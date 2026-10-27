@@ -1,0 +1,390 @@
+{
+  "command": "nix-build tools/bazel/tests/accache.nix -A execution-profiles --no-out-link --max-jobs 2 --cores 4 --option substitute false",
+  "evidence_sha256": "37baec6999a76be302a48200c2df628e4a6f7de45a772f59d0644bd0a9d46a3a",
+  "limits": [
+    "Checks actual macro and first-party compilation profiles, not complete compiler/linker equivalence.",
+    "Runtime, test inventory, editor diagnostics, cache integration, production cutover and performance have separate gates.",
+    "Cargo compiler traces retain requested arguments, not a ptrace observation of the final executable chain. Complete native compiler and linker equivalence remains independent.",
+    "Omitted Cargo optimization/debug-info settings use native compiler defaults; release overflow behavior with disabled assertions is separately exercised by cargo-execution-profile-baseline.json.",
+    "The separate qualification editor workspace selects its own execution flags. The generic development launcher still selects the ordinary family workspace; development editor routing needs separate enrollment.",
+    "The shared helper defaults remain unchanged for other families. Only accache opts into the new editor execution flags and compiler argument capture here."
+  ],
+  "output": "/nix/store/ax7sin6alpm88lnypafzficlj32x1z17-aos-bazel-accache-execution-profiles",
+  "profiles": {
+    "editor": {
+      "actions": {
+        "//crates/accache/accache-frontend:lib": {
+          "cacheHit": false,
+          "compiler_options": {
+            "debug-assertions": "no",
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-485401480",
+            "opt-level": "3",
+            "overflow-checks": "no",
+            "strip": "symbols"
+          },
+          "exitCode": 0,
+          "runner": "linux-sandbox"
+        },
+        "//crates/accache/accache:accache": {
+          "cacheHit": false,
+          "compiler_options": {
+            "debug-assertions": "no",
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+            "opt-level": "3",
+            "overflow-checks": "no",
+            "strip": "symbols"
+          },
+          "exitCode": 0,
+          "runner": "linux-sandbox"
+        },
+        "@@+aos_tools_repository+aos_accache_crates__prost-derive-0.13.5//:prost_derive": {
+          "cacheHit": false,
+          "compiler_options": {
+            "debug-assertions": "no",
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-1262035989",
+            "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+            "opt-level": "3",
+            "overflow-checks": "no",
+            "strip": "symbols"
+          },
+          "exitCode": 0,
+          "runner": "linux-sandbox"
+        },
+        "@@+aos_tools_repository+aos_accache_crates__serde_derive-1.0.229//:serde_derive": {
+          "cacheHit": false,
+          "compiler_options": {
+            "debug-assertions": "no",
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-545479530",
+            "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+            "opt-level": "3",
+            "overflow-checks": "no",
+            "strip": "symbols"
+          },
+          "exitCode": 0,
+          "runner": "linux-sandbox"
+        }
+      },
+      "cargo_macros": {
+        "prost_derive": {
+          "arguments": [
+            "/nix/store/i6rnwxfhg5w34z1hg8axsr7ylk4751x0-aos-bazel-toolchains-1/bin/rustc",
+            "--crate-name",
+            "prost_derive",
+            "--edition=2021",
+            "/nix/store/0psmrzq4shjzs4bfy760swhrgxdcmrj4-cargo-deps/prost-derive/src/lib.rs",
+            "--error-format=json",
+            "--json=diagnostic-rendered-ansi,artifacts,future-incompat",
+            "--crate-type",
+            "proc-macro",
+            "--emit=dep-info,link",
+            "-C",
+            "prefer-dynamic",
+            "-C",
+            "embed-bitcode=no",
+            "--check-cfg",
+            "cfg(docsrs,test)",
+            "--check-cfg",
+            "cfg(feature, values())",
+            "-C",
+            "metadata=9e34272c74aa4329",
+            "-C",
+            "extra-filename=-fa60b7b49ef1e3d9",
+            "--out-dir",
+            "/build/target/debug/deps",
+            "-L",
+            "dependency=/build/target/debug/deps",
+            "--extern",
+            "anyhow=/build/target/debug/deps/libanyhow-bf98894e39b13dbb.rlib",
+            "--extern",
+            "itertools=/build/target/debug/deps/libitertools-1f6e7d318eceac97.rlib",
+            "--extern",
+            "proc_macro2=/build/target/debug/deps/libproc_macro2-9ab18c937f66a453.rlib",
+            "--extern",
+            "quote=/build/target/debug/deps/libquote-ba3042dd4b33edd7.rlib",
+            "--extern",
+            "syn=/build/target/debug/deps/libsyn-cea0664500f665b5.rlib",
+            "--extern",
+            "proc_macro",
+            "--cap-lints",
+            "allow",
+            "-Copt-level=3",
+            "-Cdebuginfo=0",
+            "-Cdebug-assertions=no",
+            "-Coverflow-checks=no",
+            "-Cstrip=symbols"
+          ],
+          "compiler_options": {
+            "debug-assertions": "no",
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-fa60b7b49ef1e3d9",
+            "opt-level": "3",
+            "overflow-checks": "no",
+            "strip": "symbols"
+          }
+        },
+        "serde_derive": {
+          "arguments": [
+            "/nix/store/i6rnwxfhg5w34z1hg8axsr7ylk4751x0-aos-bazel-toolchains-1/bin/rustc",
+            "--crate-name",
+            "serde_derive",
+            "--edition=2021",
+            "/nix/store/0psmrzq4shjzs4bfy760swhrgxdcmrj4-cargo-deps/serde_derive/src/lib.rs",
+            "--error-format=json",
+            "--json=diagnostic-rendered-ansi,artifacts,future-incompat",
+            "--crate-type",
+            "proc-macro",
+            "--emit=dep-info,link",
+            "-C",
+            "prefer-dynamic",
+            "-C",
+            "embed-bitcode=no",
+            "--cfg",
+            "feature=\"default\"",
+            "--check-cfg",
+            "cfg(docsrs,test)",
+            "--check-cfg",
+            "cfg(feature, values(\"default\", \"deserialize_in_place\"))",
+            "-C",
+            "metadata=d010cb3bb90bca62",
+            "-C",
+            "extra-filename=-964902796da39257",
+            "--out-dir",
+            "/build/target/debug/deps",
+            "-L",
+            "dependency=/build/target/debug/deps",
+            "--extern",
+            "proc_macro2=/build/target/debug/deps/libproc_macro2-9ab18c937f66a453.rlib",
+            "--extern",
+            "quote=/build/target/debug/deps/libquote-ba3042dd4b33edd7.rlib",
+            "--extern",
+            "syn=/build/target/debug/deps/libsyn-d98f96ddc389e165.rlib",
+            "--extern",
+            "proc_macro",
+            "--cap-lints",
+            "allow",
+            "-Copt-level=3",
+            "-Cdebuginfo=0",
+            "-Cdebug-assertions=no",
+            "-Coverflow-checks=no",
+            "-Cstrip=symbols"
+          ],
+          "compiler_options": {
+            "debug-assertions": "no",
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-964902796da39257",
+            "opt-level": "3",
+            "overflow-checks": "no",
+            "strip": "symbols"
+          }
+        }
+      },
+      "cargo_trace_sha256": "0654e3292af77aec45c21c3e42db51d4e1cf2087efe0ae35825784c98c923897",
+      "inputs_sha256": {
+        "actions.json": "ac034ce825043adf3e945204ce3a405dc2ef143b0b5e396e987570849567dec7",
+        "compiler-inputs.json": "dacc91d97d640d06cb306434ea4f5cbe179894a36ba0cdc041d0682e7b18a0f2",
+        "execution.json": "9a320559f289d940bc2ac7ca96aae967e348513f1b30c2d7dfa50989529600f7"
+      },
+      "opt_level": "3",
+      "oracle": "/nix/store/gyn90sigg9jznmwvwax4fdlf00y9vs9r-aos-bazel-accache-editor-cargo-oracle",
+      "path": "/nix/store/03ply940dq62kkl7gbywklkqg3j2wyp6-aos-bazel-accache-editor-execution-profile-1"
+    },
+    "release": {
+      "actions": {
+        "//crates/accache/accache-frontend:lib": {
+          "cacheHit": false,
+          "compiler_options": {
+            "debug-assertions": "no",
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-485401480",
+            "opt-level": "3",
+            "overflow-checks": "no",
+            "strip": "symbols"
+          },
+          "exitCode": 0,
+          "runner": "linux-sandbox"
+        },
+        "//crates/accache/accache:accache": {
+          "cacheHit": false,
+          "compiler_options": {
+            "debug-assertions": "no",
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+            "opt-level": "3",
+            "overflow-checks": "no",
+            "strip": "symbols"
+          },
+          "exitCode": 0,
+          "runner": "linux-sandbox"
+        },
+        "@@+aos_tools_repository+aos_accache_crates__prost-derive-0.13.5//:prost_derive": {
+          "cacheHit": false,
+          "compiler_options": {
+            "debug-assertions": "no",
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-1262035989",
+            "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+            "opt-level": "0",
+            "overflow-checks": "no",
+            "strip": "symbols"
+          },
+          "exitCode": 0,
+          "runner": "linux-sandbox"
+        },
+        "@@+aos_tools_repository+aos_accache_crates__serde_derive-1.0.229//:serde_derive": {
+          "cacheHit": false,
+          "compiler_options": {
+            "debug-assertions": "no",
+            "debuginfo": "0",
+            "embed-bitcode": "no",
+            "extra-filename": "-545479530",
+            "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+            "opt-level": "0",
+            "overflow-checks": "no",
+            "strip": "symbols"
+          },
+          "exitCode": 0,
+          "runner": "linux-sandbox"
+        }
+      },
+      "cargo_macros": {
+        "prost_derive": {
+          "arguments": [
+            "rustc",
+            "--crate-name",
+            "prost_derive",
+            "--edition=2021",
+            "/nix/store/0psmrzq4shjzs4bfy760swhrgxdcmrj4-cargo-deps/prost-derive/src/lib.rs",
+            "--error-format=json",
+            "--json=diagnostic-rendered-ansi,artifacts,future-incompat",
+            "--crate-type",
+            "proc-macro",
+            "--emit=dep-info,link",
+            "-C",
+            "prefer-dynamic",
+            "-C",
+            "embed-bitcode=no",
+            "-C",
+            "debug-assertions=off",
+            "--check-cfg",
+            "cfg(docsrs,test)",
+            "--check-cfg",
+            "cfg(feature, values())",
+            "-C",
+            "metadata=7b03efb4f3f24d07",
+            "-C",
+            "extra-filename=-5de3c16c5f0c65d8",
+            "--out-dir",
+            "/build/target/release/deps",
+            "-C",
+            "strip=symbols",
+            "-L",
+            "dependency=/build/target/release/deps",
+            "--extern",
+            "anyhow=/build/target/release/deps/libanyhow-d6d0a4d19ce51650.rlib",
+            "--extern",
+            "itertools=/build/target/release/deps/libitertools-24e78e153af1fb7d.rlib",
+            "--extern",
+            "proc_macro2=/build/target/release/deps/libproc_macro2-22521f442175b8c2.rlib",
+            "--extern",
+            "quote=/build/target/release/deps/libquote-af70d05e3ff9b474.rlib",
+            "--extern",
+            "syn=/build/target/release/deps/libsyn-0c659ada48c5f9f2.rlib",
+            "--extern",
+            "proc_macro",
+            "--cap-lints",
+            "allow"
+          ],
+          "compiler_options": {
+            "debug-assertions": "off",
+            "embed-bitcode": "no",
+            "extra-filename": "-5de3c16c5f0c65d8",
+            "strip": "symbols"
+          }
+        },
+        "serde_derive": {
+          "arguments": [
+            "rustc",
+            "--crate-name",
+            "serde_derive",
+            "--edition=2021",
+            "/nix/store/0psmrzq4shjzs4bfy760swhrgxdcmrj4-cargo-deps/serde_derive/src/lib.rs",
+            "--error-format=json",
+            "--json=diagnostic-rendered-ansi,artifacts,future-incompat",
+            "--crate-type",
+            "proc-macro",
+            "--emit=dep-info,link",
+            "-C",
+            "prefer-dynamic",
+            "-C",
+            "embed-bitcode=no",
+            "-C",
+            "debug-assertions=off",
+            "--cfg",
+            "feature=\"default\"",
+            "--check-cfg",
+            "cfg(docsrs,test)",
+            "--check-cfg",
+            "cfg(feature, values(\"default\", \"deserialize_in_place\"))",
+            "-C",
+            "metadata=a48fa6fb8f367cda",
+            "-C",
+            "extra-filename=-dd1853d5fd7aabe3",
+            "--out-dir",
+            "/build/target/release/deps",
+            "-C",
+            "strip=symbols",
+            "-L",
+            "dependency=/build/target/release/deps",
+            "--extern",
+            "proc_macro2=/build/target/release/deps/libproc_macro2-22521f442175b8c2.rlib",
+            "--extern",
+            "quote=/build/target/release/deps/libquote-af70d05e3ff9b474.rlib",
+            "--extern",
+            "syn=/build/target/release/deps/libsyn-88fcaf433b899604.rlib",
+            "--extern",
+            "proc_macro",
+            "--cap-lints",
+            "allow"
+          ],
+          "compiler_options": {
+            "debug-assertions": "off",
+            "embed-bitcode": "no",
+            "extra-filename": "-dd1853d5fd7aabe3",
+            "strip": "symbols"
+          }
+        }
+      },
+      "cargo_trace_sha256": "08e91403cac88b39c8e0780fc4b89ea711e3d11a1f46e6833dbe8755be3b14ca",
+      "inputs_sha256": {
+        "actions.json": "2de04ec57ef2129a094eb1065caaf1d11313f9a39d028de35fdad05efe0321bd",
+        "compiler-inputs.json": "24b647856ab62f5cd42723ac20a2b99a0f998dc2a235d5123dce683b904aa70f",
+        "execution.json": "3ef9d46f4fb5ddb6c916469eddd48457e5e06b7fa4a4ccbfebbe6a3e72adfbfb"
+      },
+      "opt_level": "0",
+      "oracle": "/nix/store/bvbji6mn444jf05dxz0ihpfjmh5gp40f-aos-bazel-accache-cargo-oracle-1",
+      "path": "/nix/store/cpfxp8c4w6p52nhwnmbffwi4a5awbh6l-aos-bazel-accache-production-1"
+    }
+  },
+  "schema_version": 1,
+  "source_sha256": {
+    "crates/accache/Cargo.toml": "fd956f2b54861515b55346656f5d06a000912edebf0810a3ee427d693d9d4594",
+    "tests/build/_bazel-accache-execution-profiles.nix": "b25897bed71c60b6660e4c9cce66811b7070c582f5d2361f57c8f6a09085b083",
+    "tests/build/_bazel-accache.nix": "89aff5b0de170b74107ae31b395c29ce9da98bc1ba4a561795e4711b120909cb",
+    "tests/build/_bazel-rust-family.nix": "227d92f7f1a1d3d58578b5e7472fc06472f36bcdc41dc24cf03f0d482cc5213c",
+    "tools/bazel/tests/trace_cargo_rustc.py": "6d9107e9b9c888b2f2e8e9f437d11e4fce7afbe48b92bfa84bc4929f496c383a"
+  },
+  "status": "PASS"
+}

@@ -1,0 +1,206 @@
+{
+  "bazel_driver": {
+    "derivation": "/nix/store/0rc0kr3j3l26y169cvcp53w1hf16wym9-crucible-phase2-abi-conformance-0.drv",
+    "executed_cases": 114,
+    "input_audit": {
+      "cargo_home_setup_absent": true,
+      "cargo_test_command_absent": true,
+      "derivation": "/nix/store/0rc0kr3j3l26y169cvcp53w1hf16wym9-crucible-phase2-abi-conformance-0.drv",
+      "direct_cargo_vendor_and_test_oracle_inputs_absent": true,
+      "direct_input_count": 20,
+      "empty_cargo_test_oracle": true,
+      "empty_source_archive": true,
+      "verifier_present": true
+    },
+    "output": "/nix/store/v6v68iwzb907b2149g2q420csfyh8hpd-crucible-phase2-abi-conformance-0",
+    "owner_evidence_sha256": "c93d530940076b1f5535b65f81b11801b9db26907651d072acf3b06967c60a68",
+    "owners": {
+      "api": {
+        "arguments": [
+          "--expected-count=6",
+          "--require-case=rpc_abi_conformance_runs_named_checks",
+          "--jobs=1"
+        ],
+        "build": "/nix/store/dqkflj4ajp20agrnqsfkpwp5hknb442j-aos-bazel-abi-owner-comparisons/owners/api",
+        "case_count": 6,
+        "execution_sha256": "a5e62bd5ab0eb4f0971c9fc0dca92dfd9c82e6eb9d987cc249383400c87ac1d6",
+        "junit_sha256": "08d07451055698761a1aed9dacba629451914f5dd570b6a21d00aa0751450f87",
+        "runner": "linux-sandbox",
+        "target": "//crates/crucible/crucible-control-api:gate_abi_conformance"
+      },
+      "engine": {
+        "arguments": [
+          "--expected-count=2",
+          "--require-case=gate_abi_conformance_engine_aggregates_boundary_abi_owners",
+          "--jobs=1"
+        ],
+        "build": "/nix/store/dqkflj4ajp20agrnqsfkpwp5hknb442j-aos-bazel-abi-owner-comparisons/owners/engine",
+        "case_count": 2,
+        "execution_sha256": "dd789b6bd008f252bdfbec9c852ef5455bbd33039522573bda202890bf69e4ec",
+        "junit_sha256": "7ae6d7490000002007d005f4098517acb0da4ad0979d2837282f9791e1256fee",
+        "runner": "linux-sandbox",
+        "target": "//crates/crucible/crucible-engine:gate_abi_conformance_test_double"
+      },
+      "guest": {
+        "arguments": [
+          "--expected-count=5",
+          "--require-case=guest_cli_verbs_encode_shared_marker_payloads",
+          "--jobs=1"
+        ],
+        "build": "/nix/store/dqkflj4ajp20agrnqsfkpwp5hknb442j-aos-bazel-abi-owner-comparisons/owners/guest",
+        "case_count": 5,
+        "execution_sha256": "ec84d104309d3c0008002bf50c5b942c850b51e72da37aab14173827741d9e11",
+        "junit_sha256": "7ac3321c442ed563af634a7c2a09508799b30bdfed6afa1d525c6fe4d3345647",
+        "runner": "linux-sandbox",
+        "target": "//crates/crucible/crucible-guest:gate_abi_conformance"
+      },
+      "harness": {
+        "arguments": [
+          "--expected-count=4",
+          "--require-case=gate_abi_conformance_is_implemented_in_catalog_and_targets",
+          "--jobs=1"
+        ],
+        "build": "/nix/store/dqkflj4ajp20agrnqsfkpwp5hknb442j-aos-bazel-abi-owner-comparisons/owners/harness",
+        "case_count": 4,
+        "execution_sha256": "80b400fbc3ac14060a85728021c52af153a44809fa4c9cd5bcfd927abb81f7b1",
+        "junit_sha256": "9b523b52a53c5207f9aea9fd8763eeee87dff60925e9ff5af0ff8d398492fd12",
+        "runner": "linux-sandbox",
+        "target": "//crates/crucible/crucible-test-support:gate_abi_conformance"
+      },
+      "plugin-doorbell": {
+        "arguments": [
+          "--expected-count=54",
+          "--require-case=whitebox_doorbell::tests::whitebox_registration_off_mode_installs_no_trap_and_preserves_black_box",
+          "--jobs=1",
+          "--filter=whitebox_doorbell"
+        ],
+        "build": "/nix/store/dqkflj4ajp20agrnqsfkpwp5hknb442j-aos-bazel-abi-owner-comparisons/owners/plugin-doorbell",
+        "case_count": 54,
+        "execution_sha256": "94ed604bb56e3d3012aafff5026466d6e991ecf2db429558f4267b0ca6731f05",
+        "junit_sha256": "73e78fe59ceae65247a312f85276461c2f21e61942f3e9f8a8cda96f706c6d9e",
+        "runner": "linux-sandbox",
+        "target": "//crates/crucible/crucible-qemu-plugin:unit"
+      },
+      "plugin-io-wire": {
+        "arguments": [
+          "--expected-count=8",
+          "--require-case=io_wire_fuzz::tests::io_wire_regression_corpus_exercises_block_and_9p_wire_cases",
+          "--jobs=1",
+          "--filter=io_wire_fuzz"
+        ],
+        "build": "/nix/store/dqkflj4ajp20agrnqsfkpwp5hknb442j-aos-bazel-abi-owner-comparisons/owners/plugin-io-wire",
+        "case_count": 8,
+        "execution_sha256": "a79be495f589151d0e713ee1637ef7ca5abaa58a52585c30f7d03495419354e8",
+        "junit_sha256": "a9b8cba2d6c042920eaa910b5ef518d7333ecc8303f3830ebbac76a72d32aaab",
+        "runner": "linux-sandbox",
+        "target": "//crates/crucible/crucible-qemu-plugin:unit"
+      },
+      "plugin-owner": {
+        "arguments": [
+          "--expected-count=2",
+          "--require-case=gate_abi_conformance_covers_plugin_io_wire_fuzzing",
+          "--jobs=1"
+        ],
+        "build": "/nix/store/dqkflj4ajp20agrnqsfkpwp5hknb442j-aos-bazel-abi-owner-comparisons/owners/plugin-owner",
+        "case_count": 2,
+        "execution_sha256": "1ba4660d44c97ca539cf915f1938594d8f7fb2fde84fb155392ffc8260a49690",
+        "junit_sha256": "e2b4e7c90410a8f7c425895052b1f11082880e3a3d997d6dd4e838aeb357a4ba",
+        "runner": "linux-sandbox",
+        "target": "//crates/crucible/crucible-qemu-plugin:gate_abi_conformance"
+      },
+      "protocol": {
+        "arguments": [
+          "--expected-count=18",
+          "--require-case=protocol_abi_conformance_runs_named_checks",
+          "--jobs=1"
+        ],
+        "build": "/nix/store/dqkflj4ajp20agrnqsfkpwp5hknb442j-aos-bazel-abi-owner-comparisons/owners/protocol",
+        "case_count": 18,
+        "execution_sha256": "628db7c4b431ab0bcfab4a3dca97b555adae42fc858ce32a7386d019ae43c56b",
+        "junit_sha256": "9c2a169b58fc0f3391ee906fa4f84952d35ae785c9101c36a5645ad1a71f282c",
+        "runner": "linux-sandbox",
+        "target": "//crates/crucible/crucible-qemu-protocol:gate_abi_conformance"
+      },
+      "protocol-doorbell": {
+        "arguments": [
+          "--expected-count=3",
+          "--require-case=doorbell_abi::tests::doorbell_abi_vectors_cover_x86_64_and_aarch64",
+          "--jobs=1",
+          "--filter=doorbell_abi"
+        ],
+        "build": "/nix/store/dqkflj4ajp20agrnqsfkpwp5hknb442j-aos-bazel-abi-owner-comparisons/owners/protocol-doorbell",
+        "case_count": 3,
+        "execution_sha256": "1f3ad854d41e45a6eb6c38be52940f5168af214eb83ce1e054abc854286ee09f",
+        "junit_sha256": "dc53076e8c78a34187b1278fc017b8b89b6de2041b92d7083da1e6f5e9d5dd6c",
+        "runner": "linux-sandbox",
+        "target": "//crates/crucible/crucible-qemu-protocol:unit"
+      },
+      "protocol-golden": {
+        "arguments": [
+          "--expected-count=7",
+          "--require-case=golden_vectors_match_canonical_codec_bytes",
+          "--jobs=1"
+        ],
+        "build": "/nix/store/dqkflj4ajp20agrnqsfkpwp5hknb442j-aos-bazel-abi-owner-comparisons/owners/protocol-golden",
+        "case_count": 7,
+        "execution_sha256": "37a183da85cc63b58e24286bc65e9ef1cfff27f56b37708cd6f6cbedfe5d0507",
+        "junit_sha256": "8778302aaf1f5ac3dfe83f1c7efa62c2c17cf8686fb75192e02d0882578d6dcf",
+        "runner": "linux-sandbox",
+        "target": "//crates/crucible/crucible-qemu-protocol:golden_vectors"
+      },
+      "shmem": {
+        "arguments": [
+          "--expected-count=5",
+          "--require-case=gate_cases::gate_abi_conformance_checks_generated_header_and_golden_vectors",
+          "--jobs=1"
+        ],
+        "build": "/nix/store/dqkflj4ajp20agrnqsfkpwp5hknb442j-aos-bazel-abi-owner-comparisons/owners/shmem",
+        "case_count": 5,
+        "execution_sha256": "88d6a1a024f700040d91fa729eaca3dd377f3af1d2a2e232dc03b6fafc2df80a",
+        "junit_sha256": "63ec62ab020de3c2e451916f4c7f0435bf13addaf1c7a071b9adb39794c332aa",
+        "runner": "linux-sandbox",
+        "target": "//crates/crucible/crucible-qemu-shmem:gate_abi_conformance"
+      }
+    },
+    "result": "PASS\ncheck=checks.build.bazel.abi-owners.driver-comparison\ntasks=T-HARN-17,T-API-11,T-API-12,T-PAT-8\ngate=gate:abi-conformance\ndriver=bazel\nshmem_vectors=generated-header,layout-fixture,spsc-structure-aware,spsc-snapshot-byte-codec\nprotocol_vectors=hello,hello-ack,setup-payload,setup-ack,quit\nrpc_vectors=hello-request,hello-response,attached,send-request,send-response,event-effect-applied\nplugin_io_wire_fuzz=phase2-protocol-codec-fuzz-run-qemu-plugin-io-wire-fuzz\nplugin_io_wire_fuzz_executed=true\ndoorbell_abi_unit_targets_executed=true\nguest_abi_target_executed=true\nengine_abi_aggregate=true\nzero_test_guards=exact-count-and-canonical-owner\nversion_bump_rule=shmem+protocol+rpc-golden-corpora\nrpc_exact_version_rejection=true\nreference_client_scope=implemented-T-API-13\n"
+  },
+  "cargo_rollback": {
+    "log_sha256": "acac2f56e0dd072bb256a281c51b35243f408d8b83aeb08e1c2b8c6b4607f713",
+    "output": "/nix/store/rq8xl671mxilk5wc0pis187j23rhsldn-crucible-phase2-abi-conformance-0",
+    "result": "PASS\ncheck=checks.crucible.phase2.abiConformance\ntasks=T-HARN-17,T-API-11,T-API-12,T-PAT-8\ngate=gate:abi-conformance\ndriver=cargo\nshmem_vectors=generated-header,layout-fixture,spsc-structure-aware,spsc-snapshot-byte-codec\nprotocol_vectors=hello,hello-ack,setup-payload,setup-ack,quit\nrpc_vectors=hello-request,hello-response,attached,send-request,send-response,event-effect-applied\nplugin_io_wire_fuzz=phase2-protocol-codec-fuzz-run-qemu-plugin-io-wire-fuzz\nplugin_io_wire_fuzz_executed=true\ndoorbell_abi_unit_targets_executed=true\nguest_abi_target_executed=true\nengine_abi_aggregate=true\nzero_test_guards=exact-count-and-canonical-owner\nversion_bump_rule=shmem+protocol+rpc-golden-corpora\nrpc_exact_version_rejection=true\nreference_client_scope=implemented-T-API-13\n",
+    "scope": "Direct canonical raw driver, including all eleven existing guarded Cargo selections. The final Bazel-only source/archive change does not alter this frozen Cargo branch."
+  },
+  "limits": [
+    "The full named ABI prerequisite chain remains unqualified. Its selected-component VM failure is retained in selected-gpl-normative-gates.json; this isolated execution does not waive any prerequisite.",
+    "Both Cargo and Bazel named source audits were evaluated, not built through the full prerequisite graph.",
+    "Normal production checks still default to Cargo. The standalone qualification entry point explicitly selects the Bazel ABI driver.",
+    "The license-boundary driver still uses Cargo. First-party Cargo metadata and consumers are retained.",
+    "No performance, foreign-platform, or production-cutover acceptance is claimed."
+  ],
+  "schema_version": 1,
+  "selector_evaluation": {
+    "bazel_driver": "bazel",
+    "bazel_source_audit": "/nix/store/pm3nkc7rmbkghchnd3l3l0isv42vkx2f-crucible-phase7-package-abi-conformance-0.drv",
+    "cargo_driver": "cargo",
+    "cargo_source_audit": "/nix/store/clcqxvgwfcax79rbh2vlxkzahc32ldz5-crucible-phase7-package-abi-conformance-0.drv",
+    "mismatched_modes_rejected": true,
+    "normal_driver": "cargo",
+    "unknown_driver_rejected": true
+  },
+  "source_sha256": {
+    "tests/build/_bazel-abi-owners.nix": "8a975d7605194eabebc15673d0399e9a19585dc783bf2df92a27c8bca5d14d22",
+    "tests/crucible/phase2-abi-conformance.nix": "dfe578e4aa5105945b252d8d23656a06a1ea274053ddb3b4c0ac2da9a19c53b2",
+    "tests/crucible/phase7-crucible-package-abi-conformance.nix": "a9377688a82c7071624eb6ae490b8d6aaff5b8d3798df3047d28843ed8a41b14",
+    "tools/bazel/tests/gpl-gates.nix": "6279cd8f87506e3cd0db05bb6c4d99dd00f5a0c952d6a4afee7bc694f2796ad7",
+    "tools/bazel/tests/test_abi_owners.py": "3d74c5ebcc34008800b84aeeaca6f9fd3772157c469157364e92e9184f74ad87",
+    "tools/bazel/tests/verify_abi_owners.py": "e1338f80a0dc24c7caa97eaa51fe8e7256a80ac5fe8d62afc9ac784f2299af36"
+  },
+  "status": "PASS: isolated canonical driver branches and selector evaluation",
+  "validation": {
+    "focused_evidence_cases": 6,
+    "policy_cases": 311,
+    "policy_output": "/nix/store/2lqda2q293p06nyiwcfnghavy9bfqkcw-aos-bazel-policy-checks",
+    "rust_test_targets": "/nix/store/629dd4wikswscw89bl8f8cpppfzv3pv5-aos-test-targets-0.1.0",
+    "rust_test_targets_scope": "Required application compilation after the preceding Hub OIDC formatting change; this checkpoint has no Rust edits."
+  }
+}

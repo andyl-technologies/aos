@@ -1,0 +1,669 @@
+{
+  "actual_analysis_count": 26,
+  "baseline_commit": "23fd01f9311bb2b716696da42e23cb0d30bb59fc",
+  "families": {
+    "activation-crucible": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/nhdq853i60vzi8d4qvvhxv8gxnkzmbbl-aos-bazel-controller-declarations-activation-crucible-tests-inventory-1",
+        "/nix/store/wx9pa1fzciddyadir77zibbp2afc8h3a-aos-bazel-controller-declarations-activation-crucible-production-inventory-1"
+      ],
+      "changed_contracts": [
+        "crates/crucible/crucible-campaign/BUILD.bazel",
+        "crates/crucible/crucible-determinism/BUILD.bazel",
+        "crates/crucible/crucible-device/BUILD.bazel",
+        "crates/crucible/crucible-engine/BUILD.bazel",
+        "crates/crucible/crucible-guest/BUILD.bazel",
+        "crates/crucible/crucible-qemu-protocol/BUILD.bazel",
+        "crates/crucible/crucible-qemu-shmem/BUILD.bazel",
+        "crates/crucible/crucible-store/BUILD.bazel",
+        "tools/bazel/rules/clippy.bzl"
+      ],
+      "inventory": "tools/bazel/metadata/activation-crucible-inventory.json",
+      "problems": [],
+      "sha256": "565155251e05aa80cb6b0a92de46684a3a76e3e0f5f7b8dab44899cd88a4719e"
+    },
+    "control": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/vxrzlpwr5b3jl1g68wh2m3xgxvnkh0dr-aos-bazel-controller-declarations-control-inventory-1"
+      ],
+      "changed_contracts": [
+        "crates/crucible/crucible-campaign/BUILD.bazel",
+        "crates/crucible/crucible-control-api/BUILD.bazel",
+        "crates/crucible/crucible-control-client/BUILD.bazel",
+        "crates/crucible/crucible-control-server/BUILD.bazel",
+        "crates/crucible/crucible-determinism/BUILD.bazel",
+        "crates/crucible/crucible-device/BUILD.bazel",
+        "crates/crucible/crucible-engine/BUILD.bazel",
+        "crates/crucible/crucible-qemu-protocol/BUILD.bazel",
+        "crates/crucible/crucible-qemu-shmem/BUILD.bazel",
+        "crates/crucible/crucible-session/BUILD.bazel",
+        "crates/crucible/crucible-store/BUILD.bazel",
+        "tools/bazel/rules/clippy.bzl"
+      ],
+      "inventory": "tools/bazel/metadata/control-inventory.json",
+      "problems": [],
+      "sha256": "261b13f58644d2bf05167ecf4f084b1d15bec293f5eef042434a7b3b9b37d4b8"
+    },
+    "crucible-cli": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/6iahqgrzw9jv42fdig8dh5b06dqi7iy8-aos-bazel-controller-declarations-crucible-cli-inventory-1"
+      ],
+      "changed_contracts": [
+        "crates/crucible/crucible-campaign/BUILD.bazel",
+        "crates/crucible/crucible-cli/BUILD.bazel",
+        "crates/crucible/crucible-control-api/BUILD.bazel",
+        "crates/crucible/crucible-control-client/BUILD.bazel",
+        "crates/crucible/crucible-control-server/BUILD.bazel",
+        "crates/crucible/crucible-daemon/BUILD.bazel",
+        "crates/crucible/crucible-determinism/BUILD.bazel",
+        "crates/crucible/crucible-device/BUILD.bazel",
+        "crates/crucible/crucible-engine/BUILD.bazel",
+        "crates/crucible/crucible-guest/BUILD.bazel",
+        "crates/crucible/crucible-qemu-host/BUILD.bazel",
+        "crates/crucible/crucible-qemu-protocol/BUILD.bazel",
+        "crates/crucible/crucible-qemu-shmem/BUILD.bazel",
+        "crates/crucible/crucible-session/BUILD.bazel",
+        "crates/crucible/crucible-store-s3/BUILD.bazel",
+        "crates/crucible/crucible-store/BUILD.bazel",
+        "crates/crucible/crucible-test-support/BUILD.bazel",
+        "tests/crucible/BUILD.bazel",
+        "tools/bazel/rules/clippy.bzl"
+      ],
+      "inventory": "tools/bazel/metadata/crucible-cli-inventory.json",
+      "problems": [],
+      "sha256": "157110978145064fa7049aed6c9f0c02891a55e0251d261b55a99da8121c204f"
+    },
+    "crucible-controller-cli": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/zh6rllsxlbz3r5ghcsqmnahd574n5q6a-aos-bazel-controller-declarations-crucible-controller-cli-inventory-1"
+      ],
+      "changed_contracts": [
+        "crates/crucible/crucible-campaign/BUILD.bazel",
+        "crates/crucible/crucible-cli/BUILD.bazel",
+        "crates/crucible/crucible-control-api/BUILD.bazel",
+        "crates/crucible/crucible-control-client/BUILD.bazel",
+        "crates/crucible/crucible-control-server/BUILD.bazel",
+        "crates/crucible/crucible-daemon/BUILD.bazel",
+        "crates/crucible/crucible-determinism/BUILD.bazel",
+        "crates/crucible/crucible-device/BUILD.bazel",
+        "crates/crucible/crucible-engine/BUILD.bazel",
+        "crates/crucible/crucible-qemu-host/BUILD.bazel",
+        "crates/crucible/crucible-qemu-protocol/BUILD.bazel",
+        "crates/crucible/crucible-qemu-shmem/BUILD.bazel",
+        "crates/crucible/crucible-session/BUILD.bazel",
+        "crates/crucible/crucible-store-s3/BUILD.bazel",
+        "crates/crucible/crucible-store/BUILD.bazel",
+        "tools/bazel/rules/clippy.bzl"
+      ],
+      "inventory": "tools/bazel/metadata/crucible-controller-cli-inventory.json",
+      "problems": [],
+      "sha256": "702a93219ea0dbeaff9b820d637ff564a9d782b97269dbe235861e790881aa13"
+    },
+    "crucible-controller-debugger": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/mk9wzxjd78x45ripyjq8p692v6wfb95w-aos-bazel-controller-declarations-crucible-controller-debugger-inventory-1"
+      ],
+      "changed_contracts": [
+        "crates/crucible/crucible-campaign/BUILD.bazel",
+        "crates/crucible/crucible-determinism/BUILD.bazel",
+        "crates/crucible/crucible-device/BUILD.bazel",
+        "crates/crucible/crucible-engine/BUILD.bazel",
+        "crates/crucible/crucible-qemu-protocol/BUILD.bazel",
+        "crates/crucible/crucible-qemu-shmem/BUILD.bazel",
+        "crates/crucible/crucible-store/BUILD.bazel",
+        "crates/crucible/crucible-test-support/BUILD.bazel",
+        "tools/bazel/rules/clippy.bzl"
+      ],
+      "inventory": "tools/bazel/metadata/crucible-controller-debugger-inventory.json",
+      "problems": [],
+      "sha256": "e9f7cffdb72cf02541fcc6b2716c3a593a58e37d762139e4708e354ae7ea149d"
+    },
+    "crucible-controller-scenario": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/9i3jnc0nbvi31k658d058356gwa5qf69-aos-bazel-controller-declarations-crucible-controller-scenario-inventory-1"
+      ],
+      "changed_contracts": [
+        "crates/crucible/crucible-campaign/BUILD.bazel",
+        "crates/crucible/crucible-control-api/BUILD.bazel",
+        "crates/crucible/crucible-control-client/BUILD.bazel",
+        "crates/crucible/crucible-control-server/BUILD.bazel",
+        "crates/crucible/crucible-daemon/BUILD.bazel",
+        "crates/crucible/crucible-determinism/BUILD.bazel",
+        "crates/crucible/crucible-device/BUILD.bazel",
+        "crates/crucible/crucible-engine/BUILD.bazel",
+        "crates/crucible/crucible-guest/BUILD.bazel",
+        "crates/crucible/crucible-qemu-host/BUILD.bazel",
+        "crates/crucible/crucible-qemu-protocol/BUILD.bazel",
+        "crates/crucible/crucible-qemu-shmem/BUILD.bazel",
+        "crates/crucible/crucible-session/BUILD.bazel",
+        "crates/crucible/crucible-store-s3/BUILD.bazel",
+        "crates/crucible/crucible-store/BUILD.bazel",
+        "tools/bazel/rules/clippy.bzl"
+      ],
+      "inventory": "tools/bazel/metadata/crucible-controller-scenario-inventory.json",
+      "problems": [],
+      "sha256": "3f812cf7bce443e7bf27db7125d13e938771528e942e489c310c03822f4aae12"
+    },
+    "crucible-controller-tests": {
+      "added_sources": [
+        "crates/Cargo.toml",
+        "crates/clippy.toml",
+        "crates/crucible/crucible-cli/Cargo.toml",
+        "crates/crucible/crucible-control-api/Cargo.toml",
+        "crates/crucible/crucible-control-server/Cargo.toml",
+        "crates/crucible/crucible-daemon/Cargo.toml",
+        "crates/crucible/crucible-device/Cargo.toml",
+        "crates/crucible/crucible-engine/Cargo.toml",
+        "crates/crucible/crucible-guest/Cargo.toml",
+        "crates/crucible/crucible-qemu-host/Cargo.toml",
+        "crates/crucible/crucible-qemu-plugin/Cargo.toml",
+        "crates/crucible/crucible-qemu-protocol/Cargo.toml",
+        "crates/crucible/crucible-session/Cargo.toml",
+        "crates/crucible/crucible-store/Cargo.toml",
+        "crates/crucible/crucible-test-support/tests/support/harness_lint/declared.rs",
+        "crates/crucible/crucible-test-support/tests/support/harness_lint/lint_selection.rs",
+        "docs/rfcs/0014-signal-driven-fault-model/01-signal-program.md",
+        "docs/rfcs/0014-signal-driven-fault-model/02-opportunities-bindings-runtime.md",
+        "docs/rfcs/0014-signal-driven-fault-model/03-network-paths-and-media.md",
+        "docs/rfcs/0014-signal-driven-fault-model/05-recording-replay-observability.md",
+        "docs/rfcs/0014-signal-driven-fault-model/06-schema-and-examples.md",
+        "docs/rfcs/0014-signal-driven-fault-model/07-implementation-plan.md",
+        "docs/rfcs/0014-signal-driven-fault-model/09-normative-schema.md",
+        "docs/rfcs/0014-signal-driven-fault-model/10-network-technology-contracts.md",
+        "docs/rfcs/0014-signal-driven-fault-model/11-storage-durability-and-media.md",
+        "docs/rfcs/0014-signal-driven-fault-model/12-sensor-adapter-specification.md",
+        "docs/rfcs/0014-signal-driven-fault-model/13-resource-and-performance-bounds.md",
+        "docs/rfcs/0014-signal-driven-fault-model/README.md",
+        "modules/base/build.nix",
+        "modules/profiles/ability-crucible.nix",
+        "pkgs/kernel/linux-crucible.nix",
+        "pkgs/kernel/linux.nix",
+        "pkgs/tools/aos-ability-crucible.nix",
+        "pkgs/tools/crucible-fixtures.nix",
+        "pkgs/tools/crucible-fleet-store.nix",
+        "pkgs/tools/crucible-guest.nix",
+        "pkgs/tools/crucible/_cargo-source.nix",
+        "pkgs/tools/crucible/_packages.nix",
+        "pkgs/tools/crucible/_release-manifest.nix",
+        "pkgs/tools/crucible/_source.nix",
+        "pkgs/tools/crucible/crucible.nix",
+        "stdenv/phases.nix",
+        "tests/build/_bazel-crucible-controller-tests.nix",
+        "tests/crucible/.validate-enumerate.nix",
+        "tests/crucible/fixtures/envoy-network/README.md",
+        "tests/crucible/fixtures/qemu-without-typed-node-result.patch",
+        "tests/crucible/fixtures/tcg-empty-reply-native-qualification-2026-10-05.json",
+        "tests/crucible/fixtures/tcg-empty-reply-performance-2026-10-05.json",
+        "tests/crucible/fixtures/tcg-final-finite-performance-2026-10-06.json",
+        "tests/crucible/fixtures/tcg-final-linux-performance-2026-10-06.json",
+        "tests/crucible/fixtures/tcg-final-linux-profile-diagnostics-2026-10-05.json",
+        "tests/crucible/fixtures/tcg-final-native-qualification-2026-10-06.json",
+        "tests/crucible/fixtures/tcg-final-ordinary-icount-profile-diagnostics-2026-10-06.json",
+        "tests/crucible/fixtures/tcg-final-qemu-qualification-2026-10-05.json",
+        "tests/crucible/fixtures/tcg-linux-classification-performance-2026-10-05.json",
+        "tests/crucible/fixtures/tcg-linux-classification-profile-audit-2026-10-05.json",
+        "tests/crucible/fixtures/tcg-linux-classification-profile-diagnostics-2026-10-05.json",
+        "tests/crucible/fixtures/tcg-linux-performance-comparison-2026-10-05.json",
+        "tests/crucible/fixtures/tcg-linux-rx-presence-performance-2026-10-05.json",
+        "tests/crucible/fixtures/tcg-performance-comparison-2026-10-05.json",
+        "tests/crucible/fixtures/tcg-rx-callback-performance-2026-10-05.json",
+        "tests/crucible/fixtures/tcg-rx-occupied-performance-2026-10-05.json",
+        "tests/crucible/fixtures/tcg-stock-linux-performance-comparison-2026-10-05.json",
+        "tests/crucible/fixtures/tcg-stock-linux-profile-diagnostics-2026-10-05.json",
+        "tests/crucible/harness-lint-baseline.txt",
+        "tests/crucible/linux-tsc-known-frequency.patch",
+        "tests/crucible/phase0-s5-apic-known-period.patch",
+        "tests/crucible/phase2-qemu-live-fault-hardware-cases.txt",
+        "tests/crucible/qemu-thorough-test-inventory.md",
+        "tests/crucible/qemu-thorough-test-inventory.txt",
+        "tests/crucible/rustdoc-bar-baseline.txt",
+        "tests/crucible/tcg-finite-rom-performance.rs",
+        "tests/crucible/tcg-linux-serial-performance.rs",
+        "tests/crucible/tcg-production-performance.rs",
+        "tools/bazel/launcher.py",
+        "tools/bazel/rules/clippy.toml"
+      ],
+      "added_targets": [
+        "//crates/crucible/crucible-campaign:clippy_all",
+        "//crates/crucible/crucible-cli:clippy_all",
+        "//crates/crucible/crucible-control-api:clippy_all",
+        "//crates/crucible/crucible-control-client:clippy_all",
+        "//crates/crucible/crucible-control-server:clippy_all",
+        "//crates/crucible/crucible-daemon:clippy_all",
+        "//crates/crucible/crucible-determinism:clippy_all",
+        "//crates/crucible/crucible-device:clippy_all",
+        "//crates/crucible/crucible-engine:clippy_all",
+        "//crates/crucible/crucible-guest:clippy_all",
+        "//crates/crucible/crucible-qemu-host:clippy_all",
+        "//crates/crucible/crucible-qemu-protocol:clippy_all",
+        "//crates/crucible/crucible-qemu-shmem:clippy_all",
+        "//crates/crucible/crucible-session:clippy_all",
+        "//crates/crucible/crucible-store-s3:clippy_all",
+        "//crates/crucible/crucible-store:clippy_all",
+        "//crates/crucible/crucible-test-support:clippy_all",
+        "//crates/linux/aos-linux-project-quota:clippy"
+      ],
+      "analysis_output": "/nix/store/9cril1njxkj9438yv0y8chma91qnl7v4-aos-bazel-crucible-controller-test-inventory-1",
+      "changed_contracts": [
+        "BUILD.bazel",
+        "crates/BUILD.bazel",
+        "crates/crucible/crucible-campaign/BUILD.bazel",
+        "crates/crucible/crucible-cli/BUILD.bazel",
+        "crates/crucible/crucible-control-api/BUILD.bazel",
+        "crates/crucible/crucible-control-client/BUILD.bazel",
+        "crates/crucible/crucible-control-server/BUILD.bazel",
+        "crates/crucible/crucible-daemon/BUILD.bazel",
+        "crates/crucible/crucible-determinism/BUILD.bazel",
+        "crates/crucible/crucible-device/BUILD.bazel",
+        "crates/crucible/crucible-engine/BUILD.bazel",
+        "crates/crucible/crucible-guest/BUILD.bazel",
+        "crates/crucible/crucible-qemu-debug-gateway/BUILD.bazel",
+        "crates/crucible/crucible-qemu-host/BUILD.bazel",
+        "crates/crucible/crucible-qemu-plugin/BUILD.bazel",
+        "crates/crucible/crucible-qemu-protocol/BUILD.bazel",
+        "crates/crucible/crucible-qemu-shmem/BUILD.bazel",
+        "crates/crucible/crucible-session/BUILD.bazel",
+        "crates/crucible/crucible-store-s3/BUILD.bazel",
+        "crates/crucible/crucible-store/BUILD.bazel",
+        "crates/crucible/crucible-test-support/BUILD.bazel",
+        "docs/rfcs/0014-signal-driven-fault-model/BUILD.bazel",
+        "docs/users/crucible/BUILD.bazel",
+        "tests/build/BUILD.bazel",
+        "tests/crucible/BUILD.bazel",
+        "tools/bazel/rules/clippy.bzl"
+      ],
+      "configured_record_count": 2021,
+      "inventory": "tools/bazel/metadata/crucible-controller-tests-inventory.json",
+      "preserved_configured_records": 1010,
+      "scope": "Preserves existing compilation identities, features, flags and dependency edges; expands declared lint roots and runtime evidence data.",
+      "sha256": "50291f782cf46a657e5b37eb6d4b17974ed279182f160814403c6f2fcb6cbbdd"
+    },
+    "daemon": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/y7s3yj11d205zn5nnp2andwgqshm5yh7-aos-bazel-controller-declarations-daemon-inventory-1"
+      ],
+      "changed_contracts": [
+        "crates/crucible/crucible-campaign/BUILD.bazel",
+        "crates/crucible/crucible-control-api/BUILD.bazel",
+        "crates/crucible/crucible-control-client/BUILD.bazel",
+        "crates/crucible/crucible-control-server/BUILD.bazel",
+        "crates/crucible/crucible-daemon/BUILD.bazel",
+        "crates/crucible/crucible-determinism/BUILD.bazel",
+        "crates/crucible/crucible-device/BUILD.bazel",
+        "crates/crucible/crucible-engine/BUILD.bazel",
+        "crates/crucible/crucible-guest/BUILD.bazel",
+        "crates/crucible/crucible-qemu-host/BUILD.bazel",
+        "crates/crucible/crucible-qemu-protocol/BUILD.bazel",
+        "crates/crucible/crucible-qemu-shmem/BUILD.bazel",
+        "crates/crucible/crucible-session/BUILD.bazel",
+        "crates/crucible/crucible-store-s3/BUILD.bazel",
+        "crates/crucible/crucible-store/BUILD.bazel",
+        "tests/crucible/BUILD.bazel",
+        "tools/bazel/rules/clippy.bzl"
+      ],
+      "inventory": "tools/bazel/metadata/daemon-inventory.json",
+      "problems": [],
+      "sha256": "df30071c16975d50515e5db78f91bff3e4813af454ac98dd01fc295ca741d649"
+    },
+    "device": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/kmfxshzifrkj1mi5mm9ajimg59x15hgz-aos-bazel-controller-declarations-device-inventory-1"
+      ],
+      "changed_contracts": [
+        "crates/crucible/crucible-determinism/BUILD.bazel",
+        "crates/crucible/crucible-device/BUILD.bazel",
+        "crates/crucible/crucible-qemu-protocol/BUILD.bazel",
+        "crates/crucible/crucible-qemu-shmem/BUILD.bazel",
+        "tools/bazel/rules/clippy.bzl"
+      ],
+      "inventory": "tools/bazel/metadata/device-inventory.json",
+      "problems": [],
+      "sha256": "3258f8dc5503a8f8a38ab006ba71df4defa9cc21e711341904469b53bb2f9126"
+    },
+    "engine": {
+      "added_sources": [
+        "crates/crucible/crucible-test-support/tests/support/harness_lint/declared.rs",
+        "crates/crucible/crucible-test-support/tests/support/harness_lint/lint_selection.rs"
+      ],
+      "analysis_outputs": [
+        "/nix/store/3a6pfbvm74kxnplmgq45h07xfwcs9spx-aos-bazel-controller-declarations-engine-inventory-1"
+      ],
+      "changed_contracts": [
+        "crates/BUILD.bazel",
+        "crates/crucible/crucible-campaign/BUILD.bazel",
+        "crates/crucible/crucible-cli/BUILD.bazel",
+        "crates/crucible/crucible-control-api/BUILD.bazel",
+        "crates/crucible/crucible-control-client/BUILD.bazel",
+        "crates/crucible/crucible-control-server/BUILD.bazel",
+        "crates/crucible/crucible-daemon/BUILD.bazel",
+        "crates/crucible/crucible-determinism/BUILD.bazel",
+        "crates/crucible/crucible-device/BUILD.bazel",
+        "crates/crucible/crucible-engine/BUILD.bazel",
+        "crates/crucible/crucible-guest/BUILD.bazel",
+        "crates/crucible/crucible-qemu-debug-gateway/BUILD.bazel",
+        "crates/crucible/crucible-qemu-host/BUILD.bazel",
+        "crates/crucible/crucible-qemu-plugin/BUILD.bazel",
+        "crates/crucible/crucible-qemu-protocol/BUILD.bazel",
+        "crates/crucible/crucible-qemu-shmem/BUILD.bazel",
+        "crates/crucible/crucible-session/BUILD.bazel",
+        "crates/crucible/crucible-store-s3/BUILD.bazel",
+        "crates/crucible/crucible-store/BUILD.bazel",
+        "crates/crucible/crucible-test-support/BUILD.bazel",
+        "docs/rfcs/0014-signal-driven-fault-model/BUILD.bazel",
+        "docs/users/crucible/BUILD.bazel",
+        "tests/crucible/BUILD.bazel",
+        "tools/bazel/rules/clippy.bzl"
+      ],
+      "inventory": "tools/bazel/metadata/engine-inventory.json",
+      "problems": [],
+      "sha256": "30d7c60733fe442d802fbca6b56e4288cbd16888495c6b6cfbbedddc184a3b68"
+    },
+    "feature-powerset": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/i8amnxymb6r96hk3dq8bwjfhz5283lq1-aos-bazel-controller-declarations-feature-powerset-inventory-1"
+      ],
+      "changed_contracts": [
+        "crates/crucible/crucible-campaign/BUILD.bazel",
+        "crates/crucible/crucible-determinism/BUILD.bazel",
+        "crates/crucible/crucible-device/BUILD.bazel",
+        "crates/crucible/crucible-engine/BUILD.bazel",
+        "crates/crucible/crucible-qemu-host/BUILD.bazel",
+        "crates/crucible/crucible-qemu-protocol/BUILD.bazel",
+        "crates/crucible/crucible-qemu-shmem/BUILD.bazel",
+        "crates/crucible/crucible-store/BUILD.bazel",
+        "tools/bazel/rules/clippy.bzl"
+      ],
+      "inventory": "tools/bazel/metadata/feature-powerset-inventory.json",
+      "problems": [],
+      "sha256": "6717581638d788cb1cc4f2b72955842aaa79c4fd9f8d11c8640aff74abf9080e"
+    },
+    "guest": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/gxr6gcwd27xhr5c3knkpbs0ap1r9cic2-aos-bazel-controller-declarations-guest-inventory-1"
+      ],
+      "changed_contracts": [
+        "BUILD.bazel",
+        "crates/crucible/crucible-campaign/BUILD.bazel",
+        "crates/crucible/crucible-guest/BUILD.bazel",
+        "crates/crucible/crucible-qemu-protocol/BUILD.bazel",
+        "crates/crucible/crucible-store/BUILD.bazel",
+        "tests/build/BUILD.bazel",
+        "tests/crucible/BUILD.bazel",
+        "tools/bazel/rules/clippy.bzl"
+      ],
+      "inventory": "tools/bazel/metadata/guest-inventory.json",
+      "problems": [],
+      "sha256": "22e01afff785cfef395a14d4d76cf3b4eceaf18f2481be9fc081672c99716267"
+    },
+    "protocol": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/9bi0jajkl2l9x0w6maqnlbafbyz4yy0i-aos-bazel-controller-declarations-protocol-inventory-1"
+      ],
+      "changed_contracts": [
+        "crates/crucible/crucible-qemu-protocol/BUILD.bazel",
+        "crates/crucible/crucible-qemu-shmem/BUILD.bazel",
+        "tools/bazel/rules/clippy.bzl"
+      ],
+      "inventory": "tools/bazel/metadata/protocol-inventory.json",
+      "problems": [],
+      "sha256": "17a0f5a3a83e9fe876aac02f6315261af7e286471d7f42471207a1f55fa7ceaf"
+    },
+    "qemu-gateway-installed": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/k4b1yjv310dajx4vw2amjcka4h821cm2-aos-bazel-controller-declarations-qemu-gateway-installed-inventory-1"
+      ],
+      "changed_contracts": [
+        "crates/crucible/crucible-qemu-debug-gateway/BUILD.bazel",
+        "crates/crucible/crucible-qemu-protocol/BUILD.bazel",
+        "tools/bazel/rules/clippy.bzl"
+      ],
+      "inventory": "tools/bazel/metadata/qemu-gateway-installed-inventory.json",
+      "problems": [],
+      "sha256": "3918e4cb34e2f91a6d81733c09d0e1e56e0a49657117a3bca6f3bf5231f0d663"
+    },
+    "qemu-gateway-process-test": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/f5y7da8wmh31s5i3dw2k8xicp15g1h1a-aos-bazel-controller-declarations-qemu-gateway-process-test-inventory-1"
+      ],
+      "changed_contracts": [
+        "crates/crucible/crucible-qemu-debug-gateway/BUILD.bazel",
+        "crates/crucible/crucible-qemu-protocol/BUILD.bazel",
+        "tools/bazel/rules/clippy.bzl"
+      ],
+      "inventory": "tools/bazel/metadata/qemu-gateway-process-test-inventory.json",
+      "problems": [],
+      "sha256": "eb10f6c5ff358bd79d9c3825592a5bdd93b8e7a11f929bb56aeda2eb91de29cd"
+    },
+    "qemu-gpl-production": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/ircxnwh69d968q6mcr8mv9hp1jd3nv9k-aos-bazel-controller-declarations-qemu-gpl-inventory-1"
+      ],
+      "changed_contracts": [
+        "crates/crucible/crucible-qemu-debug-gateway/BUILD.bazel",
+        "crates/crucible/crucible-qemu-plugin/BUILD.bazel",
+        "crates/crucible/crucible-qemu-protocol/BUILD.bazel",
+        "crates/crucible/crucible-qemu-shmem/BUILD.bazel",
+        "tools/bazel/rules/clippy.bzl"
+      ],
+      "inventory": "tools/bazel/metadata/qemu-gpl-production-inventory.json",
+      "problems": [],
+      "sha256": "7f0e5349b9dbb041dc1f096ade918011b599529c27b16bbdf029b0d45b3be93b"
+    },
+    "qemu-host": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/ldjiva1b6s0yn7m73424mqdnq4ar6qrr-aos-bazel-controller-declarations-qemu-host-inventory-1"
+      ],
+      "changed_contracts": [
+        "BUILD.bazel",
+        "crates/crucible/crucible-campaign/BUILD.bazel",
+        "crates/crucible/crucible-determinism/BUILD.bazel",
+        "crates/crucible/crucible-device/BUILD.bazel",
+        "crates/crucible/crucible-engine/BUILD.bazel",
+        "crates/crucible/crucible-qemu-host/BUILD.bazel",
+        "crates/crucible/crucible-qemu-protocol/BUILD.bazel",
+        "crates/crucible/crucible-qemu-shmem/BUILD.bazel",
+        "crates/crucible/crucible-store/BUILD.bazel",
+        "tests/crucible/BUILD.bazel",
+        "tools/bazel/rules/clippy.bzl"
+      ],
+      "inventory": "tools/bazel/metadata/qemu-host-inventory.json",
+      "problems": [],
+      "sha256": "946e64fcfb53b48a6288e5be6d3a039ab90da4976f7e1cc9c76b6c17c31e6bdb"
+    },
+    "qemu-plugin-installed": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/rp6z3lqn6v339svlnkaxihi80xrfcadr-aos-bazel-controller-declarations-qemu-plugin-installed-inventory-1"
+      ],
+      "changed_contracts": [
+        "crates/crucible/crucible-qemu-plugin/BUILD.bazel",
+        "crates/crucible/crucible-qemu-protocol/BUILD.bazel",
+        "crates/crucible/crucible-qemu-shmem/BUILD.bazel",
+        "tools/bazel/rules/clippy.bzl"
+      ],
+      "inventory": "tools/bazel/metadata/qemu-plugin-installed-inventory.json",
+      "problems": [],
+      "sha256": "3fd457492f9abf3a4bfae960c6eb3eef4d525dc9342c49e9c97d7ad55a7400f3"
+    },
+    "qemu-plugin-process-test": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/vpmhjq98snz6gf1xmramgvhjpzandjy3-aos-bazel-controller-declarations-qemu-plugin-process-test-inventory-1"
+      ],
+      "changed_contracts": [
+        "BUILD.bazel",
+        "crates/crucible/crucible-guest/BUILD.bazel",
+        "crates/crucible/crucible-qemu-plugin/BUILD.bazel",
+        "crates/crucible/crucible-qemu-protocol/BUILD.bazel",
+        "crates/crucible/crucible-qemu-shmem/BUILD.bazel",
+        "tests/crucible/BUILD.bazel",
+        "tools/bazel/rules/clippy.bzl"
+      ],
+      "inventory": "tools/bazel/metadata/qemu-plugin-process-test-inventory.json",
+      "problems": [],
+      "sha256": "525786e129d18c630fca58f1ba651c99e0d316d3d7a438aeeca7d1b3808034ff"
+    },
+    "qemu-test-oracle-host": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/j93q71rmgp37cmckj43yvwvfsysf5wzk-aos-bazel-controller-declarations-qemu-test-oracle-host-inventory-1"
+      ],
+      "changed_contracts": [
+        "crates/crucible/crucible-campaign/BUILD.bazel",
+        "crates/crucible/crucible-control-api/BUILD.bazel",
+        "crates/crucible/crucible-control-client/BUILD.bazel",
+        "crates/crucible/crucible-control-server/BUILD.bazel",
+        "crates/crucible/crucible-determinism/BUILD.bazel",
+        "crates/crucible/crucible-device/BUILD.bazel",
+        "crates/crucible/crucible-engine/BUILD.bazel",
+        "crates/crucible/crucible-qemu-protocol/BUILD.bazel",
+        "crates/crucible/crucible-qemu-shmem/BUILD.bazel",
+        "crates/crucible/crucible-session/BUILD.bazel",
+        "crates/crucible/crucible-store/BUILD.bazel",
+        "tools/bazel/rules/clippy.bzl"
+      ],
+      "inventory": "tools/bazel/metadata/qemu-test-oracle-host-inventory.json",
+      "problems": [],
+      "sha256": "f4e11db2bc8cc7cfb542f40143e612bb2f91e654278b6d4f8cb079154999c119"
+    },
+    "session": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/mx8zlfbmvbvm22n18r0k287xxby35aqm-aos-bazel-controller-declarations-session-inventory-1"
+      ],
+      "changed_contracts": [
+        "crates/crucible/crucible-campaign/BUILD.bazel",
+        "crates/crucible/crucible-control-api/BUILD.bazel",
+        "crates/crucible/crucible-determinism/BUILD.bazel",
+        "crates/crucible/crucible-device/BUILD.bazel",
+        "crates/crucible/crucible-engine/BUILD.bazel",
+        "crates/crucible/crucible-qemu-protocol/BUILD.bazel",
+        "crates/crucible/crucible-qemu-shmem/BUILD.bazel",
+        "crates/crucible/crucible-session/BUILD.bazel",
+        "crates/crucible/crucible-store/BUILD.bazel",
+        "tools/bazel/rules/clippy.bzl"
+      ],
+      "inventory": "tools/bazel/metadata/session-inventory.json",
+      "problems": [],
+      "sha256": "dbc630291a1d3126537a2f574d2ab4664fb30a79709fa92f0601a2e9164693bb"
+    },
+    "store": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/6vsa3hlb7dwfqwhi0cjdvz6wxnv09kaq-aos-bazel-controller-declarations-store-inventory-1"
+      ],
+      "changed_contracts": [
+        "crates/crucible/crucible-campaign/BUILD.bazel",
+        "crates/crucible/crucible-store/BUILD.bazel",
+        "tools/bazel/rules/clippy.bzl"
+      ],
+      "inventory": "tools/bazel/metadata/store-inventory.json",
+      "problems": [],
+      "sha256": "4e6c68f8c3eb129221c66a20b5ef86f37a4dcec8072e6ffedbf3306b7253b46e"
+    },
+    "store-s3": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/x2ng0xyfa1qw788a0gaij97531b92nk6-aos-bazel-controller-declarations-store-s3-inventory-1"
+      ],
+      "changed_contracts": [
+        "crates/crucible/crucible-store-s3/BUILD.bazel",
+        "crates/crucible/crucible-store/BUILD.bazel",
+        "tools/bazel/rules/clippy.bzl"
+      ],
+      "inventory": "tools/bazel/metadata/store-s3-inventory.json",
+      "problems": [],
+      "sha256": "21ce31264e4ec092776383b48ff7b7398a20017fa6e2c58a096d7841e108c1f2"
+    },
+    "test-support": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/4i8qfhnmqhblmbfjcgvsn86i59zh3pzi-aos-bazel-controller-declarations-test-support-inventory-1"
+      ],
+      "changed_contracts": [
+        "crates/crucible/crucible-qemu-protocol/BUILD.bazel",
+        "crates/crucible/crucible-qemu-shmem/BUILD.bazel",
+        "crates/crucible/crucible-test-support/BUILD.bazel",
+        "tools/bazel/rules/clippy.bzl"
+      ],
+      "inventory": "tools/bazel/metadata/test-support-inventory.json",
+      "problems": [],
+      "sha256": "8763324e88b9bc9b99851d1149aa411f2cf620ceb80d12efc4614b3c02d138db"
+    },
+    "test-support-audit": {
+      "added_sources": [
+        "crates/crucible/crucible-test-support/tests/support/harness_lint/declared.rs",
+        "crates/crucible/crucible-test-support/tests/support/harness_lint/lint_selection.rs"
+      ],
+      "analysis_outputs": [
+        "/nix/store/sa4vsmpjxhmvyg08csqc0kqihn182pvm-aos-bazel-controller-declarations-test-support-audits-inventory-1"
+      ],
+      "changed_contracts": [
+        "crates/BUILD.bazel",
+        "crates/crucible/crucible-campaign/BUILD.bazel",
+        "crates/crucible/crucible-cli/BUILD.bazel",
+        "crates/crucible/crucible-control-api/BUILD.bazel",
+        "crates/crucible/crucible-control-client/BUILD.bazel",
+        "crates/crucible/crucible-control-server/BUILD.bazel",
+        "crates/crucible/crucible-daemon/BUILD.bazel",
+        "crates/crucible/crucible-determinism/BUILD.bazel",
+        "crates/crucible/crucible-device/BUILD.bazel",
+        "crates/crucible/crucible-engine/BUILD.bazel",
+        "crates/crucible/crucible-guest/BUILD.bazel",
+        "crates/crucible/crucible-qemu-debug-gateway/BUILD.bazel",
+        "crates/crucible/crucible-qemu-host/BUILD.bazel",
+        "crates/crucible/crucible-qemu-plugin/BUILD.bazel",
+        "crates/crucible/crucible-qemu-protocol/BUILD.bazel",
+        "crates/crucible/crucible-qemu-shmem/BUILD.bazel",
+        "crates/crucible/crucible-session/BUILD.bazel",
+        "crates/crucible/crucible-store-s3/BUILD.bazel",
+        "crates/crucible/crucible-store/BUILD.bazel",
+        "crates/crucible/crucible-test-support/BUILD.bazel",
+        "tests/crucible/BUILD.bazel",
+        "tools/bazel/rules/clippy.bzl"
+      ],
+      "inventory": "tools/bazel/metadata/test-support-audit-inventory.json",
+      "problems": [],
+      "sha256": "b3caa87dd4f951fd98013caa78c0501526ea1a94e5bbfc70fe10ca2c5bf62beb"
+    }
+  },
+  "limits": [
+    "Configured declaration and source selection checks only; runtime, ABI, license, performance and production cutover have separate qualification."
+  ],
+  "preservation": [
+    "All old sources retained",
+    "Existing compilation ownership, features, flags and dependency edges unchanged",
+    "New helper source inputs and harness runtime evidence retained",
+    "Controller selection grows from 554 to 572 roots with 18 complete package Clippy roots"
+  ],
+  "regenerated_inventory_count": 25,
+  "rust_sdk_guards": {
+    "generated_files": 18123,
+    "sdk_families": 79,
+    "status": "PASS"
+  },
+  "schema_version": 1,
+  "scope": "Actual configured source selections for the expanded controller lint graph and its existing build-family consumers.",
+  "source_guards": {
+    "checked_declaration_load_closure": true,
+    "current": 81,
+    "inventory_count": 81,
+    "status": "PASS"
+  },
+  "status": "PASS"
+}

@@ -1,0 +1,325 @@
+{
+  "command": "nix-build -A checks.rust.aos-test-targets --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "comparison_base_commit": "ef801cc67cc6af449b33af3502c6ce3837812057",
+  "compiled_changed_rust_inputs_sha256": {
+    "crates/hub/aos-hub-native/src/auth/extract.rs": "c794a4b226c24b8bbc21c36eac60690e1ace0e5e4a2f519265b38fbb774209f9",
+    "crates/hub/aos-hub-native/src/auth/seal.rs": "b8db6de5cbc7e74993a8ef75b3f2f2ef64f147255a28eb11f7992a7129b7e162",
+    "crates/hub/aos-hub-native/src/cloudflare.rs": "53e33c1ccf70e148cc9d1b71c7954176b2a116bfac54b63f0e2a52dd7306d21d",
+    "crates/hub/aos-hub-native/src/coreports.rs": "ab0a002ca698163cc0f65b09fe96525fdf7c85665c3a78dfcb6bb0656c6f1644",
+    "crates/hub/aos-hub-native/src/egress_gateway.rs": "713dee0b5e4fb2080b714470891a43909e6f45250be6417f877707a3ac00f223",
+    "crates/hub/aos-hub-native/src/export.rs": "ab50598c688447c7d5853aca6a45127a6b07069778af249ee25e48c6a9fd98f0",
+    "crates/hub/aos-hub-native/src/fetch.rs": "530ca14813d927d922b57d364b85885a7feae3a6ee63e7443022cae6d1cfa223",
+    "crates/hub/aos-hub-native/src/image_snapshot.rs": "6074dbd483ef688b58f6e3a6c4f3a6bc22d1a6ed4fb325666825367623742751",
+    "crates/hub/aos-hub-native/src/lib.rs": "a3de9b331e399c2e1195a6b293b4c60ad7ed1358f70e83e2e5f31fefe3c2922c",
+    "crates/hub/aos-hub-native/src/main.rs": "0d1b07ce951409da4d48ae4e1bd3525a74544bfe45d2c922a3f66d067e7710c8",
+    "crates/hub/aos-hub-native/src/mirror.rs": "d762a1b73f7b600bc75c18192ecb91a4d1a5022f40ca5532986a7574b587be9d",
+    "crates/hub/aos-hub-native/src/narlist.rs": "3a1d14dbfcd6e043cb1e1b2da6a04338a55c610035cc9f4f3f9c613091e24e3e",
+    "crates/hub/aos-hub-native/src/ratelimit.rs": "e52adf03553076b40bd6642f48b99b0cd27276ffa31bf8aa9926fb1623354b65",
+    "crates/hub/aos-hub-native/src/seed.rs": "1d3d9ca663f6198d721b0a5e56c076bae795b7bc228ce1eaab65825d249550fa",
+    "crates/hub/aos-hub-native/src/ui/pages.rs": "f75b626cf829bdccddb865ce50f3140f2d563b3e79169762252ace3228b2a7fc",
+    "crates/hub/aos-hub-native/src/ui/render.rs": "7a5bce9439fd79ec027d6b0c9165373a5e73f127b4ea3c373d3a5135e2334e05",
+    "crates/hub/aos-hub-native/src/webhook.rs": "0c8459092c3b0b58f33c4b30a28565d177a44cf1e7a5afc3cb3a5598c23cbd4f",
+    "crates/hub/aos-hub-native/tests/common/mod.rs": "9d2b4ae4a9eb4d2ccdff4febb5c503d230f4613f5ed419d420e6a9c5d8ed06e9",
+    "crates/hub/aos-hub-native/tests/console.rs": "e0263968f9435c159953b1dfcf1634da94801ad05650871ddf99f83123575609",
+    "crates/hub/aos-hub-native/tests/dialect.rs": "97f1f12def0c5b3be8ed5f166beaff3a9653b9bd7afec4515c76871234d9c8c8",
+    "crates/hub/aos-hub-native/tests/gitconfig.rs": "6b94591e1db1797e946a3ca2b9fb5e69a3744c627d980a954365f1c6f013894e",
+    "crates/hub/aos-hub-native/tests/mirror.rs": "ad1c8f13a4def51ab2f30bf523afa704c4520bdb20a5c507a4569b69aabcd589",
+    "crates/hub/aos-hub-native/tests/oci_distribution.rs": "b9435fa0a37d55fbd7b770417e673bef844f959b077e205379a1b7ce211f3bed",
+    "crates/hub/aos-hub-native/tests/oidc.rs": "abfae6dd507d9cd9df50a90c2848f2b317a5a4028de4c88b5e0c21f366d26597",
+    "crates/hub/aos-hub-native/tests/operations.rs": "0815b74dcd65b50d21815ab11b6f0b6c06a37a888498a8d903ece75bdc2f85e3",
+    "crates/hub/aos-hub-native/tests/settings_workflows.rs": "8f91be28ccf025abaf6a8f01ce8b432d7eb6bb686915186828e352cc91150051",
+    "crates/hub/aos-hub-native/tests/tenancy_read_authz.rs": "41ee8b545821a197a06c56d08eeda271af13ea61ce38c3584106f91ac34506bd",
+    "crates/hub/aos-hub-native/tests/web.rs": "47c7efc9cb34cc3efe463b167757aa5d637c052970bc475b324c3b79c1a5a024",
+    "crates/hub/aos-hub-native/tests/webhook.rs": "e6effbc334b0afb0801188d9d88d48a85fa96a82cca8814ec1a9c3b03733502e"
+  },
+  "derivation": "/nix/store/4281w2di9bfy8nzvh59pqv3gizbqz7il-aos-test-targets-0.1.0.drv",
+  "derivation_sha256": "b26a1c550c21a0bca0421362a3c9239b9d180658ee44f3311f2bc4f7c7f4e25d",
+  "limits": [
+    "This gate compiles application unit and integration targets without executing them. Bazel/Cargo runtime and editor qualification remain separate.",
+    "The frozen source contains all 29 Native Rust repairs, including the bounded console-test response helper, declared VM-source discovery, equivalent lint repairs, scoped native clock/entropy/hash exceptions and documentation links.",
+    "The later binary manifest-directory declaration changes only BUILD metadata; this checkpoint qualifies the exact retained Rust source bytes. Production migration and Cargo removal remain separate gates."
+  ],
+  "log_sha256": "674f5c0b5c7c1c8b27201c5001d1087bf753ec0a40febaa6cc3c5e6b45e8bb63",
+  "output": "/nix/store/ihn76rr1lfnz1pwqridcwdmwbkd8442v-aos-test-targets-0.1.0",
+  "schema_version": 1,
+  "source": "/nix/store/s41bk4hzq124h8swpw78wqzshkip7ml8-aos-workspace-src",
+  "source_test_audit": {
+    "changed_rust_source_sha256": {
+      "crates/hub/aos-hub-native/src/auth/extract.rs": "c794a4b226c24b8bbc21c36eac60690e1ace0e5e4a2f519265b38fbb774209f9",
+      "crates/hub/aos-hub-native/src/auth/seal.rs": "b8db6de5cbc7e74993a8ef75b3f2f2ef64f147255a28eb11f7992a7129b7e162",
+      "crates/hub/aos-hub-native/src/cloudflare.rs": "53e33c1ccf70e148cc9d1b71c7954176b2a116bfac54b63f0e2a52dd7306d21d",
+      "crates/hub/aos-hub-native/src/coreports.rs": "ab0a002ca698163cc0f65b09fe96525fdf7c85665c3a78dfcb6bb0656c6f1644",
+      "crates/hub/aos-hub-native/src/egress_gateway.rs": "713dee0b5e4fb2080b714470891a43909e6f45250be6417f877707a3ac00f223",
+      "crates/hub/aos-hub-native/src/export.rs": "ab50598c688447c7d5853aca6a45127a6b07069778af249ee25e48c6a9fd98f0",
+      "crates/hub/aos-hub-native/src/fetch.rs": "530ca14813d927d922b57d364b85885a7feae3a6ee63e7443022cae6d1cfa223",
+      "crates/hub/aos-hub-native/src/image_snapshot.rs": "6074dbd483ef688b58f6e3a6c4f3a6bc22d1a6ed4fb325666825367623742751",
+      "crates/hub/aos-hub-native/src/lib.rs": "a3de9b331e399c2e1195a6b293b4c60ad7ed1358f70e83e2e5f31fefe3c2922c",
+      "crates/hub/aos-hub-native/src/main.rs": "0d1b07ce951409da4d48ae4e1bd3525a74544bfe45d2c922a3f66d067e7710c8",
+      "crates/hub/aos-hub-native/src/mirror.rs": "d762a1b73f7b600bc75c18192ecb91a4d1a5022f40ca5532986a7574b587be9d",
+      "crates/hub/aos-hub-native/src/narlist.rs": "3a1d14dbfcd6e043cb1e1b2da6a04338a55c610035cc9f4f3f9c613091e24e3e",
+      "crates/hub/aos-hub-native/src/ratelimit.rs": "e52adf03553076b40bd6642f48b99b0cd27276ffa31bf8aa9926fb1623354b65",
+      "crates/hub/aos-hub-native/src/seed.rs": "1d3d9ca663f6198d721b0a5e56c076bae795b7bc228ce1eaab65825d249550fa",
+      "crates/hub/aos-hub-native/src/ui/pages.rs": "f75b626cf829bdccddb865ce50f3140f2d563b3e79169762252ace3228b2a7fc",
+      "crates/hub/aos-hub-native/src/ui/render.rs": "7a5bce9439fd79ec027d6b0c9165373a5e73f127b4ea3c373d3a5135e2334e05",
+      "crates/hub/aos-hub-native/src/webhook.rs": "0c8459092c3b0b58f33c4b30a28565d177a44cf1e7a5afc3cb3a5598c23cbd4f",
+      "crates/hub/aos-hub-native/tests/common/mod.rs": "9d2b4ae4a9eb4d2ccdff4febb5c503d230f4613f5ed419d420e6a9c5d8ed06e9",
+      "crates/hub/aos-hub-native/tests/console.rs": "e0263968f9435c159953b1dfcf1634da94801ad05650871ddf99f83123575609",
+      "crates/hub/aos-hub-native/tests/dialect.rs": "97f1f12def0c5b3be8ed5f166beaff3a9653b9bd7afec4515c76871234d9c8c8",
+      "crates/hub/aos-hub-native/tests/gitconfig.rs": "6b94591e1db1797e946a3ca2b9fb5e69a3744c627d980a954365f1c6f013894e",
+      "crates/hub/aos-hub-native/tests/mirror.rs": "ad1c8f13a4def51ab2f30bf523afa704c4520bdb20a5c507a4569b69aabcd589",
+      "crates/hub/aos-hub-native/tests/oci_distribution.rs": "b9435fa0a37d55fbd7b770417e673bef844f959b077e205379a1b7ce211f3bed",
+      "crates/hub/aos-hub-native/tests/oidc.rs": "abfae6dd507d9cd9df50a90c2848f2b317a5a4028de4c88b5e0c21f366d26597",
+      "crates/hub/aos-hub-native/tests/operations.rs": "0815b74dcd65b50d21815ab11b6f0b6c06a37a888498a8d903ece75bdc2f85e3",
+      "crates/hub/aos-hub-native/tests/settings_workflows.rs": "8f91be28ccf025abaf6a8f01ce8b432d7eb6bb686915186828e352cc91150051",
+      "crates/hub/aos-hub-native/tests/tenancy_read_authz.rs": "41ee8b545821a197a06c56d08eeda271af13ea61ce38c3584106f91ac34506bd",
+      "crates/hub/aos-hub-native/tests/web.rs": "47c7efc9cb34cc3efe463b167757aa5d637c052970bc475b324c3b79c1a5a024",
+      "crates/hub/aos-hub-native/tests/webhook.rs": "e6effbc334b0afb0801188d9d88d48a85fa96a82cca8814ec1a9c3b03733502e"
+    },
+    "comparison_base_commit": "ef801cc67cc6af449b33af3502c6ce3837812057",
+    "ignored_declarations": 0,
+    "test_declarations": 310,
+    "unchanged_test_declarations": {
+      "crates/hub/aos-hub-native/src/auth/extract.rs": {
+        "ignored": 0,
+        "tests": 5
+      },
+      "crates/hub/aos-hub-native/src/auth/mod.rs": {
+        "ignored": 0,
+        "tests": 0
+      },
+      "crates/hub/aos-hub-native/src/auth/oidc.rs": {
+        "ignored": 0,
+        "tests": 0
+      },
+      "crates/hub/aos-hub-native/src/auth/seal.rs": {
+        "ignored": 0,
+        "tests": 11
+      },
+      "crates/hub/aos-hub-native/src/bin/aos-hub-egress.rs": {
+        "ignored": 0,
+        "tests": 0
+      },
+      "crates/hub/aos-hub-native/src/cloudflare.rs": {
+        "ignored": 0,
+        "tests": 16
+      },
+      "crates/hub/aos-hub-native/src/coreports.rs": {
+        "ignored": 0,
+        "tests": 9
+      },
+      "crates/hub/aos-hub-native/src/coreports_frozen_tests.rs": {
+        "ignored": 0,
+        "tests": 3
+      },
+      "crates/hub/aos-hub-native/src/db/backend.rs": {
+        "ignored": 0,
+        "tests": 0
+      },
+      "crates/hub/aos-hub-native/src/db/dialect.rs": {
+        "ignored": 0,
+        "tests": 26
+      },
+      "crates/hub/aos-hub-native/src/db/mod.rs": {
+        "ignored": 0,
+        "tests": 0
+      },
+      "crates/hub/aos-hub-native/src/db/value.rs": {
+        "ignored": 0,
+        "tests": 0
+      },
+      "crates/hub/aos-hub-native/src/egress_gateway.rs": {
+        "ignored": 0,
+        "tests": 6
+      },
+      "crates/hub/aos-hub-native/src/export.rs": {
+        "ignored": 0,
+        "tests": 0
+      },
+      "crates/hub/aos-hub-native/src/fetch.rs": {
+        "ignored": 0,
+        "tests": 15
+      },
+      "crates/hub/aos-hub-native/src/gitwrite.rs": {
+        "ignored": 0,
+        "tests": 0
+      },
+      "crates/hub/aos-hub-native/src/image_snapshot.rs": {
+        "ignored": 0,
+        "tests": 4
+      },
+      "crates/hub/aos-hub-native/src/indexer.rs": {
+        "ignored": 0,
+        "tests": 0
+      },
+      "crates/hub/aos-hub-native/src/lib.rs": {
+        "ignored": 0,
+        "tests": 0
+      },
+      "crates/hub/aos-hub-native/src/local_fs_delete.rs": {
+        "ignored": 0,
+        "tests": 5
+      },
+      "crates/hub/aos-hub-native/src/main.rs": {
+        "ignored": 0,
+        "tests": 3
+      },
+      "crates/hub/aos-hub-native/src/mirror.rs": {
+        "ignored": 0,
+        "tests": 7
+      },
+      "crates/hub/aos-hub-native/src/nar_verification.rs": {
+        "ignored": 0,
+        "tests": 3
+      },
+      "crates/hub/aos-hub-native/src/narlist.rs": {
+        "ignored": 0,
+        "tests": 3
+      },
+      "crates/hub/aos-hub-native/src/native_tls.rs": {
+        "ignored": 0,
+        "tests": 0
+      },
+      "crates/hub/aos-hub-native/src/ratelimit.rs": {
+        "ignored": 0,
+        "tests": 7
+      },
+      "crates/hub/aos-hub-native/src/seed.rs": {
+        "ignored": 0,
+        "tests": 0
+      },
+      "crates/hub/aos-hub-native/src/seed/publication.rs": {
+        "ignored": 0,
+        "tests": 0
+      },
+      "crates/hub/aos-hub-native/src/server.rs": {
+        "ignored": 0,
+        "tests": 0
+      },
+      "crates/hub/aos-hub-native/src/signing.rs": {
+        "ignored": 0,
+        "tests": 0
+      },
+      "crates/hub/aos-hub-native/src/surface/load.rs": {
+        "ignored": 0,
+        "tests": 0
+      },
+      "crates/hub/aos-hub-native/src/surface/mod.rs": {
+        "ignored": 0,
+        "tests": 0
+      },
+      "crates/hub/aos-hub-native/src/ui/mod.rs": {
+        "ignored": 0,
+        "tests": 0
+      },
+      "crates/hub/aos-hub-native/src/ui/pages.rs": {
+        "ignored": 0,
+        "tests": 0
+      },
+      "crates/hub/aos-hub-native/src/ui/render.rs": {
+        "ignored": 0,
+        "tests": 5
+      },
+      "crates/hub/aos-hub-native/src/webhook.rs": {
+        "ignored": 0,
+        "tests": 0
+      },
+      "crates/hub/aos-hub-native/tests/auth.rs": {
+        "ignored": 0,
+        "tests": 5
+      },
+      "crates/hub/aos-hub-native/tests/common/mod.rs": {
+        "ignored": 0,
+        "tests": 0
+      },
+      "crates/hub/aos-hub-native/tests/config.rs": {
+        "ignored": 0,
+        "tests": 6
+      },
+      "crates/hub/aos-hub-native/tests/console.rs": {
+        "ignored": 0,
+        "tests": 6
+      },
+      "crates/hub/aos-hub-native/tests/container_admin.rs": {
+        "ignored": 0,
+        "tests": 9
+      },
+      "crates/hub/aos-hub-native/tests/dialect.rs": {
+        "ignored": 0,
+        "tests": 3
+      },
+      "crates/hub/aos-hub-native/tests/e2e.rs": {
+        "ignored": 0,
+        "tests": 6
+      },
+      "crates/hub/aos-hub-native/tests/git_interop.rs": {
+        "ignored": 0,
+        "tests": 1
+      },
+      "crates/hub/aos-hub-native/tests/gitconfig.rs": {
+        "ignored": 0,
+        "tests": 5
+      },
+      "crates/hub/aos-hub-native/tests/hardening.rs": {
+        "ignored": 0,
+        "tests": 5
+      },
+      "crates/hub/aos-hub-native/tests/http_source.rs": {
+        "ignored": 0,
+        "tests": 1
+      },
+      "crates/hub/aos-hub-native/tests/mirror.rs": {
+        "ignored": 0,
+        "tests": 13
+      },
+      "crates/hub/aos-hub-native/tests/oci_alert_rules.rs": {
+        "ignored": 0,
+        "tests": 1
+      },
+      "crates/hub/aos-hub-native/tests/oci_distribution.rs": {
+        "ignored": 0,
+        "tests": 15
+      },
+      "crates/hub/aos-hub-native/tests/oidc.rs": {
+        "ignored": 0,
+        "tests": 17
+      },
+      "crates/hub/aos-hub-native/tests/operations.rs": {
+        "ignored": 0,
+        "tests": 12
+      },
+      "crates/hub/aos-hub-native/tests/password.rs": {
+        "ignored": 0,
+        "tests": 13
+      },
+      "crates/hub/aos-hub-native/tests/seed.rs": {
+        "ignored": 0,
+        "tests": 2
+      },
+      "crates/hub/aos-hub-native/tests/settings_workflows.rs": {
+        "ignored": 0,
+        "tests": 1
+      },
+      "crates/hub/aos-hub-native/tests/tenancy.rs": {
+        "ignored": 0,
+        "tests": 13
+      },
+      "crates/hub/aos-hub-native/tests/tenancy_read_authz.rs": {
+        "ignored": 0,
+        "tests": 10
+      },
+      "crates/hub/aos-hub-native/tests/web.rs": {
+        "ignored": 0,
+        "tests": 17
+      },
+      "crates/hub/aos-hub-native/tests/webauthn.rs": {
+        "ignored": 0,
+        "tests": 11
+      },
+      "crates/hub/aos-hub-native/tests/webhook.rs": {
+        "ignored": 0,
+        "tests": 10
+      }
+    }
+  },
+  "status": "Required workspace Rust application unit and integration targets compiled successfully"
+}

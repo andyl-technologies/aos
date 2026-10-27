@@ -1272,10 +1272,7 @@ async fn collect_bounded_rpc_body(
     }
 
     let bytes = if chunks.len() == 1 {
-        match chunks.pop() {
-            Some(chunk) => chunk,
-            None => Bytes::new(),
-        }
+        chunks.pop().unwrap_or_default()
     } else {
         let mut contiguous = BytesMut::with_capacity(body_bytes);
         for chunk in chunks {

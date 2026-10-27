@@ -20,6 +20,7 @@ use serde_json::{Value, json};
 use super::{atomic_write, key, normalized_path, private_directory, read_regular, state_path};
 
 #[cfg(all(test, feature = "systemd-parser-tests"))]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod parser_tests;
 mod resource_group;
 
@@ -537,23 +538,23 @@ pub(super) async fn execute(invocation: &Invocation, action: &str, ability: &str
         None
     };
     let seed = group.as_ref().map(resource_group::seed_text).transpose()?;
-    if let Some(receipt) = &previous {
-        if let Some(image) = &receipt.image {
-            ensure!(
-                !receipt.complete
-                    && receipt.retiring.is_none()
-                    && receipt.desired == desired
-                    && group.as_ref().is_some_and(|input| input.bootstrap),
-                "finish pending image group conversion before changing policy"
-            );
-            resource_group::alias_at(
-                &unit_path(&desired),
-                image,
-                seed.as_deref().context("image custody is not a group")?,
-                &desired.text,
-                resource_group::read_member,
-            )?;
-        }
+    if let Some(receipt) = &previous
+        && let Some(image) = &receipt.image
+    {
+        ensure!(
+            !receipt.complete
+                && receipt.retiring.is_none()
+                && receipt.desired == desired
+                && group.as_ref().is_some_and(|input| input.bootstrap),
+            "finish pending image group conversion before changing policy"
+        );
+        resource_group::alias_at(
+            &unit_path(&desired),
+            image,
+            seed.as_deref().context("image custody is not a group")?,
+            &desired.text,
+            resource_group::read_member,
+        )?;
     }
     let initial_image = if previous.is_none()
         && action != "remove"
@@ -605,9 +606,8 @@ pub(super) async fn execute(invocation: &Invocation, action: &str, ability: &str
                     seed.as_deref().context("missing group seed")?,
                     &desired.text,
                     resource_group::read_member,
-                )? {
-                    fs::remove_file(unit_path(&desired))?;
-                } else if owned_file(&desired)? {
+                )? || owned_file(&desired)?
+                {
                     fs::remove_file(unit_path(&desired))?;
                 }
                 if enabled {
@@ -681,19 +681,19 @@ pub(super) async fn execute(invocation: &Invocation, action: &str, ability: &str
         }
     };
     atomic_write(&path, &serde_json::to_vec(&receipt)?, 0o600)?;
-    if let Some(image) = &receipt.image {
-        if resource_group::alias_at(
+    if let Some(image) = &receipt.image
+        && resource_group::alias_at(
             &unit_path(&desired),
             image,
             seed.as_deref().context("missing group seed")?,
             &desired.text,
             resource_group::read_member,
-        )? {
-            // Pending custody is durable before the alias disappears. A crash
-            // in this gap is recoverable; installing uses no-clobber below.
-            fs::remove_file(unit_path(&desired))?;
-            fs::File::open(UNIT_ROOT)?.sync_all()?;
-        }
+        )?
+    {
+        // Pending custody is durable before the alias disappears. A crash
+        // in this gap is recoverable; installing uses no-clobber below.
+        fs::remove_file(unit_path(&desired))?;
+        fs::File::open(UNIT_ROOT)?.sync_all()?;
     }
     if let Some(retiring) = &receipt.retiring {
         retire(&manager, retiring).await?;
@@ -929,6 +929,7 @@ async fn observe(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

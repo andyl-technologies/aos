@@ -1039,6 +1039,10 @@ pub(super) fn require_public_untracked_repair_kind(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::items_after_test_module,
+    reason = "Preserves the existing grouping of control-plane helpers and their tests."
+)]
 mod untracked_repair_tests {
     use super::*;
 

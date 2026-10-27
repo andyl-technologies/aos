@@ -18,7 +18,7 @@
 //! # Deployment mapping
 //!
 //! - The **native hub** backs the lease with an in-process [`InMemoryLease`] (a
-//!   `Mutex<HashMap>`): a single-replica hub serializes pointer flips correctly
+//!   `Mutex<BTreeMap>`): a single-replica hub serializes pointer flips correctly
 //!   and cheaply. (A multi-replica native deployment would need a shared store,
 //!   as for the Worker.)
 //! - The **Cloudflare Worker** backs the lease with the strongly consistent
@@ -34,7 +34,7 @@
 //! its keys under `publish:` and delegates admission and release to the shared
 //! [`Coordinator`] port.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use crate::coordinator::Coordinator;
@@ -143,7 +143,7 @@ struct LeaseEntry {
     deadline: i64,
 }
 
-/// The native, process-local [`PublishLease`]: a `Mutex<HashMap>` of
+/// The native, process-local [`PublishLease`]: a `Mutex<BTreeMap>` of
 /// `registry_id -> `lease.
 ///
 /// Correct and cheap for the common single-replica native hub (publish writes
@@ -153,7 +153,7 @@ struct LeaseEntry {
 /// in-`AppState` `LeaseMap`.
 #[derive(Debug, Default)]
 pub struct InMemoryLease {
-    leases: Mutex<HashMap<i64, LeaseEntry>>,
+    leases: Mutex<BTreeMap<i64, LeaseEntry>>,
 }
 
 impl InMemoryLease {

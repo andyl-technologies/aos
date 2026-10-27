@@ -60,11 +60,11 @@ impl RetentionFields {
             current_catalog: RwSignal::new(selector.current_catalog),
             all_channels: RwSignal::new(channels.all),
             channels: RwSignal::new(channels.names.join(", ")),
-            recent_count: RwSignal::new(
-                (recent.count > 0)
-                    .then(|| recent.count.to_string())
-                    .unwrap_or_default(),
-            ),
+            recent_count: RwSignal::new(if recent.count > 0 {
+                recent.count.to_string()
+            } else {
+                String::new()
+            }),
             recent_prereleases: RwSignal::new(recent.include_prereleases),
             release_tags: RwSignal::new(selector.release_tags.join(", ")),
             semver: RwSignal::new(semver.requirement),

@@ -628,6 +628,10 @@ impl aos_activation::adapter::RuntimeControl for EvaluationBudget<'_> {
         0
     }
 
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "native evaluator subprocess budgets use host monotonic time"
+    )]
     fn attempt_remaining_millis(&self) -> u64 {
         self.budget
             .attempt_remaining_millis()
@@ -653,6 +657,35 @@ fn evaluator_store() -> Result<Option<std::ffi::OsString>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn run_in_private_store(test: &str) -> bool {
+        const CHILD_MARKER: &str = "AOS_EVALUATION_TEST_CHILD";
+
+        if std::env::var(CHILD_MARKER).as_deref() == Ok(test) {
+            return false;
+        }
+
+        // Keep store routing out of the parallel runner's environment and give
+        // each evaluator its own database, including its initialization locks.
+        let store = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test, "--nocapture"])
+            .env(CHILD_MARKER, test)
+            .env(
+                "AOS_NIX_EVAL_STORE",
+                format!("local?root={}", store.path().display()),
+            )
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "private evaluator test failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        true
+    }
 
     fn eval_projection(expression: &str) -> (Value, String) {
         let executable = std::env::var_os("AOS_NIX_STORE")
@@ -725,6 +758,12 @@ mod tests {
 
     #[test]
     fn session_reuses_private_sources_without_reusing_definition_policy() {
+        if run_in_private_store(
+            "evaluation::tests::session_reuses_private_sources_without_reusing_definition_policy",
+        ) {
+            return;
+        }
+
         let evaluation = session_evaluation(
             r#"{ system }: { evalPackageModules = args: {
               config.aos.apm.desiredPackages = [ "example" ];
@@ -762,6 +801,12 @@ mod tests {
 
     #[test]
     fn session_strict_query_rejects_definitions_deferred_by_selection() {
+        if run_in_private_store(
+            "evaluation::tests::session_strict_query_rejects_definitions_deferred_by_selection",
+        ) {
+            return;
+        }
+
         let evaluation = session_evaluation(
             r#"{ system }: { evalPackageModules = args:
               if args.checkDefinitions then throw "malformed-strict-definition"
@@ -783,6 +828,10 @@ mod tests {
 
     #[test]
     fn session_reuse_still_honors_cancellation() {
+        if run_in_private_store("evaluation::tests::session_reuse_still_honors_cancellation") {
+            return;
+        }
+
         let evaluation = session_evaluation(
             r#"{ system }: { evalPackageModules = args: {
               config.aos.apm.desiredPackages = [];
@@ -804,6 +853,12 @@ mod tests {
 
     #[test]
     fn co_projection_preserves_null_and_configured_observer() {
+        if run_in_private_store(
+            "evaluation::tests::co_projection_preserves_null_and_configured_observer",
+        ) {
+            return;
+        }
+
         let projection = deployment_observer_projection().unwrap();
         let expected = serde_json::json!({"socketPath":"/run/override.sock","timeoutMillis":1234});
         for (configured, observer) in [
@@ -829,6 +884,12 @@ mod tests {
 
     #[test]
     fn co_projection_shares_the_fixed_point_and_missing_observer_is_null() {
+        if run_in_private_store(
+            "evaluation::tests::co_projection_shares_the_fixed_point_and_missing_observer_is_null",
+        ) {
+            return;
+        }
+
         let projection = deployment_observer_projection().unwrap();
         let expression = format!(
             "let evaluated = builtins.trace \"shared-evaluation-projection\" \

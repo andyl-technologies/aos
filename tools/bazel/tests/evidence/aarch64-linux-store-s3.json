@@ -1,0 +1,79 @@
+{
+  "command": "nix-build tools/bazel/tests/store-s3.nix -A cross-linux --keep-going --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "compilation": "/nix/store/k2vm7c2w6k38qcx9w7rs2y0rg8h0ajdq-aos-bazel-store-s3-aarch64-compilation",
+  "compilation_report_sha256": "67ac07cf6ea92cb0e57eab5fa8e691db959dd01d441353f3f5cd8f0279461950",
+  "compiler_arguments_sha256": "095d364617d73916537bfe252f16256f5d896cae5c0e337e28337b2c606e303d",
+  "configuration": "/nix/store/vjy4y5rhz0agaagd0zr5bpf31iksixms-aos-bazel-configuration.json",
+  "configuration_sha256": "f71803c7c3763ac475edc4ebcf7544c3de2442431a8db010270a83343e4eb2fe",
+  "derivation": "/nix/store/27nqj5yrdsvxjcy8wf5ig5zmmbp4hwxa-aos-bazel-store-s3-aarch64-parity.drv",
+  "evidence": "/nix/store/3l516awa39fdxvc7iw0x4kji3pzllml8-aos-bazel-store-s3-aarch64-compilation-evidence",
+  "execution_sha256": "b2a71bf0807849aaf8aa095f4ea8b69c52d7b858dbcbc2ea4082e55a3089d5da",
+  "file_sha256": {
+    "MODULE.bazel": "2824fcf5dc08065c71f719ca63eb527aa073e17271d302543a17133aa86b1cfc",
+    "crates/crucible/storage/crucible-store-s3/BUILD.bazel": "cec82ca6887e335ff6bd45b241f034b7ec1d103d657768dfdb13208849a3f069",
+    "tests/build/_bazel-family-vm.nix": "4a0f7da4c2244c8ead39222b9bd74c0cdeba2caed12ac513ae89f37f1586d0c6",
+    "tests/build/_bazel-store-s3-cross.nix": "924507bad91741f0aaf82bf871a2e40ff93b3921bd9783b925d0f0039fdf1d8c",
+    "third_party/bazel/modules.json": "a88ebd1b8441802247f07436c543ad31d84070bd25f403669a13d3171a1e34a9",
+    "third_party/rust/store-s3/sources.json": "611bd0905ac966fbb95e79d145697ce101839eb388f90d215afe2a02cf5755b4",
+    "tools/bazel/metadata/store-s3-inventory.json": "e263b0438365ccdc79dc34dd9d545101f33b34bb3e6db1cdd592d9beba551899",
+    "tools/bazel/tests/family_libtest.py": "2aa8ef4a594dd5e22a5b866de743416aeea444fbcdd4c1524bf77a458e7c1944",
+    "tools/bazel/tests/run_family_vm.py": "0842da3c35b1541f06603e904c6cce3b17adcb144733474f3c7c8ccaec0f9040",
+    "tools/bazel/tests/verify_cross_linux.py": "4e68c910de0485f38cdf6070532b70055f86cd1a312d39b49b623b74667e9c85",
+    "tools/bazel/tests/verify_family_cross.py": "f05cec4dc26cf7d84e548c2c594432f0350163db145b57ccad13c3e319a4d05a"
+  },
+  "first_party_cargo_manifests_in_bazel_workspace": false,
+  "guest_network": "Loopback enabled with AOS target iproute2; QEMU uses -nic none.",
+  "libraries": "/nix/store/82b8kn3mhmcp5aa9b0d216v4f13jp1h8-aos-bazel-native-libraries-1",
+  "limits": [
+    "The original ignored live-service case is retained in the compiled and executed inventory. No S3 service, bucket or credentials were provisioned.",
+    "The immutable source and configuration predate the daemon graph. Input hashes describe that tested snapshot.",
+    "Production consumers remain on Cargo and no performance budget is accepted."
+  ],
+  "native_library_metadata_sha256": {
+    "sqlite/closure.json": "b320fc872d2afd2655423046248ed9d337034703886e1c293b2d898d44677024",
+    "sqlite/pkg-config-tools.json": "5b0fcda1caad0d2f99a4a4fdbc332042dfa2dc138f6d4b40b21d4547e3726e38",
+    "zstd/closure.json": "9d31f17eadf9d0d723b708b9a1de36bf17a20eb8c0cd3b3b0cab67d2850a1706",
+    "zstd/pkg-config-tools.json": "5b0fcda1caad0d2f99a4a4fdbc332042dfa2dc138f6d4b40b21d4547e3726e38"
+  },
+  "native_procedural_macros": [
+    "@@+aos_tools_repository+aos_store_s3_crates__aws-smithy-runtime-api-macros-1.0.0//:aws_smithy_runtime_api_macros",
+    "@@+aos_tools_repository+aos_store_s3_crates__displaydoc-0.2.6//:displaydoc",
+    "@@+aos_tools_repository+aos_store_s3_crates__rustversion-1.0.22//:rustversion",
+    "@@+aos_tools_repository+aos_store_s3_crates__thiserror-impl-2.0.18//:thiserror_impl",
+    "@@+aos_tools_repository+aos_store_s3_crates__tokio-macros-2.7.0//:tokio_macros",
+    "@@+aos_tools_repository+aos_store_s3_crates__tracing-attributes-0.1.31//:tracing_attributes",
+    "@@+aos_tools_repository+aos_store_s3_crates__yoke-derive-0.8.2//:yoke_derive",
+    "@@+aos_tools_repository+aos_store_s3_crates__zerofrom-derive-0.1.7//:zerofrom_derive",
+    "@@+aos_tools_repository+aos_store_s3_crates__zerovec-derive-0.11.3//:zerovec_derive"
+  ],
+  "native_qualification": "native-linux-store-s3.json",
+  "output": "/nix/store/lvq41h4ayigpicfi29800kssm8higcfr-aos-bazel-store-s3-aarch64-parity",
+  "platform_differences": {},
+  "runtime": {
+    "compilation_sha256": "67ac07cf6ea92cb0e57eab5fa8e691db959dd01d441353f3f5cd8f0279461950",
+    "executed_cases": 11,
+    "executed_targets": 2,
+    "ignored_cases": 1,
+    "runtime": "AOS AArch64 Linux kernel under source-built QEMU system emulation",
+    "schema_version": 1,
+    "target": "aarch64-unknown-linux-gnu"
+  },
+  "runtime_report_sha256": "360a2e2d147b988359e64fb336b81fbf7eb1bc2b2d70f70ad5c6d8a75c37e559",
+  "schema_version": 1,
+  "serial_sha256": "75b51468debb31794886ef1a87144d8b287db11b424f2eacace6487a3a1f2e53",
+  "source": "/nix/store/47l8h0ml89ygk3zw97474l9q4g4bx9gd-aos-bazel-workspace",
+  "status": "AArch64 Linux offline S3 adapter execution passed; live-service case remains ignored",
+  "tested_tree_parent_commit": "95badb2ddd9d0c868df5a1ccdd460017723ff5a9",
+  "toolchains": "/nix/store/as939vk2k6j0gv1msqwd2jb586587mhi-aos-bazel-cross-toolchains-aarch64-linux-1",
+  "verified_first_party_compile_labels": [
+    "//crates/crucible/storage/crucible-store-s3:lib_for_tests",
+    "//crates/crucible/storage/crucible-store-s3:live_conformance_binary",
+    "//crates/crucible/storage/crucible-store-s3:unit_binary"
+  ],
+  "verified_first_party_compiler_flags": [
+    "-Copt-level=s",
+    "-Cdebuginfo=0",
+    "-Cdebug-assertions=yes",
+    "-Coverflow-checks=yes"
+  ]
+}

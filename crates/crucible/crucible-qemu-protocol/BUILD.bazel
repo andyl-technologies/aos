@@ -1,0 +1,160 @@
+load("//tools/bazel/rules:clippy.bzl", "aos_package_clippy")
+load("@rules_rust//rust:defs.bzl", "rust_clippy", "rust_doc", "rust_doc_test", "rustfmt_test")
+load("//tools/bazel/rules:compile.bzl", "rust_library")
+load("//tools/bazel/rules:test.bzl", "aos_rust_test")
+load("//tools/bazel/rules:license.bzl", "aos_license_check")
+load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")
+load("//tools/bazel/rules:source_package.bzl", "aos_source_package")
+
+exports_files(
+    ["src/control_protocol_version.in"],
+    visibility = ["//crates/crucible/crucible-test-support:__pkg__"],
+)
+
+RUST_PACKAGE = aos_rust_package(
+    edition = "2024",
+    name = "crucible-qemu-protocol",
+    version = "0.1.0",
+    license_expression = "MIT OR Apache-2.0",
+    license_domain = "permissive-protocol",
+)
+
+package(default_visibility = ["//crates/crucible:__subpackages__"])
+
+exports_files(["src/doorbell_abi.rs"])
+
+DEPENDENCIES = [
+    "//third_party/rust:core_blake3",
+    "//third_party/rust:core_libc",
+    "//third_party/rust:core_sha2",
+    "//third_party/rust:core_thiserror",
+    "//third_party/rust:core_unicode_normalization",
+]
+
+rust_library(
+    name = "lib",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "crucible_qemu_protocol",
+    crate_root = "src/lib.rs",
+    crate_features = select({
+        "//tools/bazel/rules:qemu_test_oracle_host_dependencies": ["test-oracle"],
+        "//tools/bazel/rules:qemu_gpl_plugin_test_dependencies": ["test-oracle"],
+        "//tools/bazel/rules:qemu_gpl_test_dependencies": ["test-oracle"],
+        "//conditions:default": [],
+    }),
+    srcs = glob(["src/**/*.rs"]),
+    compile_data = ["src/control_protocol_version.in"],
+    deps = DEPENDENCIES,
+)
+
+aos_rust_test(
+    name = "unit",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate = ":lib",
+)
+
+rust_library(
+    name = "lib_test_oracle",
+    testonly = True,
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "crucible_qemu_protocol",
+    crate_root = "src/lib.rs",
+    crate_features = ["test-oracle"],
+    srcs = glob(["src/**/*.rs"]),
+    compile_data = ["src/control_protocol_version.in"],
+    deps = DEPENDENCIES,
+)
+
+aos_rust_test(
+    name = "test_oracle_unit",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate = ":lib_test_oracle",
+    crate_features = ["test-oracle"],
+)
+
+# Each Cargo integration root remains a separate libtest artifact; its support
+# modules and compile-time fixtures are declared without an ambient manifest.
+# Library-only source selections may omit this package's integration tree.
+[
+    aos_rust_test(
+        name = source.removeprefix("tests/").removesuffix(".rs"),
+        lint_config = "//tools/bazel/rules:workspace_lints",
+        package = RUST_PACKAGE,
+        crate_root = source,
+        srcs = [source] + glob([source.removesuffix(".rs") + "/**/*.rs"], allow_empty = True),
+        deps = [":lib"] + DEPENDENCIES,
+        compile_data = ["//docs/rfcs/0020-crucible-campaigns:schema-registry.tsv"] if source == "tests/gate_abi_conformance.rs" else [],
+    )
+    for source in glob(["tests/*.rs"], allow_empty = True)
+]
+
+rust_doc_test(
+    name = "doc",
+    crate = ":lib",
+)
+
+# Test-only roots need the same closure analysis as installable package roots.
+aos_license_check(
+    name = "license_closure",
+    testonly = True,
+    roots = [":lib", ":unit_binary"] + [
+        ":" + source.removeprefix("tests/").removesuffix(".rs") + "_binary"
+        for source in glob(["tests/*.rs"], allow_empty = True)
+    ],
+    license_domain = "permissive-protocol",
+)
+
+rust_clippy(
+    name = "clippy",
+    testonly = True,
+    deps = [":lib", ":unit_binary"] + [
+        ":" + source.removeprefix("tests/").removesuffix(".rs") + "_binary"
+        for source in glob(["tests/*.rs"], allow_empty = True)
+    ],
+)
+
+rustfmt_test(
+    name = "format",
+    targets = [":lib", ":unit_binary"] + [
+        ":" + source.removeprefix("tests/").removesuffix(".rs") + "_binary"
+        for source in glob(["tests/*.rs"], allow_empty = True)
+    ],
+)
+
+rust_doc(
+    name = "documentation",
+    crate = ":lib",
+)
+
+aos_source_package(
+    name = "source_package",
+    package = RUST_PACKAGE,
+    srcs = glob(["**/*.rs"]),
+    visibility = ["//visibility:public"],
+)
+
+# Source-only gate inputs are inspected as data, never linked into the plugin.
+filegroup(
+    name = "qemu_plugin_gate_audit",
+    testonly = True,
+    srcs = [
+        "src/lib.rs",
+        "src/doorbell_abi.rs",
+    ],
+    visibility = ["//crates/crucible/crucible-qemu-plugin:__pkg__"],
+)
+
+filegroup(
+    name = "gate_manifest_reference",
+    testonly = True,
+    # Nix source gates still name this file; retain their existence assertions
+    # until those consumers have migrated to declared Bazel contracts.
+    srcs = ["Cargo.toml"],
+    visibility = ["//crates/crucible/crucible-test-support:__pkg__"],
+)
+
+aos_package_clippy(name = "clippy_all")

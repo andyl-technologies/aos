@@ -1,3 +1,7 @@
+#[macro_use]
+#[path = "support/binaries.rs"]
+mod binaries;
+
 use std::fs;
 use std::process::Command;
 
@@ -37,7 +41,7 @@ fn apr_trust_cli_pins_lists_replaces_and_removes_keys() -> Result<()> {
     run_apr(&home, &["trust", "pin", "core", "core:Ed25519:aGlqa2w="])?;
     assert_eq!(fs::read_to_string(&key_file)?, "core:Ed25519:aGlqa2w=\n");
 
-    let err = Command::new(env!("CARGO_BIN_EXE_apr"))
+    let err = Command::new(cli_binary!("CARGO_BIN_EXE_apr"))
         .env("HOME", &home)
         .args(["trust", "pin", "core", "other:Ed25519:YWJjZA=="])
         .output()
@@ -80,7 +84,7 @@ public_key = "core:Ed25519:YWJjZA=="
 }
 
 fn run_apr(home: &std::path::Path, args: &[&str]) -> Result<String> {
-    let output = Command::new(env!("CARGO_BIN_EXE_apr"))
+    let output = Command::new(cli_binary!("CARGO_BIN_EXE_apr"))
         .env("HOME", home)
         .args(args)
         .output()

@@ -662,10 +662,12 @@ fn io_error(operation: &'static str, path: &Path, source: std::io::Error) -> Jou
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 #[path = "file/observation_tests.rs"]
 mod observation_tests;
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use aos_core::Sha256Digest;
     use serde::{Deserialize, Serialize};

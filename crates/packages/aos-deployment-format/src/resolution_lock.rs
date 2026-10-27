@@ -80,7 +80,7 @@ impl ResolutionLock {
         for edge in &self.edges {
             edge.requirement.check()?;
             ensure!(
-                edge.requester.name != "" && edge.requester.version != "",
+                !edge.requester.name.is_empty() && !edge.requester.version.is_empty(),
                 "lock requester has no coordinate"
             );
             ensure!(

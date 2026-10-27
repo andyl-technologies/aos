@@ -1,0 +1,105 @@
+load("//tools/bazel/rules:package.bzl", "aos_package")
+load("//tools/bazel/rules:source_package.bzl", "aos_source_catalog")
+
+exports_files(["MODULE.bazel"])
+
+filegroup(
+    name = "qemu_host_build_audit",
+    testonly = True,
+    srcs = ["pkgs/default.nix", "pkgs/emulation/qemu.nix"],
+    visibility = ["//crates/crucible/crucible-qemu-host:__pkg__"],
+)
+
+# QMP tests inspect checked-in patch text; no QEMU code is linked into the host.
+filegroup(
+    name = "qemu_host_patch_audit",
+    testonly = True,
+    srcs = ["pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch"],
+    visibility = ["//crates/crucible/crucible-qemu-host:__pkg__"],
+)
+
+aos_source_catalog(
+    name = "source_catalog",
+    packages = [
+        "//crates:source_catalog",
+        "//crates/accache/accache:source_package",
+        "//crates/accache/accache-frontend:source_package",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+aos_package(
+    name = "source_catalog_package",
+    package_name = "aos-source-catalog",
+    version = "1",
+    license_expression = "Apache-2.0",
+    license_domain = "apache-host",
+    artifacts = {":source_catalog": "share/aos/source-catalog.json"},
+)
+
+# Source-only gate inputs are inspected as data, never linked into the plugin.
+filegroup(
+    name = "qemu_plugin_gate_audit",
+    testonly = True,
+    srcs = [
+        "MODULE.bazel",
+        "default.nix",
+        "pkgs/emulation/qemu.nix",
+        "pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch",
+        "pkgs/emulation/qemu-patches/_atomic-patch.nix",
+    ],
+    visibility = ["//crates/crucible/crucible-qemu-plugin:__pkg__", "//crates/crucible/crucible-test-support:__pkg__"],
+)
+
+# License audits inspect policy and package source as data in the test sandbox.
+filegroup(
+    name = "license_boundary_audit_inputs",
+    testonly = True,
+    srcs = [
+        "AGENTS.md",
+        "CONTRIBUTING.md",
+        "README.md",
+        "LICENSES/Apache-2.0.txt",
+        "LICENSES/MIT.txt",
+        "LICENSES/GPL-2.0-only.txt",
+        "LICENSES/GPL-2.0-or-later.txt",
+        "docs/legal/licensing.md",
+        "docs/legal/external-contributor-license-agreement.md",
+        "docs/maintainers/contributor-licensing.md",
+        "docs/maintainers/README.md",
+        "pkgs/emulation/crucible-qemu-plugin.nix",
+        "pkgs/emulation/_crucible-qemu-bazel-installed.nix",
+        "pkgs/tools/crucible/_debug-gateway.nix",
+        "pkgs/emulation/qemu-patches/LICENSES.md",
+    ] + glob(["pkgs/emulation/qemu-patches/*.patch"], allow_empty = True),
+    visibility = ["//crates/crucible/crucible-test-support:__pkg__"],
+)
+
+# Runtime source evidence remains data, independent of the Rust build graph.
+filegroup(
+    name = "harness_lint_audit_inputs",
+    testonly = True,
+    srcs = [
+        "modules/base/build.nix",
+        "modules/profiles/ability-crucible.nix",
+        "pkgs/default.nix",
+        "pkgs/emulation/crucible-qemu-plugin.nix",
+        "pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch",
+        "pkgs/emulation/qemu.nix",
+        "pkgs/kernel/linux-crucible.nix",
+        "pkgs/kernel/linux.nix",
+        "pkgs/tools/aos-ability-crucible.nix",
+        "pkgs/tools/crucible-fixtures.nix",
+        "pkgs/tools/crucible-fleet-store.nix",
+        "pkgs/tools/crucible-guest.nix",
+        "pkgs/tools/crucible/_cargo-source.nix",
+        "pkgs/tools/crucible/_packages.nix",
+        "pkgs/tools/crucible/_release-manifest.nix",
+        "pkgs/tools/crucible/_source.nix",
+        "pkgs/tools/crucible/crucible.nix",
+        "stdenv/phases.nix",
+        "//tests/build:_bazel-crucible-controller-tests.nix",
+        "tools/bazel/launcher.py",
+    ],
+    visibility = ["//crates/crucible/crucible-test-support:__pkg__"],
+)

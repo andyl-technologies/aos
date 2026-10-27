@@ -1,0 +1,17 @@
+{
+  "annotations": {},
+  "generate_binaries": false,
+  "generate_build_scripts": true,
+  "rendering": {
+    "generate_cargo_toml_env_vars": true,
+    "generate_rules_license_metadata": false,
+    "generate_target_compatible_with": true,
+    "incompatible_no_root_alias_targets": false,
+    "regen_command": "aos-dev bazel update-deps qemu-gpl-plugin-tests",
+    "repository_name": "aos_qemu_gpl_plugin_tests_crates"
+  },
+  "supported_platform_triples": [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu"
+  ]
+}

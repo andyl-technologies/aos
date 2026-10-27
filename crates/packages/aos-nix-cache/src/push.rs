@@ -151,9 +151,7 @@ pub async fn run_push(
 
     let effective_jobs = if jobs == 0 { 1 } else { jobs };
     let mut total_bytes: u64 = 0;
-    let uploaded: u64;
-
-    if backend.supports_pack() {
+    let uploaded: u64 = if backend.supports_pack() {
         // AOS pack mode: small NARs are batched into dependency-ordered pack
         // uploads. This accumulation is stateful, so it stays sequential.
         let mut pack_paths: Vec<PackPath> = Vec::new();
@@ -203,7 +201,7 @@ pub async fn run_push(
         }
         // Flush any remaining pack paths.
         upload_pack_entries(backend, &pack_paths, &pack_narinfos).await?;
-        uploaded = count;
+        count
     } else {
         // Direct-upload mode (the common HTTP/Worker path): genuinely
         // concurrent. Each missing path compresses on a blocking thread and
@@ -216,7 +214,7 @@ pub async fn run_push(
             .iter()
             .filter(|info| missing_hashes.contains(&narinfo::store_hash(&info.path).to_string()))
             .collect();
-        let wave_size = effective_jobs.min(MAX_DIRECT_UPLOAD_WAVE).max(1);
+        let wave_size = effective_jobs.clamp(1, MAX_DIRECT_UPLOAD_WAVE);
         let mut completed = 0u64;
         for wave in work.chunks(wave_size) {
             let prepared: Vec<PreparedUpload> = futures::stream::iter(wave.iter().copied())
@@ -230,7 +228,7 @@ pub async fn run_push(
                 .collect::<Vec<_>>();
             let admissions = backend.create_object_uploads(&admission_inputs).await?;
             let results: Vec<(u64, UploadedNarinfo)> =
-                futures::stream::iter(prepared.into_iter())
+                futures::stream::iter(prepared)
                     .map(|upload| {
                         let limiter = &limiter;
                         let admission = admissions.get(&upload.nar_path).cloned();
@@ -253,8 +251,8 @@ pub async fn run_push(
                 total_bytes.saturating_add(results.iter().map(|(size, _)| *size).sum::<u64>());
             overall.inc(wave_count);
         }
-        uploaded = completed;
-    }
+        completed
+    };
 
     overall.finish_and_clear();
 
@@ -428,36 +426,36 @@ impl MultipartBackend for CacheMultipartAdapter<'_> {
     type Part = (u32, String);
 
     async fn begin(&self, size: u64) -> Result<MultipartAdmission<Self::Session>> {
-        if let Some(journal) = &self.journal {
-            if let Some(checkpoint) = journal.read()? {
+        if let Some(journal) = &self.journal
+            && let Some(checkpoint) = journal.read()?
+        {
+            anyhow::ensure!(
+                !checkpoint.upload_id.is_empty() && checkpoint.part_size > 0,
+                "invalid durable multipart checkpoint"
+            );
+            let mut next_part_number = 1_u32;
+            for (part, etag) in &checkpoint.parts {
                 anyhow::ensure!(
-                    !checkpoint.upload_id.is_empty() && checkpoint.part_size > 0,
-                    "invalid durable multipart checkpoint"
+                    *part == next_part_number && !etag.is_empty(),
+                    "invalid durable multipart part receipt"
                 );
-                let mut next_part_number = 1_u32;
-                for (part, etag) in &checkpoint.parts {
-                    anyhow::ensure!(
-                        *part == next_part_number && !etag.is_empty(),
-                        "invalid durable multipart part receipt"
-                    );
-                    next_part_number = next_part_number
-                        .checked_add(1)
-                        .context("multipart progress overflow")?;
-                }
-                let session = checkpoint.upload_id.clone();
-                let part_size = checkpoint.part_size;
-                *self
-                    .checkpoint
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("upload checkpoint lock poisoned"))? =
-                    Some(checkpoint);
-                return Ok(MultipartAdmission {
-                    session,
-                    part_size,
-                    next_part_number,
-                    state: MultipartSessionState::Active,
-                });
+                next_part_number = next_part_number
+                    .checked_add(1)
+                    .context("multipart progress overflow")?;
             }
+            let session = checkpoint.upload_id.clone();
+            let part_size = checkpoint.part_size;
+            *self
+                .checkpoint
+                .lock()
+                .map_err(|_| anyhow::anyhow!("upload checkpoint lock poisoned"))? =
+                Some(checkpoint);
+            return Ok(MultipartAdmission {
+                session,
+                part_size,
+                next_part_number,
+                state: MultipartSessionState::Active,
+            });
         }
         let (session, part_size) = self
             .backend
@@ -580,15 +578,15 @@ pub(crate) async fn upload_multipart_source(
         }
         _ => None,
     };
-    if let (Some(journal), Some((size, digest))) = (&journal, &identity) {
-        if let Some(current) = backend.static_file_identity(path).await? {
-            anyhow::ensure!(
-                current.byte_size == *size && current.sha256 == *digest,
-                "multipart destination already contains conflicting bytes"
-            );
-            journal.clear()?;
-            return Ok(());
-        }
+    if let (Some(journal), Some((size, digest))) = (&journal, &identity)
+        && let Some(current) = backend.static_file_identity(path).await?
+    {
+        anyhow::ensure!(
+            current.byte_size == *size && current.sha256 == *digest,
+            "multipart destination already contains conflicting bytes"
+        );
+        journal.clear()?;
+        return Ok(());
     }
     let adapter = CacheMultipartAdapter {
         backend,

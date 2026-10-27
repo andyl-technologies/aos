@@ -1,0 +1,30 @@
+{
+  "command": "nix-build /tmp/aos-bazel-722/native-foundation-cargo-baselines-v1.nix --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "derivation": "/nix/store/av59s4gn8nvpsv2jfbbm0aba4754hdil-aos-bazel-native-foundation-cargo-baselines-1.drv",
+  "failure": {
+    "artifact": "aos-oci/registry",
+    "cases": [
+      "verified_release_inventory_is_closed_sorted_and_rejects_missing_layers",
+      "interrupted_signed_release_graph_resumes_offsets_and_withholds_all_tags"
+    ],
+    "executed_passes": 31,
+    "failures": 2,
+    "ignored": 0,
+    "raw_report": "failures:\n\n---- verified_release_inventory_is_closed_sorted_and_rejects_missing_layers stdout ----\n\nthread 'verified_release_inventory_is_closed_sorted_and_rejects_missing_layers' (9388) panicked at shared/aos-oci/tests/registry.rs:69:5:\nassertion `left == right` failed\n  left: 20\n right: 18\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n---- interrupted_signed_release_graph_resumes_offsets_and_withholds_all_tags stdout ----\n\nthread 'interrupted_signed_release_graph_resumes_offsets_and_withholds_all_tags' (9372) panicked at shared/aos-oci/tests/registry.rs:153:5:\nassertion `left == right` failed\n  left: 20\n right: 18\n\n\nfailures:\n    interrupted_signed_release_graph_resumes_offsets_and_withholds_all_tags\n    verified_release_inventory_is_closed_sorted_and_rejects_missing_layers\n\ntest result: FAILED. 31 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 32.08s\n\n"
+  },
+  "finding": "Two assertions still expect 18 objects. The current shared fixture has four image objects, seven evidence payload/manifest pairs, one deduplicated empty config, and one source archive: 20 objects. The existing complete-push test already expects 20.",
+  "limits": [
+    "The failing cases were not skipped, ignored or filtered. Counts describe the failing integration artifact only.",
+    "No native foundation Bazel parity, production migration or performance acceptance is claimed."
+  ],
+  "log_sha256": "47eadd4d92a4719c63148e9375c2f67e4c14982ba7ca07d10791c17a5ca70821",
+  "recipe": "let\n  root = /home/dylan/src/aos/.worktrees/codex/bazel-integration-722;\n  pkgs = (import root {}).pkgs;\nin import (root + \"/tests/build/_bazel-cargo-feature-oracles.nix\") {\n  inherit pkgs;\n  pname = \"aos-bazel-native-foundation-cargo-baselines\";\n  packages = [\"aos-nix\" \"aos-transfer\" \"aos-oci\" \"aos-systemd-client\"];\n  variants = {\n    default = [];\n    without_transfer = [\"--no-default-features\"];\n  };\n  nativeLibraries = [pkgs.openssl pkgs.libssh2 pkgs.zlib pkgs.zstdStaticMultithread];\n  nativeTools = [pkgs.pkg-config pkgs.cmake pkgs.perl];\n  cargoSetup = ''\n    export OPENSSL_DIR=\"${pkgs.openssl}\"\n    export OPENSSL_LIB_DIR=\"${pkgs.openssl}/lib\"\n    export OPENSSL_INCLUDE_DIR=\"${pkgs.openssl}/include\"\n    export OPENSSL_NO_VENDOR=1 OPENSSL_STATIC=0 ZSTD_SYS_USE_PKG_CONFIG=1\n    export SSL_CERT_FILE=\"${pkgs.ca-certificates}/etc/ssl/certs/ca-certificates.crt\"\n    unset SSL_CERT_DIR\n  '';\n}\n",
+  "recipe_sha256": "a3c183f2c1414d303b77400439f6290d328f3acd09c0017998385f6d41b3f599",
+  "schema_version": 1,
+  "source": "/nix/store/7zzvc9g0rwwfkz5r1fqyh0xgxy25w0ak-crucible-cargo-src",
+  "status": "Initial native foundation Cargo baseline failed before Bazel conversion; full family execution not completed",
+  "unchanged_source_inputs_sha256": {
+    "crates/shared/aos-oci/tests/registry.rs": "af814b4119e8b6c5ea0432ecee486383e842d08b46d524a9af4bfb9e36256d66",
+    "crates/shared/aos-oci/tests/support/mod.rs": "6e5cf79708c48d2f7afe6fa9e80462dd7ef0934825dfb42d210951e265d65981"
+  }
+}

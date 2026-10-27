@@ -1,0 +1,263 @@
+{
+  "cfg_probes": {
+    "debug_last_disabled": {
+      "cfg": [
+        "panic=\"unwind\"",
+        "target_abi=\"\"",
+        "target_arch=\"x86_64\"",
+        "target_endian=\"little\"",
+        "target_env=\"gnu\"",
+        "target_family=\"unix\"",
+        "target_feature=\"fxsr\"",
+        "target_feature=\"sse\"",
+        "target_feature=\"sse2\"",
+        "target_has_atomic=\"16\"",
+        "target_has_atomic=\"32\"",
+        "target_has_atomic=\"64\"",
+        "target_has_atomic=\"8\"",
+        "target_has_atomic=\"ptr\"",
+        "target_has_atomic_primitive_alignment=\"16\"",
+        "target_has_atomic_primitive_alignment=\"32\"",
+        "target_has_atomic_primitive_alignment=\"64\"",
+        "target_has_atomic_primitive_alignment=\"8\"",
+        "target_has_atomic_primitive_alignment=\"ptr\"",
+        "target_os=\"linux\"",
+        "target_pointer_width=\"64\"",
+        "target_vendor=\"unknown\"",
+        "unix"
+      ],
+      "command": [
+        "/nix/store/84qxzmj4vqlwkgddhcmcdi1blzli59nw-rust-1.98.1/bin/rustc",
+        "--print",
+        "cfg",
+        "-Cdebug-assertions=yes",
+        "-Cdebug-assertions=no"
+      ],
+      "scalar_options": {
+        "debug-assertions": "no"
+      }
+    },
+    "debug_last_enabled": {
+      "cfg": [
+        "debug_assertions",
+        "panic=\"unwind\"",
+        "target_abi=\"\"",
+        "target_arch=\"x86_64\"",
+        "target_endian=\"little\"",
+        "target_env=\"gnu\"",
+        "target_family=\"unix\"",
+        "target_feature=\"fxsr\"",
+        "target_feature=\"sse\"",
+        "target_feature=\"sse2\"",
+        "target_has_atomic=\"16\"",
+        "target_has_atomic=\"32\"",
+        "target_has_atomic=\"64\"",
+        "target_has_atomic=\"8\"",
+        "target_has_atomic=\"ptr\"",
+        "target_has_atomic_primitive_alignment=\"16\"",
+        "target_has_atomic_primitive_alignment=\"32\"",
+        "target_has_atomic_primitive_alignment=\"64\"",
+        "target_has_atomic_primitive_alignment=\"8\"",
+        "target_has_atomic_primitive_alignment=\"ptr\"",
+        "target_os=\"linux\"",
+        "target_pointer_width=\"64\"",
+        "target_vendor=\"unknown\"",
+        "unix"
+      ],
+      "command": [
+        "/nix/store/84qxzmj4vqlwkgddhcmcdi1blzli59nw-rust-1.98.1/bin/rustc",
+        "--print",
+        "cfg",
+        "-Cdebug-assertions=no",
+        "-Cdebug-assertions=yes"
+      ],
+      "scalar_options": {
+        "debug-assertions": "yes"
+      }
+    },
+    "optimized_default": {
+      "cfg": [
+        "panic=\"unwind\"",
+        "target_abi=\"\"",
+        "target_arch=\"x86_64\"",
+        "target_endian=\"little\"",
+        "target_env=\"gnu\"",
+        "target_family=\"unix\"",
+        "target_feature=\"fxsr\"",
+        "target_feature=\"sse\"",
+        "target_feature=\"sse2\"",
+        "target_has_atomic=\"16\"",
+        "target_has_atomic=\"32\"",
+        "target_has_atomic=\"64\"",
+        "target_has_atomic=\"8\"",
+        "target_has_atomic=\"ptr\"",
+        "target_has_atomic_primitive_alignment=\"16\"",
+        "target_has_atomic_primitive_alignment=\"32\"",
+        "target_has_atomic_primitive_alignment=\"64\"",
+        "target_has_atomic_primitive_alignment=\"8\"",
+        "target_has_atomic_primitive_alignment=\"ptr\"",
+        "target_os=\"linux\"",
+        "target_pointer_width=\"64\"",
+        "target_vendor=\"unknown\"",
+        "unix"
+      ],
+      "command": [
+        "/nix/store/84qxzmj4vqlwkgddhcmcdi1blzli59nw-rust-1.98.1/bin/rustc",
+        "--print",
+        "cfg",
+        "-Copt-level=0",
+        "-Copt-level=3"
+      ],
+      "scalar_options": {
+        "opt-level": "3"
+      }
+    },
+    "unoptimized_default": {
+      "cfg": [
+        "debug_assertions",
+        "panic=\"unwind\"",
+        "target_abi=\"\"",
+        "target_arch=\"x86_64\"",
+        "target_endian=\"little\"",
+        "target_env=\"gnu\"",
+        "target_family=\"unix\"",
+        "target_feature=\"fxsr\"",
+        "target_feature=\"sse\"",
+        "target_feature=\"sse2\"",
+        "target_has_atomic=\"16\"",
+        "target_has_atomic=\"32\"",
+        "target_has_atomic=\"64\"",
+        "target_has_atomic=\"8\"",
+        "target_has_atomic=\"ptr\"",
+        "target_has_atomic_primitive_alignment=\"16\"",
+        "target_has_atomic_primitive_alignment=\"32\"",
+        "target_has_atomic_primitive_alignment=\"64\"",
+        "target_has_atomic_primitive_alignment=\"8\"",
+        "target_has_atomic_primitive_alignment=\"ptr\"",
+        "target_os=\"linux\"",
+        "target_pointer_width=\"64\"",
+        "target_vendor=\"unknown\"",
+        "unix"
+      ],
+      "command": [
+        "/nix/store/84qxzmj4vqlwkgddhcmcdi1blzli59nw-rust-1.98.1/bin/rustc",
+        "--print",
+        "cfg",
+        "-Copt-level=3",
+        "-Copt-level=0"
+      ],
+      "scalar_options": {
+        "opt-level": "0"
+      }
+    }
+  },
+  "check": "checks.build.bazel.compiler-option-semantics",
+  "check_output": "/nix/store/3iabx097kjiknn2gaj8zxk82rivxl4a9-aos-bazel-compiler-option-semantics",
+  "evidence_sha256": "e221de03011dccba2d4365bc1a4e5e57085d6fc11d6ec59d18c0bb9ba443402d",
+  "inspected_upstream_sources": {
+    "compiler/rustc_session/src/config.rs": "b5b69ed2d317e43324acd27bc836f035dfbb22656a014340c88f97add9417d95",
+    "compiler/rustc_session/src/options.rs": "21177250c4f18c3b6f24ae196c6f1f14f697160a83a34a63a7c2fd50c31ef07d",
+    "compiler/rustc_session/src/session.rs": "9b5b8706ac927c6ddf4e2b6b0041ac1fa1fccae2308355e70bd374565958bbb2",
+    "compiler/rustc_target/src/spec/targets/aarch64_unknown_linux_gnu.rs": "7f6bd4b280bee873dbb899e53e7c5724807708e13dcd74edb631bc7c460b25ca",
+    "compiler/rustc_target/src/spec/targets/x86_64_unknown_linux_gnu.rs": "af5b4cdf3003137a84f6d243436bacbb09818f03761c2cf36548f0fd289f925b"
+  },
+  "limits": [
+    "These probes check additive metadata, scalar overrides, and optimization-dependent debug assertions on the declared native compiler.",
+    "They do not establish full compiler-default, target, linker, or runtime equivalence between build systems."
+  ],
+  "metadata": {
+    "combined": {
+      "command": [
+        "/nix/store/84qxzmj4vqlwkgddhcmcdi1blzli59nw-rust-1.98.1/bin/rustc",
+        "--crate-name",
+        "option_probe",
+        "--crate-type",
+        "rlib",
+        "--edition=2024",
+        "--emit=llvm-ir",
+        "-Ccodegen-units=1",
+        "/build/rust-option-semantics-wn2qmiu1/probe.rs",
+        "-o",
+        "/build/rust-option-semantics-wn2qmiu1/probe.ll",
+        "-Cmetadata=first second"
+      ],
+      "llvm_ir_sha256": "f274401fed2d9cf1389cdfca9b340b0e216b57505d626383551bb6ff1aab3783"
+    },
+    "last_only": {
+      "command": [
+        "/nix/store/84qxzmj4vqlwkgddhcmcdi1blzli59nw-rust-1.98.1/bin/rustc",
+        "--crate-name",
+        "option_probe",
+        "--crate-type",
+        "rlib",
+        "--edition=2024",
+        "--emit=llvm-ir",
+        "-Ccodegen-units=1",
+        "/build/rust-option-semantics-wn2qmiu1/probe.rs",
+        "-o",
+        "/build/rust-option-semantics-wn2qmiu1/probe.ll",
+        "-Cmetadata=second"
+      ],
+      "llvm_ir_sha256": "b3192e51368a2f5271e8b964fa6297650a521ac8655be51bb31dac9c9302ae9f"
+    },
+    "repeated": {
+      "command": [
+        "/nix/store/84qxzmj4vqlwkgddhcmcdi1blzli59nw-rust-1.98.1/bin/rustc",
+        "--crate-name",
+        "option_probe",
+        "--crate-type",
+        "rlib",
+        "--edition=2024",
+        "--emit=llvm-ir",
+        "-Ccodegen-units=1",
+        "/build/rust-option-semantics-wn2qmiu1/probe.rs",
+        "-o",
+        "/build/rust-option-semantics-wn2qmiu1/probe.ll",
+        "-Cmetadata=first",
+        "-Cmetadata=second"
+      ],
+      "llvm_ir_sha256": "f274401fed2d9cf1389cdfca9b340b0e216b57505d626383551bb6ff1aab3783"
+    }
+  },
+  "pinned_source_archive": "/nix/store/rjla2n2jag8m7n8f2515s3rb74g985af-rustc-1.98.1-src.tar.gz",
+  "policy_log_sha256": "81af4666f54e722ada47acb798ffd3b57f8e8db2ab8b46d646fea8f2fd39ef19",
+  "policy_output": "/nix/store/i2055jck9l7r1biz1zx0j6wc8sskq8zp-aos-bazel-policy-checks",
+  "policy_tests": 301,
+  "probe_source_sha256": "73f318db90c41686a729b22db5052432c5fc2ba56d29c063b92d2a93f31651a7",
+  "retained_gpl_reaudit": {
+    "current_report_sha256": "ea64e7ebd776367f396a90c8cef7c553b3dd25f24e22bb4958e51e03efa0a9bd",
+    "inputs_sha256": {
+      "actions": "beb0f4d8168224c78fb503e329462628edf95cb89c724508672c66cd51fcec61",
+      "compiler_trace": "4c601cb1fe0597bd561aac3fa51d4c8d877f108bbc93aac6b21c2903c25b1132",
+      "execution": "396bdc3c213197ac99a095ba87878fbbd5a2320eb56ba66d7d2d445a52ca6a8c",
+      "indirect_inputs": "d10bb5f4c6bec5d18f39ffd754414032233a813f881d5edc91b83859f4a0034a"
+    },
+    "only_change": "Metadata is removed from scalar fields. Every ordered argument, cfg/edition result, and execution-bound input digest is preserved.",
+    "previous_parity_output": "/nix/store/hc5pj0pnn00yhlhw1wz2i9jxqj9kkgvr-aos-bazel-qemu-gpl-production-parity",
+    "previous_report_sha256": "11f7ef8ce9e4bb1a2a69bb9b9dffe334c3343ea29ffada2f6eb239b2cc01138d",
+    "scope": "Reinterprets the already qualified GPL compiler execution snapshot; it does not compile new artifacts.",
+    "sources": [
+      "crates/crucible/crucible-qemu-debug-gateway/src/lib.rs",
+      "crates/crucible/crucible-qemu-debug-gateway/src/main.rs",
+      "crates/crucible/crucible-qemu-plugin/src/lib.rs",
+      "crates/crucible/crucible-qemu-protocol/src/lib.rs",
+      "crates/crucible/crucible-qemu-shmem/src/lib.rs"
+    ],
+    "units": 5
+  },
+  "rustc": "/nix/store/84qxzmj4vqlwkgddhcmcdi1blzli59nw-rust-1.98.1/bin/rustc",
+  "schema_version": 1,
+  "source_observations": [
+    "rustc_session options.rs declares metadata as Vec<String>; parse_list appends whitespace-delimited values.",
+    "rustc_session config.rs defaults debug assertions to true only at optimization level zero unless overridden.",
+    "The execution probes validate these selected rules against the AOS-built compiler; other inspected source defaults are not modeled by this check."
+  ],
+  "source_sha256": {
+    "tests/build/_bazel-compiler-option-semantics.nix": "881d614f909de776651b55ed27b0bff3b410e00f70730af28f9e32f15a9d6e88",
+    "tests/build/bazel.nix": "0fd4cfaf970cce9721d7db2aa10c148b34b51ea2fcea1042559cebfcc34846c0",
+    "tools/bazel/tests/verify_compiler_option_semantics.py": "47556161f33f316ec59306d6084e6ba732f97506b7b63e0d1165fcd327494ab1",
+    "tools/bazel/tests/verify_compiler_options.py": "32facacd49f04aacc8cb557febbb76a56e25ec9534037576aaf49c1962d0ce1c"
+  },
+  "status": "PASS",
+  "version": "rustc 1.98.1 (48a229cea 2026-09-01) (built from a source tarball)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.1\nLLVM version: 22.1.0\n"
+}

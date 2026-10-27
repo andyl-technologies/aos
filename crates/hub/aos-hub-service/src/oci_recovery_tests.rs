@@ -3,7 +3,7 @@
 #[cfg(test)]
 mod tests {
     macro_rules! vals {
-        ($($v:expr),* $(,)?) => { vec![$( aos_hub_db::value::ToValue::to_value(&$v) ),*] };
+        ($($v:expr),* $(,)?) => { [$( aos_hub_db::value::ToValue::to_value(&$v) ),*] };
     }
     use std::path::Path;
     use std::sync::atomic::{AtomicBool, Ordering};

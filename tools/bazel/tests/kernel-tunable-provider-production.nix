@@ -1,0 +1,5 @@
+##! Installed static kernel-tunable provider production qualification.
+{system ? builtins.currentSystem}: let
+  pkgs = (import ../../.. {inherit system;}).pkgs;
+in
+  import ../../../tests/build/_bazel-kernel-tunable-provider-production.nix {inherit pkgs;}

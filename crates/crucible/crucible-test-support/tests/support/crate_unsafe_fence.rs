@@ -326,8 +326,12 @@ pub(super) fn assert_expected_crucible_package_set(
     for entry in workspace::package_entries(crates_dir)? {
         let entry = entry?;
         let path = entry.path();
-        if !path.is_dir() || !path.join("Cargo.toml").is_file() {
-            continue;
+        if !path.is_dir() {
+            return Err(io::Error::other(format!(
+                "declared workspace package directory is absent: {}",
+                path.display()
+            ))
+            .into());
         }
 
         let name = entry.file_name().to_string_lossy().into_owned();

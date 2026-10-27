@@ -1,0 +1,280 @@
+{
+  "application_compilation_source_binding": {
+    "derivation": "/nix/store/qks0hv5xv5yk4mcnq00j0wmcg2v25vkp-aos-test-targets-0.1.0.drv",
+    "rust_sources_sha256": {
+      "crates/crucible/crucible-test-support/tests/gate_target_mapping.rs": "945ea73cec92f37103e0d38030d824e5cc0e2969e54349dd066a665723572285",
+      "crates/crucible/crucible-test-support/tests/support/architecture.rs": "dc6b5e51e2855a10f2e45be716d1e134a3805fe18665ca1474605e51206ef589",
+      "crates/crucible/crucible-test-support/tests/support/test_targets.rs": "76aa59cef471b1ae231581583ddfd19220d0a312b3f25d3edb5ee32715b670bb"
+    },
+    "source": "/nix/store/gcpppffgjrf0ifwb1ln5hfn6sygwvy9d-aos-workspace-src"
+  },
+  "application_compilation_validation": {
+    "binding_scope": "Historical gate mapping checkpoint Rust sources; later reader changes require their own source-bound checks.",
+    "cargo_build_messages_sha256": "cdf28ef80b2bac755a38d0d109b316bc7870e22d494cce0eca50a0bc7b9b6ea3",
+    "compiled_test_artifacts": 185,
+    "derivation": "/nix/store/qks0hv5xv5yk4mcnq00j0wmcg2v25vkp-aos-test-targets-0.1.0.drv",
+    "output": "/nix/store/hqq1hjc087ak1c90pdmsbb8w6dhq1sw2-aos-test-targets-0.1.0",
+    "scope": "Required aos/aos-* application unit and integration target compilation; the focused Cargo/Bazel gate separately compiles and executes the Crucible gate mapping audits.",
+    "source_binding": {
+      "derivation": "/nix/store/qks0hv5xv5yk4mcnq00j0wmcg2v25vkp-aos-test-targets-0.1.0.drv",
+      "rust_sources_sha256": {
+        "crates/crucible/crucible-test-support/tests/gate_target_mapping.rs": "945ea73cec92f37103e0d38030d824e5cc0e2969e54349dd066a665723572285",
+        "crates/crucible/crucible-test-support/tests/support/architecture.rs": "dc6b5e51e2855a10f2e45be716d1e134a3805fe18665ca1474605e51206ef589",
+        "crates/crucible/crucible-test-support/tests/support/test_targets.rs": "76aa59cef471b1ae231581583ddfd19220d0a312b3f25d3edb5ee32715b670bb"
+      },
+      "source": "/nix/store/gcpppffgjrf0ifwb1ln5hfn6sygwvy9d-aos-workspace-src"
+    },
+    "status": "PASS"
+  },
+  "backend_controls": {
+    "accepted": [
+      "guaranteed-concatenated-features"
+    ],
+    "actual_graph_cases": [
+      "crate_structure_gate_targets_match_rfc_table",
+      "per_layer_gates_have_named_isolable_test_targets"
+    ],
+    "rejected": {
+      "ambiguous-integration-root": {
+        "diagnostic": "must pin its exact test source",
+        "exit_code": 101
+      },
+      "conditionally-filtered-wrappers": {
+        "diagnostic": "missing unfiltered runnable test wrapper",
+        "exit_code": 101
+      },
+      "duplicate-feature-condition": {
+        "diagnostic": "invalid or duplicate test selector condition",
+        "exit_code": 101
+      },
+      "empty-compilation-coverage": {
+        "diagnostic": "incomplete declared test target coverage",
+        "exit_code": 101
+      },
+      "empty-feature-selector": {
+        "diagnostic": "test selector has no elements",
+        "exit_code": 101
+      },
+      "escaping-source-root": {
+        "diagnostic": "invalid test compilation ownership",
+        "exit_code": 101
+      },
+      "feature-union-is-not-guarantee": {
+        "diagnostic": "must guarantee required feature",
+        "exit_code": 101
+      },
+      "filtered-wrappers": {
+        "diagnostic": "missing unfiltered runnable test wrapper",
+        "exit_code": 101
+      },
+      "foreign-wrapper-binary": {
+        "diagnostic": "invalid test wrapper ownership",
+        "exit_code": 101
+      },
+      "inconsistent-feature-union": {
+        "diagnostic": "invalid test compilation ownership or features",
+        "exit_code": 101
+      },
+      "missing-compilation-coverage": {
+        "diagnostic": "test compilation coverage disagrees",
+        "exit_code": 101
+      },
+      "missing-declared-source": {
+        "diagnostic": "missing declared integration compilation",
+        "exit_code": 101
+      },
+      "missing-file": {
+        "diagnostic": "No such file or directory",
+        "exit_code": 101
+      },
+      "missing-graph": {
+        "diagnostic": "omitted its declared architecture input",
+        "exit_code": 101
+      },
+      "missing-physical-source": {
+        "diagnostic": "missing integration test target",
+        "exit_code": 101
+      },
+      "missing-record-count": {
+        "diagnostic": "incomplete declared test target coverage",
+        "exit_code": 101
+      },
+      "missing-required-feature": {
+        "diagnostic": "must guarantee required feature",
+        "exit_code": 101
+      },
+      "missing-test_compilation_count": {
+        "diagnostic": "missing field",
+        "exit_code": 101
+      },
+      "missing-test_target_selection": {
+        "diagnostic": "missing field",
+        "exit_code": 101
+      },
+      "missing-wrapper-binary": {
+        "diagnostic": "test wrapper omitted its compilation",
+        "exit_code": 101
+      },
+      "missing-wrappers": {
+        "diagnostic": "missing unfiltered runnable test wrapper",
+        "exit_code": 101
+      },
+      "production-test-compilation": {
+        "diagnostic": "invalid test compilation ownership",
+        "exit_code": 101
+      },
+      "production-wrapper": {
+        "diagnostic": "invalid test wrapper ownership",
+        "exit_code": 101
+      },
+      "unowned-inherited-crate": {
+        "diagnostic": "inherited test crate has no owned compilation",
+        "exit_code": 101
+      }
+    }
+  },
+  "builds": {
+    "conservative": {
+      "actions": {
+        "//crates/crucible/crucible-test-support:gate_target_mapping_controller:TestRunner": {
+          "action_digest": null,
+          "cache_hit": false,
+          "fingerprint": "bb497004047df3f025eee4ceb742155d6f119a239ca4264cc7c717456e0f915b",
+          "runner": "linux-sandbox"
+        },
+        "//crates/crucible/crucible-test-support:gate_target_mapping_controller_binary:Rustc": {
+          "action_digest": null,
+          "cache_hit": false,
+          "fingerprint": "cc75c25e7dd56dcf10b7d5ed10af9fb8f78d6bf6c34216257a2587255fb1afb7",
+          "runner": "linux-sandbox"
+        }
+      },
+      "cases": {
+        "schema_version": 1,
+        "targets": {
+          "//crates/crucible/crucible-test-support:gate_target_mapping_controller": {
+            "executed": [
+              "crate_structure_gate_targets_match_rfc_table",
+              "per_layer_gates_have_named_isolable_test_targets"
+            ],
+            "ignored": []
+          }
+        }
+      },
+      "declared_graph_inputs": [
+        "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-test-support/gate_target_mapping_controller.runfiles/+aos_tools_repository+aos_architecture/architecture.json"
+      ],
+      "derivation": "/nix/store/zksa83n2zrcy5dp4kcsgk7slys0sq1a2-aos-bazel-crucible-controller-gate-targets-1.drv",
+      "execution_sha256": "d419588465ada972530f2219ca7cb19e9c6905bf65378473be7d261635093ab5",
+      "output": "/nix/store/n2nqcdxfxq21ggw184dln111ypbbq385-aos-bazel-crucible-controller-gate-targets-1",
+      "selected_source_count": 3757,
+      "source": "/nix/store/8zx7wbisgcq3a0mc6balzs48c6s747ls-aos-bazel-workspace",
+      "source_receipt_sha256": "087fa71e0822fe392528596d8f6ae40b0e9f3feba6429013a4dfd0d2ed0f7756"
+    },
+    "strict": {
+      "actions": {
+        "//crates/crucible/crucible-test-support:gate_target_mapping_controller:TestRunner": {
+          "action_digest": null,
+          "cache_hit": false,
+          "fingerprint": "bb497004047df3f025eee4ceb742155d6f119a239ca4264cc7c717456e0f915b",
+          "runner": "linux-sandbox"
+        },
+        "//crates/crucible/crucible-test-support:gate_target_mapping_controller_binary:Rustc": {
+          "action_digest": null,
+          "cache_hit": false,
+          "fingerprint": "cc75c25e7dd56dcf10b7d5ed10af9fb8f78d6bf6c34216257a2587255fb1afb7",
+          "runner": "linux-sandbox"
+        }
+      },
+      "cases": {
+        "schema_version": 1,
+        "targets": {
+          "//crates/crucible/crucible-test-support:gate_target_mapping_controller": {
+            "executed": [
+              "crate_structure_gate_targets_match_rfc_table",
+              "per_layer_gates_have_named_isolable_test_targets"
+            ],
+            "ignored": []
+          }
+        }
+      },
+      "declared_graph_inputs": [
+        "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-test-support/gate_target_mapping_controller.runfiles/+aos_tools_repository+aos_architecture/architecture.json"
+      ],
+      "derivation": "/nix/store/078y8j3bf4yy1523416gih5c2d0vixgb-aos-bazel-crucible-controller-gate-targets-1.drv",
+      "execution_sha256": "837431fdf6a50e0322a21e11a4ff106899f5e2ec4ff1f6beb43dce48a6accf2a",
+      "output": "/nix/store/6mf9iv0aiclxynmaxzikrrsc96d1dhdd-aos-bazel-crucible-controller-gate-targets-1",
+      "selected_source_count": 3757,
+      "source": "/nix/store/lrsrz4ph843nzsyjyq0blgbpdrm6rhjx-aos-bazel-workspace",
+      "source_receipt_sha256": "087fa71e0822fe392528596d8f6ae40b0e9f3feba6429013a4dfd0d2ed0f7756"
+    }
+  },
+  "graph": {
+    "path": "/nix/store/call174j75d0vdk3lv3dwgimyr8civ7r-aos-bazel-architecture/architecture.json",
+    "sha256": "82ec21769221fe75a1e7865cfa845a4e9d3deebe5b6640aa052aa0648e72c9b3"
+  },
+  "inventory_receipt": "tools/bazel/tests/evidence/crucible-controller-gate-target-inventories.json",
+  "inventory_receipt_sha256": "1e72ae1bd69e6c3d46d84e367550de3caedf0e7e5228fd6d4f37c55b32de1ac7",
+  "limits": [
+    "Gate target mapping only; campaign traceability, remaining lint consumers and production runtime gates require separate conversion and qualification.",
+    "Cargo remains an independent oracle and is unavailable to actual graph-backend controls."
+  ],
+  "oracle": "/nix/store/fkfxa4ivqydzxd3sfzl2azwc6pfj9ma6-aos-bazel-crucible-controller-gate-targets-cargo-oracle-1",
+  "oracle_derivation": "/nix/store/c9k2fg4k35yv1x19x8fhxgdp372ls124-aos-bazel-crucible-controller-gate-targets-cargo-oracle-1.drv",
+  "pending_checkpoint_validation": [],
+  "public_controller_cutover_qualified": false,
+  "qualification_derivation": "/nix/store/h9p8jwqca3f6y9i4144zxb5z6dawjzqc-aos-bazel-crucible-controller-gate-target-parity.drv",
+  "qualification_helper_sha256": {
+    "verify_cache.py": "48679f851e2b8f7789104114cbd52c62798f908b3313d636531546da7f7bed02",
+    "verify_compiler_sources.py": "5163f1d80c3a05d2aaa661109882c21a6c3280a9506dad4845b2b4256dae4030",
+    "verify_controller_gate_targets.py": "cccc27d66df5a58f6696a5da0b4e2caca5380c173e573d2539ec2b81d03add25",
+    "verify_pilot.py": "19d94d835b764d92881c5797d7d8e9251b9b6965a1c7aeb41030db6a7e207e50",
+    "verify_source_audits.py": "b1d3653e56dac963773f7fea110ebfb8aa085f78def0774e1c75e5c231690468"
+  },
+  "qualification_helper_source": "/nix/store/gpgch4whzym4r7afl4xdw0635nx5ypmx-aos-controller-gate-target-qualification-tools",
+  "qualification_output": "/nix/store/cn17vslj9na8xc076hlhlzqx0abh0hv3-aos-bazel-crucible-controller-gate-target-parity",
+  "schema_version": 1,
+  "scope": "Existing RFC gate-to-integration-target mapping: exact owned roots, required features on every branch, unfiltered runnable wrappers, and original source entry-point assertions.",
+  "source_sha256": {
+    "crates/crucible/crucible-test-support/BUILD.bazel": "6440ce0e2fb20a7493cab3e06662ac939ad95406b4ed93140fa6647e72ce662e",
+    "crates/crucible/crucible-test-support/tests/gate_target_mapping.rs": "945ea73cec92f37103e0d38030d824e5cc0e2969e54349dd066a665723572285",
+    "crates/crucible/crucible-test-support/tests/support/architecture.rs": "dc6b5e51e2855a10f2e45be716d1e134a3805fe18665ca1474605e51206ef589",
+    "crates/crucible/crucible-test-support/tests/support/test_targets.rs": "76aa59cef471b1ae231581583ddfd19220d0a312b3f25d3edb5ee32715b670bb",
+    "tests/build/_bazel-crucible-controller-gate-targets-cargo.nix": "1d61332ab81f2a237bb837ff2049c056100668c49e09e99af27ae6dc5052aeef",
+    "tests/build/_bazel-crucible-controller-tests.nix": "1f28742427f02e8fe63dcc7f436df7e954917ac7d9e2dab7ef3bec7365048d99",
+    "tools/bazel/tests/crucible-controller.nix": "c70ae7dbb5459a2f7bcf00b0bedf5129a1a98c0a97508311c47688cd8bd0de73",
+    "tools/bazel/tests/verify_cache.py": "48679f851e2b8f7789104114cbd52c62798f908b3313d636531546da7f7bed02",
+    "tools/bazel/tests/verify_compiler_sources.py": "5163f1d80c3a05d2aaa661109882c21a6c3280a9506dad4845b2b4256dae4030",
+    "tools/bazel/tests/verify_controller_gate_targets.py": "cccc27d66df5a58f6696a5da0b4e2caca5380c173e573d2539ec2b81d03add25",
+    "tools/bazel/tests/verify_pilot.py": "19d94d835b764d92881c5797d7d8e9251b9b6965a1c7aeb41030db6a7e207e50",
+    "tools/bazel/tests/verify_source_audits.py": "b1d3653e56dac963773f7fea110ebfb8aa085f78def0774e1c75e5c231690468"
+  },
+  "status": "PASS",
+  "test_metadata_fields_unchanged": [
+    "compilation_targets",
+    "dependency_target_count",
+    "dependency_target_selection",
+    "dependency_targets",
+    "native_dependencies",
+    "packages",
+    "schema_version",
+    "sdk_manifests_sha256",
+    "selection",
+    "target_dependencies",
+    "test_compilation_count",
+    "test_compilation_targets",
+    "test_execution_count",
+    "test_execution_targets",
+    "test_target_selection",
+    "unavailable_profile_targets"
+  ],
+  "test_metadata_receipt": "tools/bazel/tests/evidence/crucible-test-target-metadata.json",
+  "test_metadata_receipt_sha256": "3924c86a844bbb5bc765eb6e891ca3af02121754d0a1a0637180f6ac3bdb3014",
+  "validation": {
+    "core_evaluation_output": "/nix/store/p0dcd4r7i1xmwbd0byjs53q3kybpd8s2-aos-eval-core-checks-0",
+    "current_dependency_sdk_profiles": 79,
+    "current_source_inventories": 80,
+    "helper_tests": 525,
+    "helper_tests_status": "PASS"
+  }
+}

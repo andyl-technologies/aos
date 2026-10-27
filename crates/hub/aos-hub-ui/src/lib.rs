@@ -1050,6 +1050,8 @@ pub const CACHE_PAGES: &[PageSpec] = &[
 ];
 
 #[cfg(test)]
+// Missing fixture values are assertion failures in these contract tests.
+#[allow(clippy::expect_used)]
 mod tests {
     use super::*;
 

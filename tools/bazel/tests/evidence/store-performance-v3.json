@@ -1,0 +1,204 @@
+{
+  "derivation": "/nix/store/q7jcypzpg9v51jxdawl14r7xl435l4yv-aos-bazel-store-performance.drv",
+  "derivation_sha256": "e4a15507cb82f1e7b4ce94581794e345aca384e05ce8f906b10bc51ad936cb5b",
+  "distributions_seconds": {
+    "bazel-server:cold": {
+      "maximum": 72.00422785698902,
+      "median": 68.48054337198846,
+      "minimum": 68.27651746800984,
+      "samples": [
+        68.27651746800984,
+        68.48054337198846,
+        72.00422785698902
+      ]
+    },
+    "bazel-server:fresh-build-directory": {
+      "maximum": 9.080836648994591,
+      "median": 8.900074612000026,
+      "minimum": 8.620362407003995,
+      "samples": [
+        8.620362407003995,
+        9.080836648994591,
+        8.900074612000026
+      ]
+    },
+    "bazel-server:implementation-edit": {
+      "maximum": 43.84465208402253,
+      "median": 37.714166562014725,
+      "minimum": 37.408778742013965,
+      "samples": [
+        37.408778742013965,
+        43.84465208402253,
+        37.714166562014725
+      ]
+    },
+    "bazel-server:public-api-edit": {
+      "maximum": 47.970325727015734,
+      "median": 47.63781582500087,
+      "minimum": 47.59962305100635,
+      "samples": [
+        47.59962305100635,
+        47.63781582500087,
+        47.970325727015734
+      ]
+    },
+    "bazel-server:second-worktree": {
+      "maximum": 66.6713515050069,
+      "median": 8.278970693005249,
+      "minimum": 8.151736869011074,
+      "samples": [
+        66.6713515050069,
+        8.278970693005249,
+        8.151736869011074
+      ]
+    },
+    "bazel-server:warm": {
+      "maximum": 4.982529455010081,
+      "median": 4.951464927988127,
+      "minimum": 4.495198946009623,
+      "samples": [
+        4.982529455010081,
+        4.951464927988127,
+        4.495198946009623
+      ]
+    },
+    "cargo-incremental:cold": {
+      "maximum": 129.75666362399352,
+      "median": 106.96252256300068,
+      "minimum": 102.9269540370151,
+      "samples": [
+        129.75666362399352,
+        102.9269540370151,
+        106.96252256300068
+      ]
+    },
+    "cargo-incremental:fresh-build-directory": {
+      "maximum": 104.65862701900187,
+      "median": 103.79834838499664,
+      "minimum": 100.80068222398404,
+      "samples": [
+        103.79834838499664,
+        104.65862701900187,
+        100.80068222398404
+      ]
+    },
+    "cargo-incremental:implementation-edit": {
+      "maximum": 5.421798056020634,
+      "median": 5.411221670976374,
+      "minimum": 5.258149383997079,
+      "samples": [
+        5.411221670976374,
+        5.258149383997079,
+        5.421798056020634
+      ]
+    },
+    "cargo-incremental:public-api-edit": {
+      "maximum": 8.073384529008763,
+      "median": 6.6786171790154185,
+      "minimum": 6.605588145990623,
+      "samples": [
+        8.073384529008763,
+        6.605588145990623,
+        6.6786171790154185
+      ]
+    },
+    "cargo-incremental:second-worktree": {
+      "maximum": 0.5265978520037606,
+      "median": 0.3237224079784937,
+      "minimum": 0.2850699450063985,
+      "samples": [
+        0.5265978520037606,
+        0.3237224079784937,
+        0.2850699450063985
+      ]
+    },
+    "cargo-incremental:warm": {
+      "maximum": 0.6193908269924577,
+      "median": 0.6059308779949788,
+      "minimum": 0.34400026698131114,
+      "samples": [
+        0.6059308779949788,
+        0.6193908269924577,
+        0.34400026698131114
+      ]
+    },
+    "cargo-nonincremental-accache:cold": {
+      "maximum": 86.77312803198583,
+      "median": 83.75439584901324,
+      "minimum": 80.71663991900277,
+      "samples": [
+        86.77312803198583,
+        83.75439584901324,
+        80.71663991900277
+      ]
+    },
+    "cargo-nonincremental-accache:fresh-build-directory": {
+      "maximum": 85.04293306299951,
+      "median": 83.3503047679842,
+      "minimum": 79.93503061300726,
+      "samples": [
+        83.3503047679842,
+        85.04293306299951,
+        79.93503061300726
+      ]
+    },
+    "cargo-nonincremental-accache:implementation-edit": {
+      "maximum": 53.7729990289954,
+      "median": 52.41637163498672,
+      "minimum": 51.32807970698923,
+      "samples": [
+        53.7729990289954,
+        51.32807970698923,
+        52.41637163498672
+      ]
+    },
+    "cargo-nonincremental-accache:public-api-edit": {
+      "maximum": 66.5545998600137,
+      "median": 64.21350784201059,
+      "minimum": 63.31259761200636,
+      "samples": [
+        64.21350784201059,
+        66.5545998600137,
+        63.31259761200636
+      ]
+    },
+    "cargo-nonincremental-accache:second-worktree": {
+      "maximum": 0.3776243180036545,
+      "median": 0.3764502099948004,
+      "minimum": 0.35168532299576327,
+      "samples": [
+        0.3776243180036545,
+        0.35168532299576327,
+        0.3764502099948004
+      ]
+    },
+    "cargo-nonincremental-accache:warm": {
+      "maximum": 0.343450292974012,
+      "median": 0.32924608001485467,
+      "minimum": 0.3290486379992217,
+      "samples": [
+        0.343450292974012,
+        0.3290486379992217,
+        0.32924608001485467
+      ]
+    }
+  },
+  "limits": [
+    "This is a frozen earlier storage/campaign checkpoint, not the current migration tree. The raw configuration retains exact source, compiler, native dependency and launcher identities.",
+    "Only selected artifact optimization, debug information, debug assertions and overflow settings are matched. Complete compiler invocation, codegen-unit and incremental equivalence are not established.",
+    "Bazel imports AOS SQLite/Zstandard; Cargo imports SQLite but builds the pinned bundled Zstandard C sources. Dependency preparation is excluded from timing.",
+    "Each sample validates 599 cases outside the timed compilation. An existing ignored case remains outside execution; this is not a VM/service or installation gate.",
+    "Shared-host load, JVM resource scopes and the slow first Bazel second-worktree sample remain visible in the raw report. No isolated-host or end-to-end claim is made.",
+    "Bazel cold compilation is faster in this trial, while Cargo incremental implementation/API edits and no-op builds are faster. Fresh Cargo build directories cannot reuse its previous target directory; second-worktree scenarios can.",
+    "Numeric acceptance budgets, representative end-to-end measurements and production cutover remain pending. These measurements do not authorize Cargo removal."
+  ],
+  "output": "/nix/store/i59k3yd5qnhwlysrgqq0yr8n7jvpf4b5-aos-bazel-store-performance",
+  "raw_report": "tools/bazel/tests/evidence/store-performance-v3-raw.json",
+  "raw_report_sha256": "5591a85bee0eef47f386c440fd9fcf86f6593fcb110f84ee78c29593fa709a52",
+  "repetitions": 3,
+  "samples": 54,
+  "schema_version": 1,
+  "scope": "connected storage/campaign default-feature libtest compilation; validation is untimed; excludes Nix evaluation/preparation/installation",
+  "status": "Storage/campaign compilation measurements completed; performance acceptance remains pending",
+  "validated_cases_per_sample": 599
+}

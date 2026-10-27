@@ -22,6 +22,6 @@ pub mod args;
 mod types;
 pub use types::*;
 pub mod c;
-pub mod gcc;
 pub mod clang;
+pub mod gcc;
 pub mod rust;

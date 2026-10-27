@@ -68,6 +68,10 @@ struct ProducerImageInfo {
 const MAX_IMAGE_INFO_BYTES: u64 = 1024 * 1024;
 
 /// Validates generic artifact identities without interpreting provider fields.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keep existing publication transaction inputs explicit without changing their API"
+)]
 pub(in crate::registry_ops) fn inspect_published_image(
     format: &str,
     payload: StorePathInfo,

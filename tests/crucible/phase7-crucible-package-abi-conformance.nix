@@ -56,7 +56,10 @@
     requirement // {needle = normalizeCargoFormatting requirement.needle;};
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
+    lib.optional
+    ((rawAbiGate.passthru.abiDriver or "cargo") != (gatedAbiRawGate.passthru.abiDriver or "cargo"))
+    "raw and named ABI gates select different execution drivers"
+    ++ failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
       {
         label = "T-PKG-11 completion note";
         needle = "Completed by `checks.crucible.phase7.cruciblePackageAbiConformance`";
@@ -92,6 +95,18 @@
       {
         label = "AOS mkDerivation check";
         needle = "pkgs.mkDerivation";
+      }
+      {
+        label = "Bazel ABI execution selector";
+        needle = "abiOwnerExecutions ? pkgs.crucibleBazelAbiOwners or null";
+      }
+      {
+        label = "Bazel ABI owner verification output";
+        needle = ''--comparison ''${abiOwnerExecutions} --output "$out/bazel-abi-owners.json"'';
+      }
+      {
+        label = "Cargo setup is limited to the rollback driver";
+        needle = "script = lib.optionalString (abiOwnerExecutions == null)";
       }
       {
         label = "vendored cargo dependencies";
@@ -285,7 +300,12 @@ in
             printf 'gated_abi_raw_gate=%s\n' "$GATED_ABI_RAW_GATE"
             printf '%s\n' 'check_class=eval+double-backed-aos'
             printf '%s\n' 'aos_builder=pkgs.mkDerivation'
-            printf '%s\n' 'cargo_mode=frozen-offline-vendored'
+            printf '%s\n' 'abi_driver=${rawAbiGate.passthru.abiDriver or "cargo"}'
+            printf '%s\n' 'cargo_mode=${
+            if (rawAbiGate.passthru.abiDriver or "cargo") == "cargo"
+            then "frozen-offline-vendored"
+            else "rollback-only"
+          }'
             printf '%s\n' 'shmem_vectors=generated-header,layout-fixture,spsc-structure-aware,spsc-snapshot-byte-codec'
             printf '%s\n' 'protocol_vectors=hello,hello-ack,setup-payload,setup-ack,quit,doorbell-frame,doorbell-marker'
             printf '%s\n' 'rpc_vectors=hello-request,hello-response,attached,send-request,send-response,event-effect-applied'

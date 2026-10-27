@@ -28,6 +28,12 @@ pub struct DrainState {
     shutdown_complete: Arc<Notify>,
 }
 
+impl Default for DrainState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DrainState {
     /// Creates a new drain state with draining inactive.
     pub fn new() -> Self {
@@ -124,6 +130,10 @@ pub struct BuildState {
 impl BuildState {
     /// Creates a fresh state for `drv` in `view` with status `"queued"` and
     /// `started_at` set to now.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "Persistent host build status records the Unix time at which a build was queued."
+    )]
     pub fn new(drv: &str, view: &str) -> Self {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -193,14 +203,12 @@ impl BuildState {
                 if let Ok(builds) = std::fs::read_dir(&builds_dir) {
                     for build_entry in builds.flatten() {
                         let path = build_entry.path();
-                        if path.extension().map(|e| e == "json").unwrap_or(false) {
-                            if let Ok(data) = std::fs::read_to_string(&path) {
-                                if let Ok(state) = serde_json::from_str::<BuildState>(&data) {
-                                    if state.status == "building" || state.status == "queued" {
-                                        results.push(state);
-                                    }
-                                }
-                            }
+                        if path.extension().map(|e| e == "json").unwrap_or(false)
+                            && let Ok(data) = std::fs::read_to_string(&path)
+                            && let Ok(state) = serde_json::from_str::<BuildState>(&data)
+                            && (state.status == "building" || state.status == "queued")
+                        {
+                            results.push(state);
                         }
                     }
                 }

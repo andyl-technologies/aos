@@ -1,0 +1,15 @@
+exports_files(
+    ["schema-registry.tsv"],
+    visibility = ["//crates/crucible:__subpackages__", "//crates/crucible/crucible-campaign:__pkg__", "//crates/crucible/crucible-qemu-host:__pkg__", "//crates/crucible/crucible-daemon:__pkg__"],
+)
+
+exports_files(
+    ["11-implementation-plan.md"],
+    visibility = ["//crates/crucible/crucible-campaign:__pkg__"],
+)
+
+filegroup(
+    name = "controller_audit_inputs",
+    srcs = glob(["*.md", "*.tsv"]),
+    visibility = ["//crates/crucible/crucible-test-support:__pkg__"],
+)

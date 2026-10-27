@@ -18,6 +18,10 @@ impl RpcService {
         }
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Keeps the existing transport and storage context explicit."
+    )]
     pub(in crate::service) async fn create_control_plan<T: serde::Serialize>(
         &self,
         claims: &Claims,

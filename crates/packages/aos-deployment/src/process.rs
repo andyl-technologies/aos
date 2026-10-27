@@ -179,6 +179,10 @@ pub(crate) fn run_handler(
     )
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "native handler subprocess deadlines use host monotonic time"
+)]
 fn run_with_diagnostics(
     command: &mut Command,
     input: Option<&[u8]>,
@@ -244,6 +248,10 @@ fn run_with_diagnostics(
     result
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one bounded I/O exchange couples child lifetime, process group, pipes, budget and diagnostics"
+)]
 fn exchange_io(
     child: &mut Child,
     leader: &OwnedFd,
@@ -380,6 +388,10 @@ fn observe_child_exit(leader: &OwnedFd) -> Result<Option<bool>, io::Error> {
     Ok(status.map(|status| status.exit_status() == Some(0)))
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "native handler subprocess deadlines use host monotonic time"
+)]
 fn require_budget(control: &dyn RuntimeControl, deadline: Instant) -> Result<(), io::Error> {
     if control.is_cancelled()
         || control.attempt_remaining_millis() == 0
@@ -531,6 +543,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the subprocess fixture bounds its wait with a host monotonic deadline"
+    )]
     fn diagnostic_process_helper() {
         if !std::env::args().any(|argument| argument == "process::tests::diagnostic_process_helper")
         {

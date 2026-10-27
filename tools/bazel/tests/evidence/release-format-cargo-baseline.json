@@ -1,0 +1,833 @@
+{
+  "command": "nix-build /tmp/aos-bazel-722/release-format-cargo-baseline-v1.nix --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "derivation": "/nix/store/ipzwl88pmwzc9rcp5qj0yvkj6jqsbs6w-aos-bazel-release-format-cargo-baseline-1.drv",
+  "derivation_sha256": "734a557539c86ca7969d8df270f840047a22ddac615badfe80dd4bf61f4c54c1",
+  "first_party_source_sha256": {
+    "crates/Cargo.lock": "033bfad7de38812960028c5c2f69c2737eaa5a73dba2a810dfcf2f992268e6fd",
+    "crates/Cargo.toml": "8761ede65c4d2a37b93a130f16436aba18112776494133f86e026d2a9acb6aee",
+    "crates/aos/modules/aos-module-format/Cargo.toml": "865d3d1c001bd2e9316817361235bdb5bdf992514eec0e707fbcbfa093a59fda",
+    "crates/aos/modules/aos-module-format/src/diagnostic.rs": "16ce106d58218b8ba8431f8aa1baa693edf4a62500fc6309a969fdd56496069c",
+    "crates/aos/modules/aos-module-format/src/graph/mod.rs": "a21f4339e5159bf99c1a586066da0cde0946a53dac97bd80b924aa959c41c9ee",
+    "crates/aos/modules/aos-module-format/src/graph/resolution.rs": "dab2afd9fef6e7ca5b03d002acc4e393ab75ec3129a1f6a7f68dd37aaec35ce9",
+    "crates/aos/modules/aos-module-format/src/graph/tests.rs": "a047331e2e9e566702baea74a94092baf9d5162db66729212750c43d07ab15f4",
+    "crates/aos/modules/aos-module-format/src/graph/validation.rs": "d450ab3de2f12fcc0b689185da0fc508eeaf0fbdbe0408c40c5b7c7c2609c91d",
+    "crates/aos/modules/aos-module-format/src/graph/validation/tests.rs": "f5f1ad44802802fe675d7c278b677edb52e7d5bbc38240d2dc97a3a181a16543",
+    "crates/aos/modules/aos-module-format/src/identity.rs": "87a4198a21260e2de56626cc8300d52910470795a124dd5a62eab1f5f29da5cd",
+    "crates/aos/modules/aos-module-format/src/lib.rs": "8cd0b38729c0ea2a35cbbc283480932f7d294512d2608dd620d9b759943f4520",
+    "crates/aos/modules/aos-module-format/src/limits.rs": "6a5110b4981e4d0115910d826fe4b46f6c491e0fa8ef2babdab8032dfdbc2419",
+    "crates/aos/modules/aos-module-format/src/option.rs": "ae9b246770b273b25646c41efe661412622cbafdb6875405bf6f747b8dbe2cc4",
+    "crates/aos/modules/aos-module-format/src/schema.rs": "9aef2c96fb494f81d3e54b6068b0e4b1e2ce963ec2064f579dffbe2fc0177dc3",
+    "crates/aos/modules/aos-module-format/src/transaction_blob.rs": "c677b49f46370a4b1986d1232f939784b352e37382bbde507832fd2bb267a069",
+    "crates/aos/modules/aos-module-format/src/value.rs": "7fe4d3c24684ef8b95009b3e6cfa0efbb13da1cf9f7ae3aadae7fd7648382259",
+    "crates/aos/registry/aos-registry-format/Cargo.toml": "8a1ef97fc3554e204e0761f353cfd9e426cbd6bb8a77ffca902274c5b58e1c5d",
+    "crates/aos/registry/aos-registry-format/src/channel.rs": "464355864200faf56e1bc6fd516e362c4dcf8d47245a7f0eae49080cb84190c2",
+    "crates/aos/registry/aos-registry-format/src/consumer.rs": "dd51454216042928e1926bb6362aaeef8c769d8c04eea7947e8ab542aae25b78",
+    "crates/aos/registry/aos-registry-format/src/keymap.rs": "cbe780a9c2cdcec98f55f7f3049f813e96a03a8fccfacd549c5dcc8bc3ee37fb",
+    "crates/aos/registry/aos-registry-format/src/lib.rs": "047c5a1a40b30c0c42ce6258ef09de2eb6e7b8b5caa07cb85ee48d6632550121",
+    "crates/aos/registry/aos-registry-format/src/manifest.rs": "b7bfcfc0208b978842a781e89f622d4b770838b3aac44453d560fb7434a7073c",
+    "crates/aos/registry/aos-registry-format/src/measurement.rs": "d338bb3cfe832c571ed7ecebfa3607036f91f38ef775549b02e499a750700988",
+    "crates/aos/registry/aos-registry-format/src/native_dependencies.rs": "78b34de8de02ec06454bcf56e856d339ac2e3d064e06f8f14bf3ed07d25fed65",
+    "crates/aos/registry/aos-registry-format/src/object.rs": "c113abfe03e906087a1b5a9232a3f7b254efc215ea99fe5f0eab47cf48c32a9e",
+    "crates/aos/registry/aos-registry-format/src/object_bundle.rs": "b3c1af273f862f81eade1d3d1d324ccbc553e6a77d03fc5377e71c23c6f3cc3e",
+    "crates/aos/registry/aos-registry-format/src/pack_index.rs": "8eaedd79a81c93bc76a268c2c9329dbaf085f1a07fe9a1cbc932854c22b07c75",
+    "crates/aos/registry/aos-registry-format/src/package_version.rs": "2e6c182d5bbc13f30b107bab7172253115d5c57693c4511b4a45e61b17611b7a",
+    "crates/aos/registry/aos-registry-format/src/platform.rs": "2c3329bc2c302db67aa09af918e939b1d145acb4840361447b0a85d79b100baf",
+    "crates/aos/registry/aos-registry-format/src/provenance.rs": "2a303aff22a0e8b0826014a79b1d4d989369aee08fdc6c518120828edef1c314",
+    "crates/aos/registry/aos-registry-format/src/publication.rs": "1b16a11079487c2e44813c29824cb417c7e8b67dc8df28d1892d522963b1ad8b",
+    "crates/aos/registry/aos-registry-format/src/refs.rs": "cda189051f0c5362e459ae324b4731574ec750b22eee7335521ae7cc8f400802",
+    "crates/aos/registry/aos-registry-format/src/release.rs": "66e65b115bedb728dc39e86b6960924e49e48f2a6796590a236c402cfa5a0ccf",
+    "crates/aos/registry/aos-registry-format/src/sshsig.rs": "8d40fb796173bc090f1caf872a4106e559681f832718219274218544352bf79d",
+    "crates/aos/registry/aos-registry-format/src/stack.rs": "d57cdaa679fd4c946adca184c8401332d4dca29985010a8dc1741de9c73ceb2d",
+    "crates/aos/registry/aos-registry-format/src/staging.rs": "29fc653f84e972c00688b2967c9bc99bd558f42310553ea59e785c6bad1fdc71",
+    "crates/aos/registry/aos-registry-format/src/staging/wire.rs": "ec627bfa23cd085fb59d91d8dad13b2d59b4d217e74366ba4dbaee905d1a56e9",
+    "crates/aos/registry/aos-registry-format/src/store.rs": "92da41d1aed5a80d08732d829b1950063bb5e03d4c32562351f119ccdd446f84",
+    "crates/aos/registry/aos-registry-format/src/support.rs": "9ff317da7431eadc7482b8755d325cac8cb4a80b7504fff1de1c36d12c3202f6",
+    "crates/aos/registry/aos-registry-format/src/tag.rs": "cfc01c550ac0dc57d02f320dc5bd99391a7786df5817e9534df3122983ea1a4c",
+    "crates/aos/registry/aos-registry-format/src/tagobject.rs": "8a7d276a3e09c415c225f44e3325bb5f93785ec0e7c34f1923ca74b052b8038c",
+    "crates/aos/registry/aos-registry-format/src/tuf.rs": "75af0d5b193d7ded61c0c17646a2a0086676c1f9eebe5db9c9be27fe64f4140d",
+    "crates/aos/release/aos-release-format/Cargo.toml": "9273ebb684ca6c1370b43a5e15153945be7554dae9d0b68938341e7862565ff8",
+    "crates/aos/release/aos-release-format/src/artifact.rs": "79fa20f9b3492121445af03cbab98b98aa13af8988a5ad1ee01df66a3acfbd28",
+    "crates/aos/release/aos-release-format/src/artifact_profile.rs": "244b1298b19c8cb0a0f9daf594e068505eddc472a33c9c8f4c2919721394eb3f",
+    "crates/aos/release/aos-release-format/src/assurance_tests.rs": "161dc3c6991ef02be2710a091ff84e7e53aca400f5b19ed86b9e275988b535bb",
+    "crates/aos/release/aos-release-format/src/build.rs": "9b5d9f99485b822391a27b89fe9757b47f61fe8fd38387b035d5169f7df434ce",
+    "crates/aos/release/aos-release-format/src/canonical.rs": "2ac3bb467a7bac2da3338421138603d21cdce0918249964a1ece8676edc12fa4",
+    "crates/aos/release/aos-release-format/src/digest.rs": "cdc8eeddb181c74201410474a82dd0533c9c78488214394c49a60a428f355509",
+    "crates/aos/release/aos-release-format/src/evidence.rs": "000c7fc1d3e380f39853810fa84fcb440f2da1c5f6d79567cc152eaafd83b0e5",
+    "crates/aos/release/aos-release-format/src/fitness.rs": "078aabc2d32d72f8365b3315a8ec90ca1fca11d641a58eb08e9476e44f3435eb",
+    "crates/aos/release/aos-release-format/src/fitness_tests.rs": "74405f878e5397705e7810e1b5857a86e1f28df3c0bb8d7a318b0ce14957f49d",
+    "crates/aos/release/aos-release-format/src/inventory.rs": "63e6f420ab9e2305a613adfd7e7012cdb7632be169eaf12862f70eed93124a45",
+    "crates/aos/release/aos-release-format/src/lib.rs": "f5f39f08541a81b338df7f97a62f97f8b0cf066c5aab6a1c01df0388998e413e",
+    "crates/aos/release/aos-release-format/src/manifest.rs": "c1c6ead871157a421dd3df7db3391437d13518e95c627f65959c621a2eddfbd9",
+    "crates/aos/release/aos-release-format/src/native_adapter_matrix_tests.rs": "762ac9b33901657288a9e444dffd60a9c6c0ce10cd1824a78fc1b90b48a7bc3f",
+    "crates/aos/release/aos-release-format/src/plan.rs": "6eac73b1923c1cd3fb668c211c4e35ff59366d548682e40a11397bbfc13a415c",
+    "crates/aos/release/aos-release-format/src/plan/destinations.rs": "edae1fa6b9f1baf4139baa0e99f7122d5baca26e1e09e238183f1654ce9ef6e3",
+    "crates/aos/release/aos-release-format/src/plan/destinations_tests.rs": "9320fec8050147079c1b2295110f3f0cdcd00d93fb5e75118507ac918fca3554",
+    "crates/aos/release/aos-release-format/src/plan/request.rs": "7839fb2403cea166f6bae1d19f5ca89c52c61315c113b57e00901e2ab00e3b12",
+    "crates/aos/release/aos-release-format/src/platform.rs": "521772f1973ada8191c1702715b001766e31f907e9fc1879619b5727dbf1d35d",
+    "crates/aos/release/aos-release-format/src/profile_override.rs": "87a00b0dcc392c9d398ef7b7b7124d91b3e1348fcfc120b0ae93df8cfdc110cc",
+    "crates/aos/release/aos-release-format/src/profile_override_tests.rs": "e1c5f0c0da06708d7185085d2e4d21d492b83427359cb3ccd8e74ffc5cfb5c78",
+    "crates/aos/release/aos-release-format/src/qualification.rs": "9f31828e8d55fc3315ef66803bfaebd0707d867dc00fae740ac2e3fbb355f49d",
+    "crates/aos/release/aos-release-format/src/qualification/capabilities.rs": "389355d512b7bc1635a7286d3589e0d619df22038b6034cb0b556072ec21ca26",
+    "crates/aos/release/aos-release-format/src/qualification/change_scope.rs": "f053b99d31665ac40114db1468fee5351d03e8acea11cead2b57acc199c71e62",
+    "crates/aos/release/aos-release-format/src/qualification/claims.rs": "83706d1763f571aaf4f0227ffb4aa51df3f7e5b2cfb563135411e3cb899b99c1",
+    "crates/aos/release/aos-release-format/src/qualification/deferral_tests.rs": "3f1335d8372f1ebbefaadc928e488f579b9c62c7bbf5aa6c64b20b8ef44c6bcb",
+    "crates/aos/release/aos-release-format/src/qualification/environment.rs": "4c85e18ff7b93157b424b95f0aa1a14dd7debc0c5a2301ed2f5cba59e4e4cd9e",
+    "crates/aos/release/aos-release-format/src/qualification/floors.rs": "06038dc5f71627165ec3f2e83b0ca30a406b08d3dc0b8c6ef414e8f211507f9f",
+    "crates/aos/release/aos-release-format/src/qualification/limits.rs": "1a23d44687795732f500eefef3071cd9d28e03e08f087771ddf4ed74d2f06c7d",
+    "crates/aos/release/aos-release-format/src/qualification/plan_tests.rs": "8aa0c1890aff4e7fa9de445a6ec05fbc9237cf31f84c553bf26a46c5a182fe37",
+    "crates/aos/release/aos-release-format/src/qualification/profiles.rs": "746e68d77059b0fde2370f33e881c76b0ee202a7db06d8bb546995f25e424d9c",
+    "crates/aos/release/aos-release-format/src/qualification_admission.rs": "ea6e247ad2bcb30fb6204ab005ccdcba9e7ee3ae56f9692681b25a049ba580fd",
+    "crates/aos/release/aos-release-format/src/qualification_document.rs": "2551fa2a4595795ee563efa9d98e6db71fd78b8850d830d949d00f8a1609a267",
+    "crates/aos/release/aos-release-format/src/qualification_evidence.rs": "75653425e2e9d0ed108571c92497b97e4e2764f433b926c97f67a88579627ad7",
+    "crates/aos/release/aos-release-format/src/qualification_evidence/assessment.rs": "99a1a8d4aeb2376e351cf7a650e9aca74a099c72aaae5a760f5e77a747cabaa1",
+    "crates/aos/release/aos-release-format/src/qualification_evidence/expansion.rs": "afc58fcbd8a6934c85ce03c7284a316da90f9800e09edf49a6a5253a97f72334",
+    "crates/aos/release/aos-release-format/src/qualification_evidence/selection.rs": "5d2906d78c6e0b97f4b279785feee714fc7acff0919dc1fdbbe73ec6a69682ff",
+    "crates/aos/release/aos-release-format/src/qualification_evidence/tests.rs": "eac91e84c38970fe0483350534aa1ecf7c6b7ebf999aac9e2307c17736c2f114",
+    "crates/aos/release/aos-release-format/src/qualification_k3s_tests.rs": "24959b383874d4cfb9f20f0f112d126c2ca09971f53b4b67d95911f79c1405b2",
+    "crates/aos/release/aos-release-format/src/receipt.rs": "68f06a08089b92e0032a9471f5771dc0abc229e81649edce5d2a35f76983078b",
+    "crates/aos/release/aos-release-format/src/receipt/surface.rs": "fb3788f88d120dbf4f69806811aee125aeee8a1e0e636f2bf91cfa20317b9094",
+    "crates/aos/release/aos-release-format/src/record.rs": "a7e8cb90da5de12a6a29f8d24d6d8f1f93b6e5a846d6d52fe7b645a408ee5fba",
+    "crates/aos/release/aos-release-format/src/registry.rs": "afffea8466d88a3aa4fef8acf1450abaccfb15033a1bb5b79d319e3682bf054e",
+    "crates/aos/release/aos-release-format/src/sbom.rs": "205872aed90d41366d74d4c64117470f97dd1fb366e7dcddf6d48ab93279c88d",
+    "crates/aos/release/aos-release-format/src/signing.rs": "a1a1050a7f04a0d80ff52fe3adbe2df2ccac830da1f3803ffb174fbdc31c0db0",
+    "crates/aos/release/aos-release-format/src/state.rs": "04c1ccbd9cf4b4e448cc9bd58ddb6af62b4ea8cec58f5aa75267fbbf6e94f2ae",
+    "crates/aos/release/aos-release-format/src/state_tests.rs": "62398daf80c435c9d2a4fe8b5edb2be578f2f241a9ffb2f59c36218ecb6f7a7d",
+    "crates/aos/release/aos-release-format/src/test_support/mod.rs": "411370ff137de15a98eeb940ccdb26418db790e3f70da5332769ee4b65fed56c",
+    "crates/aos/release/aos-release-format/src/test_support/qualification/contract.rs": "3b0a65d5a3ef68890de4635d1684ef8879571d2d0812039b5ac71078907ed177",
+    "crates/aos/release/aos-release-format/src/test_support/qualification/mod.rs": "8e71250c009cdafd22b1d0e7d0dfd409d19f815d5a8dc3ffaba121693b6b19ea",
+    "crates/aos/release/aos-release-format/src/tuf.rs": "eb5e12af42555c82f6405a91ec6dc30057654a9183ec7054cd5080a1ad243721",
+    "crates/aos/release/aos-release-format/src/tuf/staging.rs": "aa4555ce6e446a7834a0fc4b568ca8a4bed26b4919643c5f56cc81692e664ec8",
+    "crates/aos/release/aos-release-format/src/verify.rs": "4441063ac8265833f095c6e7ae49454be278daef68076dee3cf62d32598ff7bd",
+    "crates/aos/release/aos-release-format/src/verify_tests.rs": "0c18b3873844a9bc09690e71d7d60e4bece8382ab2722bb4df0eeb3894296cf7",
+    "crates/aos/release/aos-release-format/tests/nix_inventory.rs": "52c4515dc7318179a7e9286ff7fd6bad81d9beff92d6bb4c6f05212b2650d788",
+    "crates/aos/release/aos-release-format/tests/qualification.rs": "ab339606821de45caaf48561296d6ba23bf087257da6b1b248fb1670c00644a6",
+    "crates/shared/aos-artifact-evidence/Cargo.toml": "249f331d2c67207dc3d74d581105284273382b6278fb8186476f1ea353c9c329",
+    "crates/shared/aos-artifact-evidence/src/consumption.rs": "7e38f9f101fde359ad056e70f8ecba06c77137d561c29b609575eb5f8988862c",
+    "crates/shared/aos-artifact-evidence/src/diagnostic.rs": "1ad0a4401d80d32b31afdf0b16bf98e822449ff445a80191e1f827c512dfbf68",
+    "crates/shared/aos-artifact-evidence/src/document.rs": "b3223bef9a7dd87bb72f4afde800217a24317f64a45b2fb3413046c39af76078",
+    "crates/shared/aos-artifact-evidence/src/identity.rs": "a960256438697c76067c85c13c364da507ff8bdcad4fa098bea776a016915f5d",
+    "crates/shared/aos-artifact-evidence/src/lib.rs": "b96037a5a80f0563c3646bfb208cc7f5d44f979fff4cb166ae2dd0f466e15104",
+    "crates/shared/aos-artifact-evidence/src/limits.rs": "07d81f5fd738e4e3fe14613a1947f32beeeb9989b935f74b4242f56fc900950f",
+    "crates/shared/aos-artifact-evidence/src/model.rs": "6536a0109591d899397b86800199b262b8e427c460d3c5b301253850740f084d",
+    "crates/shared/aos-core/Cargo.toml": "a83ae101ada1471e2cf6e3592eff604b932b32bb6b9c08ca78e7f28a84386f0c",
+    "crates/shared/aos-core/src/digest.rs": "f2c3c762eaa35314f95fe60cc1a109083ceb2b4d1149d193243dc370a9f00403",
+    "crates/shared/aos-core/src/identity.rs": "d5b29def050947cd57a09ed3fec6c2e6af4ea3e13a1751fec2e7a4fe351f1686",
+    "crates/shared/aos-core/src/json.rs": "e4c9f02df4321930960b4c6586b8e93f0439c8f1eabe0b1e929ceb277c95fa45",
+    "crates/shared/aos-core/src/lib.rs": "14fadc5d679efeb8f0b7ea696886bbd44d5148f972fd0fedd8c030bae66c1198",
+    "crates/shared/aos-core/src/limits.rs": "d1071f9bbfe39c8cfde4b5bffb4e39e1e3ed935285d9eb7da3261151c9334c1b",
+    "crates/shared/aos-oci-types/Cargo.toml": "bea5fc3bc178b33900c9cee33e898b94a6dfca56c862ea77743b909b865dcc95",
+    "crates/shared/aos-oci-types/src/annotations.rs": "b826cf1eb7722467c279979fe3b3928ada6f6679347c0b55069c5be40eae73b7",
+    "crates/shared/aos-oci-types/src/canonical.rs": "2bf4df9e9605c1bd15795fbb5bf4698a725356c7c92a404c38c7ca7891705bd0",
+    "crates/shared/aos-oci-types/src/digest.rs": "11fd262899ea2e3452432139c51369e548155268e73f3fa85cc68f5fb4975591",
+    "crates/shared/aos-oci-types/src/distribution.rs": "57873d289089296efa2840ff9c3821dec0e641db94a137f957b0aabb95a3d2f4",
+    "crates/shared/aos-oci-types/src/error.rs": "1d4695ae84e0ae9e63f45606b11e24553e481fd75d0dd69e9d3e7f9b42f1d953",
+    "crates/shared/aos-oci-types/src/lib.rs": "756519530da64d7d0b12fa4017c1cafd52e6a18ad2cfadbdf8141d61a1745275",
+    "crates/shared/aos-oci-types/src/limits.rs": "077245bc92f8b997a67a77d271d7d3bfb7796211c0275d954343a03b21105758",
+    "crates/shared/aos-oci-types/src/media_type.rs": "5c0669b979b553907edd2c87b68b235e7b8bd6251f76b2582afab2ef8cd7320c",
+    "crates/shared/aos-oci-types/src/model/config.rs": "e1b656c6035aa48528ff22eb91e7acc679d44fdc39572b5eca14d28e38ba25f0",
+    "crates/shared/aos-oci-types/src/model/descriptor.rs": "eac6b0860dd0853058830bd4bf07dbfdb8fb2f8beb9ba2bca9221cbb7d0e61c1",
+    "crates/shared/aos-oci-types/src/model/manifest.rs": "a1793dc0fd47a58b3e1e4da4d977b64d25a9268de781cc2e381277d24a0de740",
+    "crates/shared/aos-oci-types/src/model/mod.rs": "b96b5f7bdd18ffc98976c75b2378b337529681873b57e071e0b2c4226e7c7444",
+    "crates/shared/aos-oci-types/src/reference.rs": "247a68b43b9ab7e6d4559aae409fd161f42cd11f48d9527ca6a4a5938abc5b54",
+    "crates/shared/aos-oci-types/src/release.rs": "d1292dd31430961a79cbd4617f0b8dff0594f893fa15fa7a66bb0b47a870efc6",
+    "crates/shared/aos-oci-types/tests/golden.rs": "c8ce5eed8bdcddda1e928987d7b6e006081ece4d652e072e1e2e252b7e3795a3",
+    "crates/shared/aos-oci-types/tests/reference_vectors.rs": "9804b99ba92e2fd66b0e8ef82a5ca296c4f41cd88f37981858d3c89f1a8ca8e8"
+  },
+  "initial_failure": "release-format-initial-cargo-failure.json",
+  "limits": [
+    "Native Linux semantic baselines only; no Wasm or foreign execution, Bazel parity, performance acceptance or production cutover is claimed.",
+    "The Cargo baseline uses private build state and frozen offline dependencies, with no shared compiler cache or service.",
+    "The pre-existing ignored Nix inventory integration case still requires a complete source checkout and its dedicated evaluation inputs.",
+    "Profiles retain four semantic settings; full compiler invocation and codegen-unit equivalence remain separate checks."
+  ],
+  "output": "/nix/store/p7vf0lqly24irlzbkdgss5zgcp9s0zg2-aos-bazel-release-format-cargo-baseline-1",
+  "packages": {
+    "aos-release-format": "crates/aos/release/aos-release-format"
+  },
+  "recipe_sha256": "c085739efb5fc43a3a33ad46459dfd5aca94ed7c1e2aed1af43752c00fd97e2a",
+  "required_workspace_rust_check": "Running separately for the test correction; this baseline does not claim its completion.",
+  "schema_version": 1,
+  "source": "/nix/store/mnxdvhdc57ld0nyjl4dqc644lqd5n6k6-crucible-cargo-src",
+  "status": "Release-format Cargo baseline passed after correcting the canonical-encoding assertion; Bazel conversion pending",
+  "test_correction": "Canonical encoding retains production_only=true on individual requirements and omits false defaults. The root legacy field remains forbidden; round-trip and digest assertions are unchanged.",
+  "tested_tree_parent_commit": "700ef5b17d1f26d20beecbb5d74adcd16bcddfbc",
+  "variants": {
+    "default": {
+      "doctests": {
+        "aos-release-format": {}
+      },
+      "executed_cases": 152,
+      "executed_doctest_cases": 0,
+      "execution": {
+        "cargoFlags": [],
+        "mode": "executed",
+        "packages": [
+          "aos-release-format"
+        ]
+      },
+      "external_features": {
+        "adler2@2.0.1": [
+          []
+        ],
+        "aho-corasick@1.1.4": [
+          [
+            "perf-literal",
+            "std"
+          ]
+        ],
+        "anyhow@1.0.102": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "base64@0.22.1": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "bitflags@2.13.0": [
+          [
+            "std"
+          ]
+        ],
+        "block-buffer@0.10.4": [
+          []
+        ],
+        "cfg-if@1.0.4": [
+          []
+        ],
+        "const-oid@0.9.6": [
+          []
+        ],
+        "cpufeatures@0.2.17": [
+          []
+        ],
+        "crc32fast@1.5.0": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "crypto-common@0.1.7": [
+          [
+            "std"
+          ]
+        ],
+        "curve25519-dalek-derive@0.1.1": [
+          []
+        ],
+        "curve25519-dalek@4.1.3": [
+          [
+            "alloc",
+            "digest",
+            "precomputed-tables",
+            "zeroize"
+          ]
+        ],
+        "der@0.7.10": [
+          [
+            "alloc",
+            "oid",
+            "std",
+            "zeroize"
+          ]
+        ],
+        "digest@0.10.7": [
+          [
+            "alloc",
+            "block-buffer",
+            "core-api",
+            "default",
+            "std"
+          ]
+        ],
+        "dyn-clone@1.0.20": [
+          []
+        ],
+        "ed25519-dalek@2.2.0": [
+          [
+            "alloc",
+            "default",
+            "fast",
+            "pkcs8",
+            "std",
+            "zeroize"
+          ]
+        ],
+        "ed25519@2.2.3": [
+          [
+            "alloc",
+            "pkcs8",
+            "std"
+          ]
+        ],
+        "equivalent@1.0.2": [
+          []
+        ],
+        "fastrand@2.4.1": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "flate2@1.1.9": [
+          [
+            "any_impl",
+            "miniz_oxide",
+            "rust_backend"
+          ]
+        ],
+        "generic-array@0.14.7": [
+          [
+            "more_lengths"
+          ]
+        ],
+        "getrandom@0.4.2": [
+          []
+        ],
+        "hashbrown@0.17.1": [
+          []
+        ],
+        "hex@0.4.3": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "humantime@2.3.0": [
+          []
+        ],
+        "indexmap@2.14.0": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "itoa@1.0.18": [
+          []
+        ],
+        "libc@0.2.186": [
+          []
+        ],
+        "linux-raw-sys@0.12.1": [
+          [
+            "auxvec",
+            "elf",
+            "errno",
+            "general",
+            "ioctl",
+            "no_std"
+          ]
+        ],
+        "memchr@2.8.2": [
+          [
+            "alloc",
+            "std"
+          ]
+        ],
+        "miniz_oxide@0.8.9": [
+          [
+            "simd",
+            "simd-adler32",
+            "with-alloc"
+          ]
+        ],
+        "once_cell@1.21.4": [
+          [
+            "alloc",
+            "race",
+            "std"
+          ]
+        ],
+        "pkcs8@0.10.2": [
+          [
+            "alloc",
+            "std"
+          ]
+        ],
+        "proc-macro2@1.0.106": [
+          [
+            "default",
+            "proc-macro"
+          ]
+        ],
+        "quote@1.0.46": [
+          [
+            "default",
+            "proc-macro"
+          ]
+        ],
+        "ref-cast-impl@1.0.27": [
+          []
+        ],
+        "ref-cast@1.0.27": [
+          []
+        ],
+        "regex-automata@0.4.14": [
+          [
+            "alloc",
+            "dfa-onepass",
+            "hybrid",
+            "meta",
+            "nfa-backtrack",
+            "nfa-pikevm",
+            "nfa-thompson",
+            "perf-inline",
+            "perf-literal",
+            "perf-literal-multisubstring",
+            "perf-literal-substring",
+            "std",
+            "syntax",
+            "unicode",
+            "unicode-age",
+            "unicode-bool",
+            "unicode-case",
+            "unicode-gencat",
+            "unicode-perl",
+            "unicode-script",
+            "unicode-segment",
+            "unicode-word-boundary"
+          ]
+        ],
+        "regex-syntax@0.8.11": [
+          [
+            "default",
+            "std",
+            "unicode",
+            "unicode-age",
+            "unicode-bool",
+            "unicode-case",
+            "unicode-gencat",
+            "unicode-perl",
+            "unicode-script",
+            "unicode-segment"
+          ]
+        ],
+        "regex@1.12.4": [
+          [
+            "default",
+            "perf",
+            "perf-backtrack",
+            "perf-cache",
+            "perf-dfa",
+            "perf-inline",
+            "perf-literal",
+            "perf-onepass",
+            "std",
+            "unicode",
+            "unicode-age",
+            "unicode-bool",
+            "unicode-case",
+            "unicode-gencat",
+            "unicode-perl",
+            "unicode-script",
+            "unicode-segment"
+          ]
+        ],
+        "rustc_version@0.4.1": [
+          []
+        ],
+        "rustix@1.1.4": [
+          [
+            "alloc",
+            "default",
+            "fs",
+            "std"
+          ]
+        ],
+        "schemars@1.2.2": [
+          [
+            "default",
+            "derive",
+            "schemars_derive",
+            "std"
+          ]
+        ],
+        "schemars_derive@1.2.2": [
+          []
+        ],
+        "semver@1.0.28": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "serde@1.0.228": [
+          [
+            "alloc",
+            "default",
+            "derive",
+            "rc",
+            "serde_derive",
+            "std"
+          ]
+        ],
+        "serde_core@1.0.228": [
+          [
+            "alloc",
+            "rc",
+            "result",
+            "std"
+          ]
+        ],
+        "serde_derive@1.0.228": [
+          [
+            "default"
+          ]
+        ],
+        "serde_derive_internals@0.30.0": [
+          []
+        ],
+        "serde_json@1.0.150": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "serde_spanned@0.6.9": [
+          [
+            "serde"
+          ]
+        ],
+        "sha2@0.10.9": [
+          [
+            "compress",
+            "default",
+            "std"
+          ]
+        ],
+        "signature@2.2.0": [
+          [
+            "alloc",
+            "std"
+          ]
+        ],
+        "simd-adler32@0.3.9": [
+          []
+        ],
+        "spki@0.7.3": [
+          [
+            "alloc",
+            "std"
+          ]
+        ],
+        "subtle@2.6.1": [
+          []
+        ],
+        "syn@2.0.118": [
+          [
+            "clone-impls",
+            "default",
+            "derive",
+            "full",
+            "parsing",
+            "printing",
+            "proc-macro"
+          ]
+        ],
+        "syn@3.0.5": [
+          [
+            "clone-impls",
+            "default",
+            "derive",
+            "parsing",
+            "printing",
+            "proc-macro"
+          ]
+        ],
+        "tempfile@3.27.0": [
+          [
+            "default",
+            "getrandom"
+          ]
+        ],
+        "thiserror-impl@2.0.18": [
+          []
+        ],
+        "thiserror@2.0.18": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "toml@0.8.23": [
+          [
+            "default",
+            "display",
+            "parse"
+          ]
+        ],
+        "toml_datetime@0.6.11": [
+          [
+            "serde"
+          ]
+        ],
+        "toml_edit@0.22.27": [
+          [
+            "display",
+            "parse",
+            "serde"
+          ]
+        ],
+        "toml_write@0.1.2": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "typenum@1.20.1": [
+          []
+        ],
+        "unicode-ident@1.0.24": [
+          []
+        ],
+        "version_check@0.9.5": [
+          []
+        ],
+        "winnow@0.7.15": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "zeroize@1.9.0": [
+          [
+            "alloc"
+          ]
+        ],
+        "zmij@1.0.21": [
+          []
+        ]
+      },
+      "first_party_features": {
+        "aos-artifact-evidence": [
+          []
+        ],
+        "aos-core": [
+          []
+        ],
+        "aos-module-format": [
+          []
+        ],
+        "aos-oci-types": [
+          []
+        ],
+        "aos-registry-format": [
+          []
+        ],
+        "aos-release-format": [
+          []
+        ]
+      },
+      "ignored_cases": 1,
+      "libtest_artifacts": 3,
+      "report_sha256": {
+        "cargo-messages.jsonl": "a6b5d7bb58cf6f851ec84e94ee96014c74fd171fd033b164756a3c26be2e146f",
+        "cargo-tests.log": "ed7894bb6b68b003ad26b711d26f40b51cb4308e4d000d41ebfde0486bc14b7b",
+        "execution.json": "78947082c4051722aaaaa903b8ee69ad34849e8d683fec9b54e78c3de4987d98"
+      },
+      "targets": {
+        "aos-release-format/nix_inventory": {
+          "binary_sha256": "b926099fb240476a5e858c4015d571b3771e0befa3b506c85d039ff4e97999e9",
+          "executed": [],
+          "ignored": [
+            "source_inventory_materializes_the_linux_release_and_retains_reviewed_deferrals"
+          ],
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 0,
+            "opt_level": "s",
+            "overflow_checks": true,
+            "test": true
+          }
+        },
+        "aos-release-format/qualification": {
+          "binary_sha256": "92e642ed852bddbe56bdd6fb06796370a894396b6b15c6820560b0b2f3be6515",
+          "executed": [
+            "arm64_container_evidence_requires_the_complete_tcg_topology",
+            "change_scope_narrows_smoke_claims",
+            "contract_identity_is_its_rust_canonical_encoding",
+            "contract_rejects_weakened_platform_and_profile_obligations",
+            "gates_follow_the_destination_profile",
+            "omitted_or_reclassified_mandatory_requirement_is_rejected",
+            "release_class_and_channel_kind_derive_from_names",
+            "shipped_contract_has_the_exact_destination_table",
+            "unknown_and_duplicate_contract_fields_fail_closed"
+          ],
+          "ignored": [],
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 0,
+            "opt_level": "s",
+            "overflow_checks": true,
+            "test": true
+          }
+        },
+        "aos-release-format/unit": {
+          "binary_sha256": "a424332b1a56bbcf913e2c3d55da8ccc3a551a34bd48236d48ef0cfc95b01b69",
+          "executed": [
+            "artifact::tests::bundle_paths_reject_aliases_and_traversal",
+            "artifact::tests::store_roots_reject_member_paths_and_traversal",
+            "artifact_profile::tests::artifact_destinations_cannot_cross_registry_or_epoch_boundaries",
+            "artifact_profile::tests::baked_channels_follow_the_registry_tier",
+            "artifact_profile::tests::main_edge_artifacts_keep_their_warning_while_supported_channels_may_drop_it",
+            "artifact_profile::tests::root_owner_signers_decode_by_default_and_must_be_planned_provenance_keys",
+            "artifact_profile::tests::testing_clients_cannot_fall_back_to_main_or_drop_their_warning",
+            "assurance_tests::actual_environment_must_match_every_required_dimension",
+            "assurance_tests::capability_evidence_is_bound_to_exact_metadata_bytes_and_observed_image",
+            "assurance_tests::cases_hash_only_under_their_own_schema",
+            "assurance_tests::cloud_instance_and_region_are_recorded_scope_dimensions",
+            "assurance_tests::cpu_family_scope_and_exact_sku_scope_have_distinct_membership",
+            "assurance_tests::cycle_measurements_cannot_be_replaced_by_affirmative_checks",
+            "assurance_tests::each_configuration_requires_its_own_complete_observation_window",
+            "assurance_tests::optional_assessments_preserve_missing_and_failed_results_without_awarding_execution",
+            "assurance_tests::report_assurance_is_recomputed_and_cannot_be_self_promoted_or_downgraded",
+            "build::tests::not_checked_round_trips_and_only_testing_accepts_it",
+            "build::tests::not_reproduced_round_trips_with_its_kebab_case_spelling",
+            "build::tests::production_tier_rejects_every_not_reproduced_output",
+            "build::tests::testing_tier_records_not_reproduced_outputs",
+            "build::tests::validation_applies_the_plan_registry_tier",
+            "evidence::tests::executor_request_closes_public_objects_and_subjects",
+            "fitness::tests::attestation_age_follows_the_profile_demand",
+            "fitness::tests::attestations_require_exact_passing_checks_and_planned_signers",
+            "fitness::tests::bindings_must_match_live_identities",
+            "fitness::tests::destinations_require_every_demanded_kind",
+            "inventory::tests::inventory_accepts_target_policy_decision_shape",
+            "inventory::tests::inventory_materializes_the_closed_plan_matrix",
+            "inventory::tests::inventory_rejects_implicit_or_reordered_targets",
+            "inventory::tests::inventory_rejects_policy_inputs_on_eligible_decisions",
+            "inventory::tests::inventory_rejects_publishable_package_without_source_evidence",
+            "inventory::tests::inventory_validates_the_exact_selected_platform_roster",
+            "inventory::tests::native_release_models_reject_legacy_contract_slots",
+            "native_adapter_matrix_tests::adoption_evaluation_is_mandatory_and_separate_from_target_custody",
+            "native_adapter_matrix_tests::aggregate_check_and_operation_denominators_are_derived",
+            "native_adapter_matrix_tests::cell_population_and_order_are_exact",
+            "native_adapter_matrix_tests::central_phase_rejects_failed_cells_and_prepared_environment_mutation",
+            "native_adapter_matrix_tests::committed_identities_and_postconditions_are_exact",
+            "native_adapter_matrix_tests::configured_lifetime_changes_are_identity_bearing_without_rust_reexpansion",
+            "native_adapter_matrix_tests::exact_cells_derive_the_matrix_result",
+            "native_adapter_matrix_tests::matrix_case_requires_a_frozen_predecessor",
+            "native_adapter_matrix_tests::matrix_environment_is_typed_and_bound_to_case_and_executor",
+            "native_adapter_matrix_tests::native_composition_environment_identity_preserves_graph_semantics",
+            "native_adapter_matrix_tests::native_subject_cannot_claim_unconfigured_lifetimes",
+            "native_adapter_matrix_tests::native_subject_rejects_foreign_executable_and_forged_effect_identity",
+            "native_adapter_matrix_tests::native_wire_rejects_undeclared_handler_claims",
+            "native_adapter_matrix_tests::observation_cannot_substitute_another_adopted_baseline",
+            "native_adapter_matrix_tests::passing_postconditions_require_independent_subject_bound_probes",
+            "native_adapter_matrix_tests::production_probes_cannot_be_replayed_across_cells",
+            "native_adapter_matrix_tests::referential_validation_rejects_matrix_drift",
+            "native_adapter_matrix_tests::required_operation_selection_is_closed_nonempty_and_ordered",
+            "native_adapter_matrix_tests::specification_order_and_partition_are_enforced",
+            "native_adapter_matrix_tests::unknown_status_and_regression_fields_are_rejected",
+            "native_adapter_matrix_tests::unqualified_environment_can_only_retain_a_failed_matrix",
+            "plan::destinations::tests::final_versions_plan_candidate_and_stable_and_per_train_channels",
+            "plan::destinations::tests::production_tier_plans_edge_versions_on_its_own_edge_destinations",
+            "plan::destinations::tests::surfaces_are_distinct_and_static_staging_cannot_feed_a_hub",
+            "plan::destinations::tests::testing_tier_rejects_candidate_releases",
+            "plan::request::tests::first_release_requests_round_trip_the_flag",
+            "plan::request::tests::ordinary_requests_omit_the_first_release_flag",
+            "platform::tests::image_platform_set_rejects_darwin",
+            "platform::tests::package_platform_set_is_closed",
+            "platform::tests::platform_parser_uses_the_canonical_spelling",
+            "profile_override::tests::overrides_cannot_lower_soak_below_a_day_or_touch_fixed_fields",
+            "profile_override::tests::threshold_signed_overrides_bind_into_the_plan",
+            "qualification::deferral_tests::a_deferred_artifact_in_the_manifest_is_rejected",
+            "qualification::deferral_tests::an_empty_deferral_list_keeps_the_contract_encoding",
+            "qualification::deferral_tests::complete_matrix_profiles_reject_a_deferral",
+            "qualification::deferral_tests::deferred_contract_keeps_optional_claim_free_targets",
+            "qualification::deferral_tests::deferred_platforms_ship_only_blocked_or_inapplicable_cells",
+            "qualification::deferral_tests::deferred_platforms_yield_no_qualification_case",
+            "qualification::deferral_tests::released_platforms_still_require_their_targets",
+            "qualification::plan_tests::blocked_package_cells_do_not_require_an_execution_image",
+            "qualification::plan_tests::execution_image_requires_every_published_package_platform",
+            "qualification::plan_tests::published_execution_images_must_exist_before_building",
+            "qualification_document::tests::native_recipe_is_closed_and_has_exact_selector_inventory",
+            "qualification_evidence::k3s_tests::k3s_case_binds_native_packages_image_and_container",
+            "qualification_evidence::k3s_tests::k3s_missing_or_ambiguous_inputs_fail_closed",
+            "qualification_evidence::k3s_tests::k3s_policy_rejects_missing_role_and_unrelated_subject",
+            "qualification_evidence::tests::case_expansion_skips_unclassified_not_applicable_manifest_packages",
+            "qualification_evidence::tests::completion_requires_measured_soak_and_nonzero_operation_denominators",
+            "qualification_evidence::tests::effective_profile_must_match_the_planned_destination",
+            "qualification_evidence::tests::gates_follow_each_destination_profile",
+            "qualification_evidence::tests::independent_review_follows_the_destination_review_threshold",
+            "qualification_evidence::tests::missing_oci_artifact_and_removed_plan_gate_fail_closed",
+            "qualification_evidence::tests::observations_cannot_be_replayed_for_changed_bytes_with_the_same_artifact_ids",
+            "qualification_evidence::tests::package_cases_inherit_the_strongest_runtime_consumer_role",
+            "qualification_evidence::tests::qualification_admission_is_fresh_and_bound_to_the_destination_ring",
+            "qualification_evidence::tests::qualification_binds_private_plan_without_requesting_it_as_a_public_object",
+            "qualification_evidence::tests::qualification_classifies_eligible_and_blocked_packages",
+            "qualification_evidence::tests::qualification_rejects_missing_failed_replayed_and_stale_observations",
+            "qualification_evidence::tests::qualification_snapshot_expands_recovery_image_package_cases_without_a_predecessor",
+            "qualification_evidence::tests::qualification_snapshot_uses_current_build_policy_but_cannot_be_published",
+            "qualification_evidence::tests::recovery_package_case_binds_the_matching_image_and_predecessor",
+            "qualification_evidence::tests::shared_contract_has_exact_package_image_and_release_cases",
+            "qualification_evidence::tests::smoke_drops_image_claims_when_the_release_is_not_image_affecting",
+            "qualification_evidence::tests::soak_profile_requires_a_week_of_observation_for_qualified_claims",
+            "receipt::tests::channel_receipts_accept_per_train_channels_by_kind",
+            "receipt::tests::completion_receipt_requires_sorted_rollout_and_passing_handoff",
+            "receipt::tests::registry_bootstrap_intent_is_environment_and_commit_bound",
+            "receipt::tests::signed_receipt_verification_rejects_payload_changes",
+            "receipt::tests::surface_receipts_bind_the_plan",
+            "record::tests::composed_records_bind_their_evidence_and_round_trip",
+            "record::tests::record_paths_follow_the_delegated_role",
+            "registry::tests::channel_kind_is_the_prefix_before_the_first_dash",
+            "registry::tests::registry_tier_uses_kebab_case_on_the_wire",
+            "registry::tests::testing_carries_edge_only_and_production_carries_every_kind",
+            "registry::tests::testing_root_resets_advance_the_registry_identity",
+            "sbom::tests::sbom_is_deterministic_and_links_planned_dependencies",
+            "signing::tests::boot_operations_require_linux_platform_context",
+            "signing::tests::canonical_metadata_payloads_retain_domain_separation",
+            "signing::tests::channel_context_accepts_per_train_channels_by_kind",
+            "signing::tests::public_key_payload_signatures_are_detached_operations",
+            "signing::tests::raw_ed25519_payload_mode_is_confined_to_explicit_wire_formats",
+            "signing::tests::raw_release_evidence_signing_rejects_other_kinds_and_roles",
+            "signing::tests::registry_catalog_metadata_is_separate_from_bundle_tuf_authority",
+            "signing::tests::release_evidence_role_signs_raw_evidence_digests",
+            "signing::tests::request_rejects_weak_nonce_and_algorithm_confusion",
+            "signing::tests::role_specific_context_cannot_be_replayed",
+            "signing::tests::surface_receipt_role_signs_only_receipt_payloads",
+            "signing::tests::surface_receipt_role_signs_raw_receipt_digests",
+            "state::tests::can_publish_follows_the_plan_and_contract_after_roles",
+            "state::tests::destinations_interleave_after_finalization",
+            "state::tests::entries_reject_malformed_destinations_and_unknown_schemas",
+            "state::tests::production_destinations_follow_a_staging_publication",
+            "tuf::staging::tests::captures_exact_identity_without_claiming_root_trust",
+            "tuf::staging::tests::rejects_changed_inventory_missing_role_and_unsafe_pointer",
+            "tuf::tests::authoring_constructors_bind_exact_predecessor_envelopes",
+            "tuf::tests::canonical_delegations_are_disjoint_and_terminating",
+            "tuf::tests::new_snapshot_continuity_moves_the_timestamp_to_a_later_release",
+            "tuf::tests::production_root_requires_role_separation_and_strong_offline_thresholds",
+            "tuf::tests::same_snapshot_refresh_keeps_its_exact_binding",
+            "tuf::tests::snapshot_version_regression_is_rejected",
+            "tuf::tests::testing_root_accepts_independent_single_key_roles",
+            "tuf::tests::timestamp_version_skips_and_repeats_are_rejected",
+            "tuf::tests::timestamp_window_cannot_exceed_forty_eight_hours",
+            "verify::tests::complete_release_fixture_verifies",
+            "verify::tests::package_artifact_requires_its_exact_signed_narinfo",
+            "verify::tests::release_fixture_rejects_extra_and_changed_files",
+            "verify::tests::release_fixture_rejects_signature_replay",
+            "verify::tests::release_plan_rejects_a_destination_without_its_gates",
+            "verify::tests::signed_plans_keep_their_exact_canonical_bytes",
+            "verify::tests::target_package_versions_bind_outputs_and_reject_unpublished_targets"
+          ],
+          "ignored": [],
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 0,
+            "opt_level": "s",
+            "overflow_checks": true,
+            "test": true
+          }
+        }
+      }
+    }
+  }
+}

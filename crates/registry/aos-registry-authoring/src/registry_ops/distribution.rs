@@ -122,27 +122,27 @@ pub async fn run_cache(
 
             let mut cache_pointer_updated = false;
             let mut committed = false;
-            if let Some(cache_url) = cache_url {
-                if nixcache::upsert_registry_cache(&dir, cache_url, *priority)? {
-                    cache_pointer_updated = true;
-                    printer.info(&format!("Updated registry.toml [caches] -> {cache_url}"));
-                    if !*no_commit {
-                        let signing_key = resolve_cache_pointer_signing_key(
-                            config,
-                            &dir,
-                            &registry_name,
-                            registry_key.as_deref(),
-                            registry_key_id.as_deref(),
-                        )?;
-                        commit_registry(
-                            &dir,
-                            "registry: update static cache pointer",
-                            signing_key.as_ref().map(ResolvedSigningKey::path),
-                        )?;
-                        refresh_registry_object_store(&dir)
-                            .context("refreshing dumb-HTTP object store after cache update")?;
-                        committed = true;
-                    }
+            if let Some(cache_url) = cache_url
+                && nixcache::upsert_registry_cache(&dir, cache_url, *priority)?
+            {
+                cache_pointer_updated = true;
+                printer.info(&format!("Updated registry.toml [caches] -> {cache_url}"));
+                if !*no_commit {
+                    let signing_key = resolve_cache_pointer_signing_key(
+                        config,
+                        &dir,
+                        &registry_name,
+                        registry_key.as_deref(),
+                        registry_key_id.as_deref(),
+                    )?;
+                    commit_registry(
+                        &dir,
+                        "registry: update static cache pointer",
+                        signing_key.as_ref().map(ResolvedSigningKey::path),
+                    )?;
+                    refresh_registry_object_store(&dir)
+                        .context("refreshing dumb-HTTP object store after cache update")?;
+                    committed = true;
                 }
             }
 

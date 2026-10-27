@@ -483,7 +483,7 @@ async fn seed_placement_and_index(
         .create_surface_placement(&NewSurfacePlacementSpec {
             surface: SurfaceTarget::Registry(registry_id),
             name: "primary".to_string(),
-            binding_id: binding_id,
+            binding_id,
             prefix: prefix.to_string(),
             kind: "complete".to_string(),
             desired_state: "active".to_string(),

@@ -1,0 +1,1092 @@
+{
+  "command": "nix-build tools/bazel/tests/hub-portable.nix -A all -A inventory --keep-going --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "configured_inventory": {
+    "configured_reports": 114,
+    "generation_output": "/nix/store/gcq7hd1b0fw5b86imp88sbkvinqlc10h-aos-bazel-hub-portable-inventory-1",
+    "requested_targets": 19,
+    "rust_source_files": 59,
+    "sha256": "31f5286a130b1ad469a9b5caee40879fb44fee9cebbfbaf29dd848e933d4d95e",
+    "source_files": 67
+  },
+  "declared_first_party_source_inputs_sha256": {
+    "api/proto/aos/hub/v1/hub.proto": "77005b93fb1df0a6830325e9b30a1b8bd83db2d1008a6bcee88a0a36f51adec5",
+    "crates/hub/aos-hub-api/build.rs": "f33e462a0e1a690a7fbecf612cc310543a932c81837f6074ac8e13f57ee2e9ca",
+    "crates/hub/aos-hub-api/src/lib.rs": "cf03f7a9fa1c04210498a0a69c05c89ccb5e3db6d48aae74380d85982a5333ea",
+    "crates/hub/aos-hub-api/tests/contract_inventory.rs": "4771db975f7e5ead657e6edc51c3605fb4f21424e2832cfe219cb45af27ad32b",
+    "crates/hub/aos-hub-console/src/app.rs": "4ae01cf28974e2592f574c081bf55b10b3444a2f1837691b64f31c38c0d45491",
+    "crates/hub/aos-hub-console/src/components.rs": "7d5fa2ab498accf8c16131ca397d74adc160da623a2e5f20e73b77dfe1c45968",
+    "crates/hub/aos-hub-console/src/lib.rs": "5aa6893e320b7c986985a007633e60ae5ab7ac23602a8705a742318a05c0e599",
+    "crates/hub/aos-hub-console/src/main.rs": "c47fff2db598117b336114361e7f0f5f67125173caf492b65ec70f9517353d37",
+    "crates/hub/aos-hub-console/src/mutation.rs": "4663c2292967441d0e686096ff291a946eaad1e0e085eb002416920860f92e87",
+    "crates/hub/aos-hub-console/src/registry_deletion.rs": "405fd7464a2252a40773fb75ccaf053ea4a63401d7a10b5d2c98256bb7f6ba0d",
+    "crates/hub/aos-hub-console/src/route.rs": "5fd9762568c9b1022ac0f2e72a54c8cdecf3e5520f662a89f08faa7659da472d",
+    "crates/hub/aos-hub-console/src/staging.rs": "b423d2364abd6305a7b885c408cf385638963b57f1846ddd2c7049e6d87f7695",
+    "crates/hub/aos-hub-console/src/transport.rs": "75fdba822221d8a05298d7fa5134cf1ddbd92f4be9e9c554656d2d1e5dcca6c9",
+    "crates/hub/aos-hub-console/src/workflows/access_policy.rs": "c04cf110f55282ce7aa523e714b2150b854ab2012099f82cde99dadfaaaa7cb6",
+    "crates/hub/aos-hub-console/src/workflows/access_tokens.rs": "8e4106cbda98b47ad3d912c73e9b572896c95bcbe74a186b755f91d63490c70b",
+    "crates/hub/aos-hub-console/src/workflows/cache_gc.rs": "891b4f022e5d6d52d54711655d06a88740ecbf642adf1e44043fe3c16e142d75",
+    "crates/hub/aos-hub-console/src/workflows/cache_gc_jobs.rs": "4aad94614e48ea0cf8ed29584a5160b2dac5db8039d3d8705c3f4a1ecd367a1f",
+    "crates/hub/aos-hub-console/src/workflows/cache_gc_safety.rs": "ee587eec2ef30f96adcef12d2c6fade052cb3ea60526c9b5cd504d1f78ba2e03",
+    "crates/hub/aos-hub-console/src/workflows/cache_integration_preview.rs": "e5ef74e9cb4384544b8d78cb3c05e97157e3afefc7324a07fdee2354d93cc165",
+    "crates/hub/aos-hub-console/src/workflows/cache_integrations.rs": "f62830303f45fbf2d1f84adc559db68c844a0bc90b82b4d6d15e2e1c2000703d",
+    "crates/hub/aos-hub-console/src/workflows/cache_manual_roots.rs": "5cc56f3e1bd83339bc298a7bbc4e1104cfd03f190d0f1ff12f098cecddf996e6",
+    "crates/hub/aos-hub-console/src/workflows/cache_objects.rs": "c2927c80ecbf54172a27385df95c6bafb941ef03afee7b98dd69e542ce108407",
+    "crates/hub/aos-hub-console/src/workflows/cache_population.rs": "acc22f84d600cd74d417b91d220f8d9373882b28c494ec6e856cbeb4a4bfa17e",
+    "crates/hub/aos-hub-console/src/workflows/cache_retention.rs": "1501c2583dcd3d9edf797ae578e413c6872801c86e7951a16989e6757450490b",
+    "crates/hub/aos-hub-console/src/workflows/cache_retention_refresh.rs": "75112b203b7f77e9375664114e2f311ae97eb6d65e523dd5dccd83e45d552c98",
+    "crates/hub/aos-hub-console/src/workflows/cache_root_reasons.rs": "d9f8bc839a6692e4e7ab926f56d798ff6473064b4c33c267feb139557bdf6b75",
+    "crates/hub/aos-hub-console/src/workflows/cache_stack.rs": "07242eb847a54e8f5e937af3766764c6619bc6b0eeaa49d4a8b13e76eb58bbfe",
+    "crates/hub/aos-hub-console/src/workflows/delivery_workflow.rs": "453f44389c870c9ef56a08774f6c096afcc67732ed05581d93d5586477a8fe2c",
+    "crates/hub/aos-hub-console/src/workflows/endpoints.rs": "a905881b68720f2cbb17c7ce8767ee14463a1b6c31ea96f5bac09c1a26a9a992",
+    "crates/hub/aos-hub-console/src/workflows/gateways.rs": "ed93d6056f11b72712033172b991cd68e89568629a16f4b33e3c44c8a686a9e4",
+    "crates/hub/aos-hub-console/src/workflows/infrastructure.rs": "e72064c24e96f4098e025de54b69042c974dd2f0f91d7a6187952a0e732b66ec",
+    "crates/hub/aos-hub-console/src/workflows/instance_settings.rs": "d798f2c974c85836f28971d1223e161aba51869e7197126ac3368d8b4085c606",
+    "crates/hub/aos-hub-console/src/workflows/mod.rs": "3bc1213a1cfa7aa1fbd9fab416a0e694e9ca740cc6f46c930fced07f527c5378",
+    "crates/hub/aos-hub-console/src/workflows/network_policies.rs": "45ae496e7335badb2a21fdd16fb155286a1bb4a0926ac69d02c480b4e8ac79b9",
+    "crates/hub/aos-hub-console/src/workflows/networking.rs": "4fe4249fa10152725bbbdaf3145119b0221d58132d3abd6141699f2fcbcfe3a4",
+    "crates/hub/aos-hub-console/src/workflows/operations.rs": "265a93d90140aa531bb9752095cdc0ac641a80eb713bd16d75bab448b4896457",
+    "crates/hub/aos-hub-console/src/workflows/organization_activity.rs": "36706ee3c524289c330a73eb7b0c2e73b1f7739e6236e71fc1174b49e0302e9a",
+    "crates/hub/aos-hub-console/src/workflows/organization_identity.rs": "340c4cf126571c4a82fe606b17c32e7552399d751ac7859d830d57ed37a38b84",
+    "crates/hub/aos-hub-console/src/workflows/organization_scope.rs": "0a7a1d07c3cb827ba4b2372da29621ed7df1f9d719530a67b259038a69f94a7a",
+    "crates/hub/aos-hub-console/src/workflows/organization_sso.rs": "ae654e3e1e54285fe0e3e0355fe4dcbbf5589bebd351e0dc5e89452ec922e741",
+    "crates/hub/aos-hub-console/src/workflows/placement_policies.rs": "8f8f95006011bd6fec2b568a3e69fc4854e456f7a98c1f501642394d1fc1bc2b",
+    "crates/hub/aos-hub-console/src/workflows/placements.rs": "add638e376a3fc842bf22fea5db07eebae27e255b9ff809f1daec1ee29ff3074",
+    "crates/hub/aos-hub-console/src/workflows/registry_configuration.rs": "c745f8a29fdc18c8f895b02445b5baa38743f989dff3248495b07f9214731c25",
+    "crates/hub/aos-hub-console/src/workflows/registry_containers/gc.rs": "a12770aedf5af2effaa65a91cd9076d267fc4d06163ac83b0bd486bf89c5b4a7",
+    "crates/hub/aos-hub-console/src/workflows/registry_containers/inspection.rs": "650ff65dc621fb4dee4f13f23318072d61a5ae4b2f95ebeac5cc99da546ed80f",
+    "crates/hub/aos-hub-console/src/workflows/registry_containers/mod.rs": "ada4e0262e18563ac6a95f5d8989a12e1bcf36f46508bdf6eac318bbba4a3a4d",
+    "crates/hub/aos-hub-console/src/workflows/registry_containers/publications.rs": "f1305e4dd73e209dd1d2b4397a5b184c0e1c2f1ebe179671f5e0dd7ae52bff9e",
+    "crates/hub/aos-hub-console/src/workflows/registry_containers/retention.rs": "af46d32c18604a0be8dffb7c2a74036bbfc239e59bcc0377022c7deace651af6",
+    "crates/hub/aos-hub-console/src/workflows/registry_containers/tags.rs": "9329954406d3cf2a55105f2920ceeefc06ebc7a9cbb8a7518e1a0f4e86969f3a",
+    "crates/hub/aos-hub-console/src/workflows/registry_delete.rs": "f8908e374f2cc6d6fbd3a8a187bd0c189c094811bafe07dffab35c1cd07a4f4b",
+    "crates/hub/aos-hub-console/src/workflows/registry_metadata.rs": "db8000041cf6e983a649b257f414eadea2255b9466a4e1e95b0f5bbc8eae01f1",
+    "crates/hub/aos-hub-console/src/workflows/registry_mirror.rs": "d0061b3efeff5ee5eb270d73fc2aff527831471019af7c27db4a0c3b7b115473",
+    "crates/hub/aos-hub-console/src/workflows/registry_publication.rs": "bc7c4a8b91787af1fd9e9b859cfcc8fce00b7b7ae25e9c4506e697c85a4e3f58",
+    "crates/hub/aos-hub-console/src/workflows/registry_stage_inventory.rs": "6967a14f969fb93f51f5e99f25a1fb5aaf2b0fdd791e48b0638afeae4c251276",
+    "crates/hub/aos-hub-console/src/workflows/registry_staging.rs": "eb977f0437e71ef5ae70629fe72e06a13721887325d83ecdedad421fb4b82b4e",
+    "crates/hub/aos-hub-console/src/workflows/resource_access.rs": "964025e9502d7a40881b504b3c5dbac33ffd8ee43637471a478b824ac0981e37",
+    "crates/hub/aos-hub-console/src/workflows/resources.rs": "7323a85a43228aced9a44eaf2c640517825d69cb78f5aa21fc141ddac0ca1d0d",
+    "crates/hub/aos-hub-console/src/workflows/routes.rs": "ce0125acf661ae258921d4c0de98316f2dcfebbe122fba90490cc48c5cae1baa",
+    "crates/hub/aos-hub-console/src/workflows/signing_keys.rs": "08002f3cac4e5f1e30669b28ac85f9e8eadc1f62284c6b107ed6dab9de1964d9",
+    "crates/hub/aos-hub-service/src/web/static_assets/style.css": "e99c8225ee398e6180bccfe9acc838e0b3ab6bcb069b771e3dce86e859719d3c",
+    "crates/hub/aos-hub-ui/src/lib.rs": "35f551e68f7cd823106225bda602843f6e87ac4d243f732b7c8acdf0c047f186",
+    "docs/rfcs/0012-hub-surface-topology/hub-api-manifest-v1.json": "334a20057a5729523a9628ae297b67b15c0c290ef4af55da859ae6fe00465e42",
+    "docs/rfcs/0012-hub-surface-topology/hub-control-plane-capabilities-v1.json": "ea9dfefe78f5dbcd76c8353bb09fa7bcd634ff27edac756c4287ae8ce7954365",
+    "tools/bazel/metadata/snapshot_generated_sources.py": "8db49e70e62687c849f693d6873384642096817b88388b52aea7070ad50585e6",
+    "tools/bazel/rules/rustfmt.toml": "a2efcdd8d36fc4614041b7b02bb744c5143caeb5f3b5e286c2b6064c1483e140",
+    "tools/bazel/testing/policy.json": "7c7ba1fd3117df593823d0d89767190df96d9eb4e02335dd18852bcda29cd757",
+    "tools/bazel/testing/runner.py": "8a18b6fb0dca658cc3f699b1e5cc1ec8b20fbcfa8e2e60fa8fa9e6f099a02adc"
+  },
+  "derivation_sha256": "9a42957eab7e2ab3620c1f3d6c7a074846426bd2478b3bcab616e8063f7fff90",
+  "editor_parity": {
+    "aggregate_statistics_comparable": false,
+    "analysis": {
+      "complete_inference": true,
+      "exprs": {
+        "partial": 0,
+        "total": 316422,
+        "unknown": 0
+      },
+      "panics": 0,
+      "pats": {
+        "partial": 0,
+        "total": 43075,
+        "unknown": 0
+      }
+    },
+    "bazel_diagnostics": [],
+    "cargo_analysis": {
+      "complete_inference": true,
+      "exprs": {
+        "partial": 0,
+        "total": 316422,
+        "unknown": 0
+      },
+      "panics": 0,
+      "pats": {
+        "partial": 0,
+        "total": 43075,
+        "unknown": 0
+      }
+    },
+    "cargo_selected_diagnostics": [],
+    "comparison_scope": [
+      "crates/hub/aos-hub-api",
+      "crates/hub/aos-hub-ui"
+    ],
+    "diagnostic_multiplicity_comparable": false,
+    "diagnostics": [],
+    "roots": {
+      "crates/hub/aos-hub-api/build.rs": [],
+      "crates/hub/aos-hub-api/src/lib.rs": [],
+      "crates/hub/aos-hub-api/tests/contract_inventory.rs": [],
+      "crates/hub/aos-hub-ui/src/lib.rs": []
+    },
+    "unattributed_cargo_diagnostics": [],
+    "unselected_cargo_diagnostics": []
+  },
+  "execution_sha256": {
+    "evidence/execution.json": "29c93aa8e92054584cccb620a4ed2892217a0bc9fb62cfeb20c50e3a88a8656a",
+    "evidence/tests/index.json": "ecacc6d72b2af9b3096e345e32e18ddbb1b95026693f1c6e74dc7eaae5dd7330"
+  },
+  "generated_source_parity": {
+    "count": 4,
+    "files": {
+      "aos.hub.v1.descriptor.bin": {
+        "sha256": "40e193e5a1e999dcb2f4fe0b1daad9bc9d11f54890f35c530ff3a2b7deb6e881",
+        "size": 455195
+      },
+      "aos.hub.v1.rs": {
+        "sha256": "127c514e16d9b94b6608456676d167a2d8390fb8ba0b65c24dc74bdca21f28de",
+        "size": 353859
+      },
+      "aos.hub.v1.serde.rs": {
+        "sha256": "4e2a1dd5c1fbca087eb224de84f9ef248e2a467d89e77205a22debda8bc3dba8",
+        "size": 4387910
+      },
+      "connect_paths.rs": {
+        "sha256": "144464fc6e2748bb6802fdb1f7b99ed7ddcbcc2a08d641e149797d6b24863f2c",
+        "size": 259532
+      }
+    },
+    "status": "PASS"
+  },
+  "generator": {
+    "actions": [
+      {
+        "cacheHit": false,
+        "commandArgs": [
+          "bazel-out/k8-opt-exec/bin/external/rules_rust+/util/process_wrapper/process_wrapper",
+          "--arg-file",
+          "bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_portable_crates__serde_core-1.0.228/_bs.linksearchpaths",
+          "--arg-file",
+          "bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_portable_crates__proc-macro2-1.0.106/_bs.linksearchpaths",
+          "--arg-file",
+          "bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_portable_crates__quote-1.0.46/_bs.linksearchpaths",
+          "--arg-file",
+          "bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_portable_crates__prettyplease-0.2.37/_bs.linksearchpaths",
+          "--arg-file",
+          "bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_portable_crates__libc-0.2.186/_bs.linksearchpaths",
+          "--arg-file",
+          "bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_portable_crates__getrandom-0.4.2/_bs.linksearchpaths",
+          "--arg-file",
+          "bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_portable_crates__rustix-1.1.4/_bs.linksearchpaths",
+          "--subst",
+          "pwd=${pwd}",
+          "--subst",
+          "exec_root=${exec_root}",
+          "--subst",
+          "output_base=${output_base}",
+          "--subst",
+          "bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_portable_crates__anyhow-1.0.102/_bs.out_dir=bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_portable_crates__anyhow-1.0.102/_bs.out_dir",
+          "--subst",
+          "bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_portable_crates__proc-macro2-1.0.106/_bs.out_dir=bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_portable_crates__proc-macro2-1.0.106/_bs.out_dir",
+          "--subst",
+          "bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_portable_crates__quote-1.0.46/_bs.out_dir=bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_portable_crates__quote-1.0.46/_bs.out_dir",
+          "--subst",
+          "bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_portable_crates__serde_core-1.0.228/_bs.out_dir=bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_portable_crates__serde_core-1.0.228/_bs.out_dir",
+          "--subst",
+          "bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_portable_crates__prettyplease-0.2.37/_bs.out_dir=bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_portable_crates__prettyplease-0.2.37/_bs.out_dir",
+          "--subst",
+          "bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_portable_crates__libc-0.2.186/_bs.out_dir=bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_portable_crates__libc-0.2.186/_bs.out_dir",
+          "--subst",
+          "bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_portable_crates__getrandom-0.4.2/_bs.out_dir=bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_portable_crates__getrandom-0.4.2/_bs.out_dir",
+          "--subst",
+          "bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_portable_crates__rustix-1.1.4/_bs.out_dir=bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_portable_crates__rustix-1.1.4/_bs.out_dir",
+          "--",
+          "bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_tools/rust/bin/rustc",
+          "@bazel-out/k8-opt-exec/bin/crates/hub/aos-hub-api/build_script_program-0.params"
+        ],
+        "environmentVariables": [
+          {
+            "name": "CARGO_CFG_TARGET_ARCH",
+            "value": "x86_64"
+          },
+          {
+            "name": "CARGO_CFG_TARGET_OS",
+            "value": "linux"
+          },
+          {
+            "name": "CARGO_CRATE_NAME",
+            "value": "build_script_program"
+          },
+          {
+            "name": "CARGO_MANIFEST_DIR",
+            "value": "${pwd}/crates/hub/aos-hub-api"
+          },
+          {
+            "name": "CARGO_PKG_AUTHORS",
+            "value": ""
+          },
+          {
+            "name": "CARGO_PKG_DESCRIPTION",
+            "value": "Portable Hub API messages, ProtoJSON codecs, and Connect descriptors"
+          },
+          {
+            "name": "CARGO_PKG_HOMEPAGE",
+            "value": ""
+          },
+          {
+            "name": "CARGO_PKG_LICENSE",
+            "value": "Apache-2.0"
+          },
+          {
+            "name": "CARGO_PKG_LICENSE_FILE",
+            "value": ""
+          },
+          {
+            "name": "CARGO_PKG_NAME",
+            "value": "aos-hub-api"
+          },
+          {
+            "name": "CARGO_PKG_README",
+            "value": ""
+          },
+          {
+            "name": "CARGO_PKG_REPOSITORY",
+            "value": ""
+          },
+          {
+            "name": "CARGO_PKG_RUST_VERSION",
+            "value": ""
+          },
+          {
+            "name": "CARGO_PKG_VERSION",
+            "value": "0.1.0"
+          },
+          {
+            "name": "CARGO_PKG_VERSION_MAJOR",
+            "value": "0"
+          },
+          {
+            "name": "CARGO_PKG_VERSION_MINOR",
+            "value": "1"
+          },
+          {
+            "name": "CARGO_PKG_VERSION_PATCH",
+            "value": "0"
+          },
+          {
+            "name": "CARGO_PKG_VERSION_PRE",
+            "value": ""
+          },
+          {
+            "name": "PATH",
+            "value": "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15/bin:/nix/store/6i9yb0a1q1k9qx8l3xb4xr25kf8cg4p5-coreutils-9.11/bin:/nix/store/6zgd9kcbnvnvvz1y4jwb46ys7j7i1cwn-binutils-2.41/bin:/nix/store/532aaff6i0bbc5rqp8nqmf99rabn91xv-findutils-4.11.0/bin:/nix/store/qwq9gmv4h5k991h1wra4ydkwl07977cd-grep-3.12/bin:/nix/store/km452j597r6swyr897sckswcyp5sr7kq-sed-4.10/bin:/nix/store/6im61c9yypa7ba1wdgjyk3lzx8ixj997-procps-ng-4.0.5/bin"
+          },
+          {
+            "name": "REPOSITORY_NAME",
+            "value": ""
+          },
+          {
+            "name": "ZERO_AR_DATE",
+            "value": "1"
+          }
+        ],
+        "exitCode": 0,
+        "mnemonic": "Rustc",
+        "runner": "linux-sandbox",
+        "targetLabel": "//crates/hub/aos-hub-api:build_script_program"
+      },
+      {
+        "cacheHit": false,
+        "commandArgs": [
+          "bazel-out/k8-opt-exec/bin/external/rules_rust+/cargo/private/cargo_build_script_runner/runner",
+          "--script=bazel-out/k8-opt-exec/bin/crates/hub/aos-hub-api/build_script_program",
+          "--links=",
+          "--out_dir=bazel-out/k8-fastbuild/bin/crates/hub/aos-hub-api/build_script.out_dir",
+          "--env_out=bazel-out/k8-fastbuild/bin/crates/hub/aos-hub-api/build_script.env",
+          "--flags_out=bazel-out/k8-fastbuild/bin/crates/hub/aos-hub-api/build_script.flags",
+          "--link_flags=bazel-out/k8-fastbuild/bin/crates/hub/aos-hub-api/build_script.linkflags",
+          "--link_search_paths=bazel-out/k8-fastbuild/bin/crates/hub/aos-hub-api/build_script.linksearchpaths",
+          "--dep_env_out=bazel-out/k8-fastbuild/bin/crates/hub/aos-hub-api/build_script.depenv",
+          "--rundir=",
+          "--cargo_manifest_args=@bazel-out/k8-fastbuild/bin/crates/hub/aos-hub-api/build_script.out_dir-0.params"
+        ],
+        "environmentVariables": [
+          {
+            "name": "AR",
+            "value": "/nix/store/6zgd9kcbnvnvvz1y4jwb46ys7j7i1cwn-binutils-2.41/bin/ar"
+          },
+          {
+            "name": "ARFLAGS",
+            "value": ""
+          },
+          {
+            "name": "CARGO",
+            "value": "${pwd}/bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_tools/rust/bin/cargo"
+          },
+          {
+            "name": "CARGO_CRATE_NAME",
+            "value": "aos_hub_api"
+          },
+          {
+            "name": "CARGO_ENCODED_RUSTFLAGS",
+            "value": "--sysroot=${pwd}/bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_tools/rust"
+          },
+          {
+            "name": "CARGO_MANIFEST_DIR",
+            "value": "bazel-out/k8-fastbuild/bin/crates/hub/aos-hub-api/build_script.cargo_runfiles/_main/crates/hub/aos-hub-api"
+          },
+          {
+            "name": "CARGO_PKG_NAME",
+            "value": "aos-hub-api"
+          },
+          {
+            "name": "CARGO_PKG_VERSION",
+            "value": "0.1.0"
+          },
+          {
+            "name": "CARGO_PKG_VERSION_MAJOR",
+            "value": "0"
+          },
+          {
+            "name": "CARGO_PKG_VERSION_MINOR",
+            "value": "1"
+          },
+          {
+            "name": "CARGO_PKG_VERSION_PATCH",
+            "value": "0"
+          },
+          {
+            "name": "CARGO_PKG_VERSION_PRE",
+            "value": ""
+          },
+          {
+            "name": "CC",
+            "value": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc"
+          },
+          {
+            "name": "CFLAGS",
+            "value": "-U_FORTIFY_SOURCE"
+          },
+          {
+            "name": "CXX",
+            "value": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc"
+          },
+          {
+            "name": "CXXFLAGS",
+            "value": "-U_FORTIFY_SOURCE"
+          },
+          {
+            "name": "DEBUG",
+            "value": "true"
+          },
+          {
+            "name": "HOST",
+            "value": "x86_64-unknown-linux-gnu"
+          },
+          {
+            "name": "LD",
+            "value": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc"
+          },
+          {
+            "name": "LDFLAGS",
+            "value": "-L/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib -Wl,-rpath,/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib -lstdc++ -lm"
+          },
+          {
+            "name": "NUM_JOBS",
+            "value": "1"
+          },
+          {
+            "name": "OPT_LEVEL",
+            "value": "0"
+          },
+          {
+            "name": "PROFILE",
+            "value": "debug"
+          },
+          {
+            "name": "PROTOC",
+            "value": "${pwd}/external/+aos_tools_repository+aos_codegen/bin/protoc"
+          },
+          {
+            "name": "RULES_RUST_OUT_DIR_VOLATILE_BASENAMES",
+            "value": "config.log:config.log.old:config.status:Makefile:Makefile.config:config.cache:commit_hash"
+          },
+          {
+            "name": "RUSTC",
+            "value": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_tools/rust/bin/rustc"
+          },
+          {
+            "name": "RUSTDOC",
+            "value": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_tools/rust/bin/rustdoc"
+          },
+          {
+            "name": "TARGET",
+            "value": "x86_64-unknown-linux-gnu"
+          },
+          {
+            "name": "ZERO_AR_DATE",
+            "value": "1"
+          }
+        ],
+        "exitCode": 0,
+        "mnemonic": "CargoBuildScriptRun",
+        "runner": "linux-sandbox",
+        "targetLabel": "//crates/hub/aos-hub-api:build_script"
+      }
+    ],
+    "cargo_executable_arguments": [],
+    "first_party_cargo_manifests_in_source": [],
+    "schema_inputs": [
+      {
+        "digest": {
+          "hash": "77005b93fb1df0a6830325e9b30a1b8bd83db2d1008a6bcee88a0a36f51adec5",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "196429"
+        },
+        "isTool": true,
+        "path": "api/proto/aos/hub/v1/hub.proto",
+        "symlinkTargetPath": ""
+      }
+    ],
+    "tool_closure": {
+      "closure": [
+        {
+          "narHash": "sha256:0awki9wjhiz48hk1p9mr1b2kfrsv0hn85k2mm4ic6nwd08b7bxpd",
+          "path": "/nix/store/49br0y2s9c52ln7bxph87faa3kdkiyfz-abseil-cpp-20260817.0"
+        },
+        {
+          "narHash": "sha256:0m2xdk54j7vnd7frv3msrr40qwxwsya552r00snv1byqz37za4fm",
+          "path": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39"
+        },
+        {
+          "narHash": "sha256:1d6ljajp4ih85ra4xahg006r5gs0hi2z3wj8ix8dcjll7z2wpm87",
+          "path": "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2"
+        },
+        {
+          "narHash": "sha256:1vkl71psjdkrdznynq2gahh3f3nc9w54dviw0f9jyfxyaq4p61sz",
+          "path": "/nix/store/iv7fg5j9zla8ia34l6gs8q1g70yxcm29-protobuf-36.1"
+        }
+      ],
+      "schema": 1
+    },
+    "tool_closure_sha256": "76553f93ad3ac90566fadc84d61954cc47a60e4b95822b2cb867d931a8c1c919"
+  },
+  "limits": [
+    "All fifty-two unit and integration cases match Cargo, with no ignored cases and two empty doctest inventories. Contract cases read the checked manifests and actual browser Rust sources; UI cases compile the actual stylesheet and route source text as declared data.",
+    "The generated API inventory and file digests match fresh Cargo and the pre-conversion production baseline. Compiled binaries are not claimed byte-identical across build systems.",
+    "Selected-package editor comparison has no selected, unattributed or unselected diagnostics. Both complete inference reports remain explicit; aggregate statistics and diagnostic multiplicities are not claimed equivalent.",
+    "Feature comparisons preserve compiled feature-unit sets rather than establishing complete compiler invocation, codegen-unit or incremental compilation equivalence.",
+    "The existing Rust generator and pinned runner execute directly with declared AOS protoc and schema inputs; no Cargo executable or first-party manifest participates in these Bazel actions.",
+    "Dedicated service, provider and assembled-system gates, foreign/Wasm execution, numeric performance acceptance, production migration and Cargo removal remain separate work."
+  ],
+  "production_features": {
+    "features": {
+      "anyhow@1.0.102": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "base64@0.21.7": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "bitflags@2.13.0": [
+        [
+          "std"
+        ]
+      ],
+      "bytes@1.11.1": [
+        []
+      ],
+      "cfg-if@1.0.4": [
+        []
+      ],
+      "either@1.16.0": [
+        [
+          "std",
+          "use_std"
+        ]
+      ],
+      "equivalent@1.0.2": [
+        []
+      ],
+      "fastrand@2.4.1": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "fixedbitset@0.5.7": [
+        []
+      ],
+      "getrandom@0.4.2": [
+        []
+      ],
+      "hashbrown@0.17.1": [
+        []
+      ],
+      "heck@0.5.0": [
+        []
+      ],
+      "indexmap@2.14.0": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "itertools@0.13.0": [
+        [
+          "default",
+          "use_alloc",
+          "use_std"
+        ]
+      ],
+      "itertools@0.14.0": [
+        [
+          "default",
+          "use_alloc",
+          "use_std"
+        ]
+      ],
+      "itoa@1.0.18": [
+        []
+      ],
+      "libc@0.2.186": [
+        []
+      ],
+      "linux-raw-sys@0.12.1": [
+        [
+          "auxvec",
+          "elf",
+          "errno",
+          "general",
+          "ioctl",
+          "no_std"
+        ]
+      ],
+      "log@0.4.30": [
+        []
+      ],
+      "memchr@2.8.2": [
+        [
+          "alloc",
+          "std"
+        ]
+      ],
+      "multimap@0.10.1": [
+        []
+      ],
+      "once_cell@1.21.4": [
+        [
+          "alloc",
+          "default",
+          "race",
+          "std"
+        ]
+      ],
+      "pbjson-build@0.7.0": [
+        []
+      ],
+      "pbjson@0.7.0": [
+        []
+      ],
+      "petgraph@0.7.1": [
+        []
+      ],
+      "prettyplease@0.2.37": [
+        []
+      ],
+      "proc-macro2@1.0.106": [
+        [
+          "default",
+          "proc-macro"
+        ]
+      ],
+      "prost-build@0.13.5": [
+        [
+          "default",
+          "format"
+        ]
+      ],
+      "prost-derive@0.13.5": [
+        []
+      ],
+      "prost-types@0.13.5": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "prost@0.13.5": [
+        [
+          "default",
+          "derive",
+          "prost-derive",
+          "std"
+        ],
+        [
+          "default",
+          "derive",
+          "std"
+        ]
+      ],
+      "quote@1.0.46": [
+        [
+          "default",
+          "proc-macro"
+        ]
+      ],
+      "regex-automata@0.4.14": [
+        [
+          "alloc",
+          "meta",
+          "nfa-pikevm",
+          "nfa-thompson",
+          "std",
+          "syntax",
+          "unicode-bool"
+        ]
+      ],
+      "regex-syntax@0.8.11": [
+        [
+          "std",
+          "unicode-bool"
+        ]
+      ],
+      "regex@1.12.4": [
+        [
+          "std",
+          "unicode-bool"
+        ]
+      ],
+      "rustix@1.1.4": [
+        [
+          "alloc",
+          "default",
+          "fs",
+          "std"
+        ]
+      ],
+      "serde@1.0.228": [
+        [
+          "default",
+          "derive",
+          "rc",
+          "serde_derive",
+          "std"
+        ]
+      ],
+      "serde_core@1.0.228": [
+        [
+          "rc",
+          "result",
+          "std"
+        ]
+      ],
+      "serde_derive@1.0.228": [
+        [
+          "default"
+        ]
+      ],
+      "serde_json@1.0.150": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "syn@2.0.118": [
+        [
+          "clone-impls",
+          "default",
+          "derive",
+          "extra-traits",
+          "full",
+          "parsing",
+          "printing",
+          "proc-macro"
+        ]
+      ],
+      "tempfile@3.27.0": [
+        [
+          "default",
+          "getrandom"
+        ]
+      ],
+      "unicode-ident@1.0.24": [
+        []
+      ],
+      "zmij@1.0.21": [
+        []
+      ]
+    },
+    "first_party_features": {
+      "aos-hub-api": [
+        []
+      ],
+      "aos-hub-ui": [
+        []
+      ]
+    }
+  },
+  "report_sha256": {
+    "editor-parity.json": "9914874e527d7352577cd70610475124aac6c43a6b156ccad2034a2de6c93b1b",
+    "generated-source-parity.json": "7d156d8bd56d4f9bd5290375ba052924ee8fe5f3492a02d973d4e6b43d1bd582",
+    "parity.json": "b20068c6d5466e3408818194236061011faad2dd2e2dd927a9b86a625a22ed96",
+    "production-parity.json": "20a81fddf8cd9889c675ede96589e8c293588a812053941d630ca5772f6acd24"
+  },
+  "schema_version": 1,
+  "scope": {
+    "all": "/nix/store/xhwaagydc1sbqc8ya1k1379pn28k6s20-aos-bazel-hub-portable-qualified-checks",
+    "cargo": "/nix/store/12lj51scw31n0ipcs0gpabrl7v5agkk6-aos-bazel-hub-portable-cargo-oracle-1",
+    "configuration": "/nix/store/qgymhqldb33x73vhhp4r96wg74vx7sip-aos-bazel-configuration.json",
+    "derivation": "/nix/store/b4khm0024svbi5hj7k7v2005vpz40jk2-aos-bazel-hub-portable-qualified-checks.drv",
+    "developer": "/nix/store/x4zaycir629zh1cl6b45fhc71iddq23a-aos-bazel-hub-portable-developer-tools-1",
+    "editor": "/nix/store/dy97xc6chb684vsdna9arsvvfqlj7lvf-aos-bazel-hub-portable-editor",
+    "editorCargo": "/nix/store/l1j3mh7fkirl2w6m64vqq600vdcdf33l-aos-bazel-hub-portable-editor-cargo-oracle",
+    "editorParity": "/nix/store/3jcg7y2mkxjigny9csw6cpqlygd42a5v-aos-bazel-hub-portable-editor-parity",
+    "formatting": "/nix/store/cq0i76kx0ap8k4796f320nybvhdp6r8k-aos-bazel-hub-portable-format-1",
+    "inventory": "/nix/store/896a7cakac05ns334cb2qsjmxd9rixpm-aos-bazel-hub-portable-inventory-1",
+    "oracle": "/nix/store/y6fb30nfjifyxxzv2ngl8ww499jqamd7-aos-bazel-hub-portable-cargo-parity",
+    "production": "/nix/store/d98srdmqybzahkygrrdxxp566vnjz1cm-aos-bazel-hub-portable-production-1",
+    "productionCargo": "/nix/store/xws05247g9rp6fcs8akw9wrgc2fxiw88-aos-bazel-hub-portable-production-cargo-1",
+    "productionConfiguration": "/nix/store/qgymhqldb33x73vhhp4r96wg74vx7sip-aos-bazel-configuration.json",
+    "productionParity": "/nix/store/jyz0j21lrngzh2kfr0a95r99kvkd6sm4-aos-bazel-hub-portable-production-features",
+    "productionSource": "/nix/store/wayk0dhy1i10n8k5yi1csg7fk14h1w2j-aos-bazel-workspace",
+    "source": "/nix/store/wayk0dhy1i10n8k5yi1csg7fk14h1w2j-aos-bazel-workspace",
+    "tests": "/nix/store/6ww5jkz41wdw4hlzn7a1mbizrfqanmlf-aos-bazel-hub-portable-tests-1"
+  },
+  "semantic_rustc_flags": [
+    "-Copt-level=s",
+    "-Cdebuginfo=0",
+    "-Cdebug-assertions=yes",
+    "-Coverflow-checks=yes"
+  ],
+  "status": "Strict portable Hub tests, Cargo parity, generated API sources, production features, developer, license and editor checks passed",
+  "tests": {
+    "doctests": {
+      "//crates/hub/aos-hub-api:doc": {},
+      "//crates/hub/aos-hub-ui:doc": {}
+    },
+    "examples": [],
+    "features": {
+      "anyhow@1.0.102": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "base64@0.21.7": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "bitflags@2.13.0": [
+        [
+          "std"
+        ]
+      ],
+      "bytes@1.11.1": [
+        []
+      ],
+      "cfg-if@1.0.4": [
+        []
+      ],
+      "either@1.16.0": [
+        [
+          "std",
+          "use_std"
+        ]
+      ],
+      "equivalent@1.0.2": [
+        []
+      ],
+      "fastrand@2.4.1": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "fixedbitset@0.5.7": [
+        []
+      ],
+      "getrandom@0.4.2": [
+        []
+      ],
+      "hashbrown@0.17.1": [
+        []
+      ],
+      "heck@0.5.0": [
+        []
+      ],
+      "indexmap@2.14.0": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "itertools@0.13.0": [
+        [
+          "default",
+          "use_alloc",
+          "use_std"
+        ]
+      ],
+      "itertools@0.14.0": [
+        [
+          "default",
+          "use_alloc",
+          "use_std"
+        ]
+      ],
+      "itoa@1.0.18": [
+        []
+      ],
+      "libc@0.2.186": [
+        []
+      ],
+      "linux-raw-sys@0.12.1": [
+        [
+          "auxvec",
+          "elf",
+          "errno",
+          "general",
+          "ioctl",
+          "no_std"
+        ]
+      ],
+      "log@0.4.30": [
+        []
+      ],
+      "memchr@2.8.2": [
+        [
+          "alloc",
+          "std"
+        ]
+      ],
+      "multimap@0.10.1": [
+        []
+      ],
+      "once_cell@1.21.4": [
+        [
+          "alloc",
+          "default",
+          "race",
+          "std"
+        ]
+      ],
+      "pbjson-build@0.7.0": [
+        []
+      ],
+      "pbjson@0.7.0": [
+        []
+      ],
+      "petgraph@0.7.1": [
+        []
+      ],
+      "prettyplease@0.2.37": [
+        []
+      ],
+      "proc-macro2@1.0.106": [
+        [
+          "default",
+          "proc-macro"
+        ]
+      ],
+      "prost-build@0.13.5": [
+        [
+          "default",
+          "format"
+        ]
+      ],
+      "prost-derive@0.13.5": [
+        []
+      ],
+      "prost-types@0.13.5": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "prost@0.13.5": [
+        [
+          "default",
+          "derive",
+          "prost-derive",
+          "std"
+        ],
+        [
+          "default",
+          "derive",
+          "std"
+        ]
+      ],
+      "quote@1.0.46": [
+        [
+          "default",
+          "proc-macro"
+        ]
+      ],
+      "regex-automata@0.4.14": [
+        [
+          "alloc",
+          "meta",
+          "nfa-pikevm",
+          "nfa-thompson",
+          "std",
+          "syntax",
+          "unicode-bool"
+        ]
+      ],
+      "regex-syntax@0.8.11": [
+        [
+          "std",
+          "unicode-bool"
+        ]
+      ],
+      "regex@1.12.4": [
+        [
+          "std",
+          "unicode-bool"
+        ]
+      ],
+      "rustix@1.1.4": [
+        [
+          "alloc",
+          "default",
+          "fs",
+          "std"
+        ]
+      ],
+      "serde@1.0.228": [
+        [
+          "default",
+          "derive",
+          "rc",
+          "serde_derive",
+          "std"
+        ]
+      ],
+      "serde_core@1.0.228": [
+        [
+          "rc",
+          "result",
+          "std"
+        ]
+      ],
+      "serde_derive@1.0.228": [
+        [
+          "default"
+        ]
+      ],
+      "serde_json@1.0.150": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "syn@2.0.118": [
+        [
+          "clone-impls",
+          "default",
+          "derive",
+          "extra-traits",
+          "full",
+          "parsing",
+          "printing",
+          "proc-macro"
+        ]
+      ],
+      "tempfile@3.27.0": [
+        [
+          "default",
+          "getrandom"
+        ]
+      ],
+      "unicode-ident@1.0.24": [
+        []
+      ],
+      "zmij@1.0.21": [
+        []
+      ]
+    },
+    "first_party_features": {
+      "aos-hub-api": [
+        []
+      ],
+      "aos-hub-ui": [
+        []
+      ]
+    },
+    "schema_version": 1,
+    "targets": {
+      "//crates/hub/aos-hub-api:contract_inventory": {
+        "executed": [
+          "browser_coverage_requires_executable_identifiers",
+          "capability_manifest_covers_descriptor_and_browser_operations",
+          "checked_api_manifest_matches_generated_descriptor"
+        ],
+        "ignored": []
+      },
+      "//crates/hub/aos-hub-api:unit": {
+        "executed": [
+          "connect_path_tests::container_administration_requests_freeze_pagination_and_cas_fields",
+          "connect_path_tests::container_gc_action_protojson_exposes_frozen_non_secret_identity",
+          "connect_path_tests::container_gc_run_protojson_preserves_exact_large_counters",
+          "connect_path_tests::container_platform_protojson_preserves_the_complete_oci_identity",
+          "connect_path_tests::container_registry_purge_fence_protojson_preserves_action_and_bounded_blockers",
+          "connect_path_tests::container_repository_protojson_exposes_only_an_explicit_distribution_reference",
+          "connect_path_tests::container_service_remains_a_closed_distinct_rpc_surface",
+          "connect_path_tests::container_untracked_repair_protojson_preserves_status_and_terminal_evidence",
+          "connect_path_tests::generated_method_constants_match_the_descriptor_inventory",
+          "tests::browser_session_bridge_uses_protojson_and_omits_no_security_context",
+          "tests::bytes_use_base64",
+          "tests::enums_emit_names_and_accept_names_or_numbers",
+          "tests::null_leaves_ordinary_fields_unset",
+          "tests::oneofs_are_flat_and_exclusive",
+          "tests::parser_accepts_proto_names_and_rejects_alias_duplicates_and_unknowns",
+          "tests::placement_eviction_uses_the_public_placement_name",
+          "tests::signed_and_unsigned_64_bit_values_use_decimal_strings",
+          "tests::unset_messages_and_default_scalars_are_omitted"
+        ],
+        "ignored": []
+      },
+      "//crates/hub/aos-hub-ui:unit": {
+        "executed": [
+          "tests::access_and_token_routes_use_one_uniform_vocabulary",
+          "tests::administrative_settings_match_their_read_api_permissions",
+          "tests::authenticated_navigation_includes_plain_settings_label",
+          "tests::catalog_bookmarks_leave_settings_without_accepting_unknown_paths",
+          "tests::closed_page_registry_matches_the_implemented_adapters",
+          "tests::compact_hash_presentation_preserves_the_full_value",
+          "tests::container_pull_commands_require_and_preserve_the_server_reference",
+          "tests::container_workflow_has_no_ssr_data_or_mutation_path",
+          "tests::creation_routes_require_their_navigation_capability",
+          "tests::delivery_inventory_does_not_wait_on_duplicate_route_or_binding_reads",
+          "tests::delivery_path_appends_the_placement_prefix",
+          "tests::delivery_setup_requires_each_resource_permission",
+          "tests::delivery_workflow_actions_follow_verification_and_activation",
+          "tests::every_page_is_backed_by_a_declared_web_workflow",
+          "tests::every_scope_root_selects_overview_first",
+          "tests::granted_infrastructure_never_exposes_owner_mutations",
+          "tests::narrow_settings_navigation_starts_collapsed",
+          "tests::navigation_groups_are_contiguous",
+          "tests::nested_registry_and_cache_routes_remain_distinct",
+          "tests::new_delivery_endpoint_requires_verifiable_provider_attachment",
+          "tests::registry_container_route_is_canonical_and_declared",
+          "tests::registry_publish_history_uses_only_the_canonical_path",
+          "tests::repository_pull_commands_use_the_explicit_server_distribution_reference",
+          "tests::role_aware_navigation_snapshots_use_live_permissions",
+          "tests::route_selection_falls_back_when_the_advertisement_is_not_enabled",
+          "tests::route_selection_starts_from_the_current_audience_advertisement",
+          "tests::settings_workspace_keeps_wide_medium_and_narrow_layout_contracts",
+          "tests::sibling_links_are_canonical",
+          "tests::sibling_pages_share_one_session_scope",
+          "tests::staged_releases_require_publish_in_flat_and_nested_registries",
+          "tests::unknown_and_ambiguous_paths_do_not_receive_the_application"
+        ],
+        "ignored": []
+      }
+    }
+  }
+}

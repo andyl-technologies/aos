@@ -457,12 +457,12 @@ pub fn verify_key_allowed_for_transparency_sequence(
     let trusted = trusted_by_id
         .get(key_id)
         .with_context(|| format!("package provenance key id '{key_id}' is not trusted"))?;
-    if let Some(retired_before_sequence) = trusted.retired_before_sequence {
-        if sequence >= retired_before_sequence {
-            bail!(
-                "package provenance key id '{key_id}' was retired before transparency sequence {retired_before_sequence}; entry sequence {sequence} is not trusted"
-            );
-        }
+    if let Some(retired_before_sequence) = trusted.retired_before_sequence
+        && sequence >= retired_before_sequence
+    {
+        bail!(
+            "package provenance key id '{key_id}' was retired before transparency sequence {retired_before_sequence}; entry sequence {sequence} is not trusted"
+        );
     }
     Ok(())
 }
@@ -554,9 +554,9 @@ fn parse_single_dsse_envelope(jsonl: &str) -> Result<DsseEnvelope> {
     serde_json::from_str(line).context("deserializing provenance DSSE envelope")
 }
 
-fn trusted_provenance_keys_by_id<'a>(
-    trusted_keys: &'a [TrustedProvenanceKey],
-) -> Result<BTreeMap<&'a str, &'a TrustedProvenanceKey>> {
+fn trusted_provenance_keys_by_id(
+    trusted_keys: &[TrustedProvenanceKey],
+) -> Result<BTreeMap<&str, &TrustedProvenanceKey>> {
     let mut by_id = BTreeMap::new();
     let mut by_key = BTreeMap::new();
     for key in trusted_keys {

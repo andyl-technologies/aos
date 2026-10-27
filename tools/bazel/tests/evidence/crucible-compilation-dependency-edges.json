@@ -1,0 +1,133 @@
+{
+  "architecture_sha256": "c9928c969955d7e68ca290a5f69219b3803878d72c35b16b9f2b418838000e8b",
+  "baseline_commit": "8ef94a7a03036bdaaa96f6bafbffb794f28e2aca",
+  "baseline_exporter_sha256": "b7dc9e28e4d654697be543164a21b5bdb8861726683cd65177f9ea062c173562",
+  "dependency_edge_count": 28000,
+  "dependency_sdk_profile_count": 79,
+  "dependency_target_count": 1921,
+  "dependency_target_kinds": {
+    "cargo_build_script": 4,
+    "rust_binary": 138,
+    "rust_clippy": 86,
+    "rust_doc": 79,
+    "rust_doc_test": 106,
+    "rust_library": 255,
+    "rust_shared_library": 4,
+    "rust_test": 1249
+  },
+  "derivation": "/nix/store/xvcqyjrf0rw2h879xk4vid54c0nf5vnl-aos-bazel-architecture.drv",
+  "limits": [
+    "Unconfigured dependency declarations only; no new compilation or runtime parity claim.",
+    "The remaining Rust audit backends still need conversion to consume this complete view."
+  ],
+  "output": "/nix/store/2c9wml0mjfqgr48mbg5kjv1gsg30l36l-aos-bazel-architecture",
+  "previous_exporter_fields_identical": [
+    "compilation_targets",
+    "native_dependencies",
+    "packages",
+    "schema_version",
+    "selection",
+    "target_dependencies",
+    "unavailable_profile_targets"
+  ],
+  "production_and_artifact_metadata_unchanged": true,
+  "production_package_count": 80,
+  "production_reader_compatibility": {
+    "executed_cases": {
+      "control_plane_boundary": [
+        "architecture_metadata_preserves_declared_dependency_names",
+        "architecture_metadata_rejects_incomplete_or_inconsistent_graphs",
+        "cli_uses_only_declared_host_composition_dependencies",
+        "control_plane_boundary_allows_api_and_session_dependencies",
+        "control_plane_boundary_rejects_direct_engine_dependency",
+        "control_plane_boundary_rejects_target_specific_engine_dependency",
+        "control_plane_boundary_rejects_workspace_engine_alias"
+      ],
+      "crate_artifact_types": [
+        "artifact_type_rules_reject_extra_or_missing_outputs",
+        "bazel_artifacts::bazel_artifact_roles_reject_extra_missing_and_wrong_kind_products",
+        "bazel_artifacts::bazel_oracle_requires_manual_test_only_feature_gating",
+        "binary_artifacts::gateway_test_oracle_requires_a_closed_opt_in_artifact_surface",
+        "crucible_packages_expose_declared_artifact_types"
+      ],
+      "crate_layer_graph": [
+        "crucible_runtime_dependencies_follow_layer_graph",
+        "layer_graph_rules_reject_upward_edges_in_vm_l0_edges_and_cycles"
+      ]
+    },
+    "oracle": "/nix/store/zxad4s99v0cbzc18pjq3gisqd1i43srs-aos-bazel-crucible-controller-architecture-cargo-oracle-1",
+    "oracle_derivation": "/nix/store/hv6wwr5f6jnnwy3yq9cscmk3n2qiayvg-aos-bazel-crucible-controller-architecture-cargo-oracle-1.drv",
+    "oracle_source": "/nix/store/5bwx9614k09r01vbgk1qifb3a0ikbj4p-crucible-cargo-src",
+    "qualification_helper_sha256": "2cbac337975b7c5d75ac89ef5653930a94d2c9f4fa627462ed00fe99c87703d1",
+    "rejected_controls": {
+      "cli-direct-engine": {
+        "diagnostic": "direct dependency",
+        "exit_code": 101
+      },
+      "cli-wrong-root": {
+        "diagnostic": "declared Bazel artifact surface",
+        "exit_code": 101
+      },
+      "cycle": {
+        "diagnostic": "dependency cycle",
+        "exit_code": 101
+      },
+      "guest-outside-layer-one": {
+        "diagnostic": "in-VM L2 crate",
+        "exit_code": 101
+      },
+      "host-static-library": {
+        "diagnostic": "declared Bazel artifact surface",
+        "exit_code": 101
+      },
+      "missing-artifact-metadata": {
+        "diagnostic": "architecture omitted compilation target metadata",
+        "exit_code": 101
+      },
+      "missing-declaration": {
+        "diagnostic": "Bazel audit omitted its declared architecture input",
+        "exit_code": 101
+      },
+      "missing-file": {
+        "diagnostic": "No such file or directory",
+        "exit_code": 101
+      },
+      "oracle-in-wildcards": {
+        "diagnostic": "manual test-only qemu-test-oracle",
+        "exit_code": 101
+      },
+      "plugin-not-cdylib": {
+        "diagnostic": "declared Bazel artifact surface",
+        "exit_code": 101
+      },
+      "runtime-test-support": {
+        "diagnostic": "test-only `crucible-test-support`",
+        "exit_code": 101
+      },
+      "upward-edge": {
+        "diagnostic": "upward dependency",
+        "exit_code": 101
+      }
+    },
+    "shared_reader_sha256": "d5d066469ca9e44423b903caddc77b524cb626d55ca2951ec16ec4bcb3971311",
+    "source_root": "/nix/store/jj4v5qa94c8z51xjhazwnl3q3dfcsv3q-aos-bazel-workspace"
+  },
+  "qualified_prior_graph": "/nix/store/16qax5rl5agdl5yaw71j4gykvrfylsjs-aos-bazel-controller-audit-inputs/architecture.json",
+  "qualified_prior_graph_sha256": "9778045077a96477b72520b28c40f121b360c406bf2ceaf3b9c972e147ad99c1",
+  "query_sha256": "5728cfe463c22e09f588a03777c928ccdbf0153c4a1ca3cb8443154bc00a6781",
+  "schema_version": 1,
+  "scope": "Unconfigured first-party Rust dependency declarations, including test and build-script branches; preparation for remaining Cargo-dependent audits.",
+  "source_inventory_count": 80,
+  "source_sha256": {
+    "pkgs/build-support/_bazel/architecture.nix": "d025f57af4ed38c913e5a0de249a504a10636b76de4af5ebc2f6f5d8a2bf8b12",
+    "tools/bazel/metadata/export_architecture.py": "21ab99e3d222a5ea6df20e9345dab2fc11c2679595952205df29872fa774169b",
+    "tools/bazel/tests/test_architecture_export.py": "7ef118c037198a37624a7246d0f70f3ef01168e03dc072f10bae138dbf16f18b"
+  },
+  "status": "PASS",
+  "test_only_target_count": 1567,
+  "validation": {
+    "helper_tests": 520,
+    "helper_tests_status": "PASS",
+    "nix_format_status": "PASS"
+  }
+}

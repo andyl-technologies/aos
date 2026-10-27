@@ -472,8 +472,8 @@ impl RpcService {
                             "source endpoint no longer matches its grant pin".to_string(),
                         ));
                     }
-                    if action_kind == "release" {
-                        if endpoint.desired_generation != Some(pin.target_generation_key)
+                    if action_kind == "release"
+                        && (endpoint.desired_generation != Some(pin.target_generation_key)
                             || !self
                                 .db
                                 .endpoint_generation_impacts(
@@ -482,13 +482,12 @@ impl RpcService {
                                 )
                                 .await
                                 .map_err(RpcError::internal)?
-                                .is_empty()
-                        {
-                            return Err(RpcError::FailedPrecondition(
+                                .is_empty())
+                    {
+                        return Err(RpcError::FailedPrecondition(
                                 "endpoint release requires the exact selected generation with no routes, gateways, or defaults"
                                     .to_string(),
                             ));
-                        }
                     }
                 }
                 "placement" => {
@@ -622,6 +621,10 @@ impl RpcService {
         Ok(sealed)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Keeps the existing transport and storage context explicit."
+    )]
     pub(in crate::service) async fn schedule_grant_revocation(
         &self,
         plan_id: &str,

@@ -5,12 +5,25 @@
 //! builds the public `crucible-engine` binary, `crucible-qemu-debug-gateway` builds the
 //! GPL-side gateway process, `crucible-guest` builds its optional in-guest
 //! emitter binary, `crucible-store` builds the fleet-store binary, and every
-//! other Crucible package remains a library crate.
+//! other Crucible package remains a library crate. The control server also
+//! declares one explicitly gated test-oracle executable, excluded from default
+//! builds and ordinary binary discovery.
 
 #![forbid(unsafe_code)]
 
 #[path = "support/workspace.rs"]
 mod workspace;
+
+#[path = "support/artifact_type_binaries.rs"]
+mod binary_artifacts;
+
+#[path = "support/architecture.rs"]
+mod architecture;
+
+#[path = "support/artifact_type_bazel.rs"]
+mod bazel_artifacts;
+
+use binary_artifacts::{forbid_binary_targets, gateway_test_oracle_failures};
 
 use std::error::Error;
 use std::fs;
@@ -116,18 +129,24 @@ const ARTIFACT_SPECS: &[ArtifactSpec] = &[
 
 #[test]
 fn crucible_packages_expose_declared_artifact_types() -> Result<(), Box<dyn Error>> {
-    let crates_dir = workspace_crates_dir()?;
     let mut failures = Vec::new();
 
-    assert_expected_crucible_package_set(&crates_dir, &mut failures)?;
+    if let Some(graph) = architecture::load()? {
+        failures.extend(bazel_artifacts::artifact_failures(
+            &graph,
+            &std::env::current_dir()?,
+        )?);
+    } else {
+        let crates_dir = workspace_crates_dir()?;
+        assert_expected_crucible_package_set(&crates_dir, &mut failures)?;
+        for spec in ARTIFACT_SPECS {
+            let package_dir = workspace::package_directory(&crates_dir, spec.package)?;
+            let manifest_path = package_dir.join("Cargo.toml");
+            let manifest: Value = fs::read_to_string(&manifest_path)?.parse()?;
+            let layout = PackageLayout::from_package_dir(&package_dir);
 
-    for spec in ARTIFACT_SPECS {
-        let package_dir = workspace::package_directory(&crates_dir, spec.package)?;
-        let manifest_path = package_dir.join("Cargo.toml");
-        let manifest: Value = fs::read_to_string(&manifest_path)?.parse()?;
-        let layout = PackageLayout::from_package_dir(&package_dir);
-
-        failures.extend(artifact_type_failures(spec, &manifest, &layout));
+            failures.extend(artifact_type_failures(spec, &manifest, &layout));
+        }
     }
 
     assert!(
@@ -590,7 +609,11 @@ fn artifact_type_failures(
                     ));
                 }
             }
-            forbid_binary_targets(spec.package, manifest, layout, &mut failures);
+            if spec.package == "crucible-control-server" {
+                failures.extend(gateway_test_oracle_failures(manifest, layout));
+            } else {
+                forbid_binary_targets(spec.package, manifest, layout, &mut failures);
+            }
         }
     }
 
@@ -645,33 +668,6 @@ fn bin_targets(manifest: &Value) -> Vec<BinTarget> {
                 .collect()
         })
         .unwrap_or_default()
-}
-
-fn forbid_binary_targets(
-    package: &str,
-    manifest: &Value,
-    layout: &PackageLayout,
-    failures: &mut Vec<String>,
-) {
-    let bins = bin_targets(manifest);
-    if !bins.is_empty() {
-        failures.push(format!(
-            "{}: library/plugin package must not declare [[bin]] targets",
-            package
-        ));
-    }
-    if layout.has_main_rs {
-        failures.push(format!(
-            "{}: library/plugin package must not have an implicit binary target at src/main.rs",
-            package
-        ));
-    }
-    if layout.has_src_bin_dir {
-        failures.push(format!(
-            "{}: library/plugin package must not have implicit binary targets under src/bin",
-            package
-        ));
-    }
 }
 
 fn contains_finding(findings: &[String], needle: &str) -> bool {

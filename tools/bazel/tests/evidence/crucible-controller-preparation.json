@@ -1,0 +1,134 @@
+{
+  "contexts": {
+    "cli": {
+      "analysis_output": "/nix/store/2747y4365aylrd701jqzxns6lla6l13f-aos-bazel-crucible-controller-cli-inventory-1",
+      "checked_inventory": "tools/bazel/metadata/crucible-controller-cli-inventory.json",
+      "checked_sha256": "65dfa73c9c742448954655c596368088cccd0997fc741248b0a9474eb363ba60",
+      "configured_targets": 359,
+      "source_files": 1668,
+      "targets": [
+        "//crates/crucible/crucible-cli:controller_artifact",
+        "//crates/crucible/crucible-cli:production_license_closure"
+      ]
+    },
+    "debugger": {
+      "analysis_output": "/nix/store/3vapxp1sqxvzfwpn5bi9yk3lqy9w6zly-aos-bazel-crucible-controller-debugger-inventory-1",
+      "checked_inventory": "tools/bazel/metadata/crucible-controller-debugger-inventory.json",
+      "checked_sha256": "7991f829487f22b3b1d8342267a851294ab10f7736b8aed796d4f2125de9f744",
+      "configured_targets": 158,
+      "source_files": 817,
+      "targets": [
+        "//crates/crucible/crucible-engine:controller_artifact",
+        "//crates/crucible/crucible-engine:controller_license_closure"
+      ]
+    },
+    "scenario": {
+      "analysis_output": "/nix/store/2gz7kplmx6f7qrsx3my7r3mzgn93vcc3-aos-bazel-crucible-controller-scenario-inventory-1",
+      "checked_inventory": "tools/bazel/metadata/crucible-controller-scenario-inventory.json",
+      "checked_sha256": "3aff266cf942ea9549bcb50bd06b2f68b819b1d38109ce2aa217170dd2690e93",
+      "configured_targets": 343,
+      "source_files": 1537,
+      "targets": [
+        "//crates/crucible/crucible-daemon:controller_artifact",
+        "//crates/crucible/crucible-daemon:controller_license_closure"
+      ]
+    }
+  },
+  "dependent_configured_graphs_and_source_selections_unchanged": true,
+  "dependent_inventory_refresh": {
+    "activation-crucible": {
+      "changed": [
+        "contracts"
+      ],
+      "checked_sha256": "06b61db20723f30d3c71be8ad7c4756904ccee8787e2139a257c09500ae6cc07",
+      "configured_targets": 255,
+      "output": "/nix/store/gl70xb24iv43gircr15za8hrhbnlr2z6-aos-bazel-controller-dependent-activation-crucible-inventory-1",
+      "production_output": "/nix/store/pdh1l5sid4ixcjxibp1f1a3x2r68h8kv-aos-bazel-controller-dependent-activation-crucible-production-inventory-1"
+    },
+    "control": {
+      "changed": [
+        "contracts"
+      ],
+      "checked_sha256": "07d8cdc4b6a47a933b466871546ceaede317a0bb054af395cf3ec396d1f0c8c5",
+      "configured_targets": 329,
+      "output": "/nix/store/49lyrs26mc1f598cszkpn5j2c6bnwkad-aos-bazel-controller-dependent-control-inventory-1"
+    },
+    "crucible-cli": {
+      "changed": [
+        "contracts"
+      ],
+      "checked_sha256": "9a29633217a78d3e4adb3baa033f9cf7073f238560a7a53a359398c886dd160c",
+      "configured_targets": 594,
+      "output": "/nix/store/law8yvyv1z84ywkf845vmg5gkx4jbx0l-aos-bazel-controller-dependent-crucible-cli-inventory-1"
+    },
+    "daemon": {
+      "changed": [
+        "contracts"
+      ],
+      "checked_sha256": "37ef8b240f6edd72652cc6bf2863d68fc0502fc8a66ca2aba634eb20fccaa26b",
+      "configured_targets": 463,
+      "output": "/nix/store/sv81r80gg6jxwjvj2a5znxm4nhc576hx-aos-bazel-controller-dependent-daemon-inventory-1"
+    },
+    "engine": {
+      "changed": [
+        "contracts"
+      ],
+      "checked_sha256": "bebb6561ca245473a88a94d3425d3b27885a484ad5d0660279d97ba9fbd8a90f",
+      "configured_targets": 1276,
+      "output": "/nix/store/lmzjvrsyhk1qrm6sgskbmwk431qx9dbc-aos-bazel-controller-dependent-engine-inventory-1"
+    },
+    "feature-powerset": {
+      "changed": [
+        "contracts"
+      ],
+      "checked_sha256": "8177b52deb1fd0bc16ea1ac99808fa336bcfd1a15b25d320e73f1a96b29d682a",
+      "configured_targets": 167,
+      "output": "/nix/store/c9mgy1m250k5yhy8dz6kqs8vmc9nxz8x-aos-bazel-controller-dependent-feature-powerset-inventory-1"
+    },
+    "qemu-host": {
+      "changed": [
+        "contracts"
+      ],
+      "checked_sha256": "c6934a7913abfcca5a10f57a644b41772312f778693fccc8f10eebc7852119f4",
+      "configured_targets": 259,
+      "output": "/nix/store/bvcsmymzn14c06mz7mbaxar3r58hnbd3-aos-bazel-controller-dependent-qemu-host-inventory-1"
+    },
+    "qemu-test-oracle-host": {
+      "changed": [
+        "contracts"
+      ],
+      "checked_sha256": "1e8df5a9f18a25cf5f98c0190479b31b1c55c63cd9cb60c51cac25306afcfb01",
+      "configured_targets": 265,
+      "output": "/nix/store/9zgf72ks60kw81kd4x6d4l589zk7psid-aos-bazel-controller-dependent-qemu-test-oracle-host-inventory-1"
+    },
+    "session": {
+      "changed": [
+        "contracts"
+      ],
+      "checked_sha256": "d01d6cbdd53b61876a34ca357d2a33d566047a7dbe49d34017085924e38ba427",
+      "configured_targets": 272,
+      "output": "/nix/store/iyzgmm1482d2wvk5p4a20b8jmjdyf7rl-aos-bazel-controller-dependent-session-inventory-1"
+    },
+    "test-support-audit": {
+      "changed": [
+        "contracts"
+      ],
+      "checked_sha256": "140dbe33a46de7e2e2a329e352eb0a6af84eb4fd44c61777ddfc7a386602726b",
+      "configured_targets": 146,
+      "output": "/nix/store/5lx7rlyd4cb57aq1gdnkpy1n1g93rrs4-aos-bazel-controller-dependent-test-support-audit-inventory-1"
+    }
+  },
+  "helper_tests": {
+    "command": "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tools/bazel/tests -p test_*.py",
+    "python": "/nix/store/03xdp3x214a0px6gvhg4dwiq7i0fqkrm-python3-3.14.3/bin/python3",
+    "result": "PASS",
+    "tests": 446
+  },
+  "limits": [
+    "Analysis and helper tests do not qualify compiled artifacts, application behavior, or a public controller cutover.",
+    "The public controller retains its ordinary Cargo builder and mandatory checks.",
+    "The combined controller test graph is a separate configuration from the three installed executable graphs."
+  ],
+  "schema_version": 1,
+  "scope": "Controller executable declarations and source inventory preparation"
+}

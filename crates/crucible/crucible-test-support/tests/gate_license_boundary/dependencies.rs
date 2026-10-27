@@ -51,9 +51,7 @@ fn boundary_crate_source_scanner_rejects_qemu_headers_and_callbacks() {
 #[test]
 fn plugin_distributed_dependency_graph_has_gpl2_compatible_license_choices()
 -> Result<(), Box<dyn Error>> {
-    let metadata = cargo_metadata()?;
-    let failures = resolved_production_graph_failures(
-        &metadata,
+    let failures = production_graph_failures(
         PLUGIN_PACKAGE,
         &[
             PLUGIN_PACKAGE,
@@ -75,9 +73,7 @@ fn plugin_distributed_dependency_graph_has_gpl2_compatible_license_choices()
 #[test]
 fn debug_gateway_distributed_dependency_graph_has_gpl2_compatible_license_choices()
 -> Result<(), Box<dyn Error>> {
-    let metadata = cargo_metadata()?;
-    let failures = resolved_production_graph_failures(
-        &metadata,
+    let failures = production_graph_failures(
         DEBUG_GATEWAY_PACKAGE,
         &[DEBUG_GATEWAY_PACKAGE, "crucible-qemu-protocol"],
         gpl2_compatible_external_license,
@@ -95,11 +91,9 @@ fn debug_gateway_distributed_dependency_graph_has_gpl2_compatible_license_choice
 #[test]
 fn permissive_boundary_dependency_graphs_remain_implementation_neutral()
 -> Result<(), Box<dyn Error>> {
-    let metadata = cargo_metadata()?;
     let mut failures = Vec::new();
     for root in ["crucible-qemu-protocol", "crucible-qemu-shmem"] {
-        failures.extend(resolved_production_graph_failures(
-            &metadata,
+        failures.extend(production_graph_failures(
             root,
             &["crucible-qemu-protocol", "crucible-qemu-shmem"],
             permissive_external_license,
@@ -112,6 +106,24 @@ fn permissive_boundary_dependency_graphs_remain_implementation_neutral()
         failures.join("\n")
     );
     Ok(())
+}
+
+fn production_graph_failures(
+    root: &str,
+    allowed_local: &[&str],
+    license_allowed: fn(&str) -> bool,
+    context: &str,
+) -> Result<Vec<String>, Box<dyn Error>> {
+    if let Some(closures) = super::bazel::load()? {
+        return Ok(closures.failures(root, allowed_local, license_allowed, context)?);
+    }
+    resolved_production_graph_failures(
+        &cargo_metadata()?,
+        root,
+        allowed_local,
+        license_allowed,
+        context,
+    )
 }
 
 fn cargo_metadata() -> Result<JsonValue, Box<dyn Error>> {
@@ -217,7 +229,8 @@ fn resolved_production_graph_failures(
     Ok(failures)
 }
 
-fn gpl2_compatible_external_license(license: &str) -> bool {
+/// Applies the gate's existing GPL-2.0-compatible external license choices.
+pub(super) fn gpl2_compatible_external_license(license: &str) -> bool {
     external_license_has_approved_choice(
         license,
         &[
@@ -234,7 +247,8 @@ fn gpl2_compatible_external_license(license: &str) -> bool {
     )
 }
 
-fn permissive_external_license(license: &str) -> bool {
+/// Applies the gate's existing implementation-neutral external license choices.
+pub(super) fn permissive_external_license(license: &str) -> bool {
     external_license_has_approved_choice(
         license,
         &[
@@ -343,6 +357,9 @@ fn resolved_graph_rejects_local_apache_and_external_gpl_boundary_regressions()
 
 #[test]
 fn non_gpl_crates_cannot_depend_on_qemu_side_implementation_crates() -> Result<(), Box<dyn Error>> {
+    if let Some(graph) = super::architecture::load()? {
+        return super::bazel::non_gpl_boundaries(&graph);
+    }
     let crates = workspace_crates_dir()?;
     let workspace: Value = fs::read_to_string(crates.join("Cargo.toml"))?.parse()?;
     let members = workspace["workspace"]["members"]
@@ -521,7 +538,8 @@ pub(super) fn resolved_dependency_package<'a>(
         .unwrap_or(alias)
 }
 
-fn is_qemu_side_implementation_name(package: &str) -> bool {
+/// Recognizes the gate's existing implementation-package naming boundary.
+pub(super) fn is_qemu_side_implementation_name(package: &str) -> bool {
     package == PLUGIN_PACKAGE
         || package == "crucible-qemu-debug-gateway"
         || package.starts_with("crucible-qemu-plugin-")

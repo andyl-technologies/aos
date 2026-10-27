@@ -87,11 +87,9 @@ pub fn is_cache_valid(root: &Path, index: &DocIndex) -> bool {
 
     let built_at = index.built_at;
 
-    for dir_name in &["lib"] {
-        let dir = root.join(dir_name);
-        if dir.is_dir() && has_newer_nix_file(&dir, built_at) {
-            return false;
-        }
+    let library_directory = root.join("lib");
+    if library_directory.is_dir() && has_newer_nix_file(&library_directory, built_at) {
+        return false;
     }
 
     true
@@ -114,17 +112,16 @@ fn has_newer_nix_file(dir: &Path, cutoff: u64) -> bool {
             if has_newer_nix_file(&path, cutoff) {
                 return true;
             }
-        } else if path.extension().and_then(|e| e.to_str()) == Some("nix") {
-            if let Ok(meta) = path.metadata() {
-                if let Ok(mtime) = meta.modified() {
-                    let mtime_secs = mtime
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs();
-                    if mtime_secs > cutoff {
-                        return true;
-                    }
-                }
+        } else if path.extension().and_then(|e| e.to_str()) == Some("nix")
+            && let Ok(meta) = path.metadata()
+            && let Ok(mtime) = meta.modified()
+        {
+            let mtime_secs = mtime
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            if mtime_secs > cutoff {
+                return true;
             }
         }
     }

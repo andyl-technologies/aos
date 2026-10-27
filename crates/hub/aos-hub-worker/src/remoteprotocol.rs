@@ -38,6 +38,13 @@ pub(crate) struct RemoteStatement {
 
 /// Result union returned by the internal SQL endpoint.
 #[derive(Debug, Default, Serialize, Deserialize)]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    expect(
+        dead_code,
+        reason = "Only the Worker SQL transport constructs responses"
+    )
+)]
 pub(crate) struct RemoteSqlResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) count: Option<u64>,

@@ -1,0 +1,43 @@
+load("//tools/bazel/rules:compile.bzl", "cc_library")
+load("//tools/bazel/rules:package.bzl", "aos_package")
+load("//tools/bazel/rules:license.bzl", "aos_license_check")
+
+# These are synthetic domain classifications, not distributed QEMU components.
+cc_library(name = "apache", license_domain = "apache-host")
+cc_library(name = "gpl", license_domain = "gpl-qemu")
+
+cc_library(
+    name = "host_links_plugin",
+    deps = [":gpl"],
+    license_domain = "apache-host",
+)
+
+cc_library(
+    name = "plugin_links_host",
+    deps = [":apache"],
+    license_domain = "gpl-qemu",
+)
+
+aos_package(
+    name = "bad_host",
+    package_name = "synthetic-license-negative",
+    version = "1",
+    license_expression = "Apache-2.0",
+    license_domain = "apache-host",
+    artifacts = {":host_links_plugin": "bad"},
+)
+
+aos_package(
+    name = "bad_plugin",
+    package_name = "synthetic-license-negative",
+    version = "1",
+    license_expression = "GPL-2.0-only",
+    license_domain = "gpl-qemu",
+    artifacts = {":plugin_links_host": "bad"},
+)
+
+aos_license_check(
+    name = "bad_protocol",
+    roots = [":apache"],
+    license_domain = "permissive-protocol",
+)

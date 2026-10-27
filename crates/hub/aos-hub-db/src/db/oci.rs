@@ -1337,6 +1337,10 @@ pub struct OciAdminProjectionReconciliationRoot {
 
 /// Bounded parsed form of one exact manifest object.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Keeps existing public projection payloads inline without changing their API representation."
+)]
 pub enum OciCatalogProjection {
     /// OCI or Docker image manifest.
     Manifest {
@@ -1424,8 +1428,7 @@ fn build_oci_catalog_statements(
     validate_catalog(input)?;
     let now = input.observed_at;
     let repository_id = portable_relational_id(Uuid::new_v4());
-    let mut statements = Vec::<CheckedStatement>::new();
-    statements.push(
+    let mut statements: Vec<CheckedStatement> = vec![
         Statement::new(
             "UPDATE registries SET updated_at = updated_at
              WHERE id = ?1
@@ -1436,8 +1439,6 @@ fn build_oci_catalog_statements(
             vals![input.registry_id],
         )
         .expecting(1),
-    );
-    statements.push(
         Statement::new(
             "INSERT INTO oci_repositories
                (id, registry_id, name, visibility, lifecycle_state,
@@ -1455,8 +1456,6 @@ fn build_oci_catalog_statements(
             ],
         )
         .unchecked(),
-    );
-    statements.push(
         Statement::new(
             "INSERT INTO oci_registry_state
                (registry_id, mutation_epoch, charged_bytes,
@@ -1467,8 +1466,6 @@ fn build_oci_catalog_statements(
             vals![input.registry_id, now],
         )
         .unchecked(),
-    );
-    statements.push(
         Statement::new(
             "INSERT INTO oci_repository_metadata
                (repository_id, registry_id, description, resource_version, updated_at)
@@ -1479,8 +1476,6 @@ fn build_oci_catalog_statements(
             vals![input.registry_id, input.repository.as_str(), now],
         )
         .unchecked(),
-    );
-    statements.push(
         Statement::new(
             "INSERT INTO org_usage (org_id, used_bytes, object_count, updated_at)
              SELECT registry.org_id, 0, 0, ?2 FROM registries registry
@@ -1489,7 +1484,7 @@ fn build_oci_catalog_statements(
             vals![input.registry_id, now],
         )
         .unchecked(),
-    );
+    ];
 
     let mut manifest_count = 0_i64;
     let mut edge_count = 0_i64;
@@ -3488,7 +3483,7 @@ mod tests {
     #[test]
     fn portable_sha256_resumes_across_block_and_tail_boundaries() {
         let mut state = OciSha256State::initial();
-        state.update(&vec![b'a'; 63]).unwrap();
+        state.update(&[b'a'; 63]).unwrap();
         assert_eq!(state.tail_hex.len(), 126);
         state.update(b"bc").unwrap();
         assert_eq!(state.tail_hex, "63");

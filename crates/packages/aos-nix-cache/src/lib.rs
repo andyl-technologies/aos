@@ -31,6 +31,9 @@
 //! - [`bandwidth`] provides a shared token-bucket limiter and
 //!   human-readable rate/size parsing for `--max-bandwidth`-style flags.
 
+// Native cache admission uses process-local lookup maps outside Crucible state.
+#![allow(clippy::disallowed_types)]
+
 pub mod backend;
 pub mod bandwidth;
 pub mod compress;

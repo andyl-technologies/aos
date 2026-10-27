@@ -22,6 +22,11 @@ in
       && (
         pathString
         == repoRootString
+        # The guest ABI test reads its Bazel and Nix qualification contracts.
+        || pathString == "${repoRootString}/MODULE.bazel"
+        || pathString == "${repoRootString}/default.nix"
+        || pathString == "${repoRootString}/tests/build"
+        || pathString == "${repoRootString}/tests/build/_bazel-guest.nix"
         || pathString == "${repoRootString}/AGENTS.md"
         || pathString == "${repoRootString}/default.nix"
         || pathString == "${repoRootString}/LICENSE"
@@ -53,6 +58,15 @@ in
         || pathString == "${repoRootString}/modules/base/build.nix"
         || pathString == "${repoRootString}/modules/profiles"
         || pathString == "${repoRootString}/modules/profiles/ability-crucible.nix"
+        # Release identities are evaluated from hash-bound Bazel metadata.
+        || pathString == "${repoRootString}/tools"
+        || pathString == "${repoRootString}/tools/bazel"
+        || pathString == "${repoRootString}/tools/bazel/metadata"
+        || pathString == "${repoRootString}/tools/bazel/metadata/crucible-release-packages.json"
+        || pathString == "${repoRootString}/tools/bazel/metadata/export_release_packages.py"
+        || pathString == "${repoRootString}/tools/bazel/rules"
+        || pathString == "${repoRootString}/tools/bazel/rules/rust_package.bzl"
+        || pathString == "${repoRootString}/tools/bazel/rules/source_package.bzl"
         || pathString == "${repoRootString}/tests"
         || lib.hasPrefix "${repoRootString}/tests/crucible" pathString
       );

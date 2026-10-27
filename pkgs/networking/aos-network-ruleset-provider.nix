@@ -8,8 +8,11 @@
   aosWorkspaceVendor,
   nftables,
   patchelf,
+  callPackage,
+  buildDriver ? "cargo",
 }: let
   version = "0.1.0";
+  withBuildDriver = selected: callPackage ./aos-network-ruleset-provider.nix {buildDriver = selected;};
   cargoDeps = aosWorkspaceVendor;
   targetTriple =
     {
@@ -53,8 +56,7 @@
     preBuild = staticBuildSetup;
     buildDeps = [patchelf];
   };
-in
-  mkAosCargoPackage {
+  packageArguments = {
     platformSupport = {
       build = [
         {
@@ -116,6 +118,11 @@ in
     buildDeps = [patchelf];
     runtimeDeps = [nftables];
 
+    passthru = {
+      inherit withBuildDriver;
+      buildDriver = "cargo";
+    };
+
     module = ./_aos-network-ruleset-provider;
     moduleDeps = [nftables];
 
@@ -153,4 +160,14 @@ in
       license = "Apache-2.0";
       mainProgram = "aos-network-ruleset-provider";
     };
-  }
+  };
+  cargoPackage = mkAosCargoPackage packageArguments;
+in
+  assert builtins.elem buildDriver ["cargo" "bazel"];
+    if buildDriver == "bazel"
+    then
+      callPackage ./_aos-network-ruleset-provider-bazel.nix {
+        inherit packageArguments;
+        cargoFallback = cargoPackage;
+      }
+    else cargoPackage

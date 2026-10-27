@@ -1,5 +1,9 @@
 //! Command-surface contracts for public CLIs and installed private helpers.
 
+#[macro_use]
+#[path = "support/binaries.rs"]
+mod binaries;
+
 use std::process::{Command, Output};
 
 #[cfg(unix)]
@@ -29,7 +33,7 @@ fn switch_dispatches_to_native_worktree_before_registry_configuration() -> Resul
     let worktree = blocked_parent.join("modules.d");
     let eval_root = temporary.path().join("selected-evaluation");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_apm"))
+    let output = Command::new(cli_binary!("CARGO_BIN_EXE_apm"))
         .arg("switch")
         .arg("--worktree")
         .arg(&worktree)
@@ -68,14 +72,23 @@ fn require_success(output: Output, description: &str) -> Result<String> {
         );
     }
 
-    Ok(String::from_utf8(output.stdout).context("CLI help was not UTF-8")?)
+    String::from_utf8(output.stdout).context("CLI help was not UTF-8")
 }
 
 #[test]
 fn each_binary_identifies_its_own_command_surface() -> Result<()> {
-    let aos = require_success(run(env!("CARGO_BIN_EXE_aos"), &["--help"])?, "aos --help")?;
-    let apm = require_success(run(env!("CARGO_BIN_EXE_apm"), &["--help"])?, "apm --help")?;
-    let apr = require_success(run(env!("CARGO_BIN_EXE_apr"), &["--help"])?, "apr --help")?;
+    let aos = require_success(
+        run(cli_binary!("CARGO_BIN_EXE_aos"), &["--help"])?,
+        "aos --help",
+    )?;
+    let apm = require_success(
+        run(cli_binary!("CARGO_BIN_EXE_apm"), &["--help"])?,
+        "apm --help",
+    )?;
+    let apr = require_success(
+        run(cli_binary!("CARGO_BIN_EXE_apr"), &["--help"])?,
+        "apr --help",
+    )?;
 
     assert!(aos.starts_with("AOS build tool"));
     assert!(apm.starts_with("Consume and manage AOS packages"));
@@ -86,46 +99,52 @@ fn each_binary_identifies_its_own_command_surface() -> Result<()> {
 #[test]
 fn commands_do_not_cross_public_cli_boundaries() -> Result<()> {
     assert!(
-        !run(env!("CARGO_BIN_EXE_aos"), &["package", "--help"])?
+        !run(cli_binary!("CARGO_BIN_EXE_aos"), &["package", "--help"])?
             .status
             .success()
     );
     assert!(
-        !run(env!("CARGO_BIN_EXE_apm"), &["build", "--help"])?
+        !run(cli_binary!("CARGO_BIN_EXE_apm"), &["build", "--help"])?
             .status
             .success()
     );
     assert!(
-        !run(env!("CARGO_BIN_EXE_apr"), &["install", "--help"])?
+        !run(cli_binary!("CARGO_BIN_EXE_apr"), &["install", "--help"])?
             .status
             .success()
     );
     assert!(
         !run(
-            env!("CARGO_BIN_EXE_apm"),
+            cli_binary!("CARGO_BIN_EXE_apm"),
             &["registry", "publish", "--help"]
         )?
         .status
         .success()
     );
     assert!(
-        !run(env!("CARGO_BIN_EXE_apm"), &["__eval", "--help"])?
-            .status
-            .success()
-    );
-    assert!(
-        !run(env!("CARGO_BIN_EXE_apm"), &["--json", "__eval", "--help"])?
-            .status
-            .success()
-    );
-    assert!(
-        !run(env!("CARGO_BIN_EXE_apm"), &["apply-deployment", "--help"])?
+        !run(cli_binary!("CARGO_BIN_EXE_apm"), &["__eval", "--help"])?
             .status
             .success()
     );
     assert!(
         !run(
-            env!("CARGO_BIN_EXE_aos-package-runtime"),
+            cli_binary!("CARGO_BIN_EXE_apm"),
+            &["--json", "__eval", "--help"]
+        )?
+        .status
+        .success()
+    );
+    assert!(
+        !run(
+            cli_binary!("CARGO_BIN_EXE_apm"),
+            &["apply-deployment", "--help"]
+        )?
+        .status
+        .success()
+    );
+    assert!(
+        !run(
+            cli_binary!("CARGO_BIN_EXE_aos-package-runtime"),
             &["install", "--help"]
         )?
         .status
@@ -133,16 +152,16 @@ fn commands_do_not_cross_public_cli_boundaries() -> Result<()> {
     );
 
     require_success(
-        run(env!("CARGO_BIN_EXE_apm"), &["install", "--help"])?,
+        run(cli_binary!("CARGO_BIN_EXE_apm"), &["install", "--help"])?,
         "apm install --help",
     )?;
     require_success(
-        run(env!("CARGO_BIN_EXE_apr"), &["publish", "--help"])?,
+        run(cli_binary!("CARGO_BIN_EXE_apr"), &["publish", "--help"])?,
         "apr publish --help",
     )?;
     require_success(
         run(
-            env!("CARGO_BIN_EXE_aos-package-runtime"),
+            cli_binary!("CARGO_BIN_EXE_aos-package-runtime"),
             &["apply-deployment", "--help"],
         )?,
         "aos-package-runtime apply-deployment --help",
@@ -153,7 +172,7 @@ fn commands_do_not_cross_public_cli_boundaries() -> Result<()> {
 #[test]
 fn system_scope_rejects_an_unidentified_target_before_loading_state() -> Result<()> {
     let root = tempdir()?;
-    let output = Command::new(env!("CARGO_BIN_EXE_apm"))
+    let output = Command::new(cli_binary!("CARGO_BIN_EXE_apm"))
         .args(["list", "--system"])
         .env("AOS_ROOT", root.path())
         .output()
@@ -177,9 +196,13 @@ fn native_deployment_dispatch_stays_private_and_rejects_retired_stage_commands()
         "deployment-result",
     ] {
         for arguments in [vec![command, "--help"], vec!["--json", command, "--help"]] {
-            assert!(!run(env!("CARGO_BIN_EXE_apm"), &arguments)?.status.success());
+            assert!(
+                !run(cli_binary!("CARGO_BIN_EXE_apm"), &arguments)?
+                    .status
+                    .success()
+            );
             require_success(
-                run(env!("CARGO_BIN_EXE_aos-package-runtime"), &arguments)?,
+                run(cli_binary!("CARGO_BIN_EXE_aos-package-runtime"), &arguments)?,
                 &format!("native runtime {command} help"),
             )?;
         }
@@ -192,8 +215,8 @@ fn native_deployment_dispatch_stays_private_and_rejects_retired_stage_commands()
         "__ability-stage-receive",
     ] {
         for binary in [
-            env!("CARGO_BIN_EXE_apm"),
-            env!("CARGO_BIN_EXE_aos-package-runtime"),
+            cli_binary!("CARGO_BIN_EXE_apm"),
+            cli_binary!("CARGO_BIN_EXE_aos-package-runtime"),
         ] {
             assert!(!run(binary, &[command, "--help"])?.status.success());
         }
@@ -205,18 +228,24 @@ fn native_deployment_dispatch_stays_private_and_rejects_retired_stage_commands()
 #[test]
 fn image_preparation_is_public_and_rejects_container_before_state_access() -> Result<()> {
     let help = require_success(
-        run(env!("CARGO_BIN_EXE_apm"), &["image", "prepare", "--help"])?,
+        run(
+            cli_binary!("CARGO_BIN_EXE_apm"),
+            &["image", "prepare", "--help"],
+        )?,
         "apm image prepare help",
     )?;
     assert!(help.contains("--qualified"));
     assert!(
-        !run(env!("CARGO_BIN_EXE_aos"), &["image", "prepare", "--help"])?
-            .status
-            .success()
+        !run(
+            cli_binary!("CARGO_BIN_EXE_aos"),
+            &["image", "prepare", "--help"]
+        )?
+        .status
+        .success()
     );
     assert!(
         !run(
-            env!("CARGO_BIN_EXE_aos-package-runtime"),
+            cli_binary!("CARGO_BIN_EXE_aos-package-runtime"),
             &["image", "prepare", "--help"]
         )?
         .status
@@ -224,7 +253,7 @@ fn image_preparation_is_public_and_rejects_container_before_state_access() -> Re
     );
 
     let home = tempdir()?;
-    let output = Command::new(env!("CARGO_BIN_EXE_apm"))
+    let output = Command::new(cli_binary!("CARGO_BIN_EXE_apm"))
         .args(["image", "prepare", "server", "--dry-run", "--yes"])
         .env_clear()
         .env("HOME", home.path())
@@ -260,11 +289,11 @@ fn shared_boot_entry_preserves_host_and_handoff_command_surfaces() -> Result<()>
     ] {
         for arguments in [vec!["--help"], vec!["handoff-initrd-store", "--help"]] {
             let standalone = run_boot_entry(
-                env!("CARGO_BIN_EXE_aos-boot-configuration"),
+                cli_binary!("CARGO_BIN_EXE_aos-boot-configuration"),
                 entry,
                 &arguments,
             )?;
-            let shared = run_boot_entry(env!("CARGO_BIN_EXE_apm"), entry, &arguments)?;
+            let shared = run_boot_entry(cli_binary!("CARGO_BIN_EXE_apm"), entry, &arguments)?;
 
             assert!(standalone.status.success());
             assert!(shared.status.success());
@@ -296,12 +325,12 @@ fn shared_boot_entry_preserves_source_rejection_before_state_access() -> Result<
     ];
 
     let standalone = run_boot_entry(
-        env!("CARGO_BIN_EXE_aos-boot-configuration"),
+        cli_binary!("CARGO_BIN_EXE_aos-boot-configuration"),
         "aos-boot-configuration",
         &arguments,
     )?;
     let shared = run_boot_entry(
-        env!("CARGO_BIN_EXE_apm"),
+        cli_binary!("CARGO_BIN_EXE_apm"),
         ".aos-boot-configuration-unwrapped",
         &arguments,
     )?;

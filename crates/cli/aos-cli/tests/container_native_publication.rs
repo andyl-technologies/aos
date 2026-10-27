@@ -5,6 +5,10 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+#[macro_use]
+#[path = "support/binaries.rs"]
+mod binaries;
+
 #[path = "../../../artifacts/aos-oci/tests/support/mod.rs"]
 mod oci_support;
 
@@ -843,7 +847,7 @@ fn publish_signed_registry_surface(
     if let Some(head) = public_head {
         fs::write(surface.join("HEAD"), head)?;
     }
-    let output = Command::new(env!("CARGO_BIN_EXE_aos"))
+    let output = Command::new(cli_binary!("CARGO_BIN_EXE_aos"))
         .env("HOME", home)
         .args(["hub", "registry", "publish", "upload", &hub.registry.slug])
         .arg("--root")
@@ -1170,9 +1174,8 @@ async fn create_ready_placement(
             requires_conditional_writes: false,
         })
         .await?;
-    Ok(db
-        .observe_surface_placement(placement.id, "ready", "complete", 1)
-        .await?)
+    db.observe_surface_placement(placement.id, "ready", "complete", 1)
+        .await
 }
 
 async fn configure_write_authority(
@@ -1486,7 +1489,7 @@ fn publish_output(
 ) -> Result<Output> {
     let home = workspace.join("publisher-home");
     fs::create_dir_all(&home)?;
-    let mut command = Command::new(env!("CARGO_BIN_EXE_aos"));
+    let mut command = Command::new(cli_binary!("CARGO_BIN_EXE_aos"));
     command
         .current_dir(workspace)
         .env("HOME", &home)
@@ -1533,7 +1536,7 @@ fn run_apr(home: &Path, arguments: &[&str]) -> Result<String> {
 }
 
 fn run_apr_output(home: &Path, arguments: &[&str]) -> Result<Output> {
-    Command::new(env!("CARGO_BIN_EXE_apr"))
+    Command::new(cli_binary!("CARGO_BIN_EXE_apr"))
         .env("HOME", home)
         .env("USER", "registry-test")
         .env("LOGNAME", "registry-test")

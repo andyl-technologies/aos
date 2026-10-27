@@ -1,0 +1,558 @@
+{
+  "builds": {
+    "aos-bazel-hub-native-developer-tools-1": {
+      "derivation": "/nix/store/2jfgp7n9k91cpafgy8jd0a1zr04c6ymg-aos-bazel-hub-native-developer-tools-1.drv",
+      "derivation_sha256": "5ce91e84336958fff5e0ec07a1400a1044752e772c5ccfffda2bf160c2cda5a0",
+      "executed_linux_sandbox_actions_without_cache_hits": {
+        "Clippy": 29,
+        "Rustc": 515
+      },
+      "execution_sha256": "f27ce64d916db21669d0ec14aef5edcb064c38d420c9e44c31b8e297c30b6088",
+      "output": "/nix/store/14w9rx1ljhxw0sn95nz9bim79hywsnd8-aos-bazel-hub-native-developer-tools-1"
+    },
+    "aos-bazel-hub-native-editor": {
+      "derivation": "/nix/store/dwc1l8m34fcgw0mjy31cdpk49yq6mid1-aos-bazel-hub-native-editor.drv",
+      "derivation_sha256": "83c08d6b01e28f9e3ce13d6a3b59c35dad2b74fcae13d552cf25be0d6751138d",
+      "output": "/nix/store/vdh4jyzpgy33nkk30g2wcwgxsyqv2w6v-aos-bazel-hub-native-editor"
+    },
+    "aos-bazel-hub-native-format-1": {
+      "derivation": "/nix/store/g18mxiw92gdw684gsifwpwavvamgwafi-aos-bazel-hub-native-format-1.drv",
+      "derivation_sha256": "9ae0ae2a1c59ca8be730bde655f102e45129a463adeef5fd262dd13a22161784",
+      "executed_linux_sandbox_actions_without_cache_hits": {
+        "Rustc": 5,
+        "TestRunner": 2
+      },
+      "execution_sha256": "dda4826f3aba8350cebba9dd57df861406c406bf41e955f11bef4316d43f8ce6",
+      "output": "/nix/store/j2qa391d2jbmf0v5nywfliy23cc6iy9x-aos-bazel-hub-native-format-1"
+    },
+    "aos-bazel-hub-native-production-1": {
+      "derivation": "/nix/store/hd5a3gxhy1afqxg30sc8aknrnzwbfa4y-aos-bazel-hub-native-production-1.drv",
+      "derivation_sha256": "2ff71b391d2f9f4043fe984d31290af5be8f4d872e351f75b07cc7846e3bc9db",
+      "executed_linux_sandbox_actions_without_cache_hits": {
+        "Rustc": 481
+      },
+      "execution_sha256": "a76a2317c31a4a503f697e0b8e2634681170d0af2f9c38b3bfdbd1d3e31ceb01",
+      "output": "/nix/store/qb3kjalm5jnc918v958gm5pya4bgqs5f-aos-bazel-hub-native-production-1"
+    },
+    "aos-bazel-hub-native-tests-1": {
+      "derivation": "/nix/store/2d9lmm8ys38001b5r66zv3fbx6z87l01-aos-bazel-hub-native-tests-1.drv",
+      "derivation_sha256": "05bc4e39fef9f00f0c53b56ac150cf6144d54da4ae048e7fcf1843e05cc14ac5",
+      "executed_linux_sandbox_actions_without_cache_hits": {
+        "Rustc": 543,
+        "TestRunner": 28
+      },
+      "execution_sha256": "6c9edac5f1cbcbad88c721ef27255809bde19b457381df34c7be9a65353588e8",
+      "output": "/nix/store/836yz2h1xm1bx993nq25qbbg2cgcd8sm-aos-bazel-hub-native-tests-1"
+    }
+  },
+  "command": "nix-build tools/bazel/tests/hub-native.nix -A all --no-out-link --max-jobs 2 --cores 4 --option substitute false",
+  "derivation": "/nix/store/sq99lpin6d1midkyg1r5qx29h7hk3l7h-aos-bazel-hub-native-qualified-checks.drv",
+  "editor_parity": {
+    "aggregate_statistics_comparable": false,
+    "analysis": {
+      "complete_inference": false,
+      "exprs": {
+        "partial": 0,
+        "total": 214674,
+        "unknown": 29
+      },
+      "panics": 0,
+      "pats": {
+        "partial": 0,
+        "total": 32953,
+        "unknown": 0
+      }
+    },
+    "bazel_diagnostics": [
+      [
+        "crates/hub/aos-hub-native/src/auth/seal.rs",
+        "74:22",
+        "74:29",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/auth/seal.rs",
+        "body-byte:10473",
+        "body-byte:13734",
+        "synthetic-type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/bin/aos-hub-egress.rs",
+        "10:2",
+        "10:16",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/bin/aos-hub-egress.rs",
+        "10:2",
+        "10:16",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/local_fs_delete.rs",
+        "136:21",
+        "136:23",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "273:2",
+        "273:14",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "273:2",
+        "273:14",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "282:2",
+        "282:14",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "282:2",
+        "282:14",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "303:2",
+        "303:14",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "303:2",
+        "303:14",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "30:2",
+        "30:16",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "30:2",
+        "30:16",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "317:2",
+        "317:14",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "317:2",
+        "317:14",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "337:2",
+        "337:14",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "337:2",
+        "337:14",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "45:2",
+        "45:20",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "45:2",
+        "45:20",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "45:2",
+        "45:20",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "45:2",
+        "45:20",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "45:2",
+        "45:20",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "45:2",
+        "45:20",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "45:2",
+        "45:20",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "45:2",
+        "45:20",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "45:2",
+        "45:20",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "45:2",
+        "45:20",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "45:2",
+        "45:20",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "45:2",
+        "45:20",
+        "type",
+        "{unknown}"
+      ]
+    ],
+    "cargo_analysis": {
+      "complete_inference": false,
+      "exprs": {
+        "partial": 538,
+        "total": 1757500,
+        "unknown": 1100
+      },
+      "panics": 0,
+      "pats": {
+        "partial": 90,
+        "total": 302241,
+        "unknown": 170
+      }
+    },
+    "cargo_selected_diagnostics": [
+      [
+        "crates/hub/aos-hub-native/src/auth/seal.rs",
+        "74:22",
+        "74:29",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/auth/seal.rs",
+        "body-byte:10473",
+        "body-byte:13734",
+        "synthetic-type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/bin/aos-hub-egress.rs",
+        "10:2",
+        "10:16",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/bin/aos-hub-egress.rs",
+        "10:2",
+        "10:16",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/local_fs_delete.rs",
+        "136:21",
+        "136:23",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "273:2",
+        "273:14",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "273:2",
+        "273:14",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "282:2",
+        "282:14",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "282:2",
+        "282:14",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "303:2",
+        "303:14",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "303:2",
+        "303:14",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "30:2",
+        "30:16",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "30:2",
+        "30:16",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "317:2",
+        "317:14",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "317:2",
+        "317:14",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "337:2",
+        "337:14",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "337:2",
+        "337:14",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "45:2",
+        "45:20",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "45:2",
+        "45:20",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "45:2",
+        "45:20",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "45:2",
+        "45:20",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "45:2",
+        "45:20",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "45:2",
+        "45:20",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "45:2",
+        "45:20",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "45:2",
+        "45:20",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "45:2",
+        "45:20",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "45:2",
+        "45:20",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "45:2",
+        "45:20",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-native/src/main.rs",
+        "45:2",
+        "45:20",
+        "type",
+        "{unknown}"
+      ]
+    ],
+    "comparison_scope": [
+      "crates/hub/aos-hub-native"
+    ],
+    "diagnostic_multiplicity_comparable": false,
+    "unattributed_cargo_diagnostics": []
+  },
+  "generated_asset_parity": {
+    "count": 3,
+    "files": {
+      "hub-console.css": {
+        "sha256": "2fd692263cf951ec2c279aa1fb98b02adc2cb108e19cb20f6d9cd4703a4c8164",
+        "size": 16286
+      },
+      "hub-console.js": {
+        "sha256": "5e9058919af8b919bf29b4e918988c86680dd63bbe77f792a334aa20a4973a6a",
+        "size": 48504
+      },
+      "hub-console_bg.wasm": {
+        "sha256": "c879df46a4b0d6e1878d5dbb89102f4b91894ec7001140387c5c88d66e82e82b",
+        "size": 8394507
+      }
+    },
+    "status": "PASS"
+  },
+  "limits": [
+    "This frozen merged-master checkpoint includes the repaired Hub generator feature units. It predates the ordinary publication preview edit and independent execution-flag launcher plumbing.",
+    "No family execution profile is enrolled at this checkpoint; the earlier execution-profile discrepancy remains a separate qualification item.",
+    "Selected editor diagnostics match; aggregate statistics and diagnostic multiplicity are not comparable. Incomplete inference and unselected Cargo diagnostics remain visible.",
+    "Live PostgreSQL/MariaDB, browser/Worker execution, the native operator VM, full compiler/linker/native ABI equivalence, performance acceptance, and production cutover are not established here."
+  ],
+  "output": "/nix/store/z33d0jn1bi0k5ywkxcf2ngzc8v3nyz4f-aos-bazel-hub-native-qualified-checks",
+  "production_feature_parity": {
+    "external_packages": 383,
+    "first_party_packages": 18
+  },
+  "reports_sha256": {
+    "editor-parity.json": "e51aa8b6bfaab92c56fb1eef45962e2af2749f8ddd256fd7d15d6f823533d468",
+    "generated-asset-parity.json": "3d6e6c743143f3f46da2eaecd520a0a38aaf761bbd8e43f488c2d2777562ee32",
+    "inventory.json": "b3ec1728cb6aadd80b58b414902202753fab4b2b6343115a2cc26faeb188d11e",
+    "parity.json": "6fb256b86b535e4668d538000da3cdd2cab7c387b1a0726a749d3bbb8517d2bd",
+    "production-parity.json": "2cd1d63f9376de62c64e179f007c83936244b1c4c191f8d366ba09796d659248"
+  },
+  "schema_version": 1,
+  "source_snapshot": {
+    "differences_from_worktree_at_capture": {
+      "crates/registry/aos-registry-authoring/src/registry_ops/inventory_publish.rs": {
+        "current_sha256": "a75a6dc799c6c28d0d16679132402120fc51f3fc5b42c8b8f0323e36dae261ff",
+        "qualified_sha256": "f60755bba5b9ad2a3c36b95cca3c8b93b591477a0c96cfb8f48fa92bcc639319"
+      }
+    },
+    "file_count": 1126,
+    "path": "/nix/store/cibsyy2jf39gal02shsf30yvq6yfhx9l-aos-bazel-workspace",
+    "sorted_file_sha256_map_sha256": "74d390158b3e954c1e6ed00a284894708854cd503dd56706c0b67007c739e187"
+  },
+  "status": "PASS",
+  "test_parity": {
+    "doctests": {
+      "//crates/hub/aos-hub-native:doc": {
+        "src/server.rs - server::router_with_transport (line 174) - compile": "ok"
+      }
+    },
+    "executed": 335,
+    "external_packages": 407,
+    "first_party_packages": 26,
+    "ignored": 0,
+    "libtest_artifacts": 26
+  },
+  "unselected_cargo_diagnostic_rows": 1869
+}

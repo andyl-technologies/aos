@@ -115,12 +115,12 @@ pub async fn copy_surface(from: &dyn SurfaceFetch, to: &dyn SurfaceWrite) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
     use std::sync::Mutex;
 
     struct SrcSurface {
         paths: Vec<String>,
-        bodies: HashMap<String, Vec<u8>>,
+        bodies: BTreeMap<String, Vec<u8>>,
     }
     #[async_trait::async_trait]
     impl SurfaceFetch for SrcSurface {
@@ -150,7 +150,7 @@ mod tests {
 
     #[derive(Default)]
     struct DstSurface {
-        written: Mutex<HashMap<String, Vec<u8>>>,
+        written: Mutex<BTreeMap<String, Vec<u8>>>,
     }
     #[async_trait::async_trait]
     impl SurfaceWrite for DstSurface {
@@ -168,7 +168,7 @@ mod tests {
 
     #[tokio::test]
     async fn copy_surface_moves_every_listed_object() {
-        let mut bodies = HashMap::new();
+        let mut bodies = BTreeMap::new();
         bodies.insert("HEAD".to_string(), b"ref: refs/heads/main".to_vec());
         bodies.insert("objects/ab/cd".to_string(), vec![0u8; 100]);
         let src = SrcSurface {

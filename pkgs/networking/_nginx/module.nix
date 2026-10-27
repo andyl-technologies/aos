@@ -752,7 +752,7 @@ in {
           nginx-tls-private-key.input = tlsCredentials.privateKey;
         };
         configuration.operations.file.effects.nginx.input = {
-          path = "/etc/aos/packages/nginx/nginx.conf";
+          path = "/etc/packages/nginx/nginx.conf";
           fragments = nginxConfigFragments;
           mode = "0444";
         };

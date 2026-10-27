@@ -352,7 +352,7 @@ async fn scoped_gateway_selector_requires_current_active_grants() {
     .await;
     assert_eq!(status, StatusCode::OK, "owned-only selector: {response}");
     assert!(
-        response["gateways"].as_array().map_or(true, Vec::is_empty),
+        response["gateways"].as_array().is_none_or(Vec::is_empty),
         "owned-only selector returned a gateway: {response}"
     );
 

@@ -309,12 +309,14 @@ impl Driver<'_> {
             .images
             .iter()
             .flat_map(|image| {
-                image.platforms.iter().filter_map(move |cell| {
-                    matches!(cell.decision, MatrixCell::Artifact { .. }).then(|| {
+                image
+                    .platforms
+                    .iter()
+                    .filter(|&cell| matches!(cell.decision, MatrixCell::Artifact { .. }))
+                    .map(|cell| {
                         work.image_work(cell.platform, &image.system_variant)
                             .join("finalized")
                     })
-                })
             })
             .collect();
         let container = work.container();

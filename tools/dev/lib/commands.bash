@@ -182,11 +182,7 @@ aos_dev_fmt() {
   fi
 
   if [[ $language == rust || $language == all ]]; then
-    local rust rust_dev
-    rust=$(nix-build "$aos_dev_root/default.nix" -A pkgs.rust --no-out-link)
-    rust_dev=$(nix-build "$aos_dev_root/default.nix" -A pkgs.rust.dev --no-out-link)
-    PATH="$rust_dev/bin:$rust/bin:$PATH" \
-      "$rust_dev/bin/cargo-fmt" --all --manifest-path "$aos_dev_root/crates/Cargo.toml" "$@"
+    aos_dev_bazel_format_rust "$@"
   fi
 }
 
@@ -207,9 +203,9 @@ aos_dev_completion() {
 _aos_dev_complete() {
   local current=${COMP_WORDS[COMP_CWORD]}
   if (( COMP_CWORD == 1 )); then
-    COMPREPLY=( $(compgen -W 'list build run all fmt release cache completion help --image-cache --no-image-cache --release --no-cache --cache --cache-dir --go-cache --no-go-cache --bazel-cache --no-bazel-cache --rust-target-cache --no-rust-target-cache --rust-incremental --no-rust-incremental --accache --no-accache' -- "$current") )
+    COMPREPLY=( $(compgen -W 'list build run bazel all fmt release cache completion help --image-cache --no-image-cache --release --no-cache --cache --cache-dir --go-cache --no-go-cache --bazel-cache --no-bazel-cache --rust-target-cache --no-rust-target-cache --rust-incremental --no-rust-incremental --accache --no-accache' -- "$current") )
   elif (( COMP_CWORD == 2 )); then
-    COMPREPLY=( $(compgen -W 'aos apm apr package image container check build eval packages images containers checks builds evals ci format nix rust go bazel all init doctor verify-mount status usage entries intermediates builds prune compact clear' -- "$current") )
+    COMPREPLY=( $(compgen -W 'aos apm apr package image container check build eval packages images containers checks builds evals ci format nix rust go bazel all init doctor verify-mount status usage entries intermediates builds prune compact clear release-metadata update-deps rust-project' -- "$current") )
   elif (( COMP_CWORD == 3 )) && [[ ${COMP_WORDS[1]} == build || ${COMP_WORDS[1]} == run ]]; then
     COMPREPLY=( $(compgen -W "$(aos-dev list "${COMP_WORDS[2]}" "$current" 2>/dev/null)" -- "$current") )
   fi
@@ -270,6 +266,7 @@ aos_dev_main() {
     list) aos_dev_list "$@" ;;
     build) aos_dev_build "$@" ;;
     run) aos_dev_run "$@" ;;
+    bazel) aos_dev_bazel "$@" ;;
     cargo) aos_dev_cargo "$@" ;;
     all) aos_dev_all "$@" ;;
     fmt) aos_dev_fmt "$@" ;;

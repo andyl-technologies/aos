@@ -1,0 +1,129 @@
+"""Checks semantic cache invalidation against a separately built baseline."""
+
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import subprocess
+
+from verify_cache import execution_events, package_files, require_action
+
+
+def verify(baseline, variants, pgo_profiles=None):
+    baseline_events = execution_events(baseline)
+    # Expected misses follow dependency edges, including both native and Rust
+    # consumers of the generator. Unrelated actions must remain cache hits.
+    changed = {
+        "header": {"cpp_library", "cpp_app", "cpp_link", "native_app"},
+        "cpp-source": {"cpp_library", "cpp_link", "native_app"},
+        "rust-source": {"rust_library", "rust_app", "native_app"},
+        "generated-input": {"generated", "generated_library", "rust_library", "rust_app", "cpp_library", "cpp_app", "cpp_link", "native_app"},
+        "generator-environment": {"generated", "generated_library", "rust_library", "rust_app", "cpp_library", "cpp_app", "cpp_link", "native_app"},
+        "feature": {"rust_library", "rust_app", "native_app"},
+        "rust-flags": {"rust_library", "rust_app", "native_app"},
+        "link-flags": {"cpp_link"},
+        "tool-closure": {"generated", "generated_library", "rust_library", "rust_app", "fixture_macro", "cpp_library", "cpp_app", "cpp_link", "native_app"},
+        "linker-closure": {"generated", "generated_library", "rust_library", "rust_app", "fixture_macro", "cpp_library", "cpp_app", "cpp_link", "native_app"},
+        "rust-cpu": {"rust_library", "rust_app", "native_app"},
+        "pgo": {"rust_library"},
+        "sysroot": {"generated", "generated_library", "rust_library", "rust_app", "fixture_macro", "cpp_library", "cpp_app", "cpp_link", "native_app"},
+    }
+    actions = {
+        "generated": "AosPythonGenerate", "generated_library": "Rustc",
+        "rust_library": "Rustc", "rust_app": "Rustc", "fixture_macro": "Rustc",
+        "cpp_library": "CppCompile", "cpp_app": "CppCompile", "native_app": "Rustc",
+        "cpp_link": "CppLink",
+    }
+    expected_values = {
+        "header": (42, 43, 85), "cpp-source": (42, 43, 85),
+        "rust-source": (43, 42, 85), "generated-input": (43, 43, 86),
+        "generator-environment": (43, 43, 86), "feature": (43, 42, 85),
+        "rust-flags": (42, 42, 84), "tool-closure": (42, 42, 84),
+        "link-flags": (42, 42, 84),
+        "linker-closure": (42, 42, 84),
+        "rust-cpu": (43, 42, 85), "sysroot": (42, 43, 85),
+        "pgo": (42, 42, 84),
+    }
+    evidence = {"schema_version": 1, "baseline": str(baseline), "variants": {}}
+    if "pgo" in variants:
+        if pgo_profiles is None:
+            raise ValueError("PGO invalidation requires its actual training records")
+        training = json.loads((pgo_profiles / "profiles.json").read_text())
+        evidence["pgo_training"] = training
+        for name, records, key in [("baseline", baseline_events, "baseline"),
+                                   ("changed", execution_events(variants["pgo"]), "changed")]:
+            compiler = next(event for event in records if event["targetLabel"] == "//tools/bazel/tests/fixture:rust_library"
+                            and event["mnemonic"] == "Rustc")
+            inputs = [entry for entry in compiler["inputs"] if entry["path"].endswith("/cache.profdata")]
+            expected = training["profiles"][key]["sha256"]
+            if len(inputs) != 1 or inputs[0]["digest"]["hash"] != expected:
+                raise ValueError(f"PGO {name} compile omitted the declared trained profile input")
+    for variant, build in variants.items():
+        events = execution_events(build)
+        results = {}
+        for target, mnemonic in actions.items():
+            label = "//tools/bazel/tests/fixture:" + ("cpp_app" if target == "cpp_link" else target)
+            original = require_action(baseline_events, label, mnemonic, hit=False)
+            expected_hit = target not in changed[variant]
+            if variant == "pgo" and target in {"rust_app", "native_app"}:
+                # Different weights can produce the same optimized rlib bytes.
+                # Its consumers then retain their exact inputs and must hit;
+                # changed consumer identities must miss instead.
+                selected = [event for event in events if event["targetLabel"] == label and event["mnemonic"] == mnemonic]
+                if len(selected) != 1:
+                    raise ValueError("PGO experiment omitted a unique consumer action")
+                expected_hit = selected[0]["cacheHit"]
+            result = require_action(events, label, mnemonic, hit=expected_hit)
+            same_identity = result["fingerprint"] == original["fingerprint"]
+            if same_identity != expected_hit:
+                raise ValueError(f"unexpected semantic identity for {variant}: {target}")
+            if original["action_digest"] is None or result["action_digest"] is None:
+                raise ValueError(f"invalidation experiment omitted an action digest: {variant}: {target}")
+            if (original["action_digest"] == result["action_digest"]) != same_identity:
+                raise ValueError(f"unexpected Bazel action digest for {variant}: {target}")
+            results[target] = result
+        if variant == "sysroot":
+            compiler = next(event for event in events if event["targetLabel"] == "//tools/bazel/tests/fixture:cpp_library"
+                            and event["mnemonic"] == "CppCompile")
+            if not any(entry["path"].endswith("/aos-cache-probe.h") for entry in compiler.get("inputs", [])):
+                raise ValueError("sysroot experiment omitted its actual compiler header input")
+        if variant == "linker-closure":
+            linker_inputs = []
+            for records in [baseline_events, events]:
+                action = next(event for event in records if event["targetLabel"] == "//tools/bazel/tests/fixture:cpp_app"
+                              and event["mnemonic"] == "CppLink")
+                inputs = [entry for entry in action["inputs"] if entry["path"].endswith("/binutils/bin/ld")]
+                if len(inputs) != 1:
+                    raise ValueError("linker experiment omitted its unique selected linker input")
+                linker_inputs.append(inputs[0])
+            if linker_inputs[0]["digest"] == linker_inputs[1]["digest"]:
+                raise ValueError("linker experiment did not replace the linker executable bytes")
+            marker = "AOS_BAZEL_REPLACED_LINKER_EXECUTED"
+            progress = [json.loads(line).get("progress", {}).get("stderr", "")
+                        for line in (build / "evidence/events.json").read_text().splitlines()]
+            if marker not in "".join(progress):
+                raise ValueError("compiler driver did not execute the replaced linker")
+            evidence["selected_linker_inputs"] = {"baseline": linker_inputs[0], "changed": linker_inputs[1]}
+        artifacts = package_files(build)
+        digests = {}
+        for destination, value in zip(["bin/rust-fixture", "bin/cpp-fixture", "bin/native-fixture"], expected_values[variant]):
+            executable = artifacts[destination]
+            result = subprocess.run([str(executable)], capture_output=True, text=True, check=True)
+            if result.stdout.strip() != f"answer={value}":
+                raise ValueError(f"incorrect {variant} runtime output: {destination}: {result.stdout}")
+            digests[destination] = hashlib.sha256(executable.read_bytes()).hexdigest()
+        evidence["variants"][variant] = {"build": str(build), "actions": results, "artifacts": digests}
+    return evidence
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--baseline", required=True, type=Path)
+    parser.add_argument("--variants", required=True, type=Path)
+    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--pgo-profiles", type=Path)
+    options = parser.parse_args()
+    variants = {name: Path(path) for name, path in json.loads(options.variants.read_text()).items()}
+    result = verify(options.baseline, variants, options.pgo_profiles)
+    options.output.mkdir(parents=True, exist_ok=True)
+    (options.output / "evidence.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")

@@ -2,6 +2,10 @@
 
 #![allow(clippy::expect_used)]
 
+#[macro_use]
+#[path = "support/binaries.rs"]
+mod binaries;
+
 #[path = "../../../artifacts/aos-oci/tests/support/mod.rs"]
 mod oci_support;
 
@@ -200,7 +204,7 @@ async fn public_transfers_ignore_matching_expired_hub_profiles() {
         ],
         vec!["--json", "container", "push", "pulled.oci", &pushed],
     ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_aos"))
+        let output = Command::new(cli_binary!("CARGO_BIN_EXE_aos"))
             .args(&arguments)
             .current_dir(workspace.path())
             .env_clear()
@@ -549,7 +553,7 @@ async fn process_publish_finalizes_complete_signed_graph_without_a_data_plane_ta
 }
 
 fn run_aos(directory: &Path, home: &Path, arguments: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_aos"))
+    Command::new(cli_binary!("CARGO_BIN_EXE_aos"))
         .args(arguments)
         .current_dir(directory)
         .env_clear()

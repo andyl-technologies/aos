@@ -16,7 +16,10 @@
 
 use super::args::*;
 use super::gcc::{self, ArgData::*};
-use std::{ffi::OsString, path::{Path,PathBuf}};
+use std::{
+    ffi::OsString,
+    path::{Path, PathBuf},
+};
 
 counted_array!(pub static ARGS: [ArgInfo<gcc::ArgData>; _] = [
     flag!("--analyze", TooHardFlag),
@@ -147,18 +150,25 @@ pub(crate) fn resolve_profile_use_path(arg: &Path, cwd: &Path) -> PathBuf {
     path
 }
 
-
 #[cfg(test)]
 mod test {
+    use super::super::c::{ArtifactDescriptor, CCompilerKind, ParsedArguments};
+    use super::super::{ColorMode, CompilerArguments, Language};
     use super::*;
-use super::super::{ColorMode,CompilerArguments,Language};
-use super::super::c::{ParsedArguments,CCompilerKind,ArtifactDescriptor};
-use std::collections::HashMap;
-use std::io::Write;
+    use std::collections::HashMap;
+    use std::io::Write;
+
     fn parse_arguments_(arguments: Vec<String>) -> CompilerArguments<ParsedArguments> {
         let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
-        gcc::parse_arguments(&arguments, &std::env::current_dir().unwrap(), (&gcc::ARGS[..], &ARGS[..]), false, CCompilerKind::Clang)
+        gcc::parse_arguments(
+            &arguments,
+            &std::env::current_dir().unwrap(),
+            (&gcc::ARGS[..], &ARGS[..]),
+            false,
+            CCompilerKind::Clang,
+        )
     }
+
     macro_rules! parses {
         ($($arg:expr),* $(,)?) => {
             match parse_arguments_(vec![$($arg.to_string()),*]) {
@@ -167,6 +177,7 @@ use std::io::Write;
             }
         };
     }
+
     #[test]
     fn test_parse_arguments_simple() {
         let a = parses!("-c", "foo.c", "-o", "foo.o");
@@ -185,7 +196,6 @@ use std::io::Write;
         assert!(a.preprocessor_args.is_empty());
         assert!(a.common_args.is_empty());
     }
-
 
     #[test]
     fn test_parse_arguments_values() {
@@ -220,7 +230,6 @@ use std::io::Write;
         assert_eq!(ovec!["-arch", "xyz"], a.arch_args);
     }
 
-
     #[test]
     fn test_parse_arguments_cuda() {
         let a = parses!("-c", "foo.cu", "-o", "foo.o");
@@ -239,7 +248,6 @@ use std::io::Write;
         assert!(a.preprocessor_args.is_empty());
         assert!(a.common_args.is_empty());
     }
-
 
     #[test]
     fn test_parse_arguments_cuda_flags() {
@@ -296,7 +304,6 @@ use std::io::Write;
         );
     }
 
-
     #[test]
     fn test_parse_arguments_hip() {
         let a = parses!("-c", "foo.hip", "-o", "foo.o");
@@ -315,7 +322,6 @@ use std::io::Write;
         assert!(a.preprocessor_args.is_empty());
         assert!(a.common_args.is_empty());
     }
-
 
     #[test]
     fn test_parse_arguments_hip_flags() {
@@ -367,7 +373,6 @@ use std::io::Write;
         assert!(b.preprocessor_args.is_empty());
         assert_eq!(ovec!["--offload-arch=gfx900"], b.common_args);
     }
-
 
     #[test]
     fn test_parse_arguments_hip_paths() {
@@ -431,7 +436,6 @@ use std::io::Write;
         );
     }
 
-
     #[test]
     fn test_parse_arguments_hip_unhash_parallel_jobs() {
         let a = parses!(
@@ -454,7 +458,6 @@ use std::io::Write;
         assert_eq!(ovec!["-parallel-jobs=5"], a.unhashed_args,);
     }
 
-
     #[test]
     fn test_parse_arguments_others() {
         parses!("-c", "foo.c", "-B", "somewhere", "-o", "foo.o");
@@ -468,7 +471,6 @@ use std::io::Write;
         );
         parses!("-c", "foo.c", "-gcc-toolchain", "somewhere", "-o", "foo.o");
     }
-
 
     #[test]
     fn test_parse_clang_short_dependency_arguments_can_be_separated() {
@@ -489,7 +491,6 @@ use std::io::Write;
             }
         }
     }
-
 
     #[test]
     fn test_parse_arguments_integrated_as() {
@@ -518,7 +519,6 @@ use std::io::Write;
         );
     }
 
-
     #[test]
     fn test_parse_arguments_clangmodules() {
         assert_eq!(
@@ -530,7 +530,6 @@ use std::io::Write;
             parse_arguments_(stringvec!["-c", "foo.c", "-fmodules", "-o", "foo.o"])
         );
     }
-
 
     #[test]
     fn test_parse_xclang_invalid() {
@@ -561,7 +560,6 @@ use std::io::Write;
         );
     }
 
-
     #[test]
     fn test_parse_xclang_load() {
         let a = parses!(
@@ -585,7 +583,6 @@ use std::io::Write;
         );
     }
 
-
     #[test]
     fn test_parse_xclang_add_plugin() {
         let a = parses!(
@@ -603,7 +600,6 @@ use std::io::Write;
             a.common_args
         );
     }
-
 
     #[test]
     fn test_parse_xclang_llvm_stuff() {
@@ -631,7 +627,6 @@ use std::io::Write;
             a.common_args
         );
     }
-
 
     #[test]
     fn test_parse_xclang_fexperimental_assignment_tracking() {
@@ -662,7 +657,6 @@ use std::io::Write;
             b.common_args
         );
     }
-
 
     #[test]
     fn test_parse_xclang_plugin_arg_blink_gc_plugin() {
@@ -695,7 +689,6 @@ use std::io::Write;
         );
     }
 
-
     #[test]
     fn test_parse_xclang_plugin_arg_find_bad_constructs() {
         let a = parses!(
@@ -727,13 +720,11 @@ use std::io::Write;
         );
     }
 
-
     #[test]
     fn test_parse_xclang_verify() {
         let a = parses!("-c", "foo.c", "-o", "foo.o", "-Xclang", "-verify");
         assert_eq!(ovec!["-Xclang", "-verify"], a.preprocessor_args);
     }
-
 
     #[test]
     fn test_parse_xclang_no_opaque_pointers() {
@@ -748,7 +739,6 @@ use std::io::Write;
         assert_eq!(ovec!["-Xclang", "-no-opaque-pointers"], a.preprocessor_args);
     }
 
-
     #[test]
     fn test_parse_xclang_fno_pch_timestamp() {
         let a = parses!(
@@ -762,13 +752,11 @@ use std::io::Write;
         assert_eq!(ovec!["-Xclang", "-fno-pch-timestamp"], a.common_args);
     }
 
-
     #[test]
     fn test_parse_xclang_use_ctor_homing() {
         let a = parses!("-c", "foo.c", "-o", "foo.o", "-Xclang", "-fuse-ctor-homing");
         assert_eq!(ovec!["-Xclang", "-fuse-ctor-homing"], a.common_args);
     }
-
 
     #[test]
     fn test_parse_xclang_mconstructor_aliases_all() {
@@ -783,13 +771,11 @@ use std::io::Write;
         assert_eq!(ovec!["-Xclang", "-mconstructor-aliases"], a.common_args);
     }
 
-
     #[test]
     fn test_parse_xclang_mrelax_all() {
         let a = parses!("-c", "foo.c", "-o", "foo.o", "-Xclang", "-mrelax-all");
         assert_eq!(ovec!["-Xclang", "-mrelax-all"], a.common_args);
     }
-
 
     #[test]
     fn test_parse_fplugin() {
@@ -802,7 +788,6 @@ use std::io::Write;
         );
     }
 
-
     #[test]
     fn test_parse_fplugin_concatenated() {
         let a = parses!("-c", "foo.c", "-o", "foo.o", "-fplugin=plugin.so");
@@ -813,7 +798,6 @@ use std::io::Write;
             a.extra_hash_files
         );
     }
-
 
     #[test]
     fn test_parse_fsanitize_blacklist() {
@@ -831,7 +815,6 @@ use std::io::Write;
         );
     }
 
-
     #[test]
     fn test_parse_fsanitize_ignorelist() {
         let a = parses!(
@@ -848,7 +831,6 @@ use std::io::Write;
         );
     }
 
-
     #[test]
     fn test_parse_color_diags() {
         let a = parses!("-c", "foo.c", "-o", "foo.o", "-fcolor-diagnostics");
@@ -860,7 +842,6 @@ use std::io::Write;
         let a = parses!("-c", "foo.c", "-o", "foo.o");
         assert_eq!(a.color_mode, ColorMode::Auto);
     }
-
 
     #[test]
     fn test_parse_arguments_profile_instr_use() {
@@ -878,7 +859,6 @@ use std::io::Write;
         );
     }
 
-
     #[test]
     fn test_parse_arguments_profile_use() {
         let a = parses!("-c", "foo.c", "-o", "foo.o", "-fprofile-use=xyz.profdata");
@@ -889,7 +869,6 @@ use std::io::Write;
             a.extra_hash_files
         );
     }
-
 
     #[test]
     fn test_parse_arguments_profile_use_with_directory() {
@@ -902,7 +881,6 @@ use std::io::Write;
         );
     }
 
-
     #[test]
     fn test_parse_arguments_profile_use_with_no_argument() {
         let a = parses!("-c", "foo.c", "-o", "foo.o", "-fprofile-use");
@@ -913,7 +891,6 @@ use std::io::Write;
             a.extra_hash_files
         );
     }
-
 
     #[test]
     fn test_parse_arguments_pgo_cancellation() {
@@ -966,7 +943,6 @@ use std::io::Write;
         );
     }
 
-
     #[test]
     fn test_parse_arguments_cxx20_modules_unsupported() {
         // -fprebuilt-implicit-modules is not supported (implicit module discovery)
@@ -993,7 +969,6 @@ use std::io::Write;
             ])
         );
     }
-
 
     #[test]
     fn test_parse_arguments_too_hard() {
@@ -1064,7 +1039,6 @@ use std::io::Write;
         }
     }
 
-
     #[test]
     fn test_parse_arguments_extra_hash_files() {
         let cwd = std::env::current_dir().unwrap();
@@ -1122,7 +1096,6 @@ use std::io::Write;
         );
     }
 
-
     #[test]
     fn test_parse_arguments_passthrough() {
         let a = parses!(
@@ -1145,7 +1118,6 @@ use std::io::Write;
             a.common_args
         );
     }
-
 
     #[test]
     fn test_parse_arguments_vfsoverlay() {
@@ -1170,7 +1142,6 @@ use std::io::Write;
         );
     }
 
-
     #[test]
     fn test_parse_arguments_precompile_reduced_bmi() {
         let a = parses!(
@@ -1186,7 +1157,6 @@ use std::io::Write;
         assert_eq!(Language::CxxModule, a.language);
         assert_eq!(ovec!["--precompile-reduced-bmi"], a.common_args);
     }
-
 
     #[test]
     fn test_parse_arguments_cxx20_module_precompile() {
@@ -1214,7 +1184,6 @@ use std::io::Write;
         );
     }
 
-
     #[test]
     fn test_parse_arguments_cxx20_module_fmodule_file() {
         // Test -fmodule-file= for importing precompiled modules
@@ -1226,7 +1195,6 @@ use std::io::Write;
             a.extra_hash_files
         );
     }
-
 
     #[test]
     fn test_parse_arguments_cxx20_module_fmodule_file_with_name() {
@@ -1252,7 +1220,6 @@ use std::io::Write;
             a.extra_hash_files
         );
     }
-
 
     #[test]
     fn test_parse_arguments_cxx20_module_fmodule_output() {
@@ -1285,7 +1252,6 @@ use std::io::Write;
         assert_eq!(ovec!["-fmodule-output=module.pcm"], a.common_args);
     }
 
-
     #[test]
     fn test_parse_arguments_cxx20_module_fmodule_output_implicit_path() {
         // Test -fmodule-output without explicit path (uses input name + .pcm)
@@ -1310,7 +1276,6 @@ use std::io::Write;
         );
     }
 
-
     #[test]
     fn test_parse_arguments_cxx20_module_fmodules_reduced_bmi() {
         // Test -fmodules-reduced-bmi flag (Clang 18+)
@@ -1328,7 +1293,6 @@ use std::io::Write;
             a.common_args
         );
     }
-
 
     #[test]
     fn test_parse_arguments_cxx20_module_combined_flags() {
@@ -1357,6 +1321,4 @@ use std::io::Write;
             a.extra_hash_files
         );
     }
-
-
 }

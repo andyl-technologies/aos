@@ -509,7 +509,7 @@ fn parse_param_item(item: &str) -> Option<(String, String)> {
     let rest = &trimmed[end_tick + 2..];
     // Skip separator: ` — `, ` - `, `: `, etc.
     let desc = rest
-        .trim_start_matches(|c: char| c == '—' || c == '-' || c == ':' || c == ' ')
+        .trim_start_matches(['—', '-', ':', ' '])
         .trim()
         .to_string();
     Some((name, desc))
@@ -546,7 +546,7 @@ fn extract_fenced_blocks(text: &str) -> Vec<String> {
 fn parse_see_also(text: &str) -> Vec<String> {
     let mut refs = Vec::new();
     // Split on commas and newlines, then extract backtick-quoted names.
-    for part in text.split(|c: char| c == ',' || c == '\n') {
+    for part in text.split([',', '\n']) {
         let trimmed = part.trim();
         if trimmed.is_empty() {
             continue;

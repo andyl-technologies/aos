@@ -334,6 +334,7 @@ pub fn to_priority_caches(stack: &StackNode, base_priority: u32) -> Vec<(String,
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
 

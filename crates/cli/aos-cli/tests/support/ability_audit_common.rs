@@ -19,6 +19,8 @@ use aos_module_format::graph::{CheckedModuleGraph, Effect, identity_key};
 use serde_json::{Value, json};
 
 /// Selects the native framework invariants tested by a qualification helper.
+// Each standalone audit program selects one of the shared implementations.
+#[allow(dead_code)]
 pub(super) enum AuditKind {
     /// Checks preflight rejection, cancellation, and invalid outcomes.
     Admission,

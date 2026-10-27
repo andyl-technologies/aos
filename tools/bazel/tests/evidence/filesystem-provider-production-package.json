@@ -1,0 +1,1545 @@
+{
+  "broader_native_evaluation_gate": {
+    "derivation": "/nix/store/b8j0nz3q4pymj0kri3wj2dwvzkmd7p9q-aos-native-evaluation-checks-0.drv",
+    "identical_to_completed_passing_gate": true,
+    "output": "/nix/store/6bz9648q4x7n62qgbkcwag90sarnagg7-aos-native-evaluation-checks-0"
+  },
+  "candidate_build_requisites": 2902,
+  "compilations": {
+    "production": {
+      "derivation": "/nix/store/4c92zdsi2f9w0523y4i0a9agl4ah7rhw-aos-bazel-filesystem-provider-production-1.drv",
+      "first_party_rust_compilations": 6,
+      "fresh_linux_sandbox_actions": 115,
+      "output": "/nix/store/80i0ahlmy4gm49r2skm0vfgi57pvv1sc-aos-bazel-filesystem-provider-production-1",
+      "retained_evidence_sha256": {
+        "actions.json": "b9aa156040f1f77f8acd66ecdae3279479b9a51902089c91a770ba1161572ab0",
+        "compiler-inputs.json": "0cb93eecdcbdb4406a211da1d6785d5d2cf97cf80ec62312e9b51d3f07511699",
+        "execution.json": "1afea5a7bf2435d436586a4c83f6a65f95bc5bf6323eee61771fd559617986c6"
+      }
+    },
+    "release_tests": {
+      "derivation": "/nix/store/lkpzvnmpxqyvk9n6z19ajsr1srwgrplh-aos-bazel-filesystem-provider-release-tests-1.drv",
+      "first_party_rust_compilations": 8,
+      "fresh_linux_sandbox_actions": 140,
+      "output": "/nix/store/sfznz2xvy50fz0v0yw33jyjb1krg354y-aos-bazel-filesystem-provider-release-tests-1",
+      "retained_evidence_sha256": {
+        "actions.json": "a566005fe9b8f5040482f1d881bdc73fde3abef94cdbad8bfb1e944db081c70d",
+        "compiler-inputs.json": "bc3bd9d83a5c02954ad774750d933c9db13f9123fdb5374eaf09c2ceacd1240f",
+        "execution.json": "03df93e9d8255896e2dbd6d2d4ff229351b57f43af2dbe1070f72a54cc9d109b"
+      }
+    }
+  },
+  "current_rust_compilation_coverage": {
+    "all_current_tracked_rust_bytes_match_completed_gate": true,
+    "matching_source_files": 3773,
+    "no_new_rust_source_changes": true,
+    "receipt": "tools/bazel/tests/evidence/test-support-spec-index-full-rust-compilation.json"
+  },
+  "current_selector_and_core_evaluation_rechecked_after_final_helper_refactor": true,
+  "dependency_profiles": {
+    "actual_compiled_features_compared_with_ordinary_package_and_independent_test_oracle": true,
+    "all_71_existing_sdks_unchanged": true,
+    "existing_module_pins_and_lock_unchanged": true,
+    "production": "activation-core",
+    "release_tests": "configuration-image-tests"
+  },
+  "driver_selection": {
+    "bazel": "/nix/store/7agbbd99pmxw2b2bpkiib8dv3mrag8zm-aos-filesystem-provider-0.1.0.drv",
+    "cargo_constructor_and_vendor_not_evaluated": true,
+    "fallback": "/nix/store/c3izmyf77ybvpd5j437xpx94s8fla6ll-aos-filesystem-provider-0.1.0.drv",
+    "invalid_driver_rejected": true,
+    "module_runtime_and_qualification_declarations_preserved": true,
+    "ordinary": "/nix/store/c3izmyf77ybvpd5j437xpx94s8fla6ll-aos-filesystem-provider-0.1.0.drv"
+  },
+  "enrolled_build_check_derivation_matches_qualification": true,
+  "entry_point": "checks.build.bazel.filesystem-provider-production.all",
+  "executed_release_test_and_macro_profiles": {
+    "actions": {
+      "//crates/activation/aos-activation-filesystem:bin_aos-filesystem-provider_binary": {
+        "cacheHit": false,
+        "compiler_options": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-378836680",
+          "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "opt-level": "3",
+          "overflow-checks": "no",
+          "strip": "none"
+        },
+        "exitCode": 0,
+        "runner": "linux-sandbox"
+      },
+      "//crates/activation/aos-activation-filesystem:unit_binary": {
+        "cacheHit": false,
+        "compiler_options": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-124533953",
+          "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "opt-level": "3",
+          "overflow-checks": "no",
+          "strip": "none"
+        },
+        "exitCode": 0,
+        "runner": "linux-sandbox"
+      },
+      "@@+aos_tools_repository+aos_configuration_image_tests_crates__ref-cast-impl-1.0.27//:ref_cast_impl": {
+        "cacheHit": false,
+        "compiler_options": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-390637393",
+          "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "opt-level": "0",
+          "overflow-checks": "no",
+          "strip": "debuginfo"
+        },
+        "exitCode": 0,
+        "runner": "linux-sandbox"
+      },
+      "@@+aos_tools_repository+aos_configuration_image_tests_crates__schemars_derive-1.2.2//:schemars_derive": {
+        "cacheHit": false,
+        "compiler_options": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-291229013",
+          "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "opt-level": "0",
+          "overflow-checks": "no",
+          "strip": "debuginfo"
+        },
+        "exitCode": 0,
+        "runner": "linux-sandbox"
+      },
+      "@@+aos_tools_repository+aos_configuration_image_tests_crates__serde_derive-1.0.228//:serde_derive": {
+        "cacheHit": false,
+        "compiler_options": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-653657620",
+          "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "opt-level": "0",
+          "overflow-checks": "no",
+          "strip": "debuginfo"
+        },
+        "exitCode": 0,
+        "runner": "linux-sandbox"
+      },
+      "@@+aos_tools_repository+aos_configuration_image_tests_crates__thiserror-impl-2.0.18//:thiserror_impl": {
+        "cacheHit": false,
+        "compiler_options": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-2599750128",
+          "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "opt-level": "0",
+          "overflow-checks": "no",
+          "strip": "debuginfo"
+        },
+        "exitCode": 0,
+        "runner": "linux-sandbox"
+      }
+    },
+    "build": "/nix/store/sfznz2xvy50fz0v0yw33jyjb1krg354y-aos-bazel-filesystem-provider-release-tests-1",
+    "cargo": "/nix/store/j7kcgqxrrinn101mdfqf024x26jvq337-aos-bazel-filesystem-provider-production-cargo-oracle-1",
+    "cargo_actions": {
+      "aos_activation_filesystem": {
+        "arguments": [
+          "rustc",
+          "--crate-name",
+          "aos_activation_filesystem",
+          "--edition=2024",
+          "activation/aos-activation-filesystem/src/lib.rs",
+          "--error-format=json",
+          "--json=diagnostic-rendered-ansi,artifacts,future-incompat",
+          "--emit=dep-info,link",
+          "-C",
+          "opt-level=3",
+          "-C",
+          "embed-bitcode=no",
+          "--test",
+          "--check-cfg",
+          "cfg(docsrs,test)",
+          "--check-cfg",
+          "cfg(feature, values())",
+          "-C",
+          "metadata=dd6f3501b0b63278",
+          "-C",
+          "extra-filename=-4e888fce6be1294c",
+          "--out-dir",
+          "/build/target/release/deps",
+          "-C",
+          "strip=debuginfo",
+          "-L",
+          "dependency=/build/target/release/deps",
+          "--extern",
+          "anyhow=/build/target/release/deps/libanyhow-8dec632b6e5d17e6.rlib",
+          "--extern",
+          "aos_activation=/build/target/release/deps/libaos_activation-1efdf9c352795228.rlib",
+          "--extern",
+          "aos_core=/build/target/release/deps/libaos_core-ca714a836a17f256.rlib",
+          "--extern",
+          "aos_module_format=/build/target/release/deps/libaos_module_format-27b424b2150854a9.rlib",
+          "--extern",
+          "rustix=/build/target/release/deps/librustix-5acf5500cfba8dc5.rlib",
+          "--extern",
+          "serde=/build/target/release/deps/libserde-603b27ef12b81d40.rlib",
+          "--extern",
+          "serde_json=/build/target/release/deps/libserde_json-eead309da309189e.rlib",
+          "--extern",
+          "sha2=/build/target/release/deps/libsha2-1955cabc95053aa8.rlib",
+          "--extern",
+          "tempfile=/build/target/release/deps/libtempfile-60130b8f64697e55.rlib",
+          "--extern",
+          "thiserror=/build/target/release/deps/libthiserror-06605cc088c2d7ca.rlib"
+        ],
+        "compiler_options": {
+          "embed-bitcode": "no",
+          "extra-filename": "-4e888fce6be1294c",
+          "opt-level": "3",
+          "strip": "debuginfo"
+        }
+      },
+      "aos_filesystem_provider": {
+        "arguments": [
+          "rustc",
+          "--crate-name",
+          "aos_filesystem_provider",
+          "--edition=2024",
+          "activation/aos-activation-filesystem/src/main.rs",
+          "--error-format=json",
+          "--json=diagnostic-rendered-ansi,artifacts,future-incompat",
+          "--emit=dep-info,link",
+          "-C",
+          "opt-level=3",
+          "-C",
+          "embed-bitcode=no",
+          "--test",
+          "--check-cfg",
+          "cfg(docsrs,test)",
+          "--check-cfg",
+          "cfg(feature, values())",
+          "-C",
+          "metadata=70d6f765bcc4e7e3",
+          "-C",
+          "extra-filename=-b6a9ebcac3cdbee2",
+          "--out-dir",
+          "/build/target/release/deps",
+          "-C",
+          "strip=debuginfo",
+          "-L",
+          "dependency=/build/target/release/deps",
+          "--extern",
+          "anyhow=/build/target/release/deps/libanyhow-8dec632b6e5d17e6.rlib",
+          "--extern",
+          "aos_activation=/build/target/release/deps/libaos_activation-1efdf9c352795228.rlib",
+          "--extern",
+          "aos_activation_filesystem=/build/target/release/deps/libaos_activation_filesystem-1d4e041a6e85ef01.rlib",
+          "--extern",
+          "aos_core=/build/target/release/deps/libaos_core-ca714a836a17f256.rlib",
+          "--extern",
+          "aos_module_format=/build/target/release/deps/libaos_module_format-27b424b2150854a9.rlib",
+          "--extern",
+          "rustix=/build/target/release/deps/librustix-5acf5500cfba8dc5.rlib",
+          "--extern",
+          "serde=/build/target/release/deps/libserde-603b27ef12b81d40.rlib",
+          "--extern",
+          "serde_json=/build/target/release/deps/libserde_json-eead309da309189e.rlib",
+          "--extern",
+          "sha2=/build/target/release/deps/libsha2-1955cabc95053aa8.rlib",
+          "--extern",
+          "tempfile=/build/target/release/deps/libtempfile-60130b8f64697e55.rlib",
+          "--extern",
+          "thiserror=/build/target/release/deps/libthiserror-06605cc088c2d7ca.rlib"
+        ],
+        "compiler_options": {
+          "embed-bitcode": "no",
+          "extra-filename": "-b6a9ebcac3cdbee2",
+          "opt-level": "3",
+          "strip": "debuginfo"
+        }
+      },
+      "ref_cast_impl": {
+        "arguments": [
+          "rustc",
+          "--crate-name",
+          "ref_cast_impl",
+          "--edition=2021",
+          "/nix/store/bi02z79nilmx60wdpjzw28g7ffsw5jnv-aos-workspace-vendor/source-registry-0/ref-cast-impl-1.0.27/src/lib.rs",
+          "--error-format=json",
+          "--json=diagnostic-rendered-ansi,artifacts,future-incompat",
+          "--crate-type",
+          "proc-macro",
+          "--emit=dep-info,link",
+          "-C",
+          "prefer-dynamic",
+          "-C",
+          "embed-bitcode=no",
+          "-C",
+          "debug-assertions=off",
+          "--check-cfg",
+          "cfg(docsrs,test)",
+          "--check-cfg",
+          "cfg(feature, values())",
+          "-C",
+          "metadata=a717141de6ecd3f1",
+          "-C",
+          "extra-filename=-a48c94bb80e87f4c",
+          "--out-dir",
+          "/build/target/release/deps",
+          "-C",
+          "strip=debuginfo",
+          "-L",
+          "dependency=/build/target/release/deps",
+          "--extern",
+          "proc_macro2=/build/target/release/deps/libproc_macro2-abb2be69adaa0af9.rlib",
+          "--extern",
+          "quote=/build/target/release/deps/libquote-2b50be8d5619ef9c.rlib",
+          "--extern",
+          "syn=/build/target/release/deps/libsyn-52b1d658133d2ea5.rlib",
+          "--extern",
+          "proc_macro",
+          "--cap-lints",
+          "allow"
+        ],
+        "compiler_options": {
+          "debug-assertions": "off",
+          "embed-bitcode": "no",
+          "extra-filename": "-a48c94bb80e87f4c",
+          "strip": "debuginfo"
+        }
+      },
+      "schemars_derive": {
+        "arguments": [
+          "rustc",
+          "--crate-name",
+          "schemars_derive",
+          "--edition=2021",
+          "/nix/store/bi02z79nilmx60wdpjzw28g7ffsw5jnv-aos-workspace-vendor/source-registry-0/schemars_derive-1.2.2/src/lib.rs",
+          "--error-format=json",
+          "--json=diagnostic-rendered-ansi,artifacts,future-incompat",
+          "--crate-type",
+          "proc-macro",
+          "--emit=dep-info,link",
+          "-C",
+          "prefer-dynamic",
+          "-C",
+          "embed-bitcode=no",
+          "-C",
+          "debug-assertions=off",
+          "--check-cfg",
+          "cfg(docsrs,test)",
+          "--check-cfg",
+          "cfg(feature, values())",
+          "-C",
+          "metadata=48fd3cd60347085a",
+          "-C",
+          "extra-filename=-4a7b269045a6e8c2",
+          "--out-dir",
+          "/build/target/release/deps",
+          "-C",
+          "strip=debuginfo",
+          "-L",
+          "dependency=/build/target/release/deps",
+          "--extern",
+          "proc_macro2=/build/target/release/deps/libproc_macro2-abb2be69adaa0af9.rlib",
+          "--extern",
+          "quote=/build/target/release/deps/libquote-2b50be8d5619ef9c.rlib",
+          "--extern",
+          "serde_derive_internals=/build/target/release/deps/libserde_derive_internals-a9aae53084cf0d9f.rlib",
+          "--extern",
+          "syn=/build/target/release/deps/libsyn-52b1d658133d2ea5.rlib",
+          "--extern",
+          "proc_macro",
+          "--cap-lints",
+          "allow"
+        ],
+        "compiler_options": {
+          "debug-assertions": "off",
+          "embed-bitcode": "no",
+          "extra-filename": "-4a7b269045a6e8c2",
+          "strip": "debuginfo"
+        }
+      },
+      "serde_derive": {
+        "arguments": [
+          "rustc",
+          "--crate-name",
+          "serde_derive",
+          "--edition=2021",
+          "/nix/store/bi02z79nilmx60wdpjzw28g7ffsw5jnv-aos-workspace-vendor/source-registry-0/serde_derive-1.0.228/src/lib.rs",
+          "--error-format=json",
+          "--json=diagnostic-rendered-ansi,artifacts,future-incompat",
+          "--crate-type",
+          "proc-macro",
+          "--emit=dep-info,link",
+          "-C",
+          "prefer-dynamic",
+          "-C",
+          "embed-bitcode=no",
+          "-C",
+          "debug-assertions=off",
+          "--cfg",
+          "feature=\"default\"",
+          "--check-cfg",
+          "cfg(docsrs,test)",
+          "--check-cfg",
+          "cfg(feature, values(\"default\", \"deserialize_in_place\"))",
+          "-C",
+          "metadata=7251362fc480c1e6",
+          "-C",
+          "extra-filename=-18561e4675320f61",
+          "--out-dir",
+          "/build/target/release/deps",
+          "-C",
+          "strip=debuginfo",
+          "-L",
+          "dependency=/build/target/release/deps",
+          "--extern",
+          "proc_macro2=/build/target/release/deps/libproc_macro2-abb2be69adaa0af9.rlib",
+          "--extern",
+          "quote=/build/target/release/deps/libquote-2b50be8d5619ef9c.rlib",
+          "--extern",
+          "syn=/build/target/release/deps/libsyn-fb82b5dc8d8ab19a.rlib",
+          "--extern",
+          "proc_macro",
+          "--cap-lints",
+          "allow"
+        ],
+        "compiler_options": {
+          "debug-assertions": "off",
+          "embed-bitcode": "no",
+          "extra-filename": "-18561e4675320f61",
+          "strip": "debuginfo"
+        }
+      },
+      "thiserror_impl": {
+        "arguments": [
+          "rustc",
+          "--crate-name",
+          "thiserror_impl",
+          "--edition=2021",
+          "/nix/store/bi02z79nilmx60wdpjzw28g7ffsw5jnv-aos-workspace-vendor/source-registry-0/thiserror-impl-2.0.18/src/lib.rs",
+          "--error-format=json",
+          "--json=diagnostic-rendered-ansi,artifacts,future-incompat",
+          "--crate-type",
+          "proc-macro",
+          "--emit=dep-info,link",
+          "-C",
+          "prefer-dynamic",
+          "-C",
+          "embed-bitcode=no",
+          "-C",
+          "debug-assertions=off",
+          "--check-cfg",
+          "cfg(docsrs,test)",
+          "--check-cfg",
+          "cfg(feature, values())",
+          "-C",
+          "metadata=99654fda423801a1",
+          "-C",
+          "extra-filename=-80b90e813577f698",
+          "--out-dir",
+          "/build/target/release/deps",
+          "-C",
+          "strip=debuginfo",
+          "-L",
+          "dependency=/build/target/release/deps",
+          "--extern",
+          "proc_macro2=/build/target/release/deps/libproc_macro2-abb2be69adaa0af9.rlib",
+          "--extern",
+          "quote=/build/target/release/deps/libquote-2b50be8d5619ef9c.rlib",
+          "--extern",
+          "syn=/build/target/release/deps/libsyn-fb82b5dc8d8ab19a.rlib",
+          "--extern",
+          "proc_macro",
+          "--cap-lints",
+          "allow"
+        ],
+        "compiler_options": {
+          "debug-assertions": "off",
+          "embed-bitcode": "no",
+          "extra-filename": "-80b90e813577f698",
+          "strip": "debuginfo"
+        }
+      }
+    },
+    "cargo_trace_sha256": "f8ab8e1f6e4498c2737ef344dc467353dbe7db7a0685115fb7a0aea7d37ddf56",
+    "evidence_sha256": {
+      "actions.json": "a566005fe9b8f5040482f1d881bdc73fde3abef94cdbad8bfb1e944db081c70d",
+      "compiler-inputs.json": "bc3bd9d83a5c02954ad774750d933c9db13f9123fdb5374eaf09c2ceacd1240f",
+      "execution.json": "03df93e9d8255896e2dbd6d2d4ff229351b57f43af2dbe1070f72a54cc9d109b"
+    },
+    "limits": [
+      "Checks selected target and macro profiles, not complete compiler/default, native ABI, linker, editor, production, or performance equivalence."
+    ],
+    "schema_version": 1,
+    "status": "PASS"
+  },
+  "installed_command_vm_effect_parity": {
+    "cases": [
+      "unclaimed-directory-apply-and-removal-rejected",
+      "claimed-directory-metadata-drift-reconciled",
+      "replaced-directory-symlink-rejected-with-target-preserved",
+      "directory-rematerialization-and-idempotent-release",
+      "mutable-file-contents-and-inode-preserved",
+      "copied-file-content-drift-reconciled",
+      "immutable-tree-link-released-without-removing-source"
+    ],
+    "status": "PASS"
+  },
+  "installed_package_report": {
+    "cli_parity": [
+      {
+        "arguments": [],
+        "status": 1,
+        "stderr_sha256": "3b8a348a94a7259ef5d41e752eda1cf62b6efcca90aabb4cb411e931b1da9254",
+        "stdin_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdin_size": 0
+      },
+      {
+        "arguments": [
+          "--help"
+        ],
+        "status": 1,
+        "stderr_sha256": "4ef4a1da8515d807ec98579e4be063dc71bec2d4c16b7c5f3c11638dde3ad8ae",
+        "stdin_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdin_size": 0
+      },
+      {
+        "arguments": [
+          "invalid"
+        ],
+        "status": 1,
+        "stderr_sha256": "4ef4a1da8515d807ec98579e4be063dc71bec2d4c16b7c5f3c11638dde3ad8ae",
+        "stdin_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdin_size": 0
+      },
+      {
+        "arguments": [
+          "apply"
+        ],
+        "status": 1,
+        "stderr_sha256": "4ef4a1da8515d807ec98579e4be063dc71bec2d4c16b7c5f3c11638dde3ad8ae",
+        "stdin_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdin_size": 0
+      },
+      {
+        "arguments": [
+          "remove"
+        ],
+        "status": 1,
+        "stderr_sha256": "4ef4a1da8515d807ec98579e4be063dc71bec2d4c16b7c5f3c11638dde3ad8ae",
+        "stdin_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdin_size": 0
+      },
+      {
+        "arguments": [
+          "observe"
+        ],
+        "status": 1,
+        "stderr_sha256": "4ef4a1da8515d807ec98579e4be063dc71bec2d4c16b7c5f3c11638dde3ad8ae",
+        "stdin_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdin_size": 0
+      },
+      {
+        "arguments": [
+          "apply"
+        ],
+        "status": 1,
+        "stderr_sha256": "3b5cd2c76efaecdda5b8587ee34c2367530a347d9f69d24ed5a2890469d087cd",
+        "stdin_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "stdin_size": 2
+      },
+      {
+        "arguments": [
+          "observe"
+        ],
+        "status": 1,
+        "stderr_sha256": "3b5cd2c76efaecdda5b8587ee34c2367530a347d9f69d24ed5a2890469d087cd",
+        "stdin_sha256": "0474915f1d2334ec7a84e4b872586c5ad840d3915626a07186800c4846a9c14c",
+        "stdin_size": 33554432
+      },
+      {
+        "arguments": [
+          "observe"
+        ],
+        "status": 1,
+        "stderr_sha256": "c3dfbd0f1ce40bce895d55f28686eda270c6f7863adca01d322a3988fee3b96f",
+        "stdin_sha256": "b367c8cf8c1abc4227ff699d4ea1a21bafe050050ca10846abb76987a4182eef",
+        "stdin_size": 33554433
+      }
+    ],
+    "doctest_parity": {
+      "//crates/activation/aos-activation-filesystem:doc": {}
+    },
+    "features": {
+      "production": {
+        "features": {
+          "aho-corasick@1.1.4": [
+            [
+              "perf-literal",
+              "std"
+            ]
+          ],
+          "anyhow@1.0.103": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "bitflags@2.13.0": [
+            [
+              "std"
+            ]
+          ],
+          "block-buffer@0.10.4": [
+            []
+          ],
+          "cfg-if@1.0.4": [
+            []
+          ],
+          "cpufeatures@0.2.17": [
+            []
+          ],
+          "crypto-common@0.1.7": [
+            [
+              "std"
+            ]
+          ],
+          "digest@0.10.7": [
+            [
+              "alloc",
+              "block-buffer",
+              "core-api",
+              "default",
+              "std"
+            ]
+          ],
+          "dyn-clone@1.0.20": [
+            []
+          ],
+          "generic-array@0.14.7": [
+            [
+              "more_lengths"
+            ]
+          ],
+          "itoa@1.0.18": [
+            []
+          ],
+          "linux-raw-sys@0.12.1": [
+            [
+              "auxvec",
+              "elf",
+              "errno",
+              "general",
+              "if_ether",
+              "ioctl",
+              "net",
+              "netlink",
+              "no_std",
+              "prctl",
+              "xdp"
+            ]
+          ],
+          "memchr@2.8.2": [
+            [
+              "alloc",
+              "std"
+            ]
+          ],
+          "proc-macro2@1.0.106": [
+            [
+              "default",
+              "proc-macro"
+            ]
+          ],
+          "quote@1.0.46": [
+            [
+              "default",
+              "proc-macro"
+            ]
+          ],
+          "ref-cast-impl@1.0.27": [
+            []
+          ],
+          "ref-cast@1.0.27": [
+            []
+          ],
+          "regex-automata@0.4.14": [
+            [
+              "alloc",
+              "dfa-onepass",
+              "hybrid",
+              "meta",
+              "nfa-backtrack",
+              "nfa-pikevm",
+              "nfa-thompson",
+              "perf-inline",
+              "perf-literal",
+              "perf-literal-multisubstring",
+              "perf-literal-substring",
+              "std",
+              "syntax",
+              "unicode",
+              "unicode-age",
+              "unicode-bool",
+              "unicode-case",
+              "unicode-gencat",
+              "unicode-perl",
+              "unicode-script",
+              "unicode-segment",
+              "unicode-word-boundary"
+            ]
+          ],
+          "regex-syntax@0.8.11": [
+            [
+              "default",
+              "std",
+              "unicode",
+              "unicode-age",
+              "unicode-bool",
+              "unicode-case",
+              "unicode-gencat",
+              "unicode-perl",
+              "unicode-script",
+              "unicode-segment"
+            ]
+          ],
+          "regex@1.12.4": [
+            [
+              "default",
+              "perf",
+              "perf-backtrack",
+              "perf-cache",
+              "perf-dfa",
+              "perf-inline",
+              "perf-literal",
+              "perf-onepass",
+              "std",
+              "unicode",
+              "unicode-age",
+              "unicode-bool",
+              "unicode-case",
+              "unicode-gencat",
+              "unicode-perl",
+              "unicode-script",
+              "unicode-segment"
+            ]
+          ],
+          "rustix@1.1.4": [
+            [
+              "alloc",
+              "default",
+              "event",
+              "fs",
+              "net",
+              "process",
+              "std"
+            ]
+          ],
+          "schemars@1.2.2": [
+            [
+              "default",
+              "derive",
+              "schemars_derive",
+              "std"
+            ]
+          ],
+          "schemars_derive@1.2.2": [
+            []
+          ],
+          "serde@1.0.228": [
+            [
+              "alloc",
+              "default",
+              "derive",
+              "rc",
+              "serde_derive",
+              "std"
+            ]
+          ],
+          "serde_core@1.0.228": [
+            [
+              "alloc",
+              "rc",
+              "result",
+              "std"
+            ]
+          ],
+          "serde_derive@1.0.228": [
+            [
+              "default"
+            ]
+          ],
+          "serde_derive_internals@0.30.0": [
+            []
+          ],
+          "serde_json@1.0.150": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "sha2@0.10.9": [
+            [
+              "compress",
+              "default",
+              "std"
+            ]
+          ],
+          "syn@2.0.118": [
+            [
+              "clone-impls",
+              "default",
+              "derive",
+              "parsing",
+              "printing",
+              "proc-macro"
+            ]
+          ],
+          "syn@3.0.5": [
+            [
+              "clone-impls",
+              "default",
+              "derive",
+              "parsing",
+              "printing",
+              "proc-macro"
+            ]
+          ],
+          "thiserror-impl@2.0.18": [
+            []
+          ],
+          "thiserror@2.0.18": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "typenum@1.20.1": [
+            []
+          ],
+          "unicode-ident@1.0.24": [
+            []
+          ],
+          "version_check@0.9.5": [
+            []
+          ],
+          "zmij@1.0.21": [
+            []
+          ]
+        },
+        "first_party_features": {
+          "aos-activation": [
+            []
+          ],
+          "aos-activation-filesystem": [
+            []
+          ],
+          "aos-artifact-evidence": [
+            []
+          ],
+          "aos-core": [
+            []
+          ],
+          "aos-module-format": [
+            []
+          ]
+        }
+      },
+      "release_tests": {
+        "features": {
+          "aho-corasick@1.1.4": [
+            [
+              "perf-literal",
+              "std"
+            ]
+          ],
+          "anyhow@1.0.103": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "bitflags@2.13.0": [
+            [
+              "std"
+            ]
+          ],
+          "block-buffer@0.10.4": [
+            []
+          ],
+          "cfg-if@1.0.4": [
+            []
+          ],
+          "cpufeatures@0.2.17": [
+            []
+          ],
+          "crypto-common@0.1.7": [
+            [
+              "std"
+            ]
+          ],
+          "digest@0.10.7": [
+            [
+              "alloc",
+              "block-buffer",
+              "core-api",
+              "default",
+              "std"
+            ]
+          ],
+          "dyn-clone@1.0.20": [
+            []
+          ],
+          "fastrand@2.4.1": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "generic-array@0.14.7": [
+            [
+              "more_lengths"
+            ]
+          ],
+          "getrandom@0.4.2": [
+            []
+          ],
+          "itoa@1.0.18": [
+            []
+          ],
+          "libc@0.2.186": [
+            []
+          ],
+          "linux-raw-sys@0.12.1": [
+            [
+              "auxvec",
+              "elf",
+              "errno",
+              "general",
+              "if_ether",
+              "ioctl",
+              "net",
+              "netlink",
+              "no_std",
+              "prctl",
+              "xdp"
+            ]
+          ],
+          "memchr@2.8.2": [
+            [
+              "alloc",
+              "std"
+            ]
+          ],
+          "once_cell@1.21.4": [
+            [
+              "alloc",
+              "race",
+              "std"
+            ]
+          ],
+          "proc-macro2@1.0.106": [
+            [
+              "default",
+              "proc-macro"
+            ]
+          ],
+          "quote@1.0.46": [
+            [
+              "default",
+              "proc-macro"
+            ]
+          ],
+          "ref-cast-impl@1.0.27": [
+            []
+          ],
+          "ref-cast@1.0.27": [
+            []
+          ],
+          "regex-automata@0.4.14": [
+            [
+              "alloc",
+              "dfa-onepass",
+              "hybrid",
+              "meta",
+              "nfa-backtrack",
+              "nfa-pikevm",
+              "nfa-thompson",
+              "perf-inline",
+              "perf-literal",
+              "perf-literal-multisubstring",
+              "perf-literal-substring",
+              "std",
+              "syntax",
+              "unicode",
+              "unicode-age",
+              "unicode-bool",
+              "unicode-case",
+              "unicode-gencat",
+              "unicode-perl",
+              "unicode-script",
+              "unicode-segment",
+              "unicode-word-boundary"
+            ]
+          ],
+          "regex-syntax@0.8.11": [
+            [
+              "default",
+              "std",
+              "unicode",
+              "unicode-age",
+              "unicode-bool",
+              "unicode-case",
+              "unicode-gencat",
+              "unicode-perl",
+              "unicode-script",
+              "unicode-segment"
+            ]
+          ],
+          "regex@1.12.4": [
+            [
+              "default",
+              "perf",
+              "perf-backtrack",
+              "perf-cache",
+              "perf-dfa",
+              "perf-inline",
+              "perf-literal",
+              "perf-onepass",
+              "std",
+              "unicode",
+              "unicode-age",
+              "unicode-bool",
+              "unicode-case",
+              "unicode-gencat",
+              "unicode-perl",
+              "unicode-script",
+              "unicode-segment"
+            ]
+          ],
+          "rustix@1.1.4": [
+            [
+              "alloc",
+              "default",
+              "event",
+              "fs",
+              "net",
+              "process",
+              "std"
+            ]
+          ],
+          "schemars@1.2.2": [
+            [
+              "default",
+              "derive",
+              "schemars_derive",
+              "std"
+            ]
+          ],
+          "schemars_derive@1.2.2": [
+            []
+          ],
+          "serde@1.0.228": [
+            [
+              "alloc",
+              "default",
+              "derive",
+              "rc",
+              "serde_derive",
+              "std"
+            ]
+          ],
+          "serde_core@1.0.228": [
+            [
+              "alloc",
+              "rc",
+              "result",
+              "std"
+            ]
+          ],
+          "serde_derive@1.0.228": [
+            [
+              "default"
+            ]
+          ],
+          "serde_derive_internals@0.30.0": [
+            []
+          ],
+          "serde_json@1.0.150": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "sha2@0.10.9": [
+            [
+              "compress",
+              "default",
+              "std"
+            ]
+          ],
+          "syn@2.0.118": [
+            [
+              "clone-impls",
+              "default",
+              "derive",
+              "parsing",
+              "printing",
+              "proc-macro"
+            ]
+          ],
+          "syn@3.0.5": [
+            [
+              "clone-impls",
+              "default",
+              "derive",
+              "parsing",
+              "printing",
+              "proc-macro"
+            ]
+          ],
+          "tempfile@3.27.0": [
+            [
+              "default",
+              "getrandom"
+            ]
+          ],
+          "thiserror-impl@2.0.18": [
+            []
+          ],
+          "thiserror@2.0.18": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "typenum@1.20.1": [
+            []
+          ],
+          "unicode-ident@1.0.24": [
+            []
+          ],
+          "version_check@0.9.5": [
+            []
+          ],
+          "zmij@1.0.21": [
+            []
+          ]
+        },
+        "first_party_features": {
+          "aos-activation": [
+            []
+          ],
+          "aos-activation-filesystem": [
+            []
+          ],
+          "aos-artifact-evidence": [
+            []
+          ],
+          "aos-core": [
+            []
+          ],
+          "aos-module-format": [
+            []
+          ]
+        }
+      }
+    },
+    "first_party_rust_compilations": 6,
+    "installed": {
+      "bazel": {
+        "out/bin": {
+          "kind": "directory",
+          "mode": 365
+        },
+        "out/bin/aos-filesystem-provider": {
+          "contract": {
+            "interpreter": [
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2"
+            ],
+            "needed": [
+              "ld-linux-x86-64.so.2",
+              "libc.so.6"
+            ],
+            "resolved_libraries": [
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6"
+            ],
+            "rpath_directories": [
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib"
+            ]
+          },
+          "kind": "elf",
+          "mode": 365
+        },
+        "out/nix-support": {
+          "kind": "directory",
+          "mode": 365
+        },
+        "out/nix-support/aos-target-platform": {
+          "kind": "file",
+          "mode": 292,
+          "sha256": "d3b7abad38647ed804b5017c5b990acab7c85648b552a97043d4d86c70ce1f9d"
+        }
+      },
+      "ordinary": {
+        "out/bin": {
+          "kind": "directory",
+          "mode": 365
+        },
+        "out/bin/aos-filesystem-provider": {
+          "contract": {
+            "interpreter": [
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2"
+            ],
+            "needed": [
+              "ld-linux-x86-64.so.2",
+              "libc.so.6"
+            ],
+            "resolved_libraries": [
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6"
+            ],
+            "rpath_directories": [
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib"
+            ]
+          },
+          "kind": "elf",
+          "mode": 365
+        },
+        "out/nix-support": {
+          "kind": "directory",
+          "mode": 365
+        },
+        "out/nix-support/aos-target-platform": {
+          "kind": "file",
+          "mode": 292,
+          "sha256": "d3b7abad38647ed804b5017c5b990acab7c85648b552a97043d4d86c70ce1f9d"
+        }
+      }
+    },
+    "library_search_changes": {},
+    "limits": [
+      "Native dynamic installation, exact compiler features, release-profile tests and bounded input rejection only.",
+      "Privileged production-root filesystem effects, foreign hosts, numeric performance budgets and default cutover remain separate gates."
+    ],
+    "packages": {
+      "bazel": {
+        "out": "/nix/store/rdjdw58jz7b2x182m24hinyzcmjiica2-aos-filesystem-provider-0.1.0"
+      },
+      "ordinary": {
+        "out": "/nix/store/0m6pb3c8fywv5lm05agy9yxm1s5hvgwa-aos-filesystem-provider-0.1.0"
+      }
+    },
+    "production_profiles": {
+      "bazel": {
+        "//crates/activation/aos-activation-filesystem:aos-filesystem-provider": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "opt-level": "3",
+          "overflow-checks": "no",
+          "strip": "none"
+        },
+        "//crates/activation/aos-activation-filesystem:lib": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-453315480",
+          "opt-level": "3",
+          "overflow-checks": "no",
+          "strip": "none"
+        },
+        "//crates/activation/aos-activation:lib": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-226328188",
+          "opt-level": "3",
+          "overflow-checks": "no",
+          "strip": "none"
+        },
+        "//crates/artifacts/aos-artifact-evidence:lib": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-386196004",
+          "opt-level": "3",
+          "overflow-checks": "no",
+          "strip": "none"
+        },
+        "//crates/core/aos-core:lib": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-2583899516",
+          "opt-level": "3",
+          "overflow-checks": "no",
+          "strip": "none"
+        },
+        "//crates/modules/aos-module-format:lib": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-1113882660",
+          "opt-level": "3",
+          "overflow-checks": "no",
+          "strip": "none"
+        }
+      },
+      "cargo": {
+        "aos-filesystem-provider": {
+          "debug_assertions": false,
+          "debuginfo": 0,
+          "opt_level": "3",
+          "overflow_checks": false,
+          "test": false
+        },
+        "aos_activation": {
+          "debug_assertions": false,
+          "debuginfo": 0,
+          "opt_level": "3",
+          "overflow_checks": false,
+          "test": false
+        },
+        "aos_activation_filesystem": {
+          "debug_assertions": false,
+          "debuginfo": 0,
+          "opt_level": "3",
+          "overflow_checks": false,
+          "test": false
+        },
+        "aos_artifact_evidence": {
+          "debug_assertions": false,
+          "debuginfo": 0,
+          "opt_level": "3",
+          "overflow_checks": false,
+          "test": false
+        },
+        "aos_core": {
+          "debug_assertions": false,
+          "debuginfo": 0,
+          "opt_level": "3",
+          "overflow_checks": false,
+          "test": false
+        },
+        "aos_module_format": {
+          "debug_assertions": false,
+          "debuginfo": 0,
+          "opt_level": "3",
+          "overflow_checks": false,
+          "test": false
+        }
+      }
+    },
+    "runtime_closures": {
+      "changes": {
+        "out": {
+          "added": [],
+          "removed": []
+        }
+      },
+      "closures": {
+        "bazel": {
+          "out": [
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+            "@output:out@"
+          ]
+        },
+        "ordinary": {
+          "out": [
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+            "@output:out@"
+          ]
+        }
+      }
+    },
+    "sandboxed_cache_miss_actions": 115,
+    "schema_version": 1,
+    "source_selection": {
+      "first_party_cargo_files": [],
+      "workspace": "/nix/store/mmdbpilyv7i0slszymw6fnann215cg80-aos-bazel-workspace"
+    },
+    "test_parity": {
+      "schema_version": 1,
+      "targets": {
+        "//crates/activation/aos-activation-filesystem:bin_aos-filesystem-provider": {
+          "executed": [],
+          "ignored": []
+        },
+        "//crates/activation/aos-activation-filesystem:unit": {
+          "executed": [
+            "handler::native::tests::a_claim_at_another_path_does_not_authorize_an_existing_destination",
+            "handler::native::tests::absent_directory_release_retains_claim_until_parent_sync_succeeds",
+            "handler::native::tests::claimed_directory_metadata_drift_is_reconciled_at_the_same_path",
+            "handler::native::tests::copied_file_claim_survives_rematerialization_and_reconciles_content",
+            "handler::native::tests::directory_claim_rejects_a_file_or_symlink_at_the_claimed_path",
+            "handler::native::tests::directory_claim_replays_after_rematerialization_and_reconfiguration",
+            "handler::native::tests::file_and_tree_claims_refuse_unclaimed_paths_and_wrong_entry_types",
+            "handler::native::tests::guarded_directory_removal_preserves_symlink_targets",
+            "handler::native::tests::guarded_directory_removal_rejects_replaced_roots",
+            "handler::native::tests::interrupted_quarantine_cleanup_is_retryable_and_never_reported_absent",
+            "handler::native::tests::native_directory_reconfigures_without_deleting_contents_and_removes_exact_claim",
+            "handler::native::tests::native_directory_refuses_unclaimed_paths_and_accepts_rematerialization",
+            "handler::native::tests::native_file_copies_bounded_source_and_observes_content_drift",
+            "handler::native::tests::native_mutable_file_preserves_contents_and_inode_across_reconfiguration",
+            "handler::native::tests::native_mutable_file_refuses_unclaimed_files_and_preserves_rematerialized_contents",
+            "handler::native::tests::native_mutable_file_rejects_sources_and_symlinks_before_mutation",
+            "handler::native::tests::native_tree_owns_only_link_and_retains_source_after_teardown",
+            "handler::native::tests::nested_allocation_accepts_rematerialized_claimed_parent",
+            "handler::native::tests::owned_directory_reconciles_and_reconfigures_with_claimed_children",
+            "handler::native::tests::parent_ordering_alone_does_not_authorize_nested_allocation",
+            "handler::native::tests::production_policy_accepts_platform_entries_and_rejects_shared_or_immutable_paths",
+            "handler::native::tests::production_policy_realizes_var_and_gc_entries_without_adopting_existing_paths",
+            "handler::native::tests::tree_claim_survives_rematerialization_and_reconciles_target",
+            "tests::storage_child_view_rejects_symlinks_and_allows_an_absent_socket",
+            "tests::storage_claims_reject_equal_parent_and_child_paths"
+          ],
+          "ignored": []
+        }
+      }
+    }
+  },
+  "limits": [
+    "Cargo remains the default. This native Linux selection does not qualify foreign hosts, numeric performance acceptance or default cutover.",
+    "Both installed commands execute seven matching effect scenarios inside separate source-built Firecracker VMs requiring KVM, including production-root mutations. This is not a complete system activation, privileged-executable or crash-injection qualification.",
+    "The 25 unit cases and seven installed VM scenarios cover distinct scopes. The command-test and doctest targets are empty and explicitly retained.",
+    "The test SDK contains an independent unused Base64 root. Actual compiled dependency and feature closure, rather than the resolver root set, is required to match Cargo exactly.",
+    "Fresh Linux sandbox execution does not establish concurrent shared-cache performance.",
+    "No Rust source changes. The completed 185-target application compilation covers all current tracked Rust bytes, separately from the new Nix and Bazel declarations."
+  ],
+  "native_effect_vm_checks": {
+    "bazel": {
+      "derivation": "/nix/store/29s8a2mbnn4h5dnn6scrx3fal8y8a73f-aos-vm-test-bazel-filesystem-provider-effects-0.drv",
+      "evidence_sha256": {
+        "fc.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "result": "c26de83abdc9496cd1301470918ec39ecca1cf389ef0ae1c6504da1800d1c431",
+        "serial.log": "a7d9cbe65e5fb9f86dd545a5e390c3acf539d343a1c03856e06e7a85362bbe11"
+      },
+      "output": "/nix/store/b9i1vvxjl8l5vcx3i07r8c71r3s517vz-aos-vm-test-bazel-filesystem-provider-effects-0",
+      "required_system_features": [
+        "kvm"
+      ]
+    },
+    "ordinary": {
+      "derivation": "/nix/store/80lqknx7l17xpbbaj7fs6j9mrqhv5f1z-aos-vm-test-bazel-filesystem-provider-effects-0.drv",
+      "evidence_sha256": {
+        "fc.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "result": "c26de83abdc9496cd1301470918ec39ecca1cf389ef0ae1c6504da1800d1c431",
+        "serial.log": "728746e245d29948043bace674ac57af9c19657457d19e2e631b55902124c94e"
+      },
+      "output": "/nix/store/ypai0rbfd79qrk1s6iy0vh0rmfacry6p-aos-vm-test-bazel-filesystem-provider-effects-0",
+      "required_system_features": [
+        "kvm"
+      ]
+    }
+  },
+  "own_cargo_package_required": false,
+  "policy_checks": "/nix/store/h2xad2dx4wf42m5rsd80k1abp32mbsf0-aos-bazel-policy-checks",
+  "policy_tests": 438,
+  "qualification": "/nix/store/jawa3dj3pifswnqyxyzlc9869s12cgg8-aos-bazel-filesystem-provider-production-package-checks",
+  "qualification_derivation": "/nix/store/mfxsxdylrwj1lv62fwr42hc0zlwgf0qq-aos-bazel-filesystem-provider-production-package-checks.drv",
+  "release_tests_required_by_installed_candidate": true,
+  "schema_version": 1,
+  "selector_introduction_preserved_cargo_identity_for_identical_sources": {
+    "after": "/nix/store/c3izmyf77ybvpd5j437xpx94s8fla6ll-aos-filesystem-provider-0.1.0.drv",
+    "before": "/nix/store/c3izmyf77ybvpd5j437xpx94s8fla6ll-aos-filesystem-provider-0.1.0.drv"
+  },
+  "source_selection": {
+    "checked_inventory": "tools/bazel/metadata/filesystem-provider-inventory.json",
+    "configured_reports": 143,
+    "conservative_inventory_outputs": [
+      "/nix/store/pra3gzhw1gpbcixlqga7cpqld5ik5lvq-aos-bazel-filesystem-provider-production-inventory-1",
+      "/nix/store/db5jci808vhg1is7p4zdvqxyvgjlwals-aos-bazel-filesystem-provider-release-tests-inventory-1"
+    ],
+    "contract_refresh": {
+      "accache-inventory.json": [],
+      "activation-core-inventory.json": [],
+      "activation-crucible-inventory.json": [],
+      "activation-storage-inventory.json": [
+        "crates/activation/aos-activation-filesystem/BUILD.bazel"
+      ],
+      "activation-systemd-inventory.json": [],
+      "aos-cli-inventory.json": [],
+      "boot-pilot-inventory.json": [],
+      "boot-preparation-inventory.json": [],
+      "boot-preparation-provider-inventory.json": [],
+      "boot-transaction-storage-provider-inventory.json": [],
+      "build-services-inventory.json": [],
+      "cli-support-inventory.json": [],
+      "configuration-image-inventory.json": [],
+      "contracts-inventory.json": [],
+      "control-inventory.json": [],
+      "crucible-cli-inventory.json": [],
+      "daemon-inventory.json": [],
+      "deployment-inventory.json": [],
+      "device-inventory.json": [],
+      "engine-inventory.json": [
+        "crates/activation/aos-activation-filesystem/BUILD.bazel"
+      ],
+      "feature-powerset-inventory.json": [],
+      "fixture-inventory.json": [],
+      "formats-inventory.json": [],
+      "guest-inventory.json": [],
+      "hub-client-inventory.json": [],
+      "hub-console-inventory.json": [],
+      "hub-console-wasm-inventory.json": [],
+      "hub-db-inventory.json": [],
+      "hub-model-inventory.json": [],
+      "hub-native-inventory.json": [],
+      "hub-portable-inventory.json": [],
+      "hub-service-inventory.json": [],
+      "hub-worker-inventory.json": [],
+      "hub-worker-wasm-inventory.json": [],
+      "initrd-preparation-inventory.json": [],
+      "kernel-tunable-provider-inventory.json": [],
+      "native-foundation-inventory.json": [],
+      "network-ruleset-provider-inventory.json": [],
+      "package-manager-inventory.json": [],
+      "protocol-inventory.json": [],
+      "qemu-gateway-process-test-inventory.json": [],
+      "qemu-gpl-production-inventory.json": [],
+      "qemu-host-inventory.json": [],
+      "qemu-plugin-process-test-inventory.json": [],
+      "qemu-test-oracle-host-inventory.json": [],
+      "quota-inventory.json": [],
+      "registry-native-inventory.json": [],
+      "registry-web-inventory.json": [],
+      "registry-web-wasm-inventory.json": [],
+      "release-coordination-inventory.json": [],
+      "release-preparation-inventory.json": [],
+      "session-inventory.json": [],
+      "shared-inventory.json": [],
+      "static-storage-providers-inventory.json": [],
+      "storage-provisioning-provider-inventory.json": [],
+      "store-inventory.json": [],
+      "store-s3-inventory.json": [],
+      "test-support-audit-inventory.json": [
+        "crates/activation/aos-activation-filesystem/BUILD.bazel"
+      ],
+      "test-support-inventory.json": [],
+      "zfs-provider-inventory.json": []
+    },
+    "declaration_contracts": 187,
+    "precise_and_conservative_inventories_equal": true,
+    "precise_inventory_outputs": [
+      "/nix/store/2yv7nk3mbygwv4mzr23jwqy982ikj4an-aos-bazel-filesystem-provider-production-inventory-1",
+      "/nix/store/qcz2x0v867lpsdx0giqykdixfhazsn89-aos-bazel-filesystem-provider-release-tests-inventory-1"
+    ],
+    "requested_roots": 6,
+    "source_files": 48,
+    "unchanged_existing_inventory_selections": 60
+  },
+  "status": "PASS"
+}

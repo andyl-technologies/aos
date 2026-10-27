@@ -1,7 +1,5 @@
 //! Shared support for nondeterminism confinement checks.
 
-use crate::workspace;
-
 use super::*;
 use toml::Value;
 
@@ -62,13 +60,17 @@ pub(super) fn workspace_confinement_findings(
     let mut findings = Vec::new();
 
     for spec in crate_spec_index() {
-        let package_dir = workspace::package_directory(root, spec.package)?;
-        let manifest: Value = fs::read_to_string(package_dir.join("Cargo.toml"))?.parse()?;
-        findings.extend(boundary_manifest_findings(
-            spec.package,
-            &manifest,
-            workspace_dependencies,
-        ));
+        let package_dir = package_directory(root, spec.package)?;
+        if let Some(declared) = declared::load()? {
+            findings.extend(declared.boundary_findings(spec.package)?);
+        } else {
+            let manifest: Value = fs::read_to_string(package_dir.join("Cargo.toml"))?.parse()?;
+            findings.extend(boundary_manifest_findings(
+                spec.package,
+                &manifest,
+                workspace_dependencies,
+            ));
+        }
 
         let mut sources = Vec::new();
         for source in rust_sources(&package_dir.join("src"))? {

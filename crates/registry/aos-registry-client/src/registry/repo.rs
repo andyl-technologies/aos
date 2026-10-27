@@ -63,11 +63,11 @@ impl VerifiedObjectGraph {
         tokio::task::spawn_blocking(move || {
             let mut cache = Self::new(&path);
             cache.database = super::verified_cache::fingerprint(&path).ok();
-            if let Some(database) = &cache.database {
-                if let Ok(verified) = super::verified_cache::load(&path, database) {
-                    cache.persisted_objects = Some(verified.len());
-                    cache.verified = verified;
-                }
+            if let Some(database) = &cache.database
+                && let Ok(verified) = super::verified_cache::load(&path, database)
+            {
+                cache.persisted_objects = Some(verified.len());
+                cache.verified = verified;
             }
             cache
         })

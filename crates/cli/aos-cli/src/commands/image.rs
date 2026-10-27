@@ -1551,10 +1551,14 @@ mod tests {
     #[test]
     fn image_pagination_collects_every_page() {
         let mut pagination = ImagePagination::default();
-        let mut first = SystemImage::default();
-        first.filename = "first.raw".into();
-        let mut second = SystemImage::default();
-        second.filename = "second.qcow2".into();
+        let first = SystemImage {
+            filename: "first.raw".into(),
+            ..Default::default()
+        };
+        let second = SystemImage {
+            filename: "second.qcow2".into(),
+            ..Default::default()
+        };
 
         assert_eq!(
             pagination.accept(vec![first], "page-2".into()).unwrap(),

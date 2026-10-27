@@ -1,0 +1,28 @@
+{
+  "assertions": {
+    "bytes_quota_enforced=true": true,
+    "cleared_project_ids_reusable=true": true,
+    "inodes_quota_enforced=true": true,
+    "nonempty_release_retains_authority=true": true
+  },
+  "checkout_parent": "06be7d2576be5de06396dc163f5dedafe127e321",
+  "command": "nix-build default.nix -A checks.build.bazel.quota.vm --no-out-link --max-jobs 2 --cores 4 --option substitute false",
+  "declarations_sha256": {
+    "tests/build/_bazel-quota.nix": "6cefd1b03a6b159cf510a6be385ee6eb88cc2552c7e7a08a3fdc6e1d8ebbd6a0",
+    "tests/crucible/phase4-project-quota-vm.nix": "15bd9a876a840f5e85e800c21c33f19eb1773edc135a121d576e1a26ebd7ee3a"
+  },
+  "derivation": "/nix/store/0hmcpbigi1c9znw5yqcbm2cvqbkc6207-aos-vm-test-crucible-project-quota-0.drv",
+  "installed_flight": "/nix/store/j4xb2wk2qkwfpvbwcb0nvzrpz9cxy3nj-aos-linux-project-quota-0.1.0",
+  "installed_flight_sha256": "6fcb43df50a75c18ff45bd8f87e2de6e1275ad76444ed5bcf8dcb0eea0f5efda",
+  "kernel": "/nix/store/kpf3k39r41wy6rn6ali97341dvpayp86-linux-7.2.3",
+  "kernel_config_sha256": "de14b5a152d064abe4c96bee5c57a18652bf876f2b39b29448aa9eb1dc0f0685",
+  "limits": [
+    "This closes the current native profile ext4 VM check. Foreign privileged enforcement, ordinary aos-dev enrollment, complete production behavior, shared-cache qualification and performance acceptance remain separate."
+  ],
+  "native_qualification": "/nix/store/ac6f4mb4x5v8z1c76wqj2zll8nwvbids-aos-bazel-quota-qualified-checks",
+  "schema_version": 1,
+  "scope": "Actual ext4 project-quota enforcement with the Bazel-built flight in the existing disposable x86_64 Firecracker/KVM guest; filesystem setup and mounts occur inside the guest.",
+  "serial_sha256": "75e335c49e09d9df86e632439ea59ac72a4ccd7aa212c0e55657f5a6d9d29be7",
+  "status": "PASS",
+  "vm": "/nix/store/gffk0lh3vh64qnbf0jparfqmqhmchb7f-aos-vm-test-crucible-project-quota-0"
+}

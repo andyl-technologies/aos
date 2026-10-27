@@ -1,0 +1,230 @@
+{
+  "derivation": "/nix/store/vfi5d33g5xcb628wrfk5digs0hyv59ix-aos-bazel-store-server-lifetime-performance.drv",
+  "derivation_sha256": "4fa0de220c30b387e7e27fede834a141b7ecdad8bb55292be5a8083bad7c03fe",
+  "distributions_seconds": {
+    "bazel-server:cold": {
+      "maximum": 73.1743233500165,
+      "median": 71.69726067496231,
+      "minimum": 70.43715123296715,
+      "samples": [
+        71.69726067496231,
+        73.1743233500165,
+        70.43715123296715
+      ]
+    },
+    "bazel-server:fresh-build-directory": {
+      "maximum": 7.883106980996672,
+      "median": 7.68943822698202,
+      "minimum": 7.642590796982404,
+      "samples": [
+        7.642590796982404,
+        7.68943822698202,
+        7.883106980996672
+      ]
+    },
+    "bazel-server:implementation-edit": {
+      "maximum": 32.92233352502808,
+      "median": 32.59669214498717,
+      "minimum": 32.595338084036484,
+      "samples": [
+        32.92233352502808,
+        32.595338084036484,
+        32.59669214498717
+      ]
+    },
+    "bazel-server:public-api-edit": {
+      "maximum": 42.39277720195241,
+      "median": 40.50645373802399,
+      "minimum": 40.139792374975514,
+      "samples": [
+        40.139792374975514,
+        42.39277720195241,
+        40.50645373802399
+      ]
+    },
+    "bazel-server:second-worktree": {
+      "maximum": 8.299594726006035,
+      "median": 8.262639524007682,
+      "minimum": 7.949171040032525,
+      "samples": [
+        8.262639524007682,
+        7.949171040032525,
+        8.299594726006035
+      ]
+    },
+    "bazel-server:warm": {
+      "maximum": 0.41691478999564424,
+      "median": 0.40311022801324725,
+      "minimum": 0.37575690902303904,
+      "samples": [
+        0.37575690902303904,
+        0.41691478999564424,
+        0.40311022801324725
+      ]
+    }
+  },
+  "lifecycle": [
+    {
+      "output_base": "/build/performance/0-bazel-server/bazel-first",
+      "repetition": 0,
+      "scenario": "cold",
+      "server_after": 14,
+      "server_before": null,
+      "validated_cases": 599
+    },
+    {
+      "output_base": "/build/performance/0-bazel-server/bazel-first",
+      "repetition": 0,
+      "scenario": "warm",
+      "server_after": 14,
+      "server_before": 14,
+      "validated_cases": 599
+    },
+    {
+      "output_base": "/build/performance/0-bazel-server/bazel-first",
+      "repetition": 0,
+      "scenario": "implementation-edit",
+      "server_after": 14,
+      "server_before": 14,
+      "validated_cases": 599
+    },
+    {
+      "output_base": "/build/performance/0-bazel-server/bazel-first",
+      "repetition": 0,
+      "scenario": "public-api-edit",
+      "server_after": 14,
+      "server_before": 14,
+      "validated_cases": 599
+    },
+    {
+      "output_base": "/build/performance/0-bazel-server/bazel-second",
+      "repetition": 0,
+      "scenario": "second-worktree",
+      "server_after": 11320,
+      "server_before": null,
+      "validated_cases": 599
+    },
+    {
+      "output_base": "/build/performance/0-bazel-server/bazel-fresh",
+      "repetition": 0,
+      "scenario": "fresh-build-directory",
+      "server_after": 13532,
+      "server_before": null,
+      "validated_cases": 599
+    },
+    {
+      "output_base": "/build/performance/1-bazel-server/bazel-first",
+      "repetition": 1,
+      "scenario": "cold",
+      "server_after": 15738,
+      "server_before": null,
+      "validated_cases": 599
+    },
+    {
+      "output_base": "/build/performance/1-bazel-server/bazel-first",
+      "repetition": 1,
+      "scenario": "warm",
+      "server_after": 15738,
+      "server_before": 15738,
+      "validated_cases": 599
+    },
+    {
+      "output_base": "/build/performance/1-bazel-server/bazel-first",
+      "repetition": 1,
+      "scenario": "implementation-edit",
+      "server_after": 15738,
+      "server_before": 15738,
+      "validated_cases": 599
+    },
+    {
+      "output_base": "/build/performance/1-bazel-server/bazel-first",
+      "repetition": 1,
+      "scenario": "public-api-edit",
+      "server_after": 15738,
+      "server_before": 15738,
+      "validated_cases": 599
+    },
+    {
+      "output_base": "/build/performance/1-bazel-server/bazel-second",
+      "repetition": 1,
+      "scenario": "second-worktree",
+      "server_after": 27137,
+      "server_before": null,
+      "validated_cases": 599
+    },
+    {
+      "output_base": "/build/performance/1-bazel-server/bazel-fresh",
+      "repetition": 1,
+      "scenario": "fresh-build-directory",
+      "server_after": 29301,
+      "server_before": null,
+      "validated_cases": 599
+    },
+    {
+      "output_base": "/build/performance/2-bazel-server/bazel-first",
+      "repetition": 2,
+      "scenario": "cold",
+      "server_after": 31553,
+      "server_before": null,
+      "validated_cases": 599
+    },
+    {
+      "output_base": "/build/performance/2-bazel-server/bazel-first",
+      "repetition": 2,
+      "scenario": "warm",
+      "server_after": 31553,
+      "server_before": 31553,
+      "validated_cases": 599
+    },
+    {
+      "output_base": "/build/performance/2-bazel-server/bazel-first",
+      "repetition": 2,
+      "scenario": "implementation-edit",
+      "server_after": 31553,
+      "server_before": 31553,
+      "validated_cases": 599
+    },
+    {
+      "output_base": "/build/performance/2-bazel-server/bazel-first",
+      "repetition": 2,
+      "scenario": "public-api-edit",
+      "server_after": 31553,
+      "server_before": 31553,
+      "validated_cases": 599
+    },
+    {
+      "output_base": "/build/performance/2-bazel-server/bazel-second",
+      "repetition": 2,
+      "scenario": "second-worktree",
+      "server_after": 42935,
+      "server_before": null,
+      "validated_cases": 599
+    },
+    {
+      "output_base": "/build/performance/2-bazel-server/bazel-fresh",
+      "repetition": 2,
+      "scenario": "fresh-build-directory",
+      "server_after": 45149,
+      "server_before": null,
+      "validated_cases": 599
+    }
+  ],
+  "limits": [
+    "This is a frozen storage/campaign checkpoint with its exact source, compiler, launcher, native inputs and concurrency retained in the raw report. It is not the current migration tree.",
+    "All nine warm/edit invocations retained their private JVM. The nine cold/second-worktree/fresh-directory invocations began without a JVM in the selected output base. Normal launcher timeout policy remains unchanged.",
+    "Every sample executed its complete 599-case qualified inventory outside the timed region. An existing ignored case remains outside execution; these are not VM, service or installed-closure gates.",
+    "Other builds ran on the shared host during this trial. Raw timings and JVM resource observations are retained without treating them as isolated-host or end-to-end measurements.",
+    "Cargo baselines were not rerun in this trial. Historical v3 Cargo observations cannot establish a controlled numerical comparison with this trial.",
+    "Selected compiler profile settings are matched by the harness; full semantic compiler equivalence, numerical acceptance budgets, representative end-to-end measurements and production cutover remain pending. No Cargo removal is authorized by these results."
+  ],
+  "output": "/nix/store/1dvw7r4yjcm9g6l9szf91d64gbcdjw4j-aos-bazel-store-server-lifetime-performance",
+  "raw_report": "tools/bazel/tests/evidence/store-performance-server-lifetime-raw.json",
+  "raw_report_sha256": "038e633741cbac22b8dbf5b3451b7e8b52fcd65d07359b9d56ac8edbf521ce40",
+  "repetitions": 3,
+  "samples": 18,
+  "schema_version": 1,
+  "scope": "connected storage/campaign default-feature libtest compilation; validation is untimed; excludes Nix evaluation/preparation/installation",
+  "server_idle_seconds": 3600,
+  "status": "Private server lifecycle and untimed case validation passed; performance acceptance remains pending",
+  "validated_cases_per_sample": 599
+}

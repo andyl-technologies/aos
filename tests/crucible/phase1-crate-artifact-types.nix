@@ -134,6 +134,31 @@
       "${package}: library/plugin package must not have implicit binary targets under src/bin"
     ];
 
+  gatewayTestOracleFailures = manifest: layout: let
+    bins = binTargets manifest;
+    bin =
+      if builtins.length bins == 1
+      then builtins.head bins
+      else {};
+    validTarget =
+      (bin.name or null)
+      == "crucible-qemu-test-oracle"
+      && (bin.path or null) == "src/bin/qemu_test_oracle.rs"
+      && (bin.required-features or null) == ["qemu-test-oracle"]
+      && (bin.test or true) == false
+      && (bin.bench or true) == false;
+  in
+    lib.optionals (
+      !validTarget
+      || (manifest.package.autobins or true) != false
+      || (manifest.features.default or null) != []
+    ) [
+      "crucible-control-server: must declare only the disabled-by-default qemu-test-oracle binary with autobins = false, test = false, and bench = false"
+    ]
+    ++ lib.optionals (layout.hasMainRs || !layout.hasSrcBinDir) [
+      "crucible-control-server: test oracle must remain under src/bin without src/main.rs"
+    ];
+
   checkArtifact = spec: manifest: layout: let
     package = manifestPackageName manifest;
     packageNameFailures = lib.optionals (package != spec.package) [
@@ -301,7 +326,11 @@
               "${spec.package}: forbidden crate-type `${crateType}` for library package"
             ]
         ) (crateTypes manifest)
-        ++ forbiddenBinaryFailures spec.package manifest layout
+        ++ (
+          if spec.package == "crucible-control-server"
+          then gatewayTestOracleFailures manifest layout
+          else forbiddenBinaryFailures spec.package manifest layout
+        )
     );
 
   realFailures =
@@ -370,6 +399,17 @@
       };
     hasFinding = needle: findings:
       builtins.any (finding: hasInfix needle finding) findings;
+    oracleManifest = readManifest "crucible-control-server";
+    oracleLayout = packageLayout "crucible-control-server";
+    oracleBin = builtins.head (binTargets oracleManifest);
+    invalidOracleManifests =
+      map (field: oracleManifest // {bin = [(builtins.removeAttrs oracleBin [field])];})
+      ["name" "path" "required-features" "test" "bench"]
+      ++ [
+        (oracleManifest // {package = oracleManifest.package // {autobins = true;};})
+        (oracleManifest // {features = oracleManifest.features // {default = ["qemu-test-oracle"];};})
+        (oracleManifest // {bin = [oracleBin oracleBin];})
+      ];
   in
     lib.optionals (!(hasFinding "exactly [\"cdylib\"]" pluginFindings)) [
       "artifact-type regression failed to reject plugin without exact cdylib crate-type"
@@ -382,6 +422,12 @@
     ]
     ++ lib.optionals (!(hasFinding "implicit binary target" implicitBinFindings)) [
       "artifact-type regression failed to reject a library src/main.rs implicit binary"
+    ]
+    ++ lib.optionals (gatewayTestOracleFailures oracleManifest oracleLayout != []) [
+      "artifact-type regression rejected the explicitly gated gateway test oracle"
+    ]
+    ++ lib.optionals (builtins.any (manifest: gatewayTestOracleFailures manifest oracleLayout == []) invalidOracleManifests) [
+      "artifact-type regression allowed an ungated, implicit, or additional gateway test command"
     ];
 
   failures = packageSetFailures ++ regressionFailures ++ realFailures;

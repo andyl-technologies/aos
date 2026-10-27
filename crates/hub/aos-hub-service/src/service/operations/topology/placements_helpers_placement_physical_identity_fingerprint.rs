@@ -403,6 +403,10 @@ impl RpcService {
         })
     }
 
+    #[allow(
+        clippy::type_complexity,
+        reason = "The tuple preserves the existing normalized persistence field order."
+    )]
     pub(in crate::service) async fn normalize_placement_policy_request(
         &self,
         surface: SurfaceTarget,

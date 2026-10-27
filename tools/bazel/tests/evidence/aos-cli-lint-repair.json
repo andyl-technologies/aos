@@ -1,0 +1,147 @@
+{
+  "baseline_failure": {
+    "report": "tools/bazel/tests/evidence/aos-cli-developer-checks.json",
+    "report_sha256": "3cdd6707557b87414f11d16f9d9e1ba5544bff254caaccca68981f745de3c8c9"
+  },
+  "configurations": {
+    "default": {
+      "bazel_derivation": "/nix/store/8ka0krr6591dydzl07mlpcjyxcg6gvdx-aos-bazel-aos-cli-tests-tests-1.drv",
+      "bazel_source": "/nix/store/mffby9yps9va8rsj10jzbvlqq6rgygq1-aos-bazel-workspace",
+      "bazel_tests": "/nix/store/40klqwvl2i28grjhnrl4j0zl08l6j5m1-aos-bazel-aos-cli-tests-tests-1",
+      "cargo": "/nix/store/0r0gfbwgmd345gxal76mbydhm6p3gaif-aos-bazel-aos-cli-cargo-1",
+      "cargo_derivation": "/nix/store/fzya6cyxn3qi1cazjgr03nk991a99bl2-aos-bazel-aos-cli-cargo-1.drv",
+      "cargo_messages_sha256": "50a9a41357a1f999ad5b6fdb94071357add00446d4404dd9b6a51c2d0456c776",
+      "cargo_source": "/nix/store/0sx0jgmbxr58zrgzl34kshdmqi5ps16n-aos-workspace-src",
+      "cargo_tests_sha256": "7c11d46151dcb116a9bba8401b7c26f91b05283013d73e16a8025a8be478c645",
+      "executed_cases": 540,
+      "execution_sha256": "38b10a7a0cc7cd70167f0a800db1c5ad0cbb8fe39414493f3fefd4f12b44bb4d",
+      "external_feature_units": 439,
+      "first_party_feature_units": 38,
+      "parity_sha256": "9f1205a03e952d36d53069b0aa7379eec6d6691e049b20d497325b14906f2d6c",
+      "test_targets": 30
+    },
+    "fleet": {
+      "bazel_derivation": "/nix/store/iimp5n6rw8ln6x641kgbywwvp44c9b7k-aos-bazel-aos-cli-fleet-tests-tests-1.drv",
+      "bazel_source": "/nix/store/mffby9yps9va8rsj10jzbvlqq6rgygq1-aos-bazel-workspace",
+      "bazel_tests": "/nix/store/xw4fc2irsgjmv3djmpnw4p7i5iygwp5q-aos-bazel-aos-cli-fleet-tests-tests-1",
+      "cargo": "/nix/store/bsfb92p4dcwwrixykfmkrrs7a5nahr73-aos-bazel-aos-cli-fleet-cargo-1",
+      "cargo_derivation": "/nix/store/36xqjwi8j7gh2k4938l436zs73iy88vg-aos-bazel-aos-cli-fleet-cargo-1.drv",
+      "cargo_messages_sha256": "3039c3e01e6711c3d97b02481e795e103193fb6e9852444289007a294c154039",
+      "cargo_source": "/nix/store/0sx0jgmbxr58zrgzl34kshdmqi5ps16n-aos-workspace-src",
+      "cargo_tests_sha256": "e8d7c7b436905fd6f207b204b1bd04304c26d56a4c934a92b587259fea950736",
+      "executed_cases": 548,
+      "execution_sha256": "3d8dd158b76e8c792f8c2653ae69ab9e6d81b794df593565685dca8bd638fa7a",
+      "external_feature_units": 439,
+      "first_party_feature_units": 38,
+      "parity_sha256": "0c44b1763e77827ca8b8094f554d3f6596137e694fcca91d1ecc4e5f8694d112",
+      "test_targets": 33
+    }
+  },
+  "developer_checks": {
+    "default": {
+      "cache_hits": 0,
+      "clippy_actions": 37,
+      "executed_clippy_actions": 37,
+      "execution_sha256": "7e6512e776e9b796c969f1948b0a8bf7dd86e4b5c1467e82cca8fd2a5753b07b",
+      "output": "/nix/store/z9n3x4x26g85j564176wj3an7vbvp93y-aos-bazel-aos-cli-tests-developer-1",
+      "runners": {
+        "linux-sandbox": 37
+      }
+    },
+    "fleet": {
+      "cache_hits": 2,
+      "clippy_actions": 43,
+      "executed_clippy_actions": 41,
+      "execution_sha256": "d56713df5c3244b8fd3bb5df1efa86e13a88fc2a1e59bb6c87427e80a71e5eab",
+      "output": "/nix/store/52mqjqcmfnfh3akk3555fhaamp9l1an8-aos-bazel-aos-cli-fleet-tests-developer-1",
+      "runners": {
+        "disk cache hit": 2,
+        "linux-sandbox": 41
+      }
+    },
+    "production": {
+      "cache_hits": 0,
+      "clippy_actions": 15,
+      "executed_clippy_actions": 15,
+      "execution_sha256": "4ef7a765c460be977ce4397bdaa8c2ccfff4cc77dea3ca6e45807650cc037e03",
+      "output": "/nix/store/4vpppf2n0yhhq6vixn7p556vnp7bhpgh-aos-bazel-aos-cli-production-clippy-1",
+      "runners": {
+        "linux-sandbox": 15
+      }
+    }
+  },
+  "format": {
+    "output": "/nix/store/0b5609hn4k8c28pi9qv9xfksbcfn71j6-aos-bazel-aos-cli-tests-format-1",
+    "status": "PASS"
+  },
+  "limits": [
+    "Development Bazel checks used the explicitly mounted local disk action cache. This is not strict uncached qualification.",
+    "The required application Rust gate compiles all application unit and integration targets; it does not execute their cases.",
+    "Runtime smoke verifies all fifteen ELF dependency resolutions and public CLI help. It does not execute privileged helper effects or establish split-output/private-dispatch closure policy.",
+    "Existing editor evidence qualifies earlier immutable sources; this repair does not claim renewed editor parity.",
+    "Compiler-option equivalence, full service/VM gates, performance acceptance, strict source qualification and production migration remain separate work."
+  ],
+  "repair_sources_sha256": {
+    "crates/aos/cli/aos-cli/src/cli/mod.rs": "7c4ee2f0f72265e7ce21140a109a2d079cfc003323c9f585b35dd8b8d37cf4f9",
+    "crates/aos/cli/aos-cli/src/commands/ability.rs": "78f8b3d5cbcb180026543d49a577155a116e503aa1f328aa9cbe791479d26e81",
+    "crates/aos/cli/aos-cli/src/commands/build.rs": "c86ac7a1eed6d5dc9821f67bd89dfb32253b05a8d6f56fea4cf63b1760e1bf04",
+    "crates/aos/cli/aos-cli/src/commands/gc.rs": "b72450d678df24754375480127a5f7a939c428455c7d2436d0894086cd2bab85",
+    "crates/aos/cli/aos-cli/src/commands/hub/cache/mutation.rs": "74a1e8e96017cc3ae6698b8b501d6393af6e27447e0e0705f80a635c20c0adb3",
+    "crates/aos/cli/aos-cli/src/commands/hub/cache/population.rs": "de1a308601c5002ed1d9871dd6f1ab5c95372d1142cf214f73c240d66f7dd022",
+    "crates/aos/cli/aos-cli/src/commands/hub/cache/retention.rs": "7dfc8f370d94266746644a5025b7b02d15bb67b11655c0ee61b68b29b064e46c",
+    "crates/aos/cli/aos-cli/src/commands/hub/endpoint.rs": "964f197fd23c1307dbf21e141c8b05dab7a172783d23fea5c549da73837fe5ad",
+    "crates/aos/cli/aos-cli/src/commands/hub/gateway.rs": "555f3b18f81b9aeb96b46b589978fe6d16b0eb3b8e0fdede09a31b713a174057",
+    "crates/aos/cli/aos-cli/src/commands/hub/instance.rs": "4b367f1e6c513acd2765ace77c4923925d0ddb86b73bedf6953e691412eb8b42",
+    "crates/aos/cli/aos-cli/src/commands/hub/mutation.rs": "6f2edeb5e31b1261569240acce73bfb8a271cbf1d10f3f991121a2fbf7e06481",
+    "crates/aos/cli/aos-cli/src/commands/hub/network_policy.rs": "035c4384dca32c1a0adfa58381e54e11a23ffcf6db159bd0264decfff013c636",
+    "crates/aos/cli/aos-cli/src/commands/hub/placement/policy.rs": "e2b4aa70e9488f02676b3e40be1687ee2ad326ae296c49fdba87c2fd998635aa",
+    "crates/aos/cli/aos-cli/src/commands/hub/route.rs": "508d53e291938a199b014099ec4696531cbf250874dbb05de7a977b52570fa05",
+    "crates/aos/cli/aos-cli/src/commands/hub_cutover_verify/bundle.rs": "28cbce3250120bfb31883fd39504a51fb410ba1b34d23706f74c773fd1785794",
+    "crates/aos/cli/aos-cli/src/commands/hub_cutover_verify/canonical.rs": "4c37f185d8fc57a8266bcd85563a8bb8a0f12fbfab87608d7f217b2982d6dd41",
+    "crates/aos/cli/aos-cli/src/commands/hub_cutover_verify/mod.rs": "d5b178a4c7ddc45ed12b8d3b1c7dbf6fb3ba3f321fdc8c8aaa6d579f943dabaf",
+    "crates/aos/cli/aos-cli/src/commands/hub_cutover_verify/schema.rs": "09f5560af0dc1f2d9fc513e8dbcdbe0e2f892bcfbe601958c43e486ce011cf1e",
+    "crates/aos/cli/aos-cli/src/commands/hub_cutover_verify/semantics.rs": "6c876e6755e99ddc94d1ab564ec48a6763b3a0e49889d6f816b468aa0990eb8c",
+    "crates/aos/cli/aos-cli/src/commands/image.rs": "897c0d394e214f33caba328d68d02bbd8a44532190c30713f7e2002bccad09e9",
+    "crates/aos/cli/aos-cli/src/commands/prefetch.rs": "c4f455ae65b4b8b69f598058c5c0c090271994cf9c313f34e6682ac75daeaffe",
+    "crates/aos/cli/aos-cli/src/commands/release/assemble/images.rs": "0bb1b9b37ebb0474e033fe46f238f965fc3fddbb8d5400debf562769822a97fc",
+    "crates/aos/cli/aos-cli/src/commands/release/assemble/mod.rs": "98854606fc80474c2d83a2b3f1712a3190117b85c9c99d6fca4f37ae19ad1940",
+    "crates/aos/cli/aos-cli/src/commands/release/container_binding.rs": "8c31403cc47c682b57a7a842357d79f473bfbcfadb3cf2d4f5b57ba94b32a5d2",
+    "crates/aos/cli/aos-cli/src/commands/release/mod.rs": "409cd10ccaf46e28f8ab2ce94a920e4848452c1dfc1aea2cdfea5326654406e6",
+    "crates/aos/cli/aos-cli/src/commands/release/porcelain/steps.rs": "ba1ad499b66470f892074d00c0fd50cb4c03187ef78458f46e231c9498683fd1",
+    "crates/aos/cli/aos-cli/src/commands/release/porcelain/testing.rs": "87c58c3917d3283b9f8e46db64ad94eba63a86e9f82e046b1edf8dabce7ea3cb",
+    "crates/aos/cli/aos-cli/src/commands/release/qualification_executor.rs": "90255415f6b457f531cee0cc41e4e6d7ccfd564509fa5116de38d8ea88cf383f",
+    "crates/aos/cli/aos-cli/src/commands/release/qualification_run.rs": "668f9c5695eef8b7024e784ae5790cc16f0f8956005598afe2690e5377ae8ae4",
+    "crates/aos/cli/aos-cli/src/commands/release/qualification_transition.rs": "3c7c4ece129e4d78366be01985624579297dc23e5fba42f2dd12e4a208c284ae",
+    "crates/aos/cli/aos-cli/src/commands/release/surface/static_.rs": "2419706f448bb12145d20abdf63eb470db57fbca6d9a33783f4eb85e70b6fe40",
+    "crates/aos/cli/aos-cli/src/commands/release/tuf.rs": "a3140b8e0605b81568308480ce7c93685b0addfcfd6c1edb887be14ba5477e0e",
+    "crates/aos/cli/aos-cli/src/entry.rs": "28a0cc673527bbd642df4f11530e5e9eaa5cfab63702255dbc7fd5b97774d91e",
+    "crates/aos/cli/aos-cli/src/lib.rs": "ecc8c669a55c918c45e823d41b6d125ab09f9c5fd7b027b15f5768d72eb5c19a",
+    "crates/aos/cli/aos-cli/tests/apr_keys_generate_cli.rs": "0ac6f9d766f08df84961a65b655d4e4878b0dacedf57fdf97530639a1db1e60a",
+    "crates/aos/cli/aos-cli/tests/cli_separation.rs": "ae8a327efe2dda03cb3aa549517b46b50ac1a768c046a89f37c83b0424b3403b",
+    "crates/aos/cli/aos-cli/tests/container_native_publication.rs": "618b3c69ba268b340efeced1dd1ed6d91a64a4db9a2a12397261dc19a3c521e5",
+    "crates/aos/cli/aos-cli/tests/documentation_cli.rs": "4d630abf122c0430e0906f131c084597df9c61855a82788d5d2706157ee3ce4b",
+    "crates/aos/cli/aos-cli/tests/hub_retained_control_cli_contract.rs": "82a04cad712cf3c53e15d031445113b7df03483328c83c12fa96dbb7ee8e633d",
+    "crates/aos/cli/aos-cli/tests/support/ability_audit_common.rs": "11b3041e7254c7ccfa9615293e1be6d052f5f2234f2df814e8f4357ebecbbc8b",
+    "crates/aos/cli/aos-cli/tests/support/release_fleet_fixture.rs": "9ee6a84d913f77a48223f99cdc53a46f6da43f85dfcd9c7e89953c72035f75ae"
+  },
+  "required_rust_compile": {
+    "derivation": "/nix/store/ayv8cpbs85z5y3pfhpyqsxxz13zl39z1-aos-test-targets-0.1.0.drv",
+    "log_sha256": "3d80c928ea5118dae78640f8bcc84b611ef9d6f462c8eed28200c1dcc344804f",
+    "output": "/nix/store/ssgdh1nnb1d2pyf5z47idhwgwnv7xr9c-aos-test-targets-0.1.0",
+    "source": "/nix/store/0sx0jgmbxr58zrgzl34kshdmqi5ps16n-aos-workspace-src",
+    "status": "PASS"
+  },
+  "runtime_smoke": {
+    "output": "/nix/store/gggs5vv6vvxlif7451vjik4ylrwmgn08-aos-bazel-aos-cli-production-runtime-smoke",
+    "programs": 15,
+    "public_help": [
+      "aos",
+      "apm",
+      "apr"
+    ],
+    "report_sha256": "a98ff5ebec84424d94ce2792f487478a318cb93fb925fba45abf3335365cf77e",
+    "status": "PASS"
+  },
+  "schema_version": 1,
+  "status": "PASS: CLI developer checks, complete test parity and required Rust compilation"
+}

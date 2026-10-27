@@ -178,11 +178,19 @@
       }
       {
         label = "safe idle callback body";
-        needle = "pub fn handle_network_rx_idle_callback";
+        needle = "pub(crate) fn handle_network_rx_idle_callback_with_commit";
       }
       {
         label = "idle-context injection method";
-        needle = "pub fn inject_due_frames_from_idle_context";
+        needle = "pub(crate) fn inject_due_frames_with_commit";
+      }
+      {
+        label = "commit mismatch fail-loud";
+        needle = "CommittedBatchMismatch";
+      }
+      {
+        label = "uncertain commit blocks retry";
+        needle = "assert_eq!(later_attempt, Err(NetworkRxError::CommitUncertain))";
       }
       {
         label = "idle delivery floor parameter";
@@ -322,7 +330,7 @@
       }
       {
         label = "RX callback after preview";
-        needle = "handle_network_rx_idle_callback(";
+        needle = "handle_network_rx_idle_callback_with_commit(";
       }
       {
         label = "idle floor passed to RX";
@@ -337,8 +345,8 @@
         needle = "PluginInboundFrames::mark_retained_head";
       }
       {
-        label = "commit mismatch fail-loud";
-        needle = "CommittedBatchMismatch";
+        label = "RX commit failures propagate";
+        needle = ".map_err(|source| IdleHotLoopError::NetworkRxInjection { source })?";
       }
       {
         label = "RX injection result recorded";
@@ -368,7 +376,7 @@
       }
       {
         label = "queue observes direct advance marker";
-        needle = "direct_advance_ns_at_queue";
+        needle = "direct_advance_tick_at_queue";
       }
       {
         label = "queue failure leaves ring unread";
@@ -409,6 +417,8 @@ in
       version = "0";
       src = crucibleSrc;
 
+      # Engine cross-checks execute the independently linked Apache helper.
+      CRUCIBLE_QEMU_TEST_ORACLE = "${pkgs.callPackage ../../pkgs/tools/crucible/_qemu-test-oracle.nix {}}/bin/crucible-qemu-test-oracle";
       runtimeDeps = [pkgs.sqlite];
 
       buildDeps = [

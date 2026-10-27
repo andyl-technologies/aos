@@ -5,6 +5,9 @@
 #[path = "support/workspace.rs"]
 mod workspace;
 
+#[path = "support/architecture.rs"]
+mod architecture;
+
 use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -18,7 +21,12 @@ mod source_sections;
 
 #[test]
 fn engine_owns_quantum_loop_and_only_l4_drivers_advance_it() -> Result<(), Box<dyn Error>> {
-    let root = workspace_root();
+    let graph = architecture::load()?;
+    let root = if graph.is_some() {
+        std::env::current_dir()?
+    } else {
+        workspace_root()
+    };
     let engine_lib = read_repo_file(&root, "crates/crucible/crucible-engine/src/lib.rs")?;
     let engine_model = read_module_tree(
         &root,
@@ -35,8 +43,6 @@ fn engine_owns_quantum_loop_and_only_l4_drivers_advance_it() -> Result<(), Box<d
         "crates/crucible/crucible-session/src/lib.rs",
         "crates/crucible/crucible-session/src/session",
     )?;
-    let session_manifest: Value =
-        read_repo_file(&root, "crates/crucible/crucible-session/Cargo.toml")?.parse()?;
     let mut failures = Vec::new();
 
     require_contains(
@@ -82,7 +88,16 @@ fn engine_owns_quantum_loop_and_only_l4_drivers_advance_it() -> Result<(), Box<d
         &mut failures,
     );
 
-    if !manifest_depends_on_package(&session_manifest, "crucible-engine") {
+    let session_depends_on_engine = if let Some(graph) = &graph {
+        graph
+            .production_dependencies("crucible-session")?
+            .contains("crucible-engine")
+    } else {
+        let manifest: Value =
+            read_repo_file(&root, "crates/crucible/crucible-session/Cargo.toml")?.parse()?;
+        manifest_depends_on_package(&manifest, "crucible-engine")
+    };
+    if !session_depends_on_engine {
         failures.push(String::from(
             "crucible-session must depend on the L3 engine crate to drive QuantumLoop",
         ));
@@ -233,9 +248,21 @@ fn package_source_scheduler_ownership_findings(
     package: &str,
 ) -> Result<Vec<String>, Box<dyn Error>> {
     let mut findings = Vec::new();
-    let package_dir = workspace::package_path(&root.join("crates"), package);
+    let graph = architecture::load()?;
+    let package_dir = if let Some(graph) = &graph {
+        root.join(graph.package_directory(package)?)
+    } else {
+        workspace::package_path(&root.join("crates"), package)
+    };
     let src_dir = package_dir.join("src");
     if !src_dir.is_dir() {
+        if graph.is_some() {
+            return Err(format!(
+                "declared scheduler audit source is absent: {}",
+                src_dir.display()
+            )
+            .into());
+        }
         return Ok(findings);
     }
 

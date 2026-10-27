@@ -1,0 +1,569 @@
+{
+  "artifact_comparison": {
+    "binary_digests": {
+      "aos": {
+        "bytes_equal": false,
+        "changed_sections": [
+          ".rodata"
+        ],
+        "conservative": "159b2e013dec791fed45b2d7eafd1f922158c3d9493cfa067de3ee054a09ea4a",
+        "precise": "8cc2eb678cc755b4794aff481c871f91e7726fde101b8e8837f885840f52bd33",
+        "sandbox_execution_roots": {
+          "conservative": [
+            "/build/bazel/sandbox/linux-sandbox/846/execroot/_main"
+          ],
+          "precise": [
+            "/build/bazel/sandbox/linux-sandbox/978/execroot/_main"
+          ]
+        },
+        "sandbox_path_diagnostic_equal": true
+      },
+      "aos-ability-authority-audit": {
+        "bytes_equal": true,
+        "changed_sections": [],
+        "conservative": "de0416fad0c2004fb72bade1bf280eb1de9cd72f32194c4de2f9053745905526",
+        "precise": "de0416fad0c2004fb72bade1bf280eb1de9cd72f32194c4de2f9053745905526",
+        "sandbox_execution_roots": {
+          "conservative": [],
+          "precise": []
+        },
+        "sandbox_path_diagnostic_equal": true
+      },
+      "aos-ability-interruption-audit": {
+        "bytes_equal": true,
+        "changed_sections": [],
+        "conservative": "01832568fac15943af5a2b34e6f58432df418506675664b4c781ed94f630e16c",
+        "precise": "01832568fac15943af5a2b34e6f58432df418506675664b4c781ed94f630e16c",
+        "sandbox_execution_roots": {
+          "conservative": [],
+          "precise": []
+        },
+        "sandbox_path_diagnostic_equal": true
+      },
+      "aos-boot-configuration": {
+        "bytes_equal": false,
+        "changed_sections": [
+          ".rodata"
+        ],
+        "conservative": "abd8f11447bc169f39e4a12cdeffecd6ed2d611f40c64749aec5a244deadf6e6",
+        "precise": "ae4cb62daaadf6abdb5ca29f248bbe3373088b4e171de6e10ea16fa8c4893a61",
+        "sandbox_execution_roots": {
+          "conservative": [
+            "/build/bazel/sandbox/linux-sandbox/846/execroot/_main"
+          ],
+          "precise": [
+            "/build/bazel/sandbox/linux-sandbox/978/execroot/_main"
+          ]
+        },
+        "sandbox_path_diagnostic_equal": true
+      },
+      "aos-deployment-check": {
+        "bytes_equal": true,
+        "changed_sections": [],
+        "conservative": "912c36128b3399353bf6e14e3f65b955ef03c445d947ffffbcfd60486ecb6990",
+        "precise": "912c36128b3399353bf6e14e3f65b955ef03c445d947ffffbcfd60486ecb6990",
+        "sandbox_execution_roots": {
+          "conservative": [],
+          "precise": []
+        },
+        "sandbox_path_diagnostic_equal": true
+      },
+      "aos-image-metadata": {
+        "bytes_equal": true,
+        "changed_sections": [],
+        "conservative": "f82afeb952418ab6908f0c9cf7a07f4629adcca06011f5d88937f2c2b93bffb8",
+        "precise": "f82afeb952418ab6908f0c9cf7a07f4629adcca06011f5d88937f2c2b93bffb8",
+        "sandbox_execution_roots": {
+          "conservative": [],
+          "precise": []
+        },
+        "sandbox_path_diagnostic_equal": true
+      },
+      "aos-image-rollout-boot": {
+        "bytes_equal": false,
+        "changed_sections": [
+          ".rodata"
+        ],
+        "conservative": "514155f75754b5b703e7d40c664245aeb2e0763e89bed02dba1b7d5bca77d9e6",
+        "precise": "3efc600b7242dde809efe53fda6d307919c95056962650f058d101af404f057f",
+        "sandbox_execution_roots": {
+          "conservative": [
+            "/build/bazel/sandbox/linux-sandbox/846/execroot/_main"
+          ],
+          "precise": [
+            "/build/bazel/sandbox/linux-sandbox/978/execroot/_main"
+          ]
+        },
+        "sandbox_path_diagnostic_equal": true
+      },
+      "aos-image-rollout-observer": {
+        "bytes_equal": false,
+        "changed_sections": [
+          ".rodata"
+        ],
+        "conservative": "0709479c3311f669c7781575ec9d4c4e00defe5333dcfff1919e1f29f9471f22",
+        "precise": "437396bac381a2c95d5eaac42dddd06a61651b9468101c289f7a37c602c188ad",
+        "sandbox_execution_roots": {
+          "conservative": [
+            "/build/bazel/sandbox/linux-sandbox/846/execroot/_main"
+          ],
+          "precise": [
+            "/build/bazel/sandbox/linux-sandbox/978/execroot/_main"
+          ]
+        },
+        "sandbox_path_diagnostic_equal": true
+      },
+      "aos-image-rollout-provider": {
+        "bytes_equal": false,
+        "changed_sections": [
+          ".rodata"
+        ],
+        "conservative": "974f638f96bcbfd3fe62396648f0bb1980b1a8cedae046196abb6ce46925fdb1",
+        "precise": "9de036760e866e22c722807b700aa69cc77fc19de923324f5d3821c4132038b3",
+        "sandbox_execution_roots": {
+          "conservative": [
+            "/build/bazel/sandbox/linux-sandbox/846/execroot/_main"
+          ],
+          "precise": [
+            "/build/bazel/sandbox/linux-sandbox/978/execroot/_main"
+          ]
+        },
+        "sandbox_path_diagnostic_equal": true
+      },
+      "aos-package-attestation-provider": {
+        "bytes_equal": false,
+        "changed_sections": [
+          ".rodata"
+        ],
+        "conservative": "2a63e00c5e32443cd9c7e0613afcd0c83b27b7b0dcb7cc2505eef4964a3da389",
+        "precise": "fc92d24141c364051bd4f772a61ab9e81f9b45ab8f60af4334e504715f781604",
+        "sandbox_execution_roots": {
+          "conservative": [
+            "/build/bazel/sandbox/linux-sandbox/846/execroot/_main"
+          ],
+          "precise": [
+            "/build/bazel/sandbox/linux-sandbox/978/execroot/_main"
+          ]
+        },
+        "sandbox_path_diagnostic_equal": true
+      },
+      "aos-package-runtime": {
+        "bytes_equal": false,
+        "changed_sections": [
+          ".rodata"
+        ],
+        "conservative": "ba81e89bc8be0a0c23eed066f39fd6394245d044a100f27a83899560240c834a",
+        "precise": "6998622cc33a251f1667d3a5a9b55e7f90112e839a87bee7777fe1e2362edcd3",
+        "sandbox_execution_roots": {
+          "conservative": [
+            "/build/bazel/sandbox/linux-sandbox/846/execroot/_main"
+          ],
+          "precise": [
+            "/build/bazel/sandbox/linux-sandbox/978/execroot/_main"
+          ]
+        },
+        "sandbox_path_diagnostic_equal": true
+      },
+      "aos-provisioning-configuration-evaluator": {
+        "bytes_equal": false,
+        "changed_sections": [
+          ".rodata"
+        ],
+        "conservative": "adc0344c2cfb90279e09f62008447e669c26ebd407c418bc66ad2f2fb6afc1f4",
+        "precise": "625331237026475b8bb0854640fedc8da915be807815341c4fcd34d9cbd70e30",
+        "sandbox_execution_roots": {
+          "conservative": [
+            "/build/bazel/sandbox/linux-sandbox/846/execroot/_main"
+          ],
+          "precise": [
+            "/build/bazel/sandbox/linux-sandbox/978/execroot/_main"
+          ]
+        },
+        "sandbox_path_diagnostic_equal": true
+      },
+      "aos-release-fleet-fixture": {
+        "bytes_equal": false,
+        "changed_sections": [
+          ".rodata"
+        ],
+        "conservative": "fad69a15c8b31590f46438b35189ddb789eb43cd96e788faf709bffdbb137301",
+        "precise": "af06cb06ced37a6811c61c28a085621d03a04294b7b7fe0c04a478dba82c8b98",
+        "sandbox_execution_roots": {
+          "conservative": [
+            "/build/bazel/sandbox/linux-sandbox/846/execroot/_main"
+          ],
+          "precise": [
+            "/build/bazel/sandbox/linux-sandbox/978/execroot/_main"
+          ]
+        },
+        "sandbox_path_diagnostic_equal": true
+      },
+      "apm": {
+        "bytes_equal": false,
+        "changed_sections": [
+          ".rodata"
+        ],
+        "conservative": "464384a495f0a4f2289c42eae666689c752c4fa032eb16d10566a35c31c2a72d",
+        "precise": "6986b4279744e51fc4a5e9feceaa5fc5db85d9950ee57b3ab63dc5af59747c82",
+        "sandbox_execution_roots": {
+          "conservative": [
+            "/build/bazel/sandbox/linux-sandbox/846/execroot/_main"
+          ],
+          "precise": [
+            "/build/bazel/sandbox/linux-sandbox/978/execroot/_main"
+          ]
+        },
+        "sandbox_path_diagnostic_equal": true
+      },
+      "apr": {
+        "bytes_equal": false,
+        "changed_sections": [
+          ".rodata"
+        ],
+        "conservative": "c1626c5f72946b566ff02ed25ad995d8c012ff8191bd92b74323280b2a3cbb0f",
+        "precise": "e8308d4a2cffa040cd2148dec0de4c25764cf00f1e8f9fe1b0ca0b2023ce227e",
+        "sandbox_execution_roots": {
+          "conservative": [
+            "/build/bazel/sandbox/linux-sandbox/846/execroot/_main"
+          ],
+          "precise": [
+            "/build/bazel/sandbox/linux-sandbox/978/execroot/_main"
+          ]
+        },
+        "sandbox_path_diagnostic_equal": true
+      }
+    },
+    "configured_targets": 580,
+    "conservative_build": "/nix/store/1hm6z5989l28viavqxz74chq7bx352if-aos-bazel-aos-cli-production-1",
+    "conservative_installed": "/nix/store/f6cm3q8m1byvqac5dli47fa4dh62pmv5-aos-cli-0.1.0",
+    "inventory_identical": true,
+    "limits": [
+      "Replacing sandbox directory names is a diagnostic only; the eleven raw binaries differ and this does not establish repeatability or satisfy the uncached parity gate."
+    ],
+    "precise_build": "/nix/store/rs5q1kzrcz41y7zh6y4i1xyf4qsppi0n-aos-bazel-aos-cli-production-1",
+    "precise_installed": "/nix/store/grccrip24k6h4wpl9vbsc8yk7y1lf9fi-aos-cli-0.1.0",
+    "selected_source_files": 761
+  },
+  "checkout_parent": "1104d8fba56f21b8aaf16a8622c72009422ea689",
+  "command": "nix-build tools/bazel/tests/aos-cli.nix -A production-precise.runtime-smoke -A production-precise.developer-build --no-out-link --max-jobs 2 --cores 4 --option substitute false",
+  "compiler_requests": {
+    "arguments_and_environment_identical": true,
+    "count": 547,
+    "output_differences": [
+      "//crates/cli/aos-cli:aos",
+      "//crates/cli/aos-cli:aos-boot-configuration",
+      "//crates/cli/aos-cli:aos-package-runtime",
+      "//crates/cli/aos-cli:aos-provisioning-configuration-evaluator",
+      "//crates/cli/aos-cli:aos-release-fleet-fixture",
+      "//crates/cli/aos-cli:apm",
+      "//crates/cli/aos-cli:apr",
+      "//crates/packages/aos-package-manager:aos-image-rollout-boot",
+      "//crates/packages/aos-package-manager:aos-image-rollout-observer",
+      "//crates/packages/aos-package-manager:aos-image-rollout-provider",
+      "//crates/packages/aos-package-manager:aos-package-attestation-provider",
+      "@@+aos_tools_repository+aos_aos_cli_production_crates__aws-lc-sys-0.46.0//:aws_lc_sys",
+      "@@+aos_tools_repository+aos_aos_cli_production_crates__libgit2-sys-0.18.7-1.9.6//:libgit2_sys",
+      "@@+aos_tools_repository+aos_aos_cli_production_crates__libmimalloc-sys-0.1.49//:libmimalloc_sys",
+      "@@+aos_tools_repository+aos_aos_cli_production_crates__ring-0.17.14//:ring"
+    ]
+  },
+  "configuration_sha256": "03caca870e8956aa5e5c42f46540cbce4bc4d5bc626b2c16098e0ae31fce86e4",
+  "core_evaluation_check": "/nix/store/8zackq55f7fmrpqyvbikc6qnik6vyyia-aos-native-evaluation-checks-0",
+  "declarations_sha256": {
+    "tests/build/_bazel-aos-cli-production.nix": "6b34a2255b14492f8c7b42c95873ade2bc6f117fdfb7ebc943432433762498c8",
+    "tools/bazel/metadata/aos-cli-inventory.json": "b45967551040d31d254ea0dcb98bbaf4e9c7f5ded180afff4ee51858dd33e6f2",
+    "tools/bazel/tests/aos-cli.nix": "d5bf76c962ddac62ed06cc8a5c3cb0192eecf908b83ff3c26d096419f6e78f62"
+  },
+  "exec_rustc_flags": [
+    "-Copt-level=0",
+    "-Cdebuginfo=0",
+    "-Cdebug-assertions=no",
+    "-Coverflow-checks=no"
+  ],
+  "limits": [
+    "The default production helper remains conservative; this is an opt-in qualification entry point, not production enrollment.",
+    "Four installed binaries match byte for byte. Eleven differ only in ELF .rodata strings containing numeric native-build sandbox directory names; executable code sections match.",
+    "Replacing those paths is a diagnostic only. No installed artifact was normalized, and this does not establish raw-byte repeatability or satisfy uncached parity.",
+    "Four upstream sys-crate Rust outputs and the eleven final binaries differ. All 547 reconstructed compiler argument and environment requests match; native source path reproducibility needs a separate repair and qualification.",
+    "No independent Cargo comparison, full compiler/default or ABI parity, complete runtime-closure comparison, split production packaging, performance acceptance, or production cutover is claimed."
+  ],
+  "paths": {
+    "build": "/nix/store/rs5q1kzrcz41y7zh6y4i1xyf4qsppi0n-aos-bazel-aos-cli-production-1",
+    "developer-build": "/nix/store/3ssiijsds374mqd5llb0yk0xjr5shr4l-aos-bazel-aos-cli-production-clippy-1",
+    "installed": "/nix/store/grccrip24k6h4wpl9vbsc8yk7y1lf9fi-aos-cli-0.1.0",
+    "runtime-smoke": "/nix/store/k19xwkcsadkjndpvwnp9jkc971cjgfbr-aos-bazel-aos-cli-production-runtime-smoke",
+    "workspace": {
+      "configuration": "/nix/store/2vcdkidv5830hy0cvz5x4x7kz96di5k0-aos-bazel-configuration.json",
+      "source": "/nix/store/192ifqp8d8v1xa9krdpkg4pbsic7f2q0-aos-bazel-workspace"
+    }
+  },
+  "runs": {
+    "conservative": {
+      "action_cache_hits": 0,
+      "action_mnemonics": {
+        "CargoBuildScriptRun": 56,
+        "ExtractCargoTomlEnvVars": 472,
+        "Rustc": 547
+      },
+      "action_runners": {
+        "linux-sandbox": 1075
+      },
+      "build": "/nix/store/1hm6z5989l28viavqxz74chq7bx352if-aos-bazel-aos-cli-production-1",
+      "evidence_sha256": {
+        "actions.json": "c6cdcefea92911ea24cf54679e47c5798135ea0ac6acd25e6010df87ef158ccb",
+        "compiler-inputs.json": "b5ad80d68cd6eb144abbb2c8a76f5d57077701502d95d55ab5ade77dce5bb981",
+        "compiler-invocations.json": "e8f5108cbc01783969c047424b1dcedba41286aa2399a7e3df3757b2c63c2a91",
+        "configured-discovery-metrics.json": "24e163062d06b7ceee49b8bddd0d792e297ff823096c988c599ce1a3c243772b",
+        "configured-labels.txt": "74451ef5ff3057defbe2d6bfb8c5ed594294df544af9c4d609d45324238b3d4b",
+        "declarations.txt": "1fcde6e977338ecbcc55e3ab14761545bb9222dc46f3a965d3f77812f8ce3df1",
+        "discovery-metrics.json": "f51c8571f0dc1fd6ddae3943500824096895409463aae3d0a4ee12a7eb3d82f6",
+        "events.json": "a5d5b6f6ced04c7283bf92c45b1b7a4b1abc5601bbf2a39942b13f6d682cf4ef",
+        "execution.json": "d7f1d208a29108ea63c308b728901ff22e3b6b95c2284066c96e99be56b96816",
+        "metrics.json": "a15ea6647b7bb56555c8bf9ff7bdbfd78c20ba99e6186b0bb1305c69964102f9"
+      },
+      "executed_actions": 1075
+    },
+    "precise": {
+      "action_cache_hits": 0,
+      "action_mnemonics": {
+        "CargoBuildScriptRun": 56,
+        "ExtractCargoTomlEnvVars": 472,
+        "Rustc": 547
+      },
+      "action_runners": {
+        "linux-sandbox": 1075
+      },
+      "build": "/nix/store/rs5q1kzrcz41y7zh6y4i1xyf4qsppi0n-aos-bazel-aos-cli-production-1",
+      "evidence_sha256": {
+        "actions.json": "c6cdcefea92911ea24cf54679e47c5798135ea0ac6acd25e6010df87ef158ccb",
+        "compiler-inputs.json": "b5ad80d68cd6eb144abbb2c8a76f5d57077701502d95d55ab5ade77dce5bb981",
+        "compiler-invocations.json": "2ae5b5bb0a9ebd3e1943fc3e60b2a10fa5f628ef7e1ef1b4f12b734ca6941d24",
+        "configured-discovery-metrics.json": "567fb125b427c9a8dcd5069386b69a271b1743cf75f998463d86f55550336424",
+        "configured-labels.txt": "74451ef5ff3057defbe2d6bfb8c5ed594294df544af9c4d609d45324238b3d4b",
+        "declarations.txt": "1fcde6e977338ecbcc55e3ab14761545bb9222dc46f3a965d3f77812f8ce3df1",
+        "discovery-metrics.json": "7cc02c8c939fe0f4cd5b37ea86ac220ca2153a037420164ad159e2113e3500fc",
+        "events.json": "bade96b268bc21afa6513c20d97776dac6360279a24a0426422ba7fac1b3abbf",
+        "execution.json": "a9cb179b00a5b7c6d090a8f7f4b7fa6562725afad5b76b0b82d5c30ec8a61804",
+        "metrics.json": "25c03f4fb5b0c49c9c9ef58f71f686742774a056df9204739ea7f101c21c84bc"
+      },
+      "executed_actions": 1075
+    },
+    "precise_clippy": {
+      "action_cache_hits": 0,
+      "action_mnemonics": {
+        "CargoBuildScriptRun": 56,
+        "Clippy": 15,
+        "ExtractCargoTomlEnvVars": 472,
+        "Rustc": 532
+      },
+      "action_runners": {
+        "linux-sandbox": 1075
+      },
+      "build": "/nix/store/3ssiijsds374mqd5llb0yk0xjr5shr4l-aos-bazel-aos-cli-production-clippy-1",
+      "evidence_sha256": {
+        "configured-discovery-metrics.json": "1d017c9103b982b26730c66c45603e481b3fb9c1c48cc19f8cb29f18c34c9652",
+        "configured-labels.txt": "bfe9d5d96e1fad1f18e576f4a8569729cfa7349f12ae688fced5e2fbf88d5f94",
+        "declarations.txt": "1fcde6e977338ecbcc55e3ab14761545bb9222dc46f3a965d3f77812f8ce3df1",
+        "discovery-metrics.json": "07ba9ff260e054593380f5b5c999e29c03b6d3b8b5f509de3a48e71150d512e8",
+        "events.json": "b5c12337f09bad2cae43e35b0f8f24a22d9481eb70a3b1b2f7a52074e1727c1b",
+        "execution.json": "55d0743c7db55806c3a1ce1a6b1299d1eb2f75bc01d046416cbee09b4aab262c",
+        "metrics.json": "04603b4bdcb3407463836e33ccd65e56da8f5dfa405ae5898fa367e79f7e843f"
+      },
+      "executed_actions": 1075
+    }
+  },
+  "runtime_smoke": {
+    "commands": {
+      "aos": {
+        "help_exit_code": 0,
+        "libraries": [
+          "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4/lib/libsqlite3.so",
+          "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib/libssh2.so.1",
+          "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib/libz.so.1",
+          "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib/libgcc_s.so.1",
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libm.so.6",
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6",
+          "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libssl.so.4",
+          "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libcrypto.so.4"
+        ],
+        "loader_exit_code": 0
+      },
+      "aos-ability-authority-audit": {
+        "libraries": [
+          "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib/libgcc_s.so.1",
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6"
+        ],
+        "loader_exit_code": 0
+      },
+      "aos-ability-interruption-audit": {
+        "libraries": [
+          "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib/libgcc_s.so.1",
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6"
+        ],
+        "loader_exit_code": 0
+      },
+      "aos-boot-configuration": {
+        "libraries": [
+          "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4/lib/libsqlite3.so",
+          "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib/libssh2.so.1",
+          "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib/libz.so.1",
+          "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib/libgcc_s.so.1",
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libm.so.6",
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6",
+          "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libssl.so.4",
+          "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libcrypto.so.4"
+        ],
+        "loader_exit_code": 0
+      },
+      "aos-deployment-check": {
+        "libraries": [
+          "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib/libgcc_s.so.1",
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6"
+        ],
+        "loader_exit_code": 0
+      },
+      "aos-image-metadata": {
+        "libraries": [
+          "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib/libgcc_s.so.1",
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6"
+        ],
+        "loader_exit_code": 0
+      },
+      "aos-image-rollout-boot": {
+        "libraries": [
+          "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib/libssh2.so.1",
+          "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib/libz.so.1",
+          "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib/libgcc_s.so.1",
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libm.so.6",
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6",
+          "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libssl.so.4",
+          "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libcrypto.so.4"
+        ],
+        "loader_exit_code": 0
+      },
+      "aos-image-rollout-observer": {
+        "libraries": [
+          "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib/libssh2.so.1",
+          "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib/libz.so.1",
+          "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib/libgcc_s.so.1",
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libm.so.6",
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6",
+          "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libssl.so.4",
+          "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libcrypto.so.4"
+        ],
+        "loader_exit_code": 0
+      },
+      "aos-image-rollout-provider": {
+        "libraries": [
+          "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib/libssh2.so.1",
+          "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib/libz.so.1",
+          "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib/libgcc_s.so.1",
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libm.so.6",
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6",
+          "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libssl.so.4",
+          "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libcrypto.so.4"
+        ],
+        "loader_exit_code": 0
+      },
+      "aos-package-attestation-provider": {
+        "libraries": [
+          "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib/libssh2.so.1",
+          "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib/libz.so.1",
+          "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib/libgcc_s.so.1",
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libm.so.6",
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6",
+          "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libssl.so.4",
+          "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libcrypto.so.4"
+        ],
+        "loader_exit_code": 0
+      },
+      "aos-package-runtime": {
+        "libraries": [
+          "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4/lib/libsqlite3.so",
+          "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib/libssh2.so.1",
+          "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib/libz.so.1",
+          "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib/libgcc_s.so.1",
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libm.so.6",
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6",
+          "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libssl.so.4",
+          "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libcrypto.so.4"
+        ],
+        "loader_exit_code": 0
+      },
+      "aos-provisioning-configuration-evaluator": {
+        "libraries": [
+          "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib/libssh2.so.1",
+          "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib/libz.so.1",
+          "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib/libgcc_s.so.1",
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libm.so.6",
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6",
+          "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libssl.so.4",
+          "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libcrypto.so.4"
+        ],
+        "loader_exit_code": 0
+      },
+      "aos-release-fleet-fixture": {
+        "libraries": [
+          "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib/libssh2.so.1",
+          "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib/libz.so.1",
+          "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib/libgcc_s.so.1",
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libm.so.6",
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6",
+          "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libssl.so.4",
+          "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libcrypto.so.4"
+        ],
+        "loader_exit_code": 0
+      },
+      "apm": {
+        "help_exit_code": 0,
+        "libraries": [
+          "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4/lib/libsqlite3.so",
+          "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib/libssh2.so.1",
+          "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib/libz.so.1",
+          "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib/libgcc_s.so.1",
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libm.so.6",
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6",
+          "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libssl.so.4",
+          "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libcrypto.so.4"
+        ],
+        "loader_exit_code": 0
+      },
+      "apr": {
+        "help_exit_code": 0,
+        "libraries": [
+          "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4/lib/libsqlite3.so",
+          "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib/libssh2.so.1",
+          "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib/libz.so.1",
+          "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib/libgcc_s.so.1",
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libm.so.6",
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6",
+          "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libssl.so.4",
+          "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libcrypto.so.4"
+        ],
+        "loader_exit_code": 0
+      }
+    },
+    "installed": "/nix/store/grccrip24k6h4wpl9vbsc8yk7y1lf9fi-aos-cli-0.1.0",
+    "schema_version": 1
+  },
+  "runtime_smoke_sha256": "5f5c423c5827ff796f3f1fb5db9541b10bb3ccf55bdccad2e0960c0d72a3c789",
+  "rustc_flags": [
+    "-Copt-level=3",
+    "-Cdebuginfo=0",
+    "-Cdebug-assertions=no",
+    "-Coverflow-checks=no"
+  ],
+  "schema_version": 1,
+  "source_inventory": {
+    "configured_targets": 580,
+    "conservative_and_precise_inventory_byte_identical": true,
+    "contracts": 203,
+    "docs_included": false,
+    "every_selected_source_matches_checkout": true,
+    "first_party_cargo_manifests_included": false,
+    "retained_evidence_included": false,
+    "selected_source_files": 761,
+    "source_hash_inventory_sha256": "838ff8b815320cf1d218f141cfc379b75b5cc4a543f07f13d0b17873d92d6360"
+  },
+  "status": "Strict source inventory, production compilation, installation, runtime smoke and Clippy passed; repeatability and production cutover remain unqualified."
+}

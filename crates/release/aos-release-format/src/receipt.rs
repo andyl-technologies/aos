@@ -297,6 +297,7 @@ impl CompletionReceipt {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use ed25519_dalek::{Signer as _, SigningKey};

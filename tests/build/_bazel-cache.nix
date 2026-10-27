@@ -1,0 +1,114 @@
+##! Separate Nix executions share only disk action results, never output bases.
+{
+  pkgs,
+  workspace,
+  trial ?
+    builtins.hashString "sha256" (builtins.toJSON {
+      source = toString workspace.source;
+      builder = builtins.hashFile "sha256" ../../pkgs/build-support/_bazel/build.nix;
+      launcher = builtins.hashFile "sha256" ../../tools/bazel/launcher.py;
+      toolchains = builtins.hashFile "sha256" ../../pkgs/build-support/_bazel/toolchains.nix;
+      # A changed proof must start in a new namespace: an older candidate
+      # result could otherwise turn a required miss into a misleading hit.
+      experiments = map (path: builtins.hashFile "sha256" path) [
+        ./_bazel-cache.nix
+        ./_bazel-invalidation.nix
+        ./_bazel-target-invalidation.nix
+        ./_bazel-pgo-profiles.nix
+        ./_bazel-replaced-linker.nix
+        ../../pkgs/build-support/_bazel/modules.nix
+        ../../pkgs/build-support/_bazel/rust-helper.nix
+        ../../tools/bazel/tests/mutate_fixture.py
+        ../../tools/bazel/tests/verify_invalidation.py
+        ../../tools/bazel/tests/verify_target_invalidation.py
+        ../../tools/bazel/tests/train_pgo.py
+      ];
+      bazel = toString pkgs.bazel;
+    }),
+}: let
+  lib = pkgs.lib;
+  toolchains = pkgs.mkAosBazelToolchains {identity = "cache-proof:${trial}";};
+  configured = pkgs.mkAosBazelWorkspace {
+    root = ../..;
+    sourceDirectories = ["tools/bazel/toolchains" "tools/bazel/rules" "tools/bazel/metadata" "tools/bazel/testing" "tools/bazel/tests/fixture"];
+    inherit toolchains;
+  };
+  snapshot = edited:
+    pkgs.runCommand "aos-bazel-cache-source-${
+      if edited
+      then "edited"
+      else "original"
+    }" {
+      buildDeps = [pkgs.python3];
+    } ''
+      mkdir -p "$out"
+      cp -a ${workspace.source}/. "$out/"
+      chmod -R u+w "$out"
+      ${lib.optionalString edited ''
+        ${pkgs.python3}/bin/python3 - "$out" <<'PY'
+        from pathlib import Path
+        import sys
+
+        root = Path(sys.argv[1]) / "tools/bazel/tests/fixture"
+        for filename, original, replacement in [
+            ("main.rs", "fixture_library::answer()", "fixture_library::answer() + 1"),
+            ("main.cc", "fixture_answer()", "fixture_answer() + 1"),
+        ]:
+            path = root / filename
+            text = path.read_text()
+            if text.count(original) != 1:
+                raise ValueError(f"fixture edit no longer applies: {filename}")
+            path.write_text(text.replace(original, replacement))
+        PY
+      ''}
+    '';
+  build = name: edited: sharedBuildCache:
+    pkgs.mkAosBazelBuild {
+      pname = "aos-bazel-cache-${name}";
+      workspace = configured // {source = snapshot edited;};
+      targets = ["//tools/bazel/tests/fixture:package"];
+      inherit sharedBuildCache;
+    };
+in
+  rec {
+    invalidation = import ./_bazel-invalidation.nix {inherit pkgs workspace trial;};
+    producer = build "producer" false true;
+    consumer = (build "consumer" true true).overrideAttrs (previous: {
+      # Establish order without exposing the producer execution tree. The
+      # launcher strips the stdenv environment before action construction.
+      buildDeps = previous.buildDeps ++ [producer];
+    });
+    uncached = build "uncached" true false;
+    concurrent = let
+      isolated = pkgs.mkAosBazelWorkspace {
+        root = ../..;
+        sourceDirectories = ["tools/bazel/toolchains" "tools/bazel/rules" "tools/bazel/metadata" "tools/bazel/testing" "tools/bazel/tests/fixture"];
+        toolchains = pkgs.mkAosBazelToolchains {identity = "concurrent:${trial}";};
+      };
+      participant = name: edited:
+        pkgs.mkAosBazelBuild {
+          pname = "aos-bazel-concurrent-${name}";
+          workspace = isolated // {source = snapshot edited;};
+          targets = ["//tools/bazel/tests/fixture:package"];
+          cacheNamespace = "concurrent-${trial}";
+        };
+      left = participant "left" false;
+      right = participant "right" true;
+    in
+      pkgs.runCommand "aos-bazel-concurrent-cache-proof" {buildDeps = [pkgs.python3];} ''
+        cp ${../../tools/bazel/tests/verify_cache.py} verify_cache.py
+        cp ${../../tools/bazel/tests/verify_concurrent.py} verify_concurrent.py
+        ${pkgs.python3}/bin/python3 verify_concurrent.py \
+          --left ${left} --right ${right} --original ${producer} --edited ${uncached} --output "$out"
+      '';
+    verify =
+      pkgs.runCommand "aos-bazel-cross-derivation-cache-proof" {
+        buildDeps = [pkgs.python3];
+      } ''
+        ${pkgs.python3}/bin/python3 ${../../tools/bazel/tests/verify_cache.py} \
+          --producer ${producer} --consumer ${consumer} --uncached ${uncached} --output "$out"
+      '';
+  }
+  // pkgs.lib.optionalAttrs (pkgs.stdenv.hostPlatform.isLinux && pkgs.stdenv.hostPlatform.isx86_64) {
+    target = import ./_bazel-target-invalidation.nix {inherit pkgs trial;};
+  }

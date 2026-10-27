@@ -1,0 +1,23 @@
+{
+  "bazel_derivation": "/nix/store/dszhbi5a4i2y017sg4mpfkc491cqjjql-bazel-9.2.0.drv",
+  "bazel_output": "/nix/store/2inj9nwplk2wisp9mhh8bl34qbxxqf0q-bazel-9.2.0",
+  "command": "nix-build -A checks.build.bazel.workspace-status --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "derivation": "/nix/store/c2b291xszmlph8ng32d7lhy7vmzvwayq-aos-bazel-workspace-status-check.drv",
+  "limits": [
+    "The check verifies the actual Bash process through its BASH variable, rather than relying on a script shebang or the presence of a compatibility shell.",
+    "Workerd compilation and execution are separate gates."
+  ],
+  "negative_bazel_output": "/nix/store/hf1qwziyc1x5v3zyqxfmrgvac0mq8ys3-bazel-9.2.0",
+  "negative_log_sha256": "476075c5e03a367100118cef2d7334cfe39f0e29c467466b48d88a47aa57718f",
+  "output": "/nix/store/b71vmb3rgb5wyqysj1js7xvfqymn49n5-aos-bazel-workspace-status-check",
+  "positive_log_sha256": "75d0845f9e3af7f8cd6b4534b4992eb92bcd399dcf2d99a6691a172e0e73740e",
+  "schema_version": 1,
+  "source_sha256": {
+    "pkgs/toolchain/_bazel.nix": "78ad848191d21c59ccc71128665e84cf291c43663d4b243ff9038e2a59dcc8a0",
+    "pkgs/toolchain/patch-bazel-command-shell.py": "2b86e3c4f857f3ed9e70564386178e66b17e070f8b33ccdf2c42dbba9daba530",
+    "tests/build/_bazel-workspace-status.nix": "dd471d6b54f4d3436bbc3dd213049925176a956d741970345ff81aace4b54b42"
+  },
+  "stable_status_line": "STABLE_AOS_COMMAND_SHELL /nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15/bin/bash",
+  "status": "Pinned AOS Bash executes Bazel workspace status; the previous package fails the same regression check",
+  "status_sha256": "70feee61da7c8a779f35170439c2efdf38c2f3f98e9052203df74f59aa72e294"
+}

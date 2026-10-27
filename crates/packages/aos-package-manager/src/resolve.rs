@@ -18,7 +18,7 @@
 //! libraries assumed installed) are silently skipped rather than treated as
 //! errors.
 
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 
 use anyhow::{Context, Result};
 
@@ -109,7 +109,7 @@ fn resolve_via_store(
     registry_name: &str,
     root: PackageMeta,
 ) -> Result<ResolvedClosure> {
-    let mut seen: HashSet<String> = HashSet::new();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
     let mut closure: Vec<PackageMeta> = Vec::new();
     let root_hash = store_path_hash(&root.store_path).to_string();
 
@@ -145,7 +145,7 @@ fn visit_store_first(
     registries: &RegistrySet,
     registry_name: &str,
     hash: &str,
-    seen: &mut HashSet<String>,
+    seen: &mut BTreeSet<String>,
     closure: &mut Vec<PackageMeta>,
 ) {
     if !seen.insert(hash.to_string()) {
@@ -170,7 +170,7 @@ fn resolve_via_bfs(
     registry_name: &str,
     root: PackageMeta,
 ) -> Result<ResolvedClosure> {
-    let mut seen: HashSet<String> = HashSet::new();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
     let mut closure: Vec<PackageMeta> = Vec::new();
 
     visit_dependencies_first(
@@ -199,7 +199,7 @@ fn visit_dependencies_first(
     registries: &RegistrySet,
     registry_name: &str,
     current: PackageMeta,
-    seen: &mut HashSet<String>,
+    seen: &mut BTreeSet<String>,
     closure: &mut Vec<PackageMeta>,
 ) {
     let current_hash = store_path_hash(&current.store_path).to_string();
@@ -237,7 +237,7 @@ pub fn resolve_multiple(
     registry_filter: Option<&str>,
 ) -> Result<Vec<ResolvedClosure>> {
     let mut closures = Vec::new();
-    let mut resolved = HashSet::new();
+    let mut resolved = BTreeSet::new();
 
     for name in names {
         if resolved.insert(name) {
@@ -259,7 +259,7 @@ pub fn resolve_multiple(
 /// Deduplicates by store path hash.  The returned references are in the
 /// order they are first encountered (stable iteration).
 pub fn collect_unique_metas(closures: &[ResolvedClosure]) -> Vec<&PackageMeta> {
-    let mut seen: HashSet<&str> = HashSet::new();
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
     let mut result: Vec<&PackageMeta> = Vec::new();
 
     for closure in closures {
@@ -385,7 +385,7 @@ mod tests {
         // curl's closure includes zlib, and zlib's closure is just zlib itself.
         // collect_unique should return each package exactly once.
         let unique = collect_unique_metas(&closures);
-        let unique_names: HashSet<&str> = unique.iter().map(|m| m.name.as_str()).collect();
+        let unique_names: BTreeSet<&str> = unique.iter().map(|m| m.name.as_str()).collect();
 
         assert!(unique_names.contains("curl"));
         assert!(unique_names.contains("zlib"));

@@ -525,13 +525,11 @@ impl State {
                     .ok_or_else(|| anyhow::anyhow!("completion without dispatch"))?;
                 match invocation.action {
                     Action::Apply => {
-                        if let Some(previous) = self.retained.get(&invocation.id) {
-                            if artifact(&previous.invocation.effect).is_some()
-                                && artifact(&previous.invocation.effect)
-                                    != artifact(&invocation.effect)
-                            {
-                                self.releases.push_back(previous.invocation.effect.clone());
-                            }
+                        if let Some(previous) = self.retained.get(&invocation.id)
+                            && artifact(&previous.invocation.effect).is_some()
+                            && artifact(&previous.invocation.effect) != artifact(&invocation.effect)
+                        {
+                            self.releases.push_back(previous.invocation.effect.clone());
                         }
                         if self.startup_desired.contains(&invocation.id) {
                             self.startup_established.insert(invocation.id.clone());
@@ -611,7 +609,20 @@ pub(super) fn fingerprint(graph: &CheckedModuleGraph, retire: &[String]) -> Resu
     Ok(aos_core::Sha256Digest::of_bytes(json::to_vec(&(graph.canonical_bytes()?, retire))?).hex())
 }
 
+pub(super) fn policy_fingerprint(
+    graph: &CheckedModuleGraph,
+    retire: &[String],
+    policy: ExecutionPolicy,
+) -> Result<String> {
+    let content = fingerprint(graph, retire)?;
+    if policy == ExecutionPolicy::Complete {
+        return Ok(content);
+    }
+    Ok(aos_core::Sha256Digest::of_bytes(json::to_vec(&(content, policy))?).hex())
+}
+
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use aos_module_format::graph::{InputOption, identity_key};
     use serde_json::json;
@@ -906,16 +917,4 @@ mod tests {
                 .is_err()
         );
     }
-}
-
-pub(super) fn policy_fingerprint(
-    graph: &CheckedModuleGraph,
-    retire: &[String],
-    policy: ExecutionPolicy,
-) -> Result<String> {
-    let content = fingerprint(graph, retire)?;
-    if policy == ExecutionPolicy::Complete {
-        return Ok(content);
-    }
-    Ok(aos_core::Sha256Digest::of_bytes(json::to_vec(&(content, policy))?).hex())
 }

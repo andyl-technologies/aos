@@ -182,6 +182,10 @@ async fn handle_bootstrap_connection(
 
 /// Dispatches a single bootstrap request to the token store and converts
 /// the outcome (including failures) into a [`BootstrapResponse`].
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Provisioning-token expiry is relative to the host request time."
+)]
 async fn handle_request(
     req: BootstrapRequest,
     state: &AppState,

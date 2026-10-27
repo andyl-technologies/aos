@@ -143,7 +143,7 @@
       required_mounts = [cfg.buildDirectory];
     };
     environment.variables = {
-      NIX_CONF_DIR = "/etc/aos/packages/nix-daemon";
+      NIX_CONF_DIR = "/etc/packages/nix-daemon";
       NIX_REMOTE = "local";
     };
     environment.search_path = [];
@@ -321,9 +321,9 @@ in {
         };
       };
       configuration.operations.file.effects = {
-        nix-daemon-config = file "/etc/aos/packages/nix-daemon/nix.conf" rendered;
+        nix-daemon-config = file "/etc/packages/nix-daemon/nix.conf" rendered;
         nix-daemon-runtime =
-          file "/etc/aos/packages/nix-daemon/runtime.env"
+          file "/etc/packages/nix-daemon/runtime.env"
           (lib.concatStringsSep "\n" (lib.mapAttrsToList (name: value: "${name}=${lib.escapeShellArg value}") runtime) + "\n");
         nix-daemon-mount = file "/etc/systemd/system/nix-daemon.service.d/30-aos-mount.conf" mountPolicy;
         nix-daemon-scheduling = file "/etc/systemd/system/nix-daemon.service.d/30-aos-scheduling.conf" schedulePolicy;
@@ -335,7 +335,7 @@ in {
           // {lifetime = "persistent";};
         nix-daemon-resources = (file "/etc/systemd/system/aos-pkg-nix-daemon-builds.slice.d/30-aos-resources.conf" slicePolicy) // {lifetime = "persistent";};
         nix-daemon-client = file "/etc/profile.d/nix-daemon.sh" (lib.optionalString (cfg.enable && cfg.clients.enable) ''
-          export NIX_CONF_DIR=/etc/aos/packages/nix-daemon
+          export NIX_CONF_DIR=/etc/packages/nix-daemon
           export NIX_REMOTE=daemon
         '');
       };

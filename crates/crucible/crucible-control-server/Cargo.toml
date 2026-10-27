@@ -1,5 +1,6 @@
 [package]
 name = "crucible-control-server"
+autobins = false
 version = "0.1.0"
 edition = "2024"
 license.workspace = true
@@ -9,11 +10,20 @@ description = "Crucible lifecycle dispatch, actor adapters, and authenticated HT
 [features]
 default = []
 test-support = ["crucible-engine/test-support"]
+qemu-test-oracle = ["crucible-qemu-protocol/test-oracle", "test-support", "crucible-engine/test-double", "dep:serde_json", "dep:crucible-determinism"]
+
+[[bin]]
+name = "crucible-qemu-test-oracle"
+path = "src/bin/qemu_test_oracle.rs"
+required-features = ["qemu-test-oracle"]
+test = false
+bench = false
 
 [lints]
 workspace = true
 
 [dependencies]
+crucible-determinism = { path = "../crucible-determinism", optional = true }
 crucible-engine = { path = "../crucible-engine" }
 crucible-qemu-protocol = { path = "../crucible-qemu-protocol" }
 crucible-session = { path = "../crucible-session" }
@@ -30,6 +40,7 @@ rustls = { workspace = true }
 rustls-pemfile = { workspace = true }
 rustls-pki-types = { workspace = true }
 sha2 = { workspace = true }
+serde_json = { workspace = true, optional = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }
 tokio-rustls = { workspace = true }

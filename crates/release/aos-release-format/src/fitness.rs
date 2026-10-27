@@ -400,5 +400,6 @@ pub fn require_destination_fitness(
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 #[path = "fitness_tests.rs"]
 mod tests;

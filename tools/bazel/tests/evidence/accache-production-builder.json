@@ -1,0 +1,606 @@
+{
+  "binary_equal_to_release_preview": true,
+  "binary_sha256": "88ec386f303c04a08a3dc9d9a537b379a12fe4eca51ff741cd0d923ed50957ae",
+  "build": {
+    "derivation": "/nix/store/22hcrnpvx4mh1y4icy1npdf3zcnajcz3-aos-bazel-accache-production-1.drv",
+    "derivation_sha256": "2756fb28c4686f2c41f2d0cfef864746114cd5dacf5b477c36e84d1e1b664d23",
+    "output": "/nix/store/q45iyjiyhxnx36pr9plxw1czgmqx8sr1-aos-bazel-accache-production-1"
+  },
+  "build_requisites_count": 2753,
+  "build_requisites_sha256": "e2f574f43c7eb65b811db588998561861e3cb301ec0e6b6f0ac2becd5caa0d38",
+  "cargo_fallback_in_build_requisites": false,
+  "configuration_sha256": "2d9500bc7d86248ed777fed589b6c22548fd8897a9d56e15b7d13dfdd235415f",
+  "evaluation": {
+    "bazel": "/nix/store/6w41aly2bb9g434z4wc36ky7r7a0l8fh-accache-0.1.0",
+    "bazelDrv": "/nix/store/55jp1nc07b7i6gr28459l3hmml5n39fy-accache-0.1.0.drv",
+    "defaultDriver": "cargo",
+    "ordinary": "/nix/store/jcl1r12zk9bfbdmjr7f3ky1sakph1khs-accache-0.1.0",
+    "ordinaryDrv": "/nix/store/5hqqg21jxdbrf518a98c5ywd9zjlnlaq-accache-0.1.0.drv",
+    "platformSupport": {
+      "build": [
+        {
+          "abi": [
+            "gnu"
+          ],
+          "os": [
+            "linux"
+          ]
+        }
+      ],
+      "host": [
+        {
+          "abi": [
+            "gnu"
+          ],
+          "cpu": [
+            "aarch64",
+            "x86_64"
+          ],
+          "os": [
+            "linux"
+          ]
+        }
+      ],
+      "role": "build-input",
+      "target": []
+    },
+    "rollback": "/nix/store/jcl1r12zk9bfbdmjr7f3ky1sakph1khs-accache-0.1.0",
+    "selectedDriver": "bazel"
+  },
+  "evaluation_declaration": "let\n  pkgs = (import /home/dylan/src/aos/.worktrees/codex/bazel-integration-722 {}).pkgs;\n  ordinary = pkgs.accache;\n  bazel = ordinary.passthru.withBuildDriver \"bazel\";\n  rollback = bazel.passthru.withBuildDriver \"cargo\";\nin\nassert rollback.drvPath == ordinary.drvPath;\nassert ordinary.outPath == \"/nix/store/jcl1r12zk9bfbdmjr7f3ky1sakph1khs-accache-0.1.0\";\nassert bazel.passthru.cargoFallback.drvPath == ordinary.drvPath;\nassert bazel.platformSupport == ordinary.platformSupport;\nassert bazel.platformSupport.role == \"build-input\";\nassert !(builtins.tryEval ((ordinary.passthru.withBuildDriver \"unknown\").drvPath)).success;\n{\n  ordinary = ordinary.outPath;\n  ordinaryDrv = ordinary.drvPath;\n  bazel = bazel.outPath;\n  bazelDrv = bazel.drvPath;\n  rollback = rollback.outPath;\n  inherit (bazel) platformSupport;\n  defaultDriver = ordinary.passthru.buildDriver;\n  selectedDriver = bazel.passthru.buildDriver;\n}\n",
+  "exec_rustc_flags": [
+    "-Copt-level=0",
+    "-Cdebuginfo=0",
+    "-Cdebug-assertions=no",
+    "-Coverflow-checks=no",
+    "-Cstrip=symbols"
+  ],
+  "executed_actions": 143,
+  "execution_profiles": {
+    "artifact": {
+      "derivation": "/nix/store/wz42bz779jhwsk922hi98sdd0km2rhsq-aos-bazel-accache-execution-profiles.drv",
+      "derivation_sha256": "0c331a5c73f829512e630a5eb1db2b33cb2e8bc12b2c6e36801071219103215d",
+      "output": "/nix/store/fizpn0prg2fgcadzlhzlj52r7c5cb1gq-aos-bazel-accache-execution-profiles"
+    },
+    "report": {
+      "limits": [
+        "Checks actual macro and first-party compilation profiles, not complete compiler/linker equivalence.",
+        "Runtime, test inventory, editor diagnostics, cache integration, production cutover and performance have separate gates."
+      ],
+      "profiles": {
+        "editor": {
+          "actions": {
+            "//crates/accache/accache-frontend:lib": {
+              "cacheHit": false,
+              "compiler_options": {
+                "debug-assertions": "no",
+                "debuginfo": "0",
+                "embed-bitcode": "no",
+                "extra-filename": "-485401480",
+                "opt-level": "3",
+                "overflow-checks": "no",
+                "strip": "symbols"
+              },
+              "exitCode": 0,
+              "runner": "linux-sandbox"
+            },
+            "//crates/accache/accache:accache": {
+              "cacheHit": false,
+              "compiler_options": {
+                "debug-assertions": "no",
+                "debuginfo": "0",
+                "embed-bitcode": "no",
+                "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+                "opt-level": "3",
+                "overflow-checks": "no",
+                "strip": "symbols"
+              },
+              "exitCode": 0,
+              "runner": "linux-sandbox"
+            },
+            "@@+aos_tools_repository+aos_accache_crates__prost-derive-0.13.5//:prost_derive": {
+              "cacheHit": false,
+              "compiler_options": {
+                "debug-assertions": "no",
+                "debuginfo": "0",
+                "embed-bitcode": "no",
+                "extra-filename": "-1262035989",
+                "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+                "opt-level": "3",
+                "overflow-checks": "no",
+                "strip": "symbols"
+              },
+              "exitCode": 0,
+              "runner": "linux-sandbox"
+            },
+            "@@+aos_tools_repository+aos_accache_crates__serde_derive-1.0.229//:serde_derive": {
+              "cacheHit": false,
+              "compiler_options": {
+                "debug-assertions": "no",
+                "debuginfo": "0",
+                "embed-bitcode": "no",
+                "extra-filename": "-545479530",
+                "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+                "opt-level": "3",
+                "overflow-checks": "no",
+                "strip": "symbols"
+              },
+              "exitCode": 0,
+              "runner": "linux-sandbox"
+            }
+          },
+          "cargo_macros": {
+            "prost_derive": {
+              "arguments": [
+                "/nix/store/i6rnwxfhg5w34z1hg8axsr7ylk4751x0-aos-bazel-toolchains-1/bin/rustc",
+                "--crate-name",
+                "prost_derive",
+                "--edition=2021",
+                "/nix/store/0psmrzq4shjzs4bfy760swhrgxdcmrj4-cargo-deps/prost-derive/src/lib.rs",
+                "--error-format=json",
+                "--json=diagnostic-rendered-ansi,artifacts,future-incompat",
+                "--crate-type",
+                "proc-macro",
+                "--emit=dep-info,link",
+                "-C",
+                "prefer-dynamic",
+                "-C",
+                "embed-bitcode=no",
+                "--check-cfg",
+                "cfg(docsrs,test)",
+                "--check-cfg",
+                "cfg(feature, values())",
+                "-C",
+                "metadata=9e34272c74aa4329",
+                "-C",
+                "extra-filename=-fa60b7b49ef1e3d9",
+                "--out-dir",
+                "/build/target/debug/deps",
+                "-L",
+                "dependency=/build/target/debug/deps",
+                "--extern",
+                "anyhow=/build/target/debug/deps/libanyhow-bf98894e39b13dbb.rlib",
+                "--extern",
+                "itertools=/build/target/debug/deps/libitertools-1f6e7d318eceac97.rlib",
+                "--extern",
+                "proc_macro2=/build/target/debug/deps/libproc_macro2-9ab18c937f66a453.rlib",
+                "--extern",
+                "quote=/build/target/debug/deps/libquote-ba3042dd4b33edd7.rlib",
+                "--extern",
+                "syn=/build/target/debug/deps/libsyn-cea0664500f665b5.rlib",
+                "--extern",
+                "proc_macro",
+                "--cap-lints",
+                "allow",
+                "-Copt-level=3",
+                "-Cdebuginfo=0",
+                "-Cdebug-assertions=no",
+                "-Coverflow-checks=no",
+                "-Cstrip=symbols"
+              ],
+              "compiler_options": {
+                "debug-assertions": "no",
+                "debuginfo": "0",
+                "embed-bitcode": "no",
+                "extra-filename": "-fa60b7b49ef1e3d9",
+                "opt-level": "3",
+                "overflow-checks": "no",
+                "strip": "symbols"
+              }
+            },
+            "serde_derive": {
+              "arguments": [
+                "/nix/store/i6rnwxfhg5w34z1hg8axsr7ylk4751x0-aos-bazel-toolchains-1/bin/rustc",
+                "--crate-name",
+                "serde_derive",
+                "--edition=2021",
+                "/nix/store/0psmrzq4shjzs4bfy760swhrgxdcmrj4-cargo-deps/serde_derive/src/lib.rs",
+                "--error-format=json",
+                "--json=diagnostic-rendered-ansi,artifacts,future-incompat",
+                "--crate-type",
+                "proc-macro",
+                "--emit=dep-info,link",
+                "-C",
+                "prefer-dynamic",
+                "-C",
+                "embed-bitcode=no",
+                "--cfg",
+                "feature=\"default\"",
+                "--check-cfg",
+                "cfg(docsrs,test)",
+                "--check-cfg",
+                "cfg(feature, values(\"default\", \"deserialize_in_place\"))",
+                "-C",
+                "metadata=d010cb3bb90bca62",
+                "-C",
+                "extra-filename=-964902796da39257",
+                "--out-dir",
+                "/build/target/debug/deps",
+                "-L",
+                "dependency=/build/target/debug/deps",
+                "--extern",
+                "proc_macro2=/build/target/debug/deps/libproc_macro2-9ab18c937f66a453.rlib",
+                "--extern",
+                "quote=/build/target/debug/deps/libquote-ba3042dd4b33edd7.rlib",
+                "--extern",
+                "syn=/build/target/debug/deps/libsyn-d98f96ddc389e165.rlib",
+                "--extern",
+                "proc_macro",
+                "--cap-lints",
+                "allow",
+                "-Copt-level=3",
+                "-Cdebuginfo=0",
+                "-Cdebug-assertions=no",
+                "-Coverflow-checks=no",
+                "-Cstrip=symbols"
+              ],
+              "compiler_options": {
+                "debug-assertions": "no",
+                "debuginfo": "0",
+                "embed-bitcode": "no",
+                "extra-filename": "-964902796da39257",
+                "opt-level": "3",
+                "overflow-checks": "no",
+                "strip": "symbols"
+              }
+            }
+          },
+          "cargo_trace_sha256": "0fc471c4d030eaae5e12bf7018754aa161a824585c74f7512567431f499a6e7b",
+          "inputs_sha256": {
+            "actions.json": "a8d020d736cc03e11961caa749d6fe49302fe4963cfb3bb7df4328804b1f94ba",
+            "compiler-inputs.json": "dacc91d97d640d06cb306434ea4f5cbe179894a36ba0cdc041d0682e7b18a0f2",
+            "execution.json": "c09008057e77faeda2d5d76ea03e44c6eb826467fb07013cecad9175d3ab99ab"
+          },
+          "opt_level": "3",
+          "oracle": "/nix/store/80nrglvd3m5afp2sskmjy49hgb1i0999-aos-bazel-accache-editor-cargo-oracle",
+          "path": "/nix/store/gkf2nbh9qilwk76a0hz88770cisimmfd-aos-bazel-accache-editor-execution-profile-1"
+        },
+        "release": {
+          "actions": {
+            "//crates/accache/accache-frontend:lib": {
+              "cacheHit": false,
+              "compiler_options": {
+                "debug-assertions": "no",
+                "debuginfo": "0",
+                "embed-bitcode": "no",
+                "extra-filename": "-485401480",
+                "opt-level": "3",
+                "overflow-checks": "no",
+                "strip": "symbols"
+              },
+              "exitCode": 0,
+              "runner": "linux-sandbox"
+            },
+            "//crates/accache/accache:accache": {
+              "cacheHit": false,
+              "compiler_options": {
+                "debug-assertions": "no",
+                "debuginfo": "0",
+                "embed-bitcode": "no",
+                "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+                "opt-level": "3",
+                "overflow-checks": "no",
+                "strip": "symbols"
+              },
+              "exitCode": 0,
+              "runner": "linux-sandbox"
+            },
+            "@@+aos_tools_repository+aos_accache_crates__prost-derive-0.13.5//:prost_derive": {
+              "cacheHit": false,
+              "compiler_options": {
+                "debug-assertions": "no",
+                "debuginfo": "0",
+                "embed-bitcode": "no",
+                "extra-filename": "-1262035989",
+                "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+                "opt-level": "0",
+                "overflow-checks": "no",
+                "strip": "symbols"
+              },
+              "exitCode": 0,
+              "runner": "linux-sandbox"
+            },
+            "@@+aos_tools_repository+aos_accache_crates__serde_derive-1.0.229//:serde_derive": {
+              "cacheHit": false,
+              "compiler_options": {
+                "debug-assertions": "no",
+                "debuginfo": "0",
+                "embed-bitcode": "no",
+                "extra-filename": "-545479530",
+                "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+                "opt-level": "0",
+                "overflow-checks": "no",
+                "strip": "symbols"
+              },
+              "exitCode": 0,
+              "runner": "linux-sandbox"
+            }
+          },
+          "cargo_macros": {
+            "prost_derive": {
+              "arguments": [
+                "rustc",
+                "--crate-name",
+                "prost_derive",
+                "--edition=2021",
+                "/nix/store/0psmrzq4shjzs4bfy760swhrgxdcmrj4-cargo-deps/prost-derive/src/lib.rs",
+                "--error-format=json",
+                "--json=diagnostic-rendered-ansi,artifacts,future-incompat",
+                "--crate-type",
+                "proc-macro",
+                "--emit=dep-info,link",
+                "-C",
+                "prefer-dynamic",
+                "-C",
+                "embed-bitcode=no",
+                "-C",
+                "debug-assertions=off",
+                "--check-cfg",
+                "cfg(docsrs,test)",
+                "--check-cfg",
+                "cfg(feature, values())",
+                "-C",
+                "metadata=7b03efb4f3f24d07",
+                "-C",
+                "extra-filename=-5de3c16c5f0c65d8",
+                "--out-dir",
+                "/build/target/release/deps",
+                "-C",
+                "strip=symbols",
+                "-L",
+                "dependency=/build/target/release/deps",
+                "--extern",
+                "anyhow=/build/target/release/deps/libanyhow-d6d0a4d19ce51650.rlib",
+                "--extern",
+                "itertools=/build/target/release/deps/libitertools-24e78e153af1fb7d.rlib",
+                "--extern",
+                "proc_macro2=/build/target/release/deps/libproc_macro2-22521f442175b8c2.rlib",
+                "--extern",
+                "quote=/build/target/release/deps/libquote-af70d05e3ff9b474.rlib",
+                "--extern",
+                "syn=/build/target/release/deps/libsyn-0c659ada48c5f9f2.rlib",
+                "--extern",
+                "proc_macro",
+                "--cap-lints",
+                "allow"
+              ],
+              "compiler_options": {
+                "debug-assertions": "off",
+                "embed-bitcode": "no",
+                "extra-filename": "-5de3c16c5f0c65d8",
+                "strip": "symbols"
+              }
+            },
+            "serde_derive": {
+              "arguments": [
+                "rustc",
+                "--crate-name",
+                "serde_derive",
+                "--edition=2021",
+                "/nix/store/0psmrzq4shjzs4bfy760swhrgxdcmrj4-cargo-deps/serde_derive/src/lib.rs",
+                "--error-format=json",
+                "--json=diagnostic-rendered-ansi,artifacts,future-incompat",
+                "--crate-type",
+                "proc-macro",
+                "--emit=dep-info,link",
+                "-C",
+                "prefer-dynamic",
+                "-C",
+                "embed-bitcode=no",
+                "-C",
+                "debug-assertions=off",
+                "--cfg",
+                "feature=\"default\"",
+                "--check-cfg",
+                "cfg(docsrs,test)",
+                "--check-cfg",
+                "cfg(feature, values(\"default\", \"deserialize_in_place\"))",
+                "-C",
+                "metadata=a48fa6fb8f367cda",
+                "-C",
+                "extra-filename=-dd1853d5fd7aabe3",
+                "--out-dir",
+                "/build/target/release/deps",
+                "-C",
+                "strip=symbols",
+                "-L",
+                "dependency=/build/target/release/deps",
+                "--extern",
+                "proc_macro2=/build/target/release/deps/libproc_macro2-22521f442175b8c2.rlib",
+                "--extern",
+                "quote=/build/target/release/deps/libquote-af70d05e3ff9b474.rlib",
+                "--extern",
+                "syn=/build/target/release/deps/libsyn-88fcaf433b899604.rlib",
+                "--extern",
+                "proc_macro",
+                "--cap-lints",
+                "allow"
+              ],
+              "compiler_options": {
+                "debug-assertions": "off",
+                "embed-bitcode": "no",
+                "extra-filename": "-dd1853d5fd7aabe3",
+                "strip": "symbols"
+              }
+            }
+          },
+          "cargo_trace_sha256": "6fa62d34782220427dd2ee66710882561f0b8439ffa5b57796ca3bf408a8182f",
+          "inputs_sha256": {
+            "actions.json": "cf1b09f7f1b35d64c1edbbdb0f77e096921a58f8e0b76a6ccb6d88d3e19076f8",
+            "compiler-inputs.json": "a10f89455b6040963831f17388da38558a0fca49adb888735c8d033d2de07b71",
+            "execution.json": "608fe0ae922016b45bee21492f601323f0fdb60e63b032a27d4e434c21ff3d19"
+          },
+          "opt_level": "0",
+          "oracle": "/nix/store/6zjk5vp3zig4msdhcya91jlpcm7pbkyp-aos-bazel-accache-cargo-oracle-1",
+          "path": "/nix/store/q45iyjiyhxnx36pr9plxw1czgmqx8sr1-aos-bazel-accache-production-1"
+        }
+      },
+      "schema_version": 1,
+      "status": "PASS"
+    }
+  },
+  "installation": {
+    "artifact": {
+      "derivation": "/nix/store/0iki79cd5nkzzzq8d3hxls2mdslxamxi-aos-bazel-accache-installation.drv",
+      "derivation_sha256": "ff7b803bc17cfc91c4db367926477903c9235eb5f58d731c4e373a56c2ed90c1",
+      "output": "/nix/store/qdxi256yknki6p1s0hdvzh38d541kbcm-aos-bazel-accache-installation"
+    },
+    "report": {
+      "bazel": {
+        "closure": [
+          "/nix/store/6w41aly2bb9g434z4wc36ky7r7a0l8fh-accache-0.1.0",
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39"
+        ],
+        "executable": "/nix/store/6w41aly2bb9g434z4wc36ky7r7a0l8fh-accache-0.1.0/bin/accache",
+        "help": "accache \u2014 daemonless Nix compiler action cache\n\nUsage:\n  accache COMPILER [COMPILER-ARGUMENTS...]\n  accache stats\n  accache explain [ACTION-SHA256]\n  accache provenance [ACTION-SHA256]\n\nSet ACCACHE_DIR to the Bazel-format disk-cache root, ACCACHE_STATE_DIR to a\nseparate metadata directory, and ACCACHE_MANIFEST to the Nix policy JSON.\nWithout configuration, compiler invocations run unchanged. ACCACHE_DISABLE=1\nalso bypasses caching. ACCACHE_DERIVATION optionally records the .drv identity\nas provenance; it is never an action-key input. ACCACHE_VERBOSE=1 prints the\nper-invocation outcome. Inspection prints JSON (provenance: JSON lines).\n\nGCC/Clang and Rust parsing uses the pinned sccache frontend tables. A cacheable\nRust invocation with nested response files expands them as sccache does;\nother compilations receive the original arguments. Supported outputs include\ndependency, debug, coverage, PCH, Clang module, and Rust library/metadata artifacts. Linking,\nincremental Rust, and other uncacheable work runs unchanged with a bypass reason.\nSee crates/accache/accache/README.md for the read contract and coverage limits.\n",
+        "interpreter": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2",
+        "libraries": {
+          "ld-linux-x86-64.so.2": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2",
+          "libc.so.6": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6"
+        },
+        "needed": [
+          "ld-linux-x86-64.so.2",
+          "libc.so.6"
+        ],
+        "rpath": [
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib"
+        ],
+        "runtime_dependencies": [
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39"
+        ],
+        "sha256": "88ec386f303c04a08a3dc9d9a537b379a12fe4eca51ff741cd0d923ed50957ae"
+      },
+      "cargo": {
+        "closure": [
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+          "/nix/store/jcl1r12zk9bfbdmjr7f3ky1sakph1khs-accache-0.1.0"
+        ],
+        "executable": "/nix/store/jcl1r12zk9bfbdmjr7f3ky1sakph1khs-accache-0.1.0/bin/accache",
+        "help": "accache \u2014 daemonless Nix compiler action cache\n\nUsage:\n  accache COMPILER [COMPILER-ARGUMENTS...]\n  accache stats\n  accache explain [ACTION-SHA256]\n  accache provenance [ACTION-SHA256]\n\nSet ACCACHE_DIR to the Bazel-format disk-cache root, ACCACHE_STATE_DIR to a\nseparate metadata directory, and ACCACHE_MANIFEST to the Nix policy JSON.\nWithout configuration, compiler invocations run unchanged. ACCACHE_DISABLE=1\nalso bypasses caching. ACCACHE_DERIVATION optionally records the .drv identity\nas provenance; it is never an action-key input. ACCACHE_VERBOSE=1 prints the\nper-invocation outcome. Inspection prints JSON (provenance: JSON lines).\n\nGCC/Clang and Rust parsing uses the pinned sccache frontend tables. A cacheable\nRust invocation with nested response files expands them as sccache does;\nother compilations receive the original arguments. Supported outputs include\ndependency, debug, coverage, PCH, Clang module, and Rust library/metadata artifacts. Linking,\nincremental Rust, and other uncacheable work runs unchanged with a bypass reason.\nSee crates/accache/accache/README.md for the read contract and coverage limits.\n",
+        "interpreter": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2",
+        "libraries": {
+          "ld-linux-x86-64.so.2": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2",
+          "libc.so.6": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6"
+        },
+        "needed": [
+          "ld-linux-x86-64.so.2",
+          "libc.so.6"
+        ],
+        "rpath": [
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib"
+        ],
+        "runtime_dependencies": [
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39"
+        ],
+        "sha256": "7d929099629aaa90b247c79a014bbef8cf4f34f29d18269d86f694e3b3f1747b"
+      },
+      "compared": [
+        "needed",
+        "interpreter",
+        "libraries",
+        "runtime_dependencies",
+        "help"
+      ],
+      "status": "PASS"
+    }
+  },
+  "integration": {
+    "accache_commands": 534,
+    "artifact": {
+      "derivation": "/nix/store/5slf2zx9vc634cpdfn5damnzcb27slkl-aos-bazel-accache-integration-1.drv",
+      "derivation_sha256": "f27b9ce2751e27387fd838cded5f7fc3a0b46c9ef80efa2a67ca7f7a0cf29864",
+      "output": "/nix/store/0763q9qvgdy4z4kwcms5gfq79xpl5a9r-aos-bazel-accache-integration-1"
+    },
+    "fixtures": 924,
+    "report_sha256": "dd6b8aa2ece5a6a9a06b882b7d977f6041f7448a84ef457d6a9efdd9462915a1"
+  },
+  "limits": [
+    "The default driver is still Cargo; this checkpoint does not claim a completed production cutover or RFC.",
+    "Complete compiler/native-linker, editor, foreign-platform, source-catalog and numeric-performance qualification remain separate work.",
+    "Cargo manifests, vendoring and oracle consumers remain until their phase-five replacements qualify.",
+    "The Bazel build and installation request no shared compiler/action caches or services."
+  ],
+  "mnemonics": {
+    "CargoBuildScriptRun": 13,
+    "ExtractCargoTomlEnvVars": 56,
+    "Rustc": 69,
+    "RustdocTestWriter": 1,
+    "TestRunner": 4
+  },
+  "package": {
+    "derivation": "/nix/store/55jp1nc07b7i6gr28459l3hmml5n39fy-accache-0.1.0.drv",
+    "derivation_sha256": "3f7a0d8b5e48d1fad4a0a183151a74ed1cd0d5b3fff79d474450eabe13fdc363",
+    "output": "/nix/store/6w41aly2bb9g434z4wc36ky7r7a0l8fh-accache-0.1.0"
+  },
+  "production_parity": {
+    "artifact": {
+      "derivation": "/nix/store/z61r7fvvh9kg913fm1g9m7anzb43yg0p-aos-bazel-accache-production-parity.drv",
+      "derivation_sha256": "63ef35d9c15d1dc2ca7d71f2824805ad396975c0477def322fefa64244aa5235",
+      "output": "/nix/store/rppmycj9gwpc4ncrqpk971ljswnm5dw4-aos-bazel-accache-production-parity"
+    },
+    "report_sha256": "dbb7c81bb1407754264d2b04e35285a29ca58ec135f24905d105bfc9d34b4e38",
+    "unit_cases": 114
+  },
+  "registered_checks": {
+    "eval": "/nix/store/8zackq55f7fmrpqyvbikc6qnik6vyyia-aos-native-evaluation-checks-0",
+    "policy": "/nix/store/bz1bibsz32mhj43wmlrw0hf5ph4cxz3g-aos-bazel-policy-checks",
+    "source-selection": "/nix/store/l40zyqw1wlq8i26b2wdfsm6wp295iqwp-aos-bazel-source-selection"
+  },
+  "retention_harness": "\"\"\"Retains executed production accache selection, rollback and package checks.\"\"\"\n\nfrom collections import Counter\nimport hashlib\nimport json\nfrom pathlib import Path\nimport re\nimport subprocess\nimport sys\n\nroot = Path.cwd()\nscratch = Path('/tmp/aos-bazel-722')\nsys.path.insert(0, str(root / 'tools/bazel/tests'))\nfrom verify_cache import execution_events\n\nnix = '/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix'\nstore = '/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-store'\n\n\ndef read(path):\n    return json.loads(Path(path).read_text())\n\n\ndef sha(path):\n    return hashlib.sha256(Path(path).read_bytes()).hexdigest()\n\n\ndef retained(output):\n    drv = subprocess.check_output([store, '--query', '--deriver', str(output)], text=True).strip()\n    recipe = next(iter(json.loads(subprocess.check_output([nix, 'derivation', 'show', drv])).values()))\n    return {'output': str(output), 'derivation': drv, 'derivation_sha256': sha(drv)}, recipe\n\n\nevaluation = read(scratch / 'accache-production-driver-evaluation.json')\nselection_path, package_path = (scratch / 'accache-production-driver-final-selection.paths').read_text().splitlines()\nselection = read(Path(selection_path) / 'selection.json')\nassert selection['status'] == 'PASS' and selection['default_driver'] == 'cargo'\nassert evaluation['defaultDriver'] == 'cargo' and evaluation['selectedDriver'] == 'bazel'\nassert evaluation['ordinary'] == evaluation['rollback'] == selection['cargo']\nassert evaluation['bazel'] == package_path == selection['bazel']\nassert evaluation['platformSupport'] == selection['platform_support']\npackage = Path(package_path)\npackage_info, package_recipe = retained(package)\nassert package_info['derivation'] == evaluation['bazelDrv']\nrequisites = subprocess.check_output([store, '--query', '--requisites', evaluation['bazelDrv']], text=True).splitlines()\nassert evaluation['ordinaryDrv'] not in requisites, 'Bazel accache acquired its Cargo fallback as a build dependency'\npreview = read(root / 'tools/bazel/tests/evidence/accache-production-release-preview.json')\nassert sha(package / 'bin/accache') == preview['installation']['report']['bazel']['sha256']\n\nbuild_path, = set(re.findall(r'--build\\s+(/nix/store/[^\\s]+)', '\\n'.join(package_recipe['args'])))\nbuild = Path(build_path)\nbuild_info, build_recipe = retained(build)\nconfig_path, = set(re.findall(r'--config\\s+(/nix/store/[^\\s]+)', '\\n'.join(build_recipe['args'])))\nconfig = read(config_path)\nassert config['cargo_profile'] == 'release'\nassert config['rustc_flags'] == preview['rustc_flags']\nassert config['exec_rustc_flags'] == preview['exec_rustc_flags']\nevents = execution_events(build)\nassert all(r['runner'] == 'linux-sandbox' and not r['cacheHit'] and r['exitCode'] == 0 for r in events)\ninstallation_path, integration_path, profile_path = (scratch / 'accache-production-driver-checks.paths').read_text().splitlines()\ninstalled = read(Path(installation_path) / 'installation.json')\nassert installed['status'] == 'PASS' and installed['bazel']['executable'] == str(package / 'bin/accache')\nassert installed['cargo']['executable'] == evaluation['ordinary'] + '/bin/accache'\nfor field in installed['compared']:\n    assert installed['bazel'][field] == installed['cargo'][field]\nintegration = read(Path(integration_path) / 'oracle.json')\nassert (Path(integration_path) / 'result').read_text().strip() == 'passed'\nassert len(integration['fixtures']) == 924 and len(integration['accache_commands']) == 534\nprofiles = read(Path(profile_path) / 'evidence.json')\nassert profiles['status'] == 'PASS' and profiles['profiles']['release']['path'] == str(build)\nparity_path = Path((scratch / 'accache-production-driver-parity.paths').read_text().strip())\nparity = read(parity_path / 'parity.json')\nassert sum(len(v['executed']) for v in parity['targets'].values()) == 114\nassert not any(v['ignored'] for v in parity['targets'].values())\nchecks = (scratch / 'accache-production-driver-registered-checks.paths').read_text().splitlines()\nassert len(checks) == 3\nassert all((Path(p) / 'result').read_text().strip() == 'PASS' for p in checks)\n\nreport = {\n    'schema_version': 1, 'status': 'PASS',\n    'scope': 'Executed opt-in production Bazel accache builder; the default remains the unchanged Cargo derivation during cutover qualification.',\n    'selection': selection, 'evaluation': evaluation,\n    'selector_checks': retained(selection_path)[0],\n    'evaluation_declaration': (scratch / 'accache-production-driver-evaluation.nix').read_text(),\n    'package': package_info, 'build': build_info,\n    'binary_sha256': sha(package / 'bin/accache'), 'binary_equal_to_release_preview': True,\n    'cargo_fallback_in_build_requisites': False,\n    'build_requisites_count': len(requisites),\n    'build_requisites_sha256': hashlib.sha256('\\n'.join(sorted(requisites)).encode()).hexdigest(),\n    'root_profile': config['cargo_profile'], 'configuration_sha256': sha(config_path),\n    'rustc_flags': config['rustc_flags'], 'exec_rustc_flags': config['exec_rustc_flags'],\n    'executed_actions': len(events), 'mnemonics': dict(Counter(r['mnemonic'] for r in events)),\n    'production_parity': {'artifact': retained(parity_path)[0], 'unit_cases': 114,\n                          'report_sha256': sha(parity_path / 'parity.json')},\n    'installation': {'artifact': retained(installation_path)[0], 'report': installed},\n    'integration': {'artifact': retained(integration_path)[0], 'fixtures': 924, 'accache_commands': 534,\n                    'report_sha256': sha(Path(integration_path) / 'oracle.json')},\n    'execution_profiles': {'artifact': retained(profile_path)[0], 'report': profiles},\n    'registered_checks': dict(zip(['eval', 'policy', 'source-selection'], checks)),\n    'source_sha256': {file: sha(root / file) for file in [\n        'pkgs/tools/accache.nix', 'pkgs/tools/accache/_bazel.nix',\n        'pkgs/build-support/_bazel/package.nix', 'tests/build/_bazel-accache.nix',\n    ]},\n    'limits': [\n        'The default driver is still Cargo; this checkpoint does not claim a completed production cutover or RFC.',\n        'Complete compiler/native-linker, editor, foreign-platform, source-catalog and numeric-performance qualification remain separate work.',\n        'Cargo manifests, vendoring and oracle consumers remain until their phase-five replacements qualify.',\n        'The Bazel build and installation request no shared compiler/action caches or services.',\n    ],\n    'retention_harness': Path(__file__).read_text(),\n}\n(root / 'tools/bazel/tests/evidence/accache-production-builder.json').write_text(\n    json.dumps(report, indent=2, sort_keys=True) + '\\n')\nprint('PASS: production accache builder, independent rollback, 114 cases, 924 integration fixtures and runtime/profile parity')\n",
+  "root_profile": "release",
+  "rustc_flags": [
+    "-Copt-level=3",
+    "-Cdebuginfo=0",
+    "-Cdebug-assertions=no",
+    "-Coverflow-checks=no",
+    "-Cstrip=symbols"
+  ],
+  "schema_version": 1,
+  "scope": "Executed opt-in production Bazel accache builder; the default remains the unchanged Cargo derivation during cutover qualification.",
+  "selection": {
+    "bazel": "/nix/store/6w41aly2bb9g434z4wc36ky7r7a0l8fh-accache-0.1.0",
+    "cargo": "/nix/store/jcl1r12zk9bfbdmjr7f3ky1sakph1khs-accache-0.1.0",
+    "default_driver": "cargo",
+    "platform_support": {
+      "build": [
+        {
+          "abi": [
+            "gnu"
+          ],
+          "os": [
+            "linux"
+          ]
+        }
+      ],
+      "host": [
+        {
+          "abi": [
+            "gnu"
+          ],
+          "cpu": [
+            "aarch64",
+            "x86_64"
+          ],
+          "os": [
+            "linux"
+          ]
+        }
+      ],
+      "role": "build-input",
+      "target": []
+    },
+    "status": "PASS"
+  },
+  "selector_checks": {
+    "derivation": "/nix/store/86f4n8nyz5wp99k3i242cm9pp34h20dp-aos-bazel-accache-driver-selection.drv",
+    "derivation_sha256": "f47d0e4f18a97b139b43334da5eefe1fecef071b0c50e21e8a44efa1a069670f",
+    "output": "/nix/store/05akhymizirmk7il7m0bbcym87ab63ya-aos-bazel-accache-driver-selection"
+  },
+  "source_sha256": {
+    "pkgs/build-support/_bazel/package.nix": "55f16dd9999af45f5425ce381d9a029da853762f948f03720f92a178af1d5049",
+    "pkgs/tools/accache.nix": "2e0bbaceb0cfc82f417c343e99aeec63f52c4c396c57247090e40abb74e6531f",
+    "pkgs/tools/accache/_bazel.nix": "68dc7a2be870b89d8f696f8eea30940b94b0c2c9119e7ae2af17888bf4046edd",
+    "tests/build/_bazel-accache.nix": "dcc097d6d49b48fc840570d529e85afef14846573e5cc7bfc56e233db7ce61eb"
+  },
+  "status": "PASS"
+}

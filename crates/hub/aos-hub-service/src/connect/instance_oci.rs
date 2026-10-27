@@ -24,6 +24,10 @@ use aos_hub_db::db::{InboundEndpointHost, InboundInstanceOciRoute};
 /// Returns a rendered Distribution error for an unready route, a malformed or
 /// unsupported path, an unknown or ambiguous repository name, token scopes
 /// that span registries, or an unavailable catalog.
+#[allow(
+    clippy::result_large_err,
+    reason = "HTTP handlers return the complete response without changing its public layout."
+)]
 pub(super) async fn rewrite_for_instance_oci_route(
     svc: &RpcService,
     mut request: Request,
@@ -144,6 +148,10 @@ pub(super) async fn rewrite_for_instance_oci_route(
 }
 
 /// Resolves one wire repository name, failing closed on ambiguity.
+#[allow(
+    clippy::result_large_err,
+    reason = "HTTP handlers return the complete response without changing its public layout."
+)]
 async fn resolve_repository(
     svc: &RpcService,
     catalog: &OciNamespaceCatalog,
@@ -195,6 +203,10 @@ async fn resolve_repository(
 ///
 /// Tokens are minted per registry, so a scope list that spans registries is
 /// rejected rather than partially honored.
+#[allow(
+    clippy::result_large_err,
+    reason = "HTTP handlers return the complete response without changing its public layout."
+)]
 async fn resolve_token_scopes(
     svc: &RpcService,
     catalog: &OciNamespaceCatalog,

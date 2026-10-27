@@ -1,0 +1,199 @@
+{
+  "acceptance": {
+    "end_to_end": false,
+    "numeric_cutover_budgets_established": false,
+    "production_cutover_justified": false,
+    "quiet_matched_host": false
+  },
+  "derivation": "/nix/store/s6gv3dnf5nbwi1x2qbqz7cyhsbgcmlfv-aos-bazel-store-performance.drv",
+  "distributions": {
+    "cargo-incremental:cold": {
+      "maximum": 137.41850060701836,
+      "median": 134.1235054860008,
+      "minimum": 130.44613909098553,
+      "samples": [
+        134.1235054860008,
+        137.41850060701836,
+        130.44613909098553
+      ]
+    },
+    "cargo-incremental:fresh-build-directory": {
+      "maximum": 135.40330392098986,
+      "median": 131.80896239500726,
+      "minimum": 124.8068620840204,
+      "samples": [
+        135.40330392098986,
+        131.80896239500726,
+        124.8068620840204
+      ]
+    },
+    "cargo-incremental:implementation-edit": {
+      "maximum": 7.2359691630117595,
+      "median": 6.187756362021901,
+      "minimum": 5.962496134976391,
+      "samples": [
+        5.962496134976391,
+        7.2359691630117595,
+        6.187756362021901
+      ]
+    },
+    "cargo-incremental:public-api-edit": {
+      "maximum": 9.699236999964342,
+      "median": 9.28383660299005,
+      "minimum": 8.846764952002559,
+      "samples": [
+        9.28383660299005,
+        9.699236999964342,
+        8.846764952002559
+      ]
+    },
+    "cargo-incremental:second-worktree": {
+      "maximum": 0.9283318660454825,
+      "median": 0.5202229470014572,
+      "minimum": 0.41538516501896083,
+      "samples": [
+        0.9283318660454825,
+        0.41538516501896083,
+        0.5202229470014572
+      ]
+    },
+    "cargo-incremental:warm": {
+      "maximum": 0.7231879869941622,
+      "median": 0.6308124089846388,
+      "minimum": 0.5669567900476977,
+      "samples": [
+        0.7231879869941622,
+        0.6308124089846388,
+        0.5669567900476977
+      ]
+    },
+    "cargo-nonincremental-accache:cold": {
+      "maximum": 112.52375084301457,
+      "median": 112.20983173605055,
+      "minimum": 103.92125285702059,
+      "samples": [
+        112.52375084301457,
+        112.20983173605055,
+        103.92125285702059
+      ]
+    },
+    "cargo-nonincremental-accache:fresh-build-directory": {
+      "maximum": 109.96534888201859,
+      "median": 107.37158266099868,
+      "minimum": 97.13722139201127,
+      "samples": [
+        109.96534888201859,
+        107.37158266099868,
+        97.13722139201127
+      ]
+    },
+    "cargo-nonincremental-accache:implementation-edit": {
+      "maximum": 70.34095114300726,
+      "median": 69.15543699602131,
+      "minimum": 67.22457118297461,
+      "samples": [
+        69.15543699602131,
+        70.34095114300726,
+        67.22457118297461
+      ]
+    },
+    "cargo-nonincremental-accache:public-api-edit": {
+      "maximum": 81.49778989696642,
+      "median": 80.5814275520388,
+      "minimum": 78.37788411905058,
+      "samples": [
+        78.37788411905058,
+        81.49778989696642,
+        80.5814275520388
+      ]
+    },
+    "cargo-nonincremental-accache:second-worktree": {
+      "maximum": 0.7743888560216874,
+      "median": 0.43712844600668177,
+      "minimum": 0.365309469983913,
+      "samples": [
+        0.7743888560216874,
+        0.43712844600668177,
+        0.365309469983913
+      ]
+    },
+    "cargo-nonincremental-accache:warm": {
+      "maximum": 1.293157126987353,
+      "median": 0.7180776949971914,
+      "minimum": 0.5265006570261903,
+      "samples": [
+        1.293157126987353,
+        0.7180776949971914,
+        0.5265006570261903
+      ]
+    }
+  },
+  "limits": [
+    "Three repeated compile-loop baselines for the retained source/toolchain configuration; other source builds, qualification and evaluation overlapped these samples.",
+    "Untimed validation passes 599 cases per sample. Timing excludes Nix evaluation, source and dependency preparation, installation and runtime startup.",
+    "Historical Bazel measurements from another toolchain are not matched comparisons. Quiet current matched measurements and numeric acceptance budgets remain required.",
+    "The retained raw configuration identifies source paths, actual compiler profiles, native input differences, CPU affinity, memory, resource usage and cache instrumentation. It does not establish complete build-driver equivalence."
+  ],
+  "modes": [
+    "cargo-incremental",
+    "cargo-nonincremental-accache"
+  ],
+  "output": "/nix/store/5j2gxs7hmmp95k10hdz2510sc3ppw57m-aos-bazel-store-performance",
+  "overlap_observations": {
+    "additional_overlap_d978181768": "Concurrent systemd-provider/systemd/Cargo CLI rebuilds for initrd metadata changes, fresh standalone-initrd source queries/compilations, native harness comparisons, policy and evaluation checks. These samples remain contended and exploratory; no quiet matched performance or numeric cutover acceptance claim.",
+    "additional_overlapping_work": [
+      "Unsafe-fence and expanded concurrency/ABI/annotation source-audit Bazel and Cargo compilations, precise/conservative comparisons and negative controls.",
+      "Full checks.rust.aos-test-targets build and current-runtime initrd/CLI installed-package qualification.",
+      "Determinism coverage source-audit Cargo oracle and fresh precise/conservative Bazel compilations, negative controls, and policy checks for a7d404846a.",
+      "Testing-standards source-audit Cargo oracle, precise/conservative Bazel compilations, runtime-data negative controls, policy checks, and compiler evidence comparison.",
+      "Static ability-adapter production Bazel compilation and release tests, ordinary Cargo artifacts and installed package, independent release Cargo oracle, and installed parity/profile qualifications.",
+      "Configuration-image source-built dependency resolution and SDK builds, static production and release-test compiles, Cargo release oracle, ordinary package rebuilding, feature/profile comparisons and policy checks.",
+      "Crate/spec-index source audit Cargo and Bazel compiles, fresh precise/conservative inventories, negative controls and the required full application Rust test-target compilation.",
+      "Static boot preparation provider production and release-test Bazel builds, actual Cargo release oracle and ordinary package rebuild, precise/conservative source queries, package/profile/feature comparisons and policy checks.",
+      "Static boot transaction storage provider production and release-test Bazel compiles, actual Cargo release oracle and ordinary package/artifact builds, precise/conservative inventory queries and installed parity/profile qualifications.",
+      "Shared static cryptsetup/storage-format production and release-test Bazel builds, separate ordinary Cargo artifacts and package builds, independent Cargo release oracle, precise/conservative inventories and installed package/feature/profile qualifications.",
+      "Static ZFS four-command production and release-test Bazel compiles, ordinary Cargo artifacts and package, independent Cargo release oracle, actual version-input compiler reconstruction, precise/conservative inventories and package/profile/policy checks.",
+      "Broader core evaluation gate rebuilt source-built systemd/provider prerequisites and passed after the shared static storage provider checkpoint.",
+      "Static storage provisioning production and release-test builds, ordinary Cargo artifacts and package, independent release Cargo oracle including storage-layout, exact installed helper/image checks, precise/conservative inventories and package/profile/policy qualification.",
+      "Kernel-tunable source-built SDK generation, initial conservative builds and ordinary package work were underway when baseline completion was first observed. The exact overlap interval was not instrumented. The independent release oracle and final qualification were launched after that observation; overlap with them is not claimed."
+    ],
+    "derivation": "/nix/store/s6gv3dnf5nbwi1x2qbqz7cyhsbgcmlfv-aos-bazel-store-performance.drv",
+    "initrd_production_overlap": "Standalone initrd Bazel package qualification and its unchanged-source Cargo/systemd runtime prerequisites also overlap; these store baseline measurements remain exploratory and contended.",
+    "known_concurrent_work": [
+      "Bazel formatting root queries",
+      "Source-built rustfmt output parity and idempotence checks",
+      "Python policy and CLI checks",
+      "Boot-identity production builder, runtime closure, and installed CLI qualification",
+      "Production boot benchmark constructor builds, fresh-derivation local-cache restoration, and measurement regression checks",
+      "Crucible test-support fixture compilation, native oracle comparisons, and metadata regeneration",
+      "Crucible no-default feature-matrix compilation, nine offline Cargo checks, and affected source-inventory refreshes",
+      "Cargo-free Crucible canonical feature-policy queries, twelve production-root analyses, and policy regression checks",
+      "Rustix source-patch qualification and two uncached Crucible feature-matrix builds",
+      "AOS CLI production-selector evaluation and five-output Bazel package compilation and installation qualification"
+    ],
+    "overlap_observation": "Formatting qualifications overlapped the first Cargo incremental cold scenario. Boot-identity qualification overlapped the first repetition's cold, warm, or implementation-edit scenarios. These scenarios also include untimed case validation, so these observations do not isolate overlap with timed compilation.",
+    "qualification_scope": "Repeated compile-loop baselines; not accepted regression budgets or end-to-end cutover evidence",
+    "required_followup": "Retain this limitation with any published samples; collect matching current Bazel/toolchain observations and quiet controlled acceptance measurements before setting numeric cutover budgets. Do not compare historical earlier-toolchain Bazel timings as matched measurements.",
+    "shared_openssl_qualification_overlap": {
+      "acceptance": "Contended samples do not establish quiet-host or matched-toolchain performance acceptance.",
+      "checkpoint": "ba9af32695",
+      "work": "Explicit source-built dependency regeneration, pkg-config regression compilation, policy checks, and console WebAssembly/native CLI rebuild overlap this exploratory baseline."
+    },
+    "trial": "f7ffcc09bb-cargo-baseline-v1"
+  },
+  "raw_evidence": "store-cargo-current-exploratory-raw.json",
+  "raw_sha256": "2c4855105f25a12ab56fb2e289fb5529fff4564ad7d9a44a9a0aae67f1783245",
+  "repetitions": 3,
+  "samples": 36,
+  "scenarios": [
+    "cold",
+    "fresh-build-directory",
+    "implementation-edit",
+    "public-api-edit",
+    "second-worktree",
+    "warm"
+  ],
+  "schema_version": 1,
+  "status": "EXPLORATORY_ONLY",
+  "validated_cases_per_sample": 599
+}

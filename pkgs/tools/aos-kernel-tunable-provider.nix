@@ -7,8 +7,11 @@
   mkCargoDummySource,
   aosWorkspaceVendor,
   patchelf,
+  callPackage,
+  buildDriver ? "cargo",
 }: let
   version = "0.1.0";
+  withBuildDriver = selected: callPackage ./aos-kernel-tunable-provider.nix {buildDriver = selected;};
   cargoDeps = aosWorkspaceVendor;
   targetTriple =
     {
@@ -51,8 +54,7 @@
     preBuild = staticBuildSetup;
     buildDeps = [patchelf];
   };
-in
-  mkAosCargoPackage {
+  packageArguments = {
     platformSupport = {
       build = [
         {
@@ -85,6 +87,11 @@ in
     buildDeps = [patchelf];
     runtimeDeps = [];
 
+    passthru = {
+      inherit withBuildDriver;
+      buildDriver = "cargo";
+    };
+
     module = ./_aos-kernel-tunable-provider;
 
     preBuild = staticBuildSetup;
@@ -105,4 +112,14 @@ in
       license = "Apache-2.0";
       mainProgram = "aos-kernel-tunable-provider";
     };
-  }
+  };
+  cargoPackage = mkAosCargoPackage packageArguments;
+in
+  assert builtins.elem buildDriver ["cargo" "bazel"];
+    if buildDriver == "bazel"
+    then
+      callPackage ./_aos-kernel-tunable-provider-bazel.nix {
+        inherit packageArguments;
+        cargoFallback = cargoPackage;
+      }
+    else cargoPackage

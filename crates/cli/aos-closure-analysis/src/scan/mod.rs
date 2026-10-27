@@ -13,6 +13,9 @@
 //! follows symlinks out of a store path, and reads symlink *targets* as
 //! reference-bearing strings in their own right.
 
+// Retain the HashMap types in the public host scanner API during build migration.
+#![allow(clippy::disallowed_types)]
+
 pub mod classify;
 pub mod elf;
 

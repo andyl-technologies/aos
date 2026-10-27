@@ -1,0 +1,9 @@
+{
+  "git_sources": 0,
+  "lock_sha256": "033bfad7de38812960028c5c2f69c2737eaa5a73dba2a810dfcf2f992268e6fd",
+  "previous_staging_hash": "sha256-6o3yyHfoAulAknlgr6juP7QLfgkplcfmp2xZysTjTwI=",
+  "source_versions_changed": false,
+  "staging": "/nix/store/mlxk6w7cza5zmqrisc91j6wy809l67xz-aos-workspace-vendor-staging",
+  "verified_registry_archives": 638,
+  "verified_staging_hash": "sha256-a3w+eqA1+VJmxEGRjXvAI5CzSytw2/Hj0pSFEPPEN78="
+}

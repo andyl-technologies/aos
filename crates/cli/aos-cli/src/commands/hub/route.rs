@@ -550,7 +550,6 @@ pub(super) async fn route(printer: &Printer, command: &HubRouteCmd) -> Result<()
                     spec: Some(replacement_spec),
                     expected_resource_version: mutation.if_version.clone().unwrap_or_default(),
                     idempotency_key: new_idempotency_key(),
-                    ..Default::default()
                 },
                 mutation,
                 |plan_id, idempotency_key, confirmation_hash| {
@@ -578,7 +577,6 @@ pub(super) async fn route(printer: &Printer, command: &HubRouteCmd) -> Result<()
                     route_id: route.clone(),
                     machine_path: path.clone().unwrap_or_default(),
                     access_class: access_class.clone(),
-                    ..Default::default()
                 },
             )
             .await
@@ -652,7 +650,6 @@ pub(super) async fn route(printer: &Printer, command: &HubRouteCmd) -> Result<()
                     route_id: route.clone(),
                     expected_resource_version: mutation.if_version.clone().unwrap_or_default(),
                     idempotency_key: new_idempotency_key(),
-                    ..Default::default()
                 },
                 mutation,
                 |plan_id, idempotency_key, confirmation_hash| {

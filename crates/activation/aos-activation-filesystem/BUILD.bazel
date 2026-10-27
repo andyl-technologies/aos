@@ -1,0 +1,114 @@
+load("@rules_rust//rust:defs.bzl", "rust_clippy", "rust_doc", "rust_doc_test", "rustfmt_test")
+load("//tools/bazel/rules:compile.bzl", "rust_binary", "rust_library")
+load("//tools/bazel/rules:license.bzl", "aos_license_check")
+load("//tools/bazel/rules:package.bzl", "aos_package")
+load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")
+load("//tools/bazel/rules:source_package.bzl", "aos_source_package")
+load("//tools/bazel/rules:test.bzl", "aos_rust_test")
+
+package(default_visibility = ["//crates:__subpackages__"])
+
+RUST_PACKAGE = aos_rust_package(
+    name = "aos-activation-filesystem",
+    version = "0.1.0",
+    edition = "2024",
+    license_expression = "Apache-2.0",
+    license_domain = "apache-host",
+)
+
+DEPENDENCIES = [
+    "//crates/activation/aos-activation:lib",
+    "//crates/modules/aos-module-format:lib",
+    "//crates/core/aos-core:lib",
+    "//third_party/rust:core_anyhow",
+    "//third_party/rust:core_rustix",
+    "//third_party/rust:core_serde",
+    "//third_party/rust:core_serde_json",
+    "//third_party/rust:core_sha2",
+    "//third_party/rust:core_thiserror",
+]
+
+DEVELOPMENT_DEPENDENCIES = [
+    "//third_party/rust:core_tempfile",
+]
+
+rust_library(
+    name = "lib",
+    package = RUST_PACKAGE,
+    crate_name = "aos_activation_filesystem",
+    crate_root = "src/lib.rs",
+    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
+    deps = DEPENDENCIES,
+)
+
+aos_rust_test(
+    name = "unit",
+    package = RUST_PACKAGE,
+    crate = ":lib",
+    deps = DEVELOPMENT_DEPENDENCIES,
+)
+
+rust_doc_test(name = "doc", crate = ":lib")
+
+# Preserve the installed command name independently of its package identity.
+rust_binary(
+    name = "aos-filesystem-provider",
+    package = RUST_PACKAGE,
+    crate_name = "aos_filesystem_provider",
+    crate_root = "src/main.rs",
+    srcs = ["src/main.rs"],
+    deps = [":lib"] + DEPENDENCIES,
+)
+
+aos_rust_test(
+    name = "bin_aos-filesystem-provider",
+    package = RUST_PACKAGE,
+    crate = ":aos-filesystem-provider",
+    deps = DEVELOPMENT_DEPENDENCIES,
+    allow_empty = True,
+)
+
+DEVELOPER_ARTIFACTS = [
+    ":lib",
+    ":unit_binary",
+    ":aos-filesystem-provider",
+    ":bin_aos-filesystem-provider_binary",
+]
+
+rust_clippy(name = "clippy", testonly = True, deps = DEVELOPER_ARTIFACTS)
+rustfmt_test(name = "format", targets = DEVELOPER_ARTIFACTS)
+rust_doc(name = "documentation", crate = ":lib")
+
+aos_license_check(
+    name = "license_closure",
+    testonly = True,
+    roots = DEVELOPER_ARTIFACTS,
+    license_domain = RUST_PACKAGE.license_domain,
+)
+
+aos_license_check(
+    name = "production_license_closure",
+    roots = [
+        ":lib",
+        ":aos-filesystem-provider",
+    ],
+    license_domain = RUST_PACKAGE.license_domain,
+)
+
+aos_package(
+    name = "package",
+    package_name = "aos-filesystem-provider",
+    version = RUST_PACKAGE.version,
+    license_expression = RUST_PACKAGE.license_expression,
+    license_domain = RUST_PACKAGE.license_domain,
+    artifacts = {":aos-filesystem-provider": "bin/aos-filesystem-provider"},
+    executables = ["bin/aos-filesystem-provider"],
+    visibility = ["//visibility:public"],
+)
+
+aos_source_package(
+    name = "source_package",
+    package = RUST_PACKAGE,
+    srcs = glob(["**/*.rs"]),
+    visibility = ["//visibility:public"],
+)

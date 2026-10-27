@@ -1,0 +1,112 @@
+load("//tools/bazel/rules:clippy.bzl", "aos_package_clippy")
+load("@rules_rust//rust:defs.bzl", "rust_clippy", "rust_doc", "rustfmt_test")
+load("//tools/bazel/rules:compile.bzl", "rust_binary", "rust_library")
+load("//tools/bazel/rules:license.bzl", "aos_license_check")
+load("//tools/bazel/rules:package.bzl", "aos_package")
+load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")
+load("//tools/bazel/rules:source_package.bzl", "aos_source_package")
+load("//tools/bazel/rules:test.bzl", "aos_rust_test")
+
+package(default_visibility = ["//crates/crucible:__subpackages__"])
+
+RUST_PACKAGE = aos_rust_package(
+    name = "crucible-qemu-debug-gateway",
+    version = "0.1.0",
+    edition = "2024",
+    license_expression = "GPL-2.0-only",
+    license_domain = "gpl-qemu",
+)
+
+SOURCES = glob(["src/**/*.rs"])
+DEPENDENCIES = [
+    "//crates/crucible/crucible-qemu-protocol:lib",
+    "//third_party/rust:core_thiserror",
+]
+
+rust_library(
+    name = "lib",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "crucible_qemu_debug_gateway",
+    crate_root = "src/lib.rs",
+    srcs = SOURCES,
+    deps = DEPENDENCIES,
+)
+
+rust_binary(
+    name = "crucible-debug-gateway",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_root = "src/main.rs",
+    srcs = SOURCES,
+    deps = [":lib"] + DEPENDENCIES,
+)
+
+rust_clippy(name = "clippy", deps = [":lib", ":crucible-debug-gateway"])
+rust_doc(name = "documentation", crate = ":lib")
+rustfmt_test(name = "format", targets = [":lib", ":crucible-debug-gateway"])
+
+aos_license_check(
+    name = "production_license_closure",
+    roots = [":lib", ":crucible-debug-gateway"],
+    license_domain = "gpl-qemu",
+)
+
+aos_package(
+    name = "compiler_artifact",
+    package = RUST_PACKAGE,
+    artifacts = {":crucible-debug-gateway": "bin/crucible-debug-gateway"},
+    executables = ["bin/crucible-debug-gateway"],
+)
+
+aos_rust_test(
+    name = "unit",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate = ":lib",
+)
+
+aos_rust_test(
+    name = "bin_crucible-debug-gateway",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "crucible_debug_gateway",
+    crate_root = "src/main.rs",
+    srcs = SOURCES,
+    deps = [":lib"] + DEPENDENCIES,
+)
+
+aos_rust_test(
+    name = "process_lifecycle",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_root = "tests/process_lifecycle.rs",
+    # Production source selections omit these unselected test files. Explicit
+    # labels defer their existence checks until this test is analyzed.
+    srcs = ["tests/process_lifecycle.rs", "tests/support/process_oracle.rs"],
+    deps = DEPENDENCIES + ["//third_party/rust:core_tempfile"],
+    data = [":crucible-debug-gateway"],
+    rustc_env = {"CARGO_BIN_EXE_crucible-debug-gateway": "$(rootpath :crucible-debug-gateway)"},
+    runfile_env = {"CRUCIBLE_QEMU_TEST_ORACLE": "@aos_qemu_test_tools//:oracle"},
+)
+
+rust_clippy(name = "test_clippy", testonly = True, deps = [":unit_binary", ":bin_crucible-debug-gateway_binary", ":process_lifecycle_binary"])
+rustfmt_test(name = "test_format", targets = [":unit_binary", ":bin_crucible-debug-gateway_binary", ":process_lifecycle_binary"])
+
+# Runtime data contains an independently linked Apache executable. The license
+# aspect inspects the GPL test's compiled dependencies without linking that tool.
+aos_license_check(
+    name = "test_license_closure",
+    testonly = True,
+    roots = [":unit_binary", ":bin_crucible-debug-gateway_binary", ":process_lifecycle_binary"],
+    license_domain = "gpl-qemu",
+)
+
+aos_source_package(
+    name = "source_package",
+    package = RUST_PACKAGE,
+    srcs = glob(["**/*.rs"]),
+    visibility = ["//visibility:public"],
+)
+
+aos_package_clippy(name = "clippy_all")

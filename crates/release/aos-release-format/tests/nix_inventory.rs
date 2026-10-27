@@ -49,7 +49,7 @@ fn source_inventory_materializes_the_linux_release_and_retains_reviewed_deferral
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
         .find(|directory| {
-            directory.join("default.nix").is_file() && directory.join("crates/Cargo.toml").is_file()
+            directory.join("default.nix").is_file() && directory.join("MODULE.bazel").is_file()
         })
         .context("release format package has no enclosing AOS source checkout")?;
     let inventory: PackageInventoryV1 = evaluate(root, "releasePackageInventory", None)?;

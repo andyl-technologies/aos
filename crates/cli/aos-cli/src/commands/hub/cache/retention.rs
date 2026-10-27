@@ -16,6 +16,8 @@ use aos_hub_client::{hub_rpc as HubTopologyMethod, hub_types};
 /// # Errors
 ///
 /// Returns an error if no selector is supplied or the removal-grace duration is invalid.
+// Validate all independent retention selectors together before constructing the request.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn retention_spec(
     current_catalog: bool,
     channels: &[String],

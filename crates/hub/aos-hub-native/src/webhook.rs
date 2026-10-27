@@ -205,7 +205,7 @@ async fn schedule_retry(
 
 /// Run the webhook delivery worker until the process exits.
 ///
-/// Every [`WORKER_INTERVAL_SECS`] seconds it sweeps the queue for due
+/// Every `WORKER_INTERVAL_SECS` seconds it sweeps the queue for due
 /// deliveries ([`Database::claim_due_deliveries`]) and attempts each in order. A
 /// single failing endpoint cannot stall the others: each delivery's outcome is
 /// recorded independently, and a recording error is logged rather than
@@ -239,6 +239,10 @@ pub async fn run_delivery_worker(
 }
 
 /// Current Unix time in seconds.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Native service timestamps use the host clock outside Crucible state."
+)]
 fn now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

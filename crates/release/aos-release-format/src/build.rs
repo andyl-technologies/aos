@@ -321,6 +321,7 @@ pub fn planned_nix_outputs(plan: &ReleasePlan) -> Result<BTreeMap<&str, PlannedN
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::platform::MatrixCell;

@@ -49,6 +49,10 @@ pub struct R2HeadObject {
 #[async_trait(?Send)]
 pub trait R2BucketAdapter {
     /// Atomically writes one object.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        expect(dead_code, reason = "The Worker provider calls this operation on Wasm")
+    )]
     async fn put(&self, key: &str, bytes: &[u8]) -> Result<()>;
     /// Idempotently deletes one object.
     async fn delete(&self, key: &str) -> Result<()>;
@@ -94,11 +98,19 @@ where
     }
 
     /// Atomically writes one object.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        expect(dead_code, reason = "The Worker provider calls this operation on Wasm")
+    )]
     pub async fn put(&self, key: &str, bytes: &[u8]) -> Result<()> {
         self.adapter.put(key, bytes).await
     }
 
     /// Idempotently deletes one object.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        expect(dead_code, reason = "The Worker provider calls this operation on Wasm")
+    )]
     pub async fn delete(&self, key: &str) -> Result<()> {
         self.adapter.delete(key).await
     }

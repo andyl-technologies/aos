@@ -1,0 +1,212 @@
+{
+  "cache_integration": {
+    "build_log_sha256": "f313926b5075a825447b099899326a5fe0c6a1acb853a6bdd3758dc1d779af23",
+    "compiler_commands": 534,
+    "fixture_families": 524,
+    "oracle_sha256": "f2aa0c5ccd4ca4778add423ae944a2876fc68492b0e3faebf9f50e5775d70602",
+    "revisions": 924,
+    "status": "PASS"
+  },
+  "command": "nix-build tools/bazel/tests/accache.nix -A all --no-out-link --max-jobs 2 --cores 4 --option substitute false",
+  "declaration_checkpoint": "23c34dba68",
+  "doctests": {
+    "//crates/accache/accache-frontend:doc": {}
+  },
+  "editor": {
+    "aggregate_statistics_comparable": false,
+    "bazel_analysis": {
+      "complete_inference": false,
+      "exprs": {
+        "partial": 138,
+        "total": 46992,
+        "unknown": 69
+      },
+      "panics": 0,
+      "pats": {
+        "partial": 46,
+        "total": 8078,
+        "unknown": 0
+      }
+    },
+    "cargo_analysis": {
+      "complete_inference": false,
+      "exprs": {
+        "partial": 138,
+        "total": 46793,
+        "unknown": 69
+      },
+      "panics": 0,
+      "pats": {
+        "partial": 46,
+        "total": 8068,
+        "unknown": 0
+      }
+    },
+    "comparison_scope": [
+      "crates/accache/accache",
+      "crates/accache/accache-frontend"
+    ],
+    "diagnostic_locations_and_types": 161,
+    "raw_records": 253,
+    "raw_records_equal": true,
+    "unattributed_cargo_diagnostics": 0,
+    "unselected_cargo_diagnostics": 0
+  },
+  "executions": {
+    "developer": {
+      "actions": 140,
+      "cache_hits": 0,
+      "execution_sha256": "401ecba792429524afaf5015e0bf6a4c7be21c9ff4e74f0dc93dff9eba412b18",
+      "mnemonics": {
+        "CargoBuildScriptRun": 13,
+        "Clippy": 4,
+        "ExtractCargoTomlEnvVars": 56,
+        "Rustc": 65,
+        "Rustdoc": 2
+      },
+      "output": "/nix/store/xv12q1612ycnh39cs1r066b1nksvw0bp-aos-bazel-accache-developer-tools-1",
+      "runners": [
+        "linux-sandbox"
+      ]
+    },
+    "editor": {
+      "actions": 136,
+      "cache_hits": 0,
+      "execution_sha256": "4ac2a0b5bbe54a6e4cdf5be757ced10439c6f011f7c88248c6bf88e665ee45af",
+      "mnemonics": {
+        "CargoBuildScriptRun": 13,
+        "ExtractCargoTomlEnvVars": 56,
+        "Rustc": 67
+      },
+      "output": "/nix/store/rn721i2bxzizfb6xj0xffay9nayxd9pm-aos-bazel-accache-editor",
+      "runners": [
+        "linux-sandbox"
+      ]
+    },
+    "format": {
+      "actions": 9,
+      "cache_hits": 0,
+      "execution_sha256": "e2350defbfccdab53e0f8fddba5261b4298426ba9f410296975852336f69c137",
+      "mnemonics": {
+        "Rustc": 5,
+        "TestRunner": 4
+      },
+      "output": "/nix/store/w4q3lkq6v83163gd7rnlxfmyrjd5bbwq-aos-bazel-accache-format-1",
+      "runners": [
+        "linux-sandbox"
+      ]
+    },
+    "production": {
+      "actions": 115,
+      "cache_hits": 0,
+      "execution_sha256": "3ef9d46f4fb5ddb6c916469eddd48457e5e06b7fa4a4ccbfebbe6a3e72adfbfb",
+      "mnemonics": {
+        "CargoBuildScriptRun": 12,
+        "ExtractCargoTomlEnvVars": 47,
+        "Rustc": 56
+      },
+      "output": "/nix/store/cpfxp8c4w6p52nhwnmbffwi4a5awbh6l-aos-bazel-accache-production-1",
+      "runners": [
+        "linux-sandbox"
+      ]
+    },
+    "tests": {
+      "actions": 143,
+      "cache_hits": 0,
+      "execution_sha256": "5e3f169f30aa6b2d2a6e3ccd7196c728c57bfc65e984e0e719a22aebe90ee016",
+      "mnemonics": {
+        "CargoBuildScriptRun": 13,
+        "ExtractCargoTomlEnvVars": 56,
+        "Rustc": 69,
+        "RustdocTestWriter": 1,
+        "TestRunner": 4
+      },
+      "output": "/nix/store/1qgs7jvfkviqjcblybj7vhqzfyik2h2d-aos-bazel-accache-tests-1",
+      "runners": [
+        "linux-sandbox"
+      ]
+    }
+  },
+  "first_party_features": {
+    "accache": [
+      []
+    ],
+    "accache-frontend": [
+      []
+    ]
+  },
+  "installation": {
+    "compared": [
+      "needed",
+      "interpreter",
+      "libraries",
+      "runtime_dependencies",
+      "help"
+    ],
+    "executable_sha256": "88ec386f303c04a08a3dc9d9a537b379a12fe4eca51ff741cd0d923ed50957ae",
+    "runtime_dependencies": [
+      "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39"
+    ]
+  },
+  "limits": [
+    "Precise source selection on the native x86_64 host. Conservative selection and foreign-host execution are not requalified here.",
+    "All recorded Bazel compiler, generator, lint, format, test and editor actions execute without disk-cache hits in Linux sandboxes. This does not claim an entirely fresh Nix/toolchain closure.",
+    "Editor raw diagnostic records match, but aggregate inference statistics differ and both analyses retain incomplete inference.",
+    "Execution profile evidence is retained separately in accache-execution-profiles.json. Complete compiler defaults, native ABI and linker equivalence remain independent gates.",
+    "The generic development launcher still uses the ordinary workspace for editor export. Its independent editor profile routing remains to be enrolled.",
+    "Production builders still use Cargo. Production cutover, performance acceptance and eventual manifest removal remain gated."
+  ],
+  "output": "/nix/store/qrfbqzpvgmjbljwizxl4imqizrw5ssgp-aos-bazel-accache-checks",
+  "outputs": {
+    "editor": "/nix/store/jqfj9dcz02vfsrpd5hkk2rixp84yyh1d-aos-bazel-accache-editor-parity",
+    "execution-profiles": "/nix/store/ax7sin6alpm88lnypafzficlj32x1z17-aos-bazel-accache-execution-profiles",
+    "installation": "/nix/store/0ixsc5v94frdy6akgl75gi8y6zifghjb-aos-bazel-accache-installation",
+    "integration": "/nix/store/c9l57jjqxqdxpkdrrrkya7qibawfwbcm-aos-bazel-accache-integration-1",
+    "package": "/nix/store/6cpspi4z23ggf6mqphk0pqmcphh9rml9-accache-0.1.0",
+    "tests": "/nix/store/y393l9j53grqnkwv7vi8n1hwg58kw15x-aos-bazel-accache-checks"
+  },
+  "reports_sha256": {
+    "editor/parity.json": "b87e1e5d316cb61752621671f2946206b51db0818568d63f0ab06fe8d219996d",
+    "execution-profiles/evidence.json": "37baec6999a76be302a48200c2df628e4a6f7de45a772f59d0644bd0a9d46a3a",
+    "installation/installation.json": "7140be82cb66c076b550ca51ad4a549e4ca0095047b460d43624564b93dd5fdf",
+    "tests/parity.json": "dbb7c81bb1407754264d2b04e35285a29ca58ec135f24905d105bfc9d34b4e38"
+  },
+  "schema_version": 1,
+  "source": {
+    "first_party_rust_files": {
+      "crates/accache/accache-frontend/src/compiler/args.rs": "277696f0311de14965b744218620d32f1a6f0f50e74ba7457cf9a76beb51cabd",
+      "crates/accache/accache-frontend/src/compiler/c.rs": "c8472df08a397003d669997233a3719f9e5bd2dda93b01c34abf4ce7ca13386e",
+      "crates/accache/accache-frontend/src/compiler/clang.rs": "47c3ad666d751aa96bc75f9b9886f031cf06b6c32f3bf02baec90750c9deda23",
+      "crates/accache/accache-frontend/src/compiler/counted_array.rs": "fa3036d604561967853073ae0bb7b0b0006de5f1556d8a4e877de962c7fdaed8",
+      "crates/accache/accache-frontend/src/compiler/gcc.rs": "0b17b03e6ab92ca7978055707f4116d4a791db1e12db05dceaa190c72e7c6b9d",
+      "crates/accache/accache-frontend/src/compiler/mod.rs": "bbc28c3b407b5acd36b1ed18b5f2e1de2328083e4fb7a547c9ede9b8fae121c7",
+      "crates/accache/accache-frontend/src/compiler/rust.rs": "7e1a8b1da4df8dbcdd23c7b103fc8468a4b261e2ada8d98d36a3968c8ad3e141",
+      "crates/accache/accache-frontend/src/compiler/types.rs": "15047ae9dcaaa44109b1399c9e4debef09c0d8b02088424cc07f1d798ff33297",
+      "crates/accache/accache-frontend/src/lib.rs": "a3ffa3a182179305491f4e6f1cd9ab4e0063afc62f1b976172b473056d0171d8",
+      "crates/accache/accache-frontend/src/util.rs": "c6cd382472206b4ed748c3b42cb70b8df01e64ce37d3d24426c224601552debe",
+      "crates/accache/accache/src/backend.rs": "3dc875cf6e2628818495e9203137fcdbda0c7257fb65ddc30b881ed7967cc24c",
+      "crates/accache/accache/src/compiler.rs": "3a0e8f0494f22a913cf0658438dd52349da514893211e451899943858aa8d1ce",
+      "crates/accache/accache/src/compiler/c.rs": "77cbf2462111fac4e977754507270f53f35b9d44548791a56379f617e5ae2e88",
+      "crates/accache/accache/src/compiler/dependencies.rs": "c40cc6b0767d9c391d2f307f9be06ae3c26a6bd978d0858e804b18681d4cc751",
+      "crates/accache/accache/src/compiler/llvm.rs": "729daaada4347757531dbcf255a0016de2795163f5e95a79e59985010af78cb8",
+      "crates/accache/accache/src/compiler/rust.rs": "2cdf6dfb9805e5426e82912cc775d6ec142f0bc785a340288a51ce5a126144a8",
+      "crates/accache/accache/src/main.rs": "4b53622fb383a5fdbd0b6ca535909434ac635cb5cb6861f8b7fa427c5b4bc6b0",
+      "crates/accache/accache/src/model.rs": "31b48a67223f2f898846a506825630c4118e6be404429244fe13fb90a7c24128",
+      "crates/accache/accache/src/proto.rs": "ca46891082b3600e0a3ee53a18f1f8b1867d04ca6eb664c8159ca7d2cb08417a",
+      "crates/accache/accache/src/report.rs": "dc0b05607546ae2ff5f8c673885924dda33e41a6b34abf43f3c5523a70a92ce2"
+    },
+    "path": "/nix/store/vvmdypc3qryb74mhd5yn86yn30ad5x8f-aos-bazel-workspace"
+  },
+  "status": "PASS",
+  "unit_cases": {
+    "//crates/accache/accache-frontend:unit": {
+      "executed": 109,
+      "ignored": 0
+    },
+    "//crates/accache/accache:bin_accache": {
+      "executed": 5,
+      "ignored": 0
+    }
+  },
+  "upstream_feature_identities": 44
+}

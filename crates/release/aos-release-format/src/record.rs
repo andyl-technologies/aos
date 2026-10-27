@@ -230,18 +230,18 @@ impl ReleaseRecordV1 {
         {
             bail!("release record summary disagrees with its signed qualification receipt");
         }
-        if let Some(support) = &self.support {
-            if support.kind == aos_registry_format::support::SupportKind::Lts
-                && support.supported_until.is_none()
-            {
-                bail!("release record marks an LTS train without an end date");
-            }
+        if let Some(support) = &self.support
+            && support.kind == aos_registry_format::support::SupportKind::Lts
+            && support.supported_until.is_none()
+        {
+            bail!("release record marks an LTS train without an end date");
         }
         Ok(receipt)
     }
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::receipt::{RECEIPT_SIGNATURE_DOMAIN, SIGNED_RECEIPT, SignedReceiptEnvelope};

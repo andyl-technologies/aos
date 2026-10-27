@@ -7,6 +7,8 @@
   mkCargoDummySource,
   aosWorkspaceVendor,
   patchelf,
+  callPackage,
+  buildDriver ? "cargo",
   zfs,
   service-management,
   smartmontools,
@@ -16,6 +18,7 @@
   aos-kernel-tunable-provider,
 }: let
   version = "0.1.0";
+  withBuildDriver = selected: callPackage ./aos-zfs-provider.nix {buildDriver = selected;};
   cargoDeps = aosWorkspaceVendor;
   targetTriple =
     {
@@ -59,8 +62,7 @@
     preBuild = staticBuildSetup;
     buildDeps = [patchelf];
   };
-in
-  mkAosCargoPackage {
+  packageArguments = {
     platformSupport = {
       build = [
         {
@@ -93,6 +95,11 @@ in
     buildDeps = [patchelf];
     runtimeDeps = [zfs];
 
+    passthru = {
+      inherit withBuildDriver;
+      buildDriver = "cargo";
+    };
+
     module = ./_aos-zfs-provider;
     # ZFS recommends hardware monitoring; admit its contract without bundling smartd.
     moduleDeps = [service-management smartmontools storage-interface kernel-interface kmod aos-kernel-tunable-provider];
@@ -116,4 +123,14 @@ in
       license = "Apache-2.0";
       mainProgram = "aos-zfs-pool-provider";
     };
-  }
+  };
+  cargoPackage = mkAosCargoPackage packageArguments;
+in
+  assert builtins.elem buildDriver ["cargo" "bazel"];
+    if buildDriver == "bazel"
+    then
+      callPackage ./_aos-zfs-provider-bazel.nix {
+        inherit packageArguments;
+        cargoFallback = cargoPackage;
+      }
+    else cargoPackage

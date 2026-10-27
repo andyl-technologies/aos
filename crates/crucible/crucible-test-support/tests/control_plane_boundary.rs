@@ -3,6 +3,9 @@
 #[path = "support/workspace.rs"]
 mod workspace;
 
+#[path = "support/architecture.rs"]
+mod architecture;
+
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::path::PathBuf;
@@ -11,9 +14,22 @@ use toml::Value;
 
 #[test]
 fn cli_uses_only_declared_host_composition_dependencies() -> Result<(), Box<dyn Error>> {
-    let manifests = load_crucible_manifests()?;
-    let workspace_dependencies = load_workspace_dependencies()?;
-    let findings = control_plane_boundary_findings(&manifests, &workspace_dependencies);
+    let findings = if let Some(graph) = architecture::load()? {
+        let dependencies = graph
+            .production_dependencies("crucible-cli")?
+            .iter()
+            .map(|package| DependencySpec {
+                key: package.clone(),
+                package: package.clone(),
+                scope: String::from("declared Bazel production graph"),
+            })
+            .collect();
+        control_plane_dependency_findings(dependencies)
+    } else {
+        let manifests = load_crucible_manifests()?;
+        let workspace_dependencies = load_workspace_dependencies()?;
+        control_plane_boundary_findings(&manifests, &workspace_dependencies)
+    };
 
     assert!(
         findings.is_empty(),
@@ -141,16 +157,97 @@ const CLI_ALLOWED_CRUCIBLE_DEPENDENCIES: [&str; 6] = [
     "crucible-session",
 ];
 
+#[test]
+fn architecture_metadata_preserves_declared_dependency_names() -> Result<(), Box<dyn Error>> {
+    let graph = architecture::parse(&architecture_fixture().to_string())?;
+    let dependencies = graph.production_dependencies("crucible-cli")?;
+
+    assert_eq!(
+        dependencies,
+        &std::collections::BTreeSet::from([String::from("crucible-engine")])
+    );
+    assert!(graph.production_dependencies("absent-package").is_err());
+
+    Ok(())
+}
+
+#[test]
+fn architecture_metadata_rejects_incomplete_or_inconsistent_graphs() -> Result<(), Box<dyn Error>> {
+    let original = architecture_fixture();
+    let mut fixtures = Vec::new();
+
+    let mut duplicate = original.clone();
+    duplicate["packages"]
+        .as_array_mut()
+        .ok_or_else(|| std::io::Error::other("architecture fixture packages must be an array"))?
+        .push(original["packages"][0].clone());
+    fixtures.push(("duplicate package", duplicate));
+
+    let mut escape = original.clone();
+    escape["packages"][0]["directory"] = serde_json::json!("crates/../outside");
+    fixtures.push(("escaped source ownership", escape));
+
+    let mut inconsistent = original.clone();
+    inconsistent["packages"][0]["production_dependencies"] = serde_json::json!([]);
+    fixtures.push(("mismatched target edges", inconsistent));
+
+    let mut missing = original.clone();
+    missing["target_dependencies"] = serde_json::json!({});
+    fixtures.push(("missing target records", missing));
+
+    let mut unmodeled = original.clone();
+    unmodeled["packages"][0]["production_dependencies"] = serde_json::Value::Null;
+    fixtures.push(("missing production graph", unmodeled));
+
+    let mut identity = original.clone();
+    identity["query_sha256"] = serde_json::json!("not-a-query-digest");
+    fixtures.push(("invalid query identity", identity));
+
+    let mut selection = original;
+    selection["selection"] = serde_json::json!("one configured platform only");
+    fixtures.push(("incomplete platform selection", selection));
+
+    for (name, fixture) in fixtures {
+        assert!(
+            architecture::parse(&fixture.to_string()).is_err(),
+            "accepted {name}"
+        );
+    }
+
+    Ok(())
+}
+
+fn architecture_fixture() -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "selection": "union of all declared production platform/feature branches",
+        "query_sha256": "a".repeat(64),
+        "packages": [{
+            "name": "crucible-cli",
+            "directory": "crates/crucible/crucible-cli",
+            "production_targets": ["//crates/crucible/crucible-cli:crucible"],
+            "production_dependencies": ["crucible-engine"],
+        }],
+        "target_dependencies": {
+            "//crates/crucible/crucible-cli:crucible": [{"packages": ["crucible-engine"]}],
+        },
+    })
+}
+
 fn control_plane_boundary_findings(
     manifests: &BTreeMap<String, Value>,
     workspace_dependencies: &toml::map::Map<String, Value>,
 ) -> Vec<String> {
+    let Some(manifest) = manifests.get("crucible-cli") else {
+        return Vec::new();
+    };
+    control_plane_dependency_findings(dependency_specs(manifest, workspace_dependencies))
+}
+
+fn control_plane_dependency_findings(dependencies: Vec<DependencySpec>) -> Vec<String> {
     let mut findings = Vec::new();
 
-    let Some(manifest) = manifests.get("crucible-cli") else {
-        return findings;
-    };
-    for dependency in dependency_specs(manifest, workspace_dependencies) {
+    for dependency in dependencies {
         if dependency.package == "crucible-engine" {
             findings.push(format!(
                 "`crucible-cli` has direct dependency `{}` on the engine crate in {}",

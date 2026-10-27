@@ -9,13 +9,12 @@ impl Database {
     ///
     /// Returns an error on database failure.
     pub async fn prune_expired_image_snapshot_leases(&self) -> Result<u64> {
-        Ok(self
-            .backend
+        self.backend
             .execute(
                 "DELETE FROM image_snapshot_leases WHERE expires_at <= ?1",
                 &vals![unix_now()],
             )
-            .await?)
+            .await
     }
 
     // -- index writes -------------------------------------------------------
@@ -284,14 +283,13 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error on database failure.
-    pub async fn known_image_snapshot_digests(&self) -> Result<std::collections::HashSet<String>> {
-        Ok(self
-            .backend
+    pub async fn known_image_snapshot_digests(&self) -> Result<std::collections::BTreeSet<String>> {
+        self.backend
             .query("SELECT digest FROM image_snapshots", &[])
             .await?
             .iter()
             .map(|row| row.get(0))
-            .collect::<Result<_>>()?)
+            .collect::<Result<_>>()
     }
 
     /// Reports whether a snapshot already has durable registry-placement roots.

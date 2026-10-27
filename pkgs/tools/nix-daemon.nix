@@ -13,7 +13,7 @@
   control = writeShellScriptBin "aos-nix-daemon-control" ''
     set -euo pipefail
     set -a
-    source /etc/aos/packages/nix-daemon/runtime.env
+    source /etc/packages/nix-daemon/runtime.env
     set +a
 
     case "''${1:-}" in

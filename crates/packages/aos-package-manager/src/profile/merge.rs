@@ -115,18 +115,18 @@ pub fn build_fhs_tree(
         // Parent directories precede children. A directory replacing a leaf
         // removes that obstruction before any descendants are considered.
         for (relative_path, entry) in entries {
-            if let Some(previous) = merged.get(&relative_path) {
-                if !(previous.entry.directory && entry.directory) {
-                    conflicts.push(FileConflict {
-                        path: relative_path.clone(),
-                        loser: previous.package.clone(),
-                        winner: package.clone(),
-                    });
-                    printer.warning(&format!(
-                        "path conflict at {relative_path}: using {package}; shadows {}",
-                        previous.package,
-                    ));
-                }
+            if let Some(previous) = merged.get(&relative_path)
+                && !(previous.entry.directory && entry.directory)
+            {
+                conflicts.push(FileConflict {
+                    path: relative_path.clone(),
+                    loser: previous.package.clone(),
+                    winner: package.clone(),
+                });
+                printer.warning(&format!(
+                    "path conflict at {relative_path}: using {package}; shadows {}",
+                    previous.package,
+                ));
             }
 
             if !entry.directory {
@@ -315,11 +315,11 @@ fn create_fhs_symlink(gen_dir: &Path, rel_path: &str, target: &Path) -> Result<(
     let link_path = gen_dir.join(rel_path);
 
     // Ensure the parent directory exists.
-    if let Some(parent) = link_path.parent() {
-        if !parent.exists() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("creating directory {}", parent.display()))?;
-        }
+    if let Some(parent) = link_path.parent()
+        && !parent.exists()
+    {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating directory {}", parent.display()))?;
     }
 
     // Remove a pre-existing symlink/file at this path (from a previous merge).

@@ -1,0 +1,578 @@
+load("@rules_rust//rust:defs.bzl", "rust_lint_config")
+load(":profiles.bzl", "compilation_role", "crucible_cli_profile_required", "formats_profile_required")
+load(":profiles.bzl", "dependency_profile", "device_profile_required", "engine_profile_required", "guest_profile_required", "quota_profile_required", "session_profile_required", "control_profile_required", "qemu_host_profile_required", "store_s3_profile_required", "daemon_profile_required", "store_profile_required")
+
+compilation_role(name = "compilation_role")
+
+config_setting(
+    name = "exec_compilation",
+    flag_values = {":compilation_role": "exec"},
+    visibility = ["//visibility:public"],
+)
+
+crucible_cli_profile_required(
+    name = "crucible_cli_profile_required",
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "crucible_cli_dependencies",
+    flag_values = {":dependency_profile": "crucible-cli"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "controller_test_dependencies",
+    flag_values = {":dependency_profile": "controller-tests"},
+    visibility = ["//visibility:public"],
+)
+
+daemon_profile_required(
+    name = "daemon_profile_required",
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "daemon_dependencies",
+    flag_values = {":dependency_profile": "daemon"},
+    visibility = ["//visibility:public"],
+)
+
+store_s3_profile_required(
+    name = "store_s3_profile_required",
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "store_s3_dependencies",
+    flag_values = {":dependency_profile": "store-s3"},
+    visibility = ["//visibility:public"],
+)
+
+qemu_host_profile_required(
+    name = "qemu_host_profile_required",
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "qemu_host_dependencies",
+    flag_values = {":dependency_profile": "qemu-host"},
+    visibility = ["//visibility:public"],
+)
+
+control_profile_required(
+    name = "control_profile_required",
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "control_dependencies",
+    flag_values = {":dependency_profile": "control"},
+    visibility = ["//visibility:public"],
+)
+
+session_profile_required(
+    name = "session_profile_required",
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "session_dependencies",
+    flag_values = {":dependency_profile": "session"},
+    visibility = ["//visibility:public"],
+)
+
+quota_profile_required(
+    name = "quota_profile_required",
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "quota_dependencies",
+    flag_values = {":dependency_profile": "quota"},
+    visibility = ["//visibility:public"],
+)
+
+engine_profile_required(
+    name = "engine_profile_required",
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "engine_dependencies",
+    flag_values = {":dependency_profile": "engine"},
+    visibility = ["//visibility:public"],
+)
+
+guest_profile_required(
+    name = "guest_profile_required",
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "guest_dependencies",
+    flag_values = {":dependency_profile": "guest"},
+    visibility = ["//visibility:public"],
+)
+
+device_profile_required(
+    name = "device_profile_required",
+    visibility = ["//visibility:public"],
+)
+
+store_profile_required(
+    name = "store_profile_required",
+    visibility = ["//visibility:public"],
+)
+
+dependency_profile(
+    name = "dependency_profile",
+    build_setting_default = "core",
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "qemu_test_oracle_host_dependencies",
+    flag_values = {":dependency_profile": "qemu-test-oracle-host"},
+)
+
+config_setting(
+    name = "qemu_gpl_test_dependencies",
+    flag_values = {":dependency_profile": "qemu-gpl-tests"},
+)
+
+config_setting(
+    name = "device_dependencies",
+    flag_values = {":dependency_profile": "device"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "store_dependencies",
+    flag_values = {":dependency_profile": "store"},
+    visibility = ["//visibility:public"],
+)
+
+exports_files(["crucible_cli_graph.bzl", "daemon_graph.bzl", "compile.bzl", "build_script.bzl", "crates.bzl", "license.bzl", "package.bzl", "rust_package.bzl", "source_package.bzl", "test.bzl", "generated.bzl", "wasm.bzl", "worker.bzl"])
+
+exports_files(["clippy.toml", "rustfmt.toml"])
+
+# Mirrors crates/Cargo.toml while Cargo remains the migration oracle.
+rust_lint_config(
+    name = "workspace_lints",
+    visibility = ["//visibility:public"],
+    clippy = {
+        "all": "deny",
+        "disallowed_methods": "deny",
+        "disallowed_types": "deny",
+        "expect_used": "deny",
+        "float_arithmetic": "deny",
+        "unwrap_used": "deny",
+    },
+)
+
+
+formats_profile_required(
+    name = "formats_profile_required",
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "formats_dependencies",
+    flag_values = {":dependency_profile": "formats"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "native_foundation_dependencies",
+    flag_values = {":dependency_profile": "native-foundation"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "native_binding_dependencies",
+    flag_values = {":dependency_profile": "native-bindings"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "native_foundation_tests_dependencies",
+    flag_values = {":dependency_profile": "native-foundation-tests"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "native_foundation_minimal_dependencies",
+    flag_values = {":dependency_profile": "native-foundation-minimal"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "activation_core_dependencies",
+    flag_values = {":dependency_profile": "activation-core"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "activation_core_tests_dependencies",
+    flag_values = {":dependency_profile": "activation-core-tests"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "activation_storage_dependencies",
+    flag_values = {":dependency_profile": "activation-storage"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "activation_systemd_dependencies",
+    flag_values = {":dependency_profile": "activation-systemd"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "activation_crucible_dependencies",
+    flag_values = {":dependency_profile": "activation-crucible"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "activation_crucible_tests_dependencies",
+    flag_values = {":dependency_profile": "activation-crucible-tests"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "cli_support_dependencies",
+    flag_values = {":dependency_profile": "cli-support"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "build_services_dependencies",
+    flag_values = {":dependency_profile": "build-services"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "deployment_dependencies",
+    flag_values = {":dependency_profile": "deployment"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "hub_portable_dependencies",
+    flag_values = {":dependency_profile": "hub-portable"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "hub_model_dependencies",
+    flag_values = {":dependency_profile": "hub-model"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "hub_model_tests_dependencies",
+    flag_values = {":dependency_profile": "hub-model-tests"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "hub_client_dependencies",
+    flag_values = {":dependency_profile": "hub-client"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "release_preparation_dependencies",
+    flag_values = {":dependency_profile": "release-preparation"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "registry_native_dependencies",
+    flag_values = {":dependency_profile": "registry-native"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "registry_native_tests_dependencies",
+    flag_values = {":dependency_profile": "registry-native-tests"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "release_coordination_dependencies",
+    flag_values = {":dependency_profile": "release-coordination"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "configuration_image_dependencies",
+    flag_values = {":dependency_profile": "configuration-image"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "configuration_image_tests_dependencies",
+    flag_values = {":dependency_profile": "configuration-image-tests"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "boot_preparation_dependencies",
+    flag_values = {":dependency_profile": "boot-preparation"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "preparation_provider_dependencies",
+    flag_values = {":dependency_profile": "preparation-provider"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "preparation_provider_tests_dependencies",
+    flag_values = {":dependency_profile": "preparation-provider-tests"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "boot_preparation_minimal_dependencies",
+    flag_values = {":dependency_profile": "boot-preparation-minimal"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "package_manager_dependencies",
+    flag_values = {":dependency_profile": "package-manager"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "package_manager_tests_dependencies",
+    flag_values = {":dependency_profile": "package-manager-tests"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "hub_db_dependencies",
+    flag_values = {":dependency_profile": "hub-db"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "hub_db_tests_dependencies",
+    flag_values = {":dependency_profile": "hub-db-tests"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "hub_db_all_features_dependencies",
+    flag_values = {":dependency_profile": "hub-db-all-features"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "hub_db_all_features_tests_dependencies",
+    flag_values = {":dependency_profile": "hub-db-all-features-tests"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "registry_web_dependencies",
+    flag_values = {":dependency_profile": "registry-web"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "registry_web_wasm_dependencies",
+    flag_values = {":dependency_profile": "registry-web-wasm"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "hub_console_dependencies",
+    flag_values = {":dependency_profile": "hub-console"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "hub_console_wasm_dependencies",
+    flag_values = {":dependency_profile": "hub-console-wasm"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "hub_service_dependencies",
+    flag_values = {":dependency_profile": "hub-service"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "hub_service_tests_dependencies",
+    flag_values = {":dependency_profile": "hub-service-tests"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "hub_service_all_features_dependencies",
+    flag_values = {":dependency_profile": "hub-service-all-features"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "hub_service_all_features_tests_dependencies",
+    flag_values = {":dependency_profile": "hub-service-all-features-tests"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "hub_native_postgres_dependencies",
+    flag_values = {":dependency_profile": "hub-native-postgres"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "hub_native_tests_dependencies",
+    flag_values = {":dependency_profile": "hub-native-tests"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "hub_worker_tests_dependencies",
+    flag_values = {":dependency_profile": "hub-worker-tests"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "hub_worker_all_features_tests_dependencies",
+    flag_values = {":dependency_profile": "hub-worker-all-features-tests"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "hub_worker_wasm_dependencies",
+    flag_values = {":dependency_profile": "hub-worker-wasm"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "hub_worker_wasm_do_e2e_dependencies",
+    flag_values = {":dependency_profile": "hub-worker-wasm-do-e2e"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "hub_worker_wasm_all_features_dependencies",
+    flag_values = {":dependency_profile": "hub-worker-wasm-all-features"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "aos_cli_tests_dependencies",
+    flag_values = {":dependency_profile": "aos-cli-tests"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "aos_cli_fleet_tests_dependencies",
+    flag_values = {":dependency_profile": "aos-cli-fleet-tests"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "aos_cli_production_dependencies",
+    flag_values = {":dependency_profile": "aos-cli-production"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "qemu_gpl_production_dependencies",
+    flag_values = {":dependency_profile": "qemu-gpl-production"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "qemu_gpl_plugin_test_dependencies",
+    flag_values = {":dependency_profile": "qemu-gpl-plugin-tests"},
+)
+
+# The compiler cache resolves its standalone lockfile independently of applications.
+config_setting(
+    name = "accache_dependencies",
+    flag_values = {":dependency_profile": "accache"},
+    visibility = ["//visibility:public"],
+)
+
+# Keep the standalone parser's Cargo lint policy separate from application policy.
+filegroup(
+    name = "clippy_config",
+    srcs = select({
+        ":accache_dependencies": ["accache/clippy.toml"],
+        "//conditions:default": ["clippy.toml"],
+    }),
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "kernel_tunable_dependencies",
+    flag_values = {":dependency_profile": "kernel-tunable"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "kernel_tunable_tests_dependencies",
+    flag_values = {":dependency_profile": "kernel-tunable-tests"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "configuration_files_dependencies",
+    flag_values = {":dependency_profile": "configuration-files"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "configuration_files_tests_dependencies",
+    flag_values = {":dependency_profile": "configuration-files-tests"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "systemd_provider_dependencies",
+    flag_values = {":dependency_profile": "systemd-provider"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "nix_store_provider_dependencies",
+    flag_values = {":dependency_profile": "nix-store-provider"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "package_evaluation_driver_dependencies",
+    flag_values = {":dependency_profile": "package-evaluation-driver"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "deployment_check_dependencies",
+    flag_values = {":dependency_profile": "deployment-check"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "release_signer_dependencies",
+    flag_values = {":dependency_profile": "release-signer"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "hub_native_dialects_dependencies",
+    flag_values = {":dependency_profile": "hub-native-dialects"},
+    visibility = ["//visibility:public"],
+)

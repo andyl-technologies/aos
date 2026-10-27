@@ -1,0 +1,1255 @@
+{
+  "all_compiler_arguments_and_environments_identical": true,
+  "cargo_oracle": {
+    "derivation": "/nix/store/n4kc8qnphfd2r8h1sa4pg8g4vyk1f6vd-aos-bazel-crucible-feature-case-cargo-oracle.drv",
+    "derivation_sha256": "55b7f6cb0a6549314d2c64ecba286950ce77fc0d8e857dccf97e6364ef592f96",
+    "output": "/nix/store/hf7j2rfn2r382h6f1gzysq2gw1hwnvkl-aos-bazel-crucible-feature-case-cargo-oracle"
+  },
+  "checks": {
+    "0mfdip9r3y2wpkzp135j8gph5gcc8414-aos-bazel-policy-checks": {
+      "derivation": "/nix/store/wjbhx6lhx0362jr246kaczgcmfpll7cl-aos-bazel-policy-checks.drv",
+      "derivation_sha256": "de217796b9592db2778c0f79115ff17e3e89b9bc2ca31fed8a6db7cf855b288f",
+      "output": "/nix/store/0mfdip9r3y2wpkzp135j8gph5gcc8414-aos-bazel-policy-checks"
+    },
+    "8zackq55f7fmrpqyvbikc6qnik6vyyia-aos-native-evaluation-checks-0": {
+      "derivation": "/nix/store/88sj4hww8gn863d94bvpsfpdl1p51pln-aos-native-evaluation-checks-0.drv",
+      "derivation_sha256": "7835bb633ce93d7c8d6c7e0aea0be869152fe5ffaeba3240a5d9f1211aff07c6",
+      "output": "/nix/store/8zackq55f7fmrpqyvbikc6qnik6vyyia-aos-native-evaluation-checks-0"
+    },
+    "n8y7j5g4plpzhdywcndpbv7hd4i6ddh9-aos-bazel-crucible-feature-case-checks": {
+      "derivation": "/nix/store/2ihbkg26vp3q2imymq27xbflb5zc5m2b-aos-bazel-crucible-feature-case-checks.drv",
+      "derivation_sha256": "5a3a7f1e92251e465f2a2eb14d31dd17ca67c08cdf1802617891b077acb38349",
+      "output": "/nix/store/n8y7j5g4plpzhdywcndpbv7hd4i6ddh9-aos-bazel-crucible-feature-case-checks"
+    },
+    "release_metadata": {
+      "derivation": "/nix/store/nlc6ihrxm0qxcpsq796cw52zc18kdkg2-aos-bazel-crucible-release-metadata-check.drv",
+      "derivation_sha256": "9f7a700a25a2e7a7bf59dbac51c9e16751761c7debecbbe397300a6c4969aaf3",
+      "output": "/nix/store/7kshzyhyhc7r3hz8g6d5cjhm3wj12sck-aos-bazel-crucible-release-metadata-check"
+    }
+  },
+  "compiled_cases": {
+    "crucible all features": {
+      "compilation": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "0a643f1d4ea57cc9afaec3dae32dc252ac9fba2cb7a5b76da1541779c070d20a",
+        "runner": "linux-sandbox"
+      },
+      "externs": {
+        "blake3": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__blake3-1.8.5/libblake3-525747419.rlib",
+        "ciborium": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__ciborium-0.2.2/libciborium-1034976433.rlib",
+        "crucible_campaign": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-campaign/libcrucible_campaign-2825766136.rlib",
+        "crucible_determinism": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-determinism/libcrucible_determinism-66940924.rlib",
+        "crucible_device": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-device/libcrucible_device-256873656.rlib",
+        "crucible_qemu_protocol": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-qemu-protocol/libcrucible_qemu_protocol-1179786364.rlib",
+        "crucible_qemu_shmem": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-qemu-shmem/libcrucible_qemu_shmem-751315480.rlib",
+        "crucible_store": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-store/libcrucible_store-4896636.rlib",
+        "regex": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__regex-1.12.4/libregex-3368730366.rlib",
+        "serde": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__serde-1.0.228/libserde-254484312.rlib",
+        "serde_json": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__serde_json-1.0.150/libserde_json-3180517593.rlib",
+        "thiserror": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__thiserror-2.0.18/libthiserror-104733029.rlib",
+        "toml": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__toml-0.8.23/libtoml-751872787.rlib",
+        "tracing": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__tracing-0.1.44/libtracing-1602418755.rlib"
+      },
+      "features": [
+        "test-double",
+        "test-support"
+      ],
+      "outputs": [
+        "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-engine/libcrucible_engine-405814032.rlib"
+      ]
+    },
+    "crucible default": {
+      "compilation": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "c813edbc2c654ade46acf195c12e717c1feeb5ed90b602cc738a0a0acc82da09",
+        "runner": "linux-sandbox"
+      },
+      "externs": {
+        "blake3": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__blake3-1.8.5/libblake3-525747419.rlib",
+        "ciborium": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__ciborium-0.2.2/libciborium-1034976433.rlib",
+        "crucible_campaign": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-campaign/libcrucible_campaign-2825766136.rlib",
+        "crucible_determinism": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-determinism/libcrucible_determinism-66940924.rlib",
+        "crucible_device": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-device/libcrucible_device-256873656.rlib",
+        "crucible_qemu_protocol": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-qemu-protocol/libcrucible_qemu_protocol-1179786364.rlib",
+        "crucible_store": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-store/libcrucible_store-4896636.rlib",
+        "regex": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__regex-1.12.4/libregex-3368730366.rlib",
+        "serde": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__serde-1.0.228/libserde-254484312.rlib",
+        "serde_json": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__serde_json-1.0.150/libserde_json-3180517593.rlib",
+        "thiserror": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__thiserror-2.0.18/libthiserror-104733029.rlib",
+        "toml": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__toml-0.8.23/libtoml-751872787.rlib",
+        "tracing": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__tracing-0.1.44/libtracing-1602418755.rlib"
+      },
+      "features": [
+        "default"
+      ],
+      "outputs": [
+        "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-engine/libcrucible_engine-1789108536.rlib"
+      ]
+    },
+    "crucible no default": {
+      "compilation": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "d85ea5aab27fc9f3ceb33d5f9e82a76b93f6852ef6b9ea2a244cd89e758e7008",
+        "runner": "linux-sandbox"
+      },
+      "externs": {
+        "blake3": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__blake3-1.8.5/libblake3-525747419.rlib",
+        "ciborium": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__ciborium-0.2.2/libciborium-1034976433.rlib",
+        "crucible_campaign": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-campaign/libcrucible_campaign-2825766136.rlib",
+        "crucible_determinism": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-determinism/libcrucible_determinism-66940924.rlib",
+        "crucible_device": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-device/libcrucible_device-256873656.rlib",
+        "crucible_qemu_protocol": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-qemu-protocol/libcrucible_qemu_protocol-1179786364.rlib",
+        "crucible_store": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-store/libcrucible_store-4896636.rlib",
+        "regex": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__regex-1.12.4/libregex-3368730366.rlib",
+        "serde": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__serde-1.0.228/libserde-254484312.rlib",
+        "serde_json": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__serde_json-1.0.150/libserde_json-3180517593.rlib",
+        "thiserror": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__thiserror-2.0.18/libthiserror-104733029.rlib",
+        "toml": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__toml-0.8.23/libtoml-751872787.rlib",
+        "tracing": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__tracing-0.1.44/libtracing-1602418755.rlib"
+      },
+      "features": [],
+      "outputs": [
+        "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-engine/libcrucible_engine-2969014990.rlib"
+      ]
+    },
+    "crucible test-double": {
+      "compilation": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "f0c7e76cfdb51c8854461b5be550778164ec324ee8ab52d03b8264e40008c3b4",
+        "runner": "linux-sandbox"
+      },
+      "externs": {
+        "blake3": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__blake3-1.8.5/libblake3-525747419.rlib",
+        "ciborium": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__ciborium-0.2.2/libciborium-1034976433.rlib",
+        "crucible_campaign": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-campaign/libcrucible_campaign-2825766136.rlib",
+        "crucible_determinism": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-determinism/libcrucible_determinism-66940924.rlib",
+        "crucible_device": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-device/libcrucible_device-256873656.rlib",
+        "crucible_qemu_protocol": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-qemu-protocol/libcrucible_qemu_protocol-1179786364.rlib",
+        "crucible_qemu_shmem": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-qemu-shmem/libcrucible_qemu_shmem-751315480.rlib",
+        "crucible_store": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-store/libcrucible_store-4896636.rlib",
+        "regex": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__regex-1.12.4/libregex-3368730366.rlib",
+        "serde": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__serde-1.0.228/libserde-254484312.rlib",
+        "serde_json": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__serde_json-1.0.150/libserde_json-3180517593.rlib",
+        "thiserror": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__thiserror-2.0.18/libthiserror-104733029.rlib",
+        "toml": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__toml-0.8.23/libtoml-751872787.rlib",
+        "tracing": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__tracing-0.1.44/libtracing-1602418755.rlib"
+      },
+      "features": [
+        "test-double"
+      ],
+      "outputs": [
+        "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-engine/libcrucible_engine-2212335821.rlib"
+      ]
+    },
+    "crucible test-support": {
+      "compilation": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "d311b21935aa1a35a87375c776bfe8a434d6f426591b0ef3ed31e9345e7d98e1",
+        "runner": "linux-sandbox"
+      },
+      "externs": {
+        "blake3": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__blake3-1.8.5/libblake3-525747419.rlib",
+        "ciborium": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__ciborium-0.2.2/libciborium-1034976433.rlib",
+        "crucible_campaign": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-campaign/libcrucible_campaign-2825766136.rlib",
+        "crucible_determinism": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-determinism/libcrucible_determinism-66940924.rlib",
+        "crucible_device": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-device/libcrucible_device-256873656.rlib",
+        "crucible_qemu_protocol": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-qemu-protocol/libcrucible_qemu_protocol-1179786364.rlib",
+        "crucible_store": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-store/libcrucible_store-4896636.rlib",
+        "regex": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__regex-1.12.4/libregex-3368730366.rlib",
+        "serde": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__serde-1.0.228/libserde-254484312.rlib",
+        "serde_json": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__serde_json-1.0.150/libserde_json-3180517593.rlib",
+        "thiserror": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__thiserror-2.0.18/libthiserror-104733029.rlib",
+        "toml": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__toml-0.8.23/libtoml-751872787.rlib",
+        "tracing": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__tracing-0.1.44/libtracing-1602418755.rlib"
+      },
+      "features": [
+        "test-support"
+      ],
+      "outputs": [
+        "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-engine/libcrucible_engine-2426638263.rlib"
+      ]
+    },
+    "crucible-device default": {
+      "compilation": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "4268156e5110a198308500f1c5aaa95a2794987e136beb51f55286ea8882a733",
+        "runner": "linux-sandbox"
+      },
+      "externs": {
+        "blake3": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__blake3-1.8.5/libblake3-525747419.rlib",
+        "ciborium": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__ciborium-0.2.2/libciborium-1034976433.rlib",
+        "crucible_determinism": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-determinism/libcrucible_determinism-66940924.rlib",
+        "crucible_qemu_shmem": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-qemu-shmem/libcrucible_qemu_shmem-751315480.rlib",
+        "serde": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__serde-1.0.228/libserde-254484312.rlib",
+        "thiserror": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__thiserror-2.0.18/libthiserror-104733029.rlib"
+      },
+      "features": [
+        "default"
+      ],
+      "outputs": [
+        "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-device/libcrucible_device-256873656.rlib"
+      ]
+    },
+    "crucible-device no default": {
+      "compilation": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "921354e17782dcd6b9f4abc7dba3b25071c56e0c863a3697224d288f98711894",
+        "runner": "linux-sandbox"
+      },
+      "externs": {
+        "blake3": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__blake3-1.8.5/libblake3-525747419.rlib",
+        "ciborium": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__ciborium-0.2.2/libciborium-1034976433.rlib",
+        "crucible_determinism": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-determinism/libcrucible_determinism-66940924.rlib",
+        "crucible_qemu_shmem": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-qemu-shmem/libcrucible_qemu_shmem-751315480.rlib",
+        "serde": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__serde-1.0.228/libserde-254484312.rlib",
+        "thiserror": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__thiserror-2.0.18/libthiserror-104733029.rlib"
+      },
+      "features": [],
+      "outputs": [
+        "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-device/libcrucible_device-164185334.rlib"
+      ]
+    },
+    "crucible-qemu production": {
+      "compilation": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "3be8a875150fe12f84d62d47fbbccee995ae0b3617b1717949c403ec69c92b2b",
+        "runner": "linux-sandbox"
+      },
+      "externs": {
+        "aos_linux_project_quota": "bazel-out/k8-fastbuild/bin/crates/linux/aos-linux-project-quota/libaos_linux_project_quota-2760692444.rlib",
+        "blake3": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__blake3-1.8.5/libblake3-525747419.rlib",
+        "ciborium": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__ciborium-0.2.2/libciborium-1034976433.rlib",
+        "crucible_device": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-device/libcrucible_device-256873656.rlib",
+        "crucible_engine": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-engine/libcrucible_engine-1789108536.rlib",
+        "crucible_qemu_protocol": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-qemu-protocol/libcrucible_qemu_protocol-1179786364.rlib",
+        "crucible_qemu_shmem": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-qemu-shmem/libcrucible_qemu_shmem-751315480.rlib",
+        "libc": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__libc-0.2.186/liblibc-212959719.rlib",
+        "rustix": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__rustix-1.1.4/librustix-1571458234.rlib",
+        "serde": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__serde-1.0.228/libserde-254484312.rlib",
+        "serde_json": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__serde_json-1.0.150/libserde_json-3180517593.rlib",
+        "sha2": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__sha2-0.10.9/libsha2-744286347.rlib",
+        "tempfile": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__tempfile-3.27.0/libtempfile-54517749.rlib",
+        "thiserror": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__thiserror-2.0.18/libthiserror-104733029.rlib",
+        "tracing": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__tracing-0.1.44/libtracing-1602418755.rlib"
+      },
+      "features": [],
+      "outputs": [
+        "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-qemu-host/libcrucible_qemu_host-3550914204.rlib"
+      ]
+    },
+    "crucible-qemu test support": {
+      "compilation": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "9b74374c2d2c85d11eb88d9ef61dd50299ba945db62918464b7b8da8f4061c5c",
+        "runner": "linux-sandbox"
+      },
+      "externs": {
+        "aos_linux_project_quota": "bazel-out/k8-fastbuild/bin/crates/linux/aos-linux-project-quota/libaos_linux_project_quota-2760692444.rlib",
+        "blake3": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__blake3-1.8.5/libblake3-525747419.rlib",
+        "ciborium": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__ciborium-0.2.2/libciborium-1034976433.rlib",
+        "crucible_device": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-device/libcrucible_device-256873656.rlib",
+        "crucible_engine": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-engine/libcrucible_engine-1622174873.rlib",
+        "crucible_qemu_protocol": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-qemu-protocol/libcrucible_qemu_protocol-1179786364.rlib",
+        "crucible_qemu_shmem": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-qemu-shmem/libcrucible_qemu_shmem-751315480.rlib",
+        "libc": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__libc-0.2.186/liblibc-212959719.rlib",
+        "rustix": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__rustix-1.1.4/librustix-1571458234.rlib",
+        "serde": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__serde-1.0.228/libserde-254484312.rlib",
+        "serde_json": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__serde_json-1.0.150/libserde_json-3180517593.rlib",
+        "sha2": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__sha2-0.10.9/libsha2-744286347.rlib",
+        "tempfile": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__tempfile-3.27.0/libtempfile-54517749.rlib",
+        "thiserror": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__thiserror-2.0.18/libthiserror-104733029.rlib",
+        "tracing": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__tracing-0.1.44/libtracing-1602418755.rlib"
+      },
+      "features": [
+        "test-support"
+      ],
+      "outputs": [
+        "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-qemu-host/libcrucible_qemu_host-2745543429.rlib"
+      ]
+    }
+  },
+  "configured_targets": 167,
+  "execution": {
+    "conservative": {
+      "actions": 291,
+      "cache_hits": 0,
+      "first_party_rust_compilations": 16,
+      "runner": "linux-sandbox"
+    },
+    "precise": {
+      "actions": 291,
+      "cache_hits": 0,
+      "first_party_rust_compilations": 16,
+      "runner": "linux-sandbox"
+    }
+  },
+  "first_party_compilations": {
+    "//crates/crucible/crucible-campaign:lib": {
+      "conservative_compilation": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "93c051594eab0c29abdb265a210578fabdb7a20e5eb734f0f7601bba5025efde",
+        "runner": "linux-sandbox"
+      },
+      "outputs": [
+        {
+          "digest": {
+            "hash": "dfab18eb5638321633dbfd83507331cd4dfd2a7b88333e309faf643b7e4febf5",
+            "hashFunctionName": "SHA-256",
+            "sizeBytes": "32302862"
+          },
+          "isTool": false,
+          "path": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-campaign/libcrucible_campaign-2825766136.rlib",
+          "symlinkTargetPath": ""
+        }
+      ],
+      "precise_compilation": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "14ec5c3f5d74e24c38c61ba48236cb9e88813e98b672a44d35dc8236d664d228",
+        "runner": "linux-sandbox"
+      }
+    },
+    "//crates/crucible/crucible-determinism:lib": {
+      "conservative_compilation": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "606eb0c5d6685d9cff7f3c7f8bec2dd7a554f265311dab345e27339fba4598f4",
+        "runner": "linux-sandbox"
+      },
+      "outputs": [
+        {
+          "digest": {
+            "hash": "d5b24f3ec1d00757ce8763a49fb69549c016cebb05772cc16d37d1e9972a134b",
+            "hashFunctionName": "SHA-256",
+            "sizeBytes": "256642"
+          },
+          "isTool": false,
+          "path": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-determinism/libcrucible_determinism-66940924.rlib",
+          "symlinkTargetPath": ""
+        }
+      ],
+      "precise_compilation": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "606eb0c5d6685d9cff7f3c7f8bec2dd7a554f265311dab345e27339fba4598f4",
+        "runner": "linux-sandbox"
+      }
+    },
+    "//crates/crucible/crucible-device:lib": {
+      "conservative_compilation": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "4268156e5110a198308500f1c5aaa95a2794987e136beb51f55286ea8882a733",
+        "runner": "linux-sandbox"
+      },
+      "outputs": [
+        {
+          "digest": {
+            "hash": "0ef4c010d4f24cb0f41495aa467061e3dbb6c94cfbf1ea98b1a15b0e7be564df",
+            "hashFunctionName": "SHA-256",
+            "sizeBytes": "18955532"
+          },
+          "isTool": false,
+          "path": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-device/libcrucible_device-256873656.rlib",
+          "symlinkTargetPath": ""
+        }
+      ],
+      "precise_compilation": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "4268156e5110a198308500f1c5aaa95a2794987e136beb51f55286ea8882a733",
+        "runner": "linux-sandbox"
+      }
+    },
+    "//crates/crucible/crucible-device:lib_no_default": {
+      "conservative_compilation": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "921354e17782dcd6b9f4abc7dba3b25071c56e0c863a3697224d288f98711894",
+        "runner": "linux-sandbox"
+      },
+      "outputs": [
+        {
+          "digest": {
+            "hash": "ede19fafc5a7173f04f27f3a4f65ed80f73bbe435d9d942f34522e4ba6830ed7",
+            "hashFunctionName": "SHA-256",
+            "sizeBytes": "18954886"
+          },
+          "isTool": false,
+          "path": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-device/libcrucible_device-164185334.rlib",
+          "symlinkTargetPath": ""
+        }
+      ],
+      "precise_compilation": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "921354e17782dcd6b9f4abc7dba3b25071c56e0c863a3697224d288f98711894",
+        "runner": "linux-sandbox"
+      }
+    },
+    "//crates/crucible/crucible-engine:lib": {
+      "conservative_compilation": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "1bc85c3c714d3f076337f35358f10fdfa1847a1257c2913fe3fe538bd9c8a0a0",
+        "runner": "linux-sandbox"
+      },
+      "outputs": [
+        {
+          "digest": {
+            "hash": "db7cc9da307e22665568a35d2055d38648058e44eaa9034d4d098422d40dd008",
+            "hashFunctionName": "SHA-256",
+            "sizeBytes": "199749068"
+          },
+          "isTool": false,
+          "path": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-engine/libcrucible_engine-1789108536.rlib",
+          "symlinkTargetPath": ""
+        }
+      ],
+      "precise_compilation": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "c813edbc2c654ade46acf195c12e717c1feeb5ed90b602cc738a0a0acc82da09",
+        "runner": "linux-sandbox"
+      }
+    },
+    "//crates/crucible/crucible-engine:lib_all_features_no_default": {
+      "conservative_compilation": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "4ae6610dccdb34aa62bf2d6b3ff314372380d13f0c9db9cd96357325b747e7a7",
+        "runner": "linux-sandbox"
+      },
+      "outputs": [
+        {
+          "digest": {
+            "hash": "e2a7128aa8ae10405cbe10f3e3ca149129c51cb0111c50040a571461890c23f3",
+            "hashFunctionName": "SHA-256",
+            "sizeBytes": "200700620"
+          },
+          "isTool": false,
+          "path": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-engine/libcrucible_engine-405814032.rlib",
+          "symlinkTargetPath": ""
+        }
+      ],
+      "precise_compilation": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "0a643f1d4ea57cc9afaec3dae32dc252ac9fba2cb7a5b76da1541779c070d20a",
+        "runner": "linux-sandbox"
+      }
+    },
+    "//crates/crucible/crucible-engine:lib_no_default": {
+      "conservative_compilation": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "0bfe4ef02420984af8ae87d1b43041965959a216bcabf8d814aea2efb6650d0a",
+        "runner": "linux-sandbox"
+      },
+      "outputs": [
+        {
+          "digest": {
+            "hash": "49013c9835a1d20524c5018e8b4f46f3d65c879cc31261e4efb549355a886ea9",
+            "hashFunctionName": "SHA-256",
+            "sizeBytes": "199748466"
+          },
+          "isTool": false,
+          "path": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-engine/libcrucible_engine-2969014990.rlib",
+          "symlinkTargetPath": ""
+        }
+      ],
+      "precise_compilation": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "d85ea5aab27fc9f3ceb33d5f9e82a76b93f6852ef6b9ea2a244cd89e758e7008",
+        "runner": "linux-sandbox"
+      }
+    },
+    "//crates/crucible/crucible-engine:lib_test_double": {
+      "conservative_compilation": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "d237134306deab4121744292e8d9d51510f5054f3738601fefcdd982d1b30012",
+        "runner": "linux-sandbox"
+      },
+      "outputs": [
+        {
+          "digest": {
+            "hash": "72799ac5b77c5b910719abccff49d0ac4d4ba971a3c1b3656184b8c6ff011cf5",
+            "hashFunctionName": "SHA-256",
+            "sizeBytes": "200699846"
+          },
+          "isTool": false,
+          "path": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-engine/libcrucible_engine-1622174873.rlib",
+          "symlinkTargetPath": ""
+        }
+      ],
+      "precise_compilation": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "e291b43d6c17f18074884d6482d1f805da1383ebd0d6324b3ac12b57ee756b05",
+        "runner": "linux-sandbox"
+      }
+    },
+    "//crates/crucible/crucible-engine:lib_test_double_no_default": {
+      "conservative_compilation": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "47942b6f0f2227d4dddd2620aadffc02430a809781bdfdd197f358f3cece269c",
+        "runner": "linux-sandbox"
+      },
+      "outputs": [
+        {
+          "digest": {
+            "hash": "48679897d5e821dc9e9bf91e3517eaf0502788655927cc65be678b18422f80da",
+            "hashFunctionName": "SHA-256",
+            "sizeBytes": "200703634"
+          },
+          "isTool": false,
+          "path": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-engine/libcrucible_engine-2212335821.rlib",
+          "symlinkTargetPath": ""
+        }
+      ],
+      "precise_compilation": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "f0c7e76cfdb51c8854461b5be550778164ec324ee8ab52d03b8264e40008c3b4",
+        "runner": "linux-sandbox"
+      }
+    },
+    "//crates/crucible/crucible-engine:lib_test_support_no_default": {
+      "conservative_compilation": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "c1f6b7976c810c2aa5b41877d670f104aa3f41c5dbf5988cfda02a98c2284652",
+        "runner": "linux-sandbox"
+      },
+      "outputs": [
+        {
+          "digest": {
+            "hash": "58827356bf93f1ad51d2c6e05223302d81bcf27fb8e143c41ab74d957ad17233",
+            "hashFunctionName": "SHA-256",
+            "sizeBytes": "199753938"
+          },
+          "isTool": false,
+          "path": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-engine/libcrucible_engine-2426638263.rlib",
+          "symlinkTargetPath": ""
+        }
+      ],
+      "precise_compilation": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "d311b21935aa1a35a87375c776bfe8a434d6f426591b0ef3ed31e9345e7d98e1",
+        "runner": "linux-sandbox"
+      }
+    },
+    "//crates/crucible/crucible-qemu-host:lib_no_default": {
+      "conservative_compilation": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "2d9e09c36c034c46932b0a28775a944d9b07ba245251811ea192de3987d22c0c",
+        "runner": "linux-sandbox"
+      },
+      "outputs": [
+        {
+          "digest": {
+            "hash": "7cd1391cbe165b6a5329560dab87b0d57d563265fe9e3405b01c863ae81c76b4",
+            "hashFunctionName": "SHA-256",
+            "sizeBytes": "28510464"
+          },
+          "isTool": false,
+          "path": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-qemu-host/libcrucible_qemu_host-3550914204.rlib",
+          "symlinkTargetPath": ""
+        }
+      ],
+      "precise_compilation": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "3be8a875150fe12f84d62d47fbbccee995ae0b3617b1717949c403ec69c92b2b",
+        "runner": "linux-sandbox"
+      }
+    },
+    "//crates/crucible/crucible-qemu-host:lib_test_support_no_default": {
+      "conservative_compilation": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "e9d42ae8590bcba3ac4371d7cc872617d97c3ffd8df581f8b8c0b52695160860",
+        "runner": "linux-sandbox"
+      },
+      "outputs": [
+        {
+          "digest": {
+            "hash": "b7fb94656ae0b8d9f9bdb22fe7bb0e64a26062fad6382e08829999c886687064",
+            "hashFunctionName": "SHA-256",
+            "sizeBytes": "29737510"
+          },
+          "isTool": false,
+          "path": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-qemu-host/libcrucible_qemu_host-2745543429.rlib",
+          "symlinkTargetPath": ""
+        }
+      ],
+      "precise_compilation": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "9b74374c2d2c85d11eb88d9ef61dd50299ba945db62918464b7b8da8f4061c5c",
+        "runner": "linux-sandbox"
+      }
+    },
+    "//crates/crucible/crucible-qemu-protocol:lib": {
+      "conservative_compilation": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "ac8e31c9ac7a84e54a88b9bd5f3069a8d770d0b92986259dcaed4a9c7289f16d",
+        "runner": "linux-sandbox"
+      },
+      "outputs": [
+        {
+          "digest": {
+            "hash": "22b2a44aace3665e3e40ee8072f7c98aae47b72b58378ba7c16db8d72afdaa8b",
+            "hashFunctionName": "SHA-256",
+            "sizeBytes": "3484128"
+          },
+          "isTool": false,
+          "path": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-qemu-protocol/libcrucible_qemu_protocol-1179786364.rlib",
+          "symlinkTargetPath": ""
+        }
+      ],
+      "precise_compilation": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "ac8e31c9ac7a84e54a88b9bd5f3069a8d770d0b92986259dcaed4a9c7289f16d",
+        "runner": "linux-sandbox"
+      }
+    },
+    "//crates/crucible/crucible-qemu-shmem:lib": {
+      "conservative_compilation": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "f9faf3eb3c4e27a6ac078c7aed4f8eb1d78f274a9aa7781a476be9b649691e5e",
+        "runner": "linux-sandbox"
+      },
+      "outputs": [
+        {
+          "digest": {
+            "hash": "1807e5448e2803f4945c41bdc6f28a2565a6a53ee6e02ffc52c18a8ab90de501",
+            "hashFunctionName": "SHA-256",
+            "sizeBytes": "5780124"
+          },
+          "isTool": false,
+          "path": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-qemu-shmem/libcrucible_qemu_shmem-751315480.rlib",
+          "symlinkTargetPath": ""
+        }
+      ],
+      "precise_compilation": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "f9faf3eb3c4e27a6ac078c7aed4f8eb1d78f274a9aa7781a476be9b649691e5e",
+        "runner": "linux-sandbox"
+      }
+    },
+    "//crates/crucible/crucible-store:lib": {
+      "conservative_compilation": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "214eccef8f5eab9afffa7723c86c8601e4b88fef509c7a9b1bb63d2237721f2e",
+        "runner": "linux-sandbox"
+      },
+      "outputs": [
+        {
+          "digest": {
+            "hash": "533412495824f986842d0958aad6ba975c3221edda9c59a4b9de2690d41570c6",
+            "hashFunctionName": "SHA-256",
+            "sizeBytes": "9256898"
+          },
+          "isTool": false,
+          "path": "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-store/libcrucible_store-4896636.rlib",
+          "symlinkTargetPath": ""
+        }
+      ],
+      "precise_compilation": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "1efc0b0c520cff5c159b13c3da1f027162e2703de38150eb701a19b3835bd0bd",
+        "runner": "linux-sandbox"
+      }
+    },
+    "//crates/linux/aos-linux-project-quota:lib": {
+      "conservative_compilation": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "ee3ed77bc41ef4ea9f9bd1b32e236b3b8a90ea1b35cdab20b7f2c375b5e8f7b7",
+        "runner": "linux-sandbox"
+      },
+      "outputs": [
+        {
+          "digest": {
+            "hash": "751553a759985fa3ef94fd67a895820091985bc0cb51d1772993be9eedaeb2fd",
+            "hashFunctionName": "SHA-256",
+            "sizeBytes": "200014"
+          },
+          "isTool": false,
+          "path": "bazel-out/k8-fastbuild/bin/crates/linux/aos-linux-project-quota/libaos_linux_project_quota-2760692444.rlib",
+          "symlinkTargetPath": ""
+        }
+      ],
+      "precise_compilation": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "a0f6e5037405e0fc6de8f5dd6342f3987f62bd6abd39fdb4e440fb8e2b0cc09d",
+        "runner": "linux-sandbox"
+      }
+    }
+  },
+  "first_party_execution_input_fingerprints_identical": false,
+  "first_party_output_digests_identical": true,
+  "implementation_sha256": {
+    "crates/crucible/crucible-device/BUILD.bazel": "de960010d9860be56520a3d4e4d1bb8a43b1a012b6466182deff7d65e47a2eae",
+    "crates/crucible/crucible-engine/BUILD.bazel": "6a4113a477650c827339ba41b6fe27bdad82d732c91f47aac4ffc87305d2570c",
+    "crates/crucible/crucible-qemu-host/BUILD.bazel": "74ad65161e7323bfcc23c607ca56e7efe21c442c50d6da74309c37d3a076dc37",
+    "tests/build/_bazel-feature-powerset.nix": "76f2f4c1d11c7cd5ad02434e54e2a38976eed31f9c8fa2bd05f56bfe68078397",
+    "tests/build/bazel.nix": "09116d07a113c3daaab62e0a62e6243f05709c32568ad5dc5c0e86f9bd4419aa",
+    "tools/bazel/metadata/crucible-feature-cases.json": "18d82df5c93eddfbd5315c3a3726b65957f4330738618b7aae13ee4d89d7ab06",
+    "tools/bazel/metadata/feature-powerset-inventory.json": "866f6044be28598b9d82603155d081829c3de2219a53f533630a7f8a996bac44",
+    "tools/bazel/tests/feature-powerset.nix": "c0c8ab82946d6be706b274d7f8c5d5c58978657d425cd6f2be958443c5090dab",
+    "tools/bazel/tests/measure_feature_cases.py": "43095958fdfc0e1bad8077f6819cbe457d39e62c59c29dbd007041f51d94a3e5",
+    "tools/bazel/tests/test_feature_powerset.py": "a5ef27dd38a5fb889a0a4fd155844d588d47faaa6d1612da6e853bcf28e405ff",
+    "tools/bazel/tests/verify_feature_powerset.py": "37a4be274c028a704eb4e776d35d8f75b2c09913b0d49aba4897b42b66736855"
+  },
+  "input_differences": {
+    "//crates/crucible/crucible-campaign:lib": {
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__rustix-1.1.4/_bs.out_dir/rustix_test_can_compile": {
+        "conservative": {
+          "digest": {
+            "hash": "46bcc381b2aa9d1d81c3b8583e0d109f466e333f9f26fedfebe2c68d5cd051dc",
+            "hashFunctionName": "SHA-256",
+            "sizeBytes": "2187"
+          },
+          "isTool": false,
+          "path": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__rustix-1.1.4/_bs.out_dir/rustix_test_can_compile",
+          "symlinkTargetPath": ""
+        },
+        "precise": {
+          "digest": {
+            "hash": "2cddad569a8eca9d41a64e529e222f7b48db99b8c579dd0311e14c95b0e6e4d6",
+            "hashFunctionName": "SHA-256",
+            "sizeBytes": "2187"
+          },
+          "isTool": false,
+          "path": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__rustix-1.1.4/_bs.out_dir/rustix_test_can_compile",
+          "symlinkTargetPath": ""
+        }
+      }
+    },
+    "//crates/crucible/crucible-engine:lib": {
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__rustix-1.1.4/_bs.out_dir/rustix_test_can_compile": {
+        "conservative": {
+          "digest": {
+            "hash": "46bcc381b2aa9d1d81c3b8583e0d109f466e333f9f26fedfebe2c68d5cd051dc",
+            "hashFunctionName": "SHA-256",
+            "sizeBytes": "2187"
+          },
+          "isTool": false,
+          "path": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__rustix-1.1.4/_bs.out_dir/rustix_test_can_compile",
+          "symlinkTargetPath": ""
+        },
+        "precise": {
+          "digest": {
+            "hash": "2cddad569a8eca9d41a64e529e222f7b48db99b8c579dd0311e14c95b0e6e4d6",
+            "hashFunctionName": "SHA-256",
+            "sizeBytes": "2187"
+          },
+          "isTool": false,
+          "path": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__rustix-1.1.4/_bs.out_dir/rustix_test_can_compile",
+          "symlinkTargetPath": ""
+        }
+      }
+    },
+    "//crates/crucible/crucible-engine:lib_all_features_no_default": {
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__rustix-1.1.4/_bs.out_dir/rustix_test_can_compile": {
+        "conservative": {
+          "digest": {
+            "hash": "46bcc381b2aa9d1d81c3b8583e0d109f466e333f9f26fedfebe2c68d5cd051dc",
+            "hashFunctionName": "SHA-256",
+            "sizeBytes": "2187"
+          },
+          "isTool": false,
+          "path": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__rustix-1.1.4/_bs.out_dir/rustix_test_can_compile",
+          "symlinkTargetPath": ""
+        },
+        "precise": {
+          "digest": {
+            "hash": "2cddad569a8eca9d41a64e529e222f7b48db99b8c579dd0311e14c95b0e6e4d6",
+            "hashFunctionName": "SHA-256",
+            "sizeBytes": "2187"
+          },
+          "isTool": false,
+          "path": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__rustix-1.1.4/_bs.out_dir/rustix_test_can_compile",
+          "symlinkTargetPath": ""
+        }
+      }
+    },
+    "//crates/crucible/crucible-engine:lib_no_default": {
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__rustix-1.1.4/_bs.out_dir/rustix_test_can_compile": {
+        "conservative": {
+          "digest": {
+            "hash": "46bcc381b2aa9d1d81c3b8583e0d109f466e333f9f26fedfebe2c68d5cd051dc",
+            "hashFunctionName": "SHA-256",
+            "sizeBytes": "2187"
+          },
+          "isTool": false,
+          "path": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__rustix-1.1.4/_bs.out_dir/rustix_test_can_compile",
+          "symlinkTargetPath": ""
+        },
+        "precise": {
+          "digest": {
+            "hash": "2cddad569a8eca9d41a64e529e222f7b48db99b8c579dd0311e14c95b0e6e4d6",
+            "hashFunctionName": "SHA-256",
+            "sizeBytes": "2187"
+          },
+          "isTool": false,
+          "path": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__rustix-1.1.4/_bs.out_dir/rustix_test_can_compile",
+          "symlinkTargetPath": ""
+        }
+      }
+    },
+    "//crates/crucible/crucible-engine:lib_test_double": {
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__rustix-1.1.4/_bs.out_dir/rustix_test_can_compile": {
+        "conservative": {
+          "digest": {
+            "hash": "46bcc381b2aa9d1d81c3b8583e0d109f466e333f9f26fedfebe2c68d5cd051dc",
+            "hashFunctionName": "SHA-256",
+            "sizeBytes": "2187"
+          },
+          "isTool": false,
+          "path": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__rustix-1.1.4/_bs.out_dir/rustix_test_can_compile",
+          "symlinkTargetPath": ""
+        },
+        "precise": {
+          "digest": {
+            "hash": "2cddad569a8eca9d41a64e529e222f7b48db99b8c579dd0311e14c95b0e6e4d6",
+            "hashFunctionName": "SHA-256",
+            "sizeBytes": "2187"
+          },
+          "isTool": false,
+          "path": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__rustix-1.1.4/_bs.out_dir/rustix_test_can_compile",
+          "symlinkTargetPath": ""
+        }
+      }
+    },
+    "//crates/crucible/crucible-engine:lib_test_double_no_default": {
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__rustix-1.1.4/_bs.out_dir/rustix_test_can_compile": {
+        "conservative": {
+          "digest": {
+            "hash": "46bcc381b2aa9d1d81c3b8583e0d109f466e333f9f26fedfebe2c68d5cd051dc",
+            "hashFunctionName": "SHA-256",
+            "sizeBytes": "2187"
+          },
+          "isTool": false,
+          "path": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__rustix-1.1.4/_bs.out_dir/rustix_test_can_compile",
+          "symlinkTargetPath": ""
+        },
+        "precise": {
+          "digest": {
+            "hash": "2cddad569a8eca9d41a64e529e222f7b48db99b8c579dd0311e14c95b0e6e4d6",
+            "hashFunctionName": "SHA-256",
+            "sizeBytes": "2187"
+          },
+          "isTool": false,
+          "path": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__rustix-1.1.4/_bs.out_dir/rustix_test_can_compile",
+          "symlinkTargetPath": ""
+        }
+      }
+    },
+    "//crates/crucible/crucible-engine:lib_test_support_no_default": {
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__rustix-1.1.4/_bs.out_dir/rustix_test_can_compile": {
+        "conservative": {
+          "digest": {
+            "hash": "46bcc381b2aa9d1d81c3b8583e0d109f466e333f9f26fedfebe2c68d5cd051dc",
+            "hashFunctionName": "SHA-256",
+            "sizeBytes": "2187"
+          },
+          "isTool": false,
+          "path": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__rustix-1.1.4/_bs.out_dir/rustix_test_can_compile",
+          "symlinkTargetPath": ""
+        },
+        "precise": {
+          "digest": {
+            "hash": "2cddad569a8eca9d41a64e529e222f7b48db99b8c579dd0311e14c95b0e6e4d6",
+            "hashFunctionName": "SHA-256",
+            "sizeBytes": "2187"
+          },
+          "isTool": false,
+          "path": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__rustix-1.1.4/_bs.out_dir/rustix_test_can_compile",
+          "symlinkTargetPath": ""
+        }
+      }
+    },
+    "//crates/crucible/crucible-qemu-host:lib_no_default": {
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__rustix-1.1.4/_bs.out_dir/rustix_test_can_compile": {
+        "conservative": {
+          "digest": {
+            "hash": "46bcc381b2aa9d1d81c3b8583e0d109f466e333f9f26fedfebe2c68d5cd051dc",
+            "hashFunctionName": "SHA-256",
+            "sizeBytes": "2187"
+          },
+          "isTool": false,
+          "path": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__rustix-1.1.4/_bs.out_dir/rustix_test_can_compile",
+          "symlinkTargetPath": ""
+        },
+        "precise": {
+          "digest": {
+            "hash": "2cddad569a8eca9d41a64e529e222f7b48db99b8c579dd0311e14c95b0e6e4d6",
+            "hashFunctionName": "SHA-256",
+            "sizeBytes": "2187"
+          },
+          "isTool": false,
+          "path": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__rustix-1.1.4/_bs.out_dir/rustix_test_can_compile",
+          "symlinkTargetPath": ""
+        }
+      }
+    },
+    "//crates/crucible/crucible-qemu-host:lib_test_support_no_default": {
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__rustix-1.1.4/_bs.out_dir/rustix_test_can_compile": {
+        "conservative": {
+          "digest": {
+            "hash": "46bcc381b2aa9d1d81c3b8583e0d109f466e333f9f26fedfebe2c68d5cd051dc",
+            "hashFunctionName": "SHA-256",
+            "sizeBytes": "2187"
+          },
+          "isTool": false,
+          "path": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__rustix-1.1.4/_bs.out_dir/rustix_test_can_compile",
+          "symlinkTargetPath": ""
+        },
+        "precise": {
+          "digest": {
+            "hash": "2cddad569a8eca9d41a64e529e222f7b48db99b8c579dd0311e14c95b0e6e4d6",
+            "hashFunctionName": "SHA-256",
+            "sizeBytes": "2187"
+          },
+          "isTool": false,
+          "path": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__rustix-1.1.4/_bs.out_dir/rustix_test_can_compile",
+          "symlinkTargetPath": ""
+        }
+      }
+    },
+    "//crates/crucible/crucible-store:lib": {
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__rustix-1.1.4/_bs.out_dir/rustix_test_can_compile": {
+        "conservative": {
+          "digest": {
+            "hash": "46bcc381b2aa9d1d81c3b8583e0d109f466e333f9f26fedfebe2c68d5cd051dc",
+            "hashFunctionName": "SHA-256",
+            "sizeBytes": "2187"
+          },
+          "isTool": false,
+          "path": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__rustix-1.1.4/_bs.out_dir/rustix_test_can_compile",
+          "symlinkTargetPath": ""
+        },
+        "precise": {
+          "digest": {
+            "hash": "2cddad569a8eca9d41a64e529e222f7b48db99b8c579dd0311e14c95b0e6e4d6",
+            "hashFunctionName": "SHA-256",
+            "sizeBytes": "2187"
+          },
+          "isTool": false,
+          "path": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__rustix-1.1.4/_bs.out_dir/rustix_test_can_compile",
+          "symlinkTargetPath": ""
+        }
+      }
+    },
+    "//crates/linux/aos-linux-project-quota:lib": {
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__rustix-1.1.4/_bs.out_dir/rustix_test_can_compile": {
+        "conservative": {
+          "digest": {
+            "hash": "46bcc381b2aa9d1d81c3b8583e0d109f466e333f9f26fedfebe2c68d5cd051dc",
+            "hashFunctionName": "SHA-256",
+            "sizeBytes": "2187"
+          },
+          "isTool": false,
+          "path": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__rustix-1.1.4/_bs.out_dir/rustix_test_can_compile",
+          "symlinkTargetPath": ""
+        },
+        "precise": {
+          "digest": {
+            "hash": "2cddad569a8eca9d41a64e529e222f7b48db99b8c579dd0311e14c95b0e6e4d6",
+            "hashFunctionName": "SHA-256",
+            "sizeBytes": "2187"
+          },
+          "isTool": false,
+          "path": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_qemu_host_crates__rustix-1.1.4/_bs.out_dir/rustix_test_can_compile",
+          "symlinkTargetPath": ""
+        }
+      }
+    }
+  },
+  "known_performance_overlap": {
+    "derivation": "/nix/store/s6gv3dnf5nbwi1x2qbqz7cyhsbgcmlfv-aos-bazel-store-performance.drv",
+    "known_concurrent_work": [
+      "Bazel formatting root queries",
+      "Source-built rustfmt output parity and idempotence checks",
+      "Python policy and CLI checks",
+      "Boot-identity production builder, runtime closure, and installed CLI qualification",
+      "Production boot benchmark constructor builds, fresh-derivation local-cache restoration, and measurement regression checks",
+      "Crucible test-support fixture compilation, native oracle comparisons, and metadata regeneration",
+      "Crucible no-default feature-matrix compilation, nine offline Cargo checks, and affected source-inventory refreshes"
+    ],
+    "overlap_observation": "Formatting qualifications overlapped the first Cargo incremental cold scenario. Boot-identity qualification overlapped the first repetition's cold, warm, or implementation-edit scenarios. These scenarios also include untimed case validation, so these observations do not isolate overlap with timed compilation.",
+    "qualification_scope": "Repeated compile-loop baselines; not accepted regression budgets or end-to-end cutover evidence",
+    "required_followup": "Retain this limitation with any published samples; collect matching current Bazel/toolchain observations and quiet controlled acceptance measurements before setting numeric cutover budgets. Do not compare historical earlier-toolchain Bazel timings as matched measurements.",
+    "trial": "f7ffcc09bb-cargo-baseline-v1"
+  },
+  "limitations": [
+    "Rustix retains rustix_test_can_compile compiler-probe metadata in its exported build-script output directory. Its digest differs between source selections for 11 first-party compilations. All other first-party execution inputs and all first-party compiled output digests match; complete input reproducibility remains unresolved.",
+    "The independent Cargo checks establish the nine root feature selections, not full compiler-default, native ABI, artifact, runtime, editor, foreign-platform, or performance parity.",
+    "The original Rust feature-powerset driver and canonical Nix manifest-policy gate remain authoritative and have not been replaced.",
+    "Repository source audits, other production builder cutovers, named production gates, and final Cargo removal remain pending."
+  ],
+  "original_cases_preserved": [
+    {
+      "name": "crucible default",
+      "no_default_features": false,
+      "package": "crucible-engine",
+      "requested_features": []
+    },
+    {
+      "name": "crucible no default",
+      "no_default_features": true,
+      "package": "crucible-engine",
+      "requested_features": []
+    },
+    {
+      "name": "crucible test-support",
+      "no_default_features": true,
+      "package": "crucible-engine",
+      "requested_features": [
+        "test-support"
+      ]
+    },
+    {
+      "name": "crucible test-double",
+      "no_default_features": true,
+      "package": "crucible-engine",
+      "requested_features": [
+        "test-double"
+      ]
+    },
+    {
+      "name": "crucible all features",
+      "no_default_features": true,
+      "package": "crucible-engine",
+      "requested_features": [
+        "test-support",
+        "test-double"
+      ]
+    },
+    {
+      "name": "crucible-qemu production",
+      "no_default_features": true,
+      "package": "crucible-qemu-host",
+      "requested_features": []
+    },
+    {
+      "name": "crucible-qemu test support",
+      "no_default_features": true,
+      "package": "crucible-qemu-host",
+      "requested_features": [
+        "test-support"
+      ]
+    },
+    {
+      "name": "crucible-device default",
+      "no_default_features": false,
+      "package": "crucible-device",
+      "requested_features": []
+    },
+    {
+      "name": "crucible-device no default",
+      "no_default_features": true,
+      "package": "crucible-device",
+      "requested_features": []
+    }
+  ],
+  "parent_revision": "60ebe3d0d18ee0ba41a1e01b9047e03fc35e4356",
+  "parity": {
+    "derivation": "/nix/store/6qvqwlnb3hhisp3lfkn6gg3kahml191s-aos-bazel-crucible-feature-case-parity.drv",
+    "derivation_sha256": "1258c76699093c52e07563220869104fca382823e6c1e61a5e0bdfeafb8131c8",
+    "output": "/nix/store/s3cv0gi5jq7ym3078frd6hqgjzjy6wp0-aos-bazel-crucible-feature-case-parity"
+  },
+  "refreshed_inventories": {
+    "activation-crucible": {
+      "analyses": [
+        {
+          "derivation": "/nix/store/sl1sak61gh7mbh8jcwy7k4pd9hfyilpg-aos-bazel-activation-crucible-inventory-1.drv",
+          "derivation_sha256": "917e5161eecf3756ea1017ad69beb136483c260515d500241f8e67075356514c",
+          "output": "/nix/store/1d1ckh86ad16vmwrbl4lidxwbwhp87z6-aos-bazel-activation-crucible-inventory-1"
+        },
+        {
+          "derivation": "/nix/store/dvh5pgyfgsbf1j7m8cq0mfnimckf02ql-aos-bazel-activation-crucible-production-inventory-1.drv",
+          "derivation_sha256": "af3bf5c19b7a38c61e363a38cfb10c42368954bd7f64ff62c151d946556edc67",
+          "output": "/nix/store/avidyh4yyfp3bnpfyfwrdqfdjdc6gx25-aos-bazel-activation-crucible-production-inventory-1"
+        }
+      ],
+      "configured_targets": 255,
+      "contracts": 182,
+      "executed_actions": 0,
+      "first_party_configurations_unchanged": true,
+      "selection": "Merged test and production analyses; both original profiles retained",
+      "sha256": "5321205ab85d83631f49de7d5be4a2eaa4e36d0a0d29fd6d23a73ed2987093a6",
+      "targets_unchanged": true
+    },
+    "control": {
+      "analyses": [
+        {
+          "derivation": "/nix/store/9ddfdq1d36s6nwh8hyy2bvy34p63f403-aos-bazel-control-inventory-1.drv",
+          "derivation_sha256": "67dbb29c14250c69260395314248f4551032137e20c6d797820b07eb12a37ed5",
+          "output": "/nix/store/cl8wpqbmjz7syhlm1i0n8gwiyknwan8r-aos-bazel-control-inventory-1"
+        }
+      ],
+      "configured_targets": 329,
+      "contracts": 180,
+      "executed_actions": 0,
+      "first_party_configurations_unchanged": true,
+      "sha256": "8e774cf7916f7818fbe45f8ae328fb49c4fe041d59920d09002c6ba4f6986c5e",
+      "targets_unchanged": true
+    },
+    "crucible-cli": {
+      "analyses": [
+        {
+          "derivation": "/nix/store/b0lp39pz3blfzlchdlbxl5a1wdbj2f7r-aos-bazel-crucible-cli-inventory-1.drv",
+          "derivation_sha256": "3c365cb9a36194959a8e328f41c26b8596a133367306f7579c28a7e939602715",
+          "output": "/nix/store/1m8l8jw2bbq0z54d5402xfba9avaca9h-aos-bazel-crucible-cli-inventory-1"
+        }
+      ],
+      "configured_targets": 594,
+      "contracts": 188,
+      "executed_actions": 0,
+      "first_party_configurations_unchanged": true,
+      "sha256": "6a76aae0f2d3b51c02ba1ddfbc103031fdb53306c9618ec785fc0985f41a3ec0",
+      "targets_unchanged": true
+    },
+    "daemon": {
+      "analyses": [
+        {
+          "derivation": "/nix/store/kdmiilj54dcpxlwdcgznri65pw3p8qwl-aos-bazel-daemon-inventory-1.drv",
+          "derivation_sha256": "b29daccd06d6a601fce2fba61079516e1f1a490085868303857f366e407e593a",
+          "output": "/nix/store/b0dwar8xkwhw0w9cbbp2x0dclwl4y59v-aos-bazel-daemon-inventory-1"
+        }
+      ],
+      "configured_targets": 463,
+      "contracts": 187,
+      "executed_actions": 0,
+      "first_party_configurations_unchanged": true,
+      "sha256": "4f2361f0eb4edb3fe8d18b95ca7cc03f70e1a39df9e3b1b23776db10026aa0de",
+      "targets_unchanged": true
+    },
+    "device": {
+      "analyses": [
+        {
+          "derivation": "/nix/store/bpaqvq687qik036ijyylcpw7p96szwhy-aos-bazel-device-inventory-1.drv",
+          "derivation_sha256": "39a5479634a9ffb009a858c9b9ab70f5f51cc0321239e138977d3b11f59c0540",
+          "output": "/nix/store/z1c3s2r4xrdz3qm83lhxzsgcc0j66yfj-aos-bazel-device-inventory-1"
+        }
+      ],
+      "configured_targets": 175,
+      "contracts": 174,
+      "executed_actions": 0,
+      "first_party_configurations_unchanged": true,
+      "sha256": "5eb83c9f0de36f338cfb1cea8c1aaf2f9e6c1f847fa450859f46afb400617cdf",
+      "targets_unchanged": true
+    },
+    "engine": {
+      "analyses": [
+        {
+          "derivation": "/nix/store/lkhnjwvmr344ak1jwmj8m3k4b95rs21v-aos-bazel-engine-inventory-1.drv",
+          "derivation_sha256": "401ba04e78384de63b6ccd5a000c32e5b7adab1cb781712030a543eac29db95c",
+          "output": "/nix/store/7xpw7nmq5kv2v0dpfh6n6if16ab1n5ri-aos-bazel-engine-inventory-1"
+        }
+      ],
+      "configured_targets": 1276,
+      "contracts": 252,
+      "executed_actions": 0,
+      "first_party_configurations_unchanged": true,
+      "sha256": "5b938eacfba18c9fe0356b8683ba21e97a8cc6508dc297c10aabb7d2db136ee4",
+      "targets_unchanged": true
+    },
+    "qemu-host": {
+      "analyses": [
+        {
+          "derivation": "/nix/store/049b55y9mffpn6hiy8q7ni4abi93xxsf-aos-bazel-qemu-host-inventory-1.drv",
+          "derivation_sha256": "11540e44d3d45e0ed9481784d1423ce84ca10603ada71739a75b72a685a6cdb0",
+          "output": "/nix/store/s66vd3cn04laq4c6sm3g0jsskfprqrjw-aos-bazel-qemu-host-inventory-1"
+        }
+      ],
+      "configured_targets": 259,
+      "contracts": 181,
+      "executed_actions": 0,
+      "first_party_configurations_unchanged": true,
+      "sha256": "45437a8c204343789386f3d11911de6d006c97b3e60afdc310c562d9c14d44d0",
+      "targets_unchanged": true
+    },
+    "qemu-test-oracle-host": {
+      "analyses": [
+        {
+          "derivation": "/nix/store/wps9djyg3l0pj30ry5gj41p9bzf5vczp-aos-bazel-qemu-test-oracle-host-inventory-1.drv",
+          "derivation_sha256": "6b5e329b321447d1be068535025c3e0837e9a42e52817d910ecc46b5d095f92d",
+          "output": "/nix/store/3i16asvli6h81jsaf3l3n1y6zjq20ff6-aos-bazel-qemu-test-oracle-host-inventory-1"
+        }
+      ],
+      "configured_targets": 265,
+      "contracts": 179,
+      "executed_actions": 0,
+      "first_party_configurations_unchanged": true,
+      "sha256": "e9a73fa308b03a32f385c27cfe647c0c5871e59262491ad59785c192fc41d22c",
+      "targets_unchanged": true
+    },
+    "session": {
+      "analyses": [
+        {
+          "derivation": "/nix/store/sdxw5ca71aip2c86d4cd3mc4npbpbn1l-aos-bazel-session-inventory-1.drv",
+          "derivation_sha256": "0e8052776655a26df1ef3460c5b4276be5c45b6a2f67d93158433fde5bd84af1",
+          "output": "/nix/store/g2gqbf95vqxzhp2qr6i3x81mlz545dj5-aos-bazel-session-inventory-1"
+        }
+      ],
+      "configured_targets": 272,
+      "contracts": 178,
+      "executed_actions": 0,
+      "first_party_configurations_unchanged": true,
+      "sha256": "d6bfec69263301a9e717a193e894eb336e9bb8e409373ae65e89df87223d4ff0",
+      "targets_unchanged": true
+    }
+  },
+  "release_metadata_sha256": "02730c087b576284723588460fe72fd4c6a479d462b84b6d9798caf0e907c752",
+  "release_package_identities_unchanged": true,
+  "schema_version": 1,
+  "selected_workspace_has_no_cargo_manifests_or_locks": true,
+  "selections": {
+    "configuration": {
+      "derivation": "/nix/store/wix8j4hvfwphln379my6zpiz8abrm1zs-aos-bazel-configuration.json.drv",
+      "derivation_sha256": "5fc90810e45a7333fe45049c1932d7bbe411e2ddc2835dc78501cb82b5ab9810",
+      "output": "/nix/store/41yfkkbwj3kvr0fv8vj1x2c6j2kbd7zn-aos-bazel-configuration.json"
+    },
+    "conservative": {
+      "derivation": "/nix/store/d4vsx4fdmsc6mg940kabphv49vwbp9i0-aos-bazel-crucible-feature-powerset-1.drv",
+      "derivation_sha256": "843f706fbcab904f129063e73d0cab7e29d8a7a5ea0ffb8da2f844e2368b11d4",
+      "output": "/nix/store/dj6sjiarfx0q4j435p8vjsrwl3b26s59-aos-bazel-crucible-feature-powerset-1"
+    },
+    "precise": {
+      "derivation": "/nix/store/l6z8lbx4m41qgdryjby62kln961v5kkg-aos-bazel-crucible-feature-powerset-1.drv",
+      "derivation_sha256": "e9e67bb9566883a9789a1e9d6af472b89c656c6c8ae7560d5ba210e21850698c",
+      "output": "/nix/store/ibma37rm0j373zrpaf5a6ry2xys9l0v3-aos-bazel-crucible-feature-powerset-1"
+    },
+    "workspace": {
+      "output": "/nix/store/nzxprg92scrc8499nx6f1b96riw3kn80-aos-bazel-workspace"
+    }
+  },
+  "status": "Nine native feature-case compilations qualified; canonical feature gate migration remains pending"
+}

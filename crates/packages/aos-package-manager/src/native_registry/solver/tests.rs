@@ -126,10 +126,15 @@ fn valid_lock_is_preferred_until_explicit_upgrade() {
     consumer
         .module_dependencies
         .push(ranged(&older, ">=1, <20"));
-    let previous = solve(&[consumer.clone()], &[older.clone()], None, false)
-        .unwrap()
-        .lock
-        .unwrap();
+    let previous = solve(
+        &[consumer.clone()],
+        std::slice::from_ref(&older),
+        None,
+        false,
+    )
+    .unwrap()
+    .lock
+    .unwrap();
 
     let preserved = solve(
         &[consumer.clone()],
@@ -188,7 +193,7 @@ fn unrelated_packages_cannot_satisfy_a_requirement() {
         .module_dependencies
         .push(ranged(&provider, ">=1, <20"));
 
-    assert!(solve(&[consumer], &[unrelated.clone()], None, false).is_err());
+    assert!(solve(&[consumer], std::slice::from_ref(&unrelated), None, false).is_err());
 }
 
 #[test]
@@ -269,6 +274,10 @@ fn cancellation_is_not_reported_as_dependency_conflict() {
 }
 
 #[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "This native test bounds real subprocess or solver execution with the host clock."
+)]
 fn elapsed_search_budget_is_terminal() {
     let cancellation = CancellationToken::default();
     let mut budget = SearchBudget {
@@ -387,10 +396,15 @@ fn upgrade_refreshes_dependencies_added_by_a_new_candidate_release() {
     consumer
         .module_dependencies
         .push(ranged(&older_engine, ">=1, <20"));
-    let previous = solve(&[consumer.clone()], &[older_engine.clone()], None, false)
-        .unwrap()
-        .lock
-        .unwrap();
+    let previous = solve(
+        &[consumer.clone()],
+        std::slice::from_ref(&older_engine),
+        None,
+        false,
+    )
+    .unwrap()
+    .lock
+    .unwrap();
 
     let solved = super::solve(
         &[consumer],
@@ -413,6 +427,10 @@ fn upgrade_refreshes_dependencies_added_by_a_new_candidate_release() {
 }
 
 #[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "This native test bounds real subprocess or solver execution with the host clock."
+)]
 fn depth_exhaustion_remains_a_terminal_error() {
     let cancellation = CancellationToken::default();
     let mut budget = SearchBudget {

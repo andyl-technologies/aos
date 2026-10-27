@@ -153,6 +153,9 @@ in
 
     inherit (upstream) version update;
     source = preparedSource;
+    # Disk cache restoration must reject corrupt bytes before they can become
+    # compilation inputs or published package outputs. AC keys are not CAS hashes.
+    sourcePatches = [./bazel-patches/disk-cache-integrity.patch];
     srcHash = "sha256-ga8CszEo7BkixrYCEt8/thULqpa7M9Mv+gIOX+1H/vw=";
     vendorDepsHash = "sha256-T8v/c1qFiVTTSnlhUW30TPZZ0bk6VQ9gO6IUnFoMS8s=";
   }

@@ -82,10 +82,10 @@ in {
           )
           node.succeed(
               f"{GREP} -qx 'KUBELET_NODE_NAME={node_name}' "
-              "/etc/aos/packages/kubelet/runtime.env"
+              "/etc/packages/kubelet/runtime.env"
           )
           config = json.loads(node.succeed(
-              "cat /etc/aos/packages/kubelet/config.json"
+              "cat /etc/packages/kubelet/config.json"
           ))
           assert config["maxPods"] == max_pods, config
           assert config["registerNode"] is False, config

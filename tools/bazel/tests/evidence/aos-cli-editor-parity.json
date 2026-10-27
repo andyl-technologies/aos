@@ -1,0 +1,139 @@
+{
+  "bazel_source": "/nix/store/xr2v89jrjkf2qq9dmvh9ijyigiw5b5r7-aos-bazel-workspace",
+  "configurations": {
+    "default": {
+      "action_cache_hits": 0,
+      "bazel_analysis": {
+        "complete_inference": false,
+        "exprs": {
+          "partial": 190,
+          "total": 1217762,
+          "unknown": 3260
+        },
+        "panics": 0,
+        "pats": {
+          "partial": 81,
+          "total": 244239,
+          "unknown": 48
+        }
+      },
+      "bazel_editor": "/nix/store/njc6i0y1v4vhr1s41b48x3zxn4vpp39k-aos-bazel-aos-cli-tests-editor-checkpoint-editor",
+      "cargo_analysis": {
+        "complete_inference": false,
+        "exprs": {
+          "partial": 888,
+          "total": 2782188,
+          "unknown": 3634
+        },
+        "panics": 0,
+        "pats": {
+          "partial": 220,
+          "total": 505670,
+          "unknown": 246
+        }
+      },
+      "cargo_editor": "/nix/store/x941w160x9cvis6bfq5i39adk4h3n1v6-aos-bazel-aos-cli-tests-editor-checkpoint-editor-cargo-oracle",
+      "cargo_source": "/nix/store/gv495d3nbn6kxm44ahab2nzy5iawzdnv-aos-workspace-src",
+      "execution_events": 1184,
+      "mnemonics": {
+        "CargoBuildScriptRun": 61,
+        "ExtractCargoTomlEnvVars": 514,
+        "Rustc": 609
+      },
+      "retained_sha256": {
+        "bazel_analysis_log": "913de0adb5ceed71c2fb467ffcdf758c486c730ab92d37bf56bea76b7bf64c59",
+        "bazel_execution_log": "10d89d394d1aa0286e121701d7beb1d5f76fb9973f375f3e52efbf438a1d2f20",
+        "bazel_graph": "2aeee28f1f7a070834ddef50fbd1496de232355e47011c95f124d472872767b0",
+        "cargo_analysis": "cf493c19b566797321c3689f745d10d4abcdef285e102213c64c4fde1ce92aa1",
+        "cargo_analysis_log": "a3e645c76bd2f030c2b3260d6602980d7fc185202cfe7e99ae9ade3299db49f7",
+        "parity": "1f647daf40de99ac2b190cadaa71a7727967a54c5e09109899ea5e18c6b9e40b"
+      },
+      "roots": 30,
+      "selected_unique_diagnostics": 606,
+      "source": {
+        "rust_files": 213,
+        "rust_tree_sha256": "cffc6ae5d742cc18fde2d601a76658c24aaee1ceddcda518a402737c89f996f9"
+      }
+    },
+    "fleet": {
+      "action_cache_hits": 0,
+      "bazel_analysis": {
+        "complete_inference": false,
+        "exprs": {
+          "partial": 209,
+          "total": 1228845,
+          "unknown": 3282
+        },
+        "panics": 0,
+        "pats": {
+          "partial": 93,
+          "total": 246570,
+          "unknown": 55
+        }
+      },
+      "bazel_editor": "/nix/store/4mq8y0xmxw0i0lzp25q7z0xc66cn2nzl-aos-bazel-aos-cli-fleet-tests-editor-checkpoint-editor",
+      "cargo_analysis": {
+        "complete_inference": false,
+        "exprs": {
+          "partial": 907,
+          "total": 2793271,
+          "unknown": 3656
+        },
+        "panics": 0,
+        "pats": {
+          "partial": 232,
+          "total": 508001,
+          "unknown": 253
+        }
+      },
+      "cargo_editor": "/nix/store/72zw6rm1nssv8v0rwahalpgdbmlk08sg-aos-bazel-aos-cli-fleet-tests-editor-checkpoint-editor-cargo-oracle",
+      "cargo_source": "/nix/store/kydvbq3hiw01wjsg13bqimka8pg8lcwb-aos-workspace-src",
+      "execution_events": 1187,
+      "mnemonics": {
+        "CargoBuildScriptRun": 61,
+        "ExtractCargoTomlEnvVars": 514,
+        "Rustc": 612
+      },
+      "retained_sha256": {
+        "bazel_analysis_log": "50414d04c5f8d0eb3018a3885828133eb0b6960ea6361deaaa9d667e2f2ce682",
+        "bazel_execution_log": "e0b312fc0158cafd988716e13b13c29f43a189709303a0434898bd5821e819a0",
+        "bazel_graph": "feb4c82f1db4d29bb08d7eb21ae92d32c856ab5a3589ba60e221e2269961e1af",
+        "cargo_analysis": "9d6462718a0948bd2ae5fbe43290d1473080d5bacd51628d1d99b5e9a27f627b",
+        "cargo_analysis_log": "73f9d0dc21917b305950bb53589f0931f55d6d9a505518e13a355392609dcd82",
+        "parity": "e78fb3daac6b7ccdb48d8e2a43dc50d6f10b851a814f8df8e45b226be7a962b8"
+      },
+      "roots": 33,
+      "selected_unique_diagnostics": 657,
+      "source": {
+        "rust_files": 213,
+        "rust_tree_sha256": "cffc6ae5d742cc18fde2d601a76658c24aaee1ceddcda518a402737c89f996f9"
+      }
+    }
+  },
+  "core_evaluation": {
+    "output": "/nix/store/1rhi589amw8vjz46zd34mvrgslpkgacn-aos-native-evaluation-checks-0",
+    "status": "PASS"
+  },
+  "implementation_sha256": {
+    "tests/build/_bazel-aos-cli-editor.nix": "671cee7d262db42cb7721b928e597a1b5641833c96b4c21f5e4e1948b9201689",
+    "tests/build/_bazel-rust-family.nix": "5d7134b612b5e9d4c4dfd5363239951abfbe718cf527db788bcfb02b3bdb7ffc",
+    "tools/bazel/metadata/export_rust_project.py": "3fa20fc0d884f3db6d9227d600d68e2bbd1db1d7fe0b1ac82183174a86fa7e1e",
+    "tools/bazel/tests/editor_cargo.py": "122c43f0cf9d3e16f22f5fc1e1bbf1177e7029edbd7ec725f97173263e463ac3",
+    "tools/bazel/tests/test_editor_cargo.py": "b71df9b76a5e5303a005cf3f3e2aa0ebb6948606cbe41cfca6a5a07f25cd7124",
+    "tools/bazel/tests/test_rust_project.py": "3e2e1c1d0a6e13d9d531cb9cbf65013b34146d3cf439e476d62a35cb48904167"
+  },
+  "limits": [
+    "The comparison checks unique selected-package diagnostic locations and inferred types. Neither aggregate inference statistics nor diagnostic multiplicities are comparable between these models; the full reports retain both.",
+    "Both analyzers retain incomplete inference and existing diagnostics. Passing parity does not imply complete inference or zero diagnostics.",
+    "The Bazel editor invoked compilation without a shared action cache. Execution logs retain zero action cache hits; dependencies built by other derivations may have used the local disk cache.",
+    "Sources are the recorded immutable pre-lint-cleanup snapshots. Later CLI source edits require their own qualification.",
+    "This conservative workspace snapshot still includes Cargo manifests for architecture tests. Strict source qualification, compiler-option parity, Clippy, performance acceptance and production migration remain separate gates."
+  ],
+  "policy_tests": {
+    "cases": 236,
+    "log_sha256": "a56adc34475078c30f1b5cf246b5456cd26f014b8b495557d0f7ecfd247ab859",
+    "status": "PASS"
+  },
+  "schema_version": 1,
+  "status": "PASS: configured CLI roots and selected editor diagnostics match Cargo"
+}

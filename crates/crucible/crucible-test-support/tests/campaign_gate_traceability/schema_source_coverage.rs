@@ -1,7 +1,5 @@
 //! Source-backed coverage for durable campaign and gate-evidence formats.
 
-use crate::workspace;
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 
@@ -175,7 +173,7 @@ crucible.qemu.hot-fork.child-diagnostics|crates/crucible/crucible-qemu-host/src/
 #[test]
 fn production_codec_declarations_match_registry_versions() {
     let registry = registry_versions(super::SCHEMA_REGISTRY);
-    let root = workspace::repository_root();
+    let root = super::workspace_root();
     let mut covered = BTreeSet::new();
 
     for line in VERSION_ANCHORS.lines().filter(|line| !line.is_empty()) {

@@ -1,0 +1,20 @@
+{
+  "check": "/nix/store/9zajj65h6f3w1vdhizryljz978a5qmnh-aos-bazel-device-performance",
+  "configuration_sha256": {
+    "tools/bazel/bench/device.nix": "0bf090de00b175ba44d5eeff36d4cd3e71ee8dd499dbef6bf79ccd678ff32841",
+    "tools/bazel/bench/measure_family.py": "c98467e9ffd4d3506d9165fe0d4cb0baae858aae48c99de1dcda9278f057be5a",
+    "tools/bazel/bench/measure_pilot.py": "f9ad2a70aae6cf8a93614fd35af7e7ea8b7cb69c7d8e5d6c0e17d0a4669c501d",
+    "tools/bazel/metadata/export_packages.py": "04d5ad773a6478fd4b5b2d9a963e9447e8964c6104f63112082d2757f5bd0d8a",
+    "tools/bazel/tests/verify_cache.py": "8b587c179db90c975044e7a4ecc56c3c2f875b0f528068f9792bcd7fd9987ed4"
+  },
+  "limitations": [
+    "Optimization and debug levels match (0/0); Cargo incremental state remains enabled and Bazel has no incremental compiler state. Other build-driver defaults may differ.",
+    "Measurements exclude Nix evaluation, dependency preparation, untimed validation and installation; no end-to-end speedup or cutover acceptance.",
+    "Other qualification jobs ran on the shared host; load averages are recorded.",
+    "The immutable configuration predates the Nix-prebuilt manifest extractor optimization."
+  ],
+  "report_sha256": "56dd2be76d89c5da708f533c72a6721918f401df524414b570f6f4a97d0c6440",
+  "schema_version": 1,
+  "validated_cases_per_sample": 642,
+  "validated_samples": 36
+}

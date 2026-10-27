@@ -99,6 +99,10 @@ fn checked_request(
 /// # Errors
 /// Returns an error for an unsafe receipt, missing committed proof, an unexpired
 /// or unsettled lease, a changed running identity, or failed native retirement.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Native rollout leases and submissions use the host wall clock."
+)]
 pub(crate) fn retire_expired_image_lease(config: &ApmConfig, printer: &Printer) -> Result<bool> {
     let Some(receipt) = read_receipt(Path::new(RECEIPT))? else {
         return Ok(false);

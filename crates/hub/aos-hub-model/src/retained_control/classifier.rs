@@ -1401,9 +1401,9 @@ fn scan_nix_string(bytes: &[u8], start: usize, kind: NixStringKind) -> Result<us
                 }
             }
             NixStringKind::Indented => {
-                if bytes[index..].starts_with(b"''$") {
-                    index += 3;
-                } else if bytes[index..].starts_with(b"'''") || bytes[index..].starts_with(b"''\\")
+                if bytes[index..].starts_with(b"''$")
+                    || bytes[index..].starts_with(b"'''")
+                    || bytes[index..].starts_with(b"''\\")
                 {
                     index += 3;
                 } else if bytes[index..].starts_with(b"${") {
@@ -1879,14 +1879,16 @@ mod tests {
             .map(str::to_owned)
             .collect(),
         };
-        assert!(
-            validate_complete_method_manifest(&[method.clone()], &[descriptor.clone()]).is_empty()
-        );
+        assert!(validate_complete_method_manifest(
+            std::slice::from_ref(&method),
+            std::slice::from_ref(&descriptor)
+        )
+        .is_empty());
 
         let mut mutable = descriptor;
         mutable.request_fields.push("intent".into());
         assert!(
-            validate_complete_method_manifest(&[method.clone()], &[mutable])
+            validate_complete_method_manifest(std::slice::from_ref(&method), &[mutable])
                 .iter()
                 .any(|violation| violation.reason.contains("delivery resume must bind"))
         );

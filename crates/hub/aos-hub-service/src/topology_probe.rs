@@ -959,6 +959,10 @@ impl DomainTlsProbeVerifier {
         Self
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Keeps the existing transport and storage context explicit."
+    )]
     fn verify(
         &self,
         response: &[u8],
@@ -2539,6 +2543,10 @@ pub(crate) async fn reconcile_colocated_write_authorities(
     Ok(reconciled)
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keeps the existing transport and storage context explicit."
+)]
 async fn measure_domain_once(
     http: &dyn HttpClient,
     tls_verifier: &DomainTlsProbeVerifier,

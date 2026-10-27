@@ -1,0 +1,199 @@
+{
+  "baselines": [
+    "cli-execution-profile-enrollment.json",
+    "cargo-execution-profile-baseline.json",
+    "rust-analyzer-execution-profile-baseline.json"
+  ],
+  "command": "nix-build tools/bazel/tests/aos-cli.nix -A execution-profiles --no-out-link --max-jobs 2 --cores 4 --option substitute false",
+  "evidence_sha256": "6b8c899c2a5b8c4f9f1978247f34759eee8c4d95a8a62459d617807c2f5b838f",
+  "limits": [
+    "Only the three real CLI generators' compiler settings are checked here.",
+    "Fleet runtime, editor diagnostics, generated-source parity, complete compiler/linker equivalence, and production cutover require separate qualification.",
+    "The default CLI editor execution tools explicitly use the same size-optimization and assertion/overflow flags as its Cargo editor oracle. Ordinary test/release tools retain independent optimization-zero profiles.",
+    "The full default editor comparison is still running at this checkpoint. This report establishes only the actual generator profiles and executions.",
+    "Fleet uses the shared declarations but its execution tools and editor comparison are not repeated by this check.",
+    "Other Rust families retain their existing execution defaults until separately enrolled; the shared family helper still defaults execRustcFlags to an empty list.",
+    "The historical production Cargo artifact inventory covers Build API and Hub API only. Minimal Cargo and rust-analyzer probes provide independent profile behavior, not full application equivalence.",
+    "These are immutable builds. Conservative CLI source selection can change their identities when unrelated tool or evidence files change."
+  ],
+  "output": "/nix/store/9f7m9dr02xky4vjykhwdvlm3ifivfl0b-aos-bazel-cli-execution-profiles",
+  "profiles": {
+    "editor": {
+      "checks": "yes",
+      "compiler_options": {
+        "crates/hub/aos-hub-api/build.rs": {
+          "debug-assertions": "yes",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "opt-level": "s",
+          "overflow-checks": "yes",
+          "strip": "debuginfo"
+        },
+        "crates/hub/aos-hub-service/build.rs": {
+          "debug-assertions": "yes",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "opt-level": "s",
+          "overflow-checks": "yes",
+          "strip": "debuginfo"
+        },
+        "crates/packages/aos-build-api/build.rs": {
+          "debug-assertions": "yes",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "opt-level": "s",
+          "overflow-checks": "yes",
+          "strip": "debuginfo"
+        }
+      },
+      "generator_executions": {
+        "//crates/hub/aos-hub-api:build_script": {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox"
+        },
+        "//crates/hub/aos-hub-service:build_script": {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox"
+        },
+        "//crates/packages/aos-build-api:build_script": {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox"
+        }
+      },
+      "inputs_sha256": {
+        "actions.json": "92cf35e6262693c25fe0a6d2c1ce897eff87742a104e24cef3a1d576ee386ee5",
+        "compiler-inputs.json": "6e5fd731acb2717d5a49abff334e4cd6fbc527927f42ad0daa9f39471304e7a0",
+        "execution.json": "80b072ad34349d6659bc4b7eea8df006eb9d9c21b0b18b2b635982f4dc31f0e6"
+      },
+      "opt_level": "s",
+      "path": "/nix/store/8rya36wgl3zwdzjn8hwhjq4bnhn0rgyf-aos-bazel-cli-execution-profile-editor-1"
+    },
+    "release": {
+      "checks": "no",
+      "compiler_options": {
+        "crates/hub/aos-hub-api/build.rs": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "opt-level": "0",
+          "overflow-checks": "no",
+          "strip": "debuginfo"
+        },
+        "crates/hub/aos-hub-service/build.rs": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "opt-level": "0",
+          "overflow-checks": "no",
+          "strip": "debuginfo"
+        },
+        "crates/packages/aos-build-api/build.rs": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "opt-level": "0",
+          "overflow-checks": "no",
+          "strip": "debuginfo"
+        }
+      },
+      "generator_executions": {
+        "//crates/hub/aos-hub-api:build_script": {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox"
+        },
+        "//crates/hub/aos-hub-service:build_script": {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox"
+        },
+        "//crates/packages/aos-build-api:build_script": {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox"
+        }
+      },
+      "inputs_sha256": {
+        "actions.json": "acba5c26136b161a0dbbb46ec32b3bd89606d14ab7a0d36aa88bd249e8063d07",
+        "compiler-inputs.json": "388118ef701859731581523497050ca349cb921b6741c500dc3c4c366d5014a9",
+        "execution.json": "e485508273f155aa03eccbc62e7a9c011c61e56fabe802ac28aa5b6029d10ba4"
+      },
+      "opt_level": "0",
+      "path": "/nix/store/spjibgjccdjd9fawfhgyqam3dkc15qsc-aos-bazel-cli-execution-profile-release-1"
+    },
+    "test": {
+      "checks": "yes",
+      "compiler_options": {
+        "crates/hub/aos-hub-api/build.rs": {
+          "debug-assertions": "yes",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "opt-level": "0",
+          "overflow-checks": "yes",
+          "strip": "debuginfo"
+        },
+        "crates/hub/aos-hub-service/build.rs": {
+          "debug-assertions": "yes",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "opt-level": "0",
+          "overflow-checks": "yes",
+          "strip": "debuginfo"
+        },
+        "crates/packages/aos-build-api/build.rs": {
+          "debug-assertions": "yes",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "opt-level": "0",
+          "overflow-checks": "yes",
+          "strip": "debuginfo"
+        }
+      },
+      "generator_executions": {
+        "//crates/hub/aos-hub-api:build_script": {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox"
+        },
+        "//crates/hub/aos-hub-service:build_script": {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox"
+        },
+        "//crates/packages/aos-build-api:build_script": {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox"
+        }
+      },
+      "inputs_sha256": {
+        "actions.json": "097b78ed028755136e3dc1e64621adde846571ee9dffac46cf20f537a9a691b0",
+        "compiler-inputs.json": "097657ff49dcbb59bab44706b51ea14861f5bb0e7ccab318d3d80c714cd56fbe",
+        "execution.json": "7f98e6a3c5892dfb7628239aa7dd1d04c9194ac75729cbf3088d69be5787e3f7"
+      },
+      "opt_level": "0",
+      "path": "/nix/store/f29fq7cxix0m5j61df5r76p9fdk27yn3-aos-bazel-cli-execution-profile-test-1"
+    }
+  },
+  "schema_version": 1,
+  "source_sha256": {
+    "tests/build/_bazel-aos-cli-editor.nix": "8c0aa221ee0cd8131d24c2a5776b495c8aeb375cea90bf4671474f6fd0b639d3",
+    "tests/build/_bazel-aos-cli-execution-profiles.nix": "8c99704c81138172bc240526dd7a6e2a0b37a388fdc25f6f90836bca6b6825b9",
+    "tests/build/_bazel-aos-cli-production.nix": "6dbd8c8ea07d85e93a5582851993919558d1dea7c1635d02eed432cff63af50f",
+    "tests/build/_bazel-aos-cli.nix": "09df34744944c4a391d1145748fbacd62232a79a6f18a41c53e82f4eeed61b60",
+    "tests/build/_bazel-rust-family.nix": "0d0151075618eb7faa5ef62ca68252f71fbd0f443aeaf060b679db4331822cd2"
+  },
+  "status": "PASS"
+}

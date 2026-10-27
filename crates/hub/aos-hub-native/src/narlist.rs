@@ -121,8 +121,8 @@ impl<'a> NarReader<'a> {
 /// # Errors
 ///
 /// Returns an error for a malformed/truncated NAR, a bad magic, a non-UTF-8
-/// path, directory nesting deeper than [`MAX_DEPTH`], or more than
-/// [`MAX_ENTRIES`] entries.
+/// path, directory nesting deeper than `MAX_DEPTH`, or more than
+/// `MAX_ENTRIES` entries.
 pub fn list_nar(data: &[u8]) -> Result<Vec<NarEntry>> {
     let mut r = NarReader { data, pos: 0 };
     r.expect("nix-archive-1")?;

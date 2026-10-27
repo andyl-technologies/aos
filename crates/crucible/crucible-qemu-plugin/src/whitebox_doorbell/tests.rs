@@ -332,30 +332,21 @@ fn whitebox_doorbell_records_decoded_marker_into_engine_event_log_sink() {
     assert_eq!(marker.decoded_payload(), &payload);
     assert_eq!(sink.entries.len(), 1);
     let entry = &sink.entries[0];
+    assert_eq!(entry["class"], serde_json::json!("observational"));
     assert_eq!(
-        entry.class(),
-        crucible_engine::SchedulerEventLogClass::Observational
+        entry["stamp"],
+        serde_json::json!({"node": "db-0", "tick": 888, "retired": 888})
     );
     assert_eq!(
-        entry.time().stamp,
-        crucible_engine::EventLogTickStamp {
-            node: Some(crucible_node("db-0")),
-            tick: crucible_engine::SimInstant { ticks: 888 },
-            retired: Some(crucible_engine::Icount { retired: 888 }),
-        }
+        entry["source"],
+        serde_json::json!({"kind": "guest", "node": "db-0"})
     );
+    assert_eq!(entry["payload"]["kind"], serde_json::json!("guest_marker"));
     assert_eq!(
-        entry.source(),
-        &crucible_engine::EventSource::Guest {
-            node: crucible_node("db-0"),
-        }
+        entry["payload"]["assertion"],
+        serde_json::json!("guest.ready")
     );
-    assert_eq!(entry.event_payload().kind(), "guest_marker");
-    assert_eq!(
-        entry.event_payload().string("assertion"),
-        Some("guest.ready")
-    );
-    assert!(crucible_engine::event_log_causal_projection(&sink.entries).is_empty());
+    assert!(sink.causal_projection_empty);
 }
 
 #[test]
@@ -1472,18 +1463,40 @@ impl WhiteboxMarkerSink for RecordingMarkerSink {
 }
 
 struct EngineEventLogMarkerSink {
-    node: crucible_engine::NodeId,
-    event_log: crucible_engine::EventLog,
-    entries: Vec<crucible_engine::SchedulerEventLogEntry>,
+    node: String,
+    oracle: crate::engine_oracle::EngineOracle,
+    entries: Vec<serde_json::Value>,
+    causal_projection_empty: bool,
 }
 
 impl EngineEventLogMarkerSink {
     fn new(node_name: &str) -> Self {
         Self {
-            node: crucible_node(node_name),
-            event_log: crucible_engine::EventLog::new(),
+            node: node_name.to_owned(),
+            oracle: crate::engine_oracle::EngineOracle::launch()
+                .unwrap_or_else(|error| panic!("engine oracle should launch: {error}")),
             entries: Vec::new(),
+            causal_projection_empty: true,
         }
+    }
+
+    fn append(&mut self, request: serde_json::Value) -> Result<(), WhiteboxMarkerSinkError> {
+        let response = self
+            .oracle
+            .request(request)
+            .map_err(|error| WhiteboxMarkerSinkError::new(error.to_string()))?;
+        let entries = response["entries"]
+            .as_array()
+            .ok_or_else(|| WhiteboxMarkerSinkError::new("oracle entries must be an array"))?;
+        let causal_projection_empty =
+            response["causal_projection_empty"]
+                .as_bool()
+                .ok_or_else(|| {
+                    WhiteboxMarkerSinkError::new("oracle causal projection must be a boolean")
+                })?;
+        self.entries.extend(entries.iter().cloned());
+        self.causal_projection_empty = causal_projection_empty;
+        Ok(())
     }
 }
 
@@ -1492,62 +1505,23 @@ impl WhiteboxMarkerSink for EngineEventLogMarkerSink {
         &mut self,
         marker: &WhiteboxMarker,
     ) -> Result<(), WhiteboxMarkerSinkError> {
-        let event = crucible_engine::observable_event_from_whitebox_marker_payload(
-            crucible_engine::Icount {
-                retired: marker.marker_icount(),
-            },
-            self.node.clone(),
-            marker.decoded_payload(),
-        )
-        .ok_or_else(|| {
-            WhiteboxMarkerSinkError::new("non-observational marker reached event-log sink")
-        })?;
-        let sequence = self
-            .event_log
-            .next_sequence(0)
-            .map_err(|error| WhiteboxMarkerSinkError::new(format!("{error:?}")))?;
-        let entry =
-            crucible_engine::test_support::condition_observation_entry_for_test(sequence, &event);
-        let append = self
-            .event_log
-            .append_entries(vec![entry])
-            .map_err(|error| WhiteboxMarkerSinkError::new(format!("{error:?}")))?;
-        self.entries.extend(append.entries);
-        Ok(())
+        let frame = encode_whitebox_marker_frame(marker.decoded_payload())
+            .map_err(|error| WhiteboxMarkerSinkError::new(error.to_string()))?;
+        self.append(serde_json::json!({
+            "operation": "marker", "node": self.node,
+            "icount": marker.marker_icount(), "frame": frame,
+        }))
     }
 
     fn record_whitebox_decode_diagnostic(
         &mut self,
         diagnostic: &WhiteboxDoorbellDecodeDiagnostic,
     ) -> Result<(), WhiteboxMarkerSinkError> {
-        let event = crucible_engine::ObservableEvent::guest_marker(
-            crucible_engine::Icount {
-                retired: diagnostic.marker_icount(),
-            },
-            self.node.clone(),
-            crucible_engine::MarkerId::from_name(format!(
-                "decode_diagnostic.{}",
-                diagnostic.kind().semantic_label()
-            )),
-        );
-        let sequence = self
-            .event_log
-            .next_sequence(0)
-            .map_err(|error| WhiteboxMarkerSinkError::new(format!("{error:?}")))?;
-        let entry =
-            crucible_engine::test_support::condition_observation_entry_for_test(sequence, &event);
-        let append = self
-            .event_log
-            .append_entries(vec![entry])
-            .map_err(|error| WhiteboxMarkerSinkError::new(format!("{error:?}")))?;
-        self.entries.extend(append.entries);
-        Ok(())
-    }
-}
-
-fn crucible_node(name: &str) -> crucible_engine::NodeId {
-    crucible_engine::NodeId {
-        name: name.to_owned(),
+        self.append(serde_json::json!({
+            "operation": "diagnostic", "node": self.node,
+            "icount": diagnostic.marker_icount(),
+            "marker": format!("decode_diagnostic.{}", diagnostic.kind().semantic_label()),
+        }))
     }
 }
 

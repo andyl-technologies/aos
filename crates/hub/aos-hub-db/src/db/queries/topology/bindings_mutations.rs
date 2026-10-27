@@ -454,6 +454,10 @@ impl Database {
     ///
     /// Returns an error for invalid identity/spec fields, uniqueness conflicts,
     /// or database failure.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Keep persisted identities and transaction inputs explicit in this existing API."
+    )]
     pub async fn create_topology_binding(
         &self,
         org_id: Option<i64>,

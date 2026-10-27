@@ -6,6 +6,7 @@
   mkCargoPackage,
   mkCargoArtifacts,
   mkCargoDummySource,
+  callPackage,
   aosWorkspaceVendor,
   rust,
   openssl,
@@ -26,6 +27,8 @@
   openssh,
   buildPackages,
   controllerOnly ? false,
+  debugGatewayPackage ? null,
+  debugGatewayBuildDriver ? "cargo",
 }: let
   version = "0.1.0";
   platformSupport = {
@@ -161,30 +164,6 @@
       [buildRustDev buildPkgConfig openssl sqlite buildProtobuf]
       ++ lib.optionals stdenv.isCross [buildPackages.crucible-controller];
     runtimeDeps = [openssl sqlite];
-  };
-  debugGatewayArtifactContract = {
-    family = "crucible-gpl-debug-gateway-release-and-test";
-    nativeInputs = map toString [buildRustDev buildPkgConfig sqlite];
-    licenseScope = "GPL-2.0-only";
-  };
-  debugGatewayCargoEnv = {LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";};
-  debugGatewayArtifacts = mkCargoArtifacts {
-    pname = "crucible-debug-gateway-artifacts";
-    inherit version cargoDeps cargoWorkspaceMembers;
-    cargoArtifactContract = debugGatewayArtifactContract;
-    cargoEnv = debugGatewayCargoEnv;
-    src = mkCargoDummySource {
-      srcRoot = ../../../crates;
-      name = "crucible-debug-gateway-dummy-source";
-      cargoRoot = "crates";
-    };
-    cargoRoot = "crates";
-    cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES -p crucible-qemu-debug-gateway"
-      "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p crucible-qemu-debug-gateway"
-    ];
-    buildDeps = [buildRustDev buildPkgConfig sqlite];
-    runtimeDeps = [sqlite];
   };
   controller = mkCargoPackage {
     inherit platformSupport;
@@ -460,43 +439,14 @@
       mainProgram = "crucible";
     };
   };
-  debugGateway = mkCargoPackage {
-    pname = "crucible-debug-gateway";
-    inherit version src;
-
-    inherit cargoDeps cargoWorkspaceMembers;
-    cargoArtifacts = debugGatewayArtifacts;
-    cargoArtifactContract = debugGatewayArtifactContract;
-    cargoEnv = debugGatewayCargoEnv;
-    cargoRoot = "crates";
-    cargoNextest = true;
-
-    cargoFlags = "-p crucible-qemu-debug-gateway";
-    cargoTestFlags = "-p crucible-qemu-debug-gateway";
-    doCheck = true;
-    buildDeps = [buildRustDev buildPkgConfig sqlite];
-    runtimeDeps = [sqlite];
-
-    postInstall = ''
-      mkdir -p "$out/share/licenses/crucible-debug-gateway"
-      cp ${../../../LICENSES/GPL-2.0-only.txt} \
-        "$out/share/licenses/crucible-debug-gateway/GPL-2.0.txt"
-      cp ${../../../LICENSES/MIT.txt} \
-        "$out/share/licenses/crucible-debug-gateway/MIT.txt"
-      cat > "$out/share/licenses/crucible-debug-gateway/COMPONENT" <<'LICENSE_SCOPE'
-      crucible-debug-gateway is a standalone QEMU RSP mediation process.
-      SPDX-License-Identifier: GPL-2.0-only
-      crucible-qemu-protocol is used under its MIT option.
-      LICENSE_SCOPE
-    '';
-
-    meta = {
-      description = "GPL-side persistent Crucible debugger gateway";
-      homepage = "https://github.com/andyl/andyl-os";
-      license = "GPL-2.0-only";
-      mainProgram = "crucible-debug-gateway";
-    };
-  };
+  # Keep the injectable package for full-suite migration comparisons.
+  debugGateway = assert builtins.elem debugGatewayBuildDriver ["cargo" "bazel"];
+    if debugGatewayPackage != null
+    then debugGatewayPackage
+    else if debugGatewayBuildDriver == "cargo"
+    then cargoDebugGateway
+    else callPackage ./_debug-gateway.nix {buildDriver = debugGatewayBuildDriver;};
+  cargoDebugGateway = callPackage ./_debug-gateway.nix {};
   releaseManifest = import ./_release-manifest.nix {
     inherit lib version src cargoDepsHash;
     qemuPackage = qemu-crucible;
@@ -713,7 +663,7 @@
       }
     ];
     passthru = {
-      inherit controller;
+      inherit controller cargoDebugGateway;
       debugGateway = debugGateway;
       debugger = gdb;
       qemu = qemu-crucible;

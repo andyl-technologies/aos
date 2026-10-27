@@ -141,6 +141,8 @@ pub struct SyncContinuity<'a> {
 ///
 /// Returns the same errors as [`sync_git`], including refusal of a new roster
 /// or selected release that does not descend from an additional anchor.
+// Keep the existing trust transaction inputs explicit at this public boundary.
+#[allow(clippy::too_many_arguments)]
 pub async fn sync_git_with_continuity(
     config: &RegistryConfig,
     tracking_mode: &TrackingMode,
@@ -1251,17 +1253,17 @@ async fn resolve_best_version_tag(
         if tag.is_empty() {
             continue;
         }
-        if let Some(ver) = parse_tag_as_semver(tag) {
-            if req.matches(&ver) {
-                match &best {
-                    Some((best_ver, _)) if ver > *best_ver => {
-                        best = Some((ver, tag.to_string()));
-                    }
-                    None => {
-                        best = Some((ver, tag.to_string()));
-                    }
-                    _ => {}
+        if let Some(ver) = parse_tag_as_semver(tag)
+            && req.matches(&ver)
+        {
+            match &best {
+                Some((best_ver, _)) if ver > *best_ver => {
+                    best = Some((ver, tag.to_string()));
                 }
+                None => {
+                    best = Some((ver, tag.to_string()));
+                }
+                _ => {}
             }
         }
     }
@@ -2096,7 +2098,7 @@ fn days_in_month(year: u64, month: u64) -> u64 {
 
 /// Gregorian leap-year rule.
 fn is_leap_year(year: u64) -> bool {
-    year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
+    year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400))
 }
 
 // ---------------------------------------------------------------------------

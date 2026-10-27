@@ -5,8 +5,11 @@
   mkCargoArtifacts,
   mkCargoDummySource,
   aosWorkspaceVendor,
+  callPackage,
+  buildDriver ? "cargo",
 }: let
   version = "0.1.0";
+  withBuildDriver = selected: callPackage ./aos-kubernetes-provider.nix {buildDriver = selected;};
   cargoDeps = aosWorkspaceVendor;
   cargoArtifactContract = {
     family = "aos-kubernetes-provider-release-and-test";
@@ -27,8 +30,7 @@
       "test --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-activation-kubernetes"
     ];
   };
-in
-  mkAosCargoPackage {
+  packageArguments = {
     platformSupport = {
       build = [
         {
@@ -60,9 +62,24 @@ in
     doCheck = true;
     runtimeDeps = [];
 
+    passthru = {
+      inherit withBuildDriver;
+      buildDriver = "cargo";
+    };
+
     meta = {
       description = "K3s-owned provider for typed Kubernetes object sets";
       license = "Apache-2.0";
       mainProgram = "aos-kubernetes-provider";
     };
-  }
+  };
+  cargoPackage = mkAosCargoPackage packageArguments;
+in
+  assert builtins.elem buildDriver ["cargo" "bazel"];
+    if buildDriver == "bazel"
+    then
+      callPackage ./_aos-kubernetes-provider-bazel.nix {
+        inherit packageArguments;
+        cargoFallback = cargoPackage;
+      }
+    else cargoPackage

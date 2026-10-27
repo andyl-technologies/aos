@@ -120,6 +120,10 @@ fn identity(image: &ImageGeneration) -> RolloutImageIdentity {
 /// # Errors
 /// Returns an error for changed image authority, missing native policy,
 /// rejected source admission, uncertain drain, or unsuccessful selection.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Native rollout leases and submissions use the host wall clock."
+)]
 pub(crate) fn submit_image_selection(
     config: &ApmConfig,
     candidate: &ImageGeneration,

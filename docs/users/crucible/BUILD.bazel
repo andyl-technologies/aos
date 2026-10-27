@@ -1,0 +1,21 @@
+filegroup(
+    name = "engine_contracts",
+    srcs = [
+        "README.md",
+        "bindings.md",
+        "network-faults.md",
+        "reference.md",
+        "signal-driven-faults.md",
+        "signals.md",
+        "storage-node-faults.md",
+        "topology.md",
+    ],
+    visibility = ["//crates/crucible/crucible-engine:__pkg__"],
+)
+
+filegroup(
+    name = "harness_lint_inputs",
+    testonly = True,
+    srcs = glob(["reference.md"], allow_empty = True),
+    visibility = ["//crates/crucible/crucible-test-support:__pkg__"],
+)

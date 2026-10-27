@@ -1,0 +1,70 @@
+{
+  "default_leak_grace_seconds": 0.1,
+  "default_slow_period_seconds": 60,
+  "default_termination_grace_seconds": 10,
+  "default_timeout_seconds": 120,
+  "oracle_sha256": "fd39ba1d16336b25cd58312ac1647a08075f96a797b2e7f2f7577bb2079647ff",
+  "overrides": [
+    {
+      "conditions": [
+        {
+          "substring": "crucible_features_resolve_for_declared_powersets"
+        }
+      ],
+      "slow_period_seconds": 60,
+      "termination_grace_seconds": 10,
+      "timeout_seconds": 600
+    },
+    {
+      "conditions": [
+        {
+          "package_substring": "crucible-campaign"
+        },
+        {
+          "regex": "ten_thousand_"
+        }
+      ],
+      "slow_period_seconds": 60,
+      "termination_grace_seconds": 10,
+      "timeout_seconds": 600
+    },
+    {
+      "conditions": [
+        {
+          "package_substring": "crucible-campaign"
+        },
+        {
+          "substring": "distinct_request_transitions_keep_indexed_cap_queries_bounded"
+        }
+      ],
+      "slow_period_seconds": 60,
+      "termination_grace_seconds": 10,
+      "timeout_seconds": 900
+    },
+    {
+      "conditions": [
+        {
+          "substring": "apr_release_channel_upload_supports_verified_consumer_sync"
+        }
+      ],
+      "exclusive": true
+    },
+    {
+      "conditions": [
+        {
+          "substring": "real_client_mounts_cancels_and_roundtrips_a_complete_multi_platform_graph"
+        }
+      ],
+      "exclusive": true
+    },
+    {
+      "conditions": [
+        {
+          "substring": "manifest_admission_stages_before_validation_and_claims_each_digest_once"
+        }
+      ],
+      "exclusive": true
+    }
+  ],
+  "schema_version": 1
+}

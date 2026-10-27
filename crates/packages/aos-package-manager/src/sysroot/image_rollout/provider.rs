@@ -612,6 +612,10 @@ fn platform(input: &Input, operation: &str, entry: Option<&str>) -> Result<Value
     serde_json::from_slice(&output).context("decoding boot platform operation result")
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Native rollout leases and submissions use the host wall clock."
+)]
 fn now_millis() -> Result<u64> {
     Ok(SystemTime::now()
         .duration_since(UNIX_EPOCH)?

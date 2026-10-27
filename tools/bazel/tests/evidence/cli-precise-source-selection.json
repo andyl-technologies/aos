@@ -1,0 +1,76 @@
+{
+  "baseline": {
+    "conservative": "/nix/store/7nrpq2hr9gzqgbk7d65mx6yclbx83kfw-aos-bazel-workspace",
+    "precise": "/nix/store/rrvxjghg2qjg1s7wj6xd4zb7gx6v916r-aos-bazel-workspace"
+  },
+  "baseline_source_identity_restored": true,
+  "configured_inventory_inputs": [
+    {
+      "path": "/nix/store/7l7k3wmp7r3b8fk8n69qynqd68nkfb6x-aos-bazel-aos-cli-production-inventory-1/inventory.json",
+      "sha256": "31d9975582e8b7ccb513b14950aa2942a39d9df152af67c4dbe3cb07f492af54"
+    },
+    {
+      "path": "/nix/store/dfwfah38sapzhk85sgayq8d433m0va51-aos-bazel-aos-cli-tests-inventory-1/inventory.json",
+      "sha256": "8a428e2a944d9526c98d8c876bade6afd39eb34f2e27f58fe859e2dcda616168"
+    },
+    {
+      "path": "/nix/store/82b2j7dgn7q7iyylj9xxfman7kgwyskg-aos-bazel-aos-cli-fleet-tests-inventory-1/inventory.json",
+      "sha256": "d810474cf8357a9e41e22bdf6f1f8f557d0795519f051bbf43885c5ab12a733c"
+    }
+  ],
+  "default_precise_selection_enabled": false,
+  "executed_harness": {
+    "cli-strict-source-candidate.nix": {
+      "sha256": "d729823d56597f477466915d7abae97f68ea719dcf4bd5f59a86c6bc678a0aa8",
+      "source": "let\n  root = /home/dylan/src/aos/.worktrees/codex/bazel-integration-722;\n  pkgs = (import root {}).pkgs;\n  precise = (import (root + \"/tests/build/_bazel-aos-cli.nix\") {\n    inherit pkgs;\n    sourceInventory = /tmp/aos-bazel-722/cli-strict-source-candidate-inventory.json;\n  }).workspace;\n  conservative = (import (root + \"/tests/build/_bazel-aos-cli.nix\") { inherit pkgs; }).workspace;\nin { precise = toString precise.source; conservative = toString conservative.source; }\n"
+    },
+    "qualify-cli-strict-source-candidate.py": {
+      "sha256": "548c36ee54cf82371e8bc6cd74e429b2b9c6b9aca423616f07de2a0ebbd03300",
+      "source": "\"\"\"Exercises actual CLI source selection and removes all temporary source edits.\"\"\"\nimport hashlib\nimport json\nfrom pathlib import Path\nimport subprocess\n\nroot=Path.cwd()\nscratch=Path('/tmp/aos-bazel-722')\ncommand=['/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-instantiate','--eval','--strict','--read-write-mode','--json',str(scratch/'cli-strict-source-candidate.nix')]\nbaseline=json.loads((scratch/'cli-strict-source-candidate-baseline.json').read_text())\ninventory=json.loads((scratch/'cli-strict-source-candidate-inventory.json').read_text())\nfor name in [*inventory['source_files'],*inventory['contracts']]:\n assert (Path(baseline['precise'])/name).is_file(),name\nassert not (Path(baseline['precise'])/'tools/bazel/metadata/aos-cli-inventory.json').exists()\nassert not (Path(baseline['precise'])/'tools/bazel/qualification').exists()\nassert not (Path(baseline['precise'])/'tools/bazel/tests').exists()\n\nrecords={}\ndef evaluate(name):\n result=subprocess.run(command,text=True,capture_output=True)\n (scratch/('cli-strict-source-'+name+'.stdout')).write_text(result.stdout)\n (scratch/('cli-strict-source-'+name+'.stderr')).write_text(result.stderr)\n return result\n\nprobes={\n root/'tools/bazel/metadata/aos-bazel-source-inventory-probe-722.json':b'{\"unrelated_inventory_probe\":true}\\n',\n root/'docs/aos-bazel-source-inventory-probe-722.md':b'Source inventory qualification probe.\\n',\n}\ncreated=[]\ntry:\n for path,data in probes.items():\n  with path.open('xb') as stream:stream.write(data)\n  created.append(path)\n result=evaluate('unrelated')\n assert result.returncode==0,result.stderr\n observed=json.loads(result.stdout)\n assert observed['precise']==baseline['precise'],observed\n assert observed['conservative']!=baseline['conservative'],observed\n for path in created:\n  assert not (Path(observed['precise'])/path.relative_to(root)).exists(),path\n records['unrelated_docs_and_inventory_json']={'status':'PASS','paths':[str(path.relative_to(root)) for path in created],**observed,'precise_source_unchanged':True,'conservative_source_changed':True}\nfinally:\n for path in created:\n  if path.read_bytes()!=probes[path]:raise ValueError('Probe changed externally; preserving it: '+str(path))\n  path.unlink()\n\nimplementation=root/'crates/cli/aos-cli/src/aos_bazel_source_inventory_probe_722.rs'\nprobe_bytes=b'// Temporary source-inventory qualification input.\\n'\nwith implementation.open('xb') as stream:stream.write(probe_bytes)\ntry:\n result=evaluate('implementation')\n assert result.returncode==0,result.stderr\n observed=json.loads(result.stdout)\n assert observed['precise']!=baseline['precise'],observed\n selected=Path(observed['precise'])/implementation.relative_to(root)\n assert selected.read_bytes()==probe_bytes\n records['new_implementation']={'status':'PASS','path':str(implementation.relative_to(root)),**observed,'discovered_without_regenerating_inventory':True}\nfinally:\n if implementation.read_bytes()!=probe_bytes:raise ValueError('Implementation probe changed externally; preserving it')\n implementation.unlink()\n\nbuild=root/'crates/cli/aos-cli/BUILD.bazel'\noriginal=build.read_bytes()\nassert hashlib.sha256(original).hexdigest()==inventory['contracts']['crates/cli/aos-cli/BUILD.bazel']\nmodified=original+b'\\n# Temporary source-inventory qualification input.\\n'\nbuild.write_bytes(modified)\ntry:\n result=evaluate('stale-build')\n expected='stale Bazel source inventory for crates/cli/aos-cli/BUILD.bazel'\n assert result.returncode!=0 and expected in result.stderr,result.stderr\n records['changed_build_declaration']={'status':'EXPECTED_REJECTION','path':'crates/cli/aos-cli/BUILD.bazel','diagnostic':expected}\nfinally:\n if build.read_bytes()!=modified:raise ValueError('BUILD changed externally; preserving it for review')\n build.write_bytes(original)\n\nresult=evaluate('restored')\nassert result.returncode==0 and json.loads(result.stdout)==baseline,(result.stdout,result.stderr)\nassert all(not path.exists() for path in [*probes,implementation])\nreport={\n 'schema_version':1,'status':'PASS','scope':'Actual configured CLI source filtering; no compiler or test parity is claimed.',\n 'baseline':baseline,'inventory':str(scratch/'cli-strict-source-candidate-inventory.json'),\n 'inventory_sha256':hashlib.sha256((scratch/'cli-strict-source-candidate-inventory.json').read_bytes()).hexdigest(),\n 'inventory_targets':len(inventory['targets']),'inventory_source_files':len(inventory['source_files']),'inventory_contracts':len(inventory['contracts']),\n 'observations':records,'temporary_source_edits_removed':True,'baseline_source_identity_restored':True,\n}\n(scratch/'cli-strict-source-candidate-qualification.json').write_text(json.dumps(report,indent=2,sort_keys=True)+'\\n')\nprint('PASS: unrelated inputs excluded, new implementation discovered, stale BUILD rejected, all probes removed',flush=True)\n"
+    }
+  },
+  "inventory": "/tmp/aos-bazel-722/cli-strict-source-candidate-inventory.json",
+  "inventory_contracts": 210,
+  "inventory_sha256": "ad893c470a7374d5e2f0fc55829b8a1026c89b30233a531fab3526361e1751fd",
+  "inventory_source_files": 1364,
+  "inventory_targets": 89,
+  "limits": [
+    "The source-selection probe does not compile or execute the CLI.",
+    "The merged inventory is staged for qualification; ordinary defaults remain conservative until the full inventory and compiler checks pass."
+  ],
+  "observations": {
+    "changed_build_declaration": {
+      "diagnostic": "stale Bazel source inventory for crates/cli/aos-cli/BUILD.bazel",
+      "path": "crates/cli/aos-cli/BUILD.bazel",
+      "status": "EXPECTED_REJECTION"
+    },
+    "new_implementation": {
+      "conservative": "/nix/store/7fd81pw3xpldwwrlmfnxl5p2630h9lpw-aos-bazel-workspace",
+      "discovered_without_regenerating_inventory": true,
+      "path": "crates/cli/aos-cli/src/aos_bazel_source_inventory_probe_722.rs",
+      "precise": "/nix/store/6b3k9fiagdv0x5z782vwl7vk99rkva8l-aos-bazel-workspace",
+      "status": "PASS"
+    },
+    "unrelated_docs_and_inventory_json": {
+      "conservative": "/nix/store/l3p62xv2yx7wjmdhvpikzysrgxaniznl-aos-bazel-workspace",
+      "conservative_source_changed": true,
+      "paths": [
+        "tools/bazel/metadata/aos-bazel-source-inventory-probe-722.json",
+        "docs/aos-bazel-source-inventory-probe-722.md"
+      ],
+      "precise": "/nix/store/rrvxjghg2qjg1s7wj6xd4zb7gx6v916r-aos-bazel-workspace",
+      "precise_source_unchanged": true,
+      "status": "PASS"
+    }
+  },
+  "schema_version": 1,
+  "scope": "Actual configured CLI source filtering; no compiler or test parity is claimed.",
+  "source_contracts_sha256": {
+    "pkgs/build-support/_bazel/workspace.nix": "6e35a5f5d76ede33d9cd93b66b34d0005457980cbdf9f76593a8f078c2902ff9",
+    "tests/build/_bazel-aos-cli.nix": "8ddd9dedf9e45655da2d449795ef9a3e2906e6a5ce7a8e462b56b40ae0a8dc3b",
+    "tools/bazel/metadata/export_inventory.py": "4708a2aabd8ab317775d19281b37ddf92b7a1942f0d7280e419e6b5c14d47256",
+    "tools/bazel/metadata/merge_inventory.py": "47679dcfe9e458c02c7a1883e421e11ccf8d0143e7e1c98bfd73ccd32a976d34"
+  },
+  "status": "PASS",
+  "temporary_source_edits_removed": true
+}

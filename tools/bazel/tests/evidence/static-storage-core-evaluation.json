@@ -1,0 +1,30 @@
+{
+  "build_log_sha256": "3d46f59d40087de84eee9955ea912d4e588755fc3e4ce67498a2c3af32e1dcc4",
+  "completed_build_exit_status": 0,
+  "entry_point": "checks.eval",
+  "limits": [
+    "This broader native evaluation gate completed for the static cryptsetup/storage-format checkpoint. The following application compilation receipt commit changed only documentation/evidence.",
+    "The later OpenZFS and storage-provisioning declarations were not present at initial gate instantiation. Reinstantiation with those changes yields the identical completed root derivation; their package-specific execution is qualified separately.",
+    "This gate collects native evaluation leaf suites; VM, foreign-platform, full Bazel closure and performance acceptance remain separate gates."
+  ],
+  "qualification": "/nix/store/6bz9648q4x7n62qgbkcwag90sarnagg7-aos-native-evaluation-checks-0",
+  "qualification_derivation": "/nix/store/b8j0nz3q4pymj0kri3wj2dwvzkmd7p9q-aos-native-evaluation-checks-0.drv",
+  "rebuilt_derivations": [
+    "/nix/store/zlxb6zhqg1kis7dl8c3hbc3rshdw3f9w-aos-systemd-provider-0.1.0.drv",
+    "/nix/store/i6jgqmzrh2z34zx0z8z8nnaahizk7ja4-systemd-261.2.drv",
+    "/nix/store/kfgj8cpspxsgx09m9ikb4qkpz5xkszgv-aos-initrd-account-serialization-check-0.drv",
+    "/nix/store/xj82h81q1cq59rb3zf5k873d133kxnh9-native-projected-service-units.drv",
+    "/nix/store/kf0rnra3czhqqpazqypklxhavn7gmg8s-aos-effect-module-checks-0.drv",
+    "/nix/store/b8j0nz3q4pymj0kri3wj2dwvzkmd7p9q-aos-native-evaluation-checks-0.drv"
+  ],
+  "revalidated_after_zfs_and_provisioning_selectors": {
+    "current_evaluation_derivation": "/nix/store/b8j0nz3q4pymj0kri3wj2dwvzkmd7p9q-aos-native-evaluation-checks-0.drv",
+    "identical_to_completed_passing_gate": true,
+    "includes_current_static_layout_link_declaration": true,
+    "scope": "Reinstantiated checks.eval after the new package selectors, build declarations and inventory updates. This validates the unchanged native evaluation root; package-specific Bazel execution has separate qualifications."
+  },
+  "schema_version": 1,
+  "source_checkpoint": "5ef0603c4e3968816f25736aeebfc00d4428282d",
+  "static_storage_implementation_checkpoint": "3dbb8090556538f793d0c0058efcc1fc192d7842",
+  "status": "PASS"
+}

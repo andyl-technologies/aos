@@ -16,7 +16,7 @@
 //! - **`orphans`**: installed packages whose source registry has been
 //!   removed from the configuration entirely.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Context, Result, bail};
 
@@ -74,10 +74,10 @@ pub async fn search(
     let mut results: Vec<(String, String, String, String)> = Vec::new();
 
     for reg in registries.registries() {
-        if let Some(filter) = registry_filter {
-            if reg.config.name != filter {
-                continue;
-            }
+        if let Some(filter) = registry_filter
+            && reg.config.name != filter
+        {
+            continue;
         }
 
         let matches = reg.search(pattern, names_only);
@@ -143,10 +143,10 @@ async fn search_installed(
         let Some(apm) = meta.apm.as_ref() else {
             continue;
         };
-        if let Some(filter) = registry_filter {
-            if apm.registry != filter {
-                continue;
-            }
+        if let Some(filter) = registry_filter
+            && apm.registry != filter
+        {
+            continue;
         }
 
         let description = installed_description(registries, &apm.registry, &meta.store_path);
@@ -233,10 +233,10 @@ pub async fn show(
     let meta_list = list_meta(&profile)?;
 
     if let Some(filter) = registry_filter {
-        if let Some(reg) = registries.get_registry(filter) {
-            if let Some(meta) = reg.get(package) {
-                return show_registry_package(config, reg, meta, &meta_list, printer);
-            }
+        if let Some(reg) = registries.get_registry(filter)
+            && let Some(meta) = reg.get(package)
+        {
+            return show_registry_package(config, reg, meta, &meta_list, printer);
         }
 
         if let Some(installed) = find_installed_package(&meta_list, package, Some(filter)) {
@@ -347,29 +347,27 @@ fn show_registry_package(
         crate::sysroot::show_sysroot_info(meta, printer);
 
         // Show sysroot-lock violations if installed.
-        if is_installed {
-            if let Some((sysroot_refs, _sys_name, _sys_version)) =
+        if is_installed
+            && let Some((sysroot_refs, _sys_name, _sys_version)) =
                 sysroot_lock::get_sysroot_references(config)?
-            {
-                let lookup = sysroot_lock::build_registry_lookup(config)?;
-                let pkg_refs: Vec<String> = meta
-                    .references
-                    .iter()
-                    .cloned()
-                    .chain(std::iter::once(
-                        store_path_hash(&meta.store_path).to_string(),
-                    ))
-                    .collect();
-                let violations =
-                    sysroot_lock::check_sysroot_lock(&sysroot_refs, &pkg_refs, &lookup);
-                if !violations.is_empty() {
-                    printer.kv("Sysroot-lock violations", "");
-                    for v in &violations {
-                        printer.plain(&format!(
-                            "  {:<16} sysroot: {:<12}  installed: {}",
-                            v.name, v.sysroot_version, v.package_version,
-                        ));
-                    }
+        {
+            let lookup = sysroot_lock::build_registry_lookup(config)?;
+            let pkg_refs: Vec<String> = meta
+                .references
+                .iter()
+                .cloned()
+                .chain(std::iter::once(
+                    store_path_hash(&meta.store_path).to_string(),
+                ))
+                .collect();
+            let violations = sysroot_lock::check_sysroot_lock(&sysroot_refs, &pkg_refs, &lookup);
+            if !violations.is_empty() {
+                printer.kv("Sysroot-lock violations", "");
+                for v in &violations {
+                    printer.plain(&format!(
+                        "  {:<16} sysroot: {:<12}  installed: {}",
+                        v.name, v.sysroot_version, v.package_version,
+                    ));
                 }
             }
         }
@@ -508,7 +506,7 @@ async fn installed_dependency_names(
     meta_list: &[InstalledPackageRecord],
 ) -> Result<Vec<String>> {
     let root_hash = store_path_hash(&installed.store_path);
-    let installed_by_hash: HashMap<String, String> = meta_list
+    let installed_by_hash: BTreeMap<String, String> = meta_list
         .iter()
         .filter_map(|meta| {
             let apm = meta.apm.as_ref()?;
@@ -594,18 +592,18 @@ pub async fn list(
     let registry_lookup = if sysroot_info_for_lock.is_some() {
         sysroot_lock::build_registry_lookup(config)?
     } else {
-        HashMap::new()
+        BTreeMap::new()
     };
 
     // Collect entries: (name, registry_name, version, status).
     let mut entries: Vec<(String, String, String, String)> = Vec::new();
-    let mut listed_installed_sources: HashSet<(String, String)> = HashSet::new();
+    let mut listed_installed_sources: BTreeSet<(String, String)> = BTreeSet::new();
 
     for reg in registries.registries() {
-        if let Some(filter) = registry_filter {
-            if reg.config.name != filter {
-                continue;
-            }
+        if let Some(filter) = registry_filter
+            && reg.config.name != filter
+        {
+            continue;
         }
 
         let mut names: Vec<&str> = reg.names();
@@ -723,10 +721,10 @@ pub async fn list(
             let Some(apm) = meta.apm.as_ref() else {
                 continue;
             };
-            if let Some(filter) = registry_filter {
-                if apm.registry != filter {
-                    continue;
-                }
+            if let Some(filter) = registry_filter
+                && apm.registry != filter
+            {
+                continue;
             }
             if held_only && !apm.held {
                 continue;
@@ -807,7 +805,7 @@ pub async fn orphans(config: &ApmConfig, printer: &Printer) -> Result<()> {
 
     // A registry counts as "configured" whether enabled or disabled — only an
     // outright-removed registry orphans its packages.
-    let configured: HashSet<&str> = config
+    let configured: BTreeSet<&str> = config
         .registries
         .iter()
         .map(|(cfg, _)| cfg.name.as_str())
@@ -950,7 +948,7 @@ pub(crate) fn warn_unsynced_scope(config: &ApmConfig, printer: &Printer) {
 /// may be installed from multiple registries with distinct store paths.
 fn installed_by_source(
     meta_list: &[InstalledPackageRecord],
-) -> HashMap<(String, String), &InstalledPackageRecord> {
+) -> BTreeMap<(String, String), &InstalledPackageRecord> {
     meta_list
         .iter()
         .filter_map(|m| {
@@ -1351,10 +1349,9 @@ mod tests {
                 if let Some(inst) = installed_by_source_map
                     .get(&(name.to_string(), reg.config.name.clone()))
                     .copied()
+                    && is_upgradable_installed_root(inst, meta)
                 {
-                    if is_upgradable_installed_root(inst, meta) {
-                        upgradable.push(name.to_string());
-                    }
+                    upgradable.push(name.to_string());
                 }
             }
         }
@@ -1392,9 +1389,7 @@ mod tests {
         let by_source = installed_by_source(&installed);
 
         assert!(
-            by_source
-                .get(&("priority-tool".to_string(), "high-priority".to_string()))
-                .is_none()
+            !by_source.contains_key(&("priority-tool".to_string(), "high-priority".to_string()))
         );
         assert_eq!(
             by_source

@@ -148,7 +148,8 @@ fn assert_contains(haystack: &str, needle: &str) {
 fn workspace_root() -> Result<PathBuf, Box<dyn Error>> {
     let mut current = std::env::current_dir()?;
     loop {
-        if current.join("crates/Cargo.toml").is_file()
+        if current.join("MODULE.bazel").is_file()
+            && current.join("default.nix").is_file()
             && current.join("tests/crucible/default.nix").is_file()
         {
             return Ok(current);

@@ -1,6 +1,8 @@
 ##! Native AOS handler for package-owned systemd abilities.
 {
   lib,
+  callPackage,
+  buildDriver ? "cargo",
   mkAosCargoPackage,
   nix,
   aosWorkspaceVendor,
@@ -14,10 +16,10 @@
   tpm2-tools,
   zlib,
 }: let
+  withBuildDriver = selected: callPackage ./aos-systemd-provider.nix {buildDriver = selected;};
   version = "0.1.0";
   cargoDeps = aosWorkspaceVendor;
-in
-  mkAosCargoPackage {
+  packageArguments = {
     platformSupport = {
       build = [
         {
@@ -85,4 +87,18 @@ in
       license = "Apache-2.0";
       mainProgram = "aos-systemd-native-resource-provider";
     };
-  }
+    passthru = {
+      inherit withBuildDriver;
+      buildDriver = "cargo";
+    };
+  };
+  cargoPackage = mkAosCargoPackage packageArguments;
+in
+  assert builtins.elem buildDriver ["cargo" "bazel"];
+    if buildDriver == "bazel"
+    then
+      callPackage ./_aos-systemd-provider-bazel.nix {
+        inherit packageArguments;
+        cargoFallback = cargoPackage;
+      }
+    else cargoPackage

@@ -302,7 +302,7 @@ fn build_response(
         } else {
             GateResult::Failed
         },
-        report_digest: Sha256Digest::of_bytes(&report_bytes),
+        report_digest: Sha256Digest::of_bytes(report_bytes),
         authority_id: identity.to_owned(),
         nonce: Some(request.nonce.clone()),
         started_at: fields.started_at,
@@ -556,10 +556,10 @@ async fn execute(args: &ReleaseQualificationExecuteArgs) -> Result<()> {
         {
             bail!("scenario observations differ from the configured executor or required case");
         }
-        if let Some(assessment) = &observation.assessment {
-            if response.report.get("assessment") != Some(&serde_json::to_value(assessment)?) {
-                bail!("scenario assessment differs from its retained report");
-            }
+        if let Some(assessment) = &observation.assessment
+            && response.report.get("assessment") != Some(&serde_json::to_value(assessment)?)
+        {
+            bail!("scenario assessment differs from its retained report");
         }
         if observation.environment.is_some() || observation.assessment.is_none() {
             let environment = response
@@ -571,10 +571,10 @@ async fn execute(args: &ReleaseQualificationExecuteArgs) -> Result<()> {
             {
                 bail!("scenario environment digest differs from its recorded inventory");
             }
-            if let Some(inventory) = &observation.environment {
-                if &serde_json::to_value(inventory)? != environment {
-                    bail!("structured execution inventory differs from the retained report");
-                }
+            if let Some(inventory) = &observation.environment
+                && &serde_json::to_value(inventory)? != environment
+            {
+                bail!("structured execution inventory differs from the retained report");
             }
         }
         Result::<Vec<u8>>::Ok(bytes)
@@ -629,7 +629,7 @@ async fn download_object(
     let mut requests = Vec::new();
 
     if resume {
-        let first_size = (object.size_bytes / 2).min(1024 * 1024).max(1);
+        let first_size = (object.size_bytes / 2).clamp(1, 1024 * 1024);
         let ranges = [(0, first_size - 1), (first_size, object.size_bytes - 1)];
         for (start, end) in ranges {
             let range = format!("bytes={start}-{end}");

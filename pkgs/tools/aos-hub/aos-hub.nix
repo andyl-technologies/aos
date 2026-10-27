@@ -1,22 +1,23 @@
 ##! aos-hub — multi-tenant AOS registry management hub (RFC-0004)
 ##!
-##! Builds the `aos-hub` and `aos-hub-egress` binaries from the shared `crates/` cargo
-##! workspace, mirroring `pkgs/tools/aos/aos.nix`. The hub is a self-contained
-##! axum server: a sqlite database (rusqlite with the AOS SQLite library) plus
-##! a `file://`/HTTP surface reader, so unlike `aos` it shells out to no external
-##! tools at runtime and needs no PATH wrapper — `$out/bin/aos-hub` is the
-##! complete artifact.
+##! Builds the `aos-hub` and `aos-hub-egress` executables from the shared
+##! source workspace. Cargo remains the default during qualification; native
+##! Linux callers can select the Bazel builder through `withBuildDriver`.
+##! The server uses SQLx with AOS SQLite and PostgreSQL libraries. Both
+##! executables run directly without a PATH wrapper or external runtime tools.
 ##!
-##! The AOS Rust toolchain and pinned workspace vendor output make this build
-##! hermetic. Native inputs include `pkg-config`, `openssl`, `sqlite`, and
-##! `protobuf`; the `aos-proto` build script runs `protoc` to generate the
-##! `aos.hub.v1` ConnectRPC stubs.
+##! Both builders use the AOS Rust toolchain, pinned source dependencies and
+##! declared native libraries. The AOS protobuf compiler generates the
+##! `aos.hub.v1` ConnectRPC stubs, and source-built console assets are embedded
+##! in the server.
 {
   lib,
   mkAosCargoPackage,
   mkCargoArtifacts,
   mkCargoDummySource,
   aosWorkspaceVendor,
+  callPackage,
+  buildDriver ? "cargo",
   libssh2,
   openssl,
   perl,
@@ -31,6 +32,7 @@
   buildPackages,
 }: let
   version = "0.1.0";
+  withBuildDriver = selected: callPackage ./aos-hub.nix {buildDriver = selected;};
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
   buildPerl =
     if isDarwinCross
@@ -76,8 +78,7 @@
     buildDeps = [buildPerl buildPkgConfig openssl sqlite buildProtobuf aos-hub-console-dist];
     runtimeDeps = [openssl sqlite libssh2 zlib];
   };
-in
-  mkAosCargoPackage {
+  packageArguments = {
     platformSupport = {
       build = [
         {
@@ -187,6 +188,20 @@ in
     meta = {
       description = "aos-hub — multi-tenant AOS registry management hub";
       homepage = "https://github.com/andyl/andyl-os";
-      license = "MIT";
+      license = "Apache-2.0";
     };
-  }
+    passthru = {
+      inherit withBuildDriver;
+      buildDriver = "cargo";
+    };
+  };
+  cargoPackage = mkAosCargoPackage packageArguments;
+in
+  assert builtins.elem buildDriver ["cargo" "bazel"];
+    if buildDriver == "bazel"
+    then
+      callPackage ../_aos-hub-bazel.nix {
+        inherit packageArguments;
+        cargoFallback = cargoPackage;
+      }
+    else cargoPackage

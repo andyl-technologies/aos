@@ -1,0 +1,416 @@
+{
+  "cleanup": {
+    "owned_qualification_cache_namespace": "/var/tmp/aos-dev-cache-1000/bazel/boot-production-harness-273460a74f-v1",
+    "removed": true,
+    "shared_cache_root_preserved": true
+  },
+  "explicit_rustc_selector_preserves_qualified_derivations": true,
+  "implementation_sha256": {
+    "pkgs/security/_aos-boot-identity-bazel.nix": "ed4ddac76d212eb175a2cf45e7cc6dc3ca3f363cc61c13ff9a5f38dc52deb48a",
+    "pkgs/security/aos-boot-identity.nix": "12d056a1179123b67ce0cd7ebe72d3b6681578f338cbb88fa279ec717b7a5cc6",
+    "tools/bazel/bench/end_to_end.nix": "f034bfc29125cd1420f5b97c42b2e19c900785ef2b4f39aa1f138be16f092acf",
+    "tools/bazel/bench/measure_end_to_end.py": "eef18c4c6d5bca3dedc9b9cebda4f31c46f33d1f538239f5bccee14899291adf",
+    "tools/bazel/bench/record_builder.py": "5884492b24bc49e73bf8be1aeb30b5c097cd43a36e6da9367ed48d7ee48f5df6",
+    "tools/bazel/bench/test_measure_end_to_end.py": "b165a3cb0ad8c402657c04c085cb39bd5ab7838f18af11d2850653e04bab4f06"
+  },
+  "limitations": [
+    "Qualification ran alongside the ongoing store-family Cargo baseline and other shared-host activity; these are not controlled timing samples.",
+    "This is constructor and instrumentation qualification, not the three-repetition, six-scenario end-to-end experiment.",
+    "The rustc constructor runs library tests; the Bazel constructor additionally runs CLI integration tests and doctests.",
+    "Package export and prerequisite builders contribute realisation wall time but have no separate resource records.",
+    "JVM and adopted-child resource counters overlap; maximum per-process RSS is not a simultaneous process-tree memory total.",
+    "Repeated matched current-toolchain measurements and numeric acceptance budgets remain required before a default cutover."
+  ],
+  "measurement_regressions": {
+    "derivation": "/nix/store/0la1rzdxqywka86h189njimf3cknygkj-aos-bazel-measurement-checks.drv",
+    "derivation_sha256": "599f875c95ccdfda34db0519fd791f85f9278cbe5cdc6946c7273e70f559f5b7",
+    "output": "/nix/store/mxsd1gmvjnpjgwki310kp64fyvgs0r9k-aos-bazel-measurement-checks",
+    "result": "PASS",
+    "tests": 28
+  },
+  "parent_revision": "273460a74f688fd4f706cca59ec3c172644334e8",
+  "records": {
+    "bazel": {
+      "accepted_and_rejected_command_lines_passed": true,
+      "action_build": {
+        "actions": 13,
+        "all_compiler_arguments_and_environments_identical": true,
+        "all_compiler_declared_inputs_identical": true,
+        "cache_hits": 0,
+        "compiler_inputs_sha256": "e09e8abe5188d414e6883b2d0ab8376c1201eae66a3a98794514f89672e83b22",
+        "compiler_invocations_sha256": "cfdc708c78da2453fa0a29bc118efbcdae6aea89155d90b32da2d25883580aaa",
+        "derivation": "/nix/store/zy4jdx32l1qiwblmbi5r50gzd2fbqrhm-aos-bazel-boot-identity-production-1.drv",
+        "derivation_sha256": "431c4597a6470bac041bf96b5ca659eeb79c8a502b2a6fa452e5c0e893c21ccc",
+        "execution_sha256": "0be6eca97257d2e4a6975f03d9eeab6f51eeab065e10e9f7447e9639cc6464c4",
+        "first_party_command_sha256": {
+          "//crates/boot/aos-boot-identity:aos-boot-identity": "f5a94fcf3268184ae569e4de64246c0dee96782359d9e5c9c5d45494a95cd745",
+          "//crates/boot/aos-boot-identity:lib": "d5069fa62dea30543d0d00e231bb202087eaf6c6699fc2215d657d45df460b4c",
+          "//crates/boot/aos-boot-identity:uki_cli_binary": "1e35c37c173f40fd019b37b6f872422bb199a397a7b7bdde1e8a8dfd761adb19",
+          "//crates/boot/aos-boot-identity:unit_binary": "b3f0ae93c4e74c5b570ce95a9b469fe161cad0b82367226d8d8d267033cf0258"
+        },
+        "output": "/nix/store/pyzq7ks90d2siaqr9x6z14wzbnfslaiz-aos-bazel-boot-identity-production-1",
+        "test_cases": {
+          "//crates/boot/aos-boot-identity:doc": [],
+          "//crates/boot/aos-boot-identity:uki_cli": [
+            "binary_copy_preserves_nuls_optional_empty_and_source_symlink_behavior",
+            "both_efi_architectures_emit_exact_required_text_without_added_newline",
+            "cli_refuses_malformed_ranges_duplicate_sections_and_truncation",
+            "exact_size_limit_is_accepted_and_text_symlinks_are_refused",
+            "original_single_path_normal_boot_validation_is_preserved",
+            "required_text_rejects_missing_empty_invalid_utf8_nul_and_oversized_payloads"
+          ],
+          "//crates/boot/aos-boot-identity:unit": [
+            "pe::tests::both_efi_architectures_preserve_virtual_payload_length",
+            "pe::tests::duplicate_selected_sections_are_rejected",
+            "pe::tests::invalid_signatures_are_rejected",
+            "pe::tests::truncated_headers_and_out_of_file_ranges_are_rejected",
+            "tests::accepts_only_the_canonical_recovery_identity",
+            "tests::accepts_slot_a_and_repeatable_console",
+            "tests::accepts_slot_b",
+            "tests::rejects_every_additional_recovery_token",
+            "tests::rejects_every_duplicate_scalar_field",
+            "tests::rejects_interactive_and_recovery_selectors",
+            "tests::rejects_malformed_root_hash",
+            "tests::rejects_missing_duplicate_and_noncanonical_recovery_fields",
+            "tests::rejects_mixed_slot_tuple",
+            "tests::rejects_noncanonical_uppercase_root_hash",
+            "tests::rejects_nonverity_root_without_verity_fields"
+          ]
+        }
+      },
+      "builder_resources": {
+        "bazel-action-metrics.json": {
+          "configured-discovery-metrics": {
+            "peak_rss_kib": 16452,
+            "server_after": {
+              "children_system_seconds": 1.37,
+              "children_user_seconds": 2.24,
+              "peak_rss_kib": 818252,
+              "pid": 12,
+              "rss_kib": 555904,
+              "system_seconds": 6.14,
+              "user_seconds": 34.88
+            },
+            "server_before": {
+              "children_system_seconds": 1.37,
+              "children_user_seconds": 2.24,
+              "peak_rss_kib": 1110232,
+              "pid": 12,
+              "rss_kib": 1110232,
+              "system_seconds": 5.04,
+              "user_seconds": 32.5
+            },
+            "system_seconds": 0.034361,
+            "user_seconds": 0.004973,
+            "wall_seconds": 0.4812430079909973
+          },
+          "discovery-metrics": {
+            "peak_rss_kib": 16452,
+            "server_after": {
+              "children_system_seconds": 1.37,
+              "children_user_seconds": 2.24,
+              "peak_rss_kib": 818252,
+              "pid": 12,
+              "rss_kib": 574196,
+              "system_seconds": 6.38,
+              "user_seconds": 35.49
+            },
+            "server_before": {
+              "children_system_seconds": 1.37,
+              "children_user_seconds": 2.24,
+              "peak_rss_kib": 818252,
+              "pid": 12,
+              "rss_kib": 556108,
+              "system_seconds": 6.14,
+              "user_seconds": 35.08
+            },
+            "system_seconds": 0.031142999999999997,
+            "user_seconds": 0.005345,
+            "wall_seconds": 0.12716178898699582
+          },
+          "metrics": {
+            "peak_rss_kib": 143424,
+            "server_after": {
+              "children_system_seconds": 1.37,
+              "children_user_seconds": 2.24,
+              "peak_rss_kib": 1110136,
+              "pid": 12,
+              "rss_kib": 1110136,
+              "system_seconds": 5.02,
+              "user_seconds": 32.26
+            },
+            "server_before": null,
+            "system_seconds": 0.151404,
+            "user_seconds": 0.29404399999999997,
+            "wall_seconds": 9.630353466956876
+          }
+        },
+        "bazel-action-resources.json": {
+          "block_inputs": 2001333,
+          "block_outputs": 345962,
+          "peak_rss_kib": 818252,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 8.897803,
+          "user_seconds": 41.540754,
+          "waited_children": 2,
+          "wall_seconds": 12.307180245989002
+        },
+        "benchmark-resources.json": {
+          "block_inputs": 16,
+          "block_outputs": 4054,
+          "peak_rss_kib": 8252,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 0.052989999999999995,
+          "user_seconds": 0.043224,
+          "waited_children": 1,
+          "wall_seconds": 0.21769492694875225
+        }
+      },
+      "derivation": "/nix/store/kk81hwmrmy4z2pbfqnk5rnqkhz0n09bq-aos-boot-identity-0.1.0.drv",
+      "derivation_sha256": "82ecaa967fdda3c8672bed812b895eb757717de65bf168f1a02dbb8aa744a97d",
+      "installed_bytes_and_modes_identical": true,
+      "installed_files": {
+        "aos-boot-identity": {
+          "mode": "0o555",
+          "sha256": "c645dd503441261605abdac9f6c3d628d4197f0bc5f9bb119789b519878c19aa"
+        },
+        "aos-boot-identity-failure-report": {
+          "mode": "0o555",
+          "sha256": "1977bef1f6ea7965218e7bdecb9ee645a800588af6aba0cc9d483e27fa1c7913"
+        },
+        "aos-boot-identity-guard": {
+          "mode": "0o555",
+          "sha256": "f6be6880f95990ae2028c0580ac3ce9ad24bd4053609c38cc8cff63e6ddfd4ef"
+        },
+        "aos-boot-identity-success": {
+          "mode": "0o555",
+          "sha256": "66157864600e39896f2af5797d97407db2408b8da6cdac642beeecf931a85ad3"
+        }
+      },
+      "output": "/nix/store/lzzd379ysdni587ydy4rjmayaxxcmbs8-aos-boot-identity-0.1.0",
+      "reused_output_has_no_fresh_resource_samples": true,
+      "runtime_closure_excluding_package_root": [
+        "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15",
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+        "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6"
+      ],
+      "runtime_closure_identical": true,
+      "unmeasured_production_output": "/nix/store/jacvxg63c3wjsw5bs2g7fipzg4n79ihw-aos-boot-identity-0.1.0"
+    },
+    "bazel-v2": {
+      "accepted_and_rejected_command_lines_passed": true,
+      "action_build": {
+        "actions": 13,
+        "all_compiler_arguments_and_environments_identical": true,
+        "all_compiler_declared_inputs_identical": true,
+        "cache_hits": 13,
+        "compiler_inputs_sha256": "e09e8abe5188d414e6883b2d0ab8376c1201eae66a3a98794514f89672e83b22",
+        "compiler_invocations_sha256": "f5e8d71e9c919b0f6d9539604e21f43f5737ff90a5534dbc31c22736a6a66eeb",
+        "derivation": "/nix/store/c3ijhq5byla8whw8cb9v1hmnzzv6d52x-aos-bazel-boot-identity-production-1.drv",
+        "derivation_sha256": "0f784995f85d60723f940f74ed6abfe4747d34bedb6079538fe63a90c68f219a",
+        "execution_sha256": "11c62b7bd58f3858b2478cbdd1243bb9b2ad9a821d0620eefd8d64854c63e49d",
+        "first_party_command_sha256": {
+          "//crates/boot/aos-boot-identity:aos-boot-identity": "f5a94fcf3268184ae569e4de64246c0dee96782359d9e5c9c5d45494a95cd745",
+          "//crates/boot/aos-boot-identity:lib": "d5069fa62dea30543d0d00e231bb202087eaf6c6699fc2215d657d45df460b4c",
+          "//crates/boot/aos-boot-identity:uki_cli_binary": "1e35c37c173f40fd019b37b6f872422bb199a397a7b7bdde1e8a8dfd761adb19",
+          "//crates/boot/aos-boot-identity:unit_binary": "b3f0ae93c4e74c5b570ce95a9b469fe161cad0b82367226d8d8d267033cf0258"
+        },
+        "output": "/nix/store/y7r0fyvck59cfj0571z95x74mgfr6z8l-aos-bazel-boot-identity-production-1",
+        "test_cases": {
+          "//crates/boot/aos-boot-identity:doc": [],
+          "//crates/boot/aos-boot-identity:uki_cli": [
+            "binary_copy_preserves_nuls_optional_empty_and_source_symlink_behavior",
+            "both_efi_architectures_emit_exact_required_text_without_added_newline",
+            "cli_refuses_malformed_ranges_duplicate_sections_and_truncation",
+            "exact_size_limit_is_accepted_and_text_symlinks_are_refused",
+            "original_single_path_normal_boot_validation_is_preserved",
+            "required_text_rejects_missing_empty_invalid_utf8_nul_and_oversized_payloads"
+          ],
+          "//crates/boot/aos-boot-identity:unit": [
+            "pe::tests::both_efi_architectures_preserve_virtual_payload_length",
+            "pe::tests::duplicate_selected_sections_are_rejected",
+            "pe::tests::invalid_signatures_are_rejected",
+            "pe::tests::truncated_headers_and_out_of_file_ranges_are_rejected",
+            "tests::accepts_only_the_canonical_recovery_identity",
+            "tests::accepts_slot_a_and_repeatable_console",
+            "tests::accepts_slot_b",
+            "tests::rejects_every_additional_recovery_token",
+            "tests::rejects_every_duplicate_scalar_field",
+            "tests::rejects_interactive_and_recovery_selectors",
+            "tests::rejects_malformed_root_hash",
+            "tests::rejects_missing_duplicate_and_noncanonical_recovery_fields",
+            "tests::rejects_mixed_slot_tuple",
+            "tests::rejects_noncanonical_uppercase_root_hash",
+            "tests::rejects_nonverity_root_without_verity_fields"
+          ]
+        }
+      },
+      "builder_resources": {
+        "bazel-action-metrics.json": {
+          "configured-discovery-metrics": {
+            "peak_rss_kib": 16452,
+            "server_after": {
+              "children_system_seconds": 0.03,
+              "children_user_seconds": 0.05,
+              "peak_rss_kib": 800452,
+              "pid": 12,
+              "rss_kib": 569984,
+              "system_seconds": 3.95,
+              "user_seconds": 36.83
+            },
+            "server_before": {
+              "children_system_seconds": 0.03,
+              "children_user_seconds": 0.05,
+              "peak_rss_kib": 1049780,
+              "pid": 12,
+              "rss_kib": 1049780,
+              "system_seconds": 3.55,
+              "user_seconds": 34.47
+            },
+            "system_seconds": 0.032319,
+            "user_seconds": 0.006657,
+            "wall_seconds": 0.46457011700840667
+          },
+          "discovery-metrics": {
+            "peak_rss_kib": 16452,
+            "server_after": {
+              "children_system_seconds": 0.03,
+              "children_user_seconds": 0.05,
+              "peak_rss_kib": 800452,
+              "pid": 12,
+              "rss_kib": 587960,
+              "system_seconds": 4.21,
+              "user_seconds": 37.4
+            },
+            "server_before": {
+              "children_system_seconds": 0.03,
+              "children_user_seconds": 0.05,
+              "peak_rss_kib": 800452,
+              "pid": 12,
+              "rss_kib": 570092,
+              "system_seconds": 3.95,
+              "user_seconds": 36.96
+            },
+            "system_seconds": 0.028501,
+            "user_seconds": 0.008419,
+            "wall_seconds": 0.1218308990355581
+          },
+          "metrics": {
+            "peak_rss_kib": 143424,
+            "server_after": {
+              "children_system_seconds": 0.03,
+              "children_user_seconds": 0.05,
+              "peak_rss_kib": 1049504,
+              "pid": 12,
+              "rss_kib": 1049504,
+              "system_seconds": 3.55,
+              "user_seconds": 34.33
+            },
+            "server_before": null,
+            "system_seconds": 0.146453,
+            "user_seconds": 0.311672,
+            "wall_seconds": 6.746999372029677
+          }
+        },
+        "bazel-action-resources.json": {
+          "block_inputs": 195278,
+          "block_outputs": 319462,
+          "peak_rss_kib": 800452,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 5.1857,
+          "user_seconds": 40.861594999999994,
+          "waited_children": 2,
+          "wall_seconds": 9.181307277991436
+        },
+        "benchmark-resources.json": {
+          "block_inputs": 0,
+          "block_outputs": 4054,
+          "peak_rss_kib": 8252,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 0.036446,
+          "user_seconds": 0.039126999999999995,
+          "waited_children": 1,
+          "wall_seconds": 0.11303209501784295
+        }
+      },
+      "derivation": "/nix/store/skwnwv1qr8m4w4xm68bkzdqznm0vmnkq-aos-boot-identity-0.1.0.drv",
+      "derivation_sha256": "163990b184162870aa1345f8ef4232a6662fabff5773f05c323c8f383937cdb7",
+      "installed_bytes_and_modes_identical": true,
+      "installed_files": {
+        "aos-boot-identity": {
+          "mode": "0o555",
+          "sha256": "c645dd503441261605abdac9f6c3d628d4197f0bc5f9bb119789b519878c19aa"
+        },
+        "aos-boot-identity-failure-report": {
+          "mode": "0o555",
+          "sha256": "1977bef1f6ea7965218e7bdecb9ee645a800588af6aba0cc9d483e27fa1c7913"
+        },
+        "aos-boot-identity-guard": {
+          "mode": "0o555",
+          "sha256": "f6be6880f95990ae2028c0580ac3ce9ad24bd4053609c38cc8cff63e6ddfd4ef"
+        },
+        "aos-boot-identity-success": {
+          "mode": "0o555",
+          "sha256": "66157864600e39896f2af5797d97407db2408b8da6cdac642beeecf931a85ad3"
+        }
+      },
+      "output": "/nix/store/iqvjx3jfnqj0zzzmg7lsp5icaig976bf-aos-boot-identity-0.1.0",
+      "reused_output_has_no_fresh_resource_samples": true,
+      "runtime_closure_excluding_package_root": [
+        "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15",
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+        "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6"
+      ],
+      "runtime_closure_identical": true,
+      "unmeasured_production_output": "/nix/store/jacvxg63c3wjsw5bs2g7fipzg4n79ihw-aos-boot-identity-0.1.0"
+    },
+    "rustc": {
+      "accepted_and_rejected_command_lines_passed": true,
+      "builder_resources": {
+        "benchmark-resources.json": {
+          "block_inputs": 20674,
+          "block_outputs": 13369,
+          "peak_rss_kib": 152200,
+          "scope": "original Nix builder and adopted descendants; CPU totals and maximum per-process RSS",
+          "system_seconds": 0.246663,
+          "user_seconds": 0.5608339999999999,
+          "waited_children": 1,
+          "wall_seconds": 0.8006643039989285
+        }
+      },
+      "derivation": "/nix/store/295m3dfpllcjmlwxljb42p5v45bqkfd3-aos-boot-identity-0.1.0.drv",
+      "derivation_sha256": "acd30b50bfbffc3e01118fc6548be91c577899916a1cb0b8b5be9b1dcb4660f3",
+      "installed_bytes_and_modes_identical": true,
+      "installed_files": {
+        "aos-boot-identity": {
+          "mode": "0o555",
+          "sha256": "0a502a36030746dc0bb96e1704d2c12fc77aa0674342fcbfa6ad791c1df11c5f"
+        },
+        "aos-boot-identity-failure-report": {
+          "mode": "0o555",
+          "sha256": "1977bef1f6ea7965218e7bdecb9ee645a800588af6aba0cc9d483e27fa1c7913"
+        },
+        "aos-boot-identity-guard": {
+          "mode": "0o555",
+          "sha256": "f6be6880f95990ae2028c0580ac3ce9ad24bd4053609c38cc8cff63e6ddfd4ef"
+        },
+        "aos-boot-identity-success": {
+          "mode": "0o555",
+          "sha256": "66157864600e39896f2af5797d97407db2408b8da6cdac642beeecf931a85ad3"
+        }
+      },
+      "output": "/nix/store/wayqicspkxhnzaywqhl022fad3zyrgjx-aos-boot-identity-0.1.0",
+      "reused_output_has_no_fresh_resource_samples": true,
+      "runtime_closure_excluding_package_root": [
+        "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15",
+        "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+        "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6"
+      ],
+      "runtime_closure_identical": true,
+      "unmeasured_production_output": "/nix/store/fm4hr98z2743v6z1xqf5zqn0rwrrlzvx-aos-boot-identity-0.1.0"
+    }
+  },
+  "schema_version": 1,
+  "scope": "One instrumented rustc build, one initially uncached Bazel build, and one fresh Bazel derivation restoring the same local disk-cache actions",
+  "status": "Production-constructor benchmark instrumentation qualified; no timing acceptance claim"
+}

@@ -23,6 +23,7 @@
   libssh2,
   pkg-config,
   protobuf,
+  python3,
   dbus,
   erofs-utils,
   sbsigntools,
@@ -41,8 +42,14 @@
   buildPackages,
   callPackage,
   withTests ? false,
+  buildDriver ? "cargo",
 }: let
   version = "0.1.0";
+  withBuildDriver = selected:
+    callPackage ./aos.nix {
+      inherit withTests;
+      buildDriver = selected;
+    };
   isCross = stdenv.isCross;
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
   buildPerl =
@@ -165,9 +172,24 @@
   # Native handler tests bind the same programs as their package recipe.
   # Only test derivations retain the shipped runtime: adding that dependency
   # to the ordinary CLI build would make its own output a build prerequisite.
+  lifecycleFixtures = import ../../../tests/build/fixtures/apm-profile-lifecycle.nix {pkgs = buildPackages;};
+  nativeCacheFixtures = import ../../../tests/build/fixtures/apm-profile-lifecycle.nix {
+    pkgs = buildPackages;
+    cache = true;
+  };
+  testPython =
+    if isCross
+    then buildPackages.python3
+    else python3;
   testCargoEnv =
     cargoEnv
-    // {AOS_NIX_STORE = "${nix}/bin/nix-store";}
+    // {
+      AOS_NIX_STORE = "${nix}/bin/nix-store";
+      AOS_LIFECYCLE_FIXTURES = "${lifecycleFixtures}/fixtures.json";
+      AOS_NATIVE_CACHE_FIXTURES = "${nativeCacheFixtures}/fixtures.json";
+      AOS_LIFECYCLE_PYTHON = "${testPython}/bin/python3";
+      AOS_LIFECYCLE_REGISTRY_SCRIPT = "${../../../tests/build/fixtures/apm_lifecycle_registry.py}";
+    }
     // (import ../../boot/_aos-configuration-lower/cargo-env.nix {
       inherit erofs-utils util-linux;
       packageRuntime = (callPackage ./aos.nix {withTests = false;}).packageRuntime;
@@ -255,7 +277,7 @@
         ];
       };
     };
-  aosPackage = mkAosCargoPackage {
+  packageArguments = {
     platformSupport = {
       build = [
         {
@@ -397,6 +419,8 @@
     passthru =
       {
         inherit cargoArtifacts cargoDeps cargoEnv testTargets;
+        inherit withBuildDriver;
+        buildDriver = "cargo";
         integrationSource = aosWorkspaceIntegrationSource;
       }
       // lib.optionalAttrs (!withTests) {
@@ -951,5 +975,16 @@
       license = "MIT";
     };
   };
+  aosPackage = mkAosCargoPackage packageArguments;
 in
-  aosPackage
+  assert builtins.elem buildDriver ["cargo" "bazel"];
+    if buildDriver == "bazel"
+    then
+      if withTests
+      then throw "aos: Bazel production selection does not yet replace the complete Cargo test derivation"
+      else
+        callPackage ./_bazel.nix {
+          inherit packageArguments;
+          cargoFallback = aosPackage;
+        }
+    else aosPackage

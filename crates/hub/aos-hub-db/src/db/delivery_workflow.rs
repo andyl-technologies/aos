@@ -327,7 +327,7 @@ impl Database {
         let now = unix_now();
         let (registry, cache) = record.surface.ids();
         let mut statements = vec![Statement::new(
-            &format!(
+            format!(
                 "UPDATE delivery_workflows
             SET progress_json = ?5, resource_version = resource_version + 1, updated_at = ?6
             WHERE workflow_id = ?7 AND resource_version = ?8 AND EXISTS ({READY_ROUTE})"
@@ -355,12 +355,12 @@ impl Database {
             let eligible = format!("EXISTS (SELECT 1 FROM routes r WHERE r.id = ?4 AND {capability} = 1
                 AND ((r.registry_id = ?1 AND r.cache_id IS NULL) OR (r.registry_id IS NULL AND r.cache_id = ?2)))");
             let statement = if let Some(version) = baseline.resource_version {
-                Statement::new(&format!("UPDATE route_advertisements SET route_id = ?4,
+                Statement::new(format!("UPDATE route_advertisements SET route_id = ?4,
                     resource_version = resource_version + 1, updated_at = ?5
                     WHERE {surface_predicate} AND audience = ?3 AND resource_version = ?6 AND {eligible}"),
                     vals![registry, cache, baseline.audience, route.route_id, now, version])
             } else {
-                Statement::new(&format!("INSERT INTO route_advertisements (registry_id, cache_id, audience, route_id, resource_version, created_at, updated_at)
+                Statement::new(format!("INSERT INTO route_advertisements (registry_id, cache_id, audience, route_id, resource_version, created_at, updated_at)
                     SELECT ?1, ?2, ?3, ?4, 1, ?5, ?5 WHERE {eligible}"),
                     vals![registry, cache, baseline.audience, route.route_id, now])
             };

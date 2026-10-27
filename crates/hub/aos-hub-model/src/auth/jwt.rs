@@ -196,6 +196,10 @@ impl JwtKeys {
     /// a process restart; production should pass a stable configured
     /// secret to [`JwtKeys::from_secret`].
     #[must_use]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "Hub credentials require unpredictable host entropy"
+    )]
     pub fn random() -> JwtKeys {
         let bytes: [u8; 32] = rand::rng().random();
         JwtKeys::from_secret(&bytes)

@@ -58,6 +58,10 @@
 //! returns [`RateDecision::Allowed`] or [`RateDecision::Limited`] with the
 //! `retry_after` seconds to surface in a `429` `Retry-After` header.
 
+#[allow(
+    clippy::disallowed_types,
+    reason = "Network-controlled rate-limit keys retain randomized hashing."
+)]
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Mutex;
 
@@ -240,6 +244,10 @@ struct Window {
 #[derive(Debug, Default)]
 struct State {
     /// Authoritative per-`(class, key)` window counters.
+    #[allow(
+        clippy::disallowed_types,
+        reason = "Network-controlled rate-limit keys retain randomized hashing."
+    )]
     windows: HashMap<(RateClass, String), Window>,
     /// Window-start index over the same keys, for `O(log n)` oldest eviction.
     by_start: BTreeSet<(i64, RateClass, String)>,

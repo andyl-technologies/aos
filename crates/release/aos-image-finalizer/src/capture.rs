@@ -470,6 +470,10 @@ fn open_regular_nofollow(path: &Path) -> Result<File> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "Adversarial fixtures must fail when invalid custody evidence is accepted"
+)]
 mod tests {
     use std::fs;
 

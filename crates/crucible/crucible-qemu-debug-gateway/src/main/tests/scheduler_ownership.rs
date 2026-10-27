@@ -25,6 +25,8 @@ fn read_test_rsp_payload(stream: &mut impl Read) -> Vec<u8> {
 }
 
 #[test]
+// crucible-lint: allow clippy-disallowed-method -- The deadline bounds host polling without entering guest state.
+#[allow(clippy::disallowed_methods)]
 fn operator_socket_routes_continue_through_scheduler_and_replays_stop() {
     let process = test_process();
     let mut backend = configure_active_backend(&process, "/run/crucible/socket-run.sock");

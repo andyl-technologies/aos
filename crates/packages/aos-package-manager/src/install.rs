@@ -25,7 +25,7 @@
 //! [`crate::sysroot`]. Profile installs handled here can still target the
 //! system profile.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::OpenOptions;
 use std::io::{Read as _, Write};
 use std::os::unix::fs::OpenOptionsExt;
@@ -96,6 +96,10 @@ struct SecondaryArtifactDownload {
 ///   the final generation switch fails;
 /// - the user declines the confirmation prompt
 ///   ([`PackageError::UserCancelled`]).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "The install entry point preserves independently selected command options."
+)]
 pub async fn run(
     config: &ApmConfig,
     packages: &[String],
@@ -125,6 +129,14 @@ pub async fn run(
     .await
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "The install transaction preserves independently selected command options."
+)]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Native package transactions record their host audit time."
+)]
 async fn run_inner(
     config: &ApmConfig,
     packages: &[String],
@@ -282,27 +294,24 @@ async fn run_inner(
     }
 
     // Sysroot-lock check: verify package closures don't diverge from sysroot.
-    if !matches!(ignore_lock, IgnoreSysrootLock::All) {
-        if let Some((sysroot_refs, sys_name, sys_version)) =
+    if !matches!(ignore_lock, IgnoreSysrootLock::All)
+        && let Some((sysroot_refs, sys_name, sys_version)) =
             sysroot_lock::get_sysroot_references(config)?
-        {
-            let lookup = sysroot_lock::build_registry_lookup(config)?;
-            for closure in &closures {
-                let pkg_refs: Vec<String> = closure
-                    .closure
-                    .iter()
-                    .map(|m| store_path_hash(&m.store_path).to_string())
-                    .collect();
+    {
+        let lookup = sysroot_lock::build_registry_lookup(config)?;
+        for closure in &closures {
+            let pkg_refs: Vec<String> = closure
+                .closure
+                .iter()
+                .map(|m| store_path_hash(&m.store_path).to_string())
+                .collect();
 
-                let violations =
-                    sysroot_lock::check_sysroot_lock(&sysroot_refs, &pkg_refs, &lookup);
-                let remaining = ignore_lock.filter(violations);
+            let violations = sysroot_lock::check_sysroot_lock(&sysroot_refs, &pkg_refs, &lookup);
+            let remaining = ignore_lock.filter(violations);
 
-                if !remaining.is_empty() {
-                    let msg =
-                        sysroot_lock::format_violation_error(&remaining, &sys_name, &sys_version);
-                    anyhow::bail!(msg);
-                }
+            if !remaining.is_empty() {
+                let msg = sysroot_lock::format_violation_error(&remaining, &sys_name, &sys_version);
+                anyhow::bail!(msg);
             }
         }
     }
@@ -311,7 +320,7 @@ async fn run_inner(
     let to_download: Vec<&PackageMeta> = if reinstall {
         all_metas.clone()
     } else {
-        let missing_set: HashSet<&str> = missing.iter().map(|s| s.as_str()).collect();
+        let missing_set: BTreeSet<&str> = missing.iter().map(|s| s.as_str()).collect();
         all_metas
             .iter()
             .filter(|m| missing_set.contains(m.store_path.as_str()))
@@ -535,7 +544,7 @@ async fn run_inner(
     printer.step(6, 7, "Updating profile...");
     let profile = Profile::open(config.scope)?;
     let prev_gen = profile.current_generation()?;
-    let explicit_names: HashSet<&str> = packages.iter().map(|s| s.as_str()).collect();
+    let explicit_names: BTreeSet<&str> = packages.iter().map(|s| s.as_str()).collect();
     let obsolete_hashes =
         obsolete_installed_hashes_after_install(&installed, &explicit_names, &closures)
             .await
@@ -565,7 +574,7 @@ async fn run_inner(
         .collect();
     // Deduplicate for GC root creation.
     let unique_for_roots: Vec<PackageMeta> = {
-        let mut seen = HashSet::new();
+        let mut seen = BTreeSet::new();
         all_closure_metas
             .into_iter()
             .filter(|m| seen.insert(store_path_hash(&m.store_path).to_string()))
@@ -727,6 +736,10 @@ async fn run_inner(
 /// Build the machine-readable result object emitted in JSON output mode:
 /// action/status, the requested roots, the deduplicated closure, and
 /// download/import counters.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "The result schema reports each independent install outcome."
+)]
 fn install_result_json(
     status: &str,
     packages: &[String],
@@ -774,8 +787,8 @@ fn install_closure_json(
     packages: &[String],
     closures: &[ResolvedClosure],
 ) -> Vec<serde_json::Value> {
-    let explicit_names: HashSet<&str> = packages.iter().map(String::as_str).collect();
-    let mut seen = HashSet::new();
+    let explicit_names: BTreeSet<&str> = packages.iter().map(String::as_str).collect();
+    let mut seen = BTreeSet::new();
     let mut entries = Vec::new();
 
     for closure in closures {
@@ -823,7 +836,7 @@ fn collect_secondary_artifacts(
     closures: &[ResolvedClosure],
 ) -> Result<Vec<SecondaryArtifactDownload>> {
     let mut artifacts = Vec::new();
-    let mut seen = HashMap::<String, usize>::new();
+    let mut seen = BTreeMap::<String, usize>::new();
 
     for closure in closures {
         for package in &closure.closure {
@@ -850,7 +863,7 @@ fn collect_secondary_artifacts(
 
 fn push_secondary_artifact(
     artifacts: &mut Vec<SecondaryArtifactDownload>,
-    seen: &mut HashMap<String, usize>,
+    seen: &mut BTreeMap<String, usize>,
     registry_name: &str,
     store_path: &str,
     nar_hash: &str,
@@ -893,7 +906,7 @@ fn verify_secondary_artifact_downloads(
     let expected = artifacts
         .iter()
         .map(|artifact| (artifact.store_path.as_str(), artifact))
-        .collect::<HashMap<_, _>>();
+        .collect::<BTreeMap<_, _>>();
 
     for result in results {
         let Some(artifact) = expected.get(result.store_path.as_str()) else {
@@ -959,8 +972,8 @@ fn verify_package_provenance_entries_from_cache_inner<'a>(
     entries: impl IntoIterator<Item = (&'a str, &'a PackageMeta)>,
 ) -> Result<usize> {
     let mut verified = 0;
-    let mut transparency_logs = HashMap::<String, String>::new();
-    let mut trusted_keys = HashMap::<String, RegistryProvenanceTrust>::new();
+    let mut transparency_logs = BTreeMap::<String, String>::new();
+    let mut trusted_keys = BTreeMap::<String, RegistryProvenanceTrust>::new();
 
     for (registry_name, meta) in entries {
         let Some(provenance_ref) = meta.attestation.provenance.as_deref() else {
@@ -970,8 +983,8 @@ fn verify_package_provenance_entries_from_cache_inner<'a>(
         let (path, jsonl) =
             read_provenance_artifact(registry_cache_root, registry_name, provenance_ref)?;
         let registry_trusted_keys = match trusted_keys.entry(registry_name.to_string()) {
-            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
-            std::collections::hash_map::Entry::Vacant(entry) => entry.insert(
+            std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::btree_map::Entry::Vacant(entry) => entry.insert(
                 read_registry_provenance_trusted_keys(registry_cache_root, registry_name)?,
             ),
         };
@@ -983,8 +996,8 @@ fn verify_package_provenance_entries_from_cache_inner<'a>(
         )
         .with_context(|| format!("verifying provenance artifact {}", path.display()))?;
         let transparency_log = match transparency_logs.entry(registry_name.to_string()) {
-            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
-            std::collections::hash_map::Entry::Vacant(entry) => {
+            std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::btree_map::Entry::Vacant(entry) => {
                 let (_, log) = read_registry_cache_artifact(
                     registry_cache_root,
                     registry_name,
@@ -1217,7 +1230,7 @@ fn build_secondary_artifact_download_requests(
     let missing = missing_store_paths
         .iter()
         .map(String::as_str)
-        .collect::<HashSet<_>>();
+        .collect::<BTreeSet<_>>();
     let mut requests = Vec::new();
 
     for artifact in artifacts {
@@ -1243,7 +1256,7 @@ fn build_secondary_artifact_download_requests(
 
 /// Deduplicate download requests by store path while preserving first-seen order.
 fn dedupe_download_requests(requests: &mut Vec<DownloadRequest>) {
-    let mut seen = HashSet::new();
+    let mut seen = BTreeSet::new();
     requests.retain(|request| seen.insert(request.store_path.clone()));
 }
 
@@ -1356,7 +1369,7 @@ fn ensure_reinstall_targets_installed(
     packages: &[String],
     installed: &[InstalledPackageRecord],
 ) -> Result<()> {
-    let installed_names: HashSet<&str> = installed
+    let installed_names: BTreeSet<&str> = installed
         .iter()
         .filter_map(|meta| meta.apm.as_ref().map(|apm| apm.name.as_str()))
         .collect();
@@ -1397,7 +1410,7 @@ struct InstalledFlags {
 
 /// Index existing explicit/held flags by store-path hash, so an unchanged
 /// path keeps its flags when its metadata is rewritten.
-fn installed_flags_by_hash(installed: &[InstalledPackageRecord]) -> HashMap<&str, InstalledFlags> {
+fn installed_flags_by_hash(installed: &[InstalledPackageRecord]) -> BTreeMap<&str, InstalledFlags> {
     installed
         .iter()
         .filter_map(|meta| {
@@ -1415,8 +1428,8 @@ fn installed_flags_by_hash(installed: &[InstalledPackageRecord]) -> HashMap<&str
 
 /// Index existing explicit/held flags by package name, so a package whose
 /// store path changed (reinstall from another registry) still keeps them.
-fn installed_flags_by_name(installed: &[InstalledPackageRecord]) -> HashMap<&str, InstalledFlags> {
-    let mut flags: HashMap<&str, InstalledFlags> = HashMap::new();
+fn installed_flags_by_name(installed: &[InstalledPackageRecord]) -> BTreeMap<&str, InstalledFlags> {
+    let mut flags: BTreeMap<&str, InstalledFlags> = BTreeMap::new();
 
     for meta in installed {
         let Some(apm) = meta.apm.as_ref() else {
@@ -1459,11 +1472,11 @@ fn prune_dependency_members(closures: &mut [ResolvedClosure]) {
 /// that would normally be installed must already exist in the local store,
 /// otherwise installing only the roots would leave dangling references.
 async fn ensure_skipped_dependencies_present(closures: &[ResolvedClosure]) -> Result<()> {
-    let requested_hashes: HashSet<String> = closures
+    let requested_hashes: BTreeSet<String> = closures
         .iter()
         .map(|closure| store_path_hash(&closure.root.store_path).to_string())
         .collect();
-    let mut seen = HashSet::new();
+    let mut seen = BTreeSet::new();
     let mut skipped = Vec::new();
 
     for closure in closures {
@@ -1486,7 +1499,7 @@ async fn ensure_skipped_dependencies_present(closures: &[ResolvedClosure]) -> Re
         return Ok(());
     }
 
-    let missing_set: HashSet<&str> = missing.iter().map(|path| path.as_str()).collect();
+    let missing_set: BTreeSet<&str> = missing.iter().map(|path| path.as_str()).collect();
     let labels: Vec<String> = skipped
         .iter()
         .filter(|meta| missing_set.contains(meta.store_path.as_str()))
@@ -1503,11 +1516,11 @@ async fn ensure_skipped_dependencies_present(closures: &[ResolvedClosure]) -> Re
 /// binary cache reports for each root (which can be more current than the
 /// registry metadata) must also be present locally before import.
 async fn ensure_narinfo_references_present(resolved: &[ResolvedDownload]) -> Result<()> {
-    let requested_hashes: HashSet<String> = resolved
+    let requested_hashes: BTreeSet<String> = resolved
         .iter()
         .map(|item| narinfo::store_hash(&item.narinfo.store_path).to_string())
         .collect();
-    let mut seen = HashSet::new();
+    let mut seen = BTreeSet::new();
     let mut references = Vec::new();
 
     for item in resolved {
@@ -1549,10 +1562,10 @@ async fn ensure_narinfo_references_present(resolved: &[ResolvedDownload]) -> Res
 /// generation.
 async fn obsolete_installed_hashes_after_install(
     installed: &[InstalledPackageRecord],
-    explicit_names: &HashSet<&str>,
+    explicit_names: &BTreeSet<&str>,
     closures: &[ResolvedClosure],
-) -> Result<HashSet<String>> {
-    let mut needed = HashSet::new();
+) -> Result<BTreeSet<String>> {
+    let mut needed = BTreeSet::new();
     for closure in closures {
         for meta in &closure.closure {
             needed.insert(store_path_hash(&meta.store_path).to_string());
@@ -1585,8 +1598,8 @@ async fn obsolete_installed_hashes_after_install(
 
 fn hashes_for_installed_names(
     installed: &[InstalledPackageRecord],
-    names: &HashSet<&str>,
-) -> HashSet<String> {
+    names: &BTreeSet<&str>,
+) -> BTreeSet<String> {
     installed
         .iter()
         .filter_map(|meta| {
@@ -1600,9 +1613,9 @@ fn hashes_for_installed_names(
 
 fn obsolete_installed_hashes(
     installed: &[InstalledPackageRecord],
-    needed_hashes: &HashSet<String>,
-) -> HashSet<String> {
-    let mut hashes = HashSet::new();
+    needed_hashes: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let mut hashes = BTreeSet::new();
     for meta in installed {
         let Some(apm) = meta.apm.as_ref() else {
             continue;
@@ -1628,7 +1641,7 @@ fn obsolete_installed_hashes(
 pub(crate) fn copy_roots_except_hashes(
     from: &super::profile::Generation,
     to: &super::profile::Generation,
-    skip_hashes: &HashSet<String>,
+    skip_hashes: &BTreeSet<String>,
 ) -> Result<()> {
     use std::os::unix::fs::symlink;
 
@@ -1679,7 +1692,7 @@ pub fn copy_roots_for_upgrade(
 ) -> Result<()> {
     use std::os::unix::fs::symlink;
 
-    let skip_hashes: HashSet<&str> = to_upgrade
+    let skip_hashes: BTreeSet<&str> = to_upgrade
         .iter()
         .map(|c| c.old_store_hash.as_str())
         .collect();
@@ -1783,7 +1796,7 @@ fn print_summary(
     download_only: bool,
     printer: &Printer,
 ) {
-    let explicit_set: HashSet<&str> = explicit_names.iter().map(|s| s.as_str()).collect();
+    let explicit_set: BTreeSet<&str> = explicit_names.iter().map(|s| s.as_str()).collect();
 
     // Collect explicitly-requested packages.
     let mut new_packages: Vec<String> = Vec::new();
@@ -1833,7 +1846,7 @@ fn install_size_summary(resolved: &[ResolvedDownload], all_metas: &[&PackageMeta
         .map(format_size)
         .unwrap_or_else(|| "unknown".to_string());
     let package_size: u64 = all_metas.iter().map(|meta| meta.nar_size).sum();
-    let downloads: HashSet<&str> = resolved
+    let downloads: BTreeSet<&str> = resolved
         .iter()
         .map(|item| item.req.store_path.as_str())
         .collect();
@@ -1866,7 +1879,7 @@ fn build_download_requests(
     // Build a map of registry_name -> mirror chain (primary + fallbacks) for
     // quick lookup. The chain enables narinfo/NAR miss-fallthrough.
     let registries_base = config.scope.registries_path();
-    let mirror_map: std::collections::HashMap<String, Vec<String>> = closures
+    let mirror_map: std::collections::BTreeMap<String, Vec<String>> = closures
         .iter()
         .map(|c| {
             let reg_config = config
@@ -1885,8 +1898,8 @@ fn build_download_requests(
         .collect();
 
     // Build a map of store_path_hash -> registry_name for each closure member.
-    let mut hash_to_registry: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
+    let mut hash_to_registry: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
     for closure in closures {
         for meta in &closure.closure {
             let hash = store_path_hash(&meta.store_path).to_string();
@@ -2907,7 +2920,7 @@ source_nar_hash = ""
                 "/nix/store/dddddddddddddddddddddddddddddddd-kept-tool-1.0.0",
             ),
         ];
-        let needed = HashSet::from([
+        let needed = BTreeSet::from([
             "dddddddddddddddddddddddddddddddd".to_string(),
             "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".to_string(),
         ]);
@@ -2966,7 +2979,7 @@ source_nar_hash = ""
             path: to_path.clone(),
         };
 
-        copy_roots_except_hashes(&from_gen, &to_gen, &HashSet::new()).unwrap();
+        copy_roots_except_hashes(&from_gen, &to_gen, &BTreeSet::new()).unwrap();
 
         // Verify usr/ root was copied.
         let usr_link = to_path.join("usr/abc123");
@@ -3016,7 +3029,7 @@ source_nar_hash = ""
         };
 
         // Should succeed even when from has no usr/ or src/ dirs.
-        copy_roots_except_hashes(&from_gen, &to_gen, &HashSet::new()).unwrap();
+        copy_roots_except_hashes(&from_gen, &to_gen, &BTreeSet::new()).unwrap();
 
         // to should have empty usr/ and src/ dirs.
         assert!(to_path.join("usr").is_dir());
@@ -3049,7 +3062,7 @@ source_nar_hash = ""
             path: to_path.clone(),
         };
 
-        copy_roots_except_hashes(&from_gen, &to_gen, &HashSet::new()).unwrap();
+        copy_roots_except_hashes(&from_gen, &to_gen, &BTreeSet::new()).unwrap();
 
         // Existing symlink in "to" should NOT be overwritten.
         let target = std::fs::read_link(to_path.join("usr/abc123")).unwrap();
@@ -3091,7 +3104,7 @@ source_nar_hash = ""
             number: 2,
             path: to_path.clone(),
         };
-        let skip_hashes = HashSet::from(["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string()]);
+        let skip_hashes = BTreeSet::from(["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string()]);
 
         copy_roots_except_hashes(&from_gen, &to_gen, &skip_hashes).unwrap();
 

@@ -1,0 +1,55 @@
+{
+  "capture_sources_sha256": {
+    "tests/build/_bazel-aos-cli-cargo.nix": "f2a4a1373006a2ecb794952c8b8b5815cd35d6a54dc66a8838b021236fe0efac",
+    "tests/build/_bazel-cargo-oracle.nix": "f794693d4a2618163381c04f42a2515083abc795fd7397890ad01b925ea4356f",
+    "tools/bazel/tests/test_cargo_rustc_trace.py": "9d096dadb7c3b39917f57863609462cfcb330422c9d421e025102f0183e14c09",
+    "tools/bazel/tests/trace_cargo_rustc.py": "6d9107e9b9c888b2f2e8e9f437d11e4fce7afbe48b92bfa84bc4929f496c383a"
+  },
+  "cargo_source": "/nix/store/bjqgqnwq8d1m6amsha9p5955s75a9fl0-aos-workspace-src",
+  "configurations": {
+    "default": {
+      "bazel_tests": "/nix/store/fqf8jnjqhfzy0fbysd97gskjy4zpndsk-aos-bazel-aos-cli-tests-editor-checkpoint-tests-1",
+      "cargo": "/nix/store/0pb3f6i644h6kp72n07bpzznhv5xykzy-aos-bazel-aos-cli-cargo-1",
+      "cargo_messages_sha256": "e1750bfdc1d36632e50b5d13776e47add82d2999344af6bc0f5e68c24e0bc64b",
+      "cargo_tests_sha256": "9b617a06253408495d2d02c8f80d370783c1019450a55ee5b697c56b19f2bf19",
+      "compiler_invocations": 639,
+      "compiler_trace_sha256": "2c6a5a20f0b26cb6dfa18b8a07c7e683f37c0273526e48fdffc181d5b0fd7a81",
+      "executed_cases": 540,
+      "external_feature_units": 439,
+      "first_party_feature_units": 38,
+      "parity_sha256": "9f1205a03e952d36d53069b0aa7379eec6d6691e049b20d497325b14906f2d6c",
+      "test_targets": 30
+    },
+    "fleet": {
+      "bazel_tests": "/nix/store/pr4wr2qq2yipdpdgjn89ys455m7073k4-aos-bazel-aos-cli-fleet-tests-editor-checkpoint-tests-1",
+      "cargo": "/nix/store/xkxx05138riayxkg1d0glknkd75b7yyw-aos-bazel-aos-cli-fleet-cargo-1",
+      "cargo_messages_sha256": "6bd68fffb88802aa7c5ed8fad5941575a9e68947167bb4a4dcb9faf96034ba3d",
+      "cargo_tests_sha256": "81e7100eb65239f4f34f33731d420e329eec859ac7c9cd8c7e5912c8598b7cfd",
+      "compiler_invocations": 645,
+      "compiler_trace_sha256": "22ed085381df43a97342cc8e2be64bb9fd217e71f06b42ce9e1a085273eaccbe",
+      "executed_cases": 548,
+      "external_feature_units": 439,
+      "first_party_feature_units": 38,
+      "parity_sha256": "0c44b1763e77827ca8b8094f554d3f6596137e694fcca91d1ecc4e5f8694d112",
+      "test_targets": 33
+    }
+  },
+  "core_evaluation": {
+    "output": "/nix/store/1rhi589amw8vjz46zd34mvrgslpkgacn-aos-native-evaluation-checks-0",
+    "status": "PASS"
+  },
+  "limits": [
+    "These traces retain actual compiler arguments and a restricted Cargo environment; semantic compiler-option equivalence remains a separate required gate.",
+    "The temporary Cargo oracle keeps its development profile, including its ordinary incremental settings. It is not a production compiler-profile comparison.",
+    "Bazel tests used the explicitly mounted local disk action cache; this comparison does not establish uncached qualification.",
+    "Editor diagnostics, Clippy, performance acceptance, split outputs and production migration remain separate gates."
+  ],
+  "policy_tests": {
+    "cases": 4,
+    "command": "python3 -m unittest discover -s tools/bazel/tests -p test_cargo_rustc_trace.py",
+    "log_sha256": "e51fd004f727b72ed2ad74edc7fb688a70d3fad11e20fba5e96072fb43a05fee",
+    "status": "PASS"
+  },
+  "schema_version": 1,
+  "status": "PASS: transparent compiler capture and repeated CLI execution/feature parity"
+}

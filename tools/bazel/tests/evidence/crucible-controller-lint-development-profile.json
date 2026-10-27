@@ -1,0 +1,131 @@
+{
+  "application_compilation_validation": {
+    "compiled_test_artifacts": 185,
+    "output": "/nix/store/b9180qqhyb02rgp1vk3iv9iln5gzw6j2-aos-test-targets-0.1.0",
+    "receipt": "tools/bazel/tests/evidence/crucible-controller-audit-application-compilation.json",
+    "receipt_sha256": "33471e9e7bf8578ae34333ef5311a59cc270f91ffca2a031f0834c8d9d3fe171",
+    "status": "PASS"
+  },
+  "configurations": {
+    "debug": {
+      "cargo_profile": "debug",
+      "exec_rustc_flags": [
+        "-Copt-level=0",
+        "-Cdebuginfo=0",
+        "-Cdebug-assertions=yes",
+        "-Coverflow-checks=yes"
+      ],
+      "path": "/nix/store/s11p3zaa28pc3w67g4v0wkch6mnhhhg7-aos-bazel-configuration.json",
+      "rustc_flags": [
+        "-Copt-level=0",
+        "-Cdebuginfo=2",
+        "-Cdebug-assertions=yes",
+        "-Coverflow-checks=yes",
+        "-Cstrip=none",
+        "-Lnative=/nix/store/jmr87wqpiymkkmlqfy1hkv83mpfs6nvd-gcc-16.2.0-stage2/lib/gcc/x86_64-unknown-linux-gnu/16.2.0"
+      ],
+      "sha256": "62ad32ac598a9b49fb9c8d0801677310d79065d33d522697e5b719554cb0cd2f"
+    },
+    "release": {
+      "cargo_profile": "release",
+      "exec_rustc_flags": [
+        "-Copt-level=0",
+        "-Cdebuginfo=0",
+        "-Cdebug-assertions=no",
+        "-Coverflow-checks=no"
+      ],
+      "path": "/nix/store/ya4pnmsgj6m08kcf1gfwf4x9jy3vmj15-aos-bazel-configuration.json",
+      "rustc_flags": [
+        "-Copt-level=3",
+        "-Cdebuginfo=0",
+        "-Cdebug-assertions=no",
+        "-Coverflow-checks=no",
+        "-Cstrip=debuginfo",
+        "-Lnative=/nix/store/jmr87wqpiymkkmlqfy1hkv83mpfs6nvd-gcc-16.2.0-stage2/lib/gcc/x86_64-unknown-linux-gnu/16.2.0"
+      ],
+      "sha256": "c36f5c19fb3ea94a4ddad3825873f18bb0ab3c62d6cf23322d5ae547348d1f1c"
+    }
+  },
+  "core_evaluation": {
+    "output": "/nix/store/8wp43is6mcn2d8ln4lmd2gc38qwqg1j3-aos-native-evaluation-checks-0",
+    "status": "PASS"
+  },
+  "limits": [
+    "Historical harness and fixture receipts retain their original source bindings.",
+    "No unrelated pre-existing product or test failures are repaired by this change.",
+    "This receipt does not qualify production cutover or remaining RFC gates."
+  ],
+  "only_configuration_differences": [
+    "cargo_profile",
+    "exec_rustc_flags",
+    "rustc_flags"
+  ],
+  "pending_validation": [
+    "Complete controller package Clippy execution with this development-profile configuration"
+  ],
+  "prior_release_configuration": {
+    "only_other_changes": {
+      "repositories": [
+        "aos_architecture",
+        "aos_controller_features"
+      ]
+    },
+    "path": "/nix/store/124kqyg1xgjyl274an15kdvjfs7r8c4p-aos-bazel-configuration.json",
+    "profile_and_rustc_flags_unchanged": true,
+    "reason": "Controller source-audit repositories include the updated Nix builder as a runtime input.",
+    "sha256": "d88420255e0ea50ae3ddec0fb13fd7909920e78af49eec3190dd49f0deb49637"
+  },
+  "public_harness_parity": {
+    "accepted_ordered_override_controls": 1,
+    "actions": {
+      "conservative": {
+        "Rustc": {
+          "action_digest": null,
+          "cache_hit": false,
+          "fingerprint": "ebb2f78acb1ad8b2835ef6a4efb0ba03658fe378ee649858c8d30bb8ad382ec2",
+          "runner": "linux-sandbox"
+        },
+        "TestRunner": {
+          "action_digest": null,
+          "cache_hit": false,
+          "fingerprint": "38d1ebf2beb95b3df043e434918a1bf936c98bb3db799818caa0ee40ef10579b",
+          "runner": "linux-sandbox"
+        }
+      },
+      "strict": {
+        "Rustc": {
+          "action_digest": null,
+          "cache_hit": false,
+          "fingerprint": "ebb2f78acb1ad8b2835ef6a4efb0ba03658fe378ee649858c8d30bb8ad382ec2",
+          "runner": "linux-sandbox"
+        },
+        "TestRunner": {
+          "action_digest": null,
+          "cache_hit": false,
+          "fingerprint": "38d1ebf2beb95b3df043e434918a1bf936c98bb3db799818caa0ee40ef10579b",
+          "runner": "linux-sandbox"
+        }
+      }
+    },
+    "builder_runtime_sha256": "841364d9655a966395d12749a733dbfd5c86a58b4465a33cd92cc17c9d27a48d",
+    "cases_per_profile": 26,
+    "derivation": "/nix/store/2k98c81nknagxa8j2j2anzksfm78fv2p-aos-bazel-crucible-controller-harness-lint-parity.drv",
+    "evidence_sha256": "a6a20e75776db09ff3fd76a38fe13095652ed82e86fa6b356b8179630c93fa06",
+    "independent_cargo_oracle": "/nix/store/7as02arz01xjamq03lkdqf525v51dc43-aos-bazel-crucible-controller-harness-lint-cargo-oracle-1",
+    "output": "/nix/store/2fi8m2kmqllcx7r4gbnl9fi9hy5vqphv-aos-bazel-crucible-controller-harness-lint-parity",
+    "profiles": [
+      "strict",
+      "conservative"
+    ],
+    "rejected_controls": 35,
+    "runtime_data_count": 996,
+    "selected_source_count": 3760
+  },
+  "schema_version": 1,
+  "scope": "Bazel controller lint development-profile wiring and unchanged release-test profile; full Clippy execution is qualified separately.",
+  "source_sha256": {
+    "tests/build/_bazel-crucible-controller-tests.nix": "841364d9655a966395d12749a733dbfd5c86a58b4465a33cd92cc17c9d27a48d",
+    "tools/bazel/README.md": "ae823d9e92ddf67808dc0b9d9360c4129e31bec0847eb815b627690b7f11d02e"
+  },
+  "status": "PASS"
+}

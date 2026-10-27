@@ -22,6 +22,7 @@ use super::store_paths::{
 use aos_registry_client::config::ApmConfig;
 use aos_registry_client::registry::store;
 use aos_registry_format::consumer::validate_registry_name;
+use aos_release_format::inventory::DerivationPackage;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn publish_evaluated_package(
@@ -76,6 +77,20 @@ pub(super) async fn publish_evaluated_package(
         .publication
         .as_ref()
         .context("selected evaluated package lacks publication metadata")?;
+
+    // Preview the complete evaluated group before acquiring a mutation lock
+    // or resolving signing material. The inner payload preview alone cannot
+    // stop named outputs, native artifacts and the outer signed transaction.
+    if aos_registry_client::dry_run::active() {
+        return preview_evaluated_publication(
+            registry_name,
+            &platform,
+            &package,
+            &packages,
+            &store,
+            printer,
+        );
+    }
 
     let signing_key =
         resolve_producer_signing_key(config, registry_dir, registry_name, key, key_id)?;
@@ -143,7 +158,7 @@ pub(super) async fn publish_evaluated_package(
                 )?;
             }
 
-            publish_native_artifacts(registry_dir, &package, &platform, &store, &internal_printer)?;
+            publish_native_artifacts(registry_dir, package, &platform, &store, &internal_printer)?;
             for output in &package.outputs {
                 super::output_evidence::publish_output_evidence(
                     registry_dir,
@@ -216,6 +231,63 @@ pub(super) async fn publish_evaluated_package(
             ""
         }
     ));
+    Ok(())
+}
+
+/// Validates realized payloads and reports their evaluated publication plan.
+///
+/// Native companion derivations remain part of the plan; a preview does not
+/// build them, materialize NARs, sign evidence, or change the authoring clone.
+fn preview_evaluated_publication(
+    registry_name: &str,
+    platform: &str,
+    selected: &DerivationPackage,
+    packages: &[DerivationPackage],
+    store: &StoreQueries,
+    printer: &Printer,
+) -> Result<()> {
+    for package in packages {
+        store
+            .introspect(&package.derivation)
+            .with_context(|| format!("introspecting source derivation {}", package.derivation))?;
+        for output in &package.outputs {
+            let info = store.introspect(&output.store_path)?;
+            validate_store_path_release_policy(store, &info)?;
+        }
+    }
+
+    let publication = selected
+        .publication
+        .as_ref()
+        .context("selected evaluated package lacks publication metadata")?;
+    if printer.json_if_active(&serde_json::json!({
+        "action": "publish",
+        "authority": "evaluated-derivation-inventory",
+        "registry": registry_name,
+        "package": selected.name,
+        "version": publication.version,
+        "platform": platform,
+        "packages": packages,
+        "dry_run": true,
+        "committed": false,
+    })) {
+        return Ok(());
+    }
+
+    for package in packages {
+        let publication = package
+            .publication
+            .as_ref()
+            .context("subpackage lacks evaluated publication metadata")?;
+        printer.info(&format!(
+            "Would publish {} {} ({platform}) to registry '{registry_name}'",
+            package.name, publication.version,
+        ));
+        for output in &package.outputs {
+            printer.kv(&format!("Output {}", output.name), &output.store_path);
+        }
+    }
+    printer.info("Dry run: nothing was written, signed, or committed.");
     Ok(())
 }
 

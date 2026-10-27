@@ -1,0 +1,28 @@
+{
+  "command": "nix-build -A checks.rust.aos-test-targets --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "comparison_base_commit": "a1017ad0bf",
+  "compiled_changed_rust_inputs_sha256": {
+    "crates/aos/release/aos-image-finalizer/src/assembly.rs": "375aba541a03533484f87c55ef26babdb5a65d2fdb5e210b6084bfadc9111597",
+    "crates/aos/release/aos-image-finalizer/src/capabilities.rs": "d3f5df7b6741ee026050b031926ddb357249e978a1ef236caee2e9b01be8a880",
+    "crates/aos/release/aos-image-finalizer/src/capture.rs": "f9c68305378d5ef10454a4582f36c0f860c41090c1854d65fb829ea9b8bd425c",
+    "crates/aos/release/aos-image-finalizer/src/finalize.rs": "3cc253e73587aee8b62cbb957aaf80ea79dbf1018d32bf0dcc6b33ad5172a8a1",
+    "crates/aos/release/aos-image-finalizer/src/metadata.rs": "8ce2c1d47836435cf3dd75bf6974f1fe7e8b45054b7ed195f637ed92fa9b31d1",
+    "crates/aos/release/aos-image-finalizer/src/pcr.rs": "8d034bb8fac4b0be6577d062ae5a53e2f19d2e0c1a8f1d56e4c892626ab07a94",
+    "crates/aos/release/aos-image-finalizer/src/pipeline.rs": "52c1078832cc69a90c1510ee3c9455dd2b53c196f9cb9cfd3f995ea9f100bc03",
+    "crates/aos/release/aos-image-finalizer/src/uki.rs": "685aec62a33863510fb9017e88ee7f4a11802316850cc8b62a02abe040b7a526",
+    "crates/aos/release/aos-package-maintenance/src/remote.rs": "a957448db03db5aaadc75e3e1f8555d2da1ddf5b832115b655d9cc9e79e68464",
+    "crates/aos/release/aos-release-signer/src/config.rs": "bf86118ad1e2538200b83c1b05d5446839df699d97cb727919a5201c8ef1bbae"
+  },
+  "derivation": "/nix/store/j7slpbghq3k7jvn290xzk353q17zvdv2-aos-test-targets-0.1.0.drv",
+  "derivation_sha256": "48505c4b6f650caed61d739fd0abb406988a99b17be42d34c6b284841cc0dc97",
+  "implementation_commit": "d85c2cd307",
+  "limits": [
+    "This gate compiles application unit and integration targets without executing them. Native Bazel/Cargo execution is retained separately.",
+    "This frozen source contains all ten release preparation Rust inputs changed by the conversion, including the separate native assembly helper move and final Clippy fixes. Later registry conversion changes are not qualified by this checkpoint."
+  ],
+  "log_sha256": "fa3adc484f9d43ae97829c3924fb1b4513e2aa705770ac4e6be73647a556a128",
+  "output": "/nix/store/84fj02wq7zckpwgksjbdgnk34j08i5jm-aos-test-targets-0.1.0",
+  "schema_version": 1,
+  "source": "/nix/store/22nnfc7iccdw3cy6bmig0hfwrrnnrqmv-aos-workspace-src",
+  "status": "Required workspace Rust application unit and integration targets compiled successfully"
+}

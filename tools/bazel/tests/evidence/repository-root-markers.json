@@ -1,0 +1,85 @@
+{
+  "bazel": {
+    "cli": "/nix/store/1iqlk02iy1fcaskch45nv210clgacp8n-aos-bazel-root-marker-cli-1",
+    "hub": "/nix/store/cxzp77kq1rw3nsvngzbziyjbwc7vskmk-aos-bazel-root-marker-hub-formatted-1"
+  },
+  "cargo": {
+    "cli": "/nix/store/82hs5f21gjhry9dnjjzhrhk3n24bnlp6-aos-bazel-root-marker-cli-cargo-1",
+    "hub": "/nix/store/l2l2q4la7chvr6w6q6sambp3v7107rvz-aos-bazel-hub-model-cargo-oracle-1"
+  },
+  "executed_cases": 33,
+  "limits": [
+    "The complete-checkout release-format Nix inventory test remains ignored and is not runtime-qualified by this evidence.",
+    "The Hub Cargo baseline precedes an import-order-only formatting repair; the final Bazel run executes all 22 cases after that repair.",
+    "These selected tests do not qualify a production migration or replace dedicated service, VM, and release gates."
+  ],
+  "repository_markers": [
+    "MODULE.bazel",
+    "default.nix"
+  ],
+  "required_rust_test_targets": "/nix/store/90bs8riii1q9imazwpkm52x0zlsqhjri-aos-test-targets-0.1.0",
+  "schema_version": 1,
+  "scope": "Three executed integration targets; exact Cargo/Bazel case discovery and result parity.",
+  "shared_cache_mounts": [
+    "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel/rfc-722-hub-service-iteration"
+  ],
+  "source_sha256": {
+    "crates/aos/cli/aos-cli/tests/hub_topology_cutover.rs": "0c119d57305036e4d847875acadb8e234b1a8ef670804f807253a0e9f313a67a",
+    "crates/aos/cli/aos-cli/tests/release_inventory_nix_boundary.rs": "40faf5c37a69c2c559501a96187a6b6744487667bff46026d349bc980df256a9",
+    "crates/aos/release/aos-release-format/tests/nix_inventory.rs": "6ba14214b5c33891ef63a274169647818f9e558868c1eaab3dd965ad6d8ecfc1",
+    "crates/hub/aos-hub-model/tests/retained_control_foundation.rs": "6211e8308b3935b29c02a21e4abe3aa29effa4cf6d23954105de5dcc84313fad",
+    "pkgs/build-support/_bazel/cli-test-sources.nix": "efd92323a0a9af80cde285155c50b470763f5d3ea5147986562995235edeb80f",
+    "pkgs/build-support/_bazel/repository-test-sources.nix": "58840acac48920656f8d4f861159cc9787c2658d902593e7261f7ff19b8f02a1",
+    "pkgs/tools/aos/_workspace-source.nix": "2b81dc417ca771017c9381ccd0fae06a6db11fa7a1effae9f65afe757394222f"
+  },
+  "targets": {
+    "//crates/aos/cli/aos-cli:hub_topology_cutover": {
+      "executed": [
+        "assembles_signs_and_verifies_closed_bundle",
+        "command_boundaries_emit_closed_external_failure_codes",
+        "generation_preflight_rejects_any_preseeded_generated_leaf",
+        "pin_resolution_controller_is_fail_closed_and_typed",
+        "project_mutations_are_plan_apply_only",
+        "registry_mutations_are_plan_apply_only",
+        "rejects_hardlinked_and_symlinked_inputs",
+        "rejects_root_key_reused_as_document_authority",
+        "topology_api_has_no_legacy_endpoint_update_surface",
+        "webhook_mutations_are_plan_apply_and_plaintext_secret_free"
+      ],
+      "ignored": []
+    },
+    "//crates/aos/cli/aos-cli:release_inventory_nix_boundary": {
+      "executed": [
+        "semantic_nix_input_crosses_the_rust_inventory_boundary"
+      ],
+      "ignored": []
+    },
+    "//crates/hub/aos-hub-model:retained_control_foundation": {
+      "executed": [
+        "classifier::tests::data_plane_writes_use_an_exact_method_allowlist",
+        "classifier::tests::delivery_resume_cannot_accept_new_intent_or_widen_the_lifecycle_exception",
+        "classifier::tests::descriptor_contract_allows_only_the_declared_reviewed_apply_cas_exceptions",
+        "classifier::tests::descriptor_contract_rejects_mutable_apply_request_fields",
+        "classifier::tests::descriptor_coverage_fails_for_missing_extra_and_duplicate_methods",
+        "classifier::tests::gc_run_cancellation_binds_only_the_exact_reviewed_run",
+        "classifier::tests::hard_cut_matching_inspects_sql_and_config_strings_but_not_comments",
+        "classifier::tests::hard_cut_matching_is_structural_and_inspects_runtime_strings",
+        "classifier::tests::nix_identifiers_accept_trailing_apostrophes",
+        "classifier::tests::nix_indented_strings_preserve_escaped_interpolation",
+        "classifier::tests::nix_strings_allow_quoted_values_inside_interpolation",
+        "classifier::tests::production_scan_excludes_cfg_test_items",
+        "classifier::tests::public_controller_and_unpaired_mutation_fail_closed",
+        "classifier::tests::reviewed_pairs_and_explicit_exceptions_validate",
+        "hard_cut_fixture_is_valid_and_covers_every_surface_category",
+        "hard_cut_fixture_scans_the_complete_production_source_universe",
+        "primitives::tests::actor_deserialization_revalidates_and_denies_unknown_fields",
+        "primitives::tests::actor_kind_controls_principal_id_presence",
+        "primitives::tests::canonical_digest_is_independent_of_object_key_order",
+        "primitives::tests::head_advance_requires_identity_version_generation_and_digest",
+        "primitives::tests::stable_ids_are_single_segment_and_route_safe",
+        "retained_method_classifier_fixture_is_structurally_valid"
+      ],
+      "ignored": []
+    }
+  }
+}

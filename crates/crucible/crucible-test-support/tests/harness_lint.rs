@@ -3,6 +3,9 @@
 #[path = "support/workspace.rs"]
 mod workspace;
 
+#[path = "support/architecture.rs"]
+mod architecture;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fs;
@@ -19,6 +22,8 @@ mod clippy;
 mod common;
 #[path = "support/harness_lint/confinement.rs"]
 mod confinement;
+#[path = "support/harness_lint/declared.rs"]
+mod declared;
 #[path = "support/harness_lint/error_logging.rs"]
 mod error_logging;
 #[path = "support/harness_lint/lex.rs"]
@@ -41,6 +46,21 @@ use lex::*;
 use reference_integrity::*;
 use scan::*;
 use source_sections::*;
+
+/// Resolves package ownership through the selected backend.
+///
+/// # Errors
+///
+/// Returns an error for missing ownership or an invalid source root.
+fn package_directory(root: &Path, package: &str) -> Result<PathBuf, Box<dyn Error>> {
+    if let Some(declared) = declared::load()? {
+        let repo = root
+            .parent()
+            .ok_or("declared workspace has no repository parent")?;
+        return Ok(repo.join(declared.directory(package)?));
+    }
+    Ok(workspace::package_directory(root, package)?)
+}
 
 #[test]
 fn gate_evidence_references_are_integral() -> Result<(), Box<dyn Error>> {
@@ -159,7 +179,7 @@ fn terminal_outcome_rules_distinguish_patterns_from_construction() {
 fn reduction_path_sources_have_no_banned_nondeterminism() -> Result<(), Box<dyn Error>> {
     let mut findings = Vec::new();
     for package in REDUCTION_PATH_PACKAGES {
-        let src_dir = workspace::package_path(&workspace_root(), package).join("src");
+        let src_dir = package_directory(&workspace_root(), package)?.join("src");
         for source in rust_sources(&src_dir)? {
             let content = fs::read_to_string(&source)?;
             findings.extend(scan_content(&source, &content));
@@ -180,8 +200,12 @@ fn host_boundary_nondeterminism_is_confined_from_state() -> Result<(), Box<dyn E
     let root = workspace_root();
     let repo = repo_root();
     let baseline = HarnessLintBaseline::load(&repo)?;
-    let workspace_manifest: Value = fs::read_to_string(root.join("Cargo.toml"))?.parse()?;
-    let workspace_dependencies = workspace_dependency_table(&workspace_manifest);
+    let workspace_dependencies = if declared::load()?.is_some() {
+        toml::map::Map::new()
+    } else {
+        let workspace_manifest: Value = fs::read_to_string(root.join("Cargo.toml"))?.parse()?;
+        workspace_dependency_table(&workspace_manifest)
+    };
     let findings = baseline.filter_findings(
         "confinement",
         &repo,
@@ -205,17 +229,31 @@ fn production_sources_follow_error_and_logging_conventions() -> Result<(), Box<d
     let baseline = HarnessLintBaseline::load(&repo)?;
 
     for spec in crate_spec_index() {
-        let package_dir = workspace::package_directory(&root, spec.package)?;
-        let manifest = fs::read_to_string(package_dir.join("Cargo.toml"))?;
+        let package_dir = package_directory(&root, spec.package)?;
         let is_library = spec.package != BINARY_BOUNDARY_PACKAGE;
-        let mut has_typed_error =
-            !is_library || manifest_declares_dependency(&manifest, "thiserror");
-
-        findings.extend(manifest_error_dependency_failures(
-            spec.package,
-            &manifest,
-            is_library,
-        ));
+        let mut has_typed_error = !is_library;
+        if let Some(declared) = declared::load()? {
+            let dependencies = declared.dependencies(spec.package)?;
+            has_typed_error |= dependencies.contains("thiserror");
+            if is_library {
+                for erased in ["anyhow", "eyre", "miette"] {
+                    if dependencies.contains(erased) {
+                        findings.push(format!(
+                            "{}/BUILD.bazel:1: banned erased error dependency `{erased}` in library crate",
+                            spec.package
+                        ));
+                    }
+                }
+            }
+        } else {
+            let manifest = fs::read_to_string(package_dir.join("Cargo.toml"))?;
+            has_typed_error |= manifest_declares_dependency(&manifest, "thiserror");
+            findings.extend(manifest_error_dependency_failures(
+                spec.package,
+                &manifest,
+                is_library,
+            ));
+        }
 
         for source in rust_sources(&package_dir.join("src"))? {
             if is_test_only_source(&package_dir, &source) {
@@ -253,15 +291,23 @@ fn production_sources_follow_error_and_logging_conventions() -> Result<(), Box<d
 fn clippy_tier_is_checked_in_and_wired() -> Result<(), Box<dyn Error>> {
     let root = workspace_root();
     let repo = repo_root();
+    if let Some(declared) = declared::load()? {
+        let findings = declared.clippy_findings(&repo)?;
+        assert!(
+            findings.is_empty(),
+            "gate:harness-lint clippy tier findings:\n{}",
+            findings.join("\n")
+        );
+        return Ok(());
+    }
     let workspace_manifest = fs::read_to_string(root.join("Cargo.toml"))?;
     let clippy_config = fs::read_to_string(root.join("clippy.toml"))?;
     let crucible_package = fs::read_to_string(repo.join("pkgs/tools/crucible/crucible.nix"))?;
     let mut package_manifests = Vec::new();
 
     for spec in crate_spec_index() {
-        let manifest = fs::read_to_string(
-            workspace::package_directory(&root, spec.package)?.join("Cargo.toml"),
-        )?;
+        let manifest =
+            fs::read_to_string(package_directory(&root, spec.package)?.join("Cargo.toml"))?;
         package_manifests.push((spec.package, manifest));
     }
 
@@ -287,7 +333,7 @@ fn custom_static_analysis_tier_runs_over_crucible_sources() -> Result<(), Box<dy
     let mut findings = Vec::new();
 
     for spec in crate_spec_index() {
-        let package_dir = workspace::package_directory(&root, spec.package)?;
+        let package_dir = package_directory(&root, spec.package)?;
         for source in rust_sources(&package_dir.join("src"))? {
             let content = fs::read_to_string(&source)?;
             findings.extend(custom_static_analysis_failures(&source, &content));
@@ -309,7 +355,7 @@ fn allow_annotations_are_checked_for_all_crucible_targets() -> Result<(), Box<dy
     let mut findings = Vec::new();
 
     for spec in crate_spec_index() {
-        let package_dir = workspace::package_directory(&root, spec.package)?;
+        let package_dir = package_directory(&root, spec.package)?;
         for source in rust_sources(&package_dir)? {
             let content = fs::read_to_string(&source)?;
             findings.extend(allow_annotation_failures(&source, &content));

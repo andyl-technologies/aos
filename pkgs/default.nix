@@ -1827,6 +1827,11 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     then package.overrideAttrs (previous: {runtimeDeps = previous.runtimeDeps ++ [self.bzip2];})
     else package;
 
+  bazelSupport = import ./build-support/_bazel {
+    inherit lib sharedBazelCacheDir;
+    pkgs = self;
+  };
+
   self =
     {
       inherit sharedImageCacheDir;
@@ -1836,6 +1841,63 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       inherit maintenanceInventory;
       inherit platformSupport targetPackageNamesFor targetPackagesFor;
       inherit mkAccacheEnvironment;
+      inherit (bazelSupport) mkAosBazelToolchains mkAosBazelCrossToolchains aosBazelModules aosBazelToolchains;
+      inherit (bazelSupport) mkAosBazelWorkspace mkAosBazelBuild;
+      inherit (bazelSupport) mkAosBazelPackage mkAosBazelCheck;
+      inherit (bazelSupport) mkAosBazelNativeLibraries;
+      inherit (bazelSupport) aosBazelStoreLibraries aosBazelNativeFoundationLibraries aosBazelHubServiceLibraries mkAosBazelStaticLibraries;
+      inherit (bazelSupport) aosBazelGuestLibraries;
+      inherit (bazelSupport) aosBazelWorkspace mkAosBazelShell aosBazelLauncher;
+      inherit (bazelSupport) aosBazelArchitecture;
+      inherit (bazelSupport) aosBazelGuestWorkspace aosBazelGuestLauncher aosBazelGuestEditorWorkspace aosBazelGuestEditorLauncher;
+      inherit (bazelSupport) aosBazelEngineWorkspace aosBazelEngineLauncher;
+      inherit (bazelSupport) aosBazelQuotaWorkspace aosBazelQuotaLauncher aosBazelQuotaEditorWorkspace aosBazelQuotaEditorLauncher;
+      inherit (bazelSupport) aosBazelSessionWorkspace aosBazelSessionLauncher;
+      inherit (bazelSupport) aosBazelControlWorkspace aosBazelControlLauncher;
+      inherit (bazelSupport) aosBazelQemuHostWorkspace aosBazelQemuHostLauncher;
+      inherit (bazelSupport) aosBazelStoreS3Workspace aosBazelStoreS3Launcher;
+      inherit (bazelSupport) aosBazelDaemonWorkspace aosBazelDaemonLauncher;
+      inherit (bazelSupport) aosBazelFormatsWorkspace aosBazelFormatsLauncher;
+      inherit (bazelSupport) aosBazelContractsWorkspace aosBazelContractsLauncher;
+      inherit (bazelSupport) aosBazelNativeFoundationWorkspace aosBazelNativeFoundationLauncher;
+      inherit (bazelSupport) aosBazelActivationCoreWorkspace aosBazelActivationCoreLauncher;
+      inherit (bazelSupport) aosBazelActivationStorageWorkspace aosBazelActivationStorageLauncher;
+      inherit (bazelSupport) aosBazelRepositoryTestSources;
+      inherit (bazelSupport) aosBazelHubConsoleWorkspace aosBazelHubConsoleLauncher;
+      inherit (bazelSupport) aosBazelHubConsoleWasmWorkspace aosBazelHubConsoleWasmLauncher;
+      inherit (bazelSupport) aosBazelAccacheWorkspace aosBazelAccacheLauncher aosBazelAccacheEditorWorkspace aosBazelAccacheEditorLauncher;
+      inherit (bazelSupport) aosBazelRegistryWebWorkspace aosBazelRegistryWebLauncher;
+      inherit (bazelSupport) aosBazelRegistryWebWasmWorkspace aosBazelRegistryWebWasmLauncher;
+      inherit (bazelSupport) aosBazelHubWorkerWorkspace aosBazelHubWorkerLauncher;
+      inherit (bazelSupport) aosBazelHubWorkerAllFeaturesWorkspace aosBazelHubWorkerAllFeaturesLauncher;
+      inherit (bazelSupport) aosBazelHubWorkerWasmWorkspace aosBazelHubWorkerWasmLauncher;
+      inherit (bazelSupport) aosBazelHubWorkerWasmDoE2eWorkspace aosBazelHubWorkerWasmDoE2eLauncher;
+      inherit (bazelSupport) aosBazelHubWorkerWasmAllFeaturesWorkspace aosBazelHubWorkerWasmAllFeaturesLauncher;
+      inherit (bazelSupport) aosBazelHubNativeWorkspace aosBazelHubNativeLauncher;
+      inherit (bazelSupport) aosBazelHubServiceWorkspace aosBazelHubServiceLauncher;
+      inherit (bazelSupport) aosBazelHubServiceAllFeaturesWorkspace aosBazelHubServiceAllFeaturesLauncher;
+      inherit (bazelSupport) aosBazelHubDbWorkspace aosBazelHubDbLauncher;
+      inherit (bazelSupport) aosBazelHubDbAllFeaturesWorkspace aosBazelHubDbAllFeaturesLauncher;
+      inherit (bazelSupport) aosBazelPackageManagerWorkspace aosBazelPackageManagerLauncher;
+      inherit (bazelSupport) aosBazelBootTools aosBazelBootPreparationWorkspace aosBazelBootPreparationLauncher;
+      inherit (bazelSupport) aosBazelReleaseCoordinationWorkspace aosBazelReleaseCoordinationLauncher;
+      inherit (bazelSupport) aosBazelRegistryNativeWorkspace aosBazelRegistryNativeLauncher;
+      inherit (bazelSupport) aosBazelReleasePreparationWorkspace aosBazelReleasePreparationLauncher;
+      inherit (bazelSupport) aosBazelHubClientWorkspace aosBazelHubClientLauncher;
+      inherit (bazelSupport) aosBazelHubModelWorkspace aosBazelHubModelLauncher;
+      inherit (bazelSupport) aosBazelHubPortableWorkspace aosBazelHubPortableLauncher;
+      inherit (bazelSupport) aosBazelRegistryTestTools;
+      inherit (bazelSupport) aosBazelDeploymentWorkspace aosBazelDeploymentLauncher aosBazelNixTestTools;
+      inherit (bazelSupport) aosBazelBuildServicesWorkspace aosBazelBuildServicesLauncher;
+      inherit (bazelSupport) aosBazelCliSupportWorkspace aosBazelCliSupportLauncher;
+      inherit (bazelSupport) aosBazelActivationCrucibleWorkspace aosBazelActivationCrucibleLauncher aosBazelActivationCrucibleEditorWorkspace aosBazelActivationCrucibleEditorLauncher;
+      inherit (bazelSupport) aosBazelActivationSystemdWorkspace aosBazelActivationSystemdLauncher;
+      inherit (bazelSupport) aosBazelCrucibleCliRuntime aosBazelCrucibleCliWorkspace aosBazelCrucibleCliLauncher;
+      inherit (bazelSupport) aosBazelDependencyGenerator aosBazelDependencyUpdater aosBazelCodegenTools aosBazelConfigurationTools;
+      inherit (bazelSupport) aosBazelQemuPluginAbi;
+      inherit (bazelSupport) aosBazelWasmTools aosBazelWorkerTools aosBazelConsoleAssets;
+      inherit (bazelSupport) aosBazelBpfTools aosBazelBpfLibraries;
+      inherit (bazelSupport) aosBazelRepositories aosBazelRustRepositories;
       inherit mkCargoPackage mkAosCargoPackage mkCargoArtifacts mkCargoNextestCheck mkGoPackage mkBazelPackage;
       inherit mkOciTools ociTools mkOciMultiPlatformContainer mkOciPackageEvidence;
       # Downstream flakes use the same package argument resolution as discovery.
@@ -2141,6 +2203,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         controllerOnly = true;
       };
       sqliteStatic = callPackage ./db/sqlite.nix {enableStatic = true;};
+      zstdStaticMultithread = callPackage ./compression/zstd.nix {enableStaticMultithread = true;};
 
       # Interpreter-free git for the system image (shares git.nix's source and
       # version). Used by apm/apr's runtimeTools and the server profile so the

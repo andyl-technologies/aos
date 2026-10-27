@@ -111,6 +111,10 @@ pub(super) fn record_output_facts(
 /// # Errors
 /// Rejects missing native companions, unavailable NARs, untrusted signers,
 /// conflicting output identities, and failed statement or catalog writes.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keep existing publication transaction inputs explicit without changing their API"
+)]
 pub(crate) async fn publish_output_evidence(
     directory: &Path,
     registry: &str,

@@ -23,6 +23,11 @@
 //! The HTTP/SSE surface for these events lives in [`crate::routes`]; the
 //! ConnectRPC surface is in [`crate::services`].
 
+#![allow(
+    clippy::disallowed_types,
+    reason = "Host build handles and per-view semaphores retain their existing synchronized lookup maps outside Crucible replay state."
+)]
+
 use std::collections::{HashMap, VecDeque};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -159,6 +164,10 @@ impl BuildEvent {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::items_after_test_module,
+    reason = "Parser tests stay adjacent to the log helpers before the host build manager."
+)]
 mod tests {
     use super::*;
 
@@ -470,6 +479,12 @@ pub struct BuildManager {
     active_count: AtomicU64,
 }
 
+impl Default for BuildManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BuildManager {
     /// Creates an empty manager with no active builds.
     pub fn new() -> Self {
@@ -592,6 +607,10 @@ impl BuildManager {
 /// crash-recovery [`BuildState`], notifying `handle.done`, and scheduling
 /// removal of the handle. If the server is draining and this was the last
 /// in-flight build, drain completion is signalled.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Host build progress reports elapsed process time outside Crucible replay state."
+)]
 async fn run_build(
     mgr: &Arc<BuildManager>,
     state: &Arc<AppState>,

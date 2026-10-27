@@ -7,7 +7,6 @@
 
 use js_sys::Promise;
 use wasm_bindgen::prelude::*;
-use wasm_bindgen::JsCast as _;
 use wasm_bindgen_futures::JsFuture;
 use worker_sys::DurableObjectStorage;
 

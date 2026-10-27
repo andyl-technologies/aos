@@ -1659,6 +1659,10 @@ fn cache_inventory_path(slug: &str) -> String {
     }
 }
 
+#[allow(
+    clippy::float_arithmetic,
+    reason = "Browser display units round byte counts for presentation without changing stored quantities."
+)]
 fn format_bytes(bytes: u64) -> String {
     const UNITS: &[&str] = &["B", "KiB", "MiB", "GiB", "TiB"];
     let mut value = bytes as f64;

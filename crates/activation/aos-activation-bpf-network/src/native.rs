@@ -44,6 +44,10 @@ impl Executable {
         &self.path
     }
 
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "Native loader subprocesses require a host monotonic deadline."
+    )]
     pub(super) fn run(&self, arguments: &[&str], remaining_millis: u64) -> Result<Output> {
         ensure!(remaining_millis > 0, "BPF network loader deadline expired");
         let mut child = Command::new(self.path())

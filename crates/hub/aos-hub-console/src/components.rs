@@ -12,6 +12,10 @@ use aos_hub_ui::HashPresentation;
 /// Formats a Unix timestamp in seconds as an explicit UTC date and time.
 ///
 /// Missing or invalid timestamps use the supplied empty-state label.
+#[allow(
+    clippy::float_arithmetic,
+    reason = "Browser date rendering converts Unix seconds to the JavaScript millisecond representation."
+)]
 pub fn format_timestamp(value: i64, missing: &str) -> String {
     if value <= 0 {
         return missing.to_string();

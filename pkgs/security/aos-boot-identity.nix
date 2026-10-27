@@ -9,6 +9,8 @@
   rust,
   util-linux,
   stdenv,
+  callPackage,
+  buildDriver ? "rustc",
 }: let
   source = ../../crates/boot/aos-boot-identity;
 
@@ -22,8 +24,10 @@
     if stdenv.isCross
     then "${buildRust}/bin/rustc --target ${stdenv.hostPlatform.config} -C linker=${stdenv.cc}/bin/cc"
     else "rustc";
-in
-  mkDerivation {
+
+  withBuildDriver = selected: callPackage ./aos-boot-identity.nix {buildDriver = selected;};
+
+  rustcPackage = mkDerivation {
     platformSupport = {
       build = [
         {
@@ -140,4 +144,13 @@ in
       description = "Validate the AOS normal-boot identity tuple";
       license = "Apache-2.0";
     };
-  }
+    passthru = {
+      inherit withBuildDriver;
+      buildDriver = "rustc";
+    };
+  };
+in
+  assert builtins.elem buildDriver ["rustc" "bazel"];
+    if buildDriver == "bazel"
+    then callPackage ./_aos-boot-identity-bazel.nix {inherit rustcPackage;}
+    else rustcPackage

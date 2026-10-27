@@ -599,6 +599,7 @@ fn validate_decision(decision: &InventoryDecision) -> Result<()> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
 

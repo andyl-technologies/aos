@@ -1,0 +1,1221 @@
+{
+  "all_selected_source_bytes_match_checkout": true,
+  "cargo_profiles": {
+    "crucible_guest:crucible/crucible-guest/src/lib.rs": {
+      "embed-bitcode": "no",
+      "extra-filename": "-bff7f939a154998b",
+      "opt-level": "3",
+      "relocation-model": "static",
+      "strip": "debuginfo"
+    },
+    "crucible_guest:crucible/crucible-guest/src/main.rs": {
+      "embed-bitcode": "no",
+      "extra-filename": "-e2bced26953dc681",
+      "opt-level": "3",
+      "relocation-model": "static",
+      "strip": "debuginfo"
+    },
+    "curve25519_dalek_derive": {
+      "debug-assertions": "off",
+      "embed-bitcode": "no",
+      "extra-filename": "-53278520882c9672",
+      "strip": "debuginfo"
+    },
+    "gate_abi_conformance": {
+      "embed-bitcode": "no",
+      "extra-filename": "-a2581768c427c799",
+      "opt-level": "3",
+      "relocation-model": "static",
+      "strip": "debuginfo"
+    },
+    "gate_single_vm_fingerprint": {
+      "embed-bitcode": "no",
+      "extra-filename": "-b2aa2ea67fa22d55",
+      "opt-level": "3",
+      "relocation-model": "static",
+      "strip": "debuginfo"
+    },
+    "serde_derive": {
+      "debug-assertions": "off",
+      "embed-bitcode": "no",
+      "extra-filename": "-0151f1d4b3f76413",
+      "strip": "debuginfo"
+    },
+    "thiserror_impl": {
+      "debug-assertions": "off",
+      "embed-bitcode": "no",
+      "extra-filename": "-a36f5f0d1e113a22",
+      "strip": "debuginfo"
+    }
+  },
+  "cargo_trace_sha256": "5510599b01015a78222c74b73cbb40d40d511f00e2c9ca0d625fa71d7906d036",
+  "checkout_parent": "5b86ef8a1ea7275eb815f16ccf400986c4e8bef6",
+  "closure": {
+    "closure": [
+      {
+        "closureSize": 19921112,
+        "narHash": "sha256:0m2xdk54j7vnd7frv3msrr40qwxwsya552r00snv1byqz37za4fm",
+        "narSize": 19921112,
+        "path": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+        "references": [
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39"
+        ],
+        "valid": true
+      },
+      {
+        "closureSize": 21961904,
+        "narHash": "sha256:0bzvjx0jyjcfhp3pzis0mriji81x7m1z41c28w9scw7dc5chilmz",
+        "narSize": 2040792,
+        "path": "/nix/store/i5gk169yfx4ar628lxqkbaq8lg6l0svi-crucible-guest-0.1.0",
+        "references": [
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39"
+        ],
+        "valid": true
+      }
+    ],
+    "glibc_data_reference": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+    "references": [
+      "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39"
+    ],
+    "root": "/nix/store/i5gk169yfx4ar628lxqkbaq8lg6l0svi-crucible-guest-0.1.0"
+  },
+  "command": "nix-build default.nix -A checks.build.bazel.guest.all -A checks.build.bazel.formats.all --no-out-link --keep-going --max-jobs 2 --cores 4 --option substitute false",
+  "declarations_sha256": {
+    "tests/build/_bazel-guest.nix": "76035266c3b5cc73cd9f94cc7a25ea9dd2993acccc2fe0cbe1d491f622ce45b6",
+    "tests/build/_bazel-rust-family.nix": "4177698223e3b70b31d1034b52dd7eced22fe10053d8b6e6c494550bf1ed3997",
+    "tests/build/_bazel-rust-test-profiles.nix": "80bb140556f108a56376909540c23510418ea559494b67f030d535362f9c7ff1"
+  },
+  "default": {
+    "doctests": {
+      "//crates/crucible/crucible-guest:doc": {}
+    },
+    "first_party_features": {
+      "crucible-campaign": [
+        []
+      ],
+      "crucible-guest": [
+        []
+      ],
+      "crucible-qemu-protocol": [
+        []
+      ],
+      "crucible-store": [
+        []
+      ]
+    },
+    "ignored_cases": 1,
+    "ignored_inventory": {
+      "//crates/crucible/crucible-guest:unit": [
+        "guest_introspection_agent::tests::inherited_output_descendant_probe"
+      ]
+    },
+    "libtest_reports": 4,
+    "parity_sha256": "c99418b52f5ba10561f6d85d9166e3196bdb176837633ade8e8b2ed5318bc3cd",
+    "test_cases": 33,
+    "upstream_feature_identities": 78
+  },
+  "editor": {
+    "aggregate_statistics_comparable": false,
+    "analysis": {
+      "complete_inference": false,
+      "exprs": {
+        "partial": 2,
+        "total": 14083,
+        "unknown": 0
+      },
+      "panics": 0,
+      "pats": {
+        "partial": 0,
+        "total": 2677,
+        "unknown": 0
+      }
+    },
+    "comparison_scope": [
+      "crates/crucible/crucible-guest"
+    ],
+    "diagnostic_multiplicity_comparable": false,
+    "diagnostics": [
+      [
+        "crates/crucible/crucible-guest/src/lib.rs",
+        "794:8",
+        "794:10",
+        "type",
+        "fn Ok<WhiteboxDoorbellAbi, {unknown}>(WhiteboxDoorbellAbi) -> Result<WhiteboxDoorbellAbi, {unknown}>"
+      ],
+      [
+        "crates/crucible/crucible-guest/src/lib.rs",
+        "794:8",
+        "796:10",
+        "mismatch",
+        "()",
+        "Result<WhiteboxDoorbellAbi, {unknown}>"
+      ],
+      [
+        "crates/crucible/crucible-guest/src/lib.rs",
+        "794:8",
+        "796:10",
+        "type",
+        "Result<WhiteboxDoorbellAbi, {unknown}>"
+      ]
+    ],
+    "roots": {
+      "crates/crucible/crucible-guest/src/lib.rs": [],
+      "crates/crucible/crucible-guest/src/main.rs": [],
+      "crates/crucible/crucible-guest/tests/gate_abi_conformance.rs": [],
+      "crates/crucible/crucible-guest/tests/gate_single_vm_fingerprint.rs": []
+    },
+    "unattributed_cargo_diagnostics": [
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "synthetic",
+        "",
+        "",
+        "type",
+        "{unknown}"
+      ]
+    ]
+  },
+  "editor_cargo_trace_sha256": "84701430a28d828934dcafdf6a6f51bb3a36b59e7a1caf40b4c1ae82d99afc9c",
+  "editor_flags": {
+    "execution": [
+      "-Copt-level=0",
+      "-Cdebuginfo=0",
+      "-Cdebug-assertions=yes",
+      "-Coverflow-checks=yes"
+    ],
+    "target": []
+  },
+  "evidence_sha256": {
+    "editor-parity.json": "00a88c72ad4243c4076ad08d60452989909985481735bc4a5925d2acf84b748f",
+    "execution-profiles.json": "a9e7df119309b4736a8510738680fe63406f73f4fcd67636145c5d447dcd0caa",
+    "inventory.json": "9efd0f56d7845269d0ebc936991eec347e21cbdc1cecfbcd70287aa4eca7a788",
+    "parity.json": "c99418b52f5ba10561f6d85d9166e3196bdb176837633ade8e8b2ed5318bc3cd"
+  },
+  "family": "guest",
+  "limits": [
+    "The actual selected test and macro scalar profiles are checked against captured native Cargo invocations. Complete compiler defaults, native ABI and linker equivalence are separate requirements.",
+    "Selected editor diagnostic identities match. Raw multiplicity and aggregate inference statistics are not comparable across these differently sized models; retained inference remains incomplete.",
+    "Ordinary development launcher enrollment, shared-cache invalidation, foreign platforms, production cutover and performance acceptance remain separate.",
+    "The existing installed static-runtime and six CLI comparisons pass. This does not qualify VM determinism or foreign static guests."
+  ],
+  "paths": {
+    "all": "/nix/store/9mc0f4qq8dc7ym2k73ddn6gr8pgijwhy-aos-bazel-guest-qualified-checks",
+    "build": "/nix/store/nj1hjnw09i4rdlm0ny9wm2w7n7wc1xqs-aos-bazel-guest-package-1",
+    "cargo": "/nix/store/bl0arfg10zr77ldqzml996069ahdqcnf-aos-bazel-guest-cargo-oracle-1",
+    "developer-build": "/nix/store/wcx47c3h2vfhzj6ijffz8axcgp53b8cf-aos-bazel-guest-developer-tools-1",
+    "developer-tests": "/nix/store/4j9mp1cz3h30i1p6ci356bajszzmb535-aos-bazel-guest-format-1",
+    "editor": "/nix/store/5k4ygzv3b9afqqsbwd4fls9425gpfzkq-aos-bazel-guest-editor",
+    "editor-cargo-oracle": "/nix/store/kzwp5zqap6qva6l9av3r83apijk42c02-aos-bazel-guest-editor-cargo-oracle",
+    "editor-parity": "/nix/store/n57qlqh2bgzi30ayb8in64hnqpabllry-aos-bazel-guest-editor-parity",
+    "editorWorkspace": {
+      "configuration": "/nix/store/l2zkz5d9jhy5qhx94idmngb4zla8l39f-aos-bazel-configuration.json",
+      "source": "/nix/store/nl2vqgdmgw8k2c07yjsb5wgpm1fyk7y2-aos-bazel-workspace"
+    },
+    "package": "/nix/store/i5gk169yfx4ar628lxqkbaq8lg6l0svi-crucible-guest-0.1.0",
+    "tests": "/nix/store/xh8sm1wbik0nd0sd2ikc2k44yx41961c-aos-bazel-guest-tests-1",
+    "workspace": {
+      "configuration": "/nix/store/6zsx0wvffvfp9mihr05lgv9bzf3jz81s-aos-bazel-configuration.json",
+      "source": "/nix/store/nl2vqgdmgw8k2c07yjsb5wgpm1fyk7y2-aos-bazel-workspace"
+    }
+  },
+  "profiles": {
+    "//crates/crucible/crucible-guest:bin_crucible-guest_binary": {
+      "cacheHit": false,
+      "compiler_options": {
+        "debug-assertions": "no",
+        "debuginfo": "0",
+        "embed-bitcode": "no",
+        "extra-filename": "-2795100955",
+        "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+        "opt-level": "3",
+        "overflow-checks": "no",
+        "relocation-model": "static",
+        "strip": "none"
+      },
+      "exitCode": 0,
+      "runner": "linux-sandbox"
+    },
+    "//crates/crucible/crucible-guest:gate_abi_conformance_binary": {
+      "cacheHit": false,
+      "compiler_options": {
+        "debug-assertions": "no",
+        "debuginfo": "0",
+        "embed-bitcode": "no",
+        "extra-filename": "-1594151663",
+        "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+        "opt-level": "3",
+        "overflow-checks": "no",
+        "relocation-model": "static",
+        "strip": "none"
+      },
+      "exitCode": 0,
+      "runner": "linux-sandbox"
+    },
+    "//crates/crucible/crucible-guest:gate_single_vm_fingerprint_binary": {
+      "cacheHit": false,
+      "compiler_options": {
+        "debug-assertions": "no",
+        "debuginfo": "0",
+        "embed-bitcode": "no",
+        "extra-filename": "-1667958469",
+        "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+        "opt-level": "3",
+        "overflow-checks": "no",
+        "relocation-model": "static",
+        "strip": "none"
+      },
+      "exitCode": 0,
+      "runner": "linux-sandbox"
+    },
+    "//crates/crucible/crucible-guest:unit_binary": {
+      "cacheHit": false,
+      "compiler_options": {
+        "debug-assertions": "no",
+        "debuginfo": "0",
+        "embed-bitcode": "no",
+        "extra-filename": "-266319173",
+        "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+        "opt-level": "3",
+        "overflow-checks": "no",
+        "relocation-model": "static",
+        "strip": "none"
+      },
+      "exitCode": 0,
+      "runner": "linux-sandbox"
+    },
+    "@@+aos_tools_repository+aos_guest_crates__curve25519-dalek-derive-0.1.1//:curve25519_dalek_derive": {
+      "cacheHit": false,
+      "compiler_options": {
+        "debug-assertions": "no",
+        "debuginfo": "0",
+        "embed-bitcode": "no",
+        "extra-filename": "-288790580",
+        "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+        "opt-level": "0",
+        "overflow-checks": "no",
+        "strip": "debuginfo"
+      },
+      "exitCode": 0,
+      "runner": "linux-sandbox"
+    },
+    "@@+aos_tools_repository+aos_guest_crates__serde_derive-1.0.228//:serde_derive": {
+      "cacheHit": false,
+      "compiler_options": {
+        "debug-assertions": "no",
+        "debuginfo": "0",
+        "embed-bitcode": "no",
+        "extra-filename": "-1786162908",
+        "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+        "opt-level": "0",
+        "overflow-checks": "no",
+        "strip": "debuginfo"
+      },
+      "exitCode": 0,
+      "runner": "linux-sandbox"
+    },
+    "@@+aos_tools_repository+aos_guest_crates__thiserror-impl-2.0.18//:thiserror_impl": {
+      "cacheHit": false,
+      "compiler_options": {
+        "debug-assertions": "no",
+        "debuginfo": "0",
+        "embed-bitcode": "no",
+        "extra-filename": "-686640968",
+        "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+        "opt-level": "0",
+        "overflow-checks": "no",
+        "strip": "debuginfo"
+      },
+      "exitCode": 0,
+      "runner": "linux-sandbox"
+    }
+  },
+  "qualified_checks": "/nix/store/9mc0f4qq8dc7ym2k73ddn6gr8pgijwhy-aos-bazel-guest-qualified-checks",
+  "runs": {
+    "developer-build": {
+      "action_cache_hits": 0,
+      "action_mnemonics": {
+        "CargoBuildScriptRun": 17,
+        "Clippy": 6,
+        "ExtractCargoTomlEnvVars": 92,
+        "Rustc": 103,
+        "Rustdoc": 1
+      },
+      "build": "/nix/store/wcx47c3h2vfhzj6ijffz8axcgp53b8cf-aos-bazel-guest-developer-tools-1",
+      "executed_actions": 219,
+      "execution_sha256": "7931a2d6ef765d499b827a29cda3a939d5079e4b2291ad56f17af5d02906743c"
+    },
+    "developer-tests": {
+      "action_cache_hits": 0,
+      "action_mnemonics": {
+        "Rustc": 5,
+        "TestRunner": 2
+      },
+      "build": "/nix/store/4j9mp1cz3h30i1p6ci356bajszzmb535-aos-bazel-guest-format-1",
+      "executed_actions": 7,
+      "execution_sha256": "b51664dfbaee4bc8665a6c714e6ea96d6cf826cc96d92d527726ad31c4540e8e"
+    },
+    "editor": {
+      "action_cache_hits": 0,
+      "action_mnemonics": {
+        "CargoBuildScriptRun": 17,
+        "ExtractCargoTomlEnvVars": 92,
+        "Rustc": 108
+      },
+      "build": "/nix/store/5k4ygzv3b9afqqsbwd4fls9425gpfzkq-aos-bazel-guest-editor",
+      "executed_actions": 217,
+      "execution_sha256": "b243449e2ae5c59838a8a083473c256d88a1723eb6d38fdff062fc8c5e25abf5"
+    },
+    "package": {
+      "action_cache_hits": 0,
+      "action_mnemonics": {
+        "AosPythonGenerate": 1,
+        "CargoBuildScriptRun": 7,
+        "ExtractCargoTomlEnvVars": 34,
+        "Rustc": 44
+      },
+      "build": "/nix/store/nj1hjnw09i4rdlm0ny9wm2w7n7wc1xqs-aos-bazel-guest-package-1",
+      "executed_actions": 86,
+      "execution_sha256": "538a4ebbfbd2b292922a128130373f69dfca1825ab3de6b46b136c53c85835a3"
+    },
+    "tests": {
+      "action_cache_hits": 0,
+      "action_mnemonics": {
+        "CargoBuildScriptRun": 17,
+        "ExtractCargoTomlEnvVars": 92,
+        "Rustc": 110,
+        "RustdocTestWriter": 1,
+        "TestRunner": 6
+      },
+      "build": "/nix/store/xh8sm1wbik0nd0sd2ikc2k44yx41961c-aos-bazel-guest-tests-1",
+      "executed_actions": 226,
+      "execution_sha256": "624b6298c6816fa5300f99a3ce3210985827ce3e0ceb323e41a9354c28db7230"
+    }
+  },
+  "runtime": {
+    "binary_sha256": "cc12b62153bf224504926d1d32a06a59c1283a3224904a86d0e5c0641f444abf",
+    "cli_parity": [
+      {
+        "arguments": [],
+        "status": 1,
+        "stderr": "crucible-guest: missing verb; usage: crucible-guest <verb> [args]\n\nverbs:\n  always <id> <message> <0|1>\n  sometimes <id> <message> <0|1>\n  reachable <id> <message>\n  unreachable <id> <message>\n  setup-complete\n  test-done\n  event <name> [k=v ...]\n  coverage <point>\n  measurement-begin <measurement> <instance>\n  metric-sample <measurement> <instance> <metric> <type> <value>\n  measurement-end <measurement> <instance>\n  semantic-marker <marker> <instance> [key:type=value ...]\n  get-random <width> [tag]\n  selectable register-bool <sequence> <id> <true|false>\n  selectable register-discrete <sequence> <id> <default-id> <alternative-id>=<label>...\n  selectable register-u64 <sequence> <id> <minimum> <maximum> <step> <default> <unit|->\n  selectable register-group <sequence> <id> <node> <adapter> <version> <member-spec>...\n  selectable choose-bool <sequence> <id> <instance>\n  selectable choose-discrete <sequence> <id> <instance> <alternative-id>...\n  selectable choose-u64 <sequence> <id> <instance> <minimum> <maximum> <step>\n  selectable choose-group <sequence> <id> <instance> <node> <adapter> <version> <member-spec>...\n  member-spec: bool@name@default | u64@name@min@max@step@default@unit | discrete@name@default@id=label,...\n  agent [--max-channels N] [--ssh-program PATH] [--ssh-arg ARG ...]\n",
+        "stdout": ""
+      },
+      {
+        "arguments": [
+          "--help"
+        ],
+        "status": 0,
+        "stderr": "",
+        "stdout": "usage: crucible-guest <verb> [args]\n\nverbs:\n  always <id> <message> <0|1>\n  sometimes <id> <message> <0|1>\n  reachable <id> <message>\n  unreachable <id> <message>\n  setup-complete\n  test-done\n  event <name> [k=v ...]\n  coverage <point>\n  measurement-begin <measurement> <instance>\n  metric-sample <measurement> <instance> <metric> <type> <value>\n  measurement-end <measurement> <instance>\n  semantic-marker <marker> <instance> [key:type=value ...]\n  get-random <width> [tag]\n  selectable register-bool <sequence> <id> <true|false>\n  selectable register-discrete <sequence> <id> <default-id> <alternative-id>=<label>...\n  selectable register-u64 <sequence> <id> <minimum> <maximum> <step> <default> <unit|->\n  selectable register-group <sequence> <id> <node> <adapter> <version> <member-spec>...\n  selectable choose-bool <sequence> <id> <instance>\n  selectable choose-discrete <sequence> <id> <instance> <alternative-id>...\n  selectable choose-u64 <sequence> <id> <instance> <minimum> <maximum> <step>\n  selectable choose-group <sequence> <id> <instance> <node> <adapter> <version> <member-spec>...\n  member-spec: bool@name@default | u64@name@min@max@step@default@unit | discrete@name@default@id=label,...\n  agent [--max-channels N] [--ssh-program PATH] [--ssh-arg ARG ...]\n"
+      },
+      {
+        "arguments": [
+          "-h"
+        ],
+        "status": 0,
+        "stderr": "",
+        "stdout": "usage: crucible-guest <verb> [args]\n\nverbs:\n  always <id> <message> <0|1>\n  sometimes <id> <message> <0|1>\n  reachable <id> <message>\n  unreachable <id> <message>\n  setup-complete\n  test-done\n  event <name> [k=v ...]\n  coverage <point>\n  measurement-begin <measurement> <instance>\n  metric-sample <measurement> <instance> <metric> <type> <value>\n  measurement-end <measurement> <instance>\n  semantic-marker <marker> <instance> [key:type=value ...]\n  get-random <width> [tag]\n  selectable register-bool <sequence> <id> <true|false>\n  selectable register-discrete <sequence> <id> <default-id> <alternative-id>=<label>...\n  selectable register-u64 <sequence> <id> <minimum> <maximum> <step> <default> <unit|->\n  selectable register-group <sequence> <id> <node> <adapter> <version> <member-spec>...\n  selectable choose-bool <sequence> <id> <instance>\n  selectable choose-discrete <sequence> <id> <instance> <alternative-id>...\n  selectable choose-u64 <sequence> <id> <instance> <minimum> <maximum> <step>\n  selectable choose-group <sequence> <id> <instance> <node> <adapter> <version> <member-spec>...\n  member-spec: bool@name@default | u64@name@min@max@step@default@unit | discrete@name@default@id=label,...\n  agent [--max-channels N] [--ssh-program PATH] [--ssh-arg ARG ...]\n"
+      },
+      {
+        "arguments": [
+          "aos-invalid-operation"
+        ],
+        "status": 1,
+        "stderr": "crucible-guest: unknown verb `aos-invalid-operation`; usage: crucible-guest <verb> [args]\n\nverbs:\n  always <id> <message> <0|1>\n  sometimes <id> <message> <0|1>\n  reachable <id> <message>\n  unreachable <id> <message>\n  setup-complete\n  test-done\n  event <name> [k=v ...]\n  coverage <point>\n  measurement-begin <measurement> <instance>\n  metric-sample <measurement> <instance> <metric> <type> <value>\n  measurement-end <measurement> <instance>\n  semantic-marker <marker> <instance> [key:type=value ...]\n  get-random <width> [tag]\n  selectable register-bool <sequence> <id> <true|false>\n  selectable register-discrete <sequence> <id> <default-id> <alternative-id>=<label>...\n  selectable register-u64 <sequence> <id> <minimum> <maximum> <step> <default> <unit|->\n  selectable register-group <sequence> <id> <node> <adapter> <version> <member-spec>...\n  selectable choose-bool <sequence> <id> <instance>\n  selectable choose-discrete <sequence> <id> <instance> <alternative-id>...\n  selectable choose-u64 <sequence> <id> <instance> <minimum> <maximum> <step>\n  selectable choose-group <sequence> <id> <instance> <node> <adapter> <version> <member-spec>...\n  member-spec: bool@name@default | u64@name@min@max@step@default@unit | discrete@name@default@id=label,...\n  agent [--max-channels N] [--ssh-program PATH] [--ssh-arg ARG ...]\n",
+        "stdout": ""
+      },
+      {
+        "arguments": [
+          "agent",
+          "--aos-invalid-option"
+        ],
+        "status": 1,
+        "stderr": "crucible-guest: unknown agent option `--aos-invalid-option`\n\nusage: crucible-guest <verb> [args]\n\nverbs:\n  always <id> <message> <0|1>\n  sometimes <id> <message> <0|1>\n  reachable <id> <message>\n  unreachable <id> <message>\n  setup-complete\n  test-done\n  event <name> [k=v ...]\n  coverage <point>\n  measurement-begin <measurement> <instance>\n  metric-sample <measurement> <instance> <metric> <type> <value>\n  measurement-end <measurement> <instance>\n  semantic-marker <marker> <instance> [key:type=value ...]\n  get-random <width> [tag]\n  selectable register-bool <sequence> <id> <true|false>\n  selectable register-discrete <sequence> <id> <default-id> <alternative-id>=<label>...\n  selectable register-u64 <sequence> <id> <minimum> <maximum> <step> <default> <unit|->\n  selectable register-group <sequence> <id> <node> <adapter> <version> <member-spec>...\n  selectable choose-bool <sequence> <id> <instance>\n  selectable choose-discrete <sequence> <id> <instance> <alternative-id>...\n  selectable choose-u64 <sequence> <id> <instance> <minimum> <maximum> <step>\n  selectable choose-group <sequence> <id> <instance> <node> <adapter> <version> <member-spec>...\n  member-spec: bool@name@default | u64@name@min@max@step@default@unit | discrete@name@default@id=label,...\n  agent [--max-channels N] [--ssh-program PATH] [--ssh-arg ARG ...]\n",
+        "stdout": ""
+      },
+      {
+        "arguments": [
+          "selectable",
+          "aos-invalid-operation"
+        ],
+        "status": 1,
+        "stderr": "crucible-guest: unknown selectable subcommand `aos-invalid-operation`\n\nusage: crucible-guest <verb> [args]\n\nverbs:\n  always <id> <message> <0|1>\n  sometimes <id> <message> <0|1>\n  reachable <id> <message>\n  unreachable <id> <message>\n  setup-complete\n  test-done\n  event <name> [k=v ...]\n  coverage <point>\n  measurement-begin <measurement> <instance>\n  metric-sample <measurement> <instance> <metric> <type> <value>\n  measurement-end <measurement> <instance>\n  semantic-marker <marker> <instance> [key:type=value ...]\n  get-random <width> [tag]\n  selectable register-bool <sequence> <id> <true|false>\n  selectable register-discrete <sequence> <id> <default-id> <alternative-id>=<label>...\n  selectable register-u64 <sequence> <id> <minimum> <maximum> <step> <default> <unit|->\n  selectable register-group <sequence> <id> <node> <adapter> <version> <member-spec>...\n  selectable choose-bool <sequence> <id> <instance>\n  selectable choose-discrete <sequence> <id> <instance> <alternative-id>...\n  selectable choose-u64 <sequence> <id> <instance> <minimum> <maximum> <step>\n  selectable choose-group <sequence> <id> <instance> <node> <adapter> <version> <member-spec>...\n  member-spec: bool@name@default | u64@name@min@max@step@default@unit | discrete@name@default@id=label,...\n  agent [--max-channels N] [--ssh-program PATH] [--ssh-arg ARG ...]\n",
+        "stdout": ""
+      }
+    ],
+    "elf": {
+      "dynamic": "\nThere is no dynamic section in this file.\n",
+      "header": "ELF Header:\n  Magic:   7f 45 4c 46 02 01 01 03 00 00 00 00 00 00 00 00 \n  Class:                             ELF64\n  Data:                              2's complement, little endian\n  Version:                           1 (current)\n  OS/ABI:                            UNIX - GNU\n  ABI Version:                       0\n  Type:                              EXEC (Executable file)\n  Machine:                           Advanced Micro Devices X86-64\n  Version:                           0x1\n  Entry point address:               0x407dc0\n  Start of program headers:          64 (bytes into file)\n  Start of section headers:          2036992 (bytes into file)\n  Flags:                             0x0\n  Size of this header:               64 (bytes)\n  Size of program headers:           56 (bytes)\n  Number of program headers:         11\n  Size of section headers:           64 (bytes)\n  Number of section headers:         23\n  Section header string table index: 22\n",
+      "program_headers": "\nElf file type is EXEC (Executable file)\nEntry point 0x407dc0\nThere are 11 program headers, starting at offset 64\n\nProgram Headers:\n  Type           Offset             VirtAddr           PhysAddr\n                 FileSiz            MemSiz              Flags  Align\n  LOAD           0x0000000000000000 0x0000000000400000 0x0000000000400000\n                 0x00000000000005a0 0x00000000000005a0  R      0x1000\n  LOAD           0x0000000000001000 0x0000000000401000 0x0000000000401000\n                 0x000000000016a8c5 0x000000000016a8c5  R E    0x1000\n  LOAD           0x000000000016c000 0x000000000056c000 0x000000000056c000\n                 0x000000000007ae70 0x000000000007ae70  R      0x1000\n  LOAD           0x00000000001e7678 0x00000000005e7678 0x00000000005e7678\n                 0x0000000000009d58 0x0000000000010150  RW     0x1000\n  NOTE           0x00000000000002a8 0x00000000004002a8 0x00000000004002a8\n                 0x0000000000000020 0x0000000000000020  R      0x8\n  NOTE           0x00000000000002c8 0x00000000004002c8 0x00000000004002c8\n                 0x0000000000000020 0x0000000000000020  R      0x4\n  TLS            0x00000000001e7678 0x00000000005e7678 0x00000000005e7678\n                 0x0000000000000068 0x00000000000000e8  R      0x8\n  GNU_PROPERTY   0x00000000000002a8 0x00000000004002a8 0x00000000004002a8\n                 0x0000000000000020 0x0000000000000020  R      0x8\n  GNU_EH_FRAME   0x00000000001b7ca0 0x00000000005b7ca0 0x00000000005b7ca0\n                 0x00000000000062dc 0x00000000000062dc  R      0x4\n  GNU_STACK      0x0000000000000000 0x0000000000000000 0x0000000000000000\n                 0x0000000000000000 0x0000000000000000  RW     0x10\n  GNU_RELRO      0x00000000001e7678 0x00000000005e7678 0x00000000005e7678\n                 0x0000000000007988 0x0000000000007988  R      0x1\n\n Section to Segment mapping:\n  Segment Sections...\n   00     .note.gnu.property .note.ABI-tag .rela.plt \n   01     .init .plt .text .fini \n   02     .rodata rodata.cst32 .eh_frame_hdr .eh_frame .gcc_except_table \n   03     .tdata .init_array .fini_array .data.rel.ro .got .data .bss \n   04     .note.gnu.property \n   05     .note.ABI-tag \n   06     .tdata .tbss \n   07     .note.gnu.property \n   08     .eh_frame_hdr \n   09     \n   10     .tdata .init_array .fini_array .data.rel.ro .got \n"
+    },
+    "link_command": [
+      "bazel-out/k8-opt-exec/bin/external/rules_rust+/util/process_wrapper/process_wrapper",
+      "--arg-file",
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_guest_crates__blake3-1.8.5/_bs.linksearchpaths",
+      "--arg-file",
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_guest_crates__libc-0.2.186/_bs.linksearchpaths",
+      "--arg-file",
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_guest_crates__generic-array-0.14.7/_bs.linksearchpaths",
+      "--arg-file",
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_guest_crates__thiserror-2.0.18/_bs.linksearchpaths",
+      "--subst",
+      "pwd=${pwd}",
+      "--subst",
+      "exec_root=${exec_root}",
+      "--subst",
+      "output_base=${output_base}",
+      "--subst",
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_guest_crates__blake3-1.8.5/_bs.out_dir=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_guest_crates__blake3-1.8.5/_bs.out_dir",
+      "--subst",
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_guest_crates__libc-0.2.186/_bs.out_dir=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_guest_crates__libc-0.2.186/_bs.out_dir",
+      "--subst",
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_guest_crates__generic-array-0.14.7/_bs.out_dir=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_guest_crates__generic-array-0.14.7/_bs.out_dir",
+      "--subst",
+      "bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_guest_crates__proc-macro2-1.0.106/_bs.out_dir=bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_guest_crates__proc-macro2-1.0.106/_bs.out_dir",
+      "--subst",
+      "bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_guest_crates__quote-1.0.46/_bs.out_dir=bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_guest_crates__quote-1.0.46/_bs.out_dir",
+      "--subst",
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_guest_crates__thiserror-2.0.18/_bs.out_dir=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_guest_crates__thiserror-2.0.18/_bs.out_dir",
+      "--",
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_tools/rust/bin/rustc",
+      "crates/crucible/crucible-guest/src/main.rs",
+      "--crate-name=crucible_guest",
+      "--crate-type=bin",
+      "--error-format=human",
+      "--out-dir=bazel-out/k8-fastbuild/bin/crates/crucible/crucible-guest",
+      "--codegen=opt-level=0",
+      "--codegen=debuginfo=0",
+      "--codegen=strip=none",
+      "--remap-path-prefix=${output_base}=.",
+      "--remap-path-prefix=${pwd}=.",
+      "--remap-path-prefix=${exec_root}=.",
+      "--emit=link=bazel-out/k8-fastbuild/bin/crates/crucible/crucible-guest/crucible-guest",
+      "--emit=dep-info",
+      "--color=always",
+      "--target=x86_64-unknown-linux-gnu",
+      "-L",
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_tools/rust/lib/rustlib/x86_64-unknown-linux-gnu/lib",
+      "--edition=2024",
+      "-Cembed-bitcode=no",
+      "--codegen=linker=/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+      "--codegen=link-arg=-L/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib",
+      "--codegen=link-arg=-Wl,-rpath,/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib",
+      "--codegen=link-arg=-lstdc++",
+      "--codegen=link-arg=-lm",
+      "--codegen=link-arg=-L/nix/store/1is6f14gpfys4b4b03m8cgdkqi9im94s-aos-bazel-static-libraries-1/static/lib",
+      "--codegen=link-arg=-static",
+      "--codegen=link-arg=-no-pie",
+      "--extern=crucible_guest=bazel-out/k8-fastbuild/bin/crates/crucible/crucible-guest/libcrucible_guest-104825572.rlib",
+      "--extern=crucible_qemu_protocol=bazel-out/k8-fastbuild/bin/crates/crucible/crucible-qemu-protocol/libcrucible_qemu_protocol-1179786364.rlib",
+      "--extern=libc=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_guest_crates__libc-0.2.186/liblibc-1587112819.rlib",
+      "--extern=thiserror=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_guest_crates__thiserror-2.0.18/libthiserror-928986949.rlib",
+      "-Ldependency=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_guest_crates__arrayref-0.3.9",
+      "-Ldependency=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_guest_crates__arrayvec-0.7.7",
+      "-Ldependency=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_guest_crates__cfg-if-1.0.4",
+      "-Ldependency=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_guest_crates__constant_time_eq-0.4.2",
+      "-Ldependency=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_guest_crates__cpufeatures-0.3.0",
+      "-Ldependency=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_guest_crates__typenum-1.20.1",
+      "-Ldependency=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_guest_crates__generic-array-0.14.7",
+      "-Ldependency=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_guest_crates__libc-0.2.186",
+      "-Ldependency=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_guest_crates__getrandom-0.2.17",
+      "-Ldependency=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_guest_crates__rand_core-0.6.4",
+      "-Ldependency=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_guest_crates__block-buffer-0.10.4",
+      "-Ldependency=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_guest_crates__crypto-common-0.1.7",
+      "-Ldependency=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_guest_crates__digest-0.10.7",
+      "-Ldependency=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_guest_crates__cpufeatures-0.2.17",
+      "-Ldependency=bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_guest_crates__thiserror-impl-2.0.18",
+      "-Ldependency=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_guest_crates__tinyvec_macros-0.1.1",
+      "-Ldependency=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_guest_crates__tinyvec-1.11.0",
+      "-Ldependency=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_guest_crates__blake3-1.8.5",
+      "-Ldependency=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_guest_crates__sha2-0.10.9",
+      "-Ldependency=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_guest_crates__thiserror-2.0.18",
+      "-Ldependency=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_guest_crates__unicode-normalization-0.1.25",
+      "-Ldependency=bazel-out/k8-fastbuild/bin/crates/crucible/crucible-qemu-protocol",
+      "-Ldependency=bazel-out/k8-fastbuild/bin/crates/crucible/crucible-guest",
+      "--sysroot=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_tools/rust",
+      "-Copt-level=3",
+      "-Cdebuginfo=0",
+      "-Cdebug-assertions=no",
+      "-Coverflow-checks=no",
+      "-Ctarget-feature=+crt-static",
+      "-Crelocation-model=static"
+    ],
+    "metadata": "package=crucible-guest\nbuild_system=Bazel\ndependency_sources=Nix-pinned-source-archives\nrustflags=-C target-feature=+crt-static -C relocation-model=static\nrust_build_target=x86_64-unknown-linux-gnu\npackaged_guest_system=x86_64-linux\ndoorbell_instruction_abi_version=4\ninstruction_abi_architectures=x86_64,aarch64\nabi_source=crucible-protocol::doorbell_abi::WHITEBOX_DOORBELL_ABIS\nframe_source=crucible-protocol::doorbell_frame\nmarker_source=crucible-protocol::doorbell_marker\n",
+    "runtime": {
+      "closure": [
+        {
+          "narHash": "sha256:12j6m23lfw5ci28aglhnc9zq448nampd126x1cy8nbz71jy0vwwx",
+          "path": "/nix/store/0hsvhnbcc7rdm4ysk3wsfz7jlcawgxgz-linux-headers-6.12"
+        },
+        {
+          "narHash": "sha256:109h987ir323zjn5jma151xnb227rax88yq3n600qymbnfw6nspd",
+          "path": "/nix/store/0ns3aw53zif9vsyx4rwjsklbq14gznqp-zstd-static-mt-1.5.7"
+        },
+        {
+          "narHash": "sha256:0y5gycdr52a2xc8gzxf37bika6m7kyzw3az0lqdbmz4mma49drj5",
+          "path": "/nix/store/56khy442n6yd810v2pqnjipqljlkyk0m-lz4-1.10.0"
+        },
+        {
+          "narHash": "sha256:1qxndfaswmmnhz60fk4c9j7qwn6pnl0il66flxlsw4w2i4lz6xxa",
+          "path": "/nix/store/6zgd9kcbnvnvvz1y4jwb46ys7j7i1cwn-binutils-2.41"
+        },
+        {
+          "narHash": "sha256:02280799m4rzqgl7xjlf0jr1d1pn6rfzfmfj1zmilibflkamxls7",
+          "path": "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15"
+        },
+        {
+          "narHash": "sha256:0m2xdk54j7vnd7frv3msrr40qwxwsya552r00snv1byqz37za4fm",
+          "path": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39"
+        },
+        {
+          "narHash": "sha256:1hzl2d1lkr3yd4a4hgf9kg7gnn4k9wvv3ma854rc8z12mfwdynab",
+          "path": "/nix/store/8jvf7ydnns316gz4iqxn185bls7k81b4-aos-bazel-native-libraries-1"
+        },
+        {
+          "narHash": "sha256:1j1rg409yyfnirgg08a7wzn2rii1lxfmjk9samqri2yi1qvcz69h",
+          "path": "/nix/store/8zr71nfka9m368nj4x0b4n2sabmm5bdn-sqlite-static-3.53.4"
+        },
+        {
+          "narHash": "sha256:1d6ljajp4ih85ra4xahg006r5gs0hi2z3wj8ix8dcjll7z2wpm87",
+          "path": "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2"
+        },
+        {
+          "narHash": "sha256:0cdxvsdc0xmrw5bd28glv64963yz5y99ngzqbk6ihd4dw7nh05c1",
+          "path": "/nix/store/h3y381vk7dz7alj6crzc224pwpm4lvwy-glibc-2.39-dev"
+        },
+        {
+          "narHash": "sha256:1pfsrp74ghfjpwmwqi2b4f61qfdb8zf82kafmfmcw0xg0dfwwjc3",
+          "path": "/nix/store/jmr87wqpiymkkmlqfy1hkv83mpfs6nvd-gcc-16.2.0-stage2"
+        },
+        {
+          "narHash": "sha256:1rlk00isrky422xyxjrg2v6jz1m0zmxlxnbclbdpjyivwvxkcc4f",
+          "path": "/nix/store/mrddkm4vqc2s2d7apgpf7fh9r2jwx35l-glibc-2.39-static"
+        },
+        {
+          "narHash": "sha256:03zmqjm0y9l9g4rx5w4161lvx5zfjbdi60liqv0i467grmsbxc0s",
+          "path": "/nix/store/slp1q1sg1nx2nikr551qficdycfbdml3-pkg-config-0.29.2"
+        },
+        {
+          "narHash": "sha256:1vv30xb54bslyj4zrhir583a9m4ysqsmgyx4vfvpibqjaz3cndvi",
+          "path": "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6"
+        }
+      ],
+      "glibc": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+      "glibc_static": "/nix/store/mrddkm4vqc2s2d7apgpf7fh9r2jwx35l-glibc-2.39-static",
+      "schema_version": 1,
+      "target": "x86_64-unknown-linux-gnu",
+      "unwinder": "/nix/store/jmr87wqpiymkkmlqfy1hkv83mpfs6nvd-gcc-16.2.0-stage2/lib/gcc/x86_64-unknown-linux-gnu/16.2.0/libgcc_s.a"
+    },
+    "schema_version": 1,
+    "selected_inputs": {
+      "static/closure.json": "6d93b57a61da040978e49fea072f9c87e24ae2e8d248035bae7865a69865a450",
+      "static/lib/libc.a": "883923139dd9d8d3b63db94b3c18e5d8a5df2bd39446a256be68891923eda5c4",
+      "static/lib/libgcc_eh.a": "318c92168f80ad55a49b68b075220a2d31888c6c1795085507884be58222476a",
+      "static/lib/libm.a": "0c2434478139e22d73d542e6d1b59e652e8140409b91e3c28324955a2e1d6324"
+    }
+  },
+  "schema_version": 1,
+  "selected_source_files": 293,
+  "selected_static_codegen": {
+    "//crates/crucible/crucible-guest:bin_crucible-guest_binary": [
+      "target-feature=+crt-static",
+      "relocation-model=static"
+    ],
+    "//crates/crucible/crucible-guest:gate_abi_conformance_binary": [
+      "target-feature=+crt-static",
+      "relocation-model=static"
+    ],
+    "//crates/crucible/crucible-guest:gate_single_vm_fingerprint_binary": [
+      "target-feature=+crt-static",
+      "relocation-model=static"
+    ],
+    "//crates/crucible/crucible-guest:unit_binary": [
+      "target-feature=+crt-static",
+      "relocation-model=static"
+    ],
+    "@@+aos_tools_repository+aos_guest_crates__curve25519-dalek-derive-0.1.1//:curve25519_dalek_derive": [],
+    "@@+aos_tools_repository+aos_guest_crates__serde_derive-1.0.228//:serde_derive": [],
+    "@@+aos_tools_repository+aos_guest_crates__thiserror-impl-2.0.18//:thiserror_impl": []
+  },
+  "status": "PASS"
+}

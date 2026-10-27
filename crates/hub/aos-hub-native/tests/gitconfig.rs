@@ -303,7 +303,7 @@ async fn indexer_trailer_marks_known_change_request_applied() {
 
     let db = Arc::new(Database::open_in_memory().await.unwrap());
     let org = db.create_org("acme", "Acme").await.unwrap();
-    let binding =
+    let _binding =
         common::create_local_binding(&db, org, "primary", dir.path().to_str().unwrap()).await;
     db.create_managed_registry(
         org,
@@ -365,7 +365,7 @@ async fn indexer_ignores_change_id_scoped_to_another_registry() {
 
     let db = Arc::new(Database::open_in_memory().await.unwrap());
     let org = db.create_org("acme", "Acme").await.unwrap();
-    let binding =
+    let _binding =
         common::create_local_binding(&db, org, "primary", dir.path().to_str().unwrap()).await;
     db.create_managed_registry(
         org,

@@ -1,0 +1,218 @@
+{
+  "annotations": {
+    "libssh2-sys *": {
+      "additive_build_file": null,
+      "additive_build_file_content": null,
+      "alias_rule": null,
+      "build_script_compile_data": null,
+      "build_script_data": null,
+      "build_script_data_glob": null,
+      "build_script_deps": null,
+      "build_script_env": null,
+      "build_script_exec_properties": null,
+      "build_script_link_deps": null,
+      "build_script_proc_macro_deps": null,
+      "build_script_rundir": null,
+      "build_script_rustc_env": null,
+      "build_script_toolchains": null,
+      "build_script_tools": null,
+      "build_script_use_default_shell_env": null,
+      "compile_data": null,
+      "compile_data_glob": null,
+      "compile_data_glob_excludes": null,
+      "crate_features": null,
+      "data": null,
+      "data_glob": null,
+      "deps": null,
+      "disable_pipelining": false,
+      "extra_aliased_targets": null,
+      "gen_binaries": null,
+      "gen_build_script": false,
+      "label_injections": null,
+      "link_deps": null,
+      "override_targets": {
+        "lib": "@//crates/bindings/libssh2-sys:lib"
+      },
+      "patch_args": null,
+      "patch_tool": null,
+      "patches": null,
+      "proc_macro_deps": null,
+      "rustc_env": null,
+      "rustc_env_files": null,
+      "rustc_flags": null,
+      "shallow_since": null
+    },
+    "libz-sys *": {
+      "additive_build_file": null,
+      "additive_build_file_content": null,
+      "alias_rule": null,
+      "build_script_compile_data": null,
+      "build_script_data": [
+        "@aos_native//:zlib_files",
+        "@aos_native//:zlib/cflags"
+      ],
+      "build_script_data_glob": null,
+      "build_script_deps": null,
+      "build_script_env": {
+        "CFLAGS": "@$(execpath @aos_native//:zlib/cflags)",
+        "LIBZ_SYS_STATIC": "0",
+        "PKG_CONFIG": "$(execpath @aos_native//:zlib/pkg-config)",
+        "PKG_CONFIG_ALLOW_CROSS": "1"
+      },
+      "build_script_exec_properties": null,
+      "build_script_link_deps": null,
+      "build_script_proc_macro_deps": null,
+      "build_script_rundir": null,
+      "build_script_rustc_env": null,
+      "build_script_toolchains": null,
+      "build_script_tools": [
+        "@aos_native//:zlib/pkg-config",
+        "@aos_native//:zlib_pkg_config_tools"
+      ],
+      "build_script_use_default_shell_env": null,
+      "compile_data": null,
+      "compile_data_glob": null,
+      "compile_data_glob_excludes": null,
+      "crate_features": null,
+      "data": null,
+      "data_glob": null,
+      "deps": null,
+      "disable_pipelining": false,
+      "extra_aliased_targets": null,
+      "gen_binaries": null,
+      "gen_build_script": null,
+      "label_injections": null,
+      "link_deps": [
+        "@aos_native//:zlib"
+      ],
+      "override_targets": null,
+      "patch_args": null,
+      "patch_tool": null,
+      "patches": null,
+      "proc_macro_deps": null,
+      "rustc_env": null,
+      "rustc_env_files": null,
+      "rustc_flags": null,
+      "shallow_since": null
+    },
+    "openssl-sys *": {
+      "additive_build_file": null,
+      "additive_build_file_content": null,
+      "alias_rule": null,
+      "build_script_compile_data": null,
+      "build_script_data": [
+        "@aos_native//:openssl_files",
+        "@aos_native//:crypto_files"
+      ],
+      "build_script_data_glob": null,
+      "build_script_deps": null,
+      "build_script_env": {
+        "OPENSSL_DYNAMIC": "1",
+        "OPENSSL_NO_VENDOR": "1",
+        "PKG_CONFIG": "$(execpath @aos_native//:openssl/pkg-config)",
+        "PKG_CONFIG_ALLOW_CROSS": "1"
+      },
+      "build_script_exec_properties": null,
+      "build_script_link_deps": null,
+      "build_script_proc_macro_deps": null,
+      "build_script_rundir": null,
+      "build_script_rustc_env": null,
+      "build_script_toolchains": null,
+      "build_script_tools": [
+        "@aos_native//:openssl/pkg-config",
+        "@aos_native//:openssl_pkg_config_tools"
+      ],
+      "build_script_use_default_shell_env": null,
+      "compile_data": null,
+      "compile_data_glob": null,
+      "compile_data_glob_excludes": null,
+      "crate_features": null,
+      "data": null,
+      "data_glob": null,
+      "deps": null,
+      "disable_pipelining": false,
+      "extra_aliased_targets": null,
+      "gen_binaries": null,
+      "gen_build_script": null,
+      "label_injections": null,
+      "link_deps": [
+        "@aos_native//:openssl",
+        "@aos_native//:crypto"
+      ],
+      "override_targets": null,
+      "patch_args": null,
+      "patch_tool": null,
+      "patches": null,
+      "proc_macro_deps": null,
+      "rustc_env": null,
+      "rustc_env_files": null,
+      "rustc_flags": null,
+      "shallow_since": null
+    },
+    "zstd-sys *": {
+      "additive_build_file": null,
+      "additive_build_file_content": null,
+      "alias_rule": null,
+      "build_script_compile_data": null,
+      "build_script_data": [
+        "@aos_native//:zstd_files"
+      ],
+      "build_script_data_glob": null,
+      "build_script_deps": null,
+      "build_script_env": {
+        "PKG_CONFIG": "$(execpath @aos_native//:zstd/pkg-config)",
+        "PKG_CONFIG_ALLOW_CROSS": "1",
+        "ZSTD_SYS_USE_PKG_CONFIG": "1"
+      },
+      "build_script_exec_properties": null,
+      "build_script_link_deps": null,
+      "build_script_proc_macro_deps": null,
+      "build_script_rundir": null,
+      "build_script_rustc_env": null,
+      "build_script_toolchains": null,
+      "build_script_tools": [
+        "@aos_native//:zstd/pkg-config",
+        "@aos_native//:zstd_pkg_config_tools"
+      ],
+      "build_script_use_default_shell_env": null,
+      "compile_data": null,
+      "compile_data_glob": null,
+      "compile_data_glob_excludes": null,
+      "crate_features": null,
+      "data": null,
+      "data_glob": null,
+      "deps": null,
+      "disable_pipelining": false,
+      "extra_aliased_targets": null,
+      "gen_binaries": null,
+      "gen_build_script": null,
+      "label_injections": null,
+      "link_deps": [
+        "@aos_native//:zstd"
+      ],
+      "override_targets": null,
+      "patch_args": null,
+      "patch_tool": null,
+      "patches": null,
+      "proc_macro_deps": null,
+      "rustc_env": null,
+      "rustc_env_files": null,
+      "rustc_flags": null,
+      "shallow_since": null
+    }
+  },
+  "generate_binaries": false,
+  "generate_build_scripts": true,
+  "rendering": {
+    "generate_cargo_toml_env_vars": true,
+    "generate_rules_license_metadata": false,
+    "generate_target_compatible_with": true,
+    "incompatible_no_root_alias_targets": false,
+    "regen_command": "aos-dev bazel update-deps package-manager-tests",
+    "repository_name": "aos_package_manager_tests_crates"
+  },
+  "supported_platform_triples": [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu"
+  ]
+}

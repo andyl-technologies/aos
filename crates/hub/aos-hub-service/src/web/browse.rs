@@ -587,6 +587,10 @@ const HOME_RESOLVE_FANOUT: usize = 16;
 ///
 /// `host_routes` is the route dispatcher's view of the request host. When it
 /// is present, registries that host does not deliver are marked in the list.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Uses the portable Hub clock for request timing and runtime budgets."
+)]
 pub async fn home(
     svc: &RpcService,
     headers: &HeaderMap,
@@ -674,6 +678,10 @@ pub async fn home(
 /// when the control-plane router serves the page. A registry with no enabled
 /// route on that host renders with an explanatory delivery notice for
 /// browsers and stays a `404` for machine clients.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Uses the portable Hub clock for request timing and runtime budgets."
+)]
 pub async fn registry_home(
     svc: &RpcService,
     headers: &HeaderMap,
@@ -754,6 +762,10 @@ pub async fn registry_home(
 /// Anonymous and expensive (full reload + filter + sort), so it is rate-limited
 /// per IP. A malformed filter expression is surfaced inline and the unfiltered
 /// list is shown.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Uses the portable Hub clock for request timing and runtime budgets."
+)]
 pub async fn packages(
     svc: &RpcService,
     headers: &HeaderMap,
@@ -780,6 +792,10 @@ pub async fn packages(
 }
 
 /// Browses authenticated native operation declarations and their module owners.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Uses the portable Hub clock for request timing and runtime budgets."
+)]
 pub async fn abilities(
     svc: &RpcService,
     headers: &HeaderMap,
@@ -856,6 +872,10 @@ pub async fn abilities(
 }
 
 /// The signed system-image catalog and direct-download page.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Uses the portable Hub clock for request timing and runtime budgets."
+)]
 pub async fn images(
     svc: &RpcService,
     headers: &HeaderMap,
@@ -916,6 +936,10 @@ pub async fn images(
 }
 
 /// Lists the immutable container roots belonging to the selected release.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Uses the portable Hub clock for request timing and runtime budgets."
+)]
 pub async fn containers(
     svc: &RpcService,
     headers: &HeaderMap,
@@ -972,6 +996,10 @@ pub async fn containers(
 /// Anonymous callers can open this page only for public registries. Internal
 /// and private registries retain the same session-aware non-disclosure policy
 /// as every other browse page.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Uses the portable Hub clock for request timing and runtime budgets."
+)]
 pub async fn container_repositories(
     svc: &RpcService,
     headers: &HeaderMap,
@@ -1023,6 +1051,10 @@ pub async fn container_repositories(
 }
 
 /// Shows one OCI repository and its current public tag pointers.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Uses the portable Hub clock for request timing and runtime budgets."
+)]
 pub async fn container_repository(
     svc: &RpcService,
     headers: &HeaderMap,
@@ -1131,6 +1163,10 @@ pub async fn container_repository(
 }
 
 /// Shows one current OCI tag, its immutable target, and runnable platforms.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Uses the portable Hub clock for request timing and runtime budgets."
+)]
 pub async fn container_tag(
     svc: &RpcService,
     headers: &HeaderMap,
@@ -1205,6 +1241,10 @@ pub async fn container_tag(
 }
 
 /// Shows one immutable OCI manifest and its runnable platform projections.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Uses the portable Hub clock for request timing and runtime budgets."
+)]
 pub async fn container_manifest(
     svc: &RpcService,
     headers: &HeaderMap,
@@ -1424,6 +1464,10 @@ async fn package_index_html(
 }
 
 /// One package's detail page (HTML), with its resolved forward/reverse closure.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Uses the portable Hub clock for request timing and runtime budgets."
+)]
 pub async fn package(
     svc: &RpcService,
     headers: &HeaderMap,
@@ -1622,6 +1666,10 @@ fn resolved_cache_urls(
 }
 
 /// The channels index page (HTML).
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Uses the portable Hub clock for request timing and runtime budgets."
+)]
 pub async fn channels(
     svc: &RpcService,
     headers: &HeaderMap,
@@ -1645,6 +1693,10 @@ pub async fn channels(
 }
 
 /// One channel's 256-partition grid page (HTML), with the `?bucket=` calculator.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Uses the portable Hub clock for request timing and runtime budgets."
+)]
 pub async fn channel(
     svc: &RpcService,
     headers: &HeaderMap,
@@ -1674,6 +1726,10 @@ pub async fn channel(
 }
 
 /// The releases page (HTML).
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Uses the portable Hub clock for request timing and runtime budgets."
+)]
 pub async fn releases(
     svc: &RpcService,
     headers: &HeaderMap,
@@ -1722,6 +1778,10 @@ pub async fn releases(
 }
 
 /// Renders one exact release's publication, contents, and current rollouts.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Uses the portable Hub clock for request timing and runtime budgets."
+)]
 pub async fn release(svc: &RpcService, headers: &HeaderMap, slug: &str, version: &str) -> Rendered {
     let started = Instant::now();
     let Some((registry, status)) = load_visible(svc, headers, slug).await else {
@@ -1789,6 +1849,10 @@ async fn verified_release_record(
 }
 
 /// The per-registry health page (HTML): index, cache policy, and route status.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Uses the portable Hub clock for request timing and runtime budgets."
+)]
 pub async fn health(svc: &RpcService, headers: &HeaderMap, slug: &str) -> Rendered {
     let started = Instant::now();
     let Some((registry, status)) = load_visible(svc, headers, slug).await else {
@@ -1898,6 +1962,10 @@ async fn load_visible_cache(
 
 /// `GET /{slug}/` for a managed cache: the cache home (HTML; non-HTML clients
 /// get the machine `nix-cache-info`).
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Uses the portable Hub clock for request timing and runtime budgets."
+)]
 pub async fn cache_home(svc: &RpcService, headers: &HeaderMap, slug: &str) -> Rendered {
     if !accepts_html(headers) {
         if load_visible_cache(svc, headers, slug).await.is_none() {
@@ -1958,6 +2026,10 @@ pub async fn cache_home(svc: &RpcService, headers: &HeaderMap, slug: &str) -> Re
 }
 
 /// `GET /{slug}/-/objects` for a cache: the object list (HTML; `?q=` search).
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Uses the portable Hub clock for request timing and runtime budgets."
+)]
 pub async fn cache_objects(
     svc: &RpcService,
     headers: &HeaderMap,
@@ -1988,6 +2060,10 @@ pub async fn cache_objects(
 }
 
 /// `GET /{slug}/-/objects/{hash}` for a cache: one object's narinfo + refs.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Uses the portable Hub clock for request timing and runtime budgets."
+)]
 pub async fn cache_object(
     svc: &RpcService,
     headers: &HeaderMap,
@@ -2013,6 +2089,10 @@ pub async fn cache_object(
 
 /// `GET /{slug}/-/closure/{hash}` for a cache: a store path's transitive
 /// closure as a no-JS table (the dependency graph in flat form).
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Uses the portable Hub clock for request timing and runtime budgets."
+)]
 pub async fn cache_closure(
     svc: &RpcService,
     headers: &HeaderMap,
@@ -2528,6 +2608,10 @@ pub async fn api_releases(svc: &RpcService, slug: &str) -> Rendered {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Rendering fixtures use the portable Hub clock for request timing."
+)]
 mod package_index_tests {
     use super::*;
 

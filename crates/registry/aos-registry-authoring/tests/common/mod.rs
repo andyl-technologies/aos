@@ -149,7 +149,7 @@ impl RegistryFixture {
 
     pub fn write_registry_toml_with_caches(&self, caches: &[(&str, u32)]) -> Result<()> {
         let mut caches = caches.to_vec();
-        caches.sort_by(|left, right| right.1.cmp(&left.1));
+        caches.sort_by_key(|left| std::cmp::Reverse(left.1));
         let mut content = format!(
             r#"[registry]
 name = "{}"

@@ -1,0 +1,23 @@
+{
+  "command": "nix-build -A checks.rust.aos-test-targets --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "comparison_base_commit": "121b83eae4",
+  "compiled_changed_rust_inputs_sha256": {
+    "crates/aos/packages/aos-deployment/src/evaluation.rs": "d4bdae86af5f289af3b6b9a9191a2ef832eb8fdd780fcdfbd30cf4cd6bcad987",
+    "crates/aos/packages/aos-deployment/src/handler.rs": "a303aa25480e9cd02ed6b0a5c466b45becebff56076fc89349d7ca03ca6e7d98",
+    "crates/aos/packages/aos-deployment/src/process.rs": "d34c786a6adc3fe183fe056e0aea66585993b92af48409dbba3c6398e74d45f3",
+    "crates/aos/packages/aos-deployment/src/retention.rs": "5b09e56f7e8b4c4e9d1ef3fc438907d11bb28c0f84d1f0e9240e02c8bfdd5f99",
+    "crates/aos/packages/aos-deployment/src/store/temp_roots.rs": "edd46c865542afbf663900ec1f47c3307d3a33c936395223cd915d0c9fc8a469"
+  },
+  "derivation": "/nix/store/s45pnzzfldljki2d9qd0424zmv5q9i8m-aos-test-targets-0.1.0.drv",
+  "derivation_sha256": "943d29aa9aaf0cfd65cc7bc3f4dee4b29500842ef530f661622328769773b064",
+  "implementation_commit": "abed9bb5d6",
+  "limits": [
+    "This gate compiles application unit and integration targets without executing them. Native Bazel/Cargo execution is retained separately.",
+    "This frozen source contains the five deployment Rust changes, including isolated evaluator fixtures and the scoped lint corrections. Later Hub UI changes are not qualified by this checkpoint."
+  ],
+  "log_sha256": "97e42db3ca2e4472bd9357203de15e12fa2f3e0a76ec254c913eb15b59b8a145",
+  "output": "/nix/store/ajl8jql6ssgglrb7p9047071kivnv3zh-aos-test-targets-0.1.0",
+  "schema_version": 1,
+  "source": "/nix/store/aa3jv06g0abr1w2xjzn6f1bfwd0j8kx7-aos-workspace-src",
+  "status": "Required workspace Rust application unit and integration targets compiled successfully"
+}

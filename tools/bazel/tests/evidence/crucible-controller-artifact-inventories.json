@@ -1,0 +1,353 @@
+{
+  "allowed_changes": [
+    "artifact audit graph runfile input",
+    "shared artifact audit source input",
+    "manual tags on the QEMU test oracle and its related explicit targets"
+  ],
+  "allowed_source_addition": "crates/crucible/crucible-test-support/tests/support/artifact_type_bazel.rs",
+  "baseline_commit": "21f37ecd2b07a1690815562326e77feba99c4050",
+  "current_dependency_sdk_count": 79,
+  "current_source_inventory_count": 80,
+  "dependency_sdk_manifest_sha256": {
+    "third_party/rust/accache/sources.json": "cd061ce88e83f61137ff352b3c38d6083e95e623f6711575015f80aff69d67df",
+    "third_party/rust/activation-core-tests/sources.json": "aa45e6f26925184e44857582ecf27c9d9f2c01a194955f12556ef51864a9fbb6",
+    "third_party/rust/activation-core/sources.json": "a1f59eedc096feb80aa17d8b16bb02fea7a311001dc3648bef0be63c555c931c",
+    "third_party/rust/activation-crucible-tests/sources.json": "088024efa9604bc3be3c97aa24d0890e7ff628684178512d03541670ffddfd68",
+    "third_party/rust/activation-crucible/sources.json": "ccea450b81380a39db93627e2f0157644eb7244303254249bb4cd33c153aa2c0",
+    "third_party/rust/activation-storage/sources.json": "3124b0b3fe28882b751495da99eac83b7b002ccb0554e1bb12e11d1fed1a9ef6",
+    "third_party/rust/activation-systemd/sources.json": "4286887827649926042d65e86ca4bd74ac1c1f1090df0bd876a138d93d8a2991",
+    "third_party/rust/aos-cli-fleet-tests/sources.json": "340180eabd35296f63548a22de19ccd84d2b4b4318315f0d7d6b829886ead04c",
+    "third_party/rust/aos-cli-production/sources.json": "79aee72870d40ae33a17d2d04e8faceaff1ee99e51121a2173f4c9cc0e92625f",
+    "third_party/rust/aos-cli-tests/sources.json": "5197275ca6bb0cff4d9f1b219c19ec8c034bcdd08b7c14e35f1feb29c4b041e2",
+    "third_party/rust/boot-preparation-minimal/sources.json": "b389e0371a5b73aa35bd3e04af2db11bec108e5cd8572eeafd962f44eeaeeaa2",
+    "third_party/rust/boot-preparation/sources.json": "53a5602425cfd456e4c6ab4cac773477d5fd569f27c1b4f18fcbbced76273f1c",
+    "third_party/rust/build-services/sources.json": "9082ea1ef38bd032d6d16d1e292511636937fcb05fc56b4262f690f3ea6b73cb",
+    "third_party/rust/cli-support/sources.json": "4296ef41ec3a6f6f845d998bbf870ac5069026fac5b91a26b45241df585236a3",
+    "third_party/rust/configuration-files-tests/sources.json": "b51e79f6def3da86ff923d2633d5e7e739ff6a4b945e537cb164d2f313ab2013",
+    "third_party/rust/configuration-files/sources.json": "727869599babcc1cf9f0db0c3ce1dcb5dadbb58a2fd56ecf5d20e321d7a43014",
+    "third_party/rust/configuration-image-tests/sources.json": "74a25af37aedc7e7e58b4b7254ee272ed61d9e3b148564252a602f6cedbc0549",
+    "third_party/rust/configuration-image/sources.json": "7cf93d4ef72cd8dc40520068e1febcc2dd30d5d150ec2dc7fff533ef9e696e9a",
+    "third_party/rust/control/sources.json": "4e02df29954f68ea2c6eae66d29aada6a1c09dfccaa5419c5c64b4b3b77158a3",
+    "third_party/rust/controller-tests/sources.json": "925bf34bfb0db0c8056c75599249cdf14ec27bfd06a0016a3c969033d2bf2aca",
+    "third_party/rust/core/sources.json": "4a62fc3400a81cb646fb0fdb5af90b357673cf3ff2871ce8a93757318fc2e891",
+    "third_party/rust/crucible-cli/sources.json": "6b9225b6bfeec7cfc20cb2796af685413c66ea52f55345ce5361bf76b73cd9d2",
+    "third_party/rust/daemon/sources.json": "059ef595a5a81ffeab6f64aee0dbd11094643940256d6618cea9b9259afb65f0",
+    "third_party/rust/deployment-check/sources.json": "76b1d26651dd75db9aa9a706f0aace702c704d0019ebcd1a56f45c909d36940a",
+    "third_party/rust/deployment/sources.json": "a8bdb434d375c1fa3370aaaf8cdb2b5e355fb6c44936cf259951901d7b954b59",
+    "third_party/rust/device/sources.json": "e5472a71b61e5e101e7ed876e527e77111ccd71ba4eb9e87a5943be1cfab52b8",
+    "third_party/rust/engine/sources.json": "6e825bbcba9215ee12c488fb37daebd76dbce55e729d5088d1f3179d1fc233b8",
+    "third_party/rust/formats/sources.json": "aa0213d8130016a2c1271a66eee2506cc9d992338f237b537840cf019a0d7d89",
+    "third_party/rust/guest/sources.json": "e7c83075a0681d23e84f9046c3594964776d50256e81aab2f4c49e221496db18",
+    "third_party/rust/hub-client/sources.json": "4955394e3750fd15ba23bab47d65b9ea4c8c4fdfc6930152d8f87ec592dcf4c3",
+    "third_party/rust/hub-console-wasm/sources.json": "2ade1b6364fbfd101a1279224b2fc6f4d75b773710a0667c6a48d11fd82374f3",
+    "third_party/rust/hub-console/sources.json": "4e592e781982a69155c69a457db97526f1b352af0a4756df8ce3097dfeefc204",
+    "third_party/rust/hub-db-all-features-tests/sources.json": "66b2fc342b47cb7f84db9098c988743380a05ca857b03b00dc322a63654d3682",
+    "third_party/rust/hub-db-all-features/sources.json": "c13c3e017fa20696a2f88825e394ba9dd4f4193c765bf2ef1561fa15e1e36306",
+    "third_party/rust/hub-db-tests/sources.json": "b8d75c7d39c2f0dad2d30724c9ea0bb95891368e4e8997e893622a61687a7e5e",
+    "third_party/rust/hub-db/sources.json": "06186b61f0110de67028c6ee8d332b5f1705c5697673390f73d3094a0009206b",
+    "third_party/rust/hub-model-tests/sources.json": "a6f427dd87bc1c250de840cffc6e0d4f73d2d674885608844ddcdb9a459f3c06",
+    "third_party/rust/hub-model/sources.json": "1e27747f1611940fc67fc33d74414fcea5cdd36884990a33407e7f7a9664117f",
+    "third_party/rust/hub-native-postgres/sources.json": "28e4918f4ba65fc476ae866c51f31f8a3958948faaf00414f87395cb7d15d5bf",
+    "third_party/rust/hub-native-tests/sources.json": "0d01e3f61b41219fe90059c906715cd30e16878fa31a787176496999e160a495",
+    "third_party/rust/hub-portable/sources.json": "80ab1e56e5cbfce029454960913909a365b30959c498755b39fdd297ef2fe56c",
+    "third_party/rust/hub-service-all-features-tests/sources.json": "868c8fff580c610c60147208c7b97ac408770a156f13d6a4c39cc55339f5f881",
+    "third_party/rust/hub-service-all-features/sources.json": "ef39455bf2f332d821a463bbeeb678e007a60a513bb2d1d4cd79bd25d074a631",
+    "third_party/rust/hub-service-tests/sources.json": "ac9c6c329d685bd2e96e446d75d478d3a95bdd05735941ec6754005964e33d59",
+    "third_party/rust/hub-service/sources.json": "845cacaa47bc2238e6e8f61735b44fd60d803197c4aca28add00e936ebf56709",
+    "third_party/rust/hub-worker-all-features-tests/sources.json": "58826e03eca0b15de0f57577f8cff8c145978ee8aa85b6fe5b7c298d3d5bdc6a",
+    "third_party/rust/hub-worker-tests/sources.json": "a8d261f89f265556c9ccc75f3eefff488f7ed31b0fb558cc996e4504182aa242",
+    "third_party/rust/hub-worker-wasm-all-features/sources.json": "cb7d5742d5bed03949da7323d13607850ccf52b447dc91c38c2daed2c7c3b174",
+    "third_party/rust/hub-worker-wasm-do-e2e/sources.json": "dab4e72eedb5ccef31731fe85c357536d01503005b7c188a1c112a6c816ebdfc",
+    "third_party/rust/hub-worker-wasm/sources.json": "48be73826951c42ded5f93e88c216b7a66a8c321945448f45156457f03c804ba",
+    "third_party/rust/kernel-tunable-tests/sources.json": "e7381e37e9703885d6eeef187f95755655dc63dcfe2121d55e96873a3e49564c",
+    "third_party/rust/kernel-tunable/sources.json": "adb667da0761405db586a082b8deedcb9a5acfe543d4b9261a04f887425840df",
+    "third_party/rust/native-bindings/sources.json": "bad9efb25a2e613f60a72fc108a534d9e1d75b50fee519ee6e9342534e5d427f",
+    "third_party/rust/native-foundation-minimal/sources.json": "da3d7da1f9cbdcc3579031282363a5f06d1b39066b7fe1b2e4094104541b3397",
+    "third_party/rust/native-foundation-tests/sources.json": "228ec817dc4900615a98594d8e7ace974502f7cd9a32771f0992c4296d06c8c3",
+    "third_party/rust/native-foundation/sources.json": "d08fe519379333d8e80d0fc3ed1e6ae484c50696b7f0e4f6da3eed0653fe6ea2",
+    "third_party/rust/nix-store-provider/sources.json": "3043f0485bb72c192ecf5207c7f80d899594a46036404f29ff76a861f4994f8a",
+    "third_party/rust/package-evaluation-driver/sources.json": "76822e7e79ae1cb5545f305ff73db6b4f5ed277b6d61e5bf9d3dd666c56bdc46",
+    "third_party/rust/package-manager-tests/sources.json": "4d465d7d84367f29ad9584d27f5fe8f35d428b3b804cae9763e9ab7435720c24",
+    "third_party/rust/package-manager/sources.json": "a1e8905d6924c28627dfae6cd268389895817441a110dcb8013c4da8f411fb53",
+    "third_party/rust/preparation-provider-tests/sources.json": "7cc650312bb78b31007e4c648daa0b680858aeeb2476ec6131fdc983f8696c17",
+    "third_party/rust/preparation-provider/sources.json": "0b63523bfe52a40a6bf452c8088146828249e707a19e17b5f80d732fefe54d62",
+    "third_party/rust/qemu-gpl-plugin-tests/sources.json": "05b9bffb1144deffe8e0b834e699dfd5fa271b4fb3eb565a0774299c7f303a16",
+    "third_party/rust/qemu-gpl-production/sources.json": "ab321d6afec2bfd1c1c8b2659092a5657159bdd64abdeba9b13d3572992b43d1",
+    "third_party/rust/qemu-gpl-tests/sources.json": "43c523faf75a0ba0d87b422860801eabd5af062e06cbd6207b801dfef5ea3fd0",
+    "third_party/rust/qemu-host/sources.json": "cacf9b4679ad3aaba96ace4194026b255c9fcbd52a8e28b66f23c450a13963f0",
+    "third_party/rust/qemu-test-oracle-host/sources.json": "50517f6e9216eeb355bbe03fa6c5973aec78fd0796b3d11edcaf815806a0b849",
+    "third_party/rust/quota/sources.json": "b1eeeb0a10d9b5834dbbdaabb661ee851bec661995cfaf1fb947c39bf55b7403",
+    "third_party/rust/registry-native-tests/sources.json": "7963695fe09863b0f0b57baba21c8ad3ab903b35d246994e2015ed8d8b55570e",
+    "third_party/rust/registry-native/sources.json": "61d7b9b0d3673b47efc430ec3e7e79fef5ba76bc248b4e57be419589a61d602a",
+    "third_party/rust/registry-web-wasm/sources.json": "43a4abae0c594a7b1a993912e765b25968489a41800672bd4b851d3adbe26558",
+    "third_party/rust/registry-web/sources.json": "ef27c8534a1ea5a302fff1c9e98be9e2b58922bbe621b33a42071ff50447bd0d",
+    "third_party/rust/release-coordination/sources.json": "666960e4c9afd0e4264d15ba516ca254610e6536faec14711ea6da77471f37f3",
+    "third_party/rust/release-preparation/sources.json": "ba48819db1c8ff04ea54873d54f6f04d4facdd8888300fc7dd95176de9653efd",
+    "third_party/rust/release-signer/sources.json": "9a743dce19f91652203354e3ea090a5910616208baa18b59f1116be67fc0044b",
+    "third_party/rust/session/sources.json": "ec2ba57efe1f954ab5b24ddb00f19695b648a7ef27035fecbc3129ae1e980beb",
+    "third_party/rust/store-s3/sources.json": "6ff13b3ca62fcde347996b9b2a200623a81950dff72aedeeb34607ff8475f745",
+    "third_party/rust/store/sources.json": "6cfe70a551caede45eb79efaca33fc0f1b35845a615663db92220b161653bb92",
+    "third_party/rust/systemd-provider/sources.json": "b2f39f2425bbaa06ef0bf14648b3cdf108037c14446f11aff843f583a7c11310"
+  },
+  "production_targets_features_and_dependency_edges_unchanged": true,
+  "public_controller_cutover_qualified": false,
+  "regenerated_inventories": {
+    "control": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/v4ambzzkpqz8z2hkhppr57kzsgmrn93c-aos-bazel-controller-declarations-control-inventory-1"
+      ],
+      "changed_contracts": [
+        "crates/crucible/crucible-control-server/BUILD.bazel"
+      ],
+      "inventory": "tools/bazel/metadata/control-inventory.json",
+      "reports_unchanged_except_declared_artifact_audit_inputs_and_manual_tags": true,
+      "roots_unchanged": true,
+      "sha256": "fcfbf2975f985667b77b9be5eb4cf4e6bc616d4e3fdea85ab470f542ec05d11c",
+      "status": "adopted"
+    },
+    "crucible-cli": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/znzcnjf9c2klb9pl395kxy8qb0v4vc9g-aos-bazel-controller-declarations-crucible-cli-inventory-1"
+      ],
+      "changed_contracts": [
+        "crates/crucible/crucible-control-server/BUILD.bazel",
+        "crates/crucible/crucible-test-support/BUILD.bazel"
+      ],
+      "inventory": "tools/bazel/metadata/crucible-cli-inventory.json",
+      "reports_unchanged_except_declared_artifact_audit_inputs_and_manual_tags": true,
+      "roots_unchanged": true,
+      "sha256": "aad8801bd6d732575c580524c027e668148e5de85beb1822ff5e9699712b3005",
+      "status": "adopted"
+    },
+    "crucible-controller-cli": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/psks7jhgfnclr7bxjj4jkzysmkhhq0pa-aos-bazel-controller-declarations-crucible-controller-cli-inventory-1"
+      ],
+      "changed_contracts": [
+        "crates/crucible/crucible-control-server/BUILD.bazel"
+      ],
+      "inventory": "tools/bazel/metadata/crucible-controller-cli-inventory.json",
+      "reports_unchanged_except_declared_artifact_audit_inputs_and_manual_tags": true,
+      "roots_unchanged": true,
+      "sha256": "1b86a86d93319e316c83544903bacae5e20ac7a72168b0ca54539971c641bcb1",
+      "status": "adopted"
+    },
+    "crucible-controller-debugger": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/k62shjw3w0p19xmc7c9rhjw4mmd7qw9n-aos-bazel-controller-declarations-crucible-controller-debugger-inventory-1"
+      ],
+      "changed_contracts": [
+        "crates/crucible/crucible-test-support/BUILD.bazel"
+      ],
+      "inventory": "tools/bazel/metadata/crucible-controller-debugger-inventory.json",
+      "reports_unchanged_except_declared_artifact_audit_inputs_and_manual_tags": true,
+      "roots_unchanged": true,
+      "sha256": "b15af9ac73b1eff10905ecb2b067b8e21aff0fb1cf3923fc7e479f31e850cc06",
+      "status": "adopted"
+    },
+    "crucible-controller-scenario": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/q992ai6xg4yiz8224f1smhydk04vhhj0-aos-bazel-controller-declarations-crucible-controller-scenario-inventory-1"
+      ],
+      "changed_contracts": [
+        "crates/crucible/crucible-control-server/BUILD.bazel"
+      ],
+      "inventory": "tools/bazel/metadata/crucible-controller-scenario-inventory.json",
+      "reports_unchanged_except_declared_artifact_audit_inputs_and_manual_tags": true,
+      "roots_unchanged": true,
+      "sha256": "37c31cfb334d5275bc3bd815e5712ac7d8c69450128733eafa75147191370463",
+      "status": "adopted"
+    },
+    "crucible-controller-tests": {
+      "added_sources": [
+        "crates/crucible/crucible-test-support/tests/support/artifact_type_bazel.rs"
+      ],
+      "analysis_outputs": [
+        "/nix/store/mxxqg3l0x4h0ss4ad4fj1k4alf4yg04c-aos-bazel-crucible-controller-test-inventory-1"
+      ],
+      "changed_contracts": [
+        "crates/crucible/crucible-control-server/BUILD.bazel",
+        "crates/crucible/crucible-test-support/BUILD.bazel"
+      ],
+      "inventory": "tools/bazel/metadata/crucible-controller-tests-inventory.json",
+      "reports_unchanged_except_declared_artifact_audit_inputs_and_manual_tags": true,
+      "roots_unchanged": true,
+      "sha256": "0deb21eebe053455497c143d079997d7d0116dc1c26a452644448b745c7da61d",
+      "status": "adopted"
+    },
+    "daemon": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/g5npk13lzg9k9j628rfgp1dqasjkg7z0-aos-bazel-controller-declarations-daemon-inventory-1"
+      ],
+      "changed_contracts": [
+        "crates/crucible/crucible-control-server/BUILD.bazel"
+      ],
+      "inventory": "tools/bazel/metadata/daemon-inventory.json",
+      "reports_unchanged_except_declared_artifact_audit_inputs_and_manual_tags": true,
+      "roots_unchanged": true,
+      "sha256": "df816e2f12102b56fd7ad95d6eb70aaa386c4a5a916833ebe66989f9cec85700",
+      "status": "adopted"
+    },
+    "engine": {
+      "added_sources": [
+        "crates/crucible/crucible-test-support/tests/support/artifact_type_bazel.rs"
+      ],
+      "analysis_outputs": [
+        "/nix/store/drxh08p48j96z1g4jn0k27p85yhyhmzk-aos-bazel-controller-declarations-engine-inventory-1"
+      ],
+      "changed_contracts": [
+        "crates/crucible/crucible-control-server/BUILD.bazel",
+        "crates/crucible/crucible-test-support/BUILD.bazel"
+      ],
+      "inventory": "tools/bazel/metadata/engine-inventory.json",
+      "reports_unchanged_except_declared_artifact_audit_inputs_and_manual_tags": true,
+      "roots_unchanged": true,
+      "sha256": "959661e5215b83116158d2e216e4668b08e6f994367f89909a31b7f10dba1a5f",
+      "status": "adopted"
+    },
+    "qemu-test-oracle-host": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/2w0nrk7zcynr76sb8xrvpydc8gsfdmig-aos-bazel-controller-declarations-qemu-test-oracle-host-inventory-1"
+      ],
+      "changed_contracts": [
+        "crates/crucible/crucible-control-server/BUILD.bazel"
+      ],
+      "inventory": "tools/bazel/metadata/qemu-test-oracle-host-inventory.json",
+      "reports_unchanged_except_declared_artifact_audit_inputs_and_manual_tags": true,
+      "roots_unchanged": true,
+      "sha256": "5a49345916dff00f7d19a43946ea85c890802ca58e5106b3279b3232323ae9ce",
+      "status": "adopted"
+    },
+    "test-support": {
+      "added_sources": [],
+      "analysis_outputs": [
+        "/nix/store/fy1dpzna04k4ihlb33iaml280ydfayq9-aos-bazel-controller-declarations-test-support-inventory-1"
+      ],
+      "changed_contracts": [
+        "crates/crucible/crucible-test-support/BUILD.bazel"
+      ],
+      "inventory": "tools/bazel/metadata/test-support-inventory.json",
+      "reports_unchanged_except_declared_artifact_audit_inputs_and_manual_tags": true,
+      "roots_unchanged": true,
+      "sha256": "f995a8889037060d2ac08cc3a5b9cf39af376412524b3f7a1826ea08df261697",
+      "status": "adopted"
+    },
+    "test-support-audit": {
+      "added_sources": [
+        "crates/crucible/crucible-test-support/tests/support/artifact_type_bazel.rs"
+      ],
+      "analysis_outputs": [
+        "/nix/store/hq237ca5c4ywgxr6s3n3b86bir1mjwff-aos-bazel-controller-declarations-test-support-audits-inventory-1"
+      ],
+      "changed_contracts": [
+        "crates/crucible/crucible-control-server/BUILD.bazel",
+        "crates/crucible/crucible-test-support/BUILD.bazel"
+      ],
+      "inventory": "tools/bazel/metadata/test-support-audit-inventory.json",
+      "reports_unchanged_except_declared_artifact_audit_inputs_and_manual_tags": true,
+      "roots_unchanged": true,
+      "sha256": "738411e5475b414167a025aae747f7b606d22fc58de72a737f903f283d3f3a3e",
+      "status": "adopted"
+    }
+  },
+  "regenerated_inventory_count": 11,
+  "schema_version": 1,
+  "scope": "Configured declarations and source membership for the controller artifact audit; compilation byte parity is qualified separately.",
+  "source_inventory_sha256": {
+    "tools/bazel/metadata/accache-inventory.json": "fe3d66a9f8863bb20b9a1d87a0d6e2bfa9fc0a00f525e7256f30caabb68eaad2",
+    "tools/bazel/metadata/activation-core-inventory.json": "c8aa7b6deddb484a89ea81d5610269bf4cb039139e6b7fc56dbe1692d1654af8",
+    "tools/bazel/metadata/activation-crucible-inventory.json": "807c2085db4a44d5e7d2e611eb6bcb76e79f8e60c570844a7a3a0fde951d7ecc",
+    "tools/bazel/metadata/activation-storage-inventory.json": "7b701c16c2a349f3fb6c649e9ed1d5457ea0a2d72ae2df0a1daf0349a7adfad9",
+    "tools/bazel/metadata/activation-systemd-inventory.json": "e3cc306d847876306c412c6bcd83be8ca635dd380277e14540cc2b671ec702e7",
+    "tools/bazel/metadata/aos-cli-inventory.json": "5b0fe44bfe460d057fb94d1a3d9aee03a08a502996845cdcb5680e1175d41e25",
+    "tools/bazel/metadata/boot-configuration-driver-inventory.json": "1414618661663e141e92fd103b44183291711ce4e477432ab12a5c7d3ddfdb30",
+    "tools/bazel/metadata/boot-pilot-inventory.json": "10d9b46cb6caef6fbd2d1e34e8c0a22b6c4ac7916de8788bfd06c9915c751170",
+    "tools/bazel/metadata/boot-preparation-inventory.json": "deb2239291e473fbef4e57b67230613cd24a02b338ae70c5d1b4b7fa82edd782",
+    "tools/bazel/metadata/boot-preparation-provider-inventory.json": "e276acf016af4dc1d22739b1ea31ff7659d4dee2d9b91d93daa74e8ebf9f8d5f",
+    "tools/bazel/metadata/boot-transaction-storage-provider-inventory.json": "1f0ac9ea26b3e3de69c66a7346fb9f953b95909728d9e8aa5e9719ed4c62917a",
+    "tools/bazel/metadata/bpf-native-inventory.json": "b4e5c46006899b6363ef9e841a88f59fa95efcaa29292a07d7696b1a0bda08a9",
+    "tools/bazel/metadata/bpf-provider-inventory.json": "0264a96f6376f832354b054cb215b055b73e2c49a6c2f8a60c2753089c3b94d6",
+    "tools/bazel/metadata/build-services-inventory.json": "e953c58066bc79f45f9edced74907ba243229a951d5ae305856ccee0745dcbe4",
+    "tools/bazel/metadata/cli-support-inventory.json": "69fa7d531a6a4b9c763668ce6e40a4239134c0e3ce6b4089d64802bdfa226305",
+    "tools/bazel/metadata/configuration-image-inventory.json": "905226b012f466d030e183b37201214e16824f449071de89623bdd60096fbfb1",
+    "tools/bazel/metadata/configuration-provider-inventory.json": "c3ea2484b79f57de30eda12b3d62d6b1acc799fae2a35148dacecb252991f65e",
+    "tools/bazel/metadata/contracts-inventory.json": "cf8e7f6974f78338183ba871c71559a4e1dd6ddeb98649e637ed0870a8cd6b30",
+    "tools/bazel/metadata/control-inventory.json": "fcfbf2975f985667b77b9be5eb4cf4e6bc616d4e3fdea85ab470f542ec05d11c",
+    "tools/bazel/metadata/crucible-cli-inventory.json": "aad8801bd6d732575c580524c027e668148e5de85beb1822ff5e9699712b3005",
+    "tools/bazel/metadata/crucible-controller-cli-inventory.json": "1b86a86d93319e316c83544903bacae5e20ac7a72168b0ca54539971c641bcb1",
+    "tools/bazel/metadata/crucible-controller-debugger-inventory.json": "b15af9ac73b1eff10905ecb2b067b8e21aff0fb1cf3923fc7e479f31e850cc06",
+    "tools/bazel/metadata/crucible-controller-scenario-inventory.json": "37c31cfb334d5275bc3bd815e5712ac7d8c69450128733eafa75147191370463",
+    "tools/bazel/metadata/crucible-controller-tests-inventory.json": "0deb21eebe053455497c143d079997d7d0116dc1c26a452644448b745c7da61d",
+    "tools/bazel/metadata/daemon-inventory.json": "df816e2f12102b56fd7ad95d6eb70aaa386c4a5a916833ebe66989f9cec85700",
+    "tools/bazel/metadata/deployment-check-inventory.json": "09e319652720f700ddfa48158cb34bba0556ec595871b437d27886788782bc9e",
+    "tools/bazel/metadata/deployment-inventory.json": "fb4e1575e04bfd5450b0d4da105b4477ebaa6547ff17913feeb4f323a4699b0e",
+    "tools/bazel/metadata/device-inventory.json": "2594da335ec123760a0548c25c31bfdb821e002cd269cd44909767c2563a1799",
+    "tools/bazel/metadata/engine-inventory.json": "959661e5215b83116158d2e216e4668b08e6f994367f89909a31b7f10dba1a5f",
+    "tools/bazel/metadata/feature-powerset-inventory.json": "161a5c1aad3807acfbe96f2907bfb782aa28b8fb0fcdc8880ec11aebe5046163",
+    "tools/bazel/metadata/filesystem-provider-inventory.json": "33aabaf999ee0d729c623b87d4fdd774e2aba26859cd7394f9afb6d7c59cedfb",
+    "tools/bazel/metadata/fixture-inventory.json": "aa218e815249dd61721215d56b21c570821c9b8439b2bff279e4fe127e721399",
+    "tools/bazel/metadata/formats-inventory.json": "f539740f173c42da9b19c782bb4e482fe2101e84789d2314da307af4b42bf148",
+    "tools/bazel/metadata/guest-inventory.json": "55e0b287d89a4d52f3495e59e0a59f20abc1426722d3515324f8811b82c49b33",
+    "tools/bazel/metadata/hub-client-inventory.json": "7b0d15d4c0fd8e8e370706d0a9bca2b2da9691217779353fa6f888bf9916f090",
+    "tools/bazel/metadata/hub-console-inventory.json": "853b7cfb3c01421cc9fba44b54a907fe83f396a5173a30cb1349edf9d4a52c9f",
+    "tools/bazel/metadata/hub-console-wasm-inventory.json": "7361af1470dcba3220c935759451825ee8ca474c55dbdf2b8e4b70f854e80842",
+    "tools/bazel/metadata/hub-db-inventory.json": "a44fb9ae1b278a3cc1af93f809efeaa07461f45ef526e27cf962df2a64f1002b",
+    "tools/bazel/metadata/hub-dialect-inventory.json": "16a1fbc845d30b72469b20d12812f340522329e922a54463dd095f16377956af",
+    "tools/bazel/metadata/hub-installed-inventory.json": "6f9c581be417f427269b52660427091690ac007a1c859a458179c91be6dc062e",
+    "tools/bazel/metadata/hub-model-inventory.json": "666e9c7adf81f45911628dece5033628c90f8713bc2fd1b3c85a45b3745c011d",
+    "tools/bazel/metadata/hub-native-inventory.json": "c31ee8314898dc06bef4b9d757506a5737c0a7202fead6cac9b2d9ebead34bf0",
+    "tools/bazel/metadata/hub-portable-inventory.json": "e9599b2bc040124125e91ad2c96c27df9fbeec39df044edb4b1e8084af691943",
+    "tools/bazel/metadata/hub-service-inventory.json": "3d6e97d7379689e8ec2991de828b21b15d5c84e754687fdc2e68dba4e0084dba",
+    "tools/bazel/metadata/hub-worker-inventory.json": "50e55ba67b98727321278c23620e5781c8c46d5694fc476406150b33f61917c1",
+    "tools/bazel/metadata/hub-worker-wasm-inventory.json": "85a01ed01ad2b87c7bd4a95a062330c03ed4029040d41d0b28c67871593b0b6d",
+    "tools/bazel/metadata/initrd-preparation-inventory.json": "4623ed06c68051596cae8dfad4e1e0c37b0d96ea9f02055c51f157b280e22487",
+    "tools/bazel/metadata/kernel-tunable-provider-inventory.json": "31231acb2e48a07243815f9b63788cbc1af03ac72d9607b9d51f13b0f24b156f",
+    "tools/bazel/metadata/kubernetes-provider-inventory.json": "6c91e430f986e2643d8c75242040b3730218bd3249fb5284860530b023d7c3ec",
+    "tools/bazel/metadata/metadata-provider-inventory.json": "60815b5e9850ee33a662cf286f59ea601830567185dcf79ed624175e78e7b660",
+    "tools/bazel/metadata/native-foundation-inventory.json": "09642b139b6543bf759db16f291f9d9540d2e4b5bc7fe3e142a4bcc00f6c2e4c",
+    "tools/bazel/metadata/network-ruleset-provider-inventory.json": "35a01cf7fa6a96f9468888ecda0dd439dd223e1aeba13797cb137bd1ad18fc66",
+    "tools/bazel/metadata/nix-store-provider-inventory.json": "bf28157ecf9dfa6995cb5ccb0567c3f85384eab63a1ccf56d87e9d2bcbff2555",
+    "tools/bazel/metadata/package-evaluation-driver-inventory.json": "4f287fc4c5e8745e6358c6a48088c591544c207ce3650ae0e098c778e451a92c",
+    "tools/bazel/metadata/package-manager-inventory.json": "387782c155baa5ed8e8f3c46fcafd0b4897f3cf460169e0a7737b51c9137a830",
+    "tools/bazel/metadata/protocol-inventory.json": "4f2ffe4a0ef34995cdf539776fa5888f10ca3beea2450172bcda970b5806d488",
+    "tools/bazel/metadata/qemu-gateway-installed-inventory.json": "f076a81033b9a109af8810346e6025e0ba8e6bfc80101e154977726418bb8aeb",
+    "tools/bazel/metadata/qemu-gateway-process-test-inventory.json": "b54f37501253252256bd394e8aa58b2cd4fa45b23b7bd85812b6344cb52107db",
+    "tools/bazel/metadata/qemu-gpl-production-inventory.json": "69663513f80fe3bed1dac679ad7d2c8b692fa316d3db96c35820554e1b6f1bfa",
+    "tools/bazel/metadata/qemu-host-inventory.json": "34ea9b4ef22552cab65c9178bfe53037868ff5dcf749fa90a63c17703cb24fd9",
+    "tools/bazel/metadata/qemu-plugin-installed-inventory.json": "e9bd346c77aac6004777fad945c76589d14cd1643f060d2e5821d1b217d0f061",
+    "tools/bazel/metadata/qemu-plugin-process-test-inventory.json": "ac33f4daf8056b1312ec4adafaa0b6b417b046e25ff5d8c87eb92ced8a8e3125",
+    "tools/bazel/metadata/qemu-test-oracle-host-inventory.json": "5a49345916dff00f7d19a43946ea85c890802ca58e5106b3279b3232323ae9ce",
+    "tools/bazel/metadata/quota-inventory.json": "56fc446e63278a6d78c01de4f85676f1aaaed5abc4bbed9060775a1dd90ff478",
+    "tools/bazel/metadata/registry-native-inventory.json": "1969988fb4b4f6e271a4bfbf5d6e7518f74f243995455fffdde829e125260374",
+    "tools/bazel/metadata/registry-web-inventory.json": "0e538197aa30f80cd69d796a3f9b3fedadd39a7093a676ce270ca699b7dfed85",
+    "tools/bazel/metadata/registry-web-wasm-inventory.json": "1d64fdcfbb7b00d85f1c45d3816df487ef85df0be26d0021efe27d988fa46392",
+    "tools/bazel/metadata/release-coordination-inventory.json": "a5343937ff112ad11da4fe0a7c106ca1f67e1e38e1233af3176110cec8620ed7",
+    "tools/bazel/metadata/release-preparation-inventory.json": "1edb6121cf175018fa26967af8f132be38c7dbdde28e7ebd30aaec52f9c918a0",
+    "tools/bazel/metadata/release-signer-inventory.json": "257c6aba2ea3b3a253cc71f2dacee69d1f0cdc24cb292af59fb73213cdadce74",
+    "tools/bazel/metadata/session-inventory.json": "30e47a2671626afe7161e49eb434e833795e0b3735f4ade5149321cb3b32bec2",
+    "tools/bazel/metadata/shared-inventory.json": "f347f073d208dbc777f4cd0af577a9daead1b0c3c0913a6a950070b213cd4f87",
+    "tools/bazel/metadata/static-storage-providers-inventory.json": "4e77ebae4e0c8a16aa17da23a420cc879d475700575cf05a427f1327b4b4742c",
+    "tools/bazel/metadata/storage-provisioning-provider-inventory.json": "90d779c914af48d41fe49b764bba28a5022286804056c4bf25f6887de58b428e",
+    "tools/bazel/metadata/store-inventory.json": "d75b9397e6d4d0136a15a3aeafe4a23ef119cf74c98a119e42bca8e55061259e",
+    "tools/bazel/metadata/store-s3-inventory.json": "b49ca01f3a9ee0a3dcd02caeabc3ef93a2507420705f6a48e7bf9b6c329c9fa8",
+    "tools/bazel/metadata/systemd-provider-inventory.json": "39cf6c94fc532a7ec42746e26d28a9925cfa461512a95db4e83f1571adab7fa5",
+    "tools/bazel/metadata/test-support-audit-inventory.json": "738411e5475b414167a025aae747f7b606d22fc58de72a737f903f283d3f3a3e",
+    "tools/bazel/metadata/test-support-inventory.json": "f995a8889037060d2ac08cc3a5b9cf39af376412524b3f7a1826ea08df261697",
+    "tools/bazel/metadata/zfs-provider-inventory.json": "0e29603e604934354efdbb0333113b8c39cc1362cf409ed59479251d437dcb09"
+  },
+  "status": "PASS",
+  "wildcard_excluded_oracle_targets": [
+    "//crates/crucible/crucible-control-server:crucible-qemu-test-oracle",
+    "//crates/crucible/crucible-control-server:qemu_test_oracle_artifact",
+    "//crates/crucible/crucible-control-server:qemu_test_oracle_clippy",
+    "//crates/crucible/crucible-control-server:qemu_test_oracle_format",
+    "//crates/crucible/crucible-control-server:qemu_test_oracle_license_closure"
+  ]
+}

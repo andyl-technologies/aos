@@ -1,0 +1,75 @@
+{
+  "aspect": "/nix/store/mk1n13gqga8c6ya9i30ijc229b3vghf0-aos-bazel-module-rules_rust-0.71.2/rust/private/rust_analyzer.bzl",
+  "aspect_sha256": "6092c0672f704956c97b4d6eadcb4278f36fb6107f8dc1584b4662caf7253d67",
+  "exported_first_party_cfg": {
+    "crucible/crucible-guest/src/lib.rs": [
+      "debug_assertions",
+      "test"
+    ],
+    "crucible/crucible-guest/src/main.rs": [
+      "debug_assertions",
+      "test"
+    ],
+    "crucible/crucible-guest/tests/gate_abi_conformance.rs": [
+      "debug_assertions",
+      "test"
+    ],
+    "crucible/crucible-guest/tests/gate_single_vm_fingerprint.rs": [
+      "debug_assertions",
+      "test"
+    ]
+  },
+  "family": "guest",
+  "finding": "The pinned aspect unconditionally inserts debug_assertions, citing older native analyzer behavior. The current native Cargo model starts from its rustc cfg query and adds test and rust_analyzer to local crates; it does not unconditionally add debug_assertions for application crates.",
+  "limits": [
+    "This records a cfg discrepancy despite passing selected diagnostic parity. It is not a completed editor acceptance gate or a waiver. Rust-analyzer may derive other built-in cfgs from the target; their complete effective union has not been compared here."
+  ],
+  "native_cfg_query": [
+    "/nix/store/i6rnwxfhg5w34z1hg8axsr7ylk4751x0-aos-bazel-toolchains-1/bin/rustc",
+    "-C",
+    "target-feature=+crt-static",
+    "-C",
+    "relocation-model=static",
+    "-L",
+    "/nix/store/1is6f14gpfys4b4b03m8cgdkqi9im94s-aos-bazel-static-libraries-1/static/lib",
+    "-O",
+    "--target",
+    "x86_64-unknown-linux-gnu",
+    "--print",
+    "cfg"
+  ],
+  "native_cfg_replay": [
+    "panic=\"unwind\"",
+    "target_abi=\"\"",
+    "target_arch=\"x86_64\"",
+    "target_endian=\"little\"",
+    "target_env=\"gnu\"",
+    "target_family=\"unix\"",
+    "target_feature=\"crt-static\"",
+    "target_feature=\"fxsr\"",
+    "target_feature=\"sse\"",
+    "target_feature=\"sse2\"",
+    "target_has_atomic=\"16\"",
+    "target_has_atomic=\"32\"",
+    "target_has_atomic=\"64\"",
+    "target_has_atomic=\"8\"",
+    "target_has_atomic=\"ptr\"",
+    "target_has_atomic_primitive_alignment=\"16\"",
+    "target_has_atomic_primitive_alignment=\"32\"",
+    "target_has_atomic_primitive_alignment=\"64\"",
+    "target_has_atomic_primitive_alignment=\"8\"",
+    "target_has_atomic_primitive_alignment=\"ptr\"",
+    "target_os=\"linux\"",
+    "target_pointer_width=\"64\"",
+    "target_vendor=\"unknown\"",
+    "unix"
+  ],
+  "native_editor": "/nix/store/kzwp5zqap6qva6l9av3r83apijk42c02-aos-bazel-guest-editor-cargo-oracle",
+  "native_trace_sha256": "84701430a28d828934dcafdf6a6f51bb3a36b59e7a1caf40b4c1ae82d99afc9c",
+  "native_workspace_source_sha256": "8f35dc3a9251e1a5953c4597af7cbda2e10214146bd1ebc194325b1c60c1ad1c",
+  "qualified_editor": "/nix/store/5k4ygzv3b9afqqsbwd4fls9425gpfzkq-aos-bazel-guest-editor",
+  "required_work": "Qualify built-in target cfg propagation separately from execution-tool profiles and selected diagnostic identity parity. Preserve target static flags in the native editor configuration, and avoid injecting target flags into host macro compilation.",
+  "rust_analyzer_source_archive": "/nix/store/rjla2n2jag8m7n8f2515s3rb74g985af-rustc-1.98.1-src.tar.gz",
+  "schema_version": 1,
+  "status": "OPEN"
+}

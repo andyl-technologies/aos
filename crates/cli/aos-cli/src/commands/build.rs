@@ -127,6 +127,8 @@ pub struct RemoteBuildResult {
 /// Returns an error when the token is missing or any local instantiation,
 /// closure export, authentication, upload, or remote build-stream operation
 /// fails.
+// Keep the remote credential, view, and build selectors explicit at the I/O boundary.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_remote_attr(
     nix: &NixRunner,
     printer: &Printer,

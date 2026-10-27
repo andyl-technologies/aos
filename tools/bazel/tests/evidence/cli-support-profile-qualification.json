@@ -1,0 +1,547 @@
+{
+  "all_selected_source_bytes_match_checkout": true,
+  "cargo_profiles": {
+    "aos_cli_ui": {
+      "debug-assertions": "on",
+      "embed-bitcode": "no",
+      "extra-filename": "-3ada2e8452a178df",
+      "incremental": "/build/target/debug/incremental",
+      "opt-level": "s",
+      "strip": "debuginfo"
+    },
+    "aos_closure_analysis": {
+      "debug-assertions": "on",
+      "embed-bitcode": "no",
+      "extra-filename": "-51097723c6e2606b",
+      "incremental": "/build/target/debug/incremental",
+      "opt-level": "s",
+      "strip": "debuginfo"
+    },
+    "aos_nix_docs": {
+      "debug-assertions": "on",
+      "embed-bitcode": "no",
+      "extra-filename": "-e1dce90a44ad0bcf",
+      "incremental": "/build/target/debug/incremental",
+      "opt-level": "s",
+      "strip": "debuginfo"
+    },
+    "curve25519_dalek_derive": {
+      "embed-bitcode": "no",
+      "extra-filename": "-705e91269dee8f3a",
+      "strip": "debuginfo"
+    },
+    "darling_macro": {
+      "embed-bitcode": "no",
+      "extra-filename": "-068ce5120f433215",
+      "strip": "debuginfo"
+    },
+    "derive_more_impl": {
+      "embed-bitcode": "no",
+      "extra-filename": "-f8ae0b6f0babf0aa",
+      "strip": "debuginfo"
+    },
+    "document_features": {
+      "embed-bitcode": "no",
+      "extra-filename": "-5017d18a6c7663de",
+      "strip": "debuginfo"
+    },
+    "indoc": {
+      "embed-bitcode": "no",
+      "extra-filename": "-61a5fdcca49b0ca8",
+      "strip": "debuginfo"
+    },
+    "instability": {
+      "embed-bitcode": "no",
+      "extra-filename": "-fcf0af965b490990",
+      "strip": "debuginfo"
+    },
+    "rustversion": {
+      "embed-bitcode": "no",
+      "extra-filename": "-75fff3b48a1562e9",
+      "strip": "debuginfo"
+    },
+    "serde_derive": {
+      "embed-bitcode": "no",
+      "extra-filename": "-7360776edeed3cf8",
+      "strip": "debuginfo"
+    },
+    "strum_macros": {
+      "embed-bitcode": "no",
+      "extra-filename": "-a98eaaa43fd5e41b",
+      "strip": "debuginfo"
+    },
+    "thiserror_impl": {
+      "embed-bitcode": "no",
+      "extra-filename": "-8a76c79da10495b8",
+      "strip": "debuginfo"
+    },
+    "tokio_macros": {
+      "embed-bitcode": "no",
+      "extra-filename": "-d545faf06da1c2a2",
+      "strip": "debuginfo"
+    }
+  },
+  "cargo_trace_sha256": "aa9e13eb5cc2d74db2a7b4907444c4e22e17ddf98f278b260590d01e5cab86ae",
+  "checkout_parent": "b02388f31259ccc6af1414dccd6f4fdbcd18e152",
+  "command": "nix-build default.nix -A checks.build.bazel.cli-support.all --no-out-link --max-jobs 2 --cores 4 --option substitute false",
+  "declarations_sha256": {
+    "tests/build/_bazel-cli-support.nix": "e9d03d3f253453fbae96d81e816ac5f22bbaf97515caf19a72fb9c815b893594",
+    "tests/build/_bazel-rust-family.nix": "898d464ed7885211e148d2eca9b8a29f43a26cc3aafa20793eb6cd4f29cfff64",
+    "tests/build/_bazel-rust-test-profiles.nix": "fabfdd9201b9a2e45b9270e6b7ae0f90c7b3bfaee95dca602ce07bbbac4bf198"
+  },
+  "default": {
+    "doctests": {
+      "//crates/cli/aos-cli-ui:doc": {
+        "src/invocation.rs - invocation::binary_name (line 20) - compile": "ok",
+        "src/invocation.rs - invocation::package_manager_command (line 55) - compile": "ok",
+        "src/invocation.rs - invocation::package_registry_command (line 84) - compile": "ok"
+      },
+      "//crates/cli/aos-closure-analysis:doc": {
+        "src/scan/classify.rs - scan::classify::split_store_path (line 135) - compile": "ok",
+        "src/target.rs - target::resolve (line 34) - compile": "ok"
+      },
+      "//crates/cli/aos-nix-docs:doc": {}
+    },
+    "examples": [],
+    "first_party_features": {
+      "aos-cli-ui": [
+        []
+      ],
+      "aos-closure-analysis": [
+        []
+      ],
+      "aos-core": [
+        []
+      ],
+      "aos-nar": [
+        [
+          "default"
+        ]
+      ],
+      "aos-nix": [
+        []
+      ],
+      "aos-nix-docs": [
+        []
+      ],
+      "aos-transfer": [
+        []
+      ]
+    },
+    "ignored_cases": 0,
+    "ignored_inventory": {},
+    "libtest_reports": 3,
+    "parity_sha256": "ace867e137f5bb67ede08f83409f918fc93c853ea3301fc36101fa4a4c87376b",
+    "test_cases": 62,
+    "upstream_feature_identities": 124
+  },
+  "editor": {
+    "aggregate_statistics_comparable": false,
+    "analysis": {
+      "complete_inference": false,
+      "exprs": {
+        "partial": 0,
+        "total": 17587,
+        "unknown": 1
+      },
+      "panics": 0,
+      "pats": {
+        "partial": 0,
+        "total": 2589,
+        "unknown": 0
+      }
+    },
+    "comparison_scope": [
+      "crates/cli/aos-cli-ui",
+      "crates/cli/aos-closure-analysis",
+      "crates/cli/aos-nix-docs"
+    ],
+    "diagnostic_multiplicity_comparable": false,
+    "diagnostics": [
+      [
+        "crates/cli/aos-closure-analysis/src/scan/mod.rs",
+        "316:32",
+        "316:35",
+        "type",
+        "{unknown}"
+      ]
+    ],
+    "roots": {
+      "crates/cli/aos-cli-ui/src/lib.rs": [],
+      "crates/cli/aos-closure-analysis/src/lib.rs": [],
+      "crates/cli/aos-nix-docs/src/lib.rs": []
+    },
+    "unattributed_cargo_diagnostics": []
+  },
+  "editor_cargo_trace_sha256": "6dc1fcc01188031f6565dffd7b3e2fb805401fa2c2a66116d895908c952c0874",
+  "editor_flags": {
+    "execution": [
+      "-Copt-level=s",
+      "-Cdebuginfo=0",
+      "-Cdebug-assertions=yes",
+      "-Coverflow-checks=yes"
+    ],
+    "target": [
+      "-Copt-level=s",
+      "-Cdebuginfo=0",
+      "-Cdebug-assertions=yes",
+      "-Coverflow-checks=yes"
+    ]
+  },
+  "evidence_sha256": {
+    "editor-parity.json": "80bf609c3af1669738526eea8df66467cf08ffc200ecc1e66d82c8df6cdf90b6",
+    "execution-profiles.json": "f32eaf08ad10f43ec1c0d539d60ac6849e6cde1aa8467210b45cbedf49aae3c2",
+    "inventory.json": "7c3dcab168b85063f28c5057455f98e95835db6e7a5a5dc99f8e5c5d86d3bbfd",
+    "parity.json": "ace867e137f5bb67ede08f83409f918fc93c853ea3301fc36101fa4a4c87376b",
+    "production-parity.json": "ed77d5429c441eb31a38ff91c62abe01163e4088313c5683fb017f21e367d426"
+  },
+  "family": "cli-support",
+  "limits": [
+    "Native x86_64 ordinary tests and existing feature variants, Clippy, documentation, formatting and selected-package editor comparison only.",
+    "Selected editor diagnostic identities match; raw multiplicity and aggregate Cargo statistics are not comparable across the differently sized models. Inference remains incomplete as recorded.",
+    "The selected test and macro audit checks scalar profiles against actual Cargo invocations; it does not establish complete compiler defaults, ABI, native libraries or linker equivalence.",
+    "Ordinary aos-dev enrollment, shared-cache qualification, foreign platforms, production cutover and performance acceptance remain separate.",
+    "Production feature inventories match; this is not a complete production compiler/default, native ABI or linker audit."
+  ],
+  "paths": {
+    "all": "/nix/store/5c8d8rlrshksx705p55mdq9vamb6i2jf-aos-bazel-cli-support-qualified-checks",
+    "cargo": "/nix/store/wqms132x01vq2lpgw94l5g2077b3b9mq-aos-bazel-cli-support-cargo-oracle-1",
+    "developer-build": "/nix/store/zgff66zv8kd0l7m4lfk8j48wnf8qnfgx-aos-bazel-cli-support-developer-tools-1",
+    "developer-tests": "/nix/store/ynyqg9y1dwy15dz54v2zixz9gffp9ncg-aos-bazel-cli-support-format-1",
+    "editor": "/nix/store/q6fvbs8mvmss6ms5iymm422nrxda9wny-aos-bazel-cli-support-editor",
+    "editor-cargo-oracle": "/nix/store/axw5fql1zrkfglca61hsbxml5grw4pg2-aos-bazel-cli-support-editor-cargo-oracle",
+    "editor-parity": "/nix/store/xx1k6v7hqgaf97dda3xxfakasxx6y3ic-aos-bazel-cli-support-editor-parity",
+    "editorWorkspace": {
+      "configuration": "/nix/store/8fzvddiscmqhndljjv201chvgj6mkiil-aos-bazel-configuration.json",
+      "source": "/nix/store/kvgw11rhha0m68pxprrbx5vp6b4nr3q5-aos-bazel-workspace"
+    },
+    "execution-profiles": "/nix/store/8nym9wpnrxajsasbr20riqkvnf3dndv5-aos-bazel-cli-support-execution-profiles",
+    "tests": "/nix/store/g4wgp5vrdha7dvmfapmmvx4fyp4waab6-aos-bazel-cli-support-tests-1",
+    "workspace": {
+      "configuration": "/nix/store/cskp8z2dvd5pyr8yhbddl8ydb58wkyfi-aos-bazel-configuration.json",
+      "source": "/nix/store/kvgw11rhha0m68pxprrbx5vp6b4nr3q5-aos-bazel-workspace"
+    }
+  },
+  "production_feature_parity": {
+    "first_party_features": {
+      "aos-cli-ui": [
+        []
+      ],
+      "aos-closure-analysis": [
+        []
+      ],
+      "aos-core": [
+        []
+      ],
+      "aos-nar": [
+        [
+          "default"
+        ]
+      ],
+      "aos-nix": [
+        []
+      ],
+      "aos-nix-docs": [
+        []
+      ],
+      "aos-transfer": [
+        []
+      ]
+    },
+    "upstream_feature_identities": 121
+  },
+  "profiles": {
+    "//crates/cli/aos-cli-ui:unit_binary": {
+      "cacheHit": false,
+      "compiler_options": {
+        "debug-assertions": "yes",
+        "debuginfo": "0",
+        "embed-bitcode": "no",
+        "extra-filename": "-2621341665",
+        "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+        "opt-level": "s",
+        "overflow-checks": "yes",
+        "strip": "none"
+      },
+      "exitCode": 0,
+      "runner": "linux-sandbox"
+    },
+    "//crates/cli/aos-closure-analysis:unit_binary": {
+      "cacheHit": false,
+      "compiler_options": {
+        "debug-assertions": "yes",
+        "debuginfo": "0",
+        "embed-bitcode": "no",
+        "extra-filename": "-188365633",
+        "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+        "opt-level": "s",
+        "overflow-checks": "yes",
+        "strip": "none"
+      },
+      "exitCode": 0,
+      "runner": "linux-sandbox"
+    },
+    "//crates/cli/aos-nix-docs:unit_binary": {
+      "cacheHit": false,
+      "compiler_options": {
+        "debug-assertions": "yes",
+        "debuginfo": "0",
+        "embed-bitcode": "no",
+        "extra-filename": "-1738022945",
+        "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+        "opt-level": "s",
+        "overflow-checks": "yes",
+        "strip": "none"
+      },
+      "exitCode": 0,
+      "runner": "linux-sandbox"
+    },
+    "@@+aos_tools_repository+aos_cli_support_crates__curve25519-dalek-derive-0.1.1//:curve25519_dalek_derive": {
+      "cacheHit": false,
+      "compiler_options": {
+        "debug-assertions": "yes",
+        "debuginfo": "0",
+        "embed-bitcode": "no",
+        "extra-filename": "-990489676",
+        "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+        "opt-level": "0",
+        "overflow-checks": "yes",
+        "strip": "debuginfo"
+      },
+      "exitCode": 0,
+      "runner": "linux-sandbox"
+    },
+    "@@+aos_tools_repository+aos_cli_support_crates__darling_macro-0.23.0//:darling_macro": {
+      "cacheHit": false,
+      "compiler_options": {
+        "debug-assertions": "yes",
+        "debuginfo": "0",
+        "embed-bitcode": "no",
+        "extra-filename": "-1274385037",
+        "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+        "opt-level": "0",
+        "overflow-checks": "yes",
+        "strip": "debuginfo"
+      },
+      "exitCode": 0,
+      "runner": "linux-sandbox"
+    },
+    "@@+aos_tools_repository+aos_cli_support_crates__derive_more-impl-2.1.1//:derive_more_impl": {
+      "cacheHit": false,
+      "compiler_options": {
+        "debug-assertions": "yes",
+        "debuginfo": "0",
+        "embed-bitcode": "no",
+        "extra-filename": "-1976939469",
+        "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+        "opt-level": "0",
+        "overflow-checks": "yes",
+        "strip": "debuginfo"
+      },
+      "exitCode": 0,
+      "runner": "linux-sandbox"
+    },
+    "@@+aos_tools_repository+aos_cli_support_crates__document-features-0.2.12//:document_features": {
+      "cacheHit": false,
+      "compiler_options": {
+        "debug-assertions": "yes",
+        "debuginfo": "0",
+        "embed-bitcode": "no",
+        "extra-filename": "-510859729",
+        "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+        "opt-level": "0",
+        "overflow-checks": "yes",
+        "strip": "debuginfo"
+      },
+      "exitCode": 0,
+      "runner": "linux-sandbox"
+    },
+    "@@+aos_tools_repository+aos_cli_support_crates__indoc-2.0.7//:indoc": {
+      "cacheHit": false,
+      "compiler_options": {
+        "debug-assertions": "yes",
+        "debuginfo": "0",
+        "embed-bitcode": "no",
+        "extra-filename": "-1321216998",
+        "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+        "opt-level": "0",
+        "overflow-checks": "yes",
+        "strip": "debuginfo"
+      },
+      "exitCode": 0,
+      "runner": "linux-sandbox"
+    },
+    "@@+aos_tools_repository+aos_cli_support_crates__instability-0.3.12//:instability": {
+      "cacheHit": false,
+      "compiler_options": {
+        "debug-assertions": "yes",
+        "debuginfo": "0",
+        "embed-bitcode": "no",
+        "extra-filename": "-2414522399",
+        "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+        "opt-level": "0",
+        "overflow-checks": "yes",
+        "strip": "debuginfo"
+      },
+      "exitCode": 0,
+      "runner": "linux-sandbox"
+    },
+    "@@+aos_tools_repository+aos_cli_support_crates__rustversion-1.0.22//:rustversion": {
+      "cacheHit": false,
+      "compiler_options": {
+        "debug-assertions": "yes",
+        "debuginfo": "0",
+        "embed-bitcode": "no",
+        "extra-filename": "-1165060657",
+        "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+        "opt-level": "0",
+        "overflow-checks": "yes",
+        "strip": "debuginfo"
+      },
+      "exitCode": 0,
+      "runner": "linux-sandbox"
+    },
+    "@@+aos_tools_repository+aos_cli_support_crates__serde_derive-1.0.228//:serde_derive": {
+      "cacheHit": false,
+      "compiler_options": {
+        "debug-assertions": "yes",
+        "debuginfo": "0",
+        "embed-bitcode": "no",
+        "extra-filename": "-290205964",
+        "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+        "opt-level": "0",
+        "overflow-checks": "yes",
+        "strip": "debuginfo"
+      },
+      "exitCode": 0,
+      "runner": "linux-sandbox"
+    },
+    "@@+aos_tools_repository+aos_cli_support_crates__strum_macros-0.28.0//:strum_macros": {
+      "cacheHit": false,
+      "compiler_options": {
+        "debug-assertions": "yes",
+        "debuginfo": "0",
+        "embed-bitcode": "no",
+        "extra-filename": "-576691126",
+        "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+        "opt-level": "0",
+        "overflow-checks": "yes",
+        "strip": "debuginfo"
+      },
+      "exitCode": 0,
+      "runner": "linux-sandbox"
+    },
+    "@@+aos_tools_repository+aos_cli_support_crates__thiserror-impl-2.0.18//:thiserror_impl": {
+      "cacheHit": false,
+      "compiler_options": {
+        "debug-assertions": "yes",
+        "debuginfo": "0",
+        "embed-bitcode": "no",
+        "extra-filename": "-300553960",
+        "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+        "opt-level": "0",
+        "overflow-checks": "yes",
+        "strip": "debuginfo"
+      },
+      "exitCode": 0,
+      "runner": "linux-sandbox"
+    },
+    "@@+aos_tools_repository+aos_cli_support_crates__tokio-macros-2.7.0//:tokio_macros": {
+      "cacheHit": false,
+      "compiler_options": {
+        "debug-assertions": "yes",
+        "debuginfo": "0",
+        "embed-bitcode": "no",
+        "extra-filename": "-690998939",
+        "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+        "opt-level": "0",
+        "overflow-checks": "yes",
+        "strip": "debuginfo"
+      },
+      "exitCode": 0,
+      "runner": "linux-sandbox"
+    }
+  },
+  "qualified_checks": "/nix/store/5c8d8rlrshksx705p55mdq9vamb6i2jf-aos-bazel-cli-support-qualified-checks",
+  "runs": {
+    "developer-build": {
+      "action_cache_hits": 0,
+      "action_mnemonics": {
+        "CargoBuildScriptRun": 20,
+        "Clippy": 6,
+        "ExtractCargoTomlEnvVars": 141,
+        "Rustc": 156,
+        "Rustdoc": 3
+      },
+      "build": "/nix/store/zgff66zv8kd0l7m4lfk8j48wnf8qnfgx-aos-bazel-cli-support-developer-tools-1",
+      "executed_actions": 326,
+      "execution_sha256": "f14f41af5d3a167a2065525be05fea690fe9d1db37f1e3d30eb62de9d7292992"
+    },
+    "developer-tests": {
+      "action_cache_hits": 0,
+      "action_mnemonics": {
+        "Rustc": 5,
+        "TestRunner": 6
+      },
+      "build": "/nix/store/ynyqg9y1dwy15dz54v2zixz9gffp9ncg-aos-bazel-cli-support-format-1",
+      "executed_actions": 11,
+      "execution_sha256": "cf759c9e6aca918c7f9a9fec77d16b73b6364ee923ce7cff460a7abfbeba92b5"
+    },
+    "editor": {
+      "action_cache_hits": 0,
+      "action_mnemonics": {
+        "CargoBuildScriptRun": 20,
+        "ExtractCargoTomlEnvVars": 141,
+        "Rustc": 159
+      },
+      "executed_actions": 320,
+      "execution_sha256": "663a2d2260cac79ee653da435afc7effb39ee7c9e7ad5d90be92dd4c85765217"
+    },
+    "production": {
+      "action_cache_hits": 0,
+      "action_mnemonics": {
+        "CargoBuildScriptRun": 19,
+        "ExtractCargoTomlEnvVars": 137,
+        "Rustc": 152
+      },
+      "build": "/nix/store/a8mycknv2al3wis2d4cj8g4skjhk0alq-aos-bazel-cli-support-production-1",
+      "executed_actions": 308,
+      "execution_sha256": "adbf33f9ee5720147ea4e1b2fb65a7d86eff77040f118650736d7a10942d0d3b"
+    },
+    "tests": {
+      "action_cache_hits": 0,
+      "action_mnemonics": {
+        "CargoBuildScriptRun": 20,
+        "ExtractCargoTomlEnvVars": 141,
+        "Rustc": 161,
+        "RustdocTestWriter": 3,
+        "TestRunner": 9
+      },
+      "build": "/nix/store/g4wgp5vrdha7dvmfapmmvx4fyp4waab6-aos-bazel-cli-support-tests-1",
+      "executed_actions": 334,
+      "execution_sha256": "18b69847609fb601b343209c294e67df433cdbf399b9a3afa818f238a98caf65"
+    }
+  },
+  "schema_version": 1,
+  "selected_source_differences_from_checkout": {},
+  "selected_source_files": 64,
+  "source_inventory_refresh": {
+    "additional_selected_targets": [
+      "//crates/cli/aos-cli-ui:lib",
+      "//crates/cli/aos-cli-ui:production_license_closure",
+      "//crates/cli/aos-closure-analysis:lib",
+      "//crates/cli/aos-closure-analysis:production_license_closure",
+      "//crates/cli/aos-nix-docs:lib",
+      "//crates/cli/aos-nix-docs:production_license_closure"
+    ],
+    "configured_export": "/nix/store/s7p224z6abxf5a9mhhb39a5i82ln8k5y-aos-bazel-cli-support-inventory-1",
+    "configured_targets": 209,
+    "contracts": 176,
+    "existing_contracts_and_source_files_preserved": true,
+    "inventory_sha256": "cff38f5591da0da7d31c91758df25a020b79c4712075c9b2feb444aef12c4e39",
+    "prior_failure": "The strict aggregate rejected its production analysis targets because the checked-in inventory selected only test/developer targets. The conservative configured export adds the six actual production library/license targets.",
+    "source_files": 65
+  },
+  "status": "PASS",
+  "variants": {}
+}

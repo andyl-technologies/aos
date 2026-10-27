@@ -831,8 +831,12 @@ fn qemu_plugin_elf_fixture_with_symbol_section(symbol_section: u16) -> Vec<u8> {
 
 #[test]
 fn cli_hermetic_qemu_discovery_rejects_text_artifact_impersonation() -> Result<(), Box<dyn Error>> {
+    use std::os::unix::fs::PermissionsExt;
+
     let temp = TempDir::new()?;
     let (qemu, plugin) = temp_qemu_artifacts(&temp)?;
+    // Bazel executables are read-only; this private fixture is deliberately mutated.
+    fs::set_permissions(&qemu, fs::Permissions::from_mode(0o700))?;
     fs::write(&qemu, b"#!/bin/false\n")?;
     let error = validate_qemu_artifacts(Path::new(&qemu), Path::new(&plugin))
         .expect_err("a text file must not impersonate the patched executable");

@@ -8,6 +8,10 @@ impl RpcService {
     /// # Errors
     ///
     /// Returns an authentication, authorization, validation, not-found, or database error.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "Uses the portable Hub clock for request timing and runtime budgets."
+    )]
     pub async fn watch_operation(
         &self,
         auth: Option<&str>,
@@ -39,8 +43,7 @@ impl RpcService {
                 operation.state.as_str(),
                 "succeeded" | "failed" | "cancelled"
             );
-            let changed =
-                after_version.map_or(true, |version| operation.resource_version > version);
+            let changed = after_version.is_none_or(|version| operation.resource_version > version);
             if changed || terminal || started.elapsed() >= timeout {
                 return Ok(pb::WatchOperationResponse {
                     operation: Some(self.operation_detail(&operation).await?),

@@ -1,0 +1,288 @@
+{
+  "derivation": "/nix/store/m0kvkj1c4hirsyzgvc9afi13a7sby1rs-aos-rust-analyzer-execution-profile-probe.drv",
+  "derivation_sha256": "640ea58e497095c840bbd47cff5ee2ea354b7630b7d8e0f14802814e7999faa4",
+  "limits": [
+    "This is an actual rust-analyzer invocation over a minimal local Cargo workspace, not the complete CLI editor graph.",
+    "Two source-built execution tools are compiled for each configuration. First-party target code is analyzed rather than compiled by this probe.",
+    "The explicit configuration uses the CLI editor oracle RUSTFLAGS; those flags reach both the generator and procedural macro.",
+    "Absent compiler options remain absent. Complete compiler-default, ABI, linker, target-code and whole-model inference equivalence are not established here."
+  ],
+  "output": "/nix/store/4vqqma0zy5kg89g5x257rddlzm0zpq2q-aos-rust-analyzer-execution-profile-probe",
+  "profiles": {
+    "default": {
+      "analysis": {
+        "complete_inference": true,
+        "exprs": {
+          "partial": 0,
+          "total": 227,
+          "unknown": 0
+        },
+        "panics": 0,
+        "pats": {
+          "partial": 0,
+          "total": 32,
+          "unknown": 0
+        }
+      },
+      "files_sha256": {
+        "-arguments.jsonl": "34ee1ca22aa105a19e5177584356fd5abc123ee93feccec594bbf8774ea6ec4e",
+        ".csv": "af137d714526ae1229374d9dfe9628892f7d8db91b8ce329a0c409eec6136a43",
+        ".log": "a98cf503a9aeec2386c1253f4026a8ddc7f22b6de9d7aa5dde8ac96df7d1be5e"
+      },
+      "units": [
+        {
+          "arguments": [
+            "/nix/store/i6rnwxfhg5w34z1hg8axsr7ylk4751x0-aos-bazel-toolchains-1/bin/rustc",
+            "--crate-name",
+            "build_script_build",
+            "--edition=2024",
+            "build.rs",
+            "--error-format=json",
+            "--json=diagnostic-rendered-ansi,artifacts,future-incompat",
+            "--crate-type",
+            "bin",
+            "--emit=dep-info,link",
+            "-C",
+            "embed-bitcode=no",
+            "--check-cfg",
+            "cfg(docsrs,test)",
+            "--check-cfg",
+            "cfg(feature, values())",
+            "-C",
+            "metadata=551325425262bdf6",
+            "-C",
+            "extra-filename=-7f4d1be877358eb8",
+            "--out-dir",
+            "/build/target-default/debug/build/aos-execution-profile-oracle-7f4d1be877358eb8",
+            "-C",
+            "incremental=/build/target-default/debug/incremental",
+            "-L",
+            "dependency=/build/target-default/debug/deps"
+          ],
+          "compiler_options": {
+            "cfg": [],
+            "codegen": [
+              "embed-bitcode=no",
+              "metadata=551325425262bdf6",
+              "extra-filename=-7f4d1be877358eb8",
+              "incremental=/build/target-default/debug/incremental"
+            ],
+            "edition": "2024",
+            "effective_scalar_codegen": {
+              "embed-bitcode": "no",
+              "extra-filename": "-7f4d1be877358eb8",
+              "incremental": "/build/target-default/debug/incremental"
+            },
+            "target": null,
+            "test": false
+          },
+          "source": "build.rs"
+        },
+        {
+          "arguments": [
+            "/nix/store/i6rnwxfhg5w34z1hg8axsr7ylk4751x0-aos-bazel-toolchains-1/bin/rustc",
+            "--crate-name",
+            "profile_macro",
+            "--edition=2024",
+            "profile-macro/src/lib.rs",
+            "--error-format=json",
+            "--json=diagnostic-rendered-ansi,artifacts,future-incompat",
+            "--crate-type",
+            "proc-macro",
+            "--emit=dep-info,link",
+            "-C",
+            "prefer-dynamic",
+            "-C",
+            "embed-bitcode=no",
+            "--check-cfg",
+            "cfg(docsrs,test)",
+            "--check-cfg",
+            "cfg(feature, values())",
+            "-C",
+            "metadata=6c6613b19286a207",
+            "-C",
+            "extra-filename=-7c8f19e97a8b9090",
+            "--out-dir",
+            "/build/target-default/debug/deps",
+            "-C",
+            "incremental=/build/target-default/debug/incremental",
+            "-L",
+            "dependency=/build/target-default/debug/deps",
+            "--extern",
+            "proc_macro"
+          ],
+          "compiler_options": {
+            "cfg": [],
+            "codegen": [
+              "prefer-dynamic",
+              "embed-bitcode=no",
+              "metadata=6c6613b19286a207",
+              "extra-filename=-7c8f19e97a8b9090",
+              "incremental=/build/target-default/debug/incremental"
+            ],
+            "edition": "2024",
+            "effective_scalar_codegen": {
+              "embed-bitcode": "no",
+              "extra-filename": "-7c8f19e97a8b9090",
+              "incremental": "/build/target-default/debug/incremental"
+            },
+            "target": null,
+            "test": false
+          },
+          "source": "profile-macro/src/lib.rs"
+        }
+      ]
+    },
+    "explicit": {
+      "analysis": {
+        "complete_inference": true,
+        "exprs": {
+          "partial": 0,
+          "total": 227,
+          "unknown": 0
+        },
+        "panics": 0,
+        "pats": {
+          "partial": 0,
+          "total": 32,
+          "unknown": 0
+        }
+      },
+      "files_sha256": {
+        "-arguments.jsonl": "9dc214cbe08ab5445d38b4b11a6ac325e6cbc13194b7f41575b00d25b117e043",
+        ".csv": "af137d714526ae1229374d9dfe9628892f7d8db91b8ce329a0c409eec6136a43",
+        ".log": "70857d19f45ccdf2b27ce0aac20ebaedc9aa81e4d89f5f992a5391c34600143a"
+      },
+      "units": [
+        {
+          "arguments": [
+            "/nix/store/i6rnwxfhg5w34z1hg8axsr7ylk4751x0-aos-bazel-toolchains-1/bin/rustc",
+            "--crate-name",
+            "build_script_build",
+            "--edition=2024",
+            "build.rs",
+            "--error-format=json",
+            "--json=diagnostic-rendered-ansi,artifacts,future-incompat",
+            "--crate-type",
+            "bin",
+            "--emit=dep-info,link",
+            "-C",
+            "embed-bitcode=no",
+            "--check-cfg",
+            "cfg(docsrs,test)",
+            "--check-cfg",
+            "cfg(feature, values())",
+            "-C",
+            "metadata=551325425262bdf6",
+            "-C",
+            "extra-filename=-2513b5f7aa926d6e",
+            "--out-dir",
+            "/build/target-explicit/debug/build/aos-execution-profile-oracle-2513b5f7aa926d6e",
+            "-C",
+            "incremental=/build/target-explicit/debug/incremental",
+            "-L",
+            "dependency=/build/target-explicit/debug/deps",
+            "-Copt-level=s",
+            "-Cdebuginfo=0",
+            "-Cdebug-assertions=yes",
+            "-Coverflow-checks=yes"
+          ],
+          "compiler_options": {
+            "cfg": [],
+            "codegen": [
+              "embed-bitcode=no",
+              "metadata=551325425262bdf6",
+              "extra-filename=-2513b5f7aa926d6e",
+              "incremental=/build/target-explicit/debug/incremental",
+              "opt-level=s",
+              "debuginfo=0",
+              "debug-assertions=yes",
+              "overflow-checks=yes"
+            ],
+            "edition": "2024",
+            "effective_scalar_codegen": {
+              "debug-assertions": "yes",
+              "debuginfo": "0",
+              "embed-bitcode": "no",
+              "extra-filename": "-2513b5f7aa926d6e",
+              "incremental": "/build/target-explicit/debug/incremental",
+              "opt-level": "s",
+              "overflow-checks": "yes"
+            },
+            "target": null,
+            "test": false
+          },
+          "source": "build.rs"
+        },
+        {
+          "arguments": [
+            "/nix/store/i6rnwxfhg5w34z1hg8axsr7ylk4751x0-aos-bazel-toolchains-1/bin/rustc",
+            "--crate-name",
+            "profile_macro",
+            "--edition=2024",
+            "profile-macro/src/lib.rs",
+            "--error-format=json",
+            "--json=diagnostic-rendered-ansi,artifacts,future-incompat",
+            "--crate-type",
+            "proc-macro",
+            "--emit=dep-info,link",
+            "-C",
+            "prefer-dynamic",
+            "-C",
+            "embed-bitcode=no",
+            "--check-cfg",
+            "cfg(docsrs,test)",
+            "--check-cfg",
+            "cfg(feature, values())",
+            "-C",
+            "metadata=6c6613b19286a207",
+            "-C",
+            "extra-filename=-41c0f0a4f21b9f8c",
+            "--out-dir",
+            "/build/target-explicit/debug/deps",
+            "-C",
+            "incremental=/build/target-explicit/debug/incremental",
+            "-L",
+            "dependency=/build/target-explicit/debug/deps",
+            "--extern",
+            "proc_macro",
+            "-Copt-level=s",
+            "-Cdebuginfo=0",
+            "-Cdebug-assertions=yes",
+            "-Coverflow-checks=yes"
+          ],
+          "compiler_options": {
+            "cfg": [],
+            "codegen": [
+              "prefer-dynamic",
+              "embed-bitcode=no",
+              "metadata=6c6613b19286a207",
+              "extra-filename=-41c0f0a4f21b9f8c",
+              "incremental=/build/target-explicit/debug/incremental",
+              "opt-level=s",
+              "debuginfo=0",
+              "debug-assertions=yes",
+              "overflow-checks=yes"
+            ],
+            "edition": "2024",
+            "effective_scalar_codegen": {
+              "debug-assertions": "yes",
+              "debuginfo": "0",
+              "embed-bitcode": "no",
+              "extra-filename": "-41c0f0a4f21b9f8c",
+              "incremental": "/build/target-explicit/debug/incremental",
+              "opt-level": "s",
+              "overflow-checks": "yes"
+            },
+            "target": null,
+            "test": false
+          },
+          "source": "profile-macro/src/lib.rs"
+        }
+      ]
+    }
+  },
+  "sandbox_recipe": "#!/nix/store/071yhimnxva604hfim2d7m51k593jpks-bash-5.3p15/bin/bash\nset -eu\nset -o pipefail 2>/dev/null || true\n\n# Restore env-var attrs when running with __structuredAttrs = true.\n# Idempotent: when NIX_ATTRS_SH_FILE isn't set (the default), this\n# is a no-op.\n#\n# Under __structuredAttrs Nix exposes `outputs` as a bash associative\n# array (declare -A outputs=([out]=/nix/store/\u2026 [dev]=/nix/store/\u2026))\n# but does NOT set each output name as a scalar. Re-declare them so\n# phase scripts that reference $out / $dev / etc. keep working.\nif [ -n \"${NIX_ATTRS_SH_FILE:-}\" ]; then\n  . \"$NIX_ATTRS_SH_FILE\"\n  if declare -p outputs 2>/dev/null | grep -q 'declare -A'; then\n    AOS_OUTPUT_NAMES=\"${!outputs[*]}\"\n    for __o in \"${!outputs[@]}\"; do\n      declare -g \"$__o=${outputs[$__o]}\"\n    done\n    unset __o\n  else\n    AOS_OUTPUT_NAMES=\"${outputs:-out}\"\n  fi\nelse\n  AOS_OUTPUT_NAMES=\"${outputs:-out}\"\nfi\nexport AOS_OUTPUT_NAMES\n\n# Source the stdenv setup if available\nif [ -n \"${stdenv:-}\" ] && [ -f \"$stdenv/setup.sh\" ]; then\n  source \"$stdenv/setup.sh\"\nfi\n\necho \">>> Phase: build\"\nmkdir -p project/profile-macro/src project/src \"$out\"\ncp /nix/store/c01b5dssh0n9dfcmq68xr1qkij842c64-exec-profile/generator.rs project/build.rs\ncp /nix/store/c01b5dssh0n9dfcmq68xr1qkij842c64-exec-profile/test.rs project/src/lib.rs\ncp /nix/store/c01b5dssh0n9dfcmq68xr1qkij842c64-exec-profile/macro.rs project/profile-macro/src/lib.rs\ncat > project/Cargo.toml <<'TOML'\n[package]\nname = \"aos-execution-profile-oracle\"\nversion = \"1.0.0\"\nedition = \"2024\"\n[dependencies]\nprofile_macro = { path = \"profile-macro\" }\n[profile.test]\nopt-level = \"s\"\ndebug = 0\nTOML\ncat > project/profile-macro/Cargo.toml <<'TOML'\n[package]\nname = \"profile_macro\"\nversion = \"1.0.0\"\nedition = \"2024\"\n[lib]\nproc-macro = true\nTOML\ncat > \"$TMPDIR/rustc-trace\" <<'WRAPPER'\n#!/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15/bin/bash\nexec /nix/store/bkypbbb7a2s3wsxgn0hc581yzyq7lpkx-python3-3.14.3/bin/python3 /nix/store/arhh41k3bi1pd5qdaflz2srw4xr7plck-bazel-integration-722/tools/bazel/tests/trace_cargo_rustc.py /nix/store/i6rnwxfhg5w34z1hg8axsr7ylk4751x0-aos-bazel-toolchains-1/bin/rustc \"$@\"\nWRAPPER\nchmod +x \"$TMPDIR/rustc-trace\"\nexport RUSTC=\"$TMPDIR/rustc-trace\"\nexport CARGO=/nix/store/84qxzmj4vqlwkgddhcmcdi1blzli59nw-rust-1.98.1/bin/cargo\nexport CARGO_HOME=\"$TMPDIR/cargo\" CARGO_NET_OFFLINE=true\nexport RUST_SRC_PATH=/nix/store/i6rnwxfhg5w34z1hg8axsr7ylk4751x0-aos-bazel-toolchains-1/developer/rust-src/library\nexport EXPECTED_EXEC_CHECKS=true EXPECTED_TARGET_CHECKS=true\nfor profile in default explicit; do\n  export CARGO_TARGET_DIR=\"$TMPDIR/target-$profile\"\n  export AOS_CARGO_RUSTC_TRACE=\"$out/$profile-arguments.jsonl\"\n  unset RUSTFLAGS\n  if [ \"$profile\" = explicit ]; then\n    export RUSTFLAGS='-Copt-level=s -Cdebuginfo=0 -Cdebug-assertions=yes -Coverflow-checks=yes'\n  fi\n  /nix/store/i6rnwxfhg5w34z1hg8axsr7ylk4751x0-aos-bazel-toolchains-1/developer/bin/rust-analyzer -v -v analysis-stats \"$PWD/project\" --output csv \\\n    --proc-macro-srv /nix/store/i6rnwxfhg5w34z1hg8axsr7ylk4751x0-aos-bazel-toolchains-1/developer/bin/proc-macro-srv \\\n    > \"$out/$profile.csv\" 2> \"$out/$profile.log\"\ndone\n\necho \"<<< Phase: build complete\"\n\necho \">>> Phase: fixup\"\nobject_format=\"${AOS_OBJECT_FORMAT:-elf}\"\n\nif [ -z \"${dontStrip:-}\" ]; then\n  echo \"stripping...\"\n  archive_strip_flags=-S\n  case \"$(strip --help 2>&1 || true)\" in\n    *--enable-deterministic-archives*) archive_strip_flags='-D -S' ;;\n  esac\n  for o in ${AOS_OUTPUT_NAMES:-out}; do\n    eval \"p=\\\"\\${$o:-}\\\"\"\n    [ -d \"$p\" ] || continue\n    find \"$p\" -type f \\( -name '*.so*' -o -name '*.dylib' -o -name '*.dylib.*' \\) \\\n      -exec chmod u+w {} \\; -exec strip --strip-unneeded {} \\; 2>/dev/null || true\n    # Use deterministic headers where strip supports them; older bootstrap\n    # tools still need their original archive-strip operation.\n    find \"$p\" -type f -name '*.a' \\\n      -exec chmod u+w {} \\; -exec strip $archive_strip_flags {} \\; 2>/dev/null || true\n    for d in bin sbin libexec; do\n      if [ -d \"$p/$d\" ]; then\n        find \"$p/$d\" -type f \\\n          -exec chmod u+w {} \\; -exec strip -s {} \\; 2>/dev/null || true\n      fi\n    done\n  done\nfi\n\nif [ \"$object_format\" = elf ] && [ -z \"${dontPatchELF:-}\" ] && command -v patchelf >/dev/null 2>&1; then\n  echo \"shrinking ELF RPATHs...\"\n  for o in ${AOS_OUTPUT_NAMES:-out}; do\n    eval \"p=\\\"\\${$o:-}\\\"\"\n    [ -d \"$p\" ] || continue\n    find \"$p\" -type f \\( -name '*.so*' -o -perm -u+x \\) | while read f; do\n      patchelf --shrink-rpath \"$f\" 2>/dev/null || true\n    done\n  done\nfi\n\n# Cross builds cannot execute their Darwin outputs. Validate every\n# Mach-O candidate structurally and fail if it has the wrong CPU type.\nif [ \"$object_format\" = macho ] && [ -z \"${dontValidateMachO:-}\" ]; then\n  echo \"validating Mach-O outputs for ${AOS_TARGET_PLATFORM:-Darwin}...\"\n  case \"${AOS_TARGET_ARCH:-}\" in\n    x86_64) expected_cpu=X86_64 ;;\n    arm64) expected_cpu=ARM64 ;;\n    *)\n      echo \"unknown Darwin target architecture: ${AOS_TARGET_ARCH:-unset}\" >&2\n      exit 1\n      ;;\n  esac\n\n  for o in ${AOS_OUTPUT_NAMES:-out}; do\n    eval \"p=\\\"\\${$o:-}\\\"\"\n    [ -d \"$p\" ] || continue\n    find \"$p\" -type f \\( -name '*.dylib' -o -name '*.dylib.*' -o -name '*.so' -o -perm -u+x \\) | while read f; do\n      if ! header=$(objdump --macho --private-header \"$f\" 2>/dev/null); then\n        # Scripts and data files may be executable, but an ELF image in\n        # a Darwin output is always a host/target splice failure. Do not\n        # silently stamp a Linux executable or shared library as Darwin.\n        magic=$(od -An -tx1 -N4 \"$f\" 2>/dev/null | tr -d ' \\n')\n        if [ \"$magic\" = 7f454c46 ]; then\n          echo \"ELF artifact in Darwin output: $f\" >&2\n          exit 1\n        fi\n        continue\n      fi\n      if ! echo \"$header\" | grep -q \"$expected_cpu\"; then\n        echo \"Mach-O architecture mismatch in $f: expected $expected_cpu\" >&2\n        echo \"$header\" >&2\n        exit 1\n      fi\n    done\n  done\nfi\n\necho \"<<< Phase: fixup complete\"\n\necho \">>> Phase: scrub\"\nif [ -n \"${dontNukeRefs:-}\" ]; then\n  echo \"scrub: skipped (dontNukeRefs set)\"\nelif ! command -v nuke-refs >/dev/null 2>&1; then\n  echo \"scrub: nuke-refs not on PATH, skipping\" >&2\nelse\n  echo \"scrubbing build-time refs...\"\n\n  # Build the -e keep list: every declared output, every runtime /\n  # propagated dep, plus the per-package extension `nukeRefsKeep`.\n  # The env vars are nixpkgs-style ($buildInputs = runtimeDeps,\n  # $propagatedBuildInputs = propagatedDeps).\n  keep_args=\"\"\n  append_keep_paths() {\n    for p in \"$@\"; do\n      [ -n \"$p\" ] && keep_args=\"$keep_args -e $p\"\n    done\n  }\n\n  for o in ${AOS_OUTPUT_NAMES:-out}; do\n    eval \"p=\\\"\\${$o:-}\\\"\"\n    append_keep_paths \"$p\"\n  done\n\n  # Structured attrs expose dependency lists as arrays. An ordinary\n  # scalar expansion reads only element zero, which would silently scrub\n  # every later intentional runtime reference from scripts and binaries.\n  if declare -p buildInputs 2>/dev/null | grep -q 'declare -a'; then\n    append_keep_paths \"${buildInputs[@]}\"\n  else\n    append_keep_paths ${buildInputs:-}\n  fi\n  if declare -p propagatedBuildInputs 2>/dev/null | grep -q 'declare -a'; then\n    append_keep_paths \"${propagatedBuildInputs[@]}\"\n  else\n    append_keep_paths ${propagatedBuildInputs:-}\n  fi\n  if declare -p nukeRefsKeep 2>/dev/null | grep -q 'declare -a'; then\n    append_keep_paths \"${nukeRefsKeep[@]}\"\n  else\n    append_keep_paths ${nukeRefsKeep:-}\n  fi\n\n  # Default target set: every executable, library, and\n  # pkgconfig/.la/Makefile/sysconfig file. These are the locations\n  # compilers, Autotools, and Python embed build-tool paths into. Python's\n  # __pycache__ is included because import compiles _sysconfigdata\n  # to .pyc at install time, baking the build-time toolchain refs\n  # into a binary blob that the .py-only pattern would miss.\n  for o in ${AOS_OUTPUT_NAMES:-out}; do\n    eval \"p=\\\"\\${$o:-}\\\"\"\n    [ -d \"$p\" ] || continue\n    find \"$p\" \\( \\\n         -path \"*/bin/*\" -o -path \"*/sbin/*\" -o -path \"*/libexec/*\" \\\n      -o -name \"*.so\" -o -name \"*.so.*\" \\\n      -o -name \"*.dylib\" -o -name \"*.dylib.*\" \\\n      -o -name \"*.a\" -o -name \"*.rlib\" \\\n      -o -name \"*.pc\"  -o -name \"*.la\" \\\n      -o -name \"Makefile\" \\\n      -o -name \"_sysconfigdata*.py\"  -o -name \"_sysconfigdata*.pyc\" \\\n      -o -name \"_sysconfig_vars*.json\" \\\n      \\) -type f -print0 \\\n    | xargs -0 -r nuke-refs $keep_args\n  done\nfi\n\necho \"<<< Phase: scrub complete\"\n\necho \">>> Phase: target-platform-metadata\"\nfor o in ${AOS_OUTPUT_NAMES:-out}; do\n  eval \"p=\\\"\\${$o:-}\\\"\"\n  [ -n \"$p\" ] || continue\n  if [ -d \"$p\" ] && [ ! -L \"$p\" ]; then\n    mkdir -p \"$p/nix-support\"\n    printf '%s\\n' 'x86_64-linux' > \"$p/nix-support/aos-target-platform\"\n  else\n    echo \"target-platform-metadata: $o is not a directory output; marker omitted\" >&2\n  fi\ndone\n\necho \"<<< Phase: target-platform-metadata complete\"\n\n",
+  "schema_version": 1,
+  "status": "PASS"
+}

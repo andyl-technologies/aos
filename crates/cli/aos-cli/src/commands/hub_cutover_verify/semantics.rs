@@ -1537,10 +1537,10 @@ fn validate_evidence(plan: &Value, report: &Value, manifest: &BundleManifest) ->
     let mut planned_by_id = BTreeMap::new();
     for expected in planned {
         let id = required_string(expected, "check_id")?;
-        if let Some(prior) = planned_by_id.insert(id.to_owned(), expected) {
-            if prior != expected {
-                bail!("conflicting duplicate planned check: {id}");
-            }
+        if let Some(prior) = planned_by_id.insert(id.to_owned(), expected)
+            && prior != expected
+        {
+            bail!("conflicting duplicate planned check: {id}");
         }
     }
     let reported_check_ids: BTreeSet<_> =
@@ -2230,7 +2230,7 @@ fn utc_instant_parts(value: &str) -> Result<(u64, String)> {
     let body = value
         .strip_suffix('Z')
         .ok_or_else(|| anyhow!("UTC instant has no Z suffix"))?;
-    let (whole, fraction) = body.split_once('.').map_or((body, ""), |parts| parts);
+    let (whole, fraction) = body.split_once('.').unwrap_or((body, ""));
     let number = |start: usize, end: usize| -> Result<u32> {
         Ok(whole
             .get(start..end)
@@ -2255,7 +2255,7 @@ fn utc_instant_parts(value: &str) -> Result<(u64, String)> {
 }
 
 fn days_in_month(year: u32, month: u32) -> u32 {
-    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let leap = year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400));
     match month {
         2 if leap => 29,
         2 => 28,

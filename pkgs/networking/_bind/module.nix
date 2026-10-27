@@ -261,7 +261,7 @@ in {
       system.checks.bind = import ./runtime-tests.nix {inherit cfg;};
       aos.abilities = {
         configuration.operations.file.effects.bind.input = {
-          path = "/etc/aos/packages/bind/named.conf";
+          path = "/etc/packages/bind/named.conf";
           fragments = configurationFragments;
           mode = "0444";
         };

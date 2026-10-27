@@ -9,6 +9,10 @@
 //! bounded. Its entry-point name selects only the parser; signed artifacts and
 //! current operator authority still select native effects.
 
+// Native CLI effects use host clocks, signing entropy, and process-local lookup
+// tables. These command handlers do not execute in Crucible replay state.
+#![allow(clippy::disallowed_methods, clippy::disallowed_types)]
+
 mod cli;
 mod commands;
 pub mod entry;

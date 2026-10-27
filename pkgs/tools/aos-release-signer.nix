@@ -1,6 +1,6 @@
 ##! aos-release-signer — file-backed release signing adapter
 ##!
-##! Builds the `aos-release-signer` binary from the shared `crates/` cargo
+##! Builds the `aos-release-signer` binary from the shared source
 ##! workspace. `aos maintain release` commands invoke a deployment-configured signer
 ##! executable with the `sign-exchange-v1` operation; this adapter serves that
 ##! protocol from operator-owned key files for registries without an HSM, such
@@ -14,10 +14,12 @@
   lib,
   mkAosCargoPackage,
   aosWorkspaceVendor,
+  callPackage,
+  buildDriver ? "cargo",
 }: let
   version = "0.1.0";
-in
-  mkAosCargoPackage {
+  withBuildDriver = selected: callPackage ./aos-release-signer.nix {buildDriver = selected;};
+  packageArguments = {
     platformSupport = {
       build = [
         {
@@ -74,4 +76,18 @@ in
       homepage = "https://github.com/andyl/andyl-os";
       license = "Apache-2.0";
     };
-  }
+    passthru = {
+      inherit withBuildDriver;
+      buildDriver = "cargo";
+    };
+  };
+  cargoPackage = mkAosCargoPackage packageArguments;
+in
+  assert builtins.elem buildDriver ["cargo" "bazel"];
+    if buildDriver == "bazel"
+    then
+      callPackage ./_aos-release-signer-bazel.nix {
+        inherit packageArguments;
+        cargoFallback = cargoPackage;
+      }
+    else cargoPackage

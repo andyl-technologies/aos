@@ -26,6 +26,10 @@ use aos_registry_format::consumer::PackageMeta;
 ///
 /// The caller holds the profile mutation lock and has authenticated the supplied
 /// baseline and every new source before entering this path.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "The configuration transaction keeps its authenticated inputs explicit."
+)]
 pub(crate) fn apply_from_descriptor(
     config: &ApmConfig,
     profile: &Profile,
@@ -190,6 +194,10 @@ pub(super) fn acquire(
     })
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Native profile metadata records its host creation time."
+)]
 pub(super) fn stage(
     generation: &Generation,
     profile: &Profile,

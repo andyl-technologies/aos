@@ -1,0 +1,2234 @@
+{
+  "cargo_identity_note": "Cargo source slices retain BUILD.bazel files. New Bazel declarations change that source identity; the untouched original Cargo recipe matches the selector against current source. All 3773 Rust sources remain byte-identical.",
+  "current_rust_compilation_coverage": {
+    "compiled_test_targets": 185,
+    "frozen_inventory_sha256": "63a82c5a342db104f284482689b29f30a70117baa57002650f575a153cd8a3e8",
+    "matching_source_files": 3773,
+    "receipt": "tools/bazel/tests/evidence/configuration-provider-full-rust-compilation.json"
+  },
+  "dependency_profile_preservation": {
+    "new_profiles": {
+      "release-signer": 150
+    },
+    "source_inventory_refresh": [
+      "tools/bazel/metadata/accache-inventory.json",
+      "tools/bazel/metadata/activation-core-inventory.json",
+      "tools/bazel/metadata/activation-crucible-inventory.json",
+      "tools/bazel/metadata/activation-storage-inventory.json",
+      "tools/bazel/metadata/activation-systemd-inventory.json",
+      "tools/bazel/metadata/aos-cli-inventory.json",
+      "tools/bazel/metadata/boot-configuration-driver-inventory.json",
+      "tools/bazel/metadata/boot-pilot-inventory.json",
+      "tools/bazel/metadata/boot-preparation-inventory.json",
+      "tools/bazel/metadata/boot-preparation-provider-inventory.json",
+      "tools/bazel/metadata/boot-transaction-storage-provider-inventory.json",
+      "tools/bazel/metadata/bpf-native-inventory.json",
+      "tools/bazel/metadata/bpf-provider-inventory.json",
+      "tools/bazel/metadata/build-services-inventory.json",
+      "tools/bazel/metadata/cli-support-inventory.json",
+      "tools/bazel/metadata/configuration-image-inventory.json",
+      "tools/bazel/metadata/configuration-provider-inventory.json",
+      "tools/bazel/metadata/contracts-inventory.json",
+      "tools/bazel/metadata/control-inventory.json",
+      "tools/bazel/metadata/crucible-cli-inventory.json",
+      "tools/bazel/metadata/daemon-inventory.json",
+      "tools/bazel/metadata/deployment-check-inventory.json",
+      "tools/bazel/metadata/deployment-inventory.json",
+      "tools/bazel/metadata/device-inventory.json",
+      "tools/bazel/metadata/engine-inventory.json",
+      "tools/bazel/metadata/feature-powerset-inventory.json",
+      "tools/bazel/metadata/filesystem-provider-inventory.json",
+      "tools/bazel/metadata/fixture-inventory.json",
+      "tools/bazel/metadata/formats-inventory.json",
+      "tools/bazel/metadata/guest-inventory.json",
+      "tools/bazel/metadata/hub-client-inventory.json",
+      "tools/bazel/metadata/hub-console-inventory.json",
+      "tools/bazel/metadata/hub-console-wasm-inventory.json",
+      "tools/bazel/metadata/hub-db-inventory.json",
+      "tools/bazel/metadata/hub-model-inventory.json",
+      "tools/bazel/metadata/hub-native-inventory.json",
+      "tools/bazel/metadata/hub-portable-inventory.json",
+      "tools/bazel/metadata/hub-service-inventory.json",
+      "tools/bazel/metadata/hub-worker-inventory.json",
+      "tools/bazel/metadata/hub-worker-wasm-inventory.json",
+      "tools/bazel/metadata/initrd-preparation-inventory.json",
+      "tools/bazel/metadata/kernel-tunable-provider-inventory.json",
+      "tools/bazel/metadata/kubernetes-provider-inventory.json",
+      "tools/bazel/metadata/metadata-provider-inventory.json",
+      "tools/bazel/metadata/native-foundation-inventory.json",
+      "tools/bazel/metadata/network-ruleset-provider-inventory.json",
+      "tools/bazel/metadata/nix-store-provider-inventory.json",
+      "tools/bazel/metadata/package-evaluation-driver-inventory.json",
+      "tools/bazel/metadata/package-manager-inventory.json",
+      "tools/bazel/metadata/protocol-inventory.json",
+      "tools/bazel/metadata/qemu-gateway-process-test-inventory.json",
+      "tools/bazel/metadata/qemu-gpl-production-inventory.json",
+      "tools/bazel/metadata/qemu-host-inventory.json",
+      "tools/bazel/metadata/qemu-plugin-process-test-inventory.json",
+      "tools/bazel/metadata/qemu-test-oracle-host-inventory.json",
+      "tools/bazel/metadata/quota-inventory.json",
+      "tools/bazel/metadata/registry-native-inventory.json",
+      "tools/bazel/metadata/registry-web-inventory.json",
+      "tools/bazel/metadata/registry-web-wasm-inventory.json",
+      "tools/bazel/metadata/release-coordination-inventory.json",
+      "tools/bazel/metadata/release-preparation-inventory.json",
+      "tools/bazel/metadata/session-inventory.json",
+      "tools/bazel/metadata/shared-inventory.json",
+      "tools/bazel/metadata/static-storage-providers-inventory.json",
+      "tools/bazel/metadata/storage-provisioning-provider-inventory.json",
+      "tools/bazel/metadata/store-inventory.json",
+      "tools/bazel/metadata/store-s3-inventory.json",
+      "tools/bazel/metadata/systemd-provider-inventory.json",
+      "tools/bazel/metadata/test-support-audit-inventory.json",
+      "tools/bazel/metadata/test-support-inventory.json",
+      "tools/bazel/metadata/zfs-provider-inventory.json"
+    ],
+    "specification_build": "/nix/store/kzrdr9d9hzaj6zr17yll0r6mglvg7wbw-aos-bazel-release-signer-profile-specifications-1",
+    "unchanged_existing_generated_files": 17595,
+    "unchanged_existing_profile_definitions": 77,
+    "unchanged_implementation_selections": true
+  },
+  "driver_selection": {
+    "bazel": "/nix/store/ppfqich5xz5ybxi179wy9z3jr6vdrcmf-aos-release-signer-0.1.0.drv",
+    "cargo": "/nix/store/lnqmn1b10450q4fpl3205lgbwah45d73-aos-release-signer-0.1.0.drv",
+    "cargo_constructor_and_vendor_not_evaluated": true,
+    "fallback": "/nix/store/lnqmn1b10450q4fpl3205lgbwah45d73-aos-release-signer-0.1.0.drv",
+    "invalid_driver_rejected": true,
+    "platform_runtime_and_qualification_contracts_preserved": true
+  },
+  "entry_point": "checks.build.bazel.release-signer-production.all",
+  "historical_cargo_identity_before_new_build_declarations": {
+    "drv": "/nix/store/kikl311pb8zayqfibdjbj1wamrla4g1r-aos-release-signer-0.1.0.drv",
+    "out": "/nix/store/d6gwl4f2rsg50ipf4di3n8c8m0ywm7ai-aos-release-signer-0.1.0"
+  },
+  "historical_cargo_source_changes_confined_to_signer_build_declaration": {
+    "crates/release/aos-release-signer/BUILD.bazel": {
+      "after": "bac147cafafde20766505cfca003bf01fef13ba05ee9619241db61e954e9bcaa",
+      "before": "8179371b5531aecbc199b55471f337268335f6a3a0c2347456e7c1dcadebdd0b"
+    }
+  },
+  "implementation_parent": "52aed502409c685e6223a086e7384f8b8aa58ea2",
+  "input_sha256": {
+    "MODULE.bazel": "b3c558f9f478fb893add7900a3b41d2e2643fb697eb11adf222ae89eb6e29371",
+    "crates/release/aos-release-signer/BUILD.bazel": "bac147cafafde20766505cfca003bf01fef13ba05ee9619241db61e954e9bcaa",
+    "pkgs/build-support/_bazel/default.nix": "a1a197a69cefd1cd0322146469f6354d4fd34dbbdcfac760ca28b4218354d83c",
+    "pkgs/tools/_aos-release-signer-bazel-build.nix": "61a13f7b4856ded83a087cd63f7335ee377c7a0245fd08aae57410aedf0e6226",
+    "pkgs/tools/_aos-release-signer-bazel.nix": "55c6f7c73142d3646b7ea854dc15b3525789d802172e011edcf945f22646be70",
+    "pkgs/tools/aos-release-signer.nix": "3dba64097ca51fff74f31334f1aad643ec14895dd9cc8c2dc3b253113b24e43d",
+    "tests/build/_bazel-release-signer-production.nix": "7355202cb8832867acea0a378fc7d9e3f356a62caf022a69bbcdb850257ddda1",
+    "tests/build/bazel.nix": "f3824023168183d9aee9ea65372b46d315bf943117641d8d19f1497b35a5d2ba",
+    "third_party/bazel/modules.json": "5c720e89a17e12c9df0a73eb681ec544b8bfdb62033cd56421aae4722c5d249d",
+    "third_party/rust/BUILD.bazel": "d9c230ac94c090a4b950c5220a9fdd0ddcafc50cf9ffccec67080eac147ac0d7",
+    "third_party/rust/release-signer/sources.json": "417fb6673204db1f3fbbd1cfd8db631c8cfef86730bbcef26fdba68943b3aa28",
+    "tools/bazel/README.md": "cbde6c728fac140fed19e54771c05e569fe3fab1a251b619b4158d9afe022f4e",
+    "tools/bazel/metadata/release-signer-inventory.json": "faaeed6799a79e60bbf9fe53aaa8d77b46eaf8b08bcb3e96b134acda9a2a3836",
+    "tools/bazel/rules/BUILD.bazel": "10a2317148ce90633760d036029bea522e4cfcc5309607fb04f225383b42de1f",
+    "tools/bazel/rules/profiles.bzl": "450d4d3c77c4366e8ba3ca2540d41abdf9bdd2662a18774cfae163d6f524c820",
+    "tools/bazel/tests/release-signer-production.nix": "27bcbb844ba03e5e21b7d0858023d3a50e34d51998f209ac02d4f7f8c139cc89",
+    "tools/bazel/tests/release_signer_protocol.py": "339028e84390dc1d737d904fe7d367971f5f268a94a11c5cdf70569824622cc6",
+    "tools/bazel/tests/verify_protocol.py": "9b993ffb0d0fe3e144fe6040ececdff724851e7a8645e32825ac0daadd2991be",
+    "tools/bazel/tests/verify_release_signer.py": "4d90babbd727d551d8c260462a321d7ef6dc5a06cd80db631abb46ccca4c9810"
+  },
+  "installed_package_report": {
+    "foreign_host_execution_qualified": false,
+    "fresh_linux_sandbox_actions": {
+      "production": 242,
+      "tests": 243
+    },
+    "installed": {
+      "bazel": {
+        "out/bin": {
+          "kind": "directory",
+          "mode": 365
+        },
+        "out/bin/aos-release-signer": {
+          "contract": {
+            "interpreter": [
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2"
+            ],
+            "needed": [
+              "ld-linux-x86-64.so.2",
+              "libc.so.6"
+            ],
+            "resolved_libraries": [
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6"
+            ],
+            "rpath_directories": [
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib"
+            ]
+          },
+          "kind": "elf",
+          "mode": 365
+        },
+        "out/nix-support": {
+          "kind": "directory",
+          "mode": 365
+        },
+        "out/nix-support/aos-target-platform": {
+          "kind": "file",
+          "mode": 292,
+          "sha256": "d3b7abad38647ed804b5017c5b990acab7c85648b552a97043d4d86c70ce1f9d"
+        }
+      },
+      "ordinary": {
+        "out/bin": {
+          "kind": "directory",
+          "mode": 365
+        },
+        "out/bin/aos-release-signer": {
+          "contract": {
+            "interpreter": [
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2"
+            ],
+            "needed": [
+              "ld-linux-x86-64.so.2",
+              "libc.so.6"
+            ],
+            "resolved_libraries": [
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6"
+            ],
+            "rpath_directories": [
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib"
+            ]
+          },
+          "kind": "elf",
+          "mode": 365
+        },
+        "out/nix-support": {
+          "kind": "directory",
+          "mode": 365
+        },
+        "out/nix-support/aos-target-platform": {
+          "kind": "file",
+          "mode": 292,
+          "sha256": "d3b7abad38647ed804b5017c5b990acab7c85648b552a97043d4d86c70ce1f9d"
+        }
+      }
+    },
+    "library_search_changes": {},
+    "packages": {
+      "bazel": {
+        "out": "/nix/store/4dmp076l6623kc0jk2zv4809v838a6j5-aos-release-signer-0.1.0"
+      },
+      "ordinary": {
+        "out": "/nix/store/xc8bmw6q0lk44hvfy8ikckgr4bl82mbi-aos-release-signer-0.1.0"
+      }
+    },
+    "production_default_cutover": false,
+    "production_features": {
+      "features": {
+        "adler2@2.0.1": [
+          []
+        ],
+        "aho-corasick@1.1.4": [
+          [
+            "perf-literal",
+            "std"
+          ]
+        ],
+        "anstream@1.0.0": [
+          [
+            "auto",
+            "default",
+            "wincon"
+          ]
+        ],
+        "anstyle-parse@1.0.0": [
+          [
+            "default",
+            "utf8"
+          ]
+        ],
+        "anstyle-query@1.1.5": [
+          []
+        ],
+        "anstyle@1.0.14": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "anyhow@1.0.103": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "base64@0.22.1": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "base64ct@1.8.3": [
+          [
+            "alloc",
+            "std"
+          ]
+        ],
+        "bitflags@2.13.0": [
+          [
+            "std"
+          ]
+        ],
+        "block-buffer@0.10.4": [
+          []
+        ],
+        "cfg-if@1.0.4": [
+          []
+        ],
+        "cipher@0.4.4": [
+          []
+        ],
+        "clap@4.6.1": [
+          [
+            "color",
+            "default",
+            "derive",
+            "env",
+            "error-context",
+            "help",
+            "std",
+            "suggestions",
+            "usage"
+          ]
+        ],
+        "clap_builder@4.6.0": [
+          [
+            "color",
+            "env",
+            "error-context",
+            "help",
+            "std",
+            "suggestions",
+            "usage"
+          ]
+        ],
+        "clap_derive@4.6.1": [
+          [
+            "default"
+          ]
+        ],
+        "clap_lex@1.1.0": [
+          []
+        ],
+        "colorchoice@1.0.5": [
+          []
+        ],
+        "const-oid@0.9.6": [
+          []
+        ],
+        "cpufeatures@0.2.17": [
+          []
+        ],
+        "crc32fast@1.5.0": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "crypto-common@0.1.7": [
+          [
+            "std"
+          ]
+        ],
+        "curve25519-dalek-derive@0.1.1": [
+          []
+        ],
+        "curve25519-dalek@4.1.3": [
+          [
+            "alloc",
+            "digest",
+            "precomputed-tables",
+            "zeroize"
+          ]
+        ],
+        "der@0.7.10": [
+          [
+            "alloc",
+            "oid",
+            "std",
+            "zeroize"
+          ]
+        ],
+        "digest@0.10.7": [
+          [
+            "alloc",
+            "block-buffer",
+            "core-api",
+            "default",
+            "std"
+          ]
+        ],
+        "dyn-clone@1.0.20": [
+          []
+        ],
+        "ed25519-dalek@2.2.0": [
+          [
+            "alloc",
+            "default",
+            "fast",
+            "pkcs8",
+            "std",
+            "zeroize"
+          ]
+        ],
+        "ed25519@2.2.3": [
+          [
+            "alloc",
+            "pkcs8",
+            "std"
+          ]
+        ],
+        "equivalent@1.0.2": [
+          []
+        ],
+        "fastrand@2.4.1": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "flate2@1.1.9": [
+          [
+            "any_impl",
+            "miniz_oxide",
+            "rust_backend"
+          ]
+        ],
+        "generic-array@0.14.7": [
+          [
+            "more_lengths"
+          ]
+        ],
+        "getrandom@0.4.2": [
+          []
+        ],
+        "hashbrown@0.17.1": [
+          []
+        ],
+        "heck@0.5.0": [
+          []
+        ],
+        "hex@0.4.3": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "humantime@2.3.0": [
+          []
+        ],
+        "indexmap@2.14.0": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "inout@0.1.4": [
+          []
+        ],
+        "is_terminal_polyfill@1.70.2": [
+          [
+            "default"
+          ]
+        ],
+        "itoa@1.0.18": [
+          []
+        ],
+        "libc@0.2.186": [
+          []
+        ],
+        "linux-raw-sys@0.12.1": [
+          [
+            "auxvec",
+            "elf",
+            "errno",
+            "general",
+            "ioctl",
+            "no_std"
+          ]
+        ],
+        "memchr@2.8.2": [
+          [
+            "alloc",
+            "std"
+          ]
+        ],
+        "miniz_oxide@0.8.9": [
+          [
+            "simd",
+            "simd-adler32",
+            "with-alloc"
+          ]
+        ],
+        "once_cell@1.21.4": [
+          [
+            "alloc",
+            "race",
+            "std"
+          ]
+        ],
+        "pem-rfc7468@0.7.0": [
+          [
+            "alloc",
+            "std"
+          ]
+        ],
+        "pkcs8@0.10.2": [
+          [
+            "alloc",
+            "std"
+          ]
+        ],
+        "proc-macro2@1.0.106": [
+          [
+            "default",
+            "proc-macro"
+          ]
+        ],
+        "quote@1.0.46": [
+          [
+            "default",
+            "proc-macro"
+          ]
+        ],
+        "rand_core@0.6.4": [
+          []
+        ],
+        "ref-cast-impl@1.0.27": [
+          []
+        ],
+        "ref-cast@1.0.27": [
+          []
+        ],
+        "regex-automata@0.4.14": [
+          [
+            "alloc",
+            "dfa-onepass",
+            "hybrid",
+            "meta",
+            "nfa-backtrack",
+            "nfa-pikevm",
+            "nfa-thompson",
+            "perf-inline",
+            "perf-literal",
+            "perf-literal-multisubstring",
+            "perf-literal-substring",
+            "std",
+            "syntax",
+            "unicode",
+            "unicode-age",
+            "unicode-bool",
+            "unicode-case",
+            "unicode-gencat",
+            "unicode-perl",
+            "unicode-script",
+            "unicode-segment",
+            "unicode-word-boundary"
+          ]
+        ],
+        "regex-syntax@0.8.11": [
+          [
+            "default",
+            "std",
+            "unicode",
+            "unicode-age",
+            "unicode-bool",
+            "unicode-case",
+            "unicode-gencat",
+            "unicode-perl",
+            "unicode-script",
+            "unicode-segment"
+          ]
+        ],
+        "regex@1.12.4": [
+          [
+            "default",
+            "perf",
+            "perf-backtrack",
+            "perf-cache",
+            "perf-dfa",
+            "perf-inline",
+            "perf-literal",
+            "perf-onepass",
+            "std",
+            "unicode",
+            "unicode-age",
+            "unicode-bool",
+            "unicode-case",
+            "unicode-gencat",
+            "unicode-perl",
+            "unicode-script",
+            "unicode-segment"
+          ]
+        ],
+        "rustc_version@0.4.1": [
+          []
+        ],
+        "rustix@1.1.4": [
+          [
+            "alloc",
+            "default",
+            "fs",
+            "std"
+          ]
+        ],
+        "schemars@1.2.2": [
+          [
+            "default",
+            "derive",
+            "schemars_derive",
+            "std"
+          ]
+        ],
+        "schemars_derive@1.2.2": [
+          []
+        ],
+        "semver@1.0.28": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "serde@1.0.228": [
+          [
+            "alloc",
+            "default",
+            "derive",
+            "rc",
+            "serde_derive",
+            "std"
+          ]
+        ],
+        "serde_core@1.0.228": [
+          [
+            "alloc",
+            "rc",
+            "result",
+            "std"
+          ]
+        ],
+        "serde_derive@1.0.228": [
+          [
+            "default"
+          ]
+        ],
+        "serde_derive_internals@0.30.0": [
+          []
+        ],
+        "serde_json@1.0.150": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "serde_spanned@0.6.9": [
+          [
+            "serde"
+          ]
+        ],
+        "sha2@0.10.9": [
+          [
+            "compress",
+            "default",
+            "std"
+          ]
+        ],
+        "signature@2.2.0": [
+          [
+            "alloc",
+            "std"
+          ]
+        ],
+        "simd-adler32@0.3.9": [
+          []
+        ],
+        "spki@0.7.3": [
+          [
+            "alloc",
+            "std"
+          ]
+        ],
+        "ssh-cipher@0.2.0": [
+          []
+        ],
+        "ssh-encoding@0.2.0": [
+          [
+            "alloc",
+            "base64",
+            "pem",
+            "sha2",
+            "std"
+          ]
+        ],
+        "ssh-key@0.6.7": [
+          [
+            "alloc",
+            "ed25519",
+            "rand_core",
+            "std"
+          ]
+        ],
+        "strsim@0.11.1": [
+          []
+        ],
+        "subtle@2.6.1": [
+          []
+        ],
+        "syn@2.0.118": [
+          [
+            "clone-impls",
+            "default",
+            "derive",
+            "full",
+            "parsing",
+            "printing",
+            "proc-macro"
+          ]
+        ],
+        "syn@3.0.5": [
+          [
+            "clone-impls",
+            "default",
+            "derive",
+            "parsing",
+            "printing",
+            "proc-macro"
+          ]
+        ],
+        "tempfile@3.27.0": [
+          [
+            "default",
+            "getrandom"
+          ]
+        ],
+        "thiserror-impl@2.0.18": [
+          []
+        ],
+        "thiserror@2.0.18": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "toml@0.8.23": [
+          [
+            "default",
+            "display",
+            "parse"
+          ]
+        ],
+        "toml_datetime@0.6.11": [
+          [
+            "serde"
+          ]
+        ],
+        "toml_edit@0.22.27": [
+          [
+            "display",
+            "parse",
+            "serde"
+          ]
+        ],
+        "toml_write@0.1.2": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "typenum@1.20.1": [
+          []
+        ],
+        "unicode-ident@1.0.24": [
+          []
+        ],
+        "utf8parse@0.2.2": [
+          [
+            "default"
+          ]
+        ],
+        "version_check@0.9.5": [
+          []
+        ],
+        "winnow@0.7.15": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "zeroize@1.9.0": [
+          [
+            "alloc"
+          ]
+        ],
+        "zmij@1.0.21": [
+          []
+        ]
+      },
+      "first_party_features": {
+        "aos-artifact-evidence": [
+          []
+        ],
+        "aos-core": [
+          []
+        ],
+        "aos-module-format": [
+          []
+        ],
+        "aos-oci-types": [
+          []
+        ],
+        "aos-registry-format": [
+          []
+        ],
+        "aos-release-format": [
+          []
+        ],
+        "aos-release-signer": [
+          []
+        ]
+      }
+    },
+    "production_profiles": {
+      "aos-artifact-evidence/aos_artifact_evidence": {
+        "bazel": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-386196004",
+          "opt-level": "3",
+          "overflow-checks": "no",
+          "strip": "none"
+        },
+        "cargo": {
+          "debug_assertions": false,
+          "debuginfo": 0,
+          "opt_level": "3",
+          "overflow_checks": false,
+          "test": false
+        },
+        "label": "//crates/artifacts/aos-artifact-evidence:lib"
+      },
+      "aos-core/aos_core": {
+        "bazel": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-2583899516",
+          "opt-level": "3",
+          "overflow-checks": "no",
+          "strip": "none"
+        },
+        "cargo": {
+          "debug_assertions": false,
+          "debuginfo": 0,
+          "opt_level": "3",
+          "overflow_checks": false,
+          "test": false
+        },
+        "label": "//crates/core/aos-core:lib"
+      },
+      "aos-module-format/aos_module_format": {
+        "bazel": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-1113882660",
+          "opt-level": "3",
+          "overflow-checks": "no",
+          "strip": "none"
+        },
+        "cargo": {
+          "debug_assertions": false,
+          "debuginfo": 0,
+          "opt_level": "3",
+          "overflow_checks": false,
+          "test": false
+        },
+        "label": "//crates/modules/aos-module-format:lib"
+      },
+      "aos-oci-types/aos_oci_types": {
+        "bazel": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-1736273532",
+          "opt-level": "3",
+          "overflow-checks": "no",
+          "strip": "none"
+        },
+        "cargo": {
+          "debug_assertions": false,
+          "debuginfo": 0,
+          "opt_level": "3",
+          "overflow_checks": false,
+          "test": false
+        },
+        "label": "//crates/artifacts/aos-oci-types:lib"
+      },
+      "aos-registry-format/aos_registry_format": {
+        "bazel": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-693301736",
+          "opt-level": "3",
+          "overflow-checks": "no",
+          "strip": "none"
+        },
+        "cargo": {
+          "debug_assertions": false,
+          "debuginfo": 0,
+          "opt_level": "3",
+          "overflow_checks": false,
+          "test": false
+        },
+        "label": "//crates/registry/aos-registry-format:lib"
+      },
+      "aos-release-format/aos_release_format": {
+        "bazel": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-1089002904",
+          "opt-level": "3",
+          "overflow-checks": "no",
+          "strip": "none"
+        },
+        "cargo": {
+          "debug_assertions": false,
+          "debuginfo": 0,
+          "opt_level": "3",
+          "overflow_checks": false,
+          "test": false
+        },
+        "label": "//crates/release/aos-release-format:lib"
+      },
+      "aos-release-signer/aos_release_signer": {
+        "bazel": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "opt-level": "3",
+          "overflow-checks": "no",
+          "strip": "none"
+        },
+        "cargo": {
+          "debug_assertions": false,
+          "debuginfo": 0,
+          "opt_level": "3",
+          "overflow_checks": false,
+          "test": false
+        },
+        "label": "//crates/release/aos-release-signer:aos-release-signer"
+      }
+    },
+    "runtime_closures": {
+      "changes": {
+        "out": {
+          "added": [],
+          "removed": []
+        }
+      },
+      "closures": {
+        "bazel": {
+          "out": [
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+            "@output:out@"
+          ]
+        },
+        "ordinary": {
+          "out": [
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+            "@output:out@"
+          ]
+        }
+      }
+    },
+    "schema_version": 1,
+    "signing_protocol": {
+      "cases": [
+        {
+          "case": "cli:--help",
+          "status": 0,
+          "stderr_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stdout_sha256": "sha256:66b475310fe074834e0b0ff93677fa0c03bac0cdae97babd3e612fa64e3eaeb1"
+        },
+        {
+          "case": "cli:--version",
+          "status": 0,
+          "stderr_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stdout_sha256": "sha256:28e3b971f738e2a05d74015e62a6ec809aa02a9c4b6fbb48d4a0063d86c6e968"
+        },
+        {
+          "case": "cli:unknown-operation",
+          "status": 2,
+          "stderr_sha256": "sha256:334009e5b6d006b35aa05f6c26b17182b43a82513c6fe59925bbc640bb15fa70",
+          "stdout_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "case": "cli:sign-evidence",
+          "status": 2,
+          "stderr_sha256": "sha256:b944a6417b7ad6597abe0c43e92d84344698bd8819fd7590fc84955bec3217fa",
+          "stdout_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "case": "cli:show",
+          "status": 0,
+          "stderr_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "stdout_sha256": "sha256:87c69390e569d2de5a4b7bc1d5ef1180fb6d3a89ac26bf0e50b1a454771904fd"
+        },
+        {
+          "case": "ed25519-request-digest",
+          "output_bytes": 0,
+          "output_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "response": {
+            "algorithm": "ed25519",
+            "key_id": "ed",
+            "output_digest": null,
+            "provider_operation_id": "file-signer-test-request-1",
+            "provider_revision": "test-provider-v1",
+            "request_digest": "sha256:7681e8ff6478634a4d467bd6aeded8d5af916b3f7cdf4a49787b6a4f9c76b172",
+            "role": "release-evidence",
+            "schema_version": "aos.release.signature-response/v1",
+            "signature_base64": "shXfDh5NdejFVl91Ldgkon6E7fIpKl0mL6MTvxlmTPaOBHSupofBGqr+aI7mSGjqjMXYD7Qod6PBI6IXF+liCw==",
+            "verification_identity": "ed",
+            "verification_material_digest": "sha256:66040574a66d0bd254fdab511f6b09e3beb5d8c0d4a026cba628ce3fdb6e7fce"
+          }
+        },
+        {
+          "case": "ed25519-raw-payload",
+          "output_bytes": 0,
+          "output_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "response": {
+            "algorithm": "ed25519-payload",
+            "key_id": "ed",
+            "output_digest": null,
+            "provider_operation_id": "file-signer-test-request-1",
+            "provider_revision": "test-provider-v1",
+            "request_digest": "sha256:37cad5789c00377941d0a500978005c0964cc795306070b6d000e8f932b869f8",
+            "role": "cache",
+            "schema_version": "aos.release.signature-response/v1",
+            "signature_base64": "xDXdYOXj2Mueo1CZ0dXKu2/oBZ1Lsm+qVcMMCW4b1pFpGa0y6InfD5IgmSkqhdd5MOiZtfm4/sHcQ8oWvYtcDQ==",
+            "verification_identity": "ed",
+            "verification_material_digest": "sha256:66040574a66d0bd254fdab511f6b09e3beb5d8c0d4a026cba628ce3fdb6e7fce"
+          }
+        },
+        {
+          "case": "rsa-sha256-payload",
+          "output_bytes": 0,
+          "output_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "response": {
+            "algorithm": "public-key-sha256",
+            "key_id": "rsa",
+            "output_digest": null,
+            "provider_operation_id": "file-signer-test-request-1",
+            "provider_revision": "test-provider-v1",
+            "request_digest": "sha256:a988805c212106da3aa8c82152b7dfb62cf929c35479aaadea9f39be4c69720f",
+            "role": "release-evidence",
+            "schema_version": "aos.release.signature-response/v1",
+            "signature_base64": "Sgecra0dgWx9Dtz39FeTX0oFvFHvpIB83WMmq/ieTbEggeo5fLE0nb87G3QyLFBhSkEUWdSSwM6e4ap62wgNt1H2KWaJV8WpUcXdba0gRCCsusKo/lCpTCaSLUiJ5FlW0bmGudIdGBp40nUPAeFixd70g0ttTt6IVYaEUQyNvQ5w6fzCfVxXc+8/0V3l7QVKtd85vHsbIk5UD5QkP4jKxGCs4buUd991GbvJHHOp6+ulnaU6LTPhx9GIWju70Q0T2rKGbFqEm5Jd1rA9uRm5ksDnjWdhw7FZGQdv4oxN5gOlQD6fFJ+fOIUTclgwXNkEt/9+B6GESqTdnzhETVkxAQ==",
+            "verification_identity": "rsa",
+            "verification_material_digest": "sha256:89d01538c9bc32ceaa7ded5b2e06382d7d6ab8954d444f2d2fb77112d357031b"
+          }
+        },
+        {
+          "case": "openssh-git",
+          "output_bytes": 0,
+          "output_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "response": {
+            "algorithm": "sshsig-ed25519",
+            "key_id": "ssh",
+            "output_digest": null,
+            "provider_operation_id": "file-signer-test-request-1",
+            "provider_revision": "test-provider-v1",
+            "request_digest": "sha256:76ff5bdd8945f3561536954a47b4c619e156722db8e53a59a000090cea8adb04",
+            "role": "registry",
+            "schema_version": "aos.release.signature-response/v1",
+            "signature_base64": "LS0tLS1CRUdJTiBTU0ggU0lHTkFUVVJFLS0tLS0KVTFOSVUwbEhBQUFBQVFBQUFETUFBQUFMYzNOb0xXVmtNalUxTVRrQUFBQWdXRks2MzJONTJjRmpZTDh0d0QyMjZpZkxkdwp4aWJjMnRjVWF0bEJyVWg5WUFBQUFEWjJsMEFBQUFBQUFBQUFaemFHRTFNVElBQUFCVEFBQUFDM056YUMxbFpESTFOVEU1CkFBQUFRSnV4REhHRUk3MnZEUGxSekI1bGsxZDNWMERmTGxYSjVBcTBhVHpyY2pqdFVKYU5yRVBsQ1JvWGpCWWgvL2FLY1EKckM3c20wQVVESXBhV0FpL0VlT1FBPQotLS0tLUVORCBTU0ggU0lHTkFUVVJFLS0tLS0K",
+            "verification_identity": "ssh",
+            "verification_material_digest": "sha256:92b190190dd30e75ee697c1063e7ebb76530601c00bd9298d89d74cf1c5e0909"
+          }
+        },
+        {
+          "case": "openssh-dsse",
+          "output_bytes": 0,
+          "output_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "response": {
+            "algorithm": "sshsig-ed25519",
+            "key_id": "ssh",
+            "output_digest": null,
+            "provider_operation_id": "file-signer-test-request-1",
+            "provider_revision": "test-provider-v1",
+            "request_digest": "sha256:97b2cc0a7637e70bebc6139a463c59d5b2f71287832e316edead90080095deec",
+            "role": "provenance",
+            "schema_version": "aos.release.signature-response/v1",
+            "signature_base64": "LS0tLS1CRUdJTiBTU0ggU0lHTkFUVVJFLS0tLS0KVTFOSVUwbEhBQUFBQVFBQUFETUFBQUFMYzNOb0xXVmtNalUxTVRrQUFBQWdXRks2MzJONTJjRmpZTDh0d0QyMjZpZkxkdwp4aWJjMnRjVWF0bEJyVWg5WUFBQUFlWVc5ekxYQmhZMnRoWjJVdGNISnZkbVZ1WVc1alpTMWtjM05sTFhZeEFBQUFBQUFBCkFBWnphR0UxTVRJQUFBQlRBQUFBQzNOemFDMWxaREkxTlRFNUFBQUFRR0cxRjYwVlhuZmdoQWFsRFR2c3lWcTRrVmVlQmEKMWRIUU05SHU4dEllcnhjK0xDREJBeVZsTXkwTXdXMzA1bmh4R0lNZGc0N2lMcldaeHJhR2tHL1FRPQotLS0tLUVORCBTU0ggU0lHTkFUVVJFLS0tLS0K",
+            "verification_identity": "ssh",
+            "verification_material_digest": "sha256:92b190190dd30e75ee697c1063e7ebb76530601c00bd9298d89d74cf1c5e0909"
+          }
+        },
+        {
+          "case": "openssh-catalog",
+          "output_bytes": 0,
+          "output_sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "response": {
+            "algorithm": "sshsig-ed25519",
+            "key_id": "ssh",
+            "output_digest": null,
+            "provider_operation_id": "file-signer-test-request-1",
+            "provider_revision": "test-provider-v1",
+            "request_digest": "sha256:2157b1feca58bfad801c8f5ee5532503b1502425fd79f17f26f44c3c305c8afe",
+            "role": "registry",
+            "schema_version": "aos.release.signature-response/v1",
+            "signature_base64": "LS0tLS1CRUdJTiBTU0ggU0lHTkFUVVJFLS0tLS0KVTFOSVUwbEhBQUFBQVFBQUFETUFBQUFMYzNOb0xXVmtNalUxTVRrQUFBQWdXRks2MzJONTJjRmpZTDh0d0QyMjZpZkxkdwp4aWJjMnRjVWF0bEJyVWg5WUFBQUFUWVc5ekxYSmxaMmx6ZEhKNUxYUjFaaTEyTVFBQUFBQUFBQUFHYzJoaE5URXlBQUFBClV3QUFBQXR6YzJndFpXUXlOVFV4T1FBQUFFRGs0R0IzRnE2ZThXb20ySkgxdWJMaHpIa2NKb1IvcXlFWW9QZU5jMitvazYKdzFWOEdHNlIwVTByU1RHdmFQY2dzUi9zR2pGNHpvbjRNRy9BQXVSMkFJCi0tLS0tRU5EIFNTSCBTSUdOQVRVUkUtLS0tLQo=",
+            "verification_identity": "ssh",
+            "verification_material_digest": "sha256:92b190190dd30e75ee697c1063e7ebb76530601c00bd9298d89d74cf1c5e0909"
+          }
+        },
+        {
+          "case": "rsa-pcr-policy",
+          "output_bytes": 528,
+          "output_sha256": "sha256:0c6e88b8e1ec67db0d5e5e7898b90b180a2692f1298c7efe4cf6bca3da774f27",
+          "response": {
+            "algorithm": "pcr-policy",
+            "key_id": "rsa",
+            "output_digest": "sha256:0c6e88b8e1ec67db0d5e5e7898b90b180a2692f1298c7efe4cf6bca3da774f27",
+            "provider_operation_id": "file-signer-test-request-1",
+            "provider_revision": "test-provider-v1",
+            "request_digest": "sha256:4a15f5639c4cc1bfcea92503649f51fc411a748c9871278a380c6d345663823f",
+            "role": "pcr-policy",
+            "schema_version": "aos.release.signature-response/v1",
+            "signature_base64": "",
+            "verification_identity": "rsa",
+            "verification_material_digest": "sha256:89d01538c9bc32ceaa7ded5b2e06382d7d6ab8954d444f2d2fb77112d357031b"
+          }
+        },
+        {
+          "case": "rsa-kernel-module-cms",
+          "output_bytes": 1170,
+          "output_sha256": "sha256:f6cf35a52d467d989f069eab0643d7af3db6e70e3837cd9dff21b745d4770140",
+          "response": {
+            "algorithm": "kernel-module",
+            "key_id": "rsa",
+            "output_digest": "sha256:f6cf35a52d467d989f069eab0643d7af3db6e70e3837cd9dff21b745d4770140",
+            "provider_operation_id": "file-signer-test-request-1",
+            "provider_revision": "test-provider-v1",
+            "request_digest": "sha256:5be0125abf2a48c608dc9ed48ae568aea5f48fe2c1ad1ff9d77b01075bd5b741",
+            "role": "kernel-module",
+            "schema_version": "aos.release.signature-response/v1",
+            "signature_base64": "",
+            "verification_identity": "rsa",
+            "verification_material_digest": "sha256:89d01538c9bc32ceaa7ded5b2e06382d7d6ab8954d444f2d2fb77112d357031b"
+          }
+        },
+        {
+          "case": "rsa-authenticode",
+          "output_bytes": 2592,
+          "output_sha256": "sha256:04fc8eab785a2843df20bd9d8f3cf32ec7aa0f494df8fa627486ec3d709bb3e4",
+          "response": {
+            "algorithm": "authenticode",
+            "key_id": "rsa",
+            "output_digest": "sha256:04fc8eab785a2843df20bd9d8f3cf32ec7aa0f494df8fa627486ec3d709bb3e4",
+            "provider_operation_id": "file-signer-test-request-1",
+            "provider_revision": "test-provider-v1",
+            "request_digest": "sha256:2a10f74da8fe102ba16ad4331fc1c33ac04aefd85674086b1c558ce76662c6fb",
+            "role": "secure-boot-db",
+            "schema_version": "aos.release.signature-response/v1",
+            "signature_base64": "",
+            "verification_identity": "rsa",
+            "verification_material_digest": "sha256:89d01538c9bc32ceaa7ded5b2e06382d7d6ab8954d444f2d2fb77112d357031b"
+          }
+        },
+        {
+          "case": "evidence-envelope",
+          "envelope_sha256": "sha256:e822863675f43095554eca2dcd34e0cd6fe1481439a1347dc2fa77e3ba559bdf"
+        },
+        {
+          "case": "refusal:evidence-overwrite",
+          "status": 1
+        },
+        {
+          "case": "refusal:noncanonical-evidence",
+          "status": 1
+        },
+        {
+          "case": "refusal:empty",
+          "status": 1,
+          "stdin_bytes": 0
+        },
+        {
+          "case": "refusal:domain",
+          "status": 1,
+          "stdin_bytes": 31
+        },
+        {
+          "case": "refusal:oversize-request-header",
+          "status": 1,
+          "stdin_bytes": 39
+        },
+        {
+          "case": "refusal:truncated-request",
+          "status": 1,
+          "stdin_bytes": 41
+        },
+        {
+          "case": "refusal:oversize-payload-header",
+          "status": 1,
+          "stdin_bytes": 745
+        },
+        {
+          "case": "refusal:truncated-payload",
+          "status": 1,
+          "stdin_bytes": 785
+        },
+        {
+          "case": "refusal:trailing-byte",
+          "status": 1,
+          "stdin_bytes": 787
+        },
+        {
+          "case": "refusal:noncanonical-request",
+          "status": 1,
+          "stdin_bytes": 787
+        },
+        {
+          "case": "refusal:payload-mismatch",
+          "status": 1,
+          "stdin_bytes": 787
+        },
+        {
+          "case": "refusal:request:provider_revision",
+          "status": 1,
+          "stdin_bytes": 775
+        },
+        {
+          "case": "refusal:request:key_id",
+          "status": 1,
+          "stdin_bytes": 791
+        },
+        {
+          "case": "refusal:request:nonce",
+          "status": 1,
+          "stdin_bytes": 786
+        },
+        {
+          "case": "refusal:request:schema_version",
+          "status": 1,
+          "stdin_bytes": 763
+        },
+        {
+          "case": "refusal:request:algorithm",
+          "status": 1,
+          "stdin_bytes": 791
+        },
+        {
+          "case": "refusal:unauthorized-role",
+          "status": 1
+        },
+        {
+          "case": "refusal:private-key-mode:0o640",
+          "status": 1
+        },
+        {
+          "case": "refusal:private-key-mode:0o604",
+          "status": 1
+        },
+        {
+          "case": "refusal:private-key-mode:0o620",
+          "status": 1
+        },
+        {
+          "case": "refusal:private-key-symlink",
+          "status": 1
+        },
+        {
+          "case": "refusal:private-key-hardlink",
+          "status": 1
+        }
+      ],
+      "independent_verifiers": [
+        "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/bin/openssl",
+        "/nix/store/mmqcn9d1qjkgnxa27dkhllzhh3jj7jq6-openssh-10.5p1/bin/ssh-keygen",
+        "/nix/store/i3jmdna23drwp862kjcq8rk4pzzh9bpr-sbsigntools-0.9.5/bin/sbverify"
+      ],
+      "private_keys": "Generated in a disposable sandbox directory and never retained."
+    },
+    "test_cases": [
+      "config::tests::accepts_a_private_owner_only_key",
+      "config::tests::material_kinds_round_trip_through_json",
+      "config::tests::rejects_group_readable_keys_and_duplicate_ids",
+      "config::tests::rejects_relative_paths_and_unknown_registries",
+      "envelope::tests::envelopes_verify_with_the_release_evidence_key",
+      "exchange::tests::reads_a_complete_request",
+      "exchange::tests::rejects_wrong_domain_and_trailing_bytes",
+      "exchange::tests::response_framing_matches_the_coordinator_reader",
+      "image::tests::module_signature_trailer_matches_the_kernel_layout",
+      "image::tests::pcr_policy_requires_the_configured_signing_tool",
+      "keys::tests::loads_a_pkcs8_ed25519_key",
+      "keys::tests::openssh_keys_require_a_matching_trust_line",
+      "sign::tests::catalog_metadata_provider_binds_role_version_and_separate_namespace",
+      "sign::tests::detached_ed25519_responses_verify_against_the_public_key",
+      "sign::tests::provenance_signatures_are_bound_to_their_artifact_namespace",
+      "sign::tests::raw_payload_mode_signs_exact_payload_bytes",
+      "sign::tests::refuses_foreign_registries_roles_and_changed_payloads",
+      "sign::tests::rsa_payload_signing_requires_the_configured_openssl_tool",
+      "sign::tests::sshsig_git_signatures_verify_in_the_git_namespace"
+    ],
+    "test_features": {
+      "features": {
+        "adler2@2.0.1": [
+          []
+        ],
+        "aho-corasick@1.1.4": [
+          [
+            "perf-literal",
+            "std"
+          ]
+        ],
+        "anstream@1.0.0": [
+          [
+            "auto",
+            "default",
+            "wincon"
+          ]
+        ],
+        "anstyle-parse@1.0.0": [
+          [
+            "default",
+            "utf8"
+          ]
+        ],
+        "anstyle-query@1.1.5": [
+          []
+        ],
+        "anstyle@1.0.14": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "anyhow@1.0.103": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "base64@0.22.1": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "base64ct@1.8.3": [
+          [
+            "alloc",
+            "std"
+          ]
+        ],
+        "bitflags@2.13.0": [
+          [
+            "std"
+          ]
+        ],
+        "block-buffer@0.10.4": [
+          []
+        ],
+        "cfg-if@1.0.4": [
+          []
+        ],
+        "cipher@0.4.4": [
+          []
+        ],
+        "clap@4.6.1": [
+          [
+            "color",
+            "default",
+            "derive",
+            "env",
+            "error-context",
+            "help",
+            "std",
+            "suggestions",
+            "usage"
+          ]
+        ],
+        "clap_builder@4.6.0": [
+          [
+            "color",
+            "env",
+            "error-context",
+            "help",
+            "std",
+            "suggestions",
+            "usage"
+          ]
+        ],
+        "clap_derive@4.6.1": [
+          [
+            "default"
+          ]
+        ],
+        "clap_lex@1.1.0": [
+          []
+        ],
+        "colorchoice@1.0.5": [
+          []
+        ],
+        "const-oid@0.9.6": [
+          []
+        ],
+        "cpufeatures@0.2.17": [
+          []
+        ],
+        "crc32fast@1.5.0": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "crypto-common@0.1.7": [
+          [
+            "std"
+          ]
+        ],
+        "curve25519-dalek-derive@0.1.1": [
+          []
+        ],
+        "curve25519-dalek@4.1.3": [
+          [
+            "alloc",
+            "digest",
+            "precomputed-tables",
+            "zeroize"
+          ]
+        ],
+        "der@0.7.10": [
+          [
+            "alloc",
+            "oid",
+            "std",
+            "zeroize"
+          ]
+        ],
+        "digest@0.10.7": [
+          [
+            "alloc",
+            "block-buffer",
+            "core-api",
+            "default",
+            "std"
+          ]
+        ],
+        "dyn-clone@1.0.20": [
+          []
+        ],
+        "ed25519-dalek@2.2.0": [
+          [
+            "alloc",
+            "default",
+            "fast",
+            "pkcs8",
+            "std",
+            "zeroize"
+          ]
+        ],
+        "ed25519@2.2.3": [
+          [
+            "alloc",
+            "pkcs8",
+            "std"
+          ]
+        ],
+        "equivalent@1.0.2": [
+          []
+        ],
+        "fastrand@2.4.1": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "flate2@1.1.9": [
+          [
+            "any_impl",
+            "miniz_oxide",
+            "rust_backend"
+          ]
+        ],
+        "generic-array@0.14.7": [
+          [
+            "more_lengths"
+          ]
+        ],
+        "getrandom@0.4.2": [
+          []
+        ],
+        "hashbrown@0.17.1": [
+          []
+        ],
+        "heck@0.5.0": [
+          []
+        ],
+        "hex@0.4.3": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "humantime@2.3.0": [
+          []
+        ],
+        "indexmap@2.14.0": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "inout@0.1.4": [
+          []
+        ],
+        "is_terminal_polyfill@1.70.2": [
+          [
+            "default"
+          ]
+        ],
+        "itoa@1.0.18": [
+          []
+        ],
+        "libc@0.2.186": [
+          []
+        ],
+        "linux-raw-sys@0.12.1": [
+          [
+            "auxvec",
+            "elf",
+            "errno",
+            "general",
+            "ioctl",
+            "no_std"
+          ]
+        ],
+        "memchr@2.8.2": [
+          [
+            "alloc",
+            "std"
+          ]
+        ],
+        "miniz_oxide@0.8.9": [
+          [
+            "simd",
+            "simd-adler32",
+            "with-alloc"
+          ]
+        ],
+        "once_cell@1.21.4": [
+          [
+            "alloc",
+            "race",
+            "std"
+          ]
+        ],
+        "pem-rfc7468@0.7.0": [
+          [
+            "alloc",
+            "std"
+          ]
+        ],
+        "pkcs8@0.10.2": [
+          [
+            "alloc",
+            "std"
+          ]
+        ],
+        "proc-macro2@1.0.106": [
+          [
+            "default",
+            "proc-macro"
+          ]
+        ],
+        "quote@1.0.46": [
+          [
+            "default",
+            "proc-macro"
+          ]
+        ],
+        "rand_core@0.6.4": [
+          []
+        ],
+        "ref-cast-impl@1.0.27": [
+          []
+        ],
+        "ref-cast@1.0.27": [
+          []
+        ],
+        "regex-automata@0.4.14": [
+          [
+            "alloc",
+            "dfa-onepass",
+            "hybrid",
+            "meta",
+            "nfa-backtrack",
+            "nfa-pikevm",
+            "nfa-thompson",
+            "perf-inline",
+            "perf-literal",
+            "perf-literal-multisubstring",
+            "perf-literal-substring",
+            "std",
+            "syntax",
+            "unicode",
+            "unicode-age",
+            "unicode-bool",
+            "unicode-case",
+            "unicode-gencat",
+            "unicode-perl",
+            "unicode-script",
+            "unicode-segment",
+            "unicode-word-boundary"
+          ]
+        ],
+        "regex-syntax@0.8.11": [
+          [
+            "default",
+            "std",
+            "unicode",
+            "unicode-age",
+            "unicode-bool",
+            "unicode-case",
+            "unicode-gencat",
+            "unicode-perl",
+            "unicode-script",
+            "unicode-segment"
+          ]
+        ],
+        "regex@1.12.4": [
+          [
+            "default",
+            "perf",
+            "perf-backtrack",
+            "perf-cache",
+            "perf-dfa",
+            "perf-inline",
+            "perf-literal",
+            "perf-onepass",
+            "std",
+            "unicode",
+            "unicode-age",
+            "unicode-bool",
+            "unicode-case",
+            "unicode-gencat",
+            "unicode-perl",
+            "unicode-script",
+            "unicode-segment"
+          ]
+        ],
+        "rustc_version@0.4.1": [
+          []
+        ],
+        "rustix@1.1.4": [
+          [
+            "alloc",
+            "default",
+            "fs",
+            "std"
+          ]
+        ],
+        "schemars@1.2.2": [
+          [
+            "default",
+            "derive",
+            "schemars_derive",
+            "std"
+          ]
+        ],
+        "schemars_derive@1.2.2": [
+          []
+        ],
+        "semver@1.0.28": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "serde@1.0.228": [
+          [
+            "alloc",
+            "default",
+            "derive",
+            "rc",
+            "serde_derive",
+            "std"
+          ]
+        ],
+        "serde_core@1.0.228": [
+          [
+            "alloc",
+            "rc",
+            "result",
+            "std"
+          ]
+        ],
+        "serde_derive@1.0.228": [
+          [
+            "default"
+          ]
+        ],
+        "serde_derive_internals@0.30.0": [
+          []
+        ],
+        "serde_json@1.0.150": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "serde_spanned@0.6.9": [
+          [
+            "serde"
+          ]
+        ],
+        "sha2@0.10.9": [
+          [
+            "compress",
+            "default",
+            "std"
+          ]
+        ],
+        "signature@2.2.0": [
+          [
+            "alloc",
+            "std"
+          ]
+        ],
+        "simd-adler32@0.3.9": [
+          []
+        ],
+        "spki@0.7.3": [
+          [
+            "alloc",
+            "std"
+          ]
+        ],
+        "ssh-cipher@0.2.0": [
+          []
+        ],
+        "ssh-encoding@0.2.0": [
+          [
+            "alloc",
+            "base64",
+            "pem",
+            "sha2",
+            "std"
+          ]
+        ],
+        "ssh-key@0.6.7": [
+          [
+            "alloc",
+            "ed25519",
+            "rand_core",
+            "std"
+          ]
+        ],
+        "strsim@0.11.1": [
+          []
+        ],
+        "subtle@2.6.1": [
+          []
+        ],
+        "syn@2.0.118": [
+          [
+            "clone-impls",
+            "default",
+            "derive",
+            "full",
+            "parsing",
+            "printing",
+            "proc-macro"
+          ]
+        ],
+        "syn@3.0.5": [
+          [
+            "clone-impls",
+            "default",
+            "derive",
+            "parsing",
+            "printing",
+            "proc-macro"
+          ]
+        ],
+        "tempfile@3.27.0": [
+          [
+            "default",
+            "getrandom"
+          ]
+        ],
+        "thiserror-impl@2.0.18": [
+          []
+        ],
+        "thiserror@2.0.18": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "toml@0.8.23": [
+          [
+            "default",
+            "display",
+            "parse"
+          ]
+        ],
+        "toml_datetime@0.6.11": [
+          [
+            "serde"
+          ]
+        ],
+        "toml_edit@0.22.27": [
+          [
+            "display",
+            "parse",
+            "serde"
+          ]
+        ],
+        "toml_write@0.1.2": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "typenum@1.20.1": [
+          []
+        ],
+        "unicode-ident@1.0.24": [
+          []
+        ],
+        "utf8parse@0.2.2": [
+          [
+            "default"
+          ]
+        ],
+        "version_check@0.9.5": [
+          []
+        ],
+        "winnow@0.7.15": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "zeroize@1.9.0": [
+          [
+            "alloc"
+          ]
+        ],
+        "zmij@1.0.21": [
+          []
+        ]
+      },
+      "first_party_features": {
+        "aos-artifact-evidence": [
+          []
+        ],
+        "aos-core": [
+          []
+        ],
+        "aos-module-format": [
+          []
+        ],
+        "aos-oci-types": [
+          []
+        ],
+        "aos-registry-format": [
+          []
+        ],
+        "aos-release-format": [
+          []
+        ],
+        "aos-release-signer": [
+          []
+        ]
+      }
+    },
+    "test_profiles": {
+      "aos-artifact-evidence/aos_artifact_evidence": {
+        "bazel": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-386196004",
+          "opt-level": "3",
+          "overflow-checks": "no",
+          "strip": "none"
+        },
+        "cargo": {
+          "debug_assertions": false,
+          "debuginfo": 0,
+          "opt_level": "3",
+          "overflow_checks": false,
+          "test": false
+        },
+        "label": "//crates/artifacts/aos-artifact-evidence:lib"
+      },
+      "aos-core/aos_core": {
+        "bazel": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-2583899516",
+          "opt-level": "3",
+          "overflow-checks": "no",
+          "strip": "none"
+        },
+        "cargo": {
+          "debug_assertions": false,
+          "debuginfo": 0,
+          "opt_level": "3",
+          "overflow_checks": false,
+          "test": false
+        },
+        "label": "//crates/core/aos-core:lib"
+      },
+      "aos-module-format/aos_module_format": {
+        "bazel": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-1113882660",
+          "opt-level": "3",
+          "overflow-checks": "no",
+          "strip": "none"
+        },
+        "cargo": {
+          "debug_assertions": false,
+          "debuginfo": 0,
+          "opt_level": "3",
+          "overflow_checks": false,
+          "test": false
+        },
+        "label": "//crates/modules/aos-module-format:lib"
+      },
+      "aos-oci-types/aos_oci_types": {
+        "bazel": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-1736273532",
+          "opt-level": "3",
+          "overflow-checks": "no",
+          "strip": "none"
+        },
+        "cargo": {
+          "debug_assertions": false,
+          "debuginfo": 0,
+          "opt_level": "3",
+          "overflow_checks": false,
+          "test": false
+        },
+        "label": "//crates/artifacts/aos-oci-types:lib"
+      },
+      "aos-registry-format/aos_registry_format": {
+        "bazel": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-693301736",
+          "opt-level": "3",
+          "overflow-checks": "no",
+          "strip": "none"
+        },
+        "cargo": {
+          "debug_assertions": false,
+          "debuginfo": 0,
+          "opt_level": "3",
+          "overflow_checks": false,
+          "test": false
+        },
+        "label": "//crates/registry/aos-registry-format:lib"
+      },
+      "aos-release-format/aos_release_format": {
+        "bazel": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-1089002904",
+          "opt-level": "3",
+          "overflow-checks": "no",
+          "strip": "none"
+        },
+        "cargo": {
+          "debug_assertions": false,
+          "debuginfo": 0,
+          "opt_level": "3",
+          "overflow_checks": false,
+          "test": false
+        },
+        "label": "//crates/release/aos-release-format:lib"
+      },
+      "aos-release-signer/aos_release_signer": {
+        "bazel": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-2243433705",
+          "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "opt-level": "3",
+          "overflow-checks": "no",
+          "strip": "none"
+        },
+        "cargo": {
+          "debug_assertions": false,
+          "debuginfo": 0,
+          "opt_level": "3",
+          "overflow_checks": false,
+          "test": true
+        },
+        "label": "//crates/release/aos-release-signer:bin_aos-release-signer_binary"
+      }
+    },
+    "tests": {
+      "schema_version": 1,
+      "targets": {
+        "//crates/release/aos-release-signer:bin_aos-release-signer": {
+          "executed": [
+            "config::tests::accepts_a_private_owner_only_key",
+            "config::tests::material_kinds_round_trip_through_json",
+            "config::tests::rejects_group_readable_keys_and_duplicate_ids",
+            "config::tests::rejects_relative_paths_and_unknown_registries",
+            "envelope::tests::envelopes_verify_with_the_release_evidence_key",
+            "exchange::tests::reads_a_complete_request",
+            "exchange::tests::rejects_wrong_domain_and_trailing_bytes",
+            "exchange::tests::response_framing_matches_the_coordinator_reader",
+            "image::tests::module_signature_trailer_matches_the_kernel_layout",
+            "image::tests::pcr_policy_requires_the_configured_signing_tool",
+            "keys::tests::loads_a_pkcs8_ed25519_key",
+            "keys::tests::openssh_keys_require_a_matching_trust_line",
+            "sign::tests::catalog_metadata_provider_binds_role_version_and_separate_namespace",
+            "sign::tests::detached_ed25519_responses_verify_against_the_public_key",
+            "sign::tests::provenance_signatures_are_bound_to_their_artifact_namespace",
+            "sign::tests::raw_payload_mode_signs_exact_payload_bytes",
+            "sign::tests::refuses_foreign_registries_roles_and_changed_payloads",
+            "sign::tests::rsa_payload_signing_requires_the_configured_openssl_tool",
+            "sign::tests::sshsig_git_signatures_verify_in_the_git_namespace"
+          ],
+          "ignored": []
+        }
+      }
+    }
+  },
+  "matched_current_source_original_cargo_recipe_identity": {
+    "ordinary": "/nix/store/lnqmn1b10450q4fpl3205lgbwah45d73-aos-release-signer-0.1.0.drv",
+    "original": "/nix/store/lnqmn1b10450q4fpl3205lgbwah45d73-aos-release-signer-0.1.0.drv"
+  },
+  "other_implementation_selections_unchanged": 71,
+  "platform": "x86_64-linux",
+  "policy_cases": 446,
+  "precise_conservative": {
+    "all_section_headers_and_non_debug_sections_equal": true,
+    "build_outputs": {
+      "conservative": [
+        "/nix/store/6n7pwsp2j20i5qbp8yshcqivk4zmrsn6-aos-bazel-release-signer-production-1",
+        "/nix/store/s08x6923c1c94kav6899vxcfqvp5if82-aos-bazel-release-signer-release-tests-1"
+      ],
+      "precise": [
+        "/nix/store/7abz91411m4wxqsbanjqabjv3jwpk2jr-aos-bazel-release-signer-production-1",
+        "/nix/store/mgwarwwm2cvmjvbc2yrqsl49ml44w3wf-aos-bazel-release-signer-release-tests-1"
+      ]
+    },
+    "configured_reports": 135,
+    "contracts": 208,
+    "installed_binary_sha256": "fead6c43525960c96bf35b524f1c0b17fecbf7a020d3ef6a3602b9213b3c4260",
+    "installed_packages": {
+      "conservative": "/nix/store/v3rx711c7w7fk7gjhsa2fy53sxjhival-aos-release-signer-0.1.0",
+      "precise": "/nix/store/4dmp076l6623kc0jk2zv4809v838a6j5-aos-release-signer-0.1.0"
+    },
+    "inventories_exact": true,
+    "raw_artifacts": {
+      "conservative": {
+        "path": "/nix/store/6n7pwsp2j20i5qbp8yshcqivk4zmrsn6-aos-bazel-release-signer-production-1/packages/77317032c1b5d8bb89c1771dc903955361b568267f1a9b2a8b19ad41e37b247b/files/bin/aos-release-signer",
+        "sha256": "f999504116728e3359239b4df377f850f5b8f6656a6735aa1c71656f2cfd13dc"
+      },
+      "precise": {
+        "path": "/nix/store/7abz91411m4wxqsbanjqabjv3jwpk2jr-aos-bazel-release-signer-production-1/packages/77317032c1b5d8bb89c1771dc903955361b568267f1a9b2a8b19ad41e37b247b/files/bin/aos-release-signer",
+        "sha256": "f999504116728e3359239b4df377f850f5b8f6656a6735aa1c71656f2cfd13dc"
+      }
+    },
+    "raw_differences_confined_to_debug_sections": {},
+    "source_directories": 7,
+    "source_files": 126,
+    "source_roots": 3
+  },
+  "qualification": "/nix/store/c11b40va1f48hc2x079jm5a0r0cby9fh-aos-bazel-release-signer-production-checks",
+  "qualification_derivation": "/nix/store/ani66khqrgdm8lgrp9g7wzz1gybmsixy-aos-bazel-release-signer-production-checks.drv",
+  "qualification_helpers": {
+    "matching_current_files": 132,
+    "sha256": {
+      "bpf_object.py": "5472158e30a14a58c4337c3a53869155e48268921bbce958e216341b9d952f8e",
+      "cache_recovery.py": "a13506b250e1e16c86a5ce4a0de670c09d67d6e2e20351f92db3be002e1d96f6",
+      "compiler_wrapper.py": "202a3d74d0b86a2ed8e679f2fdf9b6b9d3b186098473805ffcd8d519336c9180",
+      "configuration_provider_vm.py": "235e3122ffa627e723ff2b8ebd175ff411aa488e19d8f686f6abe0e41a484be1",
+      "editor_cargo.py": "122c43f0cf9d3e16f22f5fc1e1bbf1177e7029edbd7ec725f97173263e463ac3",
+      "family_libtest.py": "2aa8ef4a594dd5e22a5b866de743416aeea444fbcdd4c1524bf77a458e7c1944",
+      "filesystem_provider_vm.py": "5cbd1547535a7000b7554978abb1937e430defec4558cb1172f6c1e5c5199f12",
+      "inspect_compiler_execution.py": "4aa8d27e519562d4922a09d13b63b5ff801fea65400b8cefdf9038109303c912",
+      "installed_package.py": "620c18dccfad0337fa7449e95423fe1f7ae5010d4a47f0475e7e0632f3340e31",
+      "measure_feature_cases.py": "43095958fdfc0e1bad8077f6819cbe457d39e62c59c29dbd007041f51d94a3e5",
+      "metadata_provider_effects.py": "8a60e408814536ed74957ab796a7c2ff93857c8f8ad9c0b552290a9b4f9dafad",
+      "mutate_fixture.py": "1ccaddaba9d0eed112efacedfacab78968928b50af7817eed86903b39395bcb2",
+      "normalize_editor_diagnostics.py": "168e4608b4d4026fd72787285190bd156d05a8f9b8f004a593b4207f3d575bbf",
+      "reconstruct_compiler_inputs.py": "b8b79f7684053c4e7db9bdd4c56d21ead889d1a09a5d53247c9dec95e17e3aea",
+      "release_signer_protocol.py": "339028e84390dc1d737d904fe7d367971f5f268a94a11c5cdf70569824622cc6",
+      "retain_compiler_inputs.py": "407995e6a7b1c26742f4c18d0dec16b8bcb043a00bb27704c796c758ae57a766",
+      "run_family_vm.py": "0842da3c35b1541f06603e904c6cce3b17adcb144733474f3c7c8ccaec0f9040",
+      "run_systemd_parser.py": "6e5d48bf02d356fb8d18403943dad807debb3071434c5f87422a1b2d43c45fb3",
+      "select_cargo_editor.py": "7811cc9dc952b033c55305caf9f433df0e50fdef723ddde8c7c668de2b73aee9",
+      "select_cargo_workspace.py": "dc7219062151787c1f33af26de64859056fecdd0fd2be645aa02c5b4551d3b30",
+      "systemd_provider_effects.py": "748bd291274240dd202354f3c5767a8a19e5aa31f043805d714b2a5c9bbc94fc",
+      "test_abi_owners.py": "3d74c5ebcc34008800b84aeeaca6f9fd3772157c469157364e92e9184f74ad87",
+      "test_analyzer_identity.py": "c0f7086c53cb2b98c71ee0880ce85e9625ac9de173dbe6d224ee8616281f7aad",
+      "test_architecture_export.py": "3c4e39588ded7569f29588b43fc15880021be1571cbf22e9a8e811584ed0b73f",
+      "test_architecture_parity.py": "68f09e463e93bbaeaf9ad0cc8aae7ce0be80697c394b5de0c1a458db9ffce1a2",
+      "test_bpf_object.py": "2ed2f8b46f145bf6d641e2654ba4f9e44e2f4a43e0f5aa74a3bfc9c6ecb878ca",
+      "test_browser_assets.py": "cf638ed29158e0335e9d403d2a88153ea83fcb83f91deb8ff6d02e564551c0ba",
+      "test_cargo_editor.py": "cb0e75497ce63defc547a37bfb5861c6a9ce3901b18e116a19cd01a0a42e2d17",
+      "test_cargo_rustc_trace.py": "cc3ec29df62d804e651702220fb59355f691bddd06ff05e9d0355db85ad58448",
+      "test_cli_package.py": "138f4d3e96d0b4b37a94f6acbc51fd5f9378dd5543827ffc8e85b92b5bbe62fa",
+      "test_cli_parity.py": "0bec5bb66698b507f7f1024434e6a31b11ab15d8c98e88b6903f5db856ff0fc9",
+      "test_compiler_execution.py": "4c1523c6863db469aac3186b16fe6e93ce47b36b241cbea311e52176676093c5",
+      "test_compiler_input_reconstruction.py": "3e411716ff327a9fa137ce042a14d0e90b07b5d2a1e98a8c128b359ad9e6f6b8",
+      "test_compiler_input_retention.py": "a6b4608dee45fa303f6d396399f0a8ae17800250af6bf3de346c038632a7324b",
+      "test_compiler_options.py": "54dd8df3779e97ab3b9cadc18766eeffd69cf2b59acc51b68c469bc271ba2c2b",
+      "test_compiler_wrapper.py": "7072a49817f3d582a857c0d2a3f33e0425a6453109f5eed2e6b731386a5eee2d",
+      "test_crucible_feature_policy.py": "9dd8e153b678795898b2cd63c405cf93f94e89e41f2e12cf2bb7d219e6f63fd7",
+      "test_declaration_query.py": "9f9fee08d945dbbb549dd21a60596da718bd3c2d3124303ca0702676d1aac1db",
+      "test_editor_cargo.py": "b71df9b76a5e5303a005cf3f3e2aa0ebb6948606cbe41cfca6a5a07f25cd7124",
+      "test_editor_cfg.py": "61251687f6171263a08c1c4ed32417ff1aab637b59cd0e8ee4ea5e330166b43e",
+      "test_editor_diagnostic_context.py": "16c4f5a6fbb90e7d1e345ab9957108a0b828d81a4f8c30e8fb4e829516fd5c0c",
+      "test_editor_workspace.py": "174f1b60cc41c5947f7e80ca6ed11c1ae5d2ab6f8e69b8b283da80086f960159",
+      "test_execution_events.py": "5d361c6d2c216d25745ea13df8793c46657f06419e63ca91fe0c36e994eea3b5",
+      "test_external_profile_qualification.py": "7f7ae508ab47a1659c29db2cb539c9dc1979a242c26c59607476872a71c8dfaa",
+      "test_family_cross_cases.py": "771ea0d6a00630633e4947a60095ce82364728474ea82c977fed4474db007ddd",
+      "test_family_editor.py": "4cbaf1ad3ecda8f3ff69aaf33970b48c4d55f373d2df3f1c246a1e57a282b6c4",
+      "test_feature_powerset.py": "a5ef27dd38a5fb889a0a4fd155844d588d47faaa6d1612da6e853bcf28e405ff",
+      "test_format_rust.py": "58f15e856bc8f4c7b712cd5a5f7f8301c4ec9d587d9fdb3ca81c0ca69b5d8db1",
+      "test_guest.py": "aeced8ec312e84e281f8d7a39e0301eeaba2e23ed6304d6819bc643ec5391200",
+      "test_guest_build_info.py": "56bca9707e4bfd406381c4509f459f859cdc8491ef1009a868c4a4397a736e40",
+      "test_inventory.py": "20b0eba6cdbbcb169bf08b8c85eb4d7ba60682901248c59a463139e65cbadfc3",
+      "test_launcher.py": "f18be21cd381c3a917f35d86c632cfc4c1c8b5fcc6b98d1e41a290f91edeb07f",
+      "test_native_cli_repeatability.py": "f12553447762fc5ef2487ceb1e16954e8c4563bbe1624cf53465977b7728a232",
+      "test_native_compiler_units.py": "45da1a44c372fa35dd9a401e7d8dcf256c4d4fa7dabd6007a95be55f00818cb2",
+      "test_native_profile_defaults.py": "ac387eea30bff8cc876fc0b7e7ca928cb9f86c885fa7799774bd05cd27c8bce2",
+      "test_optional_dependencies.py": "a1ed71eb39b402e808f4672a38f1aa6130a8e0ef42de4e22ec913e69173c4932",
+      "test_package_metadata.py": "18a81b74585c502e315ad0c13f0ad87752af6419a5ce32b81dd2f16518f14c08",
+      "test_packages.py": "2eacf238e85357b4831790bdc840450d1ca5dfc26d6380133ee00784f78c709e",
+      "test_protocol_parity.py": "7749dc9eb472716dc7c955287457e79919e2975e969469fde9591aa70e59cfe5",
+      "test_registry_browser.py": "483095d51888c317eca7ac5fe896090c76c9a15ecfd80c6bf08f446ca450fda5",
+      "test_release_packages.py": "10d4aa72f0efe31b97542062f9fb3682517336e5863acf5ffa2016c24feb577c",
+      "test_repository_test_sources.py": "1d878514440561a6950a34aee640545e93e4c66bf7b9e45da3d66a6a4435ee0c",
+      "test_runner.py": "93593de9095734f007c534a35971fbf48b055452a74e0cedca0b2d6f7f77f179",
+      "test_rust_project.py": "3e2e1c1d0a6e13d9d531cb9cbf65013b34146d3cf439e476d62a35cb48904167",
+      "test_rust_update.py": "75963ab2a011e279f71501cdbba100d0969716e28d9905eddabcccce6acd1859",
+      "test_rust_update_optional.py": "1f3a277879605bb83caffd18c88bf6e5955f2b423e15719e2b6913aff9f4c1dc",
+      "test_source_catalog.py": "d4155b7fafb63bef2cae27aeca9d7157fc1a5d46e7f812cbb07e186231e19c83",
+      "test_static_runtime.py": "fc7b271a3e1b87735ceffc8b50fcf6d3222ae8f40e0a6a5e1cfa90f7cf686153",
+      "test_sysroot_cargo.py": "623fc7d571fb1368f87216250602032e06a16186dfaab9c665f86d24790b3dc5",
+      "test_worker.py": "b794252b27ef638a6d8533d0fc8d6eef00f69166bff8a70864c5a9adca6b84db",
+      "test_worktree_cache.py": "8b5b6486e6dcbc59891f4df516de7288038c9c1d74dd98b07218239b7bf60f35",
+      "trace_cargo_rustc.py": "9e61f12ad19101aa4c6aa5dc6640db6380d2632926e66b4ffc92df40c14f34a6",
+      "train_pgo.py": "10d0343d5831993024cc6ba5893cf9beb72b45d26acc941ae61c2bfab44c8847",
+      "verify_abi_owners.py": "e1338f80a0dc24c7caa97eaa51fe8e7256a80ac5fe8d62afc9ac784f2299af36",
+      "verify_ability_package.py": "77cb805e613b0c68baaf91262f1c412f4fcc35a433270b1b29319580991cb7ba",
+      "verify_activation_crucible.py": "c95443f8b8ecc22eff9b84094f126e07c6a713a5e0369bf126f12d149fd1fab0",
+      "verify_architecture.py": "a3447d3e6ea98d584d4105cc0982c5843853db8c5081162161dca510611c5e1c",
+      "verify_boot_configuration_driver.py": "48131cb6bcf464b6f7facdae05a5b31ca6028bb9368b0d92099e2a70a51405aa",
+      "verify_bpf_native.py": "73c9c6a6b372830ace9a072b3e15a9cc7f65597d9df2f038341fcb60f25861aa",
+      "verify_bpf_provider.py": "cf590a847791e65803e4529d654f4aceb4b3b793537d1e104a2b87251250d1fc",
+      "verify_cache.py": "48679f851e2b8f7789104114cbd52c62798f908b3313d636531546da7f7bed02",
+      "verify_cli.py": "fa6a9e6837c87150adf34f4371b9026ea7c65db64b97c7d91499013661e95306",
+      "verify_cli_package.py": "6a4e3be6dc746b320b094b9ee28947463d30a985c828fb3f849de7118d6f53a1",
+      "verify_compiler_option_semantics.py": "47556161f33f316ec59306d6084e6ba732f97506b7b63e0d1165fcd327494ab1",
+      "verify_compiler_options.py": "32facacd49f04aacc8cb557febbb76a56e25ec9534037576aaf49c1962d0ce1c",
+      "verify_compiler_wrapper.py": "80f0d4b70d63072a879bff2e50c2dfa9e5d960a7cd8dcdae4a9b79d3f477ba7c",
+      "verify_concurrent.py": "b2f19422f897c6cff509601f3af725f9d25a5b78c1ab484be556bc7c503e5f4e",
+      "verify_configuration_package.py": "49e8ce87a56661e4eff03d777c8085e1897d1ae3d1ff9ed6e89f98ea54b4307d",
+      "verify_configuration_provider.py": "8afbb4f19740dab5c691ae92d6f5951f4ed4a4c9907fe6d23f2fb09870a3731f",
+      "verify_cross_linux.py": "4e68c910de0485f38cdf6070532b70055f86cd1a312d39b49b623b74667e9c85",
+      "verify_crucible_feature_policy.py": "35abd0b2641b170ec57f9a80410c9b6de10d155f08a4c3aa235325f9c3a4047d",
+      "verify_deployment_check.py": "fc7e8c8ad91c0aa0841d515d9cec3ebf72c232d070bd7e59e998a2886a73b9f5",
+      "verify_family_cross.py": "2333d2bd82b04e1c7effa4911629e7c72d6504aa2f7bf6bec43dc5fbd6f81694",
+      "verify_family_editor.py": "b35d9da595d5d837e46933c7f87ee4c0f48c65239787e4d7846e88a4fab6d3cf",
+      "verify_feature_powerset.py": "37a4be274c028a704eb4e776d35d8f75b2c09913b0d49aba4897b42b66736855",
+      "verify_filesystem_provider.py": "44984e061dddb0d2295c75e7168cc1b93b0bad6383e97e640e23943b94453ff2",
+      "verify_guest.py": "b9a95c381fc242d4f1f140831681449c8b21c3e629aa0fe5926331b5d2ea0f26",
+      "verify_initrd_package.py": "14bf792f713b1db88aae1c7f0be0dfb09f287b260f1bf9105b329c4b4d016690",
+      "verify_invalidation.py": "8808c1d9dcad5678a4271b573a58653490d09447bbf2789451bf221910e0afcf",
+      "verify_kernel_tunable_provider.py": "a7d10ff0b10fcecb9ea44f8074000936ae0fd8b416e816950ba26edeea77cf74",
+      "verify_kubernetes_provider.py": "4158ab97e2d4f4f08fa0f0655dc438e9dfa0d4cf26ea97af0554209407e49a4d",
+      "verify_metadata_provider.py": "d515317904674e52343537f5baab452dc30bfdfa0a7c56a6baf6bc681b5df100",
+      "verify_metadata_rejections.py": "b5a7e27782cc1ac634a392ec1a67f243ecb22a27408339717ec022024ee7c71e",
+      "verify_native_cli_repeatability.py": "16aaaf593ea14e18c8233aafb5273b2b30a0dc3e7441108be69aca2a9e5a8dae",
+      "verify_native_libraries.py": "560d208273148ee135007ecfc10ca4fe4987506278ea2f1e3575c734b1bf00ff",
+      "verify_network_ruleset_provider.py": "04c58dab37a49cf6b4fcf07d6897fd2d99cf8c749da7066c2f5e0b2cebe9fc95",
+      "verify_nix_store_provider.py": "5886e618d247e7e9c4ad90730c5ae23b73dbf7ff0160db0cdc7424b23c5a8091",
+      "verify_package_evaluation_driver.py": "a2f7f962baea74e3e449776569e9041afb0c3e798ed1ca5e34d7a62ab3a4da6b",
+      "verify_package_metadata.py": "4d37602c85a76bb6d442c6720dcd7f24a5b7dd953c692396bbf23efaf91c1072",
+      "verify_pilot.py": "19d94d835b764d92881c5797d7d8e9251b9b6965a1c7aeb41030db6a7e207e50",
+      "verify_preparation_provider.py": "26374baa116d804b115f354a626f8f2c813d4a135a79b3e7e858ec378916854f",
+      "verify_protocol.py": "9b993ffb0d0fe3e144fe6040ececdff724851e7a8645e32825ac0daadd2991be",
+      "verify_qemu_gpl.py": "27db0f89998cea3ab6a1afa92ec370456487188a3f9c77d99dd651c743c18e43",
+      "verify_qemu_installed.py": "d5e2abf15c67a9958262501d0c703da37a940772a77d6f3a79ce331c381e7be1",
+      "verify_registry_browser.py": "2c72b6290dc7d196d9e77dd23080c2a7cbc2414f80d4e4fc57b56d5cfed925c0",
+      "verify_registry_staging.py": "6dbf4cffb4950bd4d86e3e9dae95358a1de7661053d03ade399c679aa345a7f4",
+      "verify_release_signer.py": "4d90babbd727d551d8c260462a321d7ef6dc5a06cd80db631abb46ccca4c9810",
+      "verify_rust_source_patches.py": "b2a15ff751e84c49c1251e4368b0d8c73a546207454db05a181a2a4c34cf4f63",
+      "verify_rustdoc_runner.py": "a33b7d8014fa507dab70f54b04008378fb0020558a1226f49b5f3905a9d74b50",
+      "verify_source_audits.py": "b1d3653e56dac963773f7fea110ebfb8aa085f78def0774e1c75e5c231690468",
+      "verify_source_catalog.py": "b6dfc77802c0d10dfdff65291c2f4370f5d087e24ee706d39a301d69dbd4f5b4",
+      "verify_static_runtime.py": "52ac949b73b4ac915c2aef1e0fbf10ba031584a8ec0aa09e8e8240dc94b75a2b",
+      "verify_static_storage_providers.py": "b5297c260f0af8cd0ae909d26194effd14af817ddc8dfc37a9dbf6a53fa0cf5f",
+      "verify_storage_provisioning_provider.py": "a28ae6d24bfae8a881a02e86f2bcdd26c5b8b1b1aa498cd020df9d50b50862eb",
+      "verify_store_native.py": "89e5155f54611fab421af626eeccb6938967224b94b383889eec9a8a9e027b5d",
+      "verify_systemd_provider.py": "a832bd1801ec576080bb93fe4f31521c90834e4d4bb945c00bac4649abf03334",
+      "verify_target_invalidation.py": "5a0248d21cec0fecce1ee80facceef04098dfab3845c7f62b80f20f9cf41321b",
+      "verify_transaction_storage_provider.py": "4b9d8625e2b48b0a7e2174d5c3e20b58dba66e9357b68dae40a6b126574b53dd",
+      "verify_wasm.py": "8836009a0fafb76a459dca10948461a30093110beb2f9a78e68e948af58f8f59",
+      "verify_worker.py": "2c81fe219540cc45ac1b57a00859385fc2a40fdae5084fc28bee3d428edbdb53",
+      "verify_worktree_cache.py": "794f46936718e37077acabc66c3a25eca0f47f59530fa40e44694dd0e30d3a86",
+      "verify_zfs_provider.py": "0c3a5acbd5a0865a8a6d9f091e2b203448db63927b1ae90296ebe6762ee563e9"
+    },
+    "source": "/nix/store/mmcbvyvlwkdd3wsbqz15g07l00x19kgb-aos-bazel-release-signer-production-verifiers"
+  },
+  "regression_checks": {
+    "evaluation": {
+      "derivation": "/nix/store/3z0k9p599k9ra8azwipqgwxk0c8zdwa1-aos-native-evaluation-checks-0.drv",
+      "output": "/nix/store/8wp43is6mcn2d8ln4lmd2gc38qwqg1j3-aos-native-evaluation-checks-0"
+    },
+    "policy": {
+      "derivation": "/nix/store/0xvf1q0r8rid7rr6gl0j24z7pn083ib7-aos-bazel-policy-checks.drv",
+      "output": "/nix/store/nimlynlpr0b1czahgqs9alj7mnwzvmyw-aos-bazel-policy-checks"
+    }
+  },
+  "remaining_gates": [
+    "foreign-host execution",
+    "numeric performance acceptance",
+    "production default cutover",
+    "repository-wide Cargo removal",
+    "remaining RFC-0028 conversions and qualification"
+  ],
+  "schema_version": 1,
+  "status": "PASS_NATIVE_LINUX_INSTALLED_SIGNER_BINARY_TESTS_AND_INDEPENDENT_SIGNATURE_VERIFIERS"
+}

@@ -1,0 +1,488 @@
+{
+  "command": "nix-build /tmp/aos-bazel-722/hub-portable-cargo.nix --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "derivation": "/nix/store/s920rrpq6p9v0b87pg8b957ib4i1i65f-aos-bazel-hub-portable-cargo-baseline-1.drv",
+  "derivation_sha256": "af0f6334cd7bc4d0e0caa1bb4a972877d764f59bb29221b9ee6468a277cd62cb",
+  "doctests": {
+    "aos-hub-api": {},
+    "aos-hub-ui": {}
+  },
+  "executed_cases": 52,
+  "external_features": {
+    "anyhow@1.0.102": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "base64@0.21.7": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "bitflags@2.13.0": [
+      [
+        "std"
+      ]
+    ],
+    "bytes@1.11.1": [
+      []
+    ],
+    "cfg-if@1.0.4": [
+      []
+    ],
+    "either@1.16.0": [
+      [
+        "std",
+        "use_std"
+      ]
+    ],
+    "equivalent@1.0.2": [
+      []
+    ],
+    "fastrand@2.4.1": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "fixedbitset@0.5.7": [
+      []
+    ],
+    "getrandom@0.4.2": [
+      []
+    ],
+    "hashbrown@0.17.1": [
+      []
+    ],
+    "heck@0.5.0": [
+      []
+    ],
+    "indexmap@2.14.0": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "itertools@0.13.0": [
+      [
+        "default",
+        "use_alloc",
+        "use_std"
+      ]
+    ],
+    "itertools@0.14.0": [
+      [
+        "default",
+        "use_alloc",
+        "use_std"
+      ]
+    ],
+    "itoa@1.0.18": [
+      []
+    ],
+    "libc@0.2.186": [
+      []
+    ],
+    "linux-raw-sys@0.12.1": [
+      [
+        "auxvec",
+        "elf",
+        "errno",
+        "general",
+        "ioctl",
+        "no_std"
+      ]
+    ],
+    "log@0.4.30": [
+      []
+    ],
+    "memchr@2.8.2": [
+      [
+        "alloc",
+        "std"
+      ]
+    ],
+    "multimap@0.10.1": [
+      []
+    ],
+    "once_cell@1.21.4": [
+      [
+        "alloc",
+        "default",
+        "race",
+        "std"
+      ]
+    ],
+    "pbjson-build@0.7.0": [
+      []
+    ],
+    "pbjson@0.7.0": [
+      []
+    ],
+    "petgraph@0.7.1": [
+      []
+    ],
+    "prettyplease@0.2.37": [
+      []
+    ],
+    "proc-macro2@1.0.106": [
+      [
+        "default",
+        "proc-macro"
+      ]
+    ],
+    "prost-build@0.13.5": [
+      [
+        "default",
+        "format"
+      ]
+    ],
+    "prost-derive@0.13.5": [
+      []
+    ],
+    "prost-types@0.13.5": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "prost@0.13.5": [
+      [
+        "default",
+        "derive",
+        "prost-derive",
+        "std"
+      ],
+      [
+        "default",
+        "derive",
+        "std"
+      ]
+    ],
+    "quote@1.0.46": [
+      [
+        "default",
+        "proc-macro"
+      ]
+    ],
+    "regex-automata@0.4.14": [
+      [
+        "alloc",
+        "meta",
+        "nfa-pikevm",
+        "nfa-thompson",
+        "std",
+        "syntax",
+        "unicode-bool"
+      ]
+    ],
+    "regex-syntax@0.8.11": [
+      [
+        "std",
+        "unicode-bool"
+      ]
+    ],
+    "regex@1.12.4": [
+      [
+        "std",
+        "unicode-bool"
+      ]
+    ],
+    "rustix@1.1.4": [
+      [
+        "alloc",
+        "default",
+        "fs",
+        "std"
+      ]
+    ],
+    "serde@1.0.228": [
+      [
+        "default",
+        "derive",
+        "rc",
+        "serde_derive",
+        "std"
+      ]
+    ],
+    "serde_core@1.0.228": [
+      [
+        "rc",
+        "result",
+        "std"
+      ]
+    ],
+    "serde_derive@1.0.228": [
+      [
+        "default"
+      ]
+    ],
+    "serde_json@1.0.150": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "syn@2.0.118": [
+      [
+        "clone-impls",
+        "default",
+        "derive",
+        "extra-traits",
+        "full",
+        "parsing",
+        "printing",
+        "proc-macro"
+      ]
+    ],
+    "tempfile@3.27.0": [
+      [
+        "default",
+        "getrandom"
+      ]
+    ],
+    "unicode-ident@1.0.24": [
+      []
+    ],
+    "zmij@1.0.21": [
+      []
+    ]
+  },
+  "first_party_features": {
+    "aos-hub-api": [
+      []
+    ],
+    "aos-hub-ui": [
+      []
+    ]
+  },
+  "first_party_source_sha256": {
+    "api/proto/aos/hub/v1/hub.proto": "77005b93fb1df0a6830325e9b30a1b8bd83db2d1008a6bcee88a0a36f51adec5",
+    "crates/Cargo.lock": "033bfad7de38812960028c5c2f69c2737eaa5a73dba2a810dfcf2f992268e6fd",
+    "crates/Cargo.toml": "8761ede65c4d2a37b93a130f16436aba18112776494133f86e026d2a9acb6aee",
+    "crates/hub/aos-hub-api/Cargo.toml": "569398cdddd5b291c68460b9fceb4fc0132c01868d0200d433c7a4cc472df6c5",
+    "crates/hub/aos-hub-api/build.rs": "f33e462a0e1a690a7fbecf612cc310543a932c81837f6074ac8e13f57ee2e9ca",
+    "crates/hub/aos-hub-api/src/lib.rs": "cf03f7a9fa1c04210498a0a69c05c89ccb5e3db6d48aae74380d85982a5333ea",
+    "crates/hub/aos-hub-api/tests/contract_inventory.rs": "4771db975f7e5ead657e6edc51c3605fb4f21424e2832cfe219cb45af27ad32b",
+    "crates/hub/aos-hub-console/src/app.rs": "4ae01cf28974e2592f574c081bf55b10b3444a2f1837691b64f31c38c0d45491",
+    "crates/hub/aos-hub-console/src/components.rs": "7d5fa2ab498accf8c16131ca397d74adc160da623a2e5f20e73b77dfe1c45968",
+    "crates/hub/aos-hub-console/src/lib.rs": "5aa6893e320b7c986985a007633e60ae5ab7ac23602a8705a742318a05c0e599",
+    "crates/hub/aos-hub-console/src/main.rs": "c47fff2db598117b336114361e7f0f5f67125173caf492b65ec70f9517353d37",
+    "crates/hub/aos-hub-console/src/mutation.rs": "4663c2292967441d0e686096ff291a946eaad1e0e085eb002416920860f92e87",
+    "crates/hub/aos-hub-console/src/registry_deletion.rs": "405fd7464a2252a40773fb75ccaf053ea4a63401d7a10b5d2c98256bb7f6ba0d",
+    "crates/hub/aos-hub-console/src/route.rs": "5fd9762568c9b1022ac0f2e72a54c8cdecf3e5520f662a89f08faa7659da472d",
+    "crates/hub/aos-hub-console/src/staging.rs": "b423d2364abd6305a7b885c408cf385638963b57f1846ddd2c7049e6d87f7695",
+    "crates/hub/aos-hub-console/src/transport.rs": "75fdba822221d8a05298d7fa5134cf1ddbd92f4be9e9c554656d2d1e5dcca6c9",
+    "crates/hub/aos-hub-console/src/workflows/access_policy.rs": "c04cf110f55282ce7aa523e714b2150b854ab2012099f82cde99dadfaaaa7cb6",
+    "crates/hub/aos-hub-console/src/workflows/access_tokens.rs": "8e4106cbda98b47ad3d912c73e9b572896c95bcbe74a186b755f91d63490c70b",
+    "crates/hub/aos-hub-console/src/workflows/cache_gc.rs": "891b4f022e5d6d52d54711655d06a88740ecbf642adf1e44043fe3c16e142d75",
+    "crates/hub/aos-hub-console/src/workflows/cache_gc_jobs.rs": "4aad94614e48ea0cf8ed29584a5160b2dac5db8039d3d8705c3f4a1ecd367a1f",
+    "crates/hub/aos-hub-console/src/workflows/cache_gc_safety.rs": "ee587eec2ef30f96adcef12d2c6fade052cb3ea60526c9b5cd504d1f78ba2e03",
+    "crates/hub/aos-hub-console/src/workflows/cache_integration_preview.rs": "e5ef74e9cb4384544b8d78cb3c05e97157e3afefc7324a07fdee2354d93cc165",
+    "crates/hub/aos-hub-console/src/workflows/cache_integrations.rs": "f62830303f45fbf2d1f84adc559db68c844a0bc90b82b4d6d15e2e1c2000703d",
+    "crates/hub/aos-hub-console/src/workflows/cache_manual_roots.rs": "5cc56f3e1bd83339bc298a7bbc4e1104cfd03f190d0f1ff12f098cecddf996e6",
+    "crates/hub/aos-hub-console/src/workflows/cache_objects.rs": "c2927c80ecbf54172a27385df95c6bafb941ef03afee7b98dd69e542ce108407",
+    "crates/hub/aos-hub-console/src/workflows/cache_population.rs": "acc22f84d600cd74d417b91d220f8d9373882b28c494ec6e856cbeb4a4bfa17e",
+    "crates/hub/aos-hub-console/src/workflows/cache_retention.rs": "1501c2583dcd3d9edf797ae578e413c6872801c86e7951a16989e6757450490b",
+    "crates/hub/aos-hub-console/src/workflows/cache_retention_refresh.rs": "75112b203b7f77e9375664114e2f311ae97eb6d65e523dd5dccd83e45d552c98",
+    "crates/hub/aos-hub-console/src/workflows/cache_root_reasons.rs": "d9f8bc839a6692e4e7ab926f56d798ff6473064b4c33c267feb139557bdf6b75",
+    "crates/hub/aos-hub-console/src/workflows/cache_stack.rs": "07242eb847a54e8f5e937af3766764c6619bc6b0eeaa49d4a8b13e76eb58bbfe",
+    "crates/hub/aos-hub-console/src/workflows/delivery_workflow.rs": "453f44389c870c9ef56a08774f6c096afcc67732ed05581d93d5586477a8fe2c",
+    "crates/hub/aos-hub-console/src/workflows/endpoints.rs": "a905881b68720f2cbb17c7ce8767ee14463a1b6c31ea96f5bac09c1a26a9a992",
+    "crates/hub/aos-hub-console/src/workflows/gateways.rs": "ed93d6056f11b72712033172b991cd68e89568629a16f4b33e3c44c8a686a9e4",
+    "crates/hub/aos-hub-console/src/workflows/infrastructure.rs": "e72064c24e96f4098e025de54b69042c974dd2f0f91d7a6187952a0e732b66ec",
+    "crates/hub/aos-hub-console/src/workflows/instance_settings.rs": "d798f2c974c85836f28971d1223e161aba51869e7197126ac3368d8b4085c606",
+    "crates/hub/aos-hub-console/src/workflows/mod.rs": "3bc1213a1cfa7aa1fbd9fab416a0e694e9ca740cc6f46c930fced07f527c5378",
+    "crates/hub/aos-hub-console/src/workflows/network_policies.rs": "45ae496e7335badb2a21fdd16fb155286a1bb4a0926ac69d02c480b4e8ac79b9",
+    "crates/hub/aos-hub-console/src/workflows/networking.rs": "4fe4249fa10152725bbbdaf3145119b0221d58132d3abd6141699f2fcbcfe3a4",
+    "crates/hub/aos-hub-console/src/workflows/operations.rs": "265a93d90140aa531bb9752095cdc0ac641a80eb713bd16d75bab448b4896457",
+    "crates/hub/aos-hub-console/src/workflows/organization_activity.rs": "36706ee3c524289c330a73eb7b0c2e73b1f7739e6236e71fc1174b49e0302e9a",
+    "crates/hub/aos-hub-console/src/workflows/organization_identity.rs": "340c4cf126571c4a82fe606b17c32e7552399d751ac7859d830d57ed37a38b84",
+    "crates/hub/aos-hub-console/src/workflows/organization_scope.rs": "0a7a1d07c3cb827ba4b2372da29621ed7df1f9d719530a67b259038a69f94a7a",
+    "crates/hub/aos-hub-console/src/workflows/organization_sso.rs": "ae654e3e1e54285fe0e3e0355fe4dcbbf5589bebd351e0dc5e89452ec922e741",
+    "crates/hub/aos-hub-console/src/workflows/placement_policies.rs": "8f8f95006011bd6fec2b568a3e69fc4854e456f7a98c1f501642394d1fc1bc2b",
+    "crates/hub/aos-hub-console/src/workflows/placements.rs": "add638e376a3fc842bf22fea5db07eebae27e255b9ff809f1daec1ee29ff3074",
+    "crates/hub/aos-hub-console/src/workflows/registry_configuration.rs": "c745f8a29fdc18c8f895b02445b5baa38743f989dff3248495b07f9214731c25",
+    "crates/hub/aos-hub-console/src/workflows/registry_containers/gc.rs": "a12770aedf5af2effaa65a91cd9076d267fc4d06163ac83b0bd486bf89c5b4a7",
+    "crates/hub/aos-hub-console/src/workflows/registry_containers/inspection.rs": "650ff65dc621fb4dee4f13f23318072d61a5ae4b2f95ebeac5cc99da546ed80f",
+    "crates/hub/aos-hub-console/src/workflows/registry_containers/mod.rs": "ada4e0262e18563ac6a95f5d8989a12e1bcf36f46508bdf6eac318bbba4a3a4d",
+    "crates/hub/aos-hub-console/src/workflows/registry_containers/publications.rs": "f1305e4dd73e209dd1d2b4397a5b184c0e1c2f1ebe179671f5e0dd7ae52bff9e",
+    "crates/hub/aos-hub-console/src/workflows/registry_containers/retention.rs": "af46d32c18604a0be8dffb7c2a74036bbfc239e59bcc0377022c7deace651af6",
+    "crates/hub/aos-hub-console/src/workflows/registry_containers/tags.rs": "9329954406d3cf2a55105f2920ceeefc06ebc7a9cbb8a7518e1a0f4e86969f3a",
+    "crates/hub/aos-hub-console/src/workflows/registry_delete.rs": "f8908e374f2cc6d6fbd3a8a187bd0c189c094811bafe07dffab35c1cd07a4f4b",
+    "crates/hub/aos-hub-console/src/workflows/registry_metadata.rs": "db8000041cf6e983a649b257f414eadea2255b9466a4e1e95b0f5bbc8eae01f1",
+    "crates/hub/aos-hub-console/src/workflows/registry_mirror.rs": "d0061b3efeff5ee5eb270d73fc2aff527831471019af7c27db4a0c3b7b115473",
+    "crates/hub/aos-hub-console/src/workflows/registry_publication.rs": "bc7c4a8b91787af1fd9e9b859cfcc8fce00b7b7ae25e9c4506e697c85a4e3f58",
+    "crates/hub/aos-hub-console/src/workflows/registry_stage_inventory.rs": "6967a14f969fb93f51f5e99f25a1fb5aaf2b0fdd791e48b0638afeae4c251276",
+    "crates/hub/aos-hub-console/src/workflows/registry_staging.rs": "eb977f0437e71ef5ae70629fe72e06a13721887325d83ecdedad421fb4b82b4e",
+    "crates/hub/aos-hub-console/src/workflows/resource_access.rs": "964025e9502d7a40881b504b3c5dbac33ffd8ee43637471a478b824ac0981e37",
+    "crates/hub/aos-hub-console/src/workflows/resources.rs": "7323a85a43228aced9a44eaf2c640517825d69cb78f5aa21fc141ddac0ca1d0d",
+    "crates/hub/aos-hub-console/src/workflows/routes.rs": "ce0125acf661ae258921d4c0de98316f2dcfebbe122fba90490cc48c5cae1baa",
+    "crates/hub/aos-hub-console/src/workflows/signing_keys.rs": "08002f3cac4e5f1e30669b28ac85f9e8eadc1f62284c6b107ed6dab9de1964d9",
+    "crates/hub/aos-hub-service/src/web/static_assets/style.css": "e99c8225ee398e6180bccfe9acc838e0b3ab6bcb069b771e3dce86e859719d3c",
+    "crates/hub/aos-hub-ui/Cargo.toml": "8a8b0dbbde252274e8c71e2a31aa1aefe97ae78f60a815ebf4f1507a10200484",
+    "crates/hub/aos-hub-ui/src/lib.rs": "e22997eb50c3c8c86ea80a008178f31eeeaa13e19dbc6cbf752ca46da83d31d9",
+    "docs/rfcs/0012-hub-surface-topology/00-goals-and-invariants.md": "f998adb5708ad295a16f1b2a2250e08d5aa0c662b20a668b23fb80265c9fda1e",
+    "docs/rfcs/0012-hub-surface-topology/01-domain-model.md": "f54c32a044a2ee2ba1c9f24259ff60d738f495daa15cbac7c556b8cc4b2a6759",
+    "docs/rfcs/0012-hub-surface-topology/02-delivery-and-auth.md": "9dc1674c310600d3fd48216539980882c2bc7c2dd815e35304de398c2eb81765",
+    "docs/rfcs/0012-hub-surface-topology/03-registry-cache-relations.md": "6dd4fde6056aaa7c5b2d7a666b5364641d9f5796bd1d91490854fbc9f0016950",
+    "docs/rfcs/0012-hub-surface-topology/04-retention-and-gc.md": "d5a7b5e188965fab219bf797a4e83cce67813b268c45ad0bb8794018963b59c2",
+    "docs/rfcs/0012-hub-surface-topology/05-data-model-and-api.md": "5ceb39979a58741fdedb22f2e7c304f67d523ec47e20acb9d3b128d5042aa58b",
+    "docs/rfcs/0012-hub-surface-topology/06-console-and-operations.md": "1ce1f6e8175cf714f4ea65aeb144911ab75941e48abfa0dac9fd24d23e6af5e9",
+    "docs/rfcs/0012-hub-surface-topology/07-implementation-plan.md": "8af73e24376df965362ccdcf8a3f76a268d7df270ff0a42626ae16fce5a6c4e5",
+    "docs/rfcs/0012-hub-surface-topology/08-decisions-and-open-questions.md": "be09a9c13ac676fcb169aa314db163be218e863f5c98c283b31537a1aa650949",
+    "docs/rfcs/0012-hub-surface-topology/09-interface-contracts.md": "8f1047714473068780fd69954635e73c1188387f56b8ac64189e2d9fcbf96959",
+    "docs/rfcs/0012-hub-surface-topology/10-settings-information-architecture.md": "e94be17f81ccfa3f87f5f9daa6fbefcef7ee97e115dd5c80a2efac1375f419a6",
+    "docs/rfcs/0012-hub-surface-topology/11-web-route-cutover-ledger.md": "a7a53bcc34b2b3bd110bbb646a9ad34c006497a27344916be8bd4a5f0b2bd2c0",
+    "docs/rfcs/0012-hub-surface-topology/12-topology-cutover-operator-runbook.md": "a75d39b40cb625f409b605a1b76838c7171e2542cb9418d47681688a63d8e8bb",
+    "docs/rfcs/0012-hub-surface-topology/13-control-plane-parity.md": "7d9942470ebe3199bfe34a12ed66e4758d576ec0bc96db0f3efdac0fcbfb8c9d",
+    "docs/rfcs/0012-hub-surface-topology/14-settings-workflows.md": "744ea19e300e16ef5be5d735235ef74b3adf626f876be40691cd65503c958a64",
+    "docs/rfcs/0012-hub-surface-topology/README.md": "3907c32808f900eb4511a2d852ffbff5e03e08e1fdef66b5b9882f7300160c04",
+    "docs/rfcs/0012-hub-surface-topology/aos-cutover-schema-v1.metaschema.json": "2f2994f07235e05de11d805943f7cdc3f30c3cf7b6f7ed5e2b2739c62caed6a6",
+    "docs/rfcs/0012-hub-surface-topology/hub-api-manifest-v1.json": "334a20057a5729523a9628ae297b67b15c0c290ef4af55da859ae6fe00465e42",
+    "docs/rfcs/0012-hub-surface-topology/hub-cli-json-schema-v1.json": "4cc2de885651e585f264f3d67d132377efe3cdfb7d31251285cdc5a8ef42a6cf",
+    "docs/rfcs/0012-hub-surface-topology/hub-control-plane-capabilities-v1.json": "ea9dfefe78f5dbcd76c8353bb09fa7bcd634ff27edac756c4287ae8ce7954365",
+    "docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-backup-d1-v1.fixture.json": "67175a64f0e1e18728b1e3a1ec8b6d9385591b38f47c58673c3f087ccba9069b",
+    "docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-backup-do-v1.fixture.json": "aeb6eafac8bc15f2ff29ef92cf9ad925e48d589012eb0c07152aff35f2e94ec8",
+    "docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-bundle-generation-v1.fixture.json": "c7b946cb744956c93d2c5cd16ee487d35e2cd5733947a3c3d55ccf485e7af654",
+    "docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-bundle-generation-v1.schema.json": "cfb8efa75a1596eea80e51ecad8574338e9a4b1a710fbe40732d2fc2b8502c94",
+    "docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-bundle-v1.schema.json": "ca82f84c58f8c52c785698c1af4877b8e4cb8fe82b1992fa9649f73bd7e1aef6",
+    "docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-database-restore-rules-v1.fixture.json": "c0c11c1e0ebc94c44718d94118ced026a3cfc25eb10650f43b5fb61495112248",
+    "docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-digest-verification-v1.fixture-source.json": "c478e87df6b25dfa0ebf7e86002e1037ed75db78d2d4ba30fdc64482b543fc23",
+    "docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-digest-verification-v1.schema.json": "9017a5f3fe6f471576813f44dfe5e87f3f754a012f60d2060d09bcc083ae4c6c",
+    "docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-evidence-v1.fixture.json": "fa65b579e86355daea263d7ba1feaed0ad018f78c63000f577aa1dac293d5cc1",
+    "docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-fixtures-v1.json": "edcfede55dec995b08c529fa13030c468351ee11e320e80db9bb7fae8a2ad9f9",
+    "docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-fixtures-v1.schema.json": "064602e05c962dbe1173acbd7e5ccf9c13a47f5ac5de5c885024f0131529e82e",
+    "docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-plan-v1.fixture-source.json": "06e09798302b151275405dc792825b1e55c49aea776412351299a36caf494773",
+    "docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-plan-v1.schema.json": "04546ba5729ec742af581e2e247e33d27788a5822a6ea786c626b60b2d0da652",
+    "docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-report-v1.fixture-source.json": "bbc2f3299c7fbeab4883ebfc20457e07ad8295363f2121edcd0368fae36cd426",
+    "docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-report-v1.schema.json": "d40aa53a5d36ceb34ffe54bf08590ff2acc300125ef8025dbc239008f65965e1",
+    "docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-signature-envelope-v1.schema.json": "c6b82080e86a565e7f49163cfab3474ef4cb8a9d38d7276bf11a95e62ea90dda",
+    "docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-signer-key-map-v1.fixture-source.json": "21269d8f37129406cbfd91650e792c146701d5af35975bc9cdf8193236b7d3e7",
+    "docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-signer-key-map-v1.schema.json": "0226b1c464fe781ba38c61ec8879e69f1fe018ac87152ede57b00047c63721e1",
+    "docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-source-deployment-v1.fixture.json": "65689c404164e8b9576a0d4f3db4787a3f037a7755d771231deba43e80d241da",
+    "docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-source-export-v1.fixture.json": "d217274a5079fac9673f1c33d97db08a227816904c4ec199629610078cd163e9",
+    "docs/rfcs/0012-hub-surface-topology/run-topology-cutover-fixtures.jq": "9f0cbf6fd4caa95d4089224cdc8b014f1c35f0617f6c44d67387fd574406ede1",
+    "docs/rfcs/0012-hub-surface-topology/run-topology-cutover-validation.jq": "4c6917a2662b32b9c28add7b7612966a084e4881b00239c377bb4d4118ca707b",
+    "docs/rfcs/0012-hub-surface-topology/validate-topology-cutover.jq": "9cf7bb9b3486cb2f0880d4cb190e9b47f1c857ea1cf5208f6781ef368189ceed"
+  },
+  "generated_doctest_output_root": "/build/target/debug/build/aos-hub-api-9bfa466a57f31d53/out",
+  "ignored_cases": 0,
+  "ignored_generated_doctests": 0,
+  "libtest_artifacts": 3,
+  "limits": [
+    "Native Linux Cargo semantic baseline only. Bazel, foreign and Wasm execution, performance acceptance and production cutover remain pending.",
+    "Generated doctest source paths are normalized only against the exact Cargo-reported build-script output root; all discovered doctest cases remain explicit.",
+    "Browser identifiers, the checked API and capability manifests, and the UI stylesheet are real frozen source inputs. This library baseline does not start Hub services or execute foreign/Wasm artifacts.",
+    "Private offline Cargo build state is used without shared compiler caches or services."
+  ],
+  "output": "/nix/store/qn8067sz1gr5vcjp5pfhljwzwg9piq1g-aos-bazel-hub-portable-cargo-baseline-1",
+  "packages": {
+    "aos-hub-api": "crates/hub/aos-hub-api",
+    "aos-hub-ui": "crates/hub/aos-hub-ui"
+  },
+  "recipe": "let\n  root = /home/dylan/src/aos/.worktrees/codex/bazel-integration-722;\n  pkgs = (import root {}).pkgs;\nin import (root + \"/tests/build/_bazel-cargo-oracle.nix\") {\n  inherit pkgs;\n  pname = \"aos-bazel-hub-portable-cargo-baseline\";\n  packages = [\"aos-hub-api\" \"aos-hub-ui\"];\n  cargoSource = import (root + \"/pkgs/tools/crucible/_cargo-source.nix\") {\n    inherit (pkgs) lib;\n    extraPaths = [\n      \"api/proto/aos/hub/v1/hub.proto\"\n      \"docs/rfcs/0012-hub-surface-topology/00-goals-and-invariants.md\"\n      \"docs/rfcs/0012-hub-surface-topology/01-domain-model.md\"\n      \"docs/rfcs/0012-hub-surface-topology/02-delivery-and-auth.md\"\n      \"docs/rfcs/0012-hub-surface-topology/03-registry-cache-relations.md\"\n      \"docs/rfcs/0012-hub-surface-topology/04-retention-and-gc.md\"\n      \"docs/rfcs/0012-hub-surface-topology/05-data-model-and-api.md\"\n      \"docs/rfcs/0012-hub-surface-topology/06-console-and-operations.md\"\n      \"docs/rfcs/0012-hub-surface-topology/07-implementation-plan.md\"\n      \"docs/rfcs/0012-hub-surface-topology/08-decisions-and-open-questions.md\"\n      \"docs/rfcs/0012-hub-surface-topology/09-interface-contracts.md\"\n      \"docs/rfcs/0012-hub-surface-topology/10-settings-information-architecture.md\"\n      \"docs/rfcs/0012-hub-surface-topology/11-web-route-cutover-ledger.md\"\n      \"docs/rfcs/0012-hub-surface-topology/12-topology-cutover-operator-runbook.md\"\n      \"docs/rfcs/0012-hub-surface-topology/13-control-plane-parity.md\"\n      \"docs/rfcs/0012-hub-surface-topology/14-settings-workflows.md\"\n      \"docs/rfcs/0012-hub-surface-topology/README.md\"\n      \"docs/rfcs/0012-hub-surface-topology/aos-cutover-schema-v1.metaschema.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-api-manifest-v1.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-cli-json-schema-v1.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-control-plane-capabilities-v1.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-backup-d1-v1.fixture.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-backup-do-v1.fixture.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-bundle-generation-v1.fixture.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-bundle-generation-v1.schema.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-bundle-v1.schema.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-database-restore-rules-v1.fixture.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-digest-verification-v1.fixture-source.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-digest-verification-v1.schema.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-evidence-v1.fixture.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-fixtures-v1.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-fixtures-v1.schema.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-plan-v1.fixture-source.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-plan-v1.schema.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-report-v1.fixture-source.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-report-v1.schema.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-signature-envelope-v1.schema.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-signer-key-map-v1.fixture-source.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-signer-key-map-v1.schema.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-source-deployment-v1.fixture.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-source-export-v1.fixture.json\"\n      \"docs/rfcs/0012-hub-surface-topology/run-topology-cutover-fixtures.jq\"\n      \"docs/rfcs/0012-hub-surface-topology/run-topology-cutover-validation.jq\"\n      \"docs/rfcs/0012-hub-surface-topology/validate-topology-cutover.jq\"\n      \"crates/hub/aos-hub-service/src/web/static_assets/style.css\"\n    ];\n  };\n  nativeTools = [pkgs.protobuf];\n  cargoSetup = ''\n    export PROTOC=\"${pkgs.protobuf}/bin/protoc\"\n    export PROTOC_INCLUDE=\"${pkgs.protobuf}/include\"\n  '';\n}\n",
+  "report_sha256": {
+    "cargo-messages.jsonl": "0de555d726de2e785df749c079ab770872f908544225e551e61f2e47c757ac41",
+    "cargo-tests.log": "5c13e244b38d9467e8dd824911811fc90b378a805e1eda41641fb37713aaac1e"
+  },
+  "schema_version": 1,
+  "source": "/nix/store/5c7c99iljxvz0g1khyw7249w1bbn97yl-crucible-cargo-src",
+  "status": "Hub API, browser contract and shared UI Cargo baselines passed before Bazel conversion",
+  "targets": {
+    "aos-hub-api/contract_inventory": {
+      "binary_sha256": "6aa28ea9a9c63df8c9261a3253ed6be260ea1703f256000bfb9a8078ab20048c",
+      "executed": [
+        "browser_coverage_requires_executable_identifiers",
+        "capability_manifest_covers_descriptor_and_browser_operations",
+        "checked_api_manifest_matches_generated_descriptor"
+      ],
+      "ignored": [],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      }
+    },
+    "aos-hub-api/unit": {
+      "binary_sha256": "f4cf945334ff12d19496ce3f7e6465b462fdc7270c61e53affb17859f4d21cee",
+      "executed": [
+        "connect_path_tests::container_administration_requests_freeze_pagination_and_cas_fields",
+        "connect_path_tests::container_gc_action_protojson_exposes_frozen_non_secret_identity",
+        "connect_path_tests::container_gc_run_protojson_preserves_exact_large_counters",
+        "connect_path_tests::container_platform_protojson_preserves_the_complete_oci_identity",
+        "connect_path_tests::container_registry_purge_fence_protojson_preserves_action_and_bounded_blockers",
+        "connect_path_tests::container_repository_protojson_exposes_only_an_explicit_distribution_reference",
+        "connect_path_tests::container_service_remains_a_closed_distinct_rpc_surface",
+        "connect_path_tests::container_untracked_repair_protojson_preserves_status_and_terminal_evidence",
+        "connect_path_tests::generated_method_constants_match_the_descriptor_inventory",
+        "tests::browser_session_bridge_uses_protojson_and_omits_no_security_context",
+        "tests::bytes_use_base64",
+        "tests::enums_emit_names_and_accept_names_or_numbers",
+        "tests::null_leaves_ordinary_fields_unset",
+        "tests::oneofs_are_flat_and_exclusive",
+        "tests::parser_accepts_proto_names_and_rejects_alias_duplicates_and_unknowns",
+        "tests::placement_eviction_uses_the_public_placement_name",
+        "tests::signed_and_unsigned_64_bit_values_use_decimal_strings",
+        "tests::unset_messages_and_default_scalars_are_omitted"
+      ],
+      "ignored": [],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      }
+    },
+    "aos-hub-ui/unit": {
+      "binary_sha256": "7c5ae57af6ffe678a2712c64ca0d7161f09c4e8f6ebc333150df1660f8637333",
+      "executed": [
+        "tests::access_and_token_routes_use_one_uniform_vocabulary",
+        "tests::administrative_settings_match_their_read_api_permissions",
+        "tests::authenticated_navigation_includes_plain_settings_label",
+        "tests::catalog_bookmarks_leave_settings_without_accepting_unknown_paths",
+        "tests::closed_page_registry_matches_the_implemented_adapters",
+        "tests::compact_hash_presentation_preserves_the_full_value",
+        "tests::container_pull_commands_require_and_preserve_the_server_reference",
+        "tests::container_workflow_has_no_ssr_data_or_mutation_path",
+        "tests::creation_routes_require_their_navigation_capability",
+        "tests::delivery_inventory_does_not_wait_on_duplicate_route_or_binding_reads",
+        "tests::delivery_path_appends_the_placement_prefix",
+        "tests::delivery_setup_requires_each_resource_permission",
+        "tests::delivery_workflow_actions_follow_verification_and_activation",
+        "tests::every_page_is_backed_by_a_declared_web_workflow",
+        "tests::every_scope_root_selects_overview_first",
+        "tests::granted_infrastructure_never_exposes_owner_mutations",
+        "tests::narrow_settings_navigation_starts_collapsed",
+        "tests::navigation_groups_are_contiguous",
+        "tests::nested_registry_and_cache_routes_remain_distinct",
+        "tests::new_delivery_endpoint_requires_verifiable_provider_attachment",
+        "tests::registry_container_route_is_canonical_and_declared",
+        "tests::registry_publish_history_uses_only_the_canonical_path",
+        "tests::repository_pull_commands_use_the_explicit_server_distribution_reference",
+        "tests::role_aware_navigation_snapshots_use_live_permissions",
+        "tests::route_selection_falls_back_when_the_advertisement_is_not_enabled",
+        "tests::route_selection_starts_from_the_current_audience_advertisement",
+        "tests::settings_workspace_keeps_wide_medium_and_narrow_layout_contracts",
+        "tests::sibling_links_are_canonical",
+        "tests::sibling_pages_share_one_session_scope",
+        "tests::staged_releases_require_publish_in_flat_and_nested_registries",
+        "tests::unknown_and_ambiguous_paths_do_not_receive_the_application"
+      ],
+      "ignored": [],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      }
+    }
+  }
+}

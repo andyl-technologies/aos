@@ -1,0 +1,1263 @@
+{
+  "bootstrap": {
+    "bazel_derivation": "/nix/store/45f4ikviz48ipdayyqzm7z4yqxw0syaa-bazel-9.2.0.drv",
+    "contains_accache": false,
+    "recursive_build_dependency_paths": 2318
+  },
+  "checks": {
+    "cli_and_policy": [
+      "/nix/store/jn09qza4fan14n76vvqfh0v71yp2wq5g-aos-dev-cli-check-0",
+      "/nix/store/pfjlchaq80x4k13scg1jqg2180kacycx-aos-bazel-policy-checks"
+    ],
+    "core_evaluation": "/nix/store/s70fivbi81yw035w0wn9nwr2c413kjdp-aos-native-evaluation-checks-0",
+    "default_lint_rejections": "/nix/store/w8lvh0lkk4vy6qrjlvh3kqrhj07w3ika-aos-bazel-developer-policy",
+    "scope": "Core evaluation reused its valid ordinary Nix output. CLI and policy checks execute their fixtures; the default lint check proves prohibited host clock and unwrap still fail."
+  },
+  "configurations": {
+    "conservative": {
+      "editor": {
+        "aggregate_statistics_comparable": false,
+        "bazel_analysis": {
+          "complete_inference": false,
+          "exprs": {
+            "partial": 138,
+            "total": 46992,
+            "unknown": 69
+          },
+          "panics": 0,
+          "pats": {
+            "partial": 46,
+            "total": 8078,
+            "unknown": 0
+          }
+        },
+        "cargo_analysis": {
+          "complete_inference": false,
+          "exprs": {
+            "partial": 138,
+            "total": 46793,
+            "unknown": 69
+          },
+          "panics": 0,
+          "pats": {
+            "partial": 46,
+            "total": 8068,
+            "unknown": 0
+          }
+        },
+        "comparison_scope": [
+          "crates/accache/accache",
+          "crates/accache/accache-frontend"
+        ],
+        "raw_diagnostic_records": 253,
+        "raw_diagnostic_sha256": "675252244c13cd60fcb1f238113d6859148af0b9ed8d83b7d1148e9b400f9df0",
+        "raw_records_equal_including_multiplicity": true
+      },
+      "executions": {
+        "developer": {
+          "actions": 140,
+          "cache_hits": 0,
+          "checked_source_files": 21,
+          "checked_source_map_sha256": "7b14388f12f3f2de9dea3e1dc1fac3c2be7862ea0e2e6a4382fe309f42498306",
+          "execution_log_sha256": "4886732ef02491236747e96927a5e50158bcaba76cd308c505566aa089d4de72",
+          "mnemonics": {
+            "CargoBuildScriptRun": 13,
+            "Clippy": 4,
+            "ExtractCargoTomlEnvVars": 56,
+            "Rustc": 65,
+            "Rustdoc": 2
+          },
+          "output": "/nix/store/c4hydwk6nr4vjgb3cwp7wwlj9p7rmnhd-aos-bazel-accache-developer-tools-1",
+          "runners": {
+            "linux-sandbox": 140
+          },
+          "selection_contracts_revalidated": true
+        },
+        "format": {
+          "actions": 9,
+          "cache_hits": 0,
+          "checked_source_files": 21,
+          "checked_source_map_sha256": "f108295fe0d810d480192c520c8947c9b1553a6f4cda1bb1587543d210d430b3",
+          "execution_log_sha256": "66c433cca3c0008e785cc226a5a86fb7abe2d9a77a7b2db40e27490e2e7cc0f0",
+          "mnemonics": {
+            "Rustc": 5,
+            "TestRunner": 4
+          },
+          "output": "/nix/store/7hlwl9hb28xz0gi2ag9wbq9q9lqzkp3p-aos-bazel-accache-format-1",
+          "runners": {
+            "linux-sandbox": 9
+          },
+          "selection_contracts_revalidated": true
+        },
+        "production": {
+          "actions": 115,
+          "cache_hits": 0,
+          "checked_source_files": 20,
+          "checked_source_map_sha256": "d1ad06599cbc882d8575342675b2a5c9e6912b04f4eb05a68caa785ea4d6bc9c",
+          "execution_log_sha256": "2e51f9cbcfdb7320c351e9e9a47a2311508efc453167c448099cad874b43c233",
+          "mnemonics": {
+            "CargoBuildScriptRun": 12,
+            "ExtractCargoTomlEnvVars": 47,
+            "Rustc": 56
+          },
+          "output": "/nix/store/wf3fjigyiyd4v4b214y4s3q38alxw7s8-aos-bazel-accache-production-1",
+          "runners": {
+            "linux-sandbox": 115
+          },
+          "selection_contracts_revalidated": true
+        },
+        "tests": {
+          "actions": 143,
+          "cache_hits": 0,
+          "checked_source_files": 22,
+          "checked_source_map_sha256": "69485f6ea8af9be6603e1eabeaca870a6393bd15fd94bfae83c2b62913c826c8",
+          "execution_log_sha256": "87d2d838e059d8338bbd04ce3c1ddc392c9e7c44c81e407061271e502bc4842e",
+          "mnemonics": {
+            "CargoBuildScriptRun": 13,
+            "ExtractCargoTomlEnvVars": 56,
+            "Rustc": 69,
+            "RustdocTestWriter": 1,
+            "TestRunner": 4
+          },
+          "output": "/nix/store/m7s22yfhfrl2p1bb961hj2ga281pj3iq-aos-bazel-accache-tests-1",
+          "runners": {
+            "linux-sandbox": 143
+          },
+          "selection_contracts_revalidated": true
+        }
+      },
+      "installation": {
+        "bazel": {
+          "closure": [
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+            "/nix/store/jsxicc3nrd1z30gsk0g3hqh2rb7j6nbl-accache-0.1.0"
+          ],
+          "executable": "/nix/store/jsxicc3nrd1z30gsk0g3hqh2rb7j6nbl-accache-0.1.0/bin/accache",
+          "help": "accache \u2014 daemonless Nix compiler action cache\n\nUsage:\n  accache COMPILER [COMPILER-ARGUMENTS...]\n  accache stats\n  accache explain [ACTION-SHA256]\n  accache provenance [ACTION-SHA256]\n\nSet ACCACHE_DIR to the Bazel-format disk-cache root, ACCACHE_STATE_DIR to a\nseparate metadata directory, and ACCACHE_MANIFEST to the Nix policy JSON.\nWithout configuration, compiler invocations run unchanged. ACCACHE_DISABLE=1\nalso bypasses caching. ACCACHE_DERIVATION optionally records the .drv identity\nas provenance; it is never an action-key input. ACCACHE_VERBOSE=1 prints the\nper-invocation outcome. Inspection prints JSON (provenance: JSON lines).\n\nGCC/Clang and Rust parsing uses the pinned sccache frontend tables. A cacheable\nRust invocation with nested response files expands them as sccache does;\nother compilations receive the original arguments. Supported outputs include\ndependency, debug, coverage, PCH, Clang module, and Rust library/metadata artifacts. Linking,\nincremental Rust, and other uncacheable work runs unchanged with a bypass reason.\nSee crates/accache/accache/README.md for the read contract and coverage limits.\n",
+          "interpreter": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2",
+          "libraries": {
+            "ld-linux-x86-64.so.2": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2",
+            "libc.so.6": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6"
+          },
+          "needed": [
+            "ld-linux-x86-64.so.2",
+            "libc.so.6"
+          ],
+          "rpath": [
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib"
+          ],
+          "runtime_dependencies": [
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39"
+          ],
+          "sha256": "88ec386f303c04a08a3dc9d9a537b379a12fe4eca51ff741cd0d923ed50957ae"
+        },
+        "cargo": {
+          "closure": [
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+            "/nix/store/jcl1r12zk9bfbdmjr7f3ky1sakph1khs-accache-0.1.0"
+          ],
+          "executable": "/nix/store/jcl1r12zk9bfbdmjr7f3ky1sakph1khs-accache-0.1.0/bin/accache",
+          "help": "accache \u2014 daemonless Nix compiler action cache\n\nUsage:\n  accache COMPILER [COMPILER-ARGUMENTS...]\n  accache stats\n  accache explain [ACTION-SHA256]\n  accache provenance [ACTION-SHA256]\n\nSet ACCACHE_DIR to the Bazel-format disk-cache root, ACCACHE_STATE_DIR to a\nseparate metadata directory, and ACCACHE_MANIFEST to the Nix policy JSON.\nWithout configuration, compiler invocations run unchanged. ACCACHE_DISABLE=1\nalso bypasses caching. ACCACHE_DERIVATION optionally records the .drv identity\nas provenance; it is never an action-key input. ACCACHE_VERBOSE=1 prints the\nper-invocation outcome. Inspection prints JSON (provenance: JSON lines).\n\nGCC/Clang and Rust parsing uses the pinned sccache frontend tables. A cacheable\nRust invocation with nested response files expands them as sccache does;\nother compilations receive the original arguments. Supported outputs include\ndependency, debug, coverage, PCH, Clang module, and Rust library/metadata artifacts. Linking,\nincremental Rust, and other uncacheable work runs unchanged with a bypass reason.\nSee crates/accache/accache/README.md for the read contract and coverage limits.\n",
+          "interpreter": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2",
+          "libraries": {
+            "ld-linux-x86-64.so.2": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2",
+            "libc.so.6": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6"
+          },
+          "needed": [
+            "ld-linux-x86-64.so.2",
+            "libc.so.6"
+          ],
+          "rpath": [
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib"
+          ],
+          "runtime_dependencies": [
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39"
+          ],
+          "sha256": "7d929099629aaa90b247c79a014bbef8cf4f34f29d18269d86f694e3b3f1747b"
+        },
+        "compared": [
+          "needed",
+          "interpreter",
+          "libraries",
+          "runtime_dependencies",
+          "help"
+        ],
+        "status": "PASS"
+      },
+      "integration": {
+        "compiler_commands": 534,
+        "fixture_families": 524,
+        "oracle_sha256": "ce9dced52dfa2783ac8053068adb0d8c2ee871bd68882542fd2046efd4e58c8f",
+        "output": "/nix/store/nrw7pnq1jbmdhn4y9vpj8hdhxsljq059-aos-bazel-accache-integration-1",
+        "result": "passed",
+        "revisions": 924
+      },
+      "outputs": [
+        "/nix/store/m7s22yfhfrl2p1bb961hj2ga281pj3iq-aos-bazel-accache-tests-1",
+        "/nix/store/ava4v3x4jnxy5sbkizwbak657njvxgyn-aos-bazel-accache-cargo-parity",
+        "/nix/store/c4hydwk6nr4vjgb3cwp7wwlj9p7rmnhd-aos-bazel-accache-developer-tools-1",
+        "/nix/store/7hlwl9hb28xz0gi2ag9wbq9q9lqzkp3p-aos-bazel-accache-format-1",
+        "/nix/store/d3siv0br604fhx64biysixi583rwnqrv-aos-bazel-accache-editor-parity",
+        "/nix/store/wf3fjigyiyd4v4b214y4s3q38alxw7s8-aos-bazel-accache-production-1",
+        "/nix/store/jsxicc3nrd1z30gsk0g3hqh2rb7j6nbl-accache-0.1.0",
+        "/nix/store/c9xjajj6gc2rjajrx61p0mjlbrqg42m8-aos-bazel-accache-inventory-1",
+        "/nix/store/21zq6mjf9b4wpi237vwz3gv3w78j9fs3-aos-bazel-accache-installation",
+        "/nix/store/nrw7pnq1jbmdhn4y9vpj8hdhxsljq059-aos-bazel-accache-integration-1"
+      ],
+      "test_parity": {
+        "doctests": {
+          "//crates/accache/accache-frontend:doc": {}
+        },
+        "examples": [],
+        "features": {
+          "anyhow@1.0.104": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "bitflags@2.13.2": [
+            [
+              "std"
+            ]
+          ],
+          "block-buffer@0.10.4": [
+            []
+          ],
+          "bytes@1.12.1": [
+            []
+          ],
+          "cfg-if@1.0.5": [
+            []
+          ],
+          "cpufeatures@0.2.17": [
+            []
+          ],
+          "crypto-common@0.1.7": [
+            [
+              "std"
+            ]
+          ],
+          "digest@0.10.7": [
+            [
+              "alloc",
+              "block-buffer",
+              "core-api",
+              "default",
+              "std"
+            ]
+          ],
+          "either@1.18.0": [
+            [
+              "std",
+              "use_std"
+            ]
+          ],
+          "fastrand@2.5.0": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "generic-array@0.14.7": [
+            [
+              "more_lengths"
+            ]
+          ],
+          "getrandom@0.4.3": [
+            []
+          ],
+          "hex@0.4.3": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "itertools@0.14.0": [
+            [
+              "default",
+              "use_alloc",
+              "use_std"
+            ]
+          ],
+          "itoa@1.0.18": [
+            []
+          ],
+          "libc@0.2.189": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "linux-raw-sys@0.12.1": [
+            [
+              "auxvec",
+              "elf",
+              "errno",
+              "general",
+              "ioctl",
+              "no_std"
+            ]
+          ],
+          "lock_api@0.4.14": [
+            [
+              "atomic_usize",
+              "default"
+            ]
+          ],
+          "log@0.4.34": [
+            []
+          ],
+          "memchr@2.8.3": [
+            [
+              "alloc",
+              "std"
+            ]
+          ],
+          "once_cell@1.21.4": [
+            [
+              "alloc",
+              "race",
+              "std"
+            ]
+          ],
+          "parking_lot@0.12.5": [
+            [
+              "default"
+            ]
+          ],
+          "parking_lot_core@0.9.12": [
+            []
+          ],
+          "proc-macro2@1.0.107": [
+            [
+              "default",
+              "proc-macro"
+            ]
+          ],
+          "prost-derive@0.13.5": [
+            []
+          ],
+          "prost@0.13.5": [
+            [
+              "default",
+              "derive",
+              "std"
+            ]
+          ],
+          "quote@1.0.47": [
+            [
+              "default",
+              "proc-macro"
+            ]
+          ],
+          "rustix@1.1.5": [
+            [
+              "alloc",
+              "default",
+              "fs",
+              "std"
+            ]
+          ],
+          "scopeguard@1.2.0": [
+            []
+          ],
+          "serde@1.0.229": [
+            [
+              "default",
+              "derive",
+              "serde_derive",
+              "std"
+            ]
+          ],
+          "serde_core@1.0.229": [
+            [
+              "result",
+              "std"
+            ]
+          ],
+          "serde_derive@1.0.229": [
+            [
+              "default"
+            ]
+          ],
+          "serde_json@1.0.151": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "sha2@0.10.9": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "shlex@2.0.1": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "smallvec@1.16.2": [
+            []
+          ],
+          "syn@2.0.119": [
+            [
+              "clone-impls",
+              "default",
+              "derive",
+              "extra-traits",
+              "parsing",
+              "printing",
+              "proc-macro"
+            ]
+          ],
+          "syn@3.0.6": [
+            [
+              "clone-impls",
+              "derive",
+              "parsing",
+              "printing",
+              "proc-macro"
+            ]
+          ],
+          "temp-env@0.3.6": [
+            [
+              "default"
+            ]
+          ],
+          "tempfile@3.27.0": [
+            [
+              "default",
+              "getrandom"
+            ]
+          ],
+          "typenum@1.20.1": [
+            []
+          ],
+          "unicode-ident@1.0.26": [
+            []
+          ],
+          "version_check@0.9.5": [
+            []
+          ],
+          "zmij@1.0.23": [
+            []
+          ]
+        },
+        "first_party_features": {
+          "accache": [
+            []
+          ],
+          "accache-frontend": [
+            []
+          ]
+        },
+        "schema_version": 1,
+        "targets": {
+          "//crates/accache/accache-frontend:unit": {
+            "executed": [
+              "compiler::args::tests::test_arginfo_cmp",
+              "compiler::args::tests::test_arginfo_process",
+              "compiler::args::tests::test_arginfo_process_take_concat_arg_delim_doesnt_crash",
+              "compiler::args::tests::test_argsiter",
+              "compiler::args::tests::test_argument_into_iter",
+              "compiler::args::tests::test_bsearch",
+              "compiler::args::tests::test_multi_search",
+              "compiler::clang::test::test_parse_arguments_clangmodules",
+              "compiler::clang::test::test_parse_arguments_cuda",
+              "compiler::clang::test::test_parse_arguments_cuda_flags",
+              "compiler::clang::test::test_parse_arguments_cxx20_module_combined_flags",
+              "compiler::clang::test::test_parse_arguments_cxx20_module_fmodule_file",
+              "compiler::clang::test::test_parse_arguments_cxx20_module_fmodule_file_with_name",
+              "compiler::clang::test::test_parse_arguments_cxx20_module_fmodule_output",
+              "compiler::clang::test::test_parse_arguments_cxx20_module_fmodule_output_implicit_path",
+              "compiler::clang::test::test_parse_arguments_cxx20_module_fmodules_reduced_bmi",
+              "compiler::clang::test::test_parse_arguments_cxx20_module_precompile",
+              "compiler::clang::test::test_parse_arguments_cxx20_modules_unsupported",
+              "compiler::clang::test::test_parse_arguments_extra_hash_files",
+              "compiler::clang::test::test_parse_arguments_hip",
+              "compiler::clang::test::test_parse_arguments_hip_flags",
+              "compiler::clang::test::test_parse_arguments_hip_paths",
+              "compiler::clang::test::test_parse_arguments_hip_unhash_parallel_jobs",
+              "compiler::clang::test::test_parse_arguments_integrated_as",
+              "compiler::clang::test::test_parse_arguments_others",
+              "compiler::clang::test::test_parse_arguments_passthrough",
+              "compiler::clang::test::test_parse_arguments_pgo_cancellation",
+              "compiler::clang::test::test_parse_arguments_precompile_reduced_bmi",
+              "compiler::clang::test::test_parse_arguments_profile_instr_use",
+              "compiler::clang::test::test_parse_arguments_profile_use",
+              "compiler::clang::test::test_parse_arguments_profile_use_with_directory",
+              "compiler::clang::test::test_parse_arguments_profile_use_with_no_argument",
+              "compiler::clang::test::test_parse_arguments_simple",
+              "compiler::clang::test::test_parse_arguments_too_hard",
+              "compiler::clang::test::test_parse_arguments_values",
+              "compiler::clang::test::test_parse_arguments_vfsoverlay",
+              "compiler::clang::test::test_parse_clang_short_dependency_arguments_can_be_separated",
+              "compiler::clang::test::test_parse_color_diags",
+              "compiler::clang::test::test_parse_fplugin",
+              "compiler::clang::test::test_parse_fplugin_concatenated",
+              "compiler::clang::test::test_parse_fsanitize_blacklist",
+              "compiler::clang::test::test_parse_fsanitize_ignorelist",
+              "compiler::clang::test::test_parse_xclang_add_plugin",
+              "compiler::clang::test::test_parse_xclang_fexperimental_assignment_tracking",
+              "compiler::clang::test::test_parse_xclang_fno_pch_timestamp",
+              "compiler::clang::test::test_parse_xclang_invalid",
+              "compiler::clang::test::test_parse_xclang_llvm_stuff",
+              "compiler::clang::test::test_parse_xclang_load",
+              "compiler::clang::test::test_parse_xclang_mconstructor_aliases_all",
+              "compiler::clang::test::test_parse_xclang_mrelax_all",
+              "compiler::clang::test::test_parse_xclang_no_opaque_pointers",
+              "compiler::clang::test::test_parse_xclang_plugin_arg_blink_gc_plugin",
+              "compiler::clang::test::test_parse_xclang_plugin_arg_find_bad_constructs",
+              "compiler::clang::test::test_parse_xclang_use_ctor_homing",
+              "compiler::clang::test::test_parse_xclang_verify",
+              "compiler::counted_array::test::counted_array_macro",
+              "compiler::gcc::test::at_signs",
+              "compiler::gcc::test::test_parse_arguments_coverage_outputs_gcno",
+              "compiler::gcc::test::test_parse_arguments_cxx20_modules_unsupported",
+              "compiler::gcc::test::test_parse_arguments_default_name",
+              "compiler::gcc::test::test_parse_arguments_default_outputdir",
+              "compiler::gcc::test::test_parse_arguments_dep_target_and_file_needed",
+              "compiler::gcc::test::test_parse_arguments_dep_target_needed",
+              "compiler::gcc::test::test_parse_arguments_depfile_for_preprocessed_c_clang",
+              "compiler::gcc::test::test_parse_arguments_depfile_for_raw_assembly_gcc",
+              "compiler::gcc::test::test_parse_arguments_diagnostics_color",
+              "compiler::gcc::test::test_parse_arguments_double_dash",
+              "compiler::gcc::test::test_parse_arguments_empty_args",
+              "compiler::gcc::test::test_parse_arguments_explicit_dep_target",
+              "compiler::gcc::test::test_parse_arguments_explicit_dep_target_needed",
+              "compiler::gcc::test::test_parse_arguments_explicit_mq_dep_target_needed",
+              "compiler::gcc::test::test_parse_arguments_external_assembler",
+              "compiler::gcc::test::test_parse_arguments_extra",
+              "compiler::gcc::test::test_parse_arguments_fcallgraph_info_with_markers",
+              "compiler::gcc::test::test_parse_arguments_fplugin",
+              "compiler::gcc::test::test_parse_arguments_link",
+              "compiler::gcc::test::test_parse_arguments_linker_options",
+              "compiler::gcc::test::test_parse_arguments_multiarch_cache_disabled",
+              "compiler::gcc::test::test_parse_arguments_multiple_arch",
+              "compiler::gcc::test::test_parse_arguments_not_compile",
+              "compiler::gcc::test::test_parse_arguments_objc_header_language",
+              "compiler::gcc::test::test_parse_arguments_pgo",
+              "compiler::gcc::test::test_parse_arguments_plusplus",
+              "compiler::gcc::test::test_parse_arguments_preprocessor_args",
+              "compiler::gcc::test::test_parse_arguments_profile_generate",
+              "compiler::gcc::test::test_parse_arguments_response_file",
+              "compiler::gcc::test::test_parse_arguments_response_file_with_quotes",
+              "compiler::gcc::test::test_parse_arguments_simple",
+              "compiler::gcc::test::test_parse_arguments_split_dwarf",
+              "compiler::gcc::test::test_parse_arguments_test_coverage_outputs_gcno",
+              "compiler::gcc::test::test_parse_arguments_too_hard",
+              "compiler::gcc::test::test_parse_arguments_too_many_inputs_multiple",
+              "compiler::gcc::test::test_parse_arguments_too_many_inputs_single",
+              "compiler::gcc::test::test_parse_arguments_unhashed",
+              "compiler::gcc::test::test_parse_arguments_values",
+              "compiler::gcc::test::test_parse_index_store_path",
+              "compiler::gcc::test::test_split_gnu_response_file_args",
+              "compiler::gcc::test::test_too_hard_for_preprocessor_cache_mode",
+              "compiler::rust::test::test_parse_arguments_color",
+              "compiler::rust::test::test_parse_arguments_dep_info_no_extra_filename",
+              "compiler::rust::test::test_parse_arguments_incremental",
+              "compiler::rust::test::test_parse_arguments_multiple_inputs",
+              "compiler::rust::test::test_parse_arguments_native_libs",
+              "compiler::rust::test::test_parse_arguments_non_rlib_crate",
+              "compiler::rust::test::test_parse_arguments_response_file",
+              "compiler::rust::test::test_parse_arguments_response_file_missing",
+              "compiler::rust::test::test_parse_arguments_simple",
+              "compiler::rust::test::test_parse_shell_argfile_with_quoted_path",
+              "compiler::rust::test::test_split_rust_response_file_args"
+            ],
+            "ignored": []
+          },
+          "//crates/accache/accache:bin_accache": {
+            "executed": [
+              "backend::tests::dynamic_cache_paths_cannot_escape_the_declared_output_scope",
+              "backend::tests::saved_rust_actions_wait_for_other_compilers_in_the_target",
+              "backend::tests::saved_rust_metadata_paths_stay_beneath_random_directories",
+              "compiler::llvm::tests::declared_paths_cover_both_llvm_value_spellings",
+              "compiler::llvm::tests::manifest_cannot_reclassify_invocation_reports"
+            ],
+            "ignored": []
+          }
+        }
+      }
+    },
+    "inventory": {
+      "editor": {
+        "aggregate_statistics_comparable": false,
+        "bazel_analysis": {
+          "complete_inference": false,
+          "exprs": {
+            "partial": 138,
+            "total": 46992,
+            "unknown": 69
+          },
+          "panics": 0,
+          "pats": {
+            "partial": 46,
+            "total": 8078,
+            "unknown": 0
+          }
+        },
+        "cargo_analysis": {
+          "complete_inference": false,
+          "exprs": {
+            "partial": 138,
+            "total": 46793,
+            "unknown": 69
+          },
+          "panics": 0,
+          "pats": {
+            "partial": 46,
+            "total": 8068,
+            "unknown": 0
+          }
+        },
+        "comparison_scope": [
+          "crates/accache/accache",
+          "crates/accache/accache-frontend"
+        ],
+        "raw_diagnostic_records": 253,
+        "raw_diagnostic_sha256": "675252244c13cd60fcb1f238113d6859148af0b9ed8d83b7d1148e9b400f9df0",
+        "raw_records_equal_including_multiplicity": true
+      },
+      "executions": {
+        "developer": {
+          "actions": 140,
+          "cache_hits": 0,
+          "checked_source_files": 21,
+          "checked_source_map_sha256": "7b14388f12f3f2de9dea3e1dc1fac3c2be7862ea0e2e6a4382fe309f42498306",
+          "execution_log_sha256": "3e33bff5fcca13d2bab18fb9d09abaefe9e5efc9caef131fd2da02b0385dd363",
+          "mnemonics": {
+            "CargoBuildScriptRun": 13,
+            "Clippy": 4,
+            "ExtractCargoTomlEnvVars": 56,
+            "Rustc": 65,
+            "Rustdoc": 2
+          },
+          "output": "/nix/store/whcqg583h3190djjd9gfmzhvqwx27r5v-aos-bazel-accache-developer-tools-1",
+          "runners": {
+            "linux-sandbox": 140
+          },
+          "selection_contracts_revalidated": true
+        },
+        "format": {
+          "actions": 9,
+          "cache_hits": 0,
+          "checked_source_files": 21,
+          "checked_source_map_sha256": "f108295fe0d810d480192c520c8947c9b1553a6f4cda1bb1587543d210d430b3",
+          "execution_log_sha256": "ad28667fb1aac08f1a9f0a8997c7a5573d851921720da95e7b40b482d9cc0e29",
+          "mnemonics": {
+            "Rustc": 5,
+            "TestRunner": 4
+          },
+          "output": "/nix/store/97cymg6d9awjsq9z3b93f8hsh3s7lgps-aos-bazel-accache-format-1",
+          "runners": {
+            "linux-sandbox": 9
+          },
+          "selection_contracts_revalidated": true
+        },
+        "production": {
+          "actions": 115,
+          "cache_hits": 0,
+          "checked_source_files": 20,
+          "checked_source_map_sha256": "d1ad06599cbc882d8575342675b2a5c9e6912b04f4eb05a68caa785ea4d6bc9c",
+          "execution_log_sha256": "50dc86f4834d4bb2b83a0c6698b873cbc7fd9321432c2c7086f5b06b3952617d",
+          "mnemonics": {
+            "CargoBuildScriptRun": 12,
+            "ExtractCargoTomlEnvVars": 47,
+            "Rustc": 56
+          },
+          "output": "/nix/store/j98083xgsnkl2wkr3gq9pjgr70z9ivza-aos-bazel-accache-production-1",
+          "runners": {
+            "linux-sandbox": 115
+          },
+          "selection_contracts_revalidated": true
+        },
+        "tests": {
+          "actions": 143,
+          "cache_hits": 0,
+          "checked_source_files": 22,
+          "checked_source_map_sha256": "69485f6ea8af9be6603e1eabeaca870a6393bd15fd94bfae83c2b62913c826c8",
+          "execution_log_sha256": "36dfe0d9a0d23a33bd16415d5b9145ed4d5979b408f8e7391cafa62470f76ec6",
+          "mnemonics": {
+            "CargoBuildScriptRun": 13,
+            "ExtractCargoTomlEnvVars": 56,
+            "Rustc": 69,
+            "RustdocTestWriter": 1,
+            "TestRunner": 4
+          },
+          "output": "/nix/store/3dc18g1jwq07fdakp7dr19hwyy7622n3-aos-bazel-accache-tests-1",
+          "runners": {
+            "linux-sandbox": 143
+          },
+          "selection_contracts_revalidated": true
+        }
+      },
+      "installation": {
+        "bazel": {
+          "closure": [
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+            "/nix/store/wqyigaan4lgb39603fwazwwp90h5aw4q-accache-0.1.0"
+          ],
+          "executable": "/nix/store/wqyigaan4lgb39603fwazwwp90h5aw4q-accache-0.1.0/bin/accache",
+          "help": "accache \u2014 daemonless Nix compiler action cache\n\nUsage:\n  accache COMPILER [COMPILER-ARGUMENTS...]\n  accache stats\n  accache explain [ACTION-SHA256]\n  accache provenance [ACTION-SHA256]\n\nSet ACCACHE_DIR to the Bazel-format disk-cache root, ACCACHE_STATE_DIR to a\nseparate metadata directory, and ACCACHE_MANIFEST to the Nix policy JSON.\nWithout configuration, compiler invocations run unchanged. ACCACHE_DISABLE=1\nalso bypasses caching. ACCACHE_DERIVATION optionally records the .drv identity\nas provenance; it is never an action-key input. ACCACHE_VERBOSE=1 prints the\nper-invocation outcome. Inspection prints JSON (provenance: JSON lines).\n\nGCC/Clang and Rust parsing uses the pinned sccache frontend tables. A cacheable\nRust invocation with nested response files expands them as sccache does;\nother compilations receive the original arguments. Supported outputs include\ndependency, debug, coverage, PCH, Clang module, and Rust library/metadata artifacts. Linking,\nincremental Rust, and other uncacheable work runs unchanged with a bypass reason.\nSee crates/accache/accache/README.md for the read contract and coverage limits.\n",
+          "interpreter": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2",
+          "libraries": {
+            "ld-linux-x86-64.so.2": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2",
+            "libc.so.6": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6"
+          },
+          "needed": [
+            "ld-linux-x86-64.so.2",
+            "libc.so.6"
+          ],
+          "rpath": [
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib"
+          ],
+          "runtime_dependencies": [
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39"
+          ],
+          "sha256": "88ec386f303c04a08a3dc9d9a537b379a12fe4eca51ff741cd0d923ed50957ae"
+        },
+        "cargo": {
+          "closure": [
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+            "/nix/store/jcl1r12zk9bfbdmjr7f3ky1sakph1khs-accache-0.1.0"
+          ],
+          "executable": "/nix/store/jcl1r12zk9bfbdmjr7f3ky1sakph1khs-accache-0.1.0/bin/accache",
+          "help": "accache \u2014 daemonless Nix compiler action cache\n\nUsage:\n  accache COMPILER [COMPILER-ARGUMENTS...]\n  accache stats\n  accache explain [ACTION-SHA256]\n  accache provenance [ACTION-SHA256]\n\nSet ACCACHE_DIR to the Bazel-format disk-cache root, ACCACHE_STATE_DIR to a\nseparate metadata directory, and ACCACHE_MANIFEST to the Nix policy JSON.\nWithout configuration, compiler invocations run unchanged. ACCACHE_DISABLE=1\nalso bypasses caching. ACCACHE_DERIVATION optionally records the .drv identity\nas provenance; it is never an action-key input. ACCACHE_VERBOSE=1 prints the\nper-invocation outcome. Inspection prints JSON (provenance: JSON lines).\n\nGCC/Clang and Rust parsing uses the pinned sccache frontend tables. A cacheable\nRust invocation with nested response files expands them as sccache does;\nother compilations receive the original arguments. Supported outputs include\ndependency, debug, coverage, PCH, Clang module, and Rust library/metadata artifacts. Linking,\nincremental Rust, and other uncacheable work runs unchanged with a bypass reason.\nSee crates/accache/accache/README.md for the read contract and coverage limits.\n",
+          "interpreter": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2",
+          "libraries": {
+            "ld-linux-x86-64.so.2": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2",
+            "libc.so.6": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6"
+          },
+          "needed": [
+            "ld-linux-x86-64.so.2",
+            "libc.so.6"
+          ],
+          "rpath": [
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib"
+          ],
+          "runtime_dependencies": [
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39"
+          ],
+          "sha256": "7d929099629aaa90b247c79a014bbef8cf4f34f29d18269d86f694e3b3f1747b"
+        },
+        "compared": [
+          "needed",
+          "interpreter",
+          "libraries",
+          "runtime_dependencies",
+          "help"
+        ],
+        "status": "PASS"
+      },
+      "integration": {
+        "compiler_commands": 534,
+        "fixture_families": 524,
+        "oracle_sha256": "8c98dad7ac39a698e3deee90bec6965a86ba9d06e4ba2424fcb0ab4676ffb900",
+        "output": "/nix/store/yrmgvaq17c24bsjj4590jglzsag6fgv4-aos-bazel-accache-integration-1",
+        "result": "passed",
+        "revisions": 924
+      },
+      "outputs": [
+        "/nix/store/3dc18g1jwq07fdakp7dr19hwyy7622n3-aos-bazel-accache-tests-1",
+        "/nix/store/n0w6bzg37zbfiv9finwqbdw2w4gn9qhn-aos-bazel-accache-cargo-parity",
+        "/nix/store/whcqg583h3190djjd9gfmzhvqwx27r5v-aos-bazel-accache-developer-tools-1",
+        "/nix/store/97cymg6d9awjsq9z3b93f8hsh3s7lgps-aos-bazel-accache-format-1",
+        "/nix/store/mih1qxm9halfxy16bwirdm6486b3jdcb-aos-bazel-accache-editor-parity",
+        "/nix/store/j98083xgsnkl2wkr3gq9pjgr70z9ivza-aos-bazel-accache-production-1",
+        "/nix/store/wqyigaan4lgb39603fwazwwp90h5aw4q-accache-0.1.0",
+        "/nix/store/3zjcq5x41czwrr41zhcvyqnnzx3f48sy-aos-bazel-accache-inventory-1",
+        "/nix/store/6cl0fgqmsni1q0qr6ns9689r6fzn486w-aos-bazel-accache-installation",
+        "/nix/store/yrmgvaq17c24bsjj4590jglzsag6fgv4-aos-bazel-accache-integration-1"
+      ],
+      "test_parity": {
+        "doctests": {
+          "//crates/accache/accache-frontend:doc": {}
+        },
+        "examples": [],
+        "features": {
+          "anyhow@1.0.104": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "bitflags@2.13.2": [
+            [
+              "std"
+            ]
+          ],
+          "block-buffer@0.10.4": [
+            []
+          ],
+          "bytes@1.12.1": [
+            []
+          ],
+          "cfg-if@1.0.5": [
+            []
+          ],
+          "cpufeatures@0.2.17": [
+            []
+          ],
+          "crypto-common@0.1.7": [
+            [
+              "std"
+            ]
+          ],
+          "digest@0.10.7": [
+            [
+              "alloc",
+              "block-buffer",
+              "core-api",
+              "default",
+              "std"
+            ]
+          ],
+          "either@1.18.0": [
+            [
+              "std",
+              "use_std"
+            ]
+          ],
+          "fastrand@2.5.0": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "generic-array@0.14.7": [
+            [
+              "more_lengths"
+            ]
+          ],
+          "getrandom@0.4.3": [
+            []
+          ],
+          "hex@0.4.3": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "itertools@0.14.0": [
+            [
+              "default",
+              "use_alloc",
+              "use_std"
+            ]
+          ],
+          "itoa@1.0.18": [
+            []
+          ],
+          "libc@0.2.189": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "linux-raw-sys@0.12.1": [
+            [
+              "auxvec",
+              "elf",
+              "errno",
+              "general",
+              "ioctl",
+              "no_std"
+            ]
+          ],
+          "lock_api@0.4.14": [
+            [
+              "atomic_usize",
+              "default"
+            ]
+          ],
+          "log@0.4.34": [
+            []
+          ],
+          "memchr@2.8.3": [
+            [
+              "alloc",
+              "std"
+            ]
+          ],
+          "once_cell@1.21.4": [
+            [
+              "alloc",
+              "race",
+              "std"
+            ]
+          ],
+          "parking_lot@0.12.5": [
+            [
+              "default"
+            ]
+          ],
+          "parking_lot_core@0.9.12": [
+            []
+          ],
+          "proc-macro2@1.0.107": [
+            [
+              "default",
+              "proc-macro"
+            ]
+          ],
+          "prost-derive@0.13.5": [
+            []
+          ],
+          "prost@0.13.5": [
+            [
+              "default",
+              "derive",
+              "std"
+            ]
+          ],
+          "quote@1.0.47": [
+            [
+              "default",
+              "proc-macro"
+            ]
+          ],
+          "rustix@1.1.5": [
+            [
+              "alloc",
+              "default",
+              "fs",
+              "std"
+            ]
+          ],
+          "scopeguard@1.2.0": [
+            []
+          ],
+          "serde@1.0.229": [
+            [
+              "default",
+              "derive",
+              "serde_derive",
+              "std"
+            ]
+          ],
+          "serde_core@1.0.229": [
+            [
+              "result",
+              "std"
+            ]
+          ],
+          "serde_derive@1.0.229": [
+            [
+              "default"
+            ]
+          ],
+          "serde_json@1.0.151": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "sha2@0.10.9": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "shlex@2.0.1": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "smallvec@1.16.2": [
+            []
+          ],
+          "syn@2.0.119": [
+            [
+              "clone-impls",
+              "default",
+              "derive",
+              "extra-traits",
+              "parsing",
+              "printing",
+              "proc-macro"
+            ]
+          ],
+          "syn@3.0.6": [
+            [
+              "clone-impls",
+              "derive",
+              "parsing",
+              "printing",
+              "proc-macro"
+            ]
+          ],
+          "temp-env@0.3.6": [
+            [
+              "default"
+            ]
+          ],
+          "tempfile@3.27.0": [
+            [
+              "default",
+              "getrandom"
+            ]
+          ],
+          "typenum@1.20.1": [
+            []
+          ],
+          "unicode-ident@1.0.26": [
+            []
+          ],
+          "version_check@0.9.5": [
+            []
+          ],
+          "zmij@1.0.23": [
+            []
+          ]
+        },
+        "first_party_features": {
+          "accache": [
+            []
+          ],
+          "accache-frontend": [
+            []
+          ]
+        },
+        "schema_version": 1,
+        "targets": {
+          "//crates/accache/accache-frontend:unit": {
+            "executed": [
+              "compiler::args::tests::test_arginfo_cmp",
+              "compiler::args::tests::test_arginfo_process",
+              "compiler::args::tests::test_arginfo_process_take_concat_arg_delim_doesnt_crash",
+              "compiler::args::tests::test_argsiter",
+              "compiler::args::tests::test_argument_into_iter",
+              "compiler::args::tests::test_bsearch",
+              "compiler::args::tests::test_multi_search",
+              "compiler::clang::test::test_parse_arguments_clangmodules",
+              "compiler::clang::test::test_parse_arguments_cuda",
+              "compiler::clang::test::test_parse_arguments_cuda_flags",
+              "compiler::clang::test::test_parse_arguments_cxx20_module_combined_flags",
+              "compiler::clang::test::test_parse_arguments_cxx20_module_fmodule_file",
+              "compiler::clang::test::test_parse_arguments_cxx20_module_fmodule_file_with_name",
+              "compiler::clang::test::test_parse_arguments_cxx20_module_fmodule_output",
+              "compiler::clang::test::test_parse_arguments_cxx20_module_fmodule_output_implicit_path",
+              "compiler::clang::test::test_parse_arguments_cxx20_module_fmodules_reduced_bmi",
+              "compiler::clang::test::test_parse_arguments_cxx20_module_precompile",
+              "compiler::clang::test::test_parse_arguments_cxx20_modules_unsupported",
+              "compiler::clang::test::test_parse_arguments_extra_hash_files",
+              "compiler::clang::test::test_parse_arguments_hip",
+              "compiler::clang::test::test_parse_arguments_hip_flags",
+              "compiler::clang::test::test_parse_arguments_hip_paths",
+              "compiler::clang::test::test_parse_arguments_hip_unhash_parallel_jobs",
+              "compiler::clang::test::test_parse_arguments_integrated_as",
+              "compiler::clang::test::test_parse_arguments_others",
+              "compiler::clang::test::test_parse_arguments_passthrough",
+              "compiler::clang::test::test_parse_arguments_pgo_cancellation",
+              "compiler::clang::test::test_parse_arguments_precompile_reduced_bmi",
+              "compiler::clang::test::test_parse_arguments_profile_instr_use",
+              "compiler::clang::test::test_parse_arguments_profile_use",
+              "compiler::clang::test::test_parse_arguments_profile_use_with_directory",
+              "compiler::clang::test::test_parse_arguments_profile_use_with_no_argument",
+              "compiler::clang::test::test_parse_arguments_simple",
+              "compiler::clang::test::test_parse_arguments_too_hard",
+              "compiler::clang::test::test_parse_arguments_values",
+              "compiler::clang::test::test_parse_arguments_vfsoverlay",
+              "compiler::clang::test::test_parse_clang_short_dependency_arguments_can_be_separated",
+              "compiler::clang::test::test_parse_color_diags",
+              "compiler::clang::test::test_parse_fplugin",
+              "compiler::clang::test::test_parse_fplugin_concatenated",
+              "compiler::clang::test::test_parse_fsanitize_blacklist",
+              "compiler::clang::test::test_parse_fsanitize_ignorelist",
+              "compiler::clang::test::test_parse_xclang_add_plugin",
+              "compiler::clang::test::test_parse_xclang_fexperimental_assignment_tracking",
+              "compiler::clang::test::test_parse_xclang_fno_pch_timestamp",
+              "compiler::clang::test::test_parse_xclang_invalid",
+              "compiler::clang::test::test_parse_xclang_llvm_stuff",
+              "compiler::clang::test::test_parse_xclang_load",
+              "compiler::clang::test::test_parse_xclang_mconstructor_aliases_all",
+              "compiler::clang::test::test_parse_xclang_mrelax_all",
+              "compiler::clang::test::test_parse_xclang_no_opaque_pointers",
+              "compiler::clang::test::test_parse_xclang_plugin_arg_blink_gc_plugin",
+              "compiler::clang::test::test_parse_xclang_plugin_arg_find_bad_constructs",
+              "compiler::clang::test::test_parse_xclang_use_ctor_homing",
+              "compiler::clang::test::test_parse_xclang_verify",
+              "compiler::counted_array::test::counted_array_macro",
+              "compiler::gcc::test::at_signs",
+              "compiler::gcc::test::test_parse_arguments_coverage_outputs_gcno",
+              "compiler::gcc::test::test_parse_arguments_cxx20_modules_unsupported",
+              "compiler::gcc::test::test_parse_arguments_default_name",
+              "compiler::gcc::test::test_parse_arguments_default_outputdir",
+              "compiler::gcc::test::test_parse_arguments_dep_target_and_file_needed",
+              "compiler::gcc::test::test_parse_arguments_dep_target_needed",
+              "compiler::gcc::test::test_parse_arguments_depfile_for_preprocessed_c_clang",
+              "compiler::gcc::test::test_parse_arguments_depfile_for_raw_assembly_gcc",
+              "compiler::gcc::test::test_parse_arguments_diagnostics_color",
+              "compiler::gcc::test::test_parse_arguments_double_dash",
+              "compiler::gcc::test::test_parse_arguments_empty_args",
+              "compiler::gcc::test::test_parse_arguments_explicit_dep_target",
+              "compiler::gcc::test::test_parse_arguments_explicit_dep_target_needed",
+              "compiler::gcc::test::test_parse_arguments_explicit_mq_dep_target_needed",
+              "compiler::gcc::test::test_parse_arguments_external_assembler",
+              "compiler::gcc::test::test_parse_arguments_extra",
+              "compiler::gcc::test::test_parse_arguments_fcallgraph_info_with_markers",
+              "compiler::gcc::test::test_parse_arguments_fplugin",
+              "compiler::gcc::test::test_parse_arguments_link",
+              "compiler::gcc::test::test_parse_arguments_linker_options",
+              "compiler::gcc::test::test_parse_arguments_multiarch_cache_disabled",
+              "compiler::gcc::test::test_parse_arguments_multiple_arch",
+              "compiler::gcc::test::test_parse_arguments_not_compile",
+              "compiler::gcc::test::test_parse_arguments_objc_header_language",
+              "compiler::gcc::test::test_parse_arguments_pgo",
+              "compiler::gcc::test::test_parse_arguments_plusplus",
+              "compiler::gcc::test::test_parse_arguments_preprocessor_args",
+              "compiler::gcc::test::test_parse_arguments_profile_generate",
+              "compiler::gcc::test::test_parse_arguments_response_file",
+              "compiler::gcc::test::test_parse_arguments_response_file_with_quotes",
+              "compiler::gcc::test::test_parse_arguments_simple",
+              "compiler::gcc::test::test_parse_arguments_split_dwarf",
+              "compiler::gcc::test::test_parse_arguments_test_coverage_outputs_gcno",
+              "compiler::gcc::test::test_parse_arguments_too_hard",
+              "compiler::gcc::test::test_parse_arguments_too_many_inputs_multiple",
+              "compiler::gcc::test::test_parse_arguments_too_many_inputs_single",
+              "compiler::gcc::test::test_parse_arguments_unhashed",
+              "compiler::gcc::test::test_parse_arguments_values",
+              "compiler::gcc::test::test_parse_index_store_path",
+              "compiler::gcc::test::test_split_gnu_response_file_args",
+              "compiler::gcc::test::test_too_hard_for_preprocessor_cache_mode",
+              "compiler::rust::test::test_parse_arguments_color",
+              "compiler::rust::test::test_parse_arguments_dep_info_no_extra_filename",
+              "compiler::rust::test::test_parse_arguments_incremental",
+              "compiler::rust::test::test_parse_arguments_multiple_inputs",
+              "compiler::rust::test::test_parse_arguments_native_libs",
+              "compiler::rust::test::test_parse_arguments_non_rlib_crate",
+              "compiler::rust::test::test_parse_arguments_response_file",
+              "compiler::rust::test::test_parse_arguments_response_file_missing",
+              "compiler::rust::test::test_parse_arguments_simple",
+              "compiler::rust::test::test_parse_shell_argfile_with_quoted_path",
+              "compiler::rust::test::test_split_rust_response_file_args"
+            ],
+            "ignored": []
+          },
+          "//crates/accache/accache:bin_accache": {
+            "executed": [
+              "backend::tests::dynamic_cache_paths_cannot_escape_the_declared_output_scope",
+              "backend::tests::saved_rust_actions_wait_for_other_compilers_in_the_target",
+              "backend::tests::saved_rust_metadata_paths_stay_beneath_random_directories",
+              "compiler::llvm::tests::declared_paths_cover_both_llvm_value_spellings",
+              "compiler::llvm::tests::manifest_cannot_reclassify_invocation_reports"
+            ],
+            "ignored": []
+          }
+        }
+      }
+    }
+  },
+  "installed_binary_sha256": "88ec386f303c04a08a3dc9d9a537b379a12fe4eca51ff741cd0d923ed50957ae",
+  "inventory": {
+    "configured_reports": 98,
+    "rust_source_files": 20,
+    "sha256": "afb85fc08ee0756767a9f76ef57475827473fbb83d54abb922bd54415642e45b",
+    "source_files": 23
+  },
+  "limits": [
+    "Editor selected-package raw diagnostics match, including multiplicities; both models retain unknown types and aggregate inference totals differ.",
+    "The installed native runtime closure matches Cargo; complete compiler/linker option parity remains a separate gate.",
+    "Full compiler/linker option parity, foreign hosts, performance acceptance, production cutovers, and Cargo removal remain separate RFC gates."
+  ],
+  "metadata": {
+    "schema_version": 1,
+    "targets": {
+      "//crates/accache/accache-frontend:lib": {
+        "edition": "2024",
+        "environment": {
+          "CARGO_PKG_AUTHORS": "",
+          "CARGO_PKG_DESCRIPTION": "",
+          "CARGO_PKG_HOMEPAGE": "",
+          "CARGO_PKG_LICENSE": "Apache-2.0",
+          "CARGO_PKG_LICENSE_FILE": "",
+          "CARGO_PKG_NAME": "accache-frontend",
+          "CARGO_PKG_README": "",
+          "CARGO_PKG_REPOSITORY": "",
+          "CARGO_PKG_RUST_VERSION": "",
+          "CARGO_PKG_VERSION": "0.1.0",
+          "CARGO_PKG_VERSION_MAJOR": "0",
+          "CARGO_PKG_VERSION_MINOR": "1",
+          "CARGO_PKG_VERSION_PATCH": "0",
+          "CARGO_PKG_VERSION_PRE": ""
+        }
+      },
+      "//crates/accache/accache-frontend:unit_binary": {
+        "edition": "2024",
+        "environment": {
+          "CARGO_PKG_AUTHORS": "",
+          "CARGO_PKG_DESCRIPTION": "",
+          "CARGO_PKG_HOMEPAGE": "",
+          "CARGO_PKG_LICENSE": "Apache-2.0",
+          "CARGO_PKG_LICENSE_FILE": "",
+          "CARGO_PKG_NAME": "accache-frontend",
+          "CARGO_PKG_README": "",
+          "CARGO_PKG_REPOSITORY": "",
+          "CARGO_PKG_RUST_VERSION": "",
+          "CARGO_PKG_VERSION": "0.1.0",
+          "CARGO_PKG_VERSION_MAJOR": "0",
+          "CARGO_PKG_VERSION_MINOR": "1",
+          "CARGO_PKG_VERSION_PATCH": "0",
+          "CARGO_PKG_VERSION_PRE": ""
+        }
+      },
+      "//crates/accache/accache:accache": {
+        "edition": "2024",
+        "environment": {
+          "CARGO_PKG_AUTHORS": "",
+          "CARGO_PKG_DESCRIPTION": "Daemonless compiler action cache for declared Nix build environments",
+          "CARGO_PKG_HOMEPAGE": "",
+          "CARGO_PKG_LICENSE": "Apache-2.0",
+          "CARGO_PKG_LICENSE_FILE": "",
+          "CARGO_PKG_NAME": "accache",
+          "CARGO_PKG_README": "",
+          "CARGO_PKG_REPOSITORY": "",
+          "CARGO_PKG_RUST_VERSION": "",
+          "CARGO_PKG_VERSION": "0.1.0",
+          "CARGO_PKG_VERSION_MAJOR": "0",
+          "CARGO_PKG_VERSION_MINOR": "1",
+          "CARGO_PKG_VERSION_PATCH": "0",
+          "CARGO_PKG_VERSION_PRE": ""
+        }
+      },
+      "//crates/accache/accache:bin_accache_binary": {
+        "edition": "2024",
+        "environment": {
+          "CARGO_PKG_AUTHORS": "",
+          "CARGO_PKG_DESCRIPTION": "Daemonless compiler action cache for declared Nix build environments",
+          "CARGO_PKG_HOMEPAGE": "",
+          "CARGO_PKG_LICENSE": "Apache-2.0",
+          "CARGO_PKG_LICENSE_FILE": "",
+          "CARGO_PKG_NAME": "accache",
+          "CARGO_PKG_README": "",
+          "CARGO_PKG_REPOSITORY": "",
+          "CARGO_PKG_RUST_VERSION": "",
+          "CARGO_PKG_VERSION": "0.1.0",
+          "CARGO_PKG_VERSION_MAJOR": "0",
+          "CARGO_PKG_VERSION_MINOR": "1",
+          "CARGO_PKG_VERSION_PATCH": "0",
+          "CARGO_PKG_VERSION_PRE": ""
+        }
+      }
+    }
+  },
+  "schema_version": 1,
+  "scope": "Standalone accache native Bazel graph, x86_64 Linux, current default AOS toolchains; production remains Cargo.",
+  "sdk_audit": {
+    "accache_sources": 49,
+    "generated_payload_files": 16097,
+    "preserved_existing_payload_sets": 64,
+    "profiles": 65,
+    "report_sha256": "3ac189f7a9b8d20d6a26d8141b979b3d253d02e94e3e3d7dc14cf819faeccbbb"
+  },
+  "status": "PASS"
+}

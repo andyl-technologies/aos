@@ -85,12 +85,15 @@ fn join_reader(reader: thread::JoinHandle<io::Result<Vec<u8>>>, stream: &str) ->
 }
 
 fn deadline(remaining_millis: u64) -> Result<Instant> {
-    Instant::now()
+    monotonic_now()
         .checked_add(Duration::from_millis(remaining_millis))
         .context("boot preparation deadline overflow")
 }
 
-#[allow(clippy::disallowed_methods)]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Boot preparation enforces host process deadlines outside Crucible replayable state"
+)]
 fn monotonic_now() -> Instant {
     Instant::now()
 }

@@ -2063,6 +2063,10 @@ impl Database {
     ///
     /// Returns an error for an invalid closed revision, stale gateway version,
     /// missing exact grants, path collision, or database failure.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Keep persisted identities and transaction inputs explicit in this existing API."
+    )]
     pub async fn revise_gateway(
         &self,
         gateway_id: &str,
@@ -2645,7 +2649,7 @@ impl Database {
         self.backend
             .query(
                 &sql,
-                &vec![
+                &[
                     host_value,
                     crate::value::Value::Int(i64::from(effective_port)),
                     crate::value::Value::Text(scheme.to_owned()),
@@ -2792,7 +2796,7 @@ impl Database {
                      WHERE {predicate}
                      LIMIT 1"
                 ),
-                &vec![value],
+                &[value],
             )
             .await?
             .is_some())
@@ -2911,18 +2915,15 @@ impl Database {
             if placement.kind != "complete" {
                 bail!("a pinned route target must be a complete placement");
             }
-            if direct {
-                if Some(placement.binding_id) != spec.target_binding_id
+            if direct
+                && (Some(placement.binding_id) != spec.target_binding_id
                     || Some(placement.prefix.as_str()) != spec.target_placement_prefix.as_deref()
                     || join_route_segments(
                         spec.gateway_client_base_path.as_deref().unwrap_or_default(),
                         &placement.prefix,
-                    )? != base_path
-                {
-                    bail!(
-                        "direct route path and binding must derive from its gateway and placement"
-                    );
-                }
+                    )? != base_path)
+            {
+                bail!("direct route path and binding must derive from its gateway and placement");
             }
         }
         if let Some(policy_revision_id) = spec.placement_policy_revision_id.as_deref() {

@@ -1,0 +1,1259 @@
+{
+  "controller_compilation_selection": {
+    "added_reports": [],
+    "changed_reports": {
+      "//crates/crucible/crucible-campaign:gate_attempt_idempotence_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-campaign:gate_branch_point_model_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-campaign:gate_campaign_cold_continuity_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-campaign:gate_campaign_model_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-campaign:gate_campaign_replay_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-campaign:gate_campaign_statistics_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-campaign:gate_lazy_frontier_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-campaign:gate_typed_choice_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-campaign:unit_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-control-api:gate_abi_conformance_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-control-api:gate_open_set_payload_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-control-api:gate_session_mapping_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-control-api:unit_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-control-client:gate_control_client_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-control-client:unit_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-control-server:gate_control_responsive_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-control-server:gate_epoch_guards_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-control-server:gate_lifecycle_unary_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-control-server:gate_reproduction_context_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-control-server:gate_streaming_cursor_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-control-server:gate_streaming_equivalence_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-control-server:transport_dependency_versions_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-control-server:unit_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-daemon:gate_campaign_component_contract_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-daemon:gate_campaign_metadata_million_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-daemon:gate_control_responsive_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-daemon:gate_exact_closure_streaming_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-daemon:production_effect_matrix_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-daemon:unit_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:assertion_determinism_nonperturbation_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:assertion_evaluation_order_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:assertion_evaluation_timing_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:assertion_lifecycle_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:assertion_log_fold_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:assertion_prefix_continuation_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:assertion_proximity_gradient_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:assertion_quiescence_leaves_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:assertion_violation_records_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:assertion_violation_reproduction_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:backend_node_routing_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:black_box_first_guarantee_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:compound_condition_combinators_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:condition_time_leaves_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:condition_vocabulary_shared_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:coverage_condition_leaf_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:debugger_live_fixture_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:deterministic_condition_evaluation_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:event_graph_control_flow_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:event_graph_replay_oracle_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:event_graph_serialization_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:event_kind_catalog_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:event_log_assertion_proximity_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:event_log_class_catalog_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:event_log_content_address_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:event_log_coverage_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:event_log_determinism_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:event_log_payload_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:event_log_reproduction_artifact_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:event_log_schema_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:event_log_tracing_bridge_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:event_log_unified_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:fault_observation_log_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:fault_reference_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:formal_trace_export_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:gate_abi_conformance_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:gate_adversarial_determinism_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:gate_basic_block_coverage_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:gate_campaign_replay_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:gate_canonical_debug_breakpoint_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:gate_checkpoint_materialization_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:gate_content_address_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:gate_coverage_feedback_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:gate_coverage_guided_corpus_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:gate_coverage_guided_fuzzing_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:gate_debug_attach_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:gate_debug_cli_surface_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:gate_debug_non_canonical_branch_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:gate_debug_target_resolver_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:gate_debug_time_travel_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:gate_e2e_determinism_concurrency_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:gate_failure_signature_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:gate_fleet_equivalence_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:gate_fork_replay_oracle_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:gate_guided_adaptive_exploration_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:gate_layer0_determinism_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:gate_layer1_injection_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:gate_minimization_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:gate_read_only_debug_inspection_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:gate_replay_oracle_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:gate_reproduction_artifacts_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:gate_restore_strategies_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:gate_scheduler_liveness_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:gate_search_reductions_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:gate_search_strategies_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:gate_signal_fault_system_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:gate_state_space_search_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:gate_unifying_view_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:guest_assertion_declarations_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:guest_host_black_box_surface_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:guest_host_channel_determinism_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:guest_host_marker_observability_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:guest_host_os_agnostic_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:guest_host_readiness_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:guest_marker_assertions_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:guest_marker_condition_leaf_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:happy_path_assertion_transport_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:host_side_assertions_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:live_qemu_search_fixture_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:memory_condition_leaf_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:observable_condition_leaves_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:observed_state_materialization_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:offline_assertion_checker_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:offline_assertion_empty_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:predicate_dsl_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:preemption_discrimination_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:property_configuration_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:property_fingerprint_neutrality_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:property_vocabulary_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:rfc0014_taxonomy_ledger_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:same_icount_tie_break_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:scenario_picosecond_duration_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:scheduler_actor_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:scheduler_all_vcpus_idle_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:scheduler_concurrency_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:scheduler_conservative_pdes_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:scheduler_control_responsive_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:scheduler_effective_horizon_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:scheduler_emit_step_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:scheduler_event_order_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:scheduler_exact_local_event_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:scheduler_horizon_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:scheduler_icount_ceiling_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:scheduler_idle_fast_forward_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:scheduler_lookahead_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:scheduler_partition_heal_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:scheduler_preemption_identity_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:scheduler_preemption_resolve_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:scheduler_quantum_loop_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:scheduler_rendezvous_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:scheduler_rendezvous_purpose_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:scheduler_resolve_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:scheduler_rr_subdivision_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:scheduler_run_ceiling_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:scheduler_topology_change_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:scheduler_topology_rendezvous_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:signal_fault_wakeup_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:source_size_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:time_shared_timeline_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:trigger_deadlines_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:trigger_node_scheduling_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:trigger_verdict_composition_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:trigger_wakeup_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:unit_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:workload_load_patterns_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:workload_model_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:workload_parameterization_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-engine:world_devices_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-qemu-host:crash_detection_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-qemu-host:debug_gdbstub_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-qemu-host:deterministic_launch_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-qemu-host:gate_basic_block_coverage_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-qemu-host:gate_qemu_inert_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-qemu-host:mapped_quantum_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-qemu-host:plugin_control_channel_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-qemu-host:production_fault_checkpoint_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-qemu-host:protocol_inertness_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-qemu-host:qmp_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-qemu-host:qmp_launch_channel_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-qemu-host:qmp_unix_socket_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-qemu-host:qmp_vmstate_control_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-qemu-host:shutdown_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-qemu-host:unit_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-session:event_log_stream_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-session:gate_control_responsive_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-session:gate_exploration_fork_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-session:gate_exploration_lifecycle_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-session:unit_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-store-s3:live_conformance_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-store-s3:unit_controller_binary": [
+        "rustc_env"
+      ],
+      "//crates/crucible/crucible-test-support:feature_powerset_controller_binary": [
+        "dependencies",
+        "rustc_env"
+      ]
+    }
+  },
+  "controller_runtime_selection": {
+    "added_sources": [
+      "third_party/rust/control/Cargo.lock",
+      "tools/bazel/testing/policy.json",
+      "tools/bazel/testing/runner.py"
+    ],
+    "additional_test_wrapper_roots": 268,
+    "all_previous_distinct_reports_retained": true,
+    "new_report_kinds": [
+      "_libtest_test",
+      "filegroup"
+    ],
+    "output": "/nix/store/8pxw55s68cs0212c1hgncr67lx6l6xj0-aos-bazel-crucible-controller-test-inventory-1"
+  },
+  "core_evaluation": "/nix/store/8wp43is6mcn2d8ln4lmd2gc38qwqg1j3-aos-native-evaluation-checks-0",
+  "inventories": {
+    "accache": {
+      "analysis_outputs": [
+        "/nix/store/gz3hmgdd67zrc3nfqg5x7ximc14p1vr6-aos-bazel-controller-declarations-accache-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/accache-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "34510ec8b0bc40116ff4875af377455fde11d4ebe5fb92d2b5be9982f6fc6c78"
+    },
+    "activation-core": {
+      "analysis_outputs": [
+        "/nix/store/ybjgcipycmhd78fl2bavv2awdcgw9pj2-aos-bazel-controller-declarations-activation-core-production-inventory-1",
+        "/nix/store/gk6jmc8928zvka6i885rs5fcikzz1aqf-aos-bazel-controller-declarations-activation-core-tests-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/activation-core-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "82d566d47752c15c2e90b4bf97cc9706aaa100bcb534d8e3f3a95855d26cd49f"
+    },
+    "activation-crucible": {
+      "analysis_outputs": [
+        "/nix/store/5d6aqxjqidlddlfkzwq7vmnkzm4ylyxc-aos-bazel-controller-declarations-activation-crucible-production-inventory-1",
+        "/nix/store/1fda3hj86z1wry47zj2fgvyr7zr9183q-aos-bazel-controller-declarations-activation-crucible-tests-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/activation-crucible-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "241f7922ca69ebd3cbbaa3e34e24bb545129b0f7823e8451fb932ab8ae2f08f5"
+    },
+    "activation-storage": {
+      "analysis_outputs": [
+        "/nix/store/w3gyhwcysq5pangd8rqx9sdnlls18fhr-aos-bazel-controller-declarations-activation-storage-tests-inventory-1",
+        "/nix/store/dm4rka9qlfr0b6s9yqydf9xzz61gdmyj-aos-bazel-controller-declarations-activation-storage-production-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/activation-storage-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "221f01e9968b96e3a5605a7de57dee53f5fbea97b9d56bb9897106fcc7e65c1f"
+    },
+    "activation-systemd": {
+      "analysis_outputs": [
+        "/nix/store/ajd419n35d4v0mgsvvfbzy0gm4albqnn-aos-bazel-controller-declarations-activation-systemd-production-inventory-1",
+        "/nix/store/27x41a4alf3m305jnj59vlj6aqg07prw-aos-bazel-controller-declarations-activation-systemd-tests-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/activation-systemd-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "3edc82b4ae2e758a7ef596f3cfc6f47b56fcd863ec35bbf35c8345e382b69d21"
+    },
+    "aos-cli": {
+      "analysis_outputs": [
+        "/nix/store/d0x9xwgyp8z5xzkb14n02sxaz0z352y9-aos-bazel-aos-cli-source-inventory"
+      ],
+      "inventory": "tools/bazel/metadata/aos-cli-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "734340aee130a4686b0e8e5ca631ec47012da9872592af5f7fcd534317f3c80b"
+    },
+    "boot-configuration-driver": {
+      "analysis_outputs": [
+        "/nix/store/1vyj153iik44bavj3m56lyp32jnpcadq-aos-bazel-boot-configuration-driver-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/boot-configuration-driver-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "04a3eac6d58ce92e216522a1210c98e91cd04c2b00807188fbfbad5389626111"
+    },
+    "boot-pilot": {
+      "analysis_outputs": [
+        "/nix/store/n0b4avrndbshzvxw40gh785nik7ihh3m-aos-bazel-controller-declarations-pilot-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/boot-pilot-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "9d13ce6bb55b13d99d4d4e4ff4a44fd81b028989f25da833aae3b296b2f6dc04"
+    },
+    "boot-preparation": {
+      "analysis_outputs": [
+        "/nix/store/rlln6m924m9wyi5l35261b2l58ayi1bp-aos-bazel-controller-declarations-boot-preparation-tests-inventory-1",
+        "/nix/store/xjs05fbkvy6f6hvcb2j02n9azqjinhai-aos-bazel-controller-declarations-boot-preparation-production-inventory-1",
+        "/nix/store/k8qqpb9580vi4qvhwh98732ggl0ycrrj-aos-bazel-boot-preparation-minimal-inventory-1",
+        "/nix/store/vd2jgxd7xxbjx4hbrc0fqbnhja28y2wq-aos-bazel-boot-preparation-minimal-production-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/boot-preparation-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "cedc099ab061af07aecc0cf8e6059c05aeea035fd7efacaad05c7def38a5053f"
+    },
+    "boot-preparation-provider": {
+      "analysis_outputs": [
+        "/nix/store/5h7n7q4hqrkpq69qi69y94h8j491hmvw-aos-bazel-preparation-provider-production-inventory-1",
+        "/nix/store/xl678bd1zsy6yx942sy8748xf4yc4n1z-aos-bazel-preparation-provider-release-tests-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/boot-preparation-provider-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "0e0a9d343cbcff23406267a741163f115b4174f8439982bf42a6547bf86829e4"
+    },
+    "boot-transaction-storage-provider": {
+      "analysis_outputs": [
+        "/nix/store/ykbx1n3di9x5w5529wwpsgsdh033l39h-aos-bazel-transaction-storage-provider-production-inventory-1",
+        "/nix/store/9z2bymzf7y946dapi4pjryg5yfb21nhr-aos-bazel-transaction-storage-provider-release-tests-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/boot-transaction-storage-provider-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "3e4481cda4bf0c268610033b44652dc12ad69d8943043e59dd3dbf869ab6f730"
+    },
+    "bpf-native": {
+      "analysis_outputs": [
+        "/nix/store/cb984bzal9flsrcw9j46nln243wzq0c5-aos-bazel-controller-declarations-bpf-native-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/bpf-native-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "04cc3e83768514c0dd295b55d683d0c50c66dd77af16f99110ffb6f8228176b5"
+    },
+    "bpf-provider": {
+      "analysis_outputs": [
+        "/nix/store/3id3akg09nd89hs0f4ri9lxwvyipyyn2-aos-bazel-bpf-provider-production-inventory-1",
+        "/nix/store/kn0vlrra5rzxv4xn4fl1fs46z7qj0njv-aos-bazel-bpf-provider-release-tests-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/bpf-provider-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "4902837b456d512c83e9e9f7dab7c564700dfb23daec6beac85eb99747adc6fc"
+    },
+    "build-services": {
+      "analysis_outputs": [
+        "/nix/store/9rmakbsfhfykpiqkmj43a30m19fjx6aq-aos-bazel-controller-declarations-build-services-production-inventory-1",
+        "/nix/store/c2ywny9l53nzsjsd72zg63zl2qlhqf04-aos-bazel-controller-declarations-build-services-tests-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/build-services-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "656a5c13e570c3ad3fb6a452c01b1f6ca3824c110a880e57c18d83d9e06a1da0"
+    },
+    "cli-support": {
+      "analysis_outputs": [
+        "/nix/store/4yar3dg0fzzqvqmh5agkj9ynb49iqphv-aos-bazel-controller-declarations-cli-support-tests-inventory-1",
+        "/nix/store/1xgskxm1phndqm9n86ld1si9xanffn8j-aos-bazel-controller-declarations-cli-support-production-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/cli-support-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "c5e67a46695af38054ffb58e4eb0a5c7b8bab23c8fb1ada0f97f8100b2fc4540"
+    },
+    "configuration-image": {
+      "analysis_outputs": [
+        "/nix/store/mg50ijl5qbmkdxy8dw5n2s0zb4m12gsi-aos-bazel-configuration-image-production-inventory-1",
+        "/nix/store/ynlbsk1rr0k4zps5r9aqgc1dz0ic7762-aos-bazel-configuration-image-release-tests-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/configuration-image-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "d38209d4249b15bf92fc8536020a88415c232db6a8e4dfe20ec5c13f6f74f21a"
+    },
+    "configuration-provider": {
+      "analysis_outputs": [
+        "/nix/store/lnqrfyada5q7rkkp5psp7234w5151hwx-aos-bazel-configuration-provider-production-inventory-1",
+        "/nix/store/v01c8v1www3xqavn6m2y54s25x21wc7z-aos-bazel-configuration-provider-release-tests-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/configuration-provider-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "d47da8600a5317ca2194cc0042f7fe954f64e5ac6d6b228ea334e9ea68007e4d"
+    },
+    "contracts": {
+      "analysis_outputs": [
+        "/nix/store/06i0frhqcswm0ixs33zza1ixv8qcwvwk-aos-bazel-controller-declarations-contracts-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/contracts-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "5d21b1b9d88a35b4a03155145b1e408ac004c1eb16ed45d364de88a5c67fd7cf"
+    },
+    "control": {
+      "analysis_outputs": [
+        "/nix/store/89z8qjavymwar5688d72zjzr0dg9yqq7-aos-bazel-controller-declarations-control-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/control-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "6a28cf9244982c6739c86fe9907c024b499dbfe3f5d2f500a64a421023a1a0ef"
+    },
+    "crucible-cli": {
+      "analysis_outputs": [
+        "/nix/store/25kyqnbb76viarlkffwnnih9xa175h63-aos-bazel-controller-declarations-crucible-cli-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/crucible-cli-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "24058410665af047434d9a7d08027948ec02df5af0785f9fda921b936530da16"
+    },
+    "crucible-controller-cli": {
+      "analysis_outputs": [
+        "/nix/store/qyfakrnw26z4szqfnbsiqqvc1hhmqr57-aos-bazel-controller-declarations-crucible-controller-cli-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/crucible-controller-cli-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "125f985d7c79c7bd1aa6af1e0c9a8212ab155a5b9fb0bc850b0a14273450768d"
+    },
+    "crucible-controller-debugger": {
+      "analysis_outputs": [
+        "/nix/store/cywcxil129ina56r0kfsbf3fbmv2ksv3-aos-bazel-controller-declarations-crucible-controller-debugger-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/crucible-controller-debugger-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "0f38e507150c3d43d7a703c98525cca736f8495a05285ce65d9ffa581ead70e2"
+    },
+    "crucible-controller-scenario": {
+      "analysis_outputs": [
+        "/nix/store/fgld421n3idfg2zaq08lp31vjpk5108y-aos-bazel-controller-declarations-crucible-controller-scenario-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/crucible-controller-scenario-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "8db17e81ffce1d7c6301333d54e0b8b2ad76971243391f7baf0404c1b02ca9a3"
+    },
+    "crucible-controller-tests": {
+      "analysis_outputs": [
+        "/nix/store/8pxw55s68cs0212c1hgncr67lx6l6xj0-aos-bazel-crucible-controller-test-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/crucible-controller-tests-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": false,
+      "sha256": "652ff63e680732ceb37505d39bfd6025bffe89ae11e1baa1fa07876398973b66"
+    },
+    "daemon": {
+      "analysis_outputs": [
+        "/nix/store/539sifg81g837vy6qh17y0px8awmnhij-aos-bazel-controller-declarations-daemon-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/daemon-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "3bfdb3d3c3db3da54ab994772ec84ef77d59a914154811b30ca59361a260e050"
+    },
+    "deployment": {
+      "analysis_outputs": [
+        "/nix/store/s14fx1h1lr6as04c7wlm34qiyhc2piys-aos-bazel-controller-declarations-deployment-tests-inventory-1",
+        "/nix/store/138vdsx90yjwkac5cvldxfi8k7i1a3pp-aos-bazel-controller-declarations-deployment-production-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/deployment-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "b5c56d8b7a58fae2a2e9317abc9e03a859a1f56a0e6f0d6ea250654a1582c5b5"
+    },
+    "deployment-check": {
+      "analysis_outputs": [
+        "/nix/store/admhkxiqc5x9cibqhc6fp0hchabjnars-aos-bazel-deployment-check-production-inventory-1",
+        "/nix/store/jzy5z6bshp9jn49763kmvr9bdc5rjax0-aos-bazel-deployment-check-tests-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/deployment-check-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "80c882a1f8effc5cd643ce15d0d0680ce526a608a46f6cec630fbf26e2fd9015"
+    },
+    "device": {
+      "analysis_outputs": [
+        "/nix/store/ph1gasr0vaa7hdgicp3z61vsspa49g9n-aos-bazel-controller-declarations-device-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/device-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "bd51e1fe0ad50394e2b2f4524ae98acc6c9404efec2428f13c5bdf1382470163"
+    },
+    "engine": {
+      "analysis_outputs": [
+        "/nix/store/681gb9ppqf67xa4rnm806nczr9ppjall-aos-bazel-controller-declarations-engine-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/engine-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "017baf5ff7d623e17ad3df76feb69e36a8201ae4e39b8ab5645e5d6eeb8afda4"
+    },
+    "feature-powerset": {
+      "analysis_outputs": [
+        "/nix/store/jzm9ix4ls62fc8jh9g43v2zq7jpkp17l-aos-bazel-controller-declarations-feature-powerset-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/feature-powerset-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "067a4262ba4b68a4d031d786cfc6ad0ef5023ef8dd50f63c0bf5d458d9056262"
+    },
+    "filesystem-provider": {
+      "analysis_outputs": [
+        "/nix/store/jyllr0hjah6ds7vr3bpmkz958289bcm6-aos-bazel-filesystem-provider-production-inventory-1",
+        "/nix/store/11mparp876pq56ivxr08qc49xidjy7sa-aos-bazel-filesystem-provider-release-tests-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/filesystem-provider-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "60a4a2bdb655194aa9dab700146778d79ad5340198b4d0aede1e174de3a1575b"
+    },
+    "fixture": {
+      "analysis_outputs": [
+        "/nix/store/8zlnq1viv0pmq1y2rp688p2gr09vcd6a-aos-bazel-controller-declarations-fixture-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/fixture-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "71e4024661e5b1c431a96f5034a18502eadb2973ad9eaa504817d8eb3abd399f"
+    },
+    "formats": {
+      "analysis_outputs": [
+        "/nix/store/qymn1kpm53g00kzpd0p5ysghd0xgd2n8-aos-bazel-controller-declarations-formats-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/formats-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "4f98a4fa348e359ecb260e599adbc830ccbd2ef2fee831daf5b6aca8c05f035c"
+    },
+    "guest": {
+      "analysis_outputs": [
+        "/nix/store/zwfprwsi4z5wnkdybv4rj1h22ip815bb-aos-bazel-controller-declarations-guest-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/guest-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "f72da14fc4b7e5b8a9e6943af210f733cacbe47f576800a0c1bb1a4f183efc9b"
+    },
+    "hub-client": {
+      "analysis_outputs": [
+        "/nix/store/28my8gmrd41pziz3yh4a5p8rygcnrm3r-aos-bazel-controller-declarations-hub-client-tests-inventory-1",
+        "/nix/store/97zg3ki0mxa1rq9a6xlyzvifb4rji5ps-aos-bazel-controller-declarations-hub-client-production-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/hub-client-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "bb47140e769a70c6fcb5e680ee1aa143c2ffe7b31f7c91ddd3d28b7fc4842545"
+    },
+    "hub-console": {
+      "analysis_outputs": [
+        "/nix/store/6rzagv718k4lbfw7rpqxf0il02i8d7x4-aos-bazel-controller-declarations-hub-console-production-inventory-1",
+        "/nix/store/qf10vrqggc7k23dyam2k1awza86lixq9-aos-bazel-controller-declarations-hub-console-tests-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/hub-console-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "5a93c90c56ab35fb36971abfcb0e110f9d8d47bf3d9b4bf5aa02902b26c88509"
+    },
+    "hub-console-wasm": {
+      "analysis_outputs": [
+        "/nix/store/y4yy9drd8g7zpb6kp8c88886khi8ybnc-aos-bazel-controller-declarations-hub-console-wasm-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/hub-console-wasm-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "8e0ddc155037f044fe41c7b9dada74f1453df904e9e2cfdb8997834517d9bc75"
+    },
+    "hub-db": {
+      "analysis_outputs": [
+        "/nix/store/vs78j2dwcnjcprn3z36jbcww33yc692p-aos-bazel-controller-declarations-hub-db-production-inventory-1",
+        "/nix/store/z5w9hn4y8c1p2ryaybcx7hicbh1qvg00-aos-bazel-controller-declarations-hub-db-tests-inventory-1",
+        "/nix/store/1nlgy93fwab0clk1iv4bqp98ybp8yjjm-aos-bazel-controller-declarations-hub-db-all-features-tests-inventory-1",
+        "/nix/store/hcka1hbnr115l24wr94q4yj9y3p8m667-aos-bazel-controller-declarations-hub-db-all-features-production-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/hub-db-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "e975a5f9e9e9eb428036d028174d25b45514690375245c4c88666b3c04c06fc4"
+    },
+    "hub-dialect": {
+      "analysis_outputs": [
+        "/nix/store/8fmcvzjdwff6i62a0zn9dxjj0sby080c-aos-bazel-hub-dialect-production-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/hub-dialect-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "780573026824850e2c85309f7acc2b1f51753a2029eccaa382741b3d79c423c6"
+    },
+    "hub-installed": {
+      "analysis_outputs": [
+        "/nix/store/rm0b8w7pfcvbs2w9k7w0rfap0knbhxd9-aos-bazel-hub-installed-production-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/hub-installed-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "c2f9f24db75ea206767ed0386a3a08eb7296a769d92cc727c91568cd026e45c5"
+    },
+    "hub-model": {
+      "analysis_outputs": [
+        "/nix/store/i9xyp6bkjf33cms6cgydp1143a58wp36-aos-bazel-controller-declarations-hub-model-production-inventory-1",
+        "/nix/store/93g35m0cyikxny3fih4xsgpj976j25dx-aos-bazel-controller-declarations-hub-model-tests-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/hub-model-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "63e2621ef2a59f6421041ca2f518aa3668caca18efa10cc972086a6e06d70dd3"
+    },
+    "hub-native": {
+      "analysis_outputs": [
+        "/nix/store/mrczlkzr32pfjdpi14ivnw5kqrqmh66f-aos-bazel-controller-declarations-hub-native-production-inventory-1",
+        "/nix/store/ns80y2n83rsqmna5m2grv32kdvn0frqc-aos-bazel-controller-declarations-hub-native-tests-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/hub-native-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "36bfdab2482e617192d5d0b17be4afc77a198ff61433a2e3b1eedd8734621b22"
+    },
+    "hub-portable": {
+      "analysis_outputs": [
+        "/nix/store/d67zpb6bygxqq8hcsmjzgwxga8nc3fhp-aos-bazel-controller-declarations-hub-portable-tests-inventory-1",
+        "/nix/store/34k1f3wd186y7ydq55kfaizi399qm5bm-aos-bazel-controller-declarations-hub-portable-production-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/hub-portable-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "ed4b9c8d6ddd660b3bb10bbeca66c27a2be9ce4e96664ddff1ca5aa7101ca3e4"
+    },
+    "hub-service": {
+      "analysis_outputs": [
+        "/nix/store/d3ai5vyq0gcj3i4djkvc4fqa14bj98mp-aos-bazel-controller-declarations-hub-service-production-inventory-1",
+        "/nix/store/b880bdfvmff6zgzcpkgm6ka0d49jcywz-aos-bazel-controller-declarations-hub-service-tests-inventory-1",
+        "/nix/store/0l4fhwnvg64qryrz5vrr3wn7hkdasfa2-aos-bazel-controller-declarations-hub-service-all-features-production-inventory-1",
+        "/nix/store/w7hqpszc91zgw38pniw730aw7msl7k4q-aos-bazel-controller-declarations-hub-service-all-features-tests-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/hub-service-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "e7d7093470a58786bd4ef600660912a9967e1972bd05bbc90e4736ea2acb233c"
+    },
+    "hub-worker": {
+      "analysis_outputs": [
+        "/nix/store/am4k1yclphjhn4a8z5sr53340a2n39mh-aos-bazel-hub-worker-tests-inventory-1",
+        "/nix/store/mzgv3scj3a1qj094a8rbkdamhglsbmyl-aos-bazel-hub-worker-all-features-tests-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/hub-worker-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "bcea00bc4ce0a13360e8602d0659e1498e579fb2ccd0a5ea808e7e67b8cfa0e0"
+    },
+    "hub-worker-wasm": {
+      "analysis_outputs": [
+        "/nix/store/lcm5015h5vfh38l00136ihc49fp5m5pi-aos-bazel-hub-worker-wasm-inventory-1",
+        "/nix/store/r7h6ji4kqhv9mzx552k4kpisd10asf00-aos-bazel-hub-worker-wasm-do-e2e-inventory-1",
+        "/nix/store/g7pbb3rrbqhv96339r2ivp5kwznszpgp-aos-bazel-hub-worker-wasm-all-features-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/hub-worker-wasm-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "d90975492d55fb10aef67b4ecd02f3842b8eba37d9b6352e1d9730aba20c0198"
+    },
+    "initrd-preparation": {
+      "analysis_outputs": [
+        "/nix/store/pfpsw4cmqwgplvxvzd5853s7gm4ca650-aos-bazel-controller-declarations-initrd-preparation-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/initrd-preparation-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "3c06af44814df4a0243fb59a038694205b885e78dbf20c24d043abb573b80a24"
+    },
+    "kernel-tunable-provider": {
+      "analysis_outputs": [
+        "/nix/store/2kbyw0f2wysxs90jp45a2mdjs65791ay-aos-bazel-kernel-tunable-provider-production-inventory-1",
+        "/nix/store/kx03cw9v7ip3b348av4xrh49bi341f2l-aos-bazel-kernel-tunable-provider-release-tests-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/kernel-tunable-provider-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "b92789b7c7b0ee2c460494f91ed4ab762ee5ac214c35d6e9d7a94dc7d10ebe56"
+    },
+    "kubernetes-provider": {
+      "analysis_outputs": [
+        "/nix/store/n57fjs18gc799ivxfgdynd03ncbq8ih9-aos-bazel-kubernetes-provider-production-inventory-1",
+        "/nix/store/hn0gypsnkxmmf5sn0dpbas6jypmafij2-aos-bazel-kubernetes-provider-debug-tests-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/kubernetes-provider-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "e93076f722c48a7cc60dc81b9cff71d48849175ccdb34d1ce49eb4d6689c1ad8"
+    },
+    "metadata-provider": {
+      "analysis_outputs": [
+        "/nix/store/8mark5dwrwwzr19g0r4azvgi9qvw55mm-aos-bazel-metadata-provider-production-inventory-1",
+        "/nix/store/zcmkz2zgvj3jcs9a5fv3i12cjh4wfzbb-aos-bazel-metadata-provider-release-tests-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/metadata-provider-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "8060555bf3e5e0f58d67d43cd1fdbd7837399da38680d067228808a3fb975187"
+    },
+    "native-foundation": {
+      "analysis_outputs": [
+        "/nix/store/akqjr4ymk63s5iqmk3fsp3vylwjwws5d-aos-bazel-controller-declarations-native-foundation-production-inventory-1",
+        "/nix/store/pva35bvb91ph9j95xbs9l56zhxw0i3sh-aos-bazel-controller-declarations-native-foundation-minimal-corrected-inventory-1",
+        "/nix/store/j0blr6q2cjlzi4x0ivcj1fgr5jam0k31-aos-bazel-controller-declarations-native-foundation-default-corrected-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/native-foundation-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "37a2d7f14e69e5823f9b45620d1e337901d1b87025465420830ccfea68334cc8"
+    },
+    "network-ruleset-provider": {
+      "analysis_outputs": [
+        "/nix/store/22f8321573mz54dvm5bk0z8vsc2m0a59-aos-bazel-network-ruleset-provider-production-inventory-1",
+        "/nix/store/vm8yd30djpibwl64bwxl95bwxjrmr3cx-aos-bazel-network-ruleset-provider-release-tests-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/network-ruleset-provider-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "6ef9e91d5d23258a6812b3de2bde0bc62788ef05db7689863393530f5477330d"
+    },
+    "nix-store-provider": {
+      "analysis_outputs": [
+        "/nix/store/xl56mmnv3m6vav441dd4i8k6y8lqbpaf-aos-bazel-nix-store-provider-production-inventory-1",
+        "/nix/store/d2b7iqzwxzz28gg08imz7i0dxrpqgz4a-aos-bazel-nix-store-provider-release-tests-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/nix-store-provider-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "908e3cb1275dbc2a5063955f169d499f21fc41e4a6d2e81350ba88989d9dd60a"
+    },
+    "package-evaluation-driver": {
+      "analysis_outputs": [
+        "/nix/store/x8k2sm534kgs48a26zpy0pxnm26l15z5-aos-bazel-package-evaluation-driver-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/package-evaluation-driver-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "3033514a907414c739c6cb09e2c9b9c4ebecd1ff3e2d0e7aaab6833441704161"
+    },
+    "package-manager": {
+      "analysis_outputs": [
+        "/nix/store/v6rqw49n7hf176zvyqb7nll3i813g4gs-aos-bazel-controller-declarations-package-manager-production-inventory-1",
+        "/nix/store/2z7hi7wygnqbp8fl8mh5jqh3fmypmcka-aos-bazel-controller-declarations-package-manager-tests-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/package-manager-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "e5ba5bc502f66032f3c20d3020d201f973a35569bd4f04976cc715367be0ec83"
+    },
+    "protocol": {
+      "analysis_outputs": [
+        "/nix/store/484yhbbnhv47skn1i64d9x7aapiqpz29-aos-bazel-controller-declarations-protocol-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/protocol-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "ec4d036ac4d83fa9b731dd179ee853025b38dd03df3a3ff63bf9f084ed83dc1b"
+    },
+    "qemu-gateway-installed": {
+      "analysis_outputs": [
+        "/nix/store/cx40mvia1mivhxxcy6hadbzjy5camc58-aos-bazel-controller-declarations-qemu-gateway-installed-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/qemu-gateway-installed-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "ffba19e3e3f3c6d729cd95bd43756142c6e1d810689238e460be5ba6b6baa41a"
+    },
+    "qemu-gateway-process-test": {
+      "analysis_outputs": [
+        "/nix/store/04rkmrnbzdkfvplf4a3631xj7nzka59w-aos-bazel-controller-declarations-qemu-gateway-process-test-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/qemu-gateway-process-test-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "37bed51909aa07bf20973dd47fdfee13b742fc0324db0574350c473de7c5195c"
+    },
+    "qemu-gpl-production": {
+      "analysis_outputs": [
+        "/nix/store/686x203r05i3fl2m4vbqcclip5f0s97l-aos-bazel-controller-declarations-qemu-gpl-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/qemu-gpl-production-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "2b94a75db3da49633cd0481b8f16d58990f83b6e5f1e3d5b178ef5eb9a3491aa"
+    },
+    "qemu-host": {
+      "analysis_outputs": [
+        "/nix/store/rajj8pskccriw1ykl0s2pn49v5fb8xkf-aos-bazel-controller-declarations-qemu-host-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/qemu-host-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "1c75163125cbf262c73ec3c33560280e774760c95ad38342b0e7b1826c691c68"
+    },
+    "qemu-plugin-installed": {
+      "analysis_outputs": [
+        "/nix/store/z34r1vffbcq466yi79xx2vmgrjcacr7j-aos-bazel-controller-declarations-qemu-plugin-installed-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/qemu-plugin-installed-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "5e5b3cf73cef2dd8f3699df86b50baee4ac492d1f0a41f5d5bc1f2dd54efefbd"
+    },
+    "qemu-plugin-process-test": {
+      "analysis_outputs": [
+        "/nix/store/vycg0n6nzj9nx3ghlw8np5545w847hn4-aos-bazel-controller-declarations-qemu-plugin-process-test-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/qemu-plugin-process-test-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "bd5ed11d39b316d5951efb85f3679f32a35f2d2db5c7a30c4160063a10343461"
+    },
+    "qemu-test-oracle-host": {
+      "analysis_outputs": [
+        "/nix/store/bsyjll26hvad8jj5n9p98ncwx9iamniq-aos-bazel-controller-declarations-qemu-test-oracle-host-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/qemu-test-oracle-host-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "c6a847d6d3164bacfde08474f6456a69e02249eda1f22f8889887ed0bfd80745"
+    },
+    "quota": {
+      "analysis_outputs": [
+        "/nix/store/pqyghm4m15d1wkra069zi1anmvvbixpl-aos-bazel-controller-declarations-quota-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/quota-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "36485dfeabc8ecd1111f9b4b1db0378d13b09158552e8a735eaa7741d5cd0868"
+    },
+    "registry-native": {
+      "analysis_outputs": [
+        "/nix/store/hhpjbk4dxipfz8gwqnqvcsan0g26qmsz-aos-bazel-controller-declarations-registry-native-tests-inventory-1",
+        "/nix/store/r7dfzdc9znpxnivd9bk8064fqsil0n3q-aos-bazel-controller-declarations-registry-native-production-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/registry-native-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "86a884a06add3d31032bf48869405e9c80e02abcc894ee208d1b295eb0ad641d"
+    },
+    "registry-web": {
+      "analysis_outputs": [
+        "/nix/store/n7mmbjsqal95h4hflrvhkk7gdr9j3nzg-aos-bazel-controller-declarations-registry-web-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/registry-web-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "431f7f7b9e5919ac47cf9dbff9b46b30e0975126de1897d634ebd2c803177a8d"
+    },
+    "registry-web-wasm": {
+      "analysis_outputs": [
+        "/nix/store/mrcn722n9ynjydqivwgyxaw6hvrg53v0-aos-bazel-controller-declarations-registry-web-wasm-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/registry-web-wasm-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "e69f83eb3083e33d792986c69f2ecf1d8b085899295aaac7e778cd29af78f72f"
+    },
+    "release-coordination": {
+      "analysis_outputs": [
+        "/nix/store/6ia7hv1ynbw3h9zzxc868322n4fc30rk-aos-bazel-controller-declarations-release-coordination-tests-inventory-1",
+        "/nix/store/b9nm8fwmaf7csn578sm0zzs3fr129xka-aos-bazel-controller-declarations-release-coordination-production-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/release-coordination-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "d1b9338655498877a18ad4d94332d0ddfedf59bfa12b5594be3df11d2e22757f"
+    },
+    "release-preparation": {
+      "analysis_outputs": [
+        "/nix/store/pqm1z51fqcir31ijfzqjbg2lcf7cv1x0-aos-bazel-controller-declarations-release-preparation-tests-inventory-1",
+        "/nix/store/gi1gkawp3z19qadmn0p9gb3fsy4iy4z5-aos-bazel-controller-declarations-release-preparation-production-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/release-preparation-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "3e03241d2a10c81dcdcd799c15a7b2c4143015b4c59d3ff1b7d1a0aad90f2a2a"
+    },
+    "release-signer": {
+      "analysis_outputs": [
+        "/nix/store/273x1jcf9v3bgnahqf9qb0d9x9n1hz8x-aos-bazel-release-signer-production-inventory-1",
+        "/nix/store/f9c25fniivvaq31yfjp3b2v6fmjqgrd5-aos-bazel-release-signer-tests-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/release-signer-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "8c6babd51c891c136300f474c54473f98a8f3e33e2bc391cccdde4cf14bc6160"
+    },
+    "session": {
+      "analysis_outputs": [
+        "/nix/store/isv14ay5x50kaghw4ydjppgaa2hb4vbm-aos-bazel-controller-declarations-session-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/session-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "97c29bcdda6f324a9685ad092cb7b3c80741a610fc9ddb3bfa7dadce32ce0c50"
+    },
+    "shared": {
+      "analysis_outputs": [
+        "/nix/store/k3sal4273595h1v356654iq4q73ngibw-aos-bazel-controller-declarations-shared-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/shared-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "e5f24b75cec041c69a715954ea51d8503176937341e83843cc5b3a9e2e47b909"
+    },
+    "static-storage-providers": {
+      "analysis_outputs": [
+        "/nix/store/ax4y7gg366la3v9gsl1l70nk8blgaslv-aos-bazel-static-storage-providers-production-inventory-1",
+        "/nix/store/gq0bdrya9b2s0ml25dcjngqmi83276as-aos-bazel-static-storage-providers-release-tests-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/static-storage-providers-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "8a9274516f97dee04d7d18428827cbe9d55bfaa16f598dd8f2be24f359fa0baa"
+    },
+    "storage-provisioning-provider": {
+      "analysis_outputs": [
+        "/nix/store/9gb2rlj4kc03flddbmwx9lyvmj8yjyn1-aos-bazel-storage-provisioning-provider-production-inventory-1",
+        "/nix/store/54pykzraw0ndmmyaqyps6my78m3a3z7w-aos-bazel-storage-provisioning-provider-release-tests-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/storage-provisioning-provider-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "ad8349b59868fa47e6eeae06d8384b9d8bb9c61c5dca343dd318b5afa8b43363"
+    },
+    "store": {
+      "analysis_outputs": [
+        "/nix/store/l5lg5bwnz62c5ln0d1irrz0sxwbj9ahd-aos-bazel-controller-declarations-store-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/store-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "5fc598642ee4185891fba21ebf313b75906303219ab04b9951098d73d87e60f2"
+    },
+    "store-s3": {
+      "analysis_outputs": [
+        "/nix/store/vn6h0zyr0zl1jmxm3qraijd3yizlxk8g-aos-bazel-controller-declarations-store-s3-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/store-s3-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "3145125b479a92ca0968f8a304206987aa7df3c4d37c5c1388bd1251727f477e"
+    },
+    "systemd-provider": {
+      "analysis_outputs": [
+        "/nix/store/kj5b5903n4y2qwnxrqxpgrmhxfv2dqja-aos-bazel-systemd-provider-production-inventory-1",
+        "/nix/store/ys1w0h87dqf4n7a9mq4ish0344mhing1-aos-bazel-systemd-provider-release-tests-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/systemd-provider-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "8c0b6e260656a46692b6ca7062dfda540422b7499a98fc3e8cd78978f807a3f7"
+    },
+    "test-support": {
+      "analysis_outputs": [
+        "/nix/store/sh6fh0qp8zqv7w3q5dy8v6019pvk1pln-aos-bazel-controller-declarations-test-support-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/test-support-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "f7b9704aa79240fa5676ef000ae9bc8ab9bfe6b12ccae5f4eb126246cb435576"
+    },
+    "test-support-audit": {
+      "analysis_outputs": [
+        "/nix/store/fgzypbyswckk2gahvsmdzgnf7hbmp9z3-aos-bazel-controller-declarations-test-support-audits-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/test-support-audit-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "7ef18794078f6a4d9bbdded1e74b5ab7241aa168f9d8bd4fc25c21ad037517bd"
+    },
+    "zfs-provider": {
+      "analysis_outputs": [
+        "/nix/store/s3srn9197djbfnky6h2mynrklrc58xrx-aos-bazel-zfs-provider-production-inventory-1",
+        "/nix/store/b82m1lsdjj04h8saxg5wjhj42xzpr1ya-aos-bazel-zfs-provider-release-tests-inventory-1"
+      ],
+      "inventory": "tools/bazel/metadata/zfs-provider-inventory.json",
+      "selected_sources_targets_and_distinct_reports_unchanged": true,
+      "sha256": "e56982f994ea24e26fc2a8cbbfbc14ab5de698585cdb51d2877f69389953db02"
+    }
+  },
+  "public_controller_cutover_qualified": false,
+  "schema_version": 1,
+  "scope": "Actual configured analysis regeneration for the controller feature-audit migration; no application runtime, platform, or cache-performance qualification.",
+  "sdk_source_profiles": 79,
+  "sdk_specification_analysis": "/nix/store/z9hir0zp4n3wnpgcaxqgxk8479ljv4hv-aos-bazel-controller-test-specifications-1",
+  "sdk_specification_and_rendered_compilation_bodies_unchanged": true,
+  "source_inventory_count": 80
+}

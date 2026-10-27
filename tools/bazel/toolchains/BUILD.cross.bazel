@@ -1,0 +1,100 @@
+# Appended to the native repository: generators and proc macros keep its
+# execution toolchains, while these registrations match only the foreign CPU.
+filegroup(
+    name = "cross_rustc_lib",
+    srcs = ["cross/closure.json"] + glob([
+        "cross/lib/*.so*",
+        "cross/lib/rustlib/@EXEC_TRIPLE@/codegen-backends/*.so",
+    ], allow_empty = True),
+)
+
+rust_stdlib_filegroup(
+    name = "cross_rust_std",
+    srcs = glob([
+        "cross/lib/rustlib/@TARGET_TRIPLE@/lib/*.rlib",
+        "cross/lib/rustlib/@TARGET_TRIPLE@/lib/*.rmeta",
+        "cross/lib/rustlib/@TARGET_TRIPLE@/lib/*.so*",
+        "cross/lib/rustlib/@TARGET_TRIPLE@/lib/*.a",
+        "cross/lib/rustlib/@TARGET_TRIPLE@/lib/self-contained/**",
+    ], allow_empty = True),
+)
+
+rust_toolchain(
+    name = "cross_rust",
+    rustc = "cross/bin/rustc",
+    rust_doc = "cross/bin/rustdoc",
+    cargo = ":cargo",
+    clippy_driver = ":clippy",
+    rustc_lib = ":cross_rustc_lib",
+    rust_std = ":cross_rust_std",
+    allocator_library = "@rules_rust//ffi/rs:empty",
+    binary_ext = "",
+    staticlib_ext = ".a",
+    dylib_ext = ".so",
+    stdlib_linkflags = ["-ldl", "-lpthread"],
+    default_edition = "2024",
+    exec_triple = "@EXEC_TRIPLE@",
+    target_triple = "@TARGET_TRIPLE@",
+    version = "@RUST_VERSION@",
+    channel = "stable",
+)
+
+toolchain(
+    name = "cross_rust_registered",
+    toolchain = ":cross_rust",
+    toolchain_type = "@rules_rust//rust:toolchain_type",
+    exec_compatible_with = ["@platforms//cpu:@EXEC_CPU@", "@platforms//os:linux"],
+    target_compatible_with = ["@platforms//cpu:@TARGET_CPU@", "@platforms//os:linux"],
+)
+
+filegroup(
+    name = "cross_cc_inputs",
+    srcs = ["cross/closure.json"] + glob([
+        "cross/gcc/bin/*", "cross/gcc/include/**", "cross/gcc/lib/gcc/**",
+        "cross/gcc/libexec/gcc/**", "cross/binutils/bin/*",
+        "cross/sysroot/lib/**", "cross/sysroot-dev/include/**",
+        "cross/sysroot-dev/lib/**", "cross/gcc-runtime/lib/**",
+    ], allow_empty = True),
+)
+
+cc_toolchain(
+    name = "cross_cc",
+    toolchain_identifier = "aos-@TARGET_TRIPLE@",
+    toolchain_config = ":cross_cc_config",
+    all_files = ":cross_cc_inputs",
+    ar_files = ":cross_cc_inputs",
+    as_files = ":cross_cc_inputs",
+    compiler_files = ":cross_cc_inputs",
+    dwp_files = ":cross_cc_inputs",
+    linker_files = ":cross_cc_inputs",
+    objcopy_files = ":cross_cc_inputs",
+    strip_files = ":cross_cc_inputs",
+    supports_param_files = 1,
+)
+
+cc_toolchain_config(
+    name = "cross_cc_config",
+    cpu = "@TARGET_CPU@",
+    compiler = "gcc",
+    toolchain_identifier = "aos-@TARGET_TRIPLE@",
+    host_system_name = "@EXEC_TRIPLE@",
+    target_system_name = "@TARGET_TRIPLE@",
+    target_libc = "glibc",
+    abi_version = "gnu",
+    abi_libc_version = "glibc",
+    cxx_builtin_include_directories = @INCLUDE_DIRECTORIES@,
+    tool_paths = @TOOL_PATHS@,
+    link_libs = ["-lstdc++", "-lm"],
+    link_flags = ["-L@GCC_RUNTIME@/lib", "-Wl,-rpath,@GCC_RUNTIME@/lib"],
+    opt_compile_flags = ["-O2", "-DNDEBUG"],
+    dbg_compile_flags = ["-g"],
+    supports_start_end_lib = False,
+)
+
+toolchain(
+    name = "cross_cc_registered",
+    toolchain = ":cross_cc",
+    toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
+    exec_compatible_with = ["@platforms//cpu:@EXEC_CPU@", "@platforms//os:linux"],
+    target_compatible_with = ["@platforms//cpu:@TARGET_CPU@", "@platforms//os:linux"],
+)

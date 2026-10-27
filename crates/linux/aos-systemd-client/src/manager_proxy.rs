@@ -164,6 +164,7 @@ pub trait Service {
 /// One entry returned by `Manager.ListUnitsByPatterns` — D-Bus signature
 /// `(ssssssouso)`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, zbus::zvariant::Type)]
+#[zvariant(crate = "zbus::zvariant")]
 pub struct ListUnitsEntry {
     /// Unit name, including the type suffix (e.g. `sshd.service`).
     pub name: String,

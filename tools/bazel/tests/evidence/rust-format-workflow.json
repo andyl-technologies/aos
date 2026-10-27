@@ -1,0 +1,2032 @@
+{
+  "checks": {
+    "cli": {
+      "derivation": "/nix/store/whr7g3d0xha41n6ypm7ik8qzqg0hw2lb-aos-dev-cli-check-0.drv",
+      "derivation_sha256": "305daa394029232eb5f0669dbf5c9427e54d4f7dca773032c4f6aba701cb4d67",
+      "output": "/nix/store/b6k89qjqk5slalscm1d71v4vfm87kg54-aos-dev-cli-check-0"
+    },
+    "eval": {
+      "derivation": "/nix/store/88sj4hww8gn863d94bvpsfpdl1p51pln-aos-native-evaluation-checks-0.drv",
+      "derivation_sha256": "e2689b74aa39866857889cb5f10f173db3fb3b0de9d12c3caaa1425cb5a54a5f",
+      "output": "/nix/store/8zackq55f7fmrpqyvbikc6qnik6vyyia-aos-native-evaluation-checks-0"
+    },
+    "policy": {
+      "derivation": "/nix/store/y7c0j1hnw12z6da27fgrqqxzlymvfpia-aos-bazel-policy-checks.drv",
+      "derivation_sha256": "47f5fab14a54e3f9cceab92a3b0c46e64535ff4befe7b9c718aeea3bd6c3ed80",
+      "output": "/nix/store/dlzh5llv0alhhaw89wawm0h2p1jgiwd1-aos-bazel-policy-checks"
+    }
+  },
+  "formatted_sources_sha256": "c1ca41f2d23a8978072eef0e9b9effe0c2c3203a0ed00f4b53df5791bede0ac3",
+  "formatter_regressions": 11,
+  "implementation_sha256": {
+    "tests/build/_bazel-rust-format.nix": "3f617583a072c96ef35954cfee009df47f3f13cd3817f1c37b726a0c353d7c0e",
+    "tests/build/bazel.nix": "13d97c2743c44cf0e1a3ff8c6288220a89f76e8e93a9f278d513bb00dc9ec356",
+    "tools/bazel/format_rust.py": "ca854b8a3025b368fd210ebde206395ba7382ecb2e7b512e5671a9696b98b28e",
+    "tools/bazel/tests/rust-format.nix": "d7f5f5fba0bb6e16f4b54b9513934bc1b0e3dcaba4ec01a8b9c51c9537be983f",
+    "tools/bazel/tests/test_format_rust.py": "58f15e856bc8f4c7b712cd5a5f7f8301c4ec9d587d9fdb3ca81c0ca69b5d8db1",
+    "tools/dev/lib/bazel.bash": "dc75a7f18dc020ff04fdf7c8b1ab19e8e2312bda3534e57d40f40f1ac674e370",
+    "tools/dev/lib/commands.bash": "c346b73a1081b6348b66d1e5798190fa0ecef53edb9918763d2dea568d42612f",
+    "tools/dev/tests/cli.bash": "e8964d99902acd1e1d380b0d1bd484a5f18e4234b7dad178425ca8f4e282c82e"
+  },
+  "initial_style_check": {
+    "derivation": "/nix/store/fba9wmrck6c3dydqx00i5dvb6jsrg6lk-aos-bazel-rust-format-check.drv",
+    "exit_code": 1,
+    "full_log_sha256": "ac284de9262fcab8a917ff6e2e51753603e3d5947670da68badc35d6ebffd399",
+    "scope": "Read-only check exposes the same existing style difference repaired identically in both qualification copies"
+  },
+  "inventory": {
+    "packages": 80,
+    "roots": {
+      "crates/accache/accache-frontend/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/accache/accache-frontend"
+      },
+      "crates/accache/accache/src/main.rs": {
+        "edition": "2024",
+        "owner": "crates/accache/accache"
+      },
+      "crates/activation/aos-activation-bpf-lsm/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/activation/aos-activation-bpf-lsm"
+      },
+      "crates/activation/aos-activation-bpf-lsm/src/main.rs": {
+        "edition": "2024",
+        "owner": "crates/activation/aos-activation-bpf-lsm"
+      },
+      "crates/activation/aos-activation-bpf-network/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/activation/aos-activation-bpf-network"
+      },
+      "crates/activation/aos-activation-bpf-network/src/main.rs": {
+        "edition": "2024",
+        "owner": "crates/activation/aos-activation-bpf-network"
+      },
+      "crates/activation/aos-activation-config-files/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/activation/aos-activation-config-files"
+      },
+      "crates/activation/aos-activation-config-files/src/main.rs": {
+        "edition": "2024",
+        "owner": "crates/activation/aos-activation-config-files"
+      },
+      "crates/activation/aos-activation-crucible/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/activation/aos-activation-crucible"
+      },
+      "crates/activation/aos-activation-crucible/src/main.rs": {
+        "edition": "2024",
+        "owner": "crates/activation/aos-activation-crucible"
+      },
+      "crates/activation/aos-activation-filesystem/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/activation/aos-activation-filesystem"
+      },
+      "crates/activation/aos-activation-filesystem/src/main.rs": {
+        "edition": "2024",
+        "owner": "crates/activation/aos-activation-filesystem"
+      },
+      "crates/activation/aos-activation-kubernetes/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/activation/aos-activation-kubernetes"
+      },
+      "crates/activation/aos-activation-kubernetes/src/main.rs": {
+        "edition": "2024",
+        "owner": "crates/activation/aos-activation-kubernetes"
+      },
+      "crates/activation/aos-activation-nftables/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/activation/aos-activation-nftables"
+      },
+      "crates/activation/aos-activation-nftables/src/main.rs": {
+        "edition": "2024",
+        "owner": "crates/activation/aos-activation-nftables"
+      },
+      "crates/activation/aos-activation-nix-store/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/activation/aos-activation-nix-store"
+      },
+      "crates/activation/aos-activation-nix-store/src/main.rs": {
+        "edition": "2024",
+        "owner": "crates/activation/aos-activation-nix-store"
+      },
+      "crates/activation/aos-activation-storage/src/bin/boot_transaction_storage.rs": {
+        "edition": "2024",
+        "owner": "crates/activation/aos-activation-storage"
+      },
+      "crates/activation/aos-activation-storage/src/bin/cryptsetup.rs": {
+        "edition": "2024",
+        "owner": "crates/activation/aos-activation-storage"
+      },
+      "crates/activation/aos-activation-storage/src/bin/storage_format.rs": {
+        "edition": "2024",
+        "owner": "crates/activation/aos-activation-storage"
+      },
+      "crates/activation/aos-activation-storage/src/bin/storage_provisioning.rs": {
+        "edition": "2024",
+        "owner": "crates/activation/aos-activation-storage"
+      },
+      "crates/activation/aos-activation-storage/src/bin/storage_provisioning_marker.rs": {
+        "edition": "2024",
+        "owner": "crates/activation/aos-activation-storage"
+      },
+      "crates/activation/aos-activation-storage/src/bin/zfs_dataset.rs": {
+        "edition": "2024",
+        "owner": "crates/activation/aos-activation-storage"
+      },
+      "crates/activation/aos-activation-storage/src/bin/zfs_maintenance.rs": {
+        "edition": "2024",
+        "owner": "crates/activation/aos-activation-storage"
+      },
+      "crates/activation/aos-activation-storage/src/bin/zfs_memory_policy.rs": {
+        "edition": "2024",
+        "owner": "crates/activation/aos-activation-storage"
+      },
+      "crates/activation/aos-activation-storage/src/bin/zfs_pool.rs": {
+        "edition": "2024",
+        "owner": "crates/activation/aos-activation-storage"
+      },
+      "crates/activation/aos-activation-storage/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/activation/aos-activation-storage"
+      },
+      "crates/activation/aos-activation-sysctl/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/activation/aos-activation-sysctl"
+      },
+      "crates/activation/aos-activation-sysctl/src/main.rs": {
+        "edition": "2024",
+        "owner": "crates/activation/aos-activation-sysctl"
+      },
+      "crates/activation/aos-activation-systemd/src/bin/aos-systemd-credential-encrypt.rs": {
+        "edition": "2024",
+        "owner": "crates/activation/aos-activation-systemd"
+      },
+      "crates/activation/aos-activation-systemd/src/bin/aos-systemd-native-resource-provider.rs": {
+        "edition": "2024",
+        "owner": "crates/activation/aos-activation-systemd"
+      },
+      "crates/activation/aos-activation/examples/module_graph_check.rs": {
+        "edition": "2024",
+        "owner": "crates/activation/aos-activation"
+      },
+      "crates/activation/aos-activation/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/activation/aos-activation"
+      },
+      "crates/artifacts/aos-artifact-evidence/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/artifacts/aos-artifact-evidence"
+      },
+      "crates/artifacts/aos-nar/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/artifacts/aos-nar"
+      },
+      "crates/artifacts/aos-oci-types/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/artifacts/aos-oci-types"
+      },
+      "crates/artifacts/aos-oci-types/tests/golden.rs": {
+        "edition": "2024",
+        "owner": "crates/artifacts/aos-oci-types"
+      },
+      "crates/artifacts/aos-oci-types/tests/reference_vectors.rs": {
+        "edition": "2024",
+        "owner": "crates/artifacts/aos-oci-types"
+      },
+      "crates/artifacts/aos-oci/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/artifacts/aos-oci"
+      },
+      "crates/artifacts/aos-oci/tests/external_signing.rs": {
+        "edition": "2024",
+        "owner": "crates/artifacts/aos-oci"
+      },
+      "crates/artifacts/aos-oci/tests/layout.rs": {
+        "edition": "2024",
+        "owner": "crates/artifacts/aos-oci"
+      },
+      "crates/artifacts/aos-oci/tests/registry.rs": {
+        "edition": "2024",
+        "owner": "crates/artifacts/aos-oci"
+      },
+      "crates/bindings/libssh2-sys/build.rs": {
+        "edition": "2021",
+        "owner": "crates/bindings/libssh2-sys"
+      },
+      "crates/bindings/libssh2-sys/lib.rs": {
+        "edition": "2021",
+        "owner": "crates/bindings/libssh2-sys"
+      },
+      "crates/boot/aos-boot-identity/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/boot/aos-boot-identity"
+      },
+      "crates/boot/aos-boot-identity/src/main.rs": {
+        "edition": "2024",
+        "owner": "crates/boot/aos-boot-identity"
+      },
+      "crates/boot/aos-boot-identity/tests/uki_cli.rs": {
+        "edition": "2024",
+        "owner": "crates/boot/aos-boot-identity"
+      },
+      "crates/boot/aos-boot-runtime/src/bin/aos-boot-preparation-provider.rs": {
+        "edition": "2024",
+        "owner": "crates/boot/aos-boot-runtime"
+      },
+      "crates/boot/aos-boot-runtime/src/bin/aos-systemd-boot-platform.rs": {
+        "edition": "2024",
+        "owner": "crates/boot/aos-boot-runtime"
+      },
+      "crates/boot/aos-boot-runtime/src/bin/aos-systemd-image-evidence.rs": {
+        "edition": "2024",
+        "owner": "crates/boot/aos-boot-runtime"
+      },
+      "crates/boot/aos-boot-runtime/src/bin/aos-systemd-image-stage.rs": {
+        "edition": "2024",
+        "owner": "crates/boot/aos-boot-runtime"
+      },
+      "crates/boot/aos-boot-runtime/src/bin/aos-systemd-initrd-store.rs": {
+        "edition": "2024",
+        "owner": "crates/boot/aos-boot-runtime"
+      },
+      "crates/boot/aos-boot-runtime/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/boot/aos-boot-runtime"
+      },
+      "crates/boot/aos-boot-runtime/standalone/initrd_preparation.rs": {
+        "edition": "2024",
+        "owner": "crates/boot/aos-boot-runtime"
+      },
+      "crates/boot/aos-configuration-image/src/boot_main.rs": {
+        "edition": "2024",
+        "owner": "crates/boot/aos-configuration-image"
+      },
+      "crates/boot/aos-configuration-image/src/certificate_main.rs": {
+        "edition": "2024",
+        "owner": "crates/boot/aos-configuration-image"
+      },
+      "crates/boot/aos-configuration-image/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/boot/aos-configuration-image"
+      },
+      "crates/boot/aos-configuration-image/src/main.rs": {
+        "edition": "2024",
+        "owner": "crates/boot/aos-configuration-image"
+      },
+      "crates/boot/aos-configuration-image/src/mount_main.rs": {
+        "edition": "2024",
+        "owner": "crates/boot/aos-configuration-image"
+      },
+      "crates/boot/aos-platform-metadata/src/bin/aos-metadata-acquisition-provider.rs": {
+        "edition": "2024",
+        "owner": "crates/boot/aos-platform-metadata"
+      },
+      "crates/boot/aos-platform-metadata/src/bin/aos-metadata-policy-provider.rs": {
+        "edition": "2024",
+        "owner": "crates/boot/aos-platform-metadata"
+      },
+      "crates/boot/aos-platform-metadata/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/boot/aos-platform-metadata"
+      },
+      "crates/boot/aos-recovery/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/boot/aos-recovery"
+      },
+      "crates/boot/aos-recovery/src/main.rs": {
+        "edition": "2024",
+        "owner": "crates/boot/aos-recovery"
+      },
+      "crates/boot/aos-storage-layout/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/boot/aos-storage-layout"
+      },
+      "crates/cli/aos-cli-ui/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/cli/aos-cli-ui"
+      },
+      "crates/cli/aos-cli/src/apm.rs": {
+        "edition": "2024",
+        "owner": "crates/cli/aos-cli"
+      },
+      "crates/cli/aos-cli/src/apr.rs": {
+        "edition": "2024",
+        "owner": "crates/cli/aos-cli"
+      },
+      "crates/cli/aos-cli/src/boot_configuration.rs": {
+        "edition": "2024",
+        "owner": "crates/cli/aos-cli"
+      },
+      "crates/cli/aos-cli/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/cli/aos-cli"
+      },
+      "crates/cli/aos-cli/src/main.rs": {
+        "edition": "2024",
+        "owner": "crates/cli/aos-cli"
+      },
+      "crates/cli/aos-cli/src/package_runtime.rs": {
+        "edition": "2024",
+        "owner": "crates/cli/aos-cli"
+      },
+      "crates/cli/aos-cli/src/provisioning_configuration_evaluator.rs": {
+        "edition": "2024",
+        "owner": "crates/cli/aos-cli"
+      },
+      "crates/cli/aos-cli/tests/ability_check_compat_cli.rs": {
+        "edition": "2024",
+        "owner": "crates/cli/aos-cli"
+      },
+      "crates/cli/aos-cli/tests/ability_inspect_cli.rs": {
+        "edition": "2024",
+        "owner": "crates/cli/aos-cli"
+      },
+      "crates/cli/aos-cli/tests/apm_profile_lifecycle_cli.rs": {
+        "edition": "2024",
+        "owner": "crates/cli/aos-cli"
+      },
+      "crates/cli/aos-cli/tests/apm_system_config_dir.rs": {
+        "edition": "2024",
+        "owner": "crates/cli/aos-cli"
+      },
+      "crates/cli/aos-cli/tests/apr_cache_cli.rs": {
+        "edition": "2024",
+        "owner": "crates/cli/aos-cli"
+      },
+      "crates/cli/aos-cli/tests/apr_create_host_identity_cli.rs": {
+        "edition": "2024",
+        "owner": "crates/cli/aos-cli"
+      },
+      "crates/cli/aos-cli/tests/apr_dry_run_cli.rs": {
+        "edition": "2024",
+        "owner": "crates/cli/aos-cli"
+      },
+      "crates/cli/aos-cli/tests/apr_keys_cli.rs": {
+        "edition": "2024",
+        "owner": "crates/cli/aos-cli"
+      },
+      "crates/cli/aos-cli/tests/apr_keys_generate_cli.rs": {
+        "edition": "2024",
+        "owner": "crates/cli/aos-cli"
+      },
+      "crates/cli/aos-cli/tests/apr_keys_register_cli.rs": {
+        "edition": "2024",
+        "owner": "crates/cli/aos-cli"
+      },
+      "crates/cli/aos-cli/tests/apr_origin_config_cli.rs": {
+        "edition": "2024",
+        "owner": "crates/cli/aos-cli"
+      },
+      "crates/cli/aos-cli/tests/apr_trust_cli.rs": {
+        "edition": "2024",
+        "owner": "crates/cli/aos-cli"
+      },
+      "crates/cli/aos-cli/tests/cli_separation.rs": {
+        "edition": "2024",
+        "owner": "crates/cli/aos-cli"
+      },
+      "crates/cli/aos-cli/tests/container_cli.rs": {
+        "edition": "2024",
+        "owner": "crates/cli/aos-cli"
+      },
+      "crates/cli/aos-cli/tests/container_cli_transfer.rs": {
+        "edition": "2024",
+        "owner": "crates/cli/aos-cli"
+      },
+      "crates/cli/aos-cli/tests/container_native_publication.rs": {
+        "edition": "2024",
+        "owner": "crates/cli/aos-cli"
+      },
+      "crates/cli/aos-cli/tests/documentation_cli.rs": {
+        "edition": "2024",
+        "owner": "crates/cli/aos-cli"
+      },
+      "crates/cli/aos-cli/tests/hub_retained_control_cli_contract.rs": {
+        "edition": "2024",
+        "owner": "crates/cli/aos-cli"
+      },
+      "crates/cli/aos-cli/tests/hub_topology_cutover.rs": {
+        "edition": "2024",
+        "owner": "crates/cli/aos-cli"
+      },
+      "crates/cli/aos-cli/tests/image_registry_cli.rs": {
+        "edition": "2024",
+        "owner": "crates/cli/aos-cli"
+      },
+      "crates/cli/aos-cli/tests/registry_staging_cli.rs": {
+        "edition": "2024",
+        "owner": "crates/cli/aos-cli"
+      },
+      "crates/cli/aos-cli/tests/release_inventory_nix_boundary.rs": {
+        "edition": "2024",
+        "owner": "crates/cli/aos-cli"
+      },
+      "crates/cli/aos-cli/tests/support/ability_authority_audit.rs": {
+        "edition": "2024",
+        "owner": "crates/cli/aos-cli"
+      },
+      "crates/cli/aos-cli/tests/support/ability_interruption_audit.rs": {
+        "edition": "2024",
+        "owner": "crates/cli/aos-cli"
+      },
+      "crates/cli/aos-cli/tests/support/release_fleet_fixture.rs": {
+        "edition": "2024",
+        "owner": "crates/cli/aos-cli"
+      },
+      "crates/cli/aos-cli/tests/workspace_architecture.rs": {
+        "edition": "2024",
+        "owner": "crates/cli/aos-cli"
+      },
+      "crates/cli/aos-closure-analysis/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/cli/aos-closure-analysis"
+      },
+      "crates/cli/aos-nix-docs/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/cli/aos-nix-docs"
+      },
+      "crates/core/aos-core/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/core/aos-core"
+      },
+      "crates/crucible/crucible-campaign/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-campaign"
+      },
+      "crates/crucible/crucible-campaign/tests/gate_attempt_idempotence.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-campaign"
+      },
+      "crates/crucible/crucible-campaign/tests/gate_branch_point_model.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-campaign"
+      },
+      "crates/crucible/crucible-campaign/tests/gate_campaign_cold_continuity.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-campaign"
+      },
+      "crates/crucible/crucible-campaign/tests/gate_campaign_model.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-campaign"
+      },
+      "crates/crucible/crucible-campaign/tests/gate_campaign_mutation_scaling.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-campaign"
+      },
+      "crates/crucible/crucible-campaign/tests/gate_campaign_replay.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-campaign"
+      },
+      "crates/crucible/crucible-campaign/tests/gate_campaign_statistics.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-campaign"
+      },
+      "crates/crucible/crucible-campaign/tests/gate_lazy_frontier.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-campaign"
+      },
+      "crates/crucible/crucible-campaign/tests/gate_typed_choice.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-campaign"
+      },
+      "crates/crucible/crucible-cli/src/main.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-cli"
+      },
+      "crates/crucible/crucible-cli/tests/campaign_process.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-cli"
+      },
+      "crates/crucible/crucible-cli/tests/campaign_store_process.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-cli"
+      },
+      "crates/crucible/crucible-cli/tests/gate_campaign_store_composition.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-cli"
+      },
+      "crates/crucible/crucible-cli/tests/gate_e2e_determinism.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-cli"
+      },
+      "crates/crucible/crucible-cli/tests/help_surface.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-cli"
+      },
+      "crates/crucible/crucible-cli/tests/machine_readable.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-cli"
+      },
+      "crates/crucible/crucible-cli/tests/planner_process.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-cli"
+      },
+      "crates/crucible/crucible-cli/tests/serve_process.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-cli"
+      },
+      "crates/crucible/crucible-cli/tests/store_transform_packed_process.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-cli"
+      },
+      "crates/crucible/crucible-control-api/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-control-api"
+      },
+      "crates/crucible/crucible-control-api/tests/gate_abi_conformance.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-control-api"
+      },
+      "crates/crucible/crucible-control-api/tests/gate_open_set_payload.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-control-api"
+      },
+      "crates/crucible/crucible-control-api/tests/gate_session_mapping.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-control-api"
+      },
+      "crates/crucible/crucible-control-client/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-control-client"
+      },
+      "crates/crucible/crucible-control-client/tests/gate_control_client.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-control-client"
+      },
+      "crates/crucible/crucible-control-server/src/bin/qemu_test_oracle.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-control-server"
+      },
+      "crates/crucible/crucible-control-server/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-control-server"
+      },
+      "crates/crucible/crucible-control-server/tests/gate_control_responsive.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-control-server"
+      },
+      "crates/crucible/crucible-control-server/tests/gate_epoch_guards.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-control-server"
+      },
+      "crates/crucible/crucible-control-server/tests/gate_lifecycle_unary.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-control-server"
+      },
+      "crates/crucible/crucible-control-server/tests/gate_reproduction_context.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-control-server"
+      },
+      "crates/crucible/crucible-control-server/tests/gate_streaming_cursor.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-control-server"
+      },
+      "crates/crucible/crucible-control-server/tests/gate_streaming_equivalence.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-control-server"
+      },
+      "crates/crucible/crucible-control-server/tests/transport_dependency_versions.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-control-server"
+      },
+      "crates/crucible/crucible-daemon/examples/crucible-e2e-determinism-scenario.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-daemon"
+      },
+      "crates/crucible/crucible-daemon/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-daemon"
+      },
+      "crates/crucible/crucible-daemon/tests/gate_campaign_component_contract.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-daemon"
+      },
+      "crates/crucible/crucible-daemon/tests/gate_campaign_metadata_million.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-daemon"
+      },
+      "crates/crucible/crucible-daemon/tests/gate_control_responsive.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-daemon"
+      },
+      "crates/crucible/crucible-daemon/tests/gate_exact_closure_streaming.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-daemon"
+      },
+      "crates/crucible/crucible-daemon/tests/production_effect_matrix.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-daemon"
+      },
+      "crates/crucible/crucible-determinism/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-determinism"
+      },
+      "crates/crucible/crucible-determinism/tests/contract_a.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-determinism"
+      },
+      "crates/crucible/crucible-determinism/tests/decision_rng.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-determinism"
+      },
+      "crates/crucible/crucible-determinism/tests/gate_content_address.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-determinism"
+      },
+      "crates/crucible/crucible-determinism/tests/gate_layer0_determinism.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-determinism"
+      },
+      "crates/crucible/crucible-device/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-device"
+      },
+      "crates/crucible/crucible-device/tests/device_harness.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-device"
+      },
+      "crates/crucible/crucible-device/tests/gate_layer1_injection.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-device"
+      },
+      "crates/crucible/crucible-device/tests/io_subnode_lifecycle.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-device"
+      },
+      "crates/crucible/crucible-engine/examples/crucible-debugger-live-fixture.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/examples/phase5_live_asset_fixture.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/assertion_determinism_nonperturbation.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/assertion_evaluation_order.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/assertion_evaluation_timing.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/assertion_lifecycle.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/assertion_log_fold.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/assertion_prefix_continuation.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/assertion_proximity_gradient.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/assertion_quiescence_leaves.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/assertion_violation_records.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/assertion_violation_reproduction.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/backend_node_routing.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/black_box_first_guarantee.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/compound_condition_combinators.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/condition_time_leaves.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/condition_vocabulary_shared.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/coverage_condition_leaf.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/debugger_live_fixture.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/deterministic_condition_evaluation.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/event_graph_control_flow.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/event_graph_replay_oracle.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/event_graph_serialization.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/event_kind_catalog.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/event_log_assertion_proximity.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/event_log_class_catalog.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/event_log_content_address.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/event_log_coverage.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/event_log_determinism.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/event_log_payload.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/event_log_reproduction_artifact.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/event_log_schema.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/event_log_tracing_bridge.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/event_log_unified.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/fault_observation_log.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/fault_reference.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/formal_trace_export.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/gate_abi_conformance.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/gate_adversarial_determinism.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/gate_basic_block_coverage.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/gate_campaign_replay.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/gate_canonical_debug_breakpoint.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/gate_checkpoint_materialization.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/gate_content_address.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/gate_coverage_feedback.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/gate_coverage_guided_corpus.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/gate_coverage_guided_fuzzing.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/gate_debug_attach.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/gate_debug_cli_surface.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/gate_debug_non_canonical_branch.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/gate_debug_target_resolver.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/gate_debug_time_travel.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/gate_e2e_determinism_concurrency.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/gate_failure_signature.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/gate_fleet_equivalence.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/gate_fork_replay_oracle.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/gate_guided_adaptive_exploration.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/gate_layer0_determinism.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/gate_layer1_injection.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/gate_minimization.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/gate_read_only_debug_inspection.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/gate_replay_oracle.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/gate_reproduction_artifacts.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/gate_restore_strategies.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/gate_scheduler_liveness.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/gate_search_reductions.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/gate_search_strategies.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/gate_signal_fault_system.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/gate_state_space_search.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/gate_unifying_view.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/guest_assertion_declarations.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/guest_host_black_box_surface.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/guest_host_channel_determinism.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/guest_host_marker_observability.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/guest_host_os_agnostic.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/guest_host_readiness.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/guest_marker_assertions.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/guest_marker_condition_leaf.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/happy_path_assertion_transport.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/host_side_assertions.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/live_qemu_search_fixture.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/memory_condition_leaf.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/observable_condition_leaves.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/observed_state_materialization.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/offline_assertion_checker.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/offline_assertion_empty.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/predicate_dsl.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/preemption_discrimination.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/property_configuration.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/property_fingerprint_neutrality.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/property_vocabulary.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/rfc0014_taxonomy_ledger.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/same_icount_tie_break.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/scenario_picosecond_duration.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/scheduler_actor.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/scheduler_all_vcpus_idle.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/scheduler_concurrency.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/scheduler_conservative_pdes.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/scheduler_control_responsive.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/scheduler_effective_horizon.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/scheduler_emit_step.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/scheduler_event_order.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/scheduler_exact_local_event.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/scheduler_horizon.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/scheduler_icount_ceiling.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/scheduler_idle_fast_forward.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/scheduler_lookahead.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/scheduler_partition_heal.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/scheduler_preemption_identity.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/scheduler_preemption_resolve.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/scheduler_quantum_loop.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/scheduler_rendezvous.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/scheduler_rendezvous_purpose.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/scheduler_resolve.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/scheduler_rr_subdivision.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/scheduler_run_ceiling.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/scheduler_topology_change.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/scheduler_topology_rendezvous.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/signal_fault_wakeup.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/source_size.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/time_shared_timeline.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/trigger_deadlines.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/trigger_node_scheduling.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/trigger_verdict_composition.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/trigger_wakeup.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/workload_load_patterns.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/workload_model.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/workload_parameterization.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-engine/tests/world_devices.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-engine"
+      },
+      "crates/crucible/crucible-guest/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-guest"
+      },
+      "crates/crucible/crucible-guest/src/main.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-guest"
+      },
+      "crates/crucible/crucible-guest/tests/gate_abi_conformance.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-guest"
+      },
+      "crates/crucible/crucible-guest/tests/gate_single_vm_fingerprint.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-guest"
+      },
+      "crates/crucible/crucible-qemu-debug-gateway/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-debug-gateway"
+      },
+      "crates/crucible/crucible-qemu-debug-gateway/src/main.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-debug-gateway"
+      },
+      "crates/crucible/crucible-qemu-debug-gateway/tests/process_lifecycle.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-debug-gateway"
+      },
+      "crates/crucible/crucible-qemu-host/examples/crucible-qemu-host-owner-flight.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-host"
+      },
+      "crates/crucible/crucible-qemu-host/examples/crucible-qemu-live-block-realization.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-host"
+      },
+      "crates/crucible/crucible-qemu-host/examples/crucible-qemu-live-hot-fork-child-stress.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-host"
+      },
+      "crates/crucible/crucible-qemu-host/examples/crucible-qemu-live-hot-fork-child.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-host"
+      },
+      "crates/crucible/crucible-qemu-host/examples/crucible-qemu-live-plugin-install.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-host"
+      },
+      "crates/crucible/crucible-qemu-host/examples/crucible-qemu-production-plugin-flight.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-host"
+      },
+      "crates/crucible/crucible-qemu-host/examples/crucible-qemu-rr-control-boundary-device-flight.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-host"
+      },
+      "crates/crucible/crucible-qemu-host/examples/crucible-qemu-whitebox-map-validate.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-host"
+      },
+      "crates/crucible/crucible-qemu-host/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-host"
+      },
+      "crates/crucible/crucible-qemu-host/tests/crash_detection.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-host"
+      },
+      "crates/crucible/crucible-qemu-host/tests/debug_gdbstub.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-host"
+      },
+      "crates/crucible/crucible-qemu-host/tests/deterministic_launch.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-host"
+      },
+      "crates/crucible/crucible-qemu-host/tests/gate_basic_block_coverage.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-host"
+      },
+      "crates/crucible/crucible-qemu-host/tests/gate_qemu_inert.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-host"
+      },
+      "crates/crucible/crucible-qemu-host/tests/mapped_quantum.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-host"
+      },
+      "crates/crucible/crucible-qemu-host/tests/plugin_control_channel.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-host"
+      },
+      "crates/crucible/crucible-qemu-host/tests/production_fault_checkpoint.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-host"
+      },
+      "crates/crucible/crucible-qemu-host/tests/protocol_inertness.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-host"
+      },
+      "crates/crucible/crucible-qemu-host/tests/qmp.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-host"
+      },
+      "crates/crucible/crucible-qemu-host/tests/qmp_launch_channel.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-host"
+      },
+      "crates/crucible/crucible-qemu-host/tests/qmp_unix_socket.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-host"
+      },
+      "crates/crucible/crucible-qemu-host/tests/qmp_vmstate_control.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-host"
+      },
+      "crates/crucible/crucible-qemu-host/tests/shutdown.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-host"
+      },
+      "crates/crucible/crucible-qemu-plugin/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-plugin"
+      },
+      "crates/crucible/crucible-qemu-plugin/tests/gate_abi_conformance.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-plugin"
+      },
+      "crates/crucible/crucible-qemu-plugin/tests/gate_patch_microtests.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-plugin"
+      },
+      "crates/crucible/crucible-qemu-plugin/tests/gate_qemu_inert.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-plugin"
+      },
+      "crates/crucible/crucible-qemu-protocol/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-protocol"
+      },
+      "crates/crucible/crucible-qemu-protocol/tests/codec.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-protocol"
+      },
+      "crates/crucible/crucible-qemu-protocol/tests/codec_fuzz.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-protocol"
+      },
+      "crates/crucible/crucible-qemu-protocol/tests/descriptor_handover.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-protocol"
+      },
+      "crates/crucible/crucible-qemu-protocol/tests/frame_format.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-protocol"
+      },
+      "crates/crucible/crucible-qemu-protocol/tests/gate_abi_conformance.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-protocol"
+      },
+      "crates/crucible/crucible-qemu-protocol/tests/gate_layer1_injection.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-protocol"
+      },
+      "crates/crucible/crucible-qemu-protocol/tests/golden_vectors.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-protocol"
+      },
+      "crates/crucible/crucible-qemu-protocol/tests/handshake.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-protocol"
+      },
+      "crates/crucible/crucible-qemu-protocol/tests/lifecycle.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-protocol"
+      },
+      "crates/crucible/crucible-qemu-protocol/tests/setup_completion.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-protocol"
+      },
+      "crates/crucible/crucible-qemu-shmem/examples/crucible-shmem-abi-header.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-shmem"
+      },
+      "crates/crucible/crucible-qemu-shmem/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-shmem"
+      },
+      "crates/crucible/crucible-qemu-shmem/tests/advance_ceiling_handoff.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-shmem"
+      },
+      "crates/crucible/crucible-qemu-shmem/tests/control_flags.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-shmem"
+      },
+      "crates/crucible/crucible-qemu-shmem/tests/gate_abi_conformance.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-shmem"
+      },
+      "crates/crucible/crucible-qemu-shmem/tests/gate_layer1_injection.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-shmem"
+      },
+      "crates/crucible/crucible-qemu-shmem/tests/generated_abi_header.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-shmem"
+      },
+      "crates/crucible/crucible-qemu-shmem/tests/icount_stamped_injection.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-shmem"
+      },
+      "crates/crucible/crucible-qemu-shmem/tests/lookahead_gate.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-shmem"
+      },
+      "crates/crucible/crucible-qemu-shmem/tests/multi_vcpu_node_slot.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-shmem"
+      },
+      "crates/crucible/crucible-qemu-shmem/tests/preemption_mailbox.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-shmem"
+      },
+      "crates/crucible/crucible-qemu-shmem/tests/region_layout.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-shmem"
+      },
+      "crates/crucible/crucible-qemu-shmem/tests/setup_validation.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-shmem"
+      },
+      "crates/crucible/crucible-qemu-shmem/tests/snapshot_restore.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-qemu-shmem"
+      },
+      "crates/crucible/crucible-session/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-session"
+      },
+      "crates/crucible/crucible-session/tests/event_log_stream.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-session"
+      },
+      "crates/crucible/crucible-session/tests/gate_control_responsive.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-session"
+      },
+      "crates/crucible/crucible-session/tests/gate_exploration_fork.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-session"
+      },
+      "crates/crucible/crucible-session/tests/gate_exploration_lifecycle.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-session"
+      },
+      "crates/crucible/crucible-store-s3/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-store-s3"
+      },
+      "crates/crucible/crucible-store-s3/tests/live_conformance.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-store-s3"
+      },
+      "crates/crucible/crucible-store/src/bin/crucible-fleet-store.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-store"
+      },
+      "crates/crucible/crucible-store/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-store"
+      },
+      "crates/crucible/crucible-store/tests/gate_campaign_continuity.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-store"
+      },
+      "crates/crucible/crucible-store/tests/gate_campaign_store_composition.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-store"
+      },
+      "crates/crucible/crucible-store/tests/gate_campaign_store_equivalence.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-store"
+      },
+      "crates/crucible/crucible-test-support/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-test-support"
+      },
+      "crates/crucible/crucible-test-support/tests/adversarial_host_fixture.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-test-support"
+      },
+      "crates/crucible/crucible-test-support/tests/campaign_gate_matrix_inventory.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-test-support"
+      },
+      "crates/crucible/crucible-test-support/tests/campaign_gate_traceability.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-test-support"
+      },
+      "crates/crucible/crucible-test-support/tests/campaign_release_acceptance.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-test-support"
+      },
+      "crates/crucible/crucible-test-support/tests/concurrency_abi_oracle_standards.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-test-support"
+      },
+      "crates/crucible/crucible-test-support/tests/control_plane_boundary.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-test-support"
+      },
+      "crates/crucible/crucible-test-support/tests/crate_artifact_types.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-test-support"
+      },
+      "crates/crucible/crucible-test-support/tests/crate_layer_graph.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-test-support"
+      },
+      "crates/crucible/crucible-test-support/tests/crate_spec_index.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-test-support"
+      },
+      "crates/crucible/crucible-test-support/tests/crate_unsafe_fence.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-test-support"
+      },
+      "crates/crucible/crucible-test-support/tests/determinism_core_coverage.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-test-support"
+      },
+      "crates/crucible/crucible-test-support/tests/determinism_review.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-test-support"
+      },
+      "crates/crucible/crucible-test-support/tests/documentation_hygiene.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-test-support"
+      },
+      "crates/crucible/crucible-test-support/tests/engineering_hygiene.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-test-support"
+      },
+      "crates/crucible/crucible-test-support/tests/feature_powerset.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-test-support"
+      },
+      "crates/crucible/crucible-test-support/tests/fingerprint_definition.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-test-support"
+      },
+      "crates/crucible/crucible-test-support/tests/gate_abi_conformance.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-test-support"
+      },
+      "crates/crucible/crucible-test-support/tests/gate_adversarial_determinism.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-test-support"
+      },
+      "crates/crucible/crucible-test-support/tests/gate_catalog.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-test-support"
+      },
+      "crates/crucible/crucible-test-support/tests/gate_divergence_bisect.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-test-support"
+      },
+      "crates/crucible/crucible-test-support/tests/gate_e2e_determinism.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-test-support"
+      },
+      "crates/crucible/crucible-test-support/tests/gate_layer0_determinism.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-test-support"
+      },
+      "crates/crucible/crucible-test-support/tests/gate_license_boundary.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-test-support"
+      },
+      "crates/crucible/crucible-test-support/tests/gate_perf_bench.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-test-support"
+      },
+      "crates/crucible/crucible-test-support/tests/gate_target_mapping.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-test-support"
+      },
+      "crates/crucible/crucible-test-support/tests/harness_components.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-test-support"
+      },
+      "crates/crucible/crucible-test-support/tests/harness_lint.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-test-support"
+      },
+      "crates/crucible/crucible-test-support/tests/harness_lint_annotations.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-test-support"
+      },
+      "crates/crucible/crucible-test-support/tests/phase_plan.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-test-support"
+      },
+      "crates/crucible/crucible-test-support/tests/reproduction_artifact.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-test-support"
+      },
+      "crates/crucible/crucible-test-support/tests/rfc_consistency.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-test-support"
+      },
+      "crates/crucible/crucible-test-support/tests/rustdoc_bar.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-test-support"
+      },
+      "crates/crucible/crucible-test-support/tests/single_scheduler_boundary.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-test-support"
+      },
+      "crates/crucible/crucible-test-support/tests/standalone_dependencies.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-test-support"
+      },
+      "crates/crucible/crucible-test-support/tests/testing_standards.rs": {
+        "edition": "2024",
+        "owner": "crates/crucible/crucible-test-support"
+      },
+      "crates/hub/aos-hub-api/build.rs": {
+        "edition": "2021",
+        "owner": "crates/hub/aos-hub-api"
+      },
+      "crates/hub/aos-hub-api/src/lib.rs": {
+        "edition": "2021",
+        "owner": "crates/hub/aos-hub-api"
+      },
+      "crates/hub/aos-hub-api/tests/contract_inventory.rs": {
+        "edition": "2021",
+        "owner": "crates/hub/aos-hub-api"
+      },
+      "crates/hub/aos-hub-client/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/hub/aos-hub-client"
+      },
+      "crates/hub/aos-hub-console/src/lib.rs": {
+        "edition": "2021",
+        "owner": "crates/hub/aos-hub-console"
+      },
+      "crates/hub/aos-hub-console/src/main.rs": {
+        "edition": "2021",
+        "owner": "crates/hub/aos-hub-console"
+      },
+      "crates/hub/aos-hub-db/src/lib.rs": {
+        "edition": "2021",
+        "owner": "crates/hub/aos-hub-db"
+      },
+      "crates/hub/aos-hub-model/src/lib.rs": {
+        "edition": "2021",
+        "owner": "crates/hub/aos-hub-model"
+      },
+      "crates/hub/aos-hub-model/tests/retained_control_foundation.rs": {
+        "edition": "2021",
+        "owner": "crates/hub/aos-hub-model"
+      },
+      "crates/hub/aos-hub-native/src/bin/aos-hub-egress.rs": {
+        "edition": "2021",
+        "owner": "crates/hub/aos-hub-native"
+      },
+      "crates/hub/aos-hub-native/src/lib.rs": {
+        "edition": "2021",
+        "owner": "crates/hub/aos-hub-native"
+      },
+      "crates/hub/aos-hub-native/src/main.rs": {
+        "edition": "2021",
+        "owner": "crates/hub/aos-hub-native"
+      },
+      "crates/hub/aos-hub-native/tests/auth.rs": {
+        "edition": "2021",
+        "owner": "crates/hub/aos-hub-native"
+      },
+      "crates/hub/aos-hub-native/tests/config.rs": {
+        "edition": "2021",
+        "owner": "crates/hub/aos-hub-native"
+      },
+      "crates/hub/aos-hub-native/tests/console.rs": {
+        "edition": "2021",
+        "owner": "crates/hub/aos-hub-native"
+      },
+      "crates/hub/aos-hub-native/tests/container_admin.rs": {
+        "edition": "2021",
+        "owner": "crates/hub/aos-hub-native"
+      },
+      "crates/hub/aos-hub-native/tests/dialect.rs": {
+        "edition": "2021",
+        "owner": "crates/hub/aos-hub-native"
+      },
+      "crates/hub/aos-hub-native/tests/e2e.rs": {
+        "edition": "2021",
+        "owner": "crates/hub/aos-hub-native"
+      },
+      "crates/hub/aos-hub-native/tests/git_interop.rs": {
+        "edition": "2021",
+        "owner": "crates/hub/aos-hub-native"
+      },
+      "crates/hub/aos-hub-native/tests/gitconfig.rs": {
+        "edition": "2021",
+        "owner": "crates/hub/aos-hub-native"
+      },
+      "crates/hub/aos-hub-native/tests/hardening.rs": {
+        "edition": "2021",
+        "owner": "crates/hub/aos-hub-native"
+      },
+      "crates/hub/aos-hub-native/tests/http_source.rs": {
+        "edition": "2021",
+        "owner": "crates/hub/aos-hub-native"
+      },
+      "crates/hub/aos-hub-native/tests/mirror.rs": {
+        "edition": "2021",
+        "owner": "crates/hub/aos-hub-native"
+      },
+      "crates/hub/aos-hub-native/tests/oci_alert_rules.rs": {
+        "edition": "2021",
+        "owner": "crates/hub/aos-hub-native"
+      },
+      "crates/hub/aos-hub-native/tests/oci_distribution.rs": {
+        "edition": "2021",
+        "owner": "crates/hub/aos-hub-native"
+      },
+      "crates/hub/aos-hub-native/tests/oidc.rs": {
+        "edition": "2021",
+        "owner": "crates/hub/aos-hub-native"
+      },
+      "crates/hub/aos-hub-native/tests/operations.rs": {
+        "edition": "2021",
+        "owner": "crates/hub/aos-hub-native"
+      },
+      "crates/hub/aos-hub-native/tests/password.rs": {
+        "edition": "2021",
+        "owner": "crates/hub/aos-hub-native"
+      },
+      "crates/hub/aos-hub-native/tests/seed.rs": {
+        "edition": "2021",
+        "owner": "crates/hub/aos-hub-native"
+      },
+      "crates/hub/aos-hub-native/tests/settings_workflows.rs": {
+        "edition": "2021",
+        "owner": "crates/hub/aos-hub-native"
+      },
+      "crates/hub/aos-hub-native/tests/tenancy.rs": {
+        "edition": "2021",
+        "owner": "crates/hub/aos-hub-native"
+      },
+      "crates/hub/aos-hub-native/tests/tenancy_read_authz.rs": {
+        "edition": "2021",
+        "owner": "crates/hub/aos-hub-native"
+      },
+      "crates/hub/aos-hub-native/tests/web.rs": {
+        "edition": "2021",
+        "owner": "crates/hub/aos-hub-native"
+      },
+      "crates/hub/aos-hub-native/tests/webauthn.rs": {
+        "edition": "2021",
+        "owner": "crates/hub/aos-hub-native"
+      },
+      "crates/hub/aos-hub-native/tests/webhook.rs": {
+        "edition": "2021",
+        "owner": "crates/hub/aos-hub-native"
+      },
+      "crates/hub/aos-hub-service/build.rs": {
+        "edition": "2021",
+        "owner": "crates/hub/aos-hub-service"
+      },
+      "crates/hub/aos-hub-service/src/lib.rs": {
+        "edition": "2021",
+        "owner": "crates/hub/aos-hub-service"
+      },
+      "crates/hub/aos-hub-service/tests/signing_key_lifecycle.rs": {
+        "edition": "2021",
+        "owner": "crates/hub/aos-hub-service"
+      },
+      "crates/hub/aos-hub-service/tests/wasm_clock_guard.rs": {
+        "edition": "2021",
+        "owner": "crates/hub/aos-hub-service"
+      },
+      "crates/hub/aos-hub-ui/src/lib.rs": {
+        "edition": "2021",
+        "owner": "crates/hub/aos-hub-ui"
+      },
+      "crates/hub/aos-hub-worker/src/lib.rs": {
+        "edition": "2021",
+        "owner": "crates/hub/aos-hub-worker"
+      },
+      "crates/linux/aos-linux-project-quota/examples/project-quota-flight.rs": {
+        "edition": "2024",
+        "owner": "crates/linux/aos-linux-project-quota"
+      },
+      "crates/linux/aos-linux-project-quota/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/linux/aos-linux-project-quota"
+      },
+      "crates/linux/aos-systemd-client/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/linux/aos-systemd-client"
+      },
+      "crates/linux/aos-systemd-client/tests/client.rs": {
+        "edition": "2024",
+        "owner": "crates/linux/aos-systemd-client"
+      },
+      "crates/linux/aos-systemd-client/tests/pinned_bus.rs": {
+        "edition": "2024",
+        "owner": "crates/linux/aos-systemd-client"
+      },
+      "crates/modules/aos-module-docs/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/modules/aos-module-docs"
+      },
+      "crates/modules/aos-module-format/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/modules/aos-module-format"
+      },
+      "crates/nix/aos-nix/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/nix/aos-nix"
+      },
+      "crates/packages/aos-build-api/build.rs": {
+        "edition": "2021",
+        "owner": "crates/packages/aos-build-api"
+      },
+      "crates/packages/aos-build-api/src/lib.rs": {
+        "edition": "2021",
+        "owner": "crates/packages/aos-build-api"
+      },
+      "crates/packages/aos-build-api/tests/decode_limits.rs": {
+        "edition": "2021",
+        "owner": "crates/packages/aos-build-api"
+      },
+      "crates/packages/aos-build-client/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/packages/aos-build-client"
+      },
+      "crates/packages/aos-build-client/tests/tls_trust.rs": {
+        "edition": "2024",
+        "owner": "crates/packages/aos-build-client"
+      },
+      "crates/packages/aos-build-server/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/packages/aos-build-server"
+      },
+      "crates/packages/aos-build-server/tests/rest_read_access.rs": {
+        "edition": "2024",
+        "owner": "crates/packages/aos-build-server"
+      },
+      "crates/packages/aos-build-server/tests/resumable_uploads.rs": {
+        "edition": "2024",
+        "owner": "crates/packages/aos-build-server"
+      },
+      "crates/packages/aos-build-server/tests/rpc_roundtrip.rs": {
+        "edition": "2024",
+        "owner": "crates/packages/aos-build-server"
+      },
+      "crates/packages/aos-build-server/tests/store_hash_validation.rs": {
+        "edition": "2024",
+        "owner": "crates/packages/aos-build-server"
+      },
+      "crates/packages/aos-deployment-format/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/packages/aos-deployment-format"
+      },
+      "crates/packages/aos-deployment/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/packages/aos-deployment"
+      },
+      "crates/packages/aos-nix-cache/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/packages/aos-nix-cache"
+      },
+      "crates/packages/aos-nix-cache/tests/backend_matrix.rs": {
+        "edition": "2024",
+        "owner": "crates/packages/aos-nix-cache"
+      },
+      "crates/packages/aos-nix-cache/tests/conditional_writes.rs": {
+        "edition": "2024",
+        "owner": "crates/packages/aos-nix-cache"
+      },
+      "crates/packages/aos-package-manager/examples/package_deployment_check.rs": {
+        "edition": "2024",
+        "owner": "crates/packages/aos-package-manager"
+      },
+      "crates/packages/aos-package-manager/src/bin/aos-deployment-check.rs": {
+        "edition": "2024",
+        "owner": "crates/packages/aos-package-manager"
+      },
+      "crates/packages/aos-package-manager/src/bin/aos-image-rollout-boot.rs": {
+        "edition": "2024",
+        "owner": "crates/packages/aos-package-manager"
+      },
+      "crates/packages/aos-package-manager/src/bin/aos-image-rollout-observer.rs": {
+        "edition": "2024",
+        "owner": "crates/packages/aos-package-manager"
+      },
+      "crates/packages/aos-package-manager/src/bin/aos-image-rollout-provider.rs": {
+        "edition": "2024",
+        "owner": "crates/packages/aos-package-manager"
+      },
+      "crates/packages/aos-package-manager/src/bin/aos-package-attestation-provider.rs": {
+        "edition": "2024",
+        "owner": "crates/packages/aos-package-manager"
+      },
+      "crates/packages/aos-package-manager/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/packages/aos-package-manager"
+      },
+      "crates/packages/aos-package-manager/tests/package_command_scopes.rs": {
+        "edition": "2024",
+        "owner": "crates/packages/aos-package-manager"
+      },
+      "crates/packages/aos-package-manager/tests/registry_cache_e2e.rs": {
+        "edition": "2024",
+        "owner": "crates/packages/aos-package-manager"
+      },
+      "crates/registry/aos-registry-authoring/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/registry/aos-registry-authoring"
+      },
+      "crates/registry/aos-registry-authoring/tests/change_requests.rs": {
+        "edition": "2024",
+        "owner": "crates/registry/aos-registry-authoring"
+      },
+      "crates/registry/aos-registry-authoring/tests/registry_default_channel.rs": {
+        "edition": "2024",
+        "owner": "crates/registry/aos-registry-authoring"
+      },
+      "crates/registry/aos-registry-authoring/tests/registry_e2e.rs": {
+        "edition": "2024",
+        "owner": "crates/registry/aos-registry-authoring"
+      },
+      "crates/registry/aos-registry-authoring/tests/registry_perf.rs": {
+        "edition": "2024",
+        "owner": "crates/registry/aos-registry-authoring"
+      },
+      "crates/registry/aos-registry-authoring/tests/registry_pki_e2e.rs": {
+        "edition": "2024",
+        "owner": "crates/registry/aos-registry-authoring"
+      },
+      "crates/registry/aos-registry-client/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/registry/aos-registry-client"
+      },
+      "crates/registry/aos-registry-client/tests/libgit2_inputs.rs": {
+        "edition": "2024",
+        "owner": "crates/registry/aos-registry-client"
+      },
+      "crates/registry/aos-registry-format/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/registry/aos-registry-format"
+      },
+      "crates/registry/aos-registry-web/src/lib.rs": {
+        "edition": "2021",
+        "owner": "crates/registry/aos-registry-web"
+      },
+      "crates/registry/aos-registry-web/src/main.rs": {
+        "edition": "2021",
+        "owner": "crates/registry/aos-registry-web"
+      },
+      "crates/release/aos-image-finalizer/src/bin/image_metadata.rs": {
+        "edition": "2024",
+        "owner": "crates/release/aos-image-finalizer"
+      },
+      "crates/release/aos-image-finalizer/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/release/aos-image-finalizer"
+      },
+      "crates/release/aos-package-maintenance/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/release/aos-package-maintenance"
+      },
+      "crates/release/aos-release-coordinator/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/release/aos-release-coordinator"
+      },
+      "crates/release/aos-release-format/src/lib.rs": {
+        "edition": "2024",
+        "owner": "crates/release/aos-release-format"
+      },
+      "crates/release/aos-release-format/tests/nix_inventory.rs": {
+        "edition": "2024",
+        "owner": "crates/release/aos-release-format"
+      },
+      "crates/release/aos-release-format/tests/qualification.rs": {
+        "edition": "2024",
+        "owner": "crates/release/aos-release-format"
+      },
+      "crates/release/aos-release-signer/src/main.rs": {
+        "edition": "2024",
+        "owner": "crates/release/aos-release-signer"
+      },
+      "crates/transfer/aos-transfer/src/lib.rs": {
+        "edition": "2021",
+        "owner": "crates/transfer/aos-transfer"
+      }
+    },
+    "schema_version": 1
+  },
+  "parent_revision": "f7ffcc09bbca87f02a1b7ac1ea593aa3634f4bd8",
+  "policy_tests": 403,
+  "private_cli_scratch_removed": true,
+  "qualification": {
+    "derivation": "/nix/store/dyvp0k3lidklyhkccwxka1h7n62yrs6b-aos-bazel-rust-format-check.drv",
+    "derivation_sha256": "f7a2392f75db1e0d3cceebe32f1fbd065b6d339eae76d46e5296e2e866646b17",
+    "output": "/nix/store/dg6ky09c6iji3ipp1jkkgqb2isp04p1m-aos-bazel-rust-format-check"
+  },
+  "query_xml_sha256": "3020b1f499b6f2d714b5ad80c5f11a4188c15a90d474f6c706e7aa22d27b073d",
+  "real_cli": {
+    "command": [
+      "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15/bin/bash",
+      "/home/dylan/src/aos/.worktrees/codex/bazel-integration-722/tools/dev/aos-dev",
+      "--release",
+      "fmt",
+      "rust",
+      "--check"
+    ],
+    "differences": [
+      "/home/dylan/src/aos/.worktrees/codex/bazel-integration-722/crates/hub/aos-hub-service/src/service/tests/identity.rs"
+    ],
+    "returncode": 1
+  },
+  "real_cli_expected_existing_style_failure": true,
+  "real_cli_source_built_tools": {
+    "bash": "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15",
+    "coreutils": "/nix/store/6i9yb0a1q1k9qx8l3xb4xr25kf8cg4p5-coreutils-9.11",
+    "gawk": "/nix/store/q0smvlh9mly9nvxbsnw7ng7i43kxl84m-gawk-5.4.1",
+    "grep": "/nix/store/qwq9gmv4h5k991h1wra4ydkwl07977cd-grep-3.12",
+    "sed": "/nix/store/km452j597r6swyr897sckswcyp5sr7kq-sed-4.10"
+  },
+  "real_cli_stderr_sha256": "2b7734e80bfab97bf91d2af814c8a3edb567964b7c441f2a1b1e905916a5e4be",
+  "real_cli_stdout_sha256": "63377e0172198053001d6082049df89dff83604fdcd3f263b89d6c6f7e14435d",
+  "report": {
+    "additional_declared_roots": [
+      "crates/boot/aos-boot-runtime/standalone/initrd_preparation.rs"
+    ],
+    "bazel_roots": 484,
+    "cargo_files_absent": true,
+    "cargo_roots_preserved": 483,
+    "formatted_source_bytes_identical_to_cargo": true,
+    "formatted_source_files": 3773,
+    "originally_unformatted_sources": [
+      "crates/hub/aos-hub-service/src/service/tests/identity.rs"
+    ],
+    "packages": 80,
+    "rustfmt_idempotence_check": "PASS",
+    "status": "PASS"
+  },
+  "schema_version": 1,
+  "scope": "First-party formatting workflow; compilation migration, production cutover, and Cargo removal remain separate requirements",
+  "source_tree_was_not_formatted": true,
+  "status": "Formatting discovery, output parity, idempotence, and actual CLI behavior qualified"
+}

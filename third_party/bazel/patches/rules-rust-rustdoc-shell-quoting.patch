@@ -1,0 +1,32 @@
+--- a/rust/private/rustdoc/rustdoc_test_writer.rs
++++ b/rust/private/rustdoc/rustdoc_test_writer.rs
+@@ -164,6 +164,11 @@
+     options
+ }
+ 
++/// Quotes one Unix shell word without interpreting metadata or arguments.
++fn shell_quote(value: &str) -> String {
++    format!("'{}'", value.replace('\'', "'\\''"))
++}
++
+ /// Write a unix compatible test runner
+ fn write_test_runner_unix(
+     path: &Path,
+@@ -182,7 +187,7 @@
+         "exec env - \\".to_owned(),
+     ];
+ 
+-    content.extend(env.iter().map(|(key, val)| format!("{key}='{val}' \\")));
++    content.extend(env.iter().map(|(key, val)| format!("{key}={} \\", shell_quote(val))));
+ 
+     let argv_str = argv
+         .iter()
+@@ -194,7 +199,7 @@
+                 .for_each(|substring| stripped_arg = stripped_arg.replace(substring, ""));
+             stripped_arg
+         })
+-        .map(|arg| format!("'{arg}'"))
++        .map(|arg| shell_quote(&arg))
+         .collect::<Vec<String>>()
+         .join(" ");
+ 

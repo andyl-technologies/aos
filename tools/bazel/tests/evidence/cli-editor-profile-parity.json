@@ -1,0 +1,137 @@
+{
+  "cargo_oracle": "/nix/store/95sa1nfwxv4c8wq13ycn1qc5ykgnx4lv-aos-bazel-aos-cli-tests-editor-checkpoint-editor-cargo-oracle",
+  "command": "nix-build --expr '(import ./tools/bazel/tests/aos-cli.nix {}).default.editor-parity' --no-out-link --max-jobs 2 --cores 4 --option substitute false",
+  "comparison": {
+    "aggregate_statistics_comparable": false,
+    "analysis": {
+      "complete_inference": false,
+      "exprs": {
+        "partial": 190,
+        "total": 1218273,
+        "unknown": 3260
+      },
+      "panics": 0,
+      "pats": {
+        "partial": 81,
+        "total": 244335,
+        "unknown": 48
+      }
+    },
+    "cargo_analysis": {
+      "complete_inference": false,
+      "exprs": {
+        "partial": 898,
+        "total": 2809162,
+        "unknown": 3670
+      },
+      "panics": 0,
+      "pats": {
+        "partial": 218,
+        "total": 510849,
+        "unknown": 246
+      }
+    },
+    "comparison_scope": [
+      "crates/cli/aos-cli"
+    ],
+    "diagnostic_multiplicity_comparable": false,
+    "roots": {
+      "crates/cli/aos-cli/src/apm.rs": [],
+      "crates/cli/aos-cli/src/apr.rs": [],
+      "crates/cli/aos-cli/src/boot_configuration.rs": [],
+      "crates/cli/aos-cli/src/lib.rs": [],
+      "crates/cli/aos-cli/src/main.rs": [],
+      "crates/cli/aos-cli/src/package_runtime.rs": [],
+      "crates/cli/aos-cli/src/provisioning_configuration_evaluator.rs": [],
+      "crates/cli/aos-cli/tests/ability_check_compat_cli.rs": [],
+      "crates/cli/aos-cli/tests/ability_inspect_cli.rs": [],
+      "crates/cli/aos-cli/tests/apm_profile_lifecycle_cli.rs": [],
+      "crates/cli/aos-cli/tests/apm_system_config_dir.rs": [],
+      "crates/cli/aos-cli/tests/apr_cache_cli.rs": [],
+      "crates/cli/aos-cli/tests/apr_create_host_identity_cli.rs": [],
+      "crates/cli/aos-cli/tests/apr_dry_run_cli.rs": [],
+      "crates/cli/aos-cli/tests/apr_keys_cli.rs": [],
+      "crates/cli/aos-cli/tests/apr_keys_generate_cli.rs": [],
+      "crates/cli/aos-cli/tests/apr_keys_register_cli.rs": [],
+      "crates/cli/aos-cli/tests/apr_origin_config_cli.rs": [],
+      "crates/cli/aos-cli/tests/apr_trust_cli.rs": [],
+      "crates/cli/aos-cli/tests/cli_separation.rs": [],
+      "crates/cli/aos-cli/tests/container_cli.rs": [],
+      "crates/cli/aos-cli/tests/container_cli_transfer.rs": [],
+      "crates/cli/aos-cli/tests/container_native_publication.rs": [],
+      "crates/cli/aos-cli/tests/documentation_cli.rs": [],
+      "crates/cli/aos-cli/tests/hub_retained_control_cli_contract.rs": [],
+      "crates/cli/aos-cli/tests/hub_topology_cutover.rs": [],
+      "crates/cli/aos-cli/tests/image_registry_cli.rs": [],
+      "crates/cli/aos-cli/tests/registry_staging_cli.rs": [],
+      "crates/cli/aos-cli/tests/release_inventory_nix_boundary.rs": [],
+      "crates/cli/aos-cli/tests/workspace_architecture.rs": []
+    }
+  },
+  "configuration": {
+    "execution_flags": [
+      "-Copt-level=s",
+      "-Cdebuginfo=0",
+      "-Cdebug-assertions=yes",
+      "-Coverflow-checks=yes"
+    ],
+    "path": "/nix/store/pk4451j6s85k448kglkws1yzbgwzb728-aos-bazel-configuration.json",
+    "target_flags": [
+      "-Copt-level=s",
+      "-Cdebuginfo=0",
+      "-Cdebug-assertions=yes",
+      "-Coverflow-checks=yes"
+    ]
+  },
+  "declaration_checkpoint": "7a1fbf7c0b",
+  "declaration_sha256": {
+    "tests/build/_bazel-aos-cli-editor.nix": "8c0aa221ee0cd8131d24c2a5776b495c8aeb375cea90bf4671474f6fd0b639d3",
+    "tests/build/_bazel-rust-family.nix": "0d0151075618eb7faa5ef62ca68252f71fbd0f443aeaf060b679db4331822cd2"
+  },
+  "diagnostic_counts": {
+    "bazel_diagnostics": 3579,
+    "cargo_selected_diagnostics": 2551,
+    "diagnostics": 606,
+    "unattributed_cargo_diagnostics": 0,
+    "unselected_cargo_diagnostics": 2481
+  },
+  "editor": "/nix/store/5bw38yai4qc919qz23qmqzbsnp36pgfn-aos-bazel-aos-cli-tests-editor-checkpoint-editor",
+  "editor_derivation": "/nix/store/6lwvf8nc3g4p91wvh5kacqdiqv4jsrcy-aos-bazel-aos-cli-tests-editor-checkpoint-editor.drv",
+  "editor_execution": {
+    "actions": 1229,
+    "cache_hits": 0,
+    "execution_sha256": "1b41c1e6788e7837387dac0195ff8a28eae8ff7b44e5792fccfa1302897fa313",
+    "mnemonics": {
+      "CargoBuildScriptRun": 61,
+      "ExtractCargoTomlEnvVars": 536,
+      "Rustc": 632
+    },
+    "runners": {
+      "linux-sandbox": 1229
+    }
+  },
+  "editor_recipe_sha256": "ea3bb71032e9d0c2bf1118d80d1cc1f1bc5ce40f70255a94f9f7281662adea9b",
+  "editor_test_dependency": "/nix/store/saqgnzglc10m6kvi1ccllcnvc6z41m01-aos-bazel-aos-cli-tests-editor-checkpoint-tests-1",
+  "editor_test_dependency_cases": {
+    "passed": 543,
+    "reports": 30
+  },
+  "limits": [
+    "Default CLI selected-package diagnostics only; fleet editor comparison is not repeated.",
+    "Diagnostic locations and types match after deduplication; raw multiplicities and whole-model statistics are not comparable. Both analyses retain incomplete inference.",
+    "The helper also executed its test dependency with the editor execution profile. This is not qualification of the ordinary optimization-zero test execution profile.",
+    "The source snapshot includes the pending publication-preview Rust change. Its application target compilation and publication fixture are separate checks.",
+    "Focused generator profile evidence is retained in cli-editor-execution-profile-enrollment.json; complete compiler, ABI, linker, production installation and performance remain independent gates.",
+    "The immutable source selection is conservative. Later unrelated evidence or tool edits can change workspace identities without changing the selected first-party sources."
+  ],
+  "output": "/nix/store/j4h6hyxzrpm5dc338g699ak0l8rrd3np-aos-bazel-aos-cli-tests-editor-checkpoint-editor-parity",
+  "parity_sha256": "fd22a6a1b091c2e6036a1805dd0d55ee7bfb995b515f2d62de80469527e36ea6",
+  "schema_version": 1,
+  "source_snapshot": {
+    "files": 17727,
+    "path": "/nix/store/qag2nkn9sxc9jajb5aggfbbh2mfah65g-aos-bazel-workspace",
+    "publication_preview_source_sha256": "a75a6dc799c6c28d0d16679132402120fc51f3fc5b42c8b8f0323e36dae261ff",
+    "source_map_sha256": "a007dd3c4fcf8661670aef9d416b6f16b1fc0a3a20af7ff88af1d40c2b8de59a"
+  },
+  "status": "PASS"
+}

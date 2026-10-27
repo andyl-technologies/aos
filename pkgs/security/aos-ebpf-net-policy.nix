@@ -13,8 +13,11 @@
   json-c,
   patchelf,
   buildPackages,
+  callPackage,
+  buildDriver ? "cargo",
 }: let
   version = "0.1.0";
+  withBuildDriver = selected: callPackage ./aos-ebpf-net-policy.nix {buildDriver = selected;};
   cargoDeps = aosWorkspaceVendor;
   targetTriple =
     {
@@ -66,8 +69,7 @@
     or (throw "aos-ebpf-net-policy: unsupported system '${stdenv.system}'");
   bpfSource = ./aos-ebpf-net-policy.bpf.c;
   loaderSource = ./aos-ebpf-net-policy.c;
-in
-  mkAosCargoPackage {
+  packageArguments = {
     platformSupport = {
       build = [
         {
@@ -161,20 +163,24 @@ in
       fi
     '';
 
-    passthru.evidenceSources = [
-      (builtins.path {
-        path = ./aos-ebpf-net-policy.nix;
-        name = "aos-ebpf-net-policy.nix";
-      })
-      (builtins.path {
-        path = bpfSource;
-        name = "aos-ebpf-net-policy.bpf.c";
-      })
-      (builtins.path {
-        path = loaderSource;
-        name = "aos-ebpf-net-policy.c";
-      })
-    ];
+    passthru = {
+      inherit withBuildDriver;
+      buildDriver = "cargo";
+      evidenceSources = [
+        (builtins.path {
+          path = ./aos-ebpf-net-policy.nix;
+          name = "aos-ebpf-net-policy.nix";
+        })
+        (builtins.path {
+          path = bpfSource;
+          name = "aos-ebpf-net-policy.bpf.c";
+        })
+        (builtins.path {
+          path = loaderSource;
+          name = "aos-ebpf-net-policy.c";
+        })
+      ];
+    };
 
     checks = {
       testing,
@@ -217,4 +223,15 @@ in
       description = "Load fleet-managed BPF network policy artifacts";
       license = "MIT";
     };
-  }
+  };
+  cargoPackage = mkAosCargoPackage packageArguments;
+in
+  assert builtins.elem buildDriver ["cargo" "bazel"];
+    if buildDriver == "bazel"
+    then
+      callPackage ./_aos-bpf-policy-bazel.nix {
+        inherit packageArguments;
+        cargoFallback = cargoPackage;
+        providerPackage = "aos-activation-bpf-network";
+      }
+    else cargoPackage

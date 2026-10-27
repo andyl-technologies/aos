@@ -145,12 +145,12 @@ pub fn render_robots(policy: CrawlPolicy, llms_txt_url: Option<&str>) -> String 
         CrawlPolicy::AllowNoAi => {
             out.push_str("User-agent: *\nAllow: /\n");
             for bot in AI_CRAWLERS {
-                let _ = write!(out, "\nUser-agent: {bot}\nDisallow: /\n");
+                let _ = writeln!(out, "\nUser-agent: {bot}\nDisallow: /");
             }
         }
     }
     if let Some(url) = llms_txt_url {
-        let _ = write!(out, "\n# llms.txt: {url}\n");
+        let _ = writeln!(out, "\n# llms.txt: {url}");
     }
     out
 }

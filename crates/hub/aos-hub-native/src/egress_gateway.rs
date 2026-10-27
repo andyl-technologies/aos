@@ -73,7 +73,6 @@ impl EgressGateway {
     }
 
     /// Returns the gateway router with a hard request-body limit.
-    #[must_use]
     pub fn router(self) -> axum::Router {
         axum::Router::new()
             .route("/healthz", get(|| async { StatusCode::NO_CONTENT }))

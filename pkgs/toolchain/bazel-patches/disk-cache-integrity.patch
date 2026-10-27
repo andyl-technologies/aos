@@ -1,0 +1,54 @@
+--- a/src/main/java/com/google/devtools/build/lib/remote/disk/DiskCacheClient.java
++++ b/src/main/java/com/google/devtools/build/lib/remote/disk/DiskCacheClient.java
+@@ -33,6 +33,7 @@
+ import com.google.devtools.build.lib.remote.common.MaybePathBacked;
+ import com.google.devtools.build.lib.remote.common.RemoteCacheClient.ActionKey;
+ import com.google.devtools.build.lib.remote.common.RemoteCacheClient.Blob;
++import com.google.devtools.build.lib.remote.util.DigestOutputStream;
+ import com.google.devtools.build.lib.remote.util.DigestUtil;
+ import com.google.devtools.build.lib.remote.util.Utils;
+ import com.google.devtools.build.lib.vfs.FileSystemUtils;
+@@ -70,6 +71,7 @@
+ 
+   private final ImmutableMap<Store, Path> storeRootMap;
+   private final Path tmpRoot;
++  private final DigestUtil digestUtil;
+ 
+   // Disk cache operations are almost entirely I/O-bound as digests are only computed as part of
+   // I/O operations, so using virtual threads is appropriate.
+@@ -79,6 +81,7 @@
+           Executors.newThreadPerTaskExecutor(Thread.ofVirtual().name("disk-cache-", 0).factory()));
+ 
+   public DiskCacheClient(Path root, DigestUtil digestUtil) throws IOException {
++    this.digestUtil = digestUtil;
+     Path fnRoot =
+         isOldStyleDigestFunction(digestUtil.getDigestFunction())
+             ? root
+@@ -150,9 +153,26 @@
+             // If the output stream is path-backed, the filesystem may be able to avoid copying the
+             // file.
+             FileSystemUtils.copyFile(path, outPath);
++            if (store == Store.CAS) {
++              // Hash materialized bytes rather than trusting cached filesystem metadata.
++              // Keep the copy fast path so reflink-capable filesystems avoid a full write.
++              DigestOutputStream digestOut =
++                  digestUtil.newDigestOutputStream(OutputStream.nullOutputStream());
++              try (InputStream in = outPath.getInputStream()) {
++                in.transferTo(digestOut);
++              }
++              Utils.verifyBlobContents(digest, digestOut.digest());
++            }
+           } else {
+             try (InputStream in = path.getInputStream()) {
+-              in.transferTo(out);
++              if (store == Store.CAS) {
++                DigestOutputStream digestOut = digestUtil.newDigestOutputStream(out);
++                in.transferTo(digestOut);
++                Utils.verifyBlobContents(digest, digestOut.digest());
++              } else {
++                // Action-cache keys hash actions, not the serialized ActionResult.
++                in.transferTo(out);
++              }
+             }
+           }
+           return null;

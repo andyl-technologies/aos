@@ -73,7 +73,7 @@ in
               inherit name;
               system = builtins.currentSystem;
               builder = "''${bash}/bin/bash";
-              args = [ "-c" "set -euo pipefail; test ! -e /etc/aos/packages/nix-daemon/nix.conf; ''${coreutils}/bin/mkdir \"$out\"; ''${coreutils}/bin/mkfifo /tmp/nix-daemon-fixture-release; read -r release < /tmp/nix-daemon-fixture-release; echo complete > \"$out/complete\"" ];
+              args = [ "-c" "set -euo pipefail; test ! -e /etc/packages/nix-daemon/nix.conf; ''${coreutils}/bin/mkdir \"$out\"; ''${coreutils}/bin/mkfifo /tmp/nix-daemon-fixture-release; read -r release < /tmp/nix-daemon-fixture-release; echo complete > \"$out/complete\"" ];
             }
             """)
             builder.succeed("chmod 0644 /tmp/retained-build.nix")
@@ -116,7 +116,7 @@ in
                 builder.succeed(f"grep -q '/aos-pkg-nix-daemon-builds.slice/' /proc/{worker_pid}/cgroup")
                 assert property("nix-daemon.service", "MainPID") != listener
                 assert_quota(1)
-                builder.succeed("grep -qx 'http-connections = 26' /etc/aos/packages/nix-daemon/nix.conf")
+                builder.succeed("grep -qx 'http-connections = 26' /etc/packages/nix-daemon/nix.conf")
 
                 apply(configuration(False, 'resources.cpuQuotaCores = 3; resources.memorySwapMax = "1G";', count=2))
                 assert_disabled()

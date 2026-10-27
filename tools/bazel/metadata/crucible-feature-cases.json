@@ -1,0 +1,135 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "name": "crucible default",
+      "package": "crucible-engine",
+      "no_default_features": false,
+      "requested_features": [],
+      "target": "//crates/crucible/crucible-engine:lib",
+      "expected_features": [
+        "default"
+      ],
+      "required_dependencies": [],
+      "forbidden_dependencies": [
+        "//crates/crucible/crucible-qemu-shmem:lib"
+      ]
+    },
+    {
+      "name": "crucible no default",
+      "package": "crucible-engine",
+      "no_default_features": true,
+      "requested_features": [],
+      "target": "//crates/crucible/crucible-engine:lib_no_default",
+      "expected_features": [],
+      "required_dependencies": [],
+      "forbidden_dependencies": [
+        "//crates/crucible/crucible-qemu-shmem:lib"
+      ]
+    },
+    {
+      "name": "crucible test-support",
+      "package": "crucible-engine",
+      "no_default_features": true,
+      "requested_features": [
+        "test-support"
+      ],
+      "target": "//crates/crucible/crucible-engine:lib_test_support_no_default",
+      "expected_features": [
+        "test-support"
+      ],
+      "required_dependencies": [],
+      "forbidden_dependencies": [
+        "//crates/crucible/crucible-qemu-shmem:lib"
+      ]
+    },
+    {
+      "name": "crucible test-double",
+      "package": "crucible-engine",
+      "no_default_features": true,
+      "requested_features": [
+        "test-double"
+      ],
+      "target": "//crates/crucible/crucible-engine:lib_test_double_no_default",
+      "expected_features": [
+        "test-double"
+      ],
+      "required_dependencies": [
+        "//crates/crucible/crucible-qemu-shmem:lib"
+      ],
+      "forbidden_dependencies": []
+    },
+    {
+      "name": "crucible all features",
+      "package": "crucible-engine",
+      "no_default_features": true,
+      "requested_features": [
+        "test-support",
+        "test-double"
+      ],
+      "target": "//crates/crucible/crucible-engine:lib_all_features_no_default",
+      "expected_features": [
+        "test-double",
+        "test-support"
+      ],
+      "required_dependencies": [
+        "//crates/crucible/crucible-qemu-shmem:lib"
+      ],
+      "forbidden_dependencies": []
+    },
+    {
+      "name": "crucible-qemu production",
+      "package": "crucible-qemu-host",
+      "no_default_features": true,
+      "requested_features": [],
+      "target": "//crates/crucible/crucible-qemu-host:lib_no_default",
+      "expected_features": [],
+      "required_dependencies": [
+        "//crates/crucible/crucible-engine:lib"
+      ],
+      "forbidden_dependencies": [
+        "//crates/crucible/crucible-engine:lib_test_double"
+      ]
+    },
+    {
+      "name": "crucible-qemu test support",
+      "package": "crucible-qemu-host",
+      "no_default_features": true,
+      "requested_features": [
+        "test-support"
+      ],
+      "target": "//crates/crucible/crucible-qemu-host:lib_test_support_no_default",
+      "expected_features": [
+        "test-support"
+      ],
+      "required_dependencies": [
+        "//crates/crucible/crucible-engine:lib_test_double"
+      ],
+      "forbidden_dependencies": [
+        "//crates/crucible/crucible-engine:lib"
+      ]
+    },
+    {
+      "name": "crucible-device default",
+      "package": "crucible-device",
+      "no_default_features": false,
+      "requested_features": [],
+      "target": "//crates/crucible/crucible-device:lib",
+      "expected_features": [
+        "default"
+      ],
+      "required_dependencies": [],
+      "forbidden_dependencies": []
+    },
+    {
+      "name": "crucible-device no default",
+      "package": "crucible-device",
+      "no_default_features": true,
+      "requested_features": [],
+      "target": "//crates/crucible/crucible-device:lib_no_default",
+      "expected_features": [],
+      "required_dependencies": [],
+      "forbidden_dependencies": []
+    }
+  ]
+}

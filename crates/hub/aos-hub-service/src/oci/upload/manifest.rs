@@ -31,6 +31,10 @@ use aos_hub_db::db::{
 
 const MAX_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
 
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Keeps parsed manifest documents inline without adding an allocation."
+)]
 enum ParsedDocument {
     Manifest(ImageManifest),
     Index(ImageIndex),
@@ -132,12 +136,9 @@ impl RpcService {
         };
         let mut admitted = false;
         for attempt in 0..20 {
-            match self.db.index_oci_repository_catalog(&catalog).await {
-                Ok(_) => {
-                    admitted = true;
-                    break;
-                }
-                Err(_) => {}
+            if self.db.index_oci_repository_catalog(&catalog).await.is_ok() {
+                admitted = true;
+                break;
             }
             if attempt < 19 {
                 aos_hub_model::clock::sleep(std::time::Duration::from_millis(5)).await;
@@ -155,6 +156,10 @@ impl RpcService {
         manifest_created_response(repository, &reference, digest)
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "HTTP handlers return the complete response without changing its public layout."
+    )]
     async fn stage_manifest_bytes(
         &self,
         registry_id: i64,
@@ -313,6 +318,10 @@ impl RpcService {
         }
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "HTTP handlers return the complete response without changing its public layout."
+    )]
     async fn complete_staged_manifest(
         &self,
         owner: &str,
@@ -534,6 +543,10 @@ impl RpcService {
         }
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "HTTP handlers return the complete response without changing its public layout."
+    )]
     async fn manifest_graph(
         &self,
         repository: &OciRepositoryRecord,
@@ -625,6 +638,10 @@ impl RpcService {
         Ok((root_digest, objects.into_values().collect()))
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "HTTP handlers return the complete response without changing its public layout."
+    )]
     async fn require_raw_dependency(
         &self,
         repository: &OciRepositoryRecord,
@@ -652,6 +669,10 @@ impl RpcService {
         Ok(())
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "HTTP handlers return the complete response without changing its public layout."
+    )]
     async fn require_graph_placement(
         &self,
         repository: &OciRepositoryRecord,
@@ -669,6 +690,10 @@ impl RpcService {
         Ok(())
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "HTTP handlers return the complete response without changing its public layout."
+    )]
     async fn repository_object_has_placement(
         &self,
         repository: &OciRepositoryRecord,
@@ -705,6 +730,10 @@ impl RpcService {
             })
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "HTTP handlers return the complete response without changing its public layout."
+    )]
     async fn read_image_config_projection(
         &self,
         repository: &OciRepositoryRecord,
@@ -768,6 +797,10 @@ impl RpcService {
         ))
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "HTTP handlers return the complete response without changing its public layout."
+    )]
     async fn read_layer_unpacked_size(
         &self,
         placement: &aos_hub_db::db::SurfacePlacementRecord,
@@ -801,6 +834,10 @@ impl RpcService {
         }
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "HTTP handlers return the complete response without changing its public layout."
+    )]
     async fn read_layer_range(
         &self,
         placement: &aos_hub_db::db::SurfacePlacementRecord,
@@ -916,6 +953,10 @@ fn document_descriptor(
     }
 }
 
+#[allow(
+    clippy::result_large_err,
+    reason = "HTTP handlers return the complete response without changing its public layout."
+)]
 fn merge_objects(
     objects: &mut BTreeMap<Sha256Digest, OciCatalogObject>,
     additional: Vec<OciCatalogObject>,
@@ -926,6 +967,10 @@ fn merge_objects(
     Ok(())
 }
 
+#[allow(
+    clippy::result_large_err,
+    reason = "HTTP handlers return the complete response without changing its public layout."
+)]
 fn insert_object(
     objects: &mut BTreeMap<Sha256Digest, OciCatalogObject>,
     object: OciCatalogObject,

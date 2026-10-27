@@ -1491,6 +1491,10 @@ impl Database {
         self.backend.checked_batch(&statements).await
     }
 }
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keep persisted identities and transaction inputs explicit in this existing API."
+)]
 fn release_upload_statements(
     upload_id: &str,
     writer_id: Option<&str>,

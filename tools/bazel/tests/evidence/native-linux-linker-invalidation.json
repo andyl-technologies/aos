@@ -1,0 +1,165 @@
+{
+  "checks": {
+    "combined_all": "/nix/store/7x0g1rhlzllb9zh27zllkmg8h3cijr7k-aos-bazel-checks",
+    "invalidation_matrix": "/nix/store/pdxiw3672i02pkg2zfmfy7qs55dsm37r-aos-bazel-cache-invalidation-matrix"
+  },
+  "configuration_sha256": {
+    "tests/build/_bazel-cache.nix": "f0425af25d61ea735da9a3b42687211ca8fdb9bf1db30c26becdd6fc6415e6c6",
+    "tests/build/_bazel-invalidation.nix": "9d6312fbfa83b933250670c6a6e48c9af6afda59aeaedd1b8eae282e25f5608d",
+    "tests/build/_bazel-replaced-linker.nix": "64a8c95e3dead5fb54d9a2af0c6c9a9aab3a3d45248f1c5bf824f90e3214f5e5",
+    "tools/bazel/tests/mutate_fixture.py": "1ccaddaba9d0eed112efacedfacab78968928b50af7817eed86903b39395bcb2",
+    "tools/bazel/tests/verify_invalidation.py": "8808c1d9dcad5678a4271b573a58653490d09447bbf2789451bf221910e0afcf"
+  },
+  "limitations": [
+    "The AOS compiler wrapper is copied with only its explicit binutils selection prefix replaced; the compiler binary and ordinary AOS flags remain unchanged.",
+    "The global realized toolchain identity conservatively invalidates all selected fixture actions.",
+    "Only native x86_64 Linux is qualified by this linker experiment.",
+    "Correctness checks do not establish performance budgets or authorize a production cutover."
+  ],
+  "linker": {
+    "baseline": "/nix/store/7j934fnhh5kj3al24yyyp1irnbq9ys33-aos-bazel-linker-closure-baseline-1",
+    "schema_version": 1,
+    "selected_linker_inputs": {
+      "baseline": {
+        "digest": {
+          "hash": "89ecdaac9a369130518e247132bc3b657d63ef163638e13c90c5a9051e3003bc",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "3883432"
+        },
+        "isTool": false,
+        "path": "external/+aos_tools_repository+aos_tools/binutils/bin/ld",
+        "symlinkTargetPath": ""
+      },
+      "changed": {
+        "digest": {
+          "hash": "b8d64347a47eb647b1e7f032b87dff6223f303c485cd1e7a077b3fe84989c123",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "197"
+        },
+        "isTool": false,
+        "path": "external/+aos_tools_repository+aos_tools/binutils/bin/ld",
+        "symlinkTargetPath": ""
+      }
+    },
+    "variants": {
+      "linker-closure": {
+        "actions": {
+          "cpp_app": {
+            "action_digest": {
+              "hash": "022cf6ec86c2befa7270309f72ee2654f37b052cb5cd22d6dbd8423d52664f79",
+              "hashFunctionName": "SHA256",
+              "sizeBytes": "146"
+            },
+            "cache_hit": false,
+            "fingerprint": "4ab3cbb6ccdfaaf54c5aaca2ae6e6bc986a807da47ad5db63fbe9f296d738a3b",
+            "runner": "linux-sandbox"
+          },
+          "cpp_library": {
+            "action_digest": {
+              "hash": "0608f5155595454c7924b4ecd7b35ca9b2d899c4ea6d22c24ea7b0dc6848a913",
+              "hashFunctionName": "SHA256",
+              "sizeBytes": "146"
+            },
+            "cache_hit": false,
+            "fingerprint": "1a1fb8e85493f5e8e54779077987ccb210779f2c8f98a91dad594404fd22240a",
+            "runner": "linux-sandbox"
+          },
+          "cpp_link": {
+            "action_digest": {
+              "hash": "489888045b00d5032c1eca0272d004a041e69c216f7048724cc08dfd8f26a139",
+              "hashFunctionName": "SHA256",
+              "sizeBytes": "146"
+            },
+            "cache_hit": false,
+            "fingerprint": "13cff0f08bdf458d0ca703c267738cfb2c9ef18ceab43afb8e9c06e70a610621",
+            "runner": "linux-sandbox"
+          },
+          "fixture_macro": {
+            "action_digest": {
+              "hash": "928f35e4fcd9aaa4a19aeccbaec10f764c3a4d1cc3a1e3da5ce841955e7682a2",
+              "hashFunctionName": "SHA256",
+              "sizeBytes": "146"
+            },
+            "cache_hit": false,
+            "fingerprint": "2e80c9a0fd604a2bbbb7badc5d0ccf07fda1fec0c510a3845582a1b4fc3ec412",
+            "runner": "linux-sandbox"
+          },
+          "generated": {
+            "action_digest": {
+              "hash": "6506ff0bc98724f12f742985ab2f769b8570356f094970c282f14d37087285f6",
+              "hashFunctionName": "SHA256",
+              "sizeBytes": "146"
+            },
+            "cache_hit": false,
+            "fingerprint": "688533caa892ffdf67a14d0f1d7757f3575fa9f3b8c23d6d87439f4fe4ca9df2",
+            "runner": "linux-sandbox"
+          },
+          "generated_library": {
+            "action_digest": {
+              "hash": "7767a5b7b807b6d922702778234c8c3a251e4f3aa4d4796ab908f28d5dffff24",
+              "hashFunctionName": "SHA256",
+              "sizeBytes": "146"
+            },
+            "cache_hit": false,
+            "fingerprint": "a676e651aed05c92f0b9f37c8112d58a4b58cf219ea6842770828e5f47138aba",
+            "runner": "linux-sandbox"
+          },
+          "native_app": {
+            "action_digest": {
+              "hash": "98b6d280f42e83bc93ebbb8ebf1b8a500bd57708e831f8fe8dc0d74b34932ee9",
+              "hashFunctionName": "SHA256",
+              "sizeBytes": "146"
+            },
+            "cache_hit": false,
+            "fingerprint": "1e30604650046f3f5829597869d4e0d3de783dcbb63c3262fc3c8be4e6512b9f",
+            "runner": "linux-sandbox"
+          },
+          "rust_app": {
+            "action_digest": {
+              "hash": "3467d4f503507da5d7b4669759665f6da7b1dc4121ef8ad90fbaddaa72684f48",
+              "hashFunctionName": "SHA256",
+              "sizeBytes": "146"
+            },
+            "cache_hit": false,
+            "fingerprint": "6d9515630248d3f45f0b928d9cea53e0f79cfb073f3880d4c35bfe96e42a6989",
+            "runner": "linux-sandbox"
+          },
+          "rust_library": {
+            "action_digest": {
+              "hash": "07cb037ae4157e131873c26bccfbc695b1d61e6fe1f97cf64d1daf4870488072",
+              "hashFunctionName": "SHA256",
+              "sizeBytes": "146"
+            },
+            "cache_hit": false,
+            "fingerprint": "77415a096d5060dde6304519c2bac6697c2ffb63d215d4924df98bd4f07df9bb",
+            "runner": "linux-sandbox"
+          }
+        },
+        "artifacts": {
+          "bin/cpp-fixture": "b67642d386b2d0401c5930bc0f0f417463569a887d80c15a8bc8313b19d9e516",
+          "bin/native-fixture": "7612673c8bda9fcf6ee781fc742604e20ad8879bf425de048233f18f0417156e",
+          "bin/rust-fixture": "f3e87f8679c4b325d1e4585dd9c34336d0bdcdfb1ba475a2bdcb911b42988893"
+        },
+        "build": "/nix/store/f7gy8gji32ihjj0rz0lcjwg9kh9xnh3q-aos-bazel-invalidation-linker-closure-1"
+      }
+    }
+  },
+  "matrix_cases": [
+    "cpp-source",
+    "feature",
+    "generated-input",
+    "generator-environment",
+    "header",
+    "link-flags",
+    "linker-closure",
+    "pgo",
+    "rust-cpu",
+    "rust-flags",
+    "rust-source",
+    "sysroot",
+    "tool-closure"
+  ],
+  "schema_version": 1,
+  "scope": "Native x86_64 Linux cache invalidation after replacing the actual selected linker executable",
+  "source_parent_commit": "b68370537a"
+}

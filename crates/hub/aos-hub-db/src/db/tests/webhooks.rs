@@ -159,7 +159,7 @@ async fn registry_delete_cas_commits_history_audit_and_outbox_once() {
         create_valid_write_credential(&db, binding_id, "secret://binding/retired/v1").await;
     let write_revision = db
         .create_binding_write_revision(&NewBindingWriteRevision {
-            binding_id: binding_id,
+            binding_id,
             write_credential_generation: write_generation,
             writes_supported: true,
             conditional_writes_supported: false,

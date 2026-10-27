@@ -1,0 +1,44 @@
+Backport the compiler-probe cleanup from the pinned Rustix 1.1.5 source.
+Preserve Rustix 1.1.4 probe decisions and library sources.
+
+--- a/build.rs
++++ b/build.rs
+@@ -195,6 +195,11 @@
+     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_USE_LIBC");
+     println!("cargo:rerun-if-env-changed=CARGO_FEATURE_RUSTC_DEP_OF_STD");
+     println!("cargo:rerun-if-env-changed=CARGO_CFG_MIRI");
++
++    // Backported from Rustix 1.1.5: discard the can_compile() probe artifact.
++    // The emitted metadata is not byte-reproducible, and a nondeterministic
++    // OUT_DIR destabilizes the cache keys of some build systems like Bazel.
++    let _ = std::fs::remove_file(probe_file());
+ }
+ 
+ fn use_static_assertions() -> bool {
+@@ -229,6 +234,10 @@
+         "#![allow(stable_features)]\n#![feature({})]",
+         feature
+     ))
++}
++
++fn probe_file() -> PathBuf {
++    PathBuf::from(var("OUT_DIR").unwrap()).join("rustix_test_can_compile")
+ }
+ 
+ /// Test whether the rustc at `var("RUSTC")` can compile the given code.
+@@ -254,14 +263,12 @@
+         std::process::Command::new(rustc)
+     };
+ 
+-    let out_dir = var("OUT_DIR").unwrap();
+-    let out_file = PathBuf::from(out_dir).join("rustix_test_can_compile");
+     cmd.arg("--crate-type=rlib") // Don't require `main`.
+         .arg("--emit=metadata") // Do as little as possible but still parse.
+         .arg("--target")
+         .arg(target)
+         .arg("-o")
+-        .arg(out_file)
++        .arg(probe_file())
+         .stdout(Stdio::null()); // We don't care about the output (only whether it builds or not)
+ 
+     // If Cargo wants to set RUSTFLAGS, use that.

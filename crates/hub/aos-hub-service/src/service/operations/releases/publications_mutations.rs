@@ -18,7 +18,7 @@ impl RpcService {
         };
         let documents = self
             .db
-            .native_documentation_at_release(registry_id, &release)
+            .native_documentation_at_release(registry_id, release)
             .await
             .map_err(RpcError::internal)?;
         let platform = if selected_platform.is_empty() {
@@ -45,7 +45,7 @@ impl RpcService {
                     &document.package,
                     &document.version,
                     &platform,
-                    Some(&release),
+                    Some(release),
                 )
                 .await
                 .map_err(RpcError::internal)?

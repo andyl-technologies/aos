@@ -257,36 +257,36 @@ fn store_backed_image_package() -> aos_registry_format::manifest::PackageToml {
     package
 }
 
-/// The central regression guard for the `closed_at`-axis design: closing and
-/// reopening a draft must leave `status = 'draft'`, so the indexer's
-/// `status='draft'`-guarded auto-merge still fires for a reopened change.
+// The central regression guard for the `closed_at`-axis design: closing and
+// reopening a draft must leave `status = 'draft'`, so the indexer's
+// `status='draft'`-guarded auto-merge still fires for a reopened change.
 
-/// M-3: a second approval of an already-approved `user_code` is a no-op —
-/// it returns `Ok(false)` and mints no second token. The atomic claim
-/// (`UPDATE … WHERE approved_by_user IS NULL`) stamps zero rows on the
-/// re-approval, so exactly one token exists per approval and no orphaned,
-/// un-pollable token is ever issued.
+// M-3: a second approval of an already-approved `user_code` is a no-op —
+// it returns `Ok(false)` and mints no second token. The atomic claim
+// (`UPDATE … WHERE approved_by_user IS NULL`) stamps zero rows on the
+// re-approval, so exactly one token exists per approval and no orphaned,
+// un-pollable token is ever issued.
 
-/// M-3: a denied grant cannot subsequently be approved (the claim's
-/// `denied = 0` predicate matches zero rows), so no token is minted.
+// M-3: a denied grant cannot subsequently be approved (the claim's
+// `denied = 0` predicate matches zero rows), so no token is minted.
 
-/// M-2: the transactional owner-safe revoke refuses to remove an org's last
-/// owner and rolls the delete back, but happily removes one of several
-/// owners.
+// M-2: the transactional owner-safe revoke refuses to remove an org's last
+// owner and rolls the delete back, but happily removes one of several
+// owners.
 
-/// Concurrent revokes serialize through the shared scope guard, so two
-/// writers targeting different owner rows cannot both orphan the scope.
+// Concurrent revokes serialize through the shared scope guard, so two
+// writers targeting different owner rows cannot both orphan the scope.
 
-/// Caller mutation keys make terminal-operation retries replayable without
-/// advancing the resource version twice.
+// Caller mutation keys make terminal-operation retries replayable without
+// advancing the resource version twice.
 
-/// M-2: the transactional owner-safe role change refuses to demote an org's
-/// last owner; demoting one of several owners is fine. Two sequential
-/// demotes still leave at least one owner (the second is rejected).
+// M-2: the transactional owner-safe role change refuses to demote an org's
+// last owner; demoting one of several owners is fine. Two sequential
+// demotes still leave at least one owner (the second is rejected).
 
-/// M-2: `delete_user` re-checks sole ownership inside its transaction, so a
-/// user who is the only owner of an org cannot be deleted; once another
-/// owner exists, the delete succeeds.
+// M-2: `delete_user` re-checks sole ownership inside its transaction, so a
+// user who is the only owner of an org cannot be deleted; once another
+// owner exists, the delete succeeds.
 
 /// Count the `owner`-role user grants at `scope`.
 async fn owner_count(db: &Database, scope: &str) -> usize {

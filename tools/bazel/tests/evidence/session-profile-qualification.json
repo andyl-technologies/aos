@@ -1,0 +1,571 @@
+{
+  "all_selected_source_bytes_match_checkout": true,
+  "cargo_profiles": {
+    "crucible_control_api": {
+      "debug-assertions": "on",
+      "embed-bitcode": "no",
+      "extra-filename": "-9b68bde024dbc6f2",
+      "incremental": "/build/target/debug/incremental",
+      "opt-level": "s",
+      "strip": "debuginfo"
+    },
+    "crucible_session": {
+      "debug-assertions": "on",
+      "embed-bitcode": "no",
+      "extra-filename": "-536402d7ae4cdc8e",
+      "incremental": "/build/target/debug/incremental",
+      "opt-level": "s",
+      "strip": "debuginfo"
+    },
+    "curve25519_dalek_derive": {
+      "embed-bitcode": "no",
+      "extra-filename": "-1ae089187b655dc8",
+      "strip": "debuginfo"
+    },
+    "serde_derive": {
+      "embed-bitcode": "no",
+      "extra-filename": "-818ab614bb7124bd",
+      "strip": "debuginfo"
+    },
+    "thiserror_impl": {
+      "embed-bitcode": "no",
+      "extra-filename": "-104cc3d2219ecb84",
+      "strip": "debuginfo"
+    },
+    "tokio_macros": {
+      "embed-bitcode": "no",
+      "extra-filename": "-d6b995f9e5f153a3",
+      "strip": "debuginfo"
+    },
+    "tracing_attributes": {
+      "embed-bitcode": "no",
+      "extra-filename": "-1e9f24154cd136f2",
+      "strip": "debuginfo"
+    },
+    "zerocopy_derive": {
+      "embed-bitcode": "no",
+      "extra-filename": "-04601d38d313ef28",
+      "strip": "debuginfo"
+    }
+  },
+  "cargo_trace_sha256": "a3aae779f9230250fc802986cd1fc5ff417a63641d90e38c5df1b3b9787d2cdc",
+  "checkout_parent": "4680c7f627eee837775f200473daf89eaa170e6e",
+  "command": "nix-build default.nix -A checks.build.bazel.session.all --no-out-link --max-jobs 2 --cores 4 --option substitute false",
+  "declarations_sha256": {
+    "tests/build/_bazel-rust-family.nix": "898d464ed7885211e148d2eca9b8a29f43a26cc3aafa20793eb6cd4f29cfff64",
+    "tests/build/_bazel-rust-test-profiles.nix": "fabfdd9201b9a2e45b9270e6b7ae0f90c7b3bfaee95dca602ce07bbbac4bf198",
+    "tests/build/_bazel-session.nix": "89ee66ca504684adb8adeb0e9f710fa34e3c0707cb80d8c1db9ba104a055cdf8"
+  },
+  "default": {
+    "doctests": {
+      "//crates/crucible/crucible-control-api:doc": {},
+      "//crates/crucible/crucible-session:doc": {}
+    },
+    "examples": [],
+    "first_party_features": {
+      "crucible-campaign": [
+        []
+      ],
+      "crucible-control-api": [
+        []
+      ],
+      "crucible-determinism": [
+        []
+      ],
+      "crucible-device": [
+        [
+          "default"
+        ]
+      ],
+      "crucible-engine": [
+        [
+          "default",
+          "test-double",
+          "test-support"
+        ]
+      ],
+      "crucible-qemu-protocol": [
+        []
+      ],
+      "crucible-qemu-shmem": [
+        []
+      ],
+      "crucible-session": [
+        [
+          "default"
+        ]
+      ],
+      "crucible-store": [
+        []
+      ]
+    },
+    "ignored_cases": 0,
+    "libtest_reports": 9,
+    "parity_sha256": "c28701d1b39225657c178b7a811216c32691e9497ba201e97ca0948af5721987",
+    "test_cases": 132,
+    "upstream_feature_identities": 111
+  },
+  "editor": {
+    "aggregate_statistics_comparable": false,
+    "analysis": {
+      "complete_inference": false,
+      "exprs": {
+        "partial": 0,
+        "total": 57819,
+        "unknown": 1
+      },
+      "panics": 0,
+      "pats": {
+        "partial": 0,
+        "total": 11103,
+        "unknown": 0
+      }
+    },
+    "comparison_scope": [
+      "crates/crucible/crucible-control-api",
+      "crates/crucible/crucible-session"
+    ],
+    "diagnostic_multiplicity_comparable": false,
+    "diagnostics": [
+      [
+        "crates/crucible/crucible-control-api/src/lifecycle/session_contract.rs",
+        "876:20",
+        "876:22",
+        "type",
+        "{unknown}"
+      ]
+    ],
+    "roots": {
+      "crates/crucible/crucible-control-api/src/lib.rs": [],
+      "crates/crucible/crucible-control-api/tests/gate_abi_conformance.rs": [],
+      "crates/crucible/crucible-control-api/tests/gate_open_set_payload.rs": [],
+      "crates/crucible/crucible-control-api/tests/gate_session_mapping.rs": [],
+      "crates/crucible/crucible-session/src/lib.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-session/tests/event_log_stream.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-session/tests/gate_control_responsive.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-session/tests/gate_exploration_fork.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-session/tests/gate_exploration_lifecycle.rs": [
+        "default"
+      ]
+    },
+    "unattributed_cargo_diagnostics": []
+  },
+  "editor_cargo_trace_sha256": "c7c44519013640c12a1d91f43b8f2e4c31fc3ab883ab0b16dff857a51a9c8b5b",
+  "editor_flags": {
+    "execution": [
+      "-Copt-level=s",
+      "-Cdebuginfo=0",
+      "-Cdebug-assertions=yes",
+      "-Coverflow-checks=yes"
+    ],
+    "target": [
+      "-Copt-level=s",
+      "-Cdebuginfo=0",
+      "-Cdebug-assertions=yes",
+      "-Coverflow-checks=yes"
+    ]
+  },
+  "evidence_sha256": {
+    "default.json": "c28701d1b39225657c178b7a811216c32691e9497ba201e97ca0948af5721987",
+    "editor-parity.json": "7c57feaf449ec3983bfa99d78ad8fac25f0e9665ae6501f57d48a1f75a033ca1",
+    "execution-profiles.json": "af725f405f15c47c1c5b3ceadb6ed282d41e8bc793a5d71196da54ced102929e",
+    "inventory.json": "45ada8032e21f5a81c40aa2b9e95cff50c18a75aa07e1ffc2e789e2402cddf84"
+  },
+  "family": "session",
+  "limits": [
+    "Native x86_64 ordinary tests and existing feature variants, Clippy, documentation, formatting and selected-package editor comparison only.",
+    "Selected editor diagnostic identities match; raw multiplicity and aggregate Cargo statistics are not comparable across the differently sized models. Inference remains incomplete as recorded.",
+    "The selected test and macro audit checks scalar profiles against actual Cargo invocations; it does not establish complete compiler defaults, ABI, native libraries or linker equivalence.",
+    "Ordinary aos-dev enrollment, shared-cache qualification, foreign platforms, production cutover and performance acceptance remain separate."
+  ],
+  "paths": {
+    "all": "/nix/store/45qxxshjs9h1r885xczlzlxsc0927p0c-aos-bazel-session-qualified-checks",
+    "cargo": "/nix/store/fm0gacq225n298bgadl2w5mnmbibc5kh-aos-bazel-session-cargo-oracle-1",
+    "developer-build": "/nix/store/iqwg4m6wbs2igr3xrzvab0wb7bxcld7p-aos-bazel-session-developer-tools-1",
+    "developer-tests": "/nix/store/f2v8fbyj15akyg1k8mwd6ra8iqqb8mds-aos-bazel-session-format-1",
+    "editor": "/nix/store/734k0x1qlx0zjr9iadri7jaqgami4nrz-aos-bazel-session-editor",
+    "editor-cargo-oracle": "/nix/store/w6vxg0mrsrb39h339jy293jakzn1bgpk-aos-bazel-session-editor-cargo-oracle",
+    "editor-parity": "/nix/store/3s14phi91z9sf659yym66k2ya3zjkccc-aos-bazel-session-editor-parity",
+    "editorWorkspace": {
+      "configuration": "/nix/store/0nvi6cicpa1p4q00586ihm0nrxr4hh3m-aos-bazel-configuration.json",
+      "source": "/nix/store/6mz3a9lh29bgjjfw73i5m2508ip5bjww-aos-bazel-workspace"
+    },
+    "execution-profiles": "/nix/store/xgp470x74nkkbd0psf79spfs19jcqypz-aos-bazel-session-execution-profiles",
+    "tests": "/nix/store/i0i4smjkyxzrpsn9nssaj5f5hciwcndf-aos-bazel-session-tests-1",
+    "workspace": {
+      "configuration": "/nix/store/wvkvbck2n0ry7y1qks3ssdqilgba8rvl-aos-bazel-configuration.json",
+      "source": "/nix/store/6mz3a9lh29bgjjfw73i5m2508ip5bjww-aos-bazel-workspace"
+    }
+  },
+  "profiles": {
+    "//crates/crucible/crucible-control-api:unit_binary": {
+      "cacheHit": false,
+      "compiler_options": {
+        "debug-assertions": "yes",
+        "debuginfo": "0",
+        "embed-bitcode": "no",
+        "extra-filename": "-3455944325",
+        "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+        "opt-level": "s",
+        "overflow-checks": "yes",
+        "strip": "none"
+      },
+      "exitCode": 0,
+      "runner": "linux-sandbox"
+    },
+    "//crates/crucible/crucible-session:unit_binary": {
+      "cacheHit": false,
+      "compiler_options": {
+        "debug-assertions": "yes",
+        "debuginfo": "0",
+        "embed-bitcode": "no",
+        "extra-filename": "-2360748037",
+        "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+        "opt-level": "s",
+        "overflow-checks": "yes",
+        "strip": "none"
+      },
+      "exitCode": 0,
+      "runner": "linux-sandbox"
+    },
+    "@@+aos_tools_repository+aos_session_crates__curve25519-dalek-derive-0.1.1//:curve25519_dalek_derive": {
+      "cacheHit": false,
+      "compiler_options": {
+        "debug-assertions": "yes",
+        "debuginfo": "0",
+        "embed-bitcode": "no",
+        "extra-filename": "-1460160140",
+        "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+        "opt-level": "0",
+        "overflow-checks": "yes",
+        "strip": "debuginfo"
+      },
+      "exitCode": 0,
+      "runner": "linux-sandbox"
+    },
+    "@@+aos_tools_repository+aos_session_crates__serde_derive-1.0.228//:serde_derive": {
+      "cacheHit": false,
+      "compiler_options": {
+        "debug-assertions": "yes",
+        "debuginfo": "0",
+        "embed-bitcode": "no",
+        "extra-filename": "-551574360",
+        "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+        "opt-level": "0",
+        "overflow-checks": "yes",
+        "strip": "debuginfo"
+      },
+      "exitCode": 0,
+      "runner": "linux-sandbox"
+    },
+    "@@+aos_tools_repository+aos_session_crates__thiserror-impl-2.0.18//:thiserror_impl": {
+      "cacheHit": false,
+      "compiler_options": {
+        "debug-assertions": "yes",
+        "debuginfo": "0",
+        "embed-bitcode": "no",
+        "extra-filename": "-941925940",
+        "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+        "opt-level": "0",
+        "overflow-checks": "yes",
+        "strip": "debuginfo"
+      },
+      "exitCode": 0,
+      "runner": "linux-sandbox"
+    },
+    "@@+aos_tools_repository+aos_session_crates__tokio-macros-2.7.0//:tokio_macros": {
+      "cacheHit": false,
+      "compiler_options": {
+        "debug-assertions": "yes",
+        "debuginfo": "0",
+        "embed-bitcode": "no",
+        "extra-filename": "-641565007",
+        "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+        "opt-level": "0",
+        "overflow-checks": "yes",
+        "strip": "debuginfo"
+      },
+      "exitCode": 0,
+      "runner": "linux-sandbox"
+    },
+    "@@+aos_tools_repository+aos_session_crates__tracing-attributes-0.1.31//:tracing_attributes": {
+      "cacheHit": false,
+      "compiler_options": {
+        "debug-assertions": "yes",
+        "debuginfo": "0",
+        "embed-bitcode": "no",
+        "extra-filename": "-2688037895",
+        "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+        "opt-level": "0",
+        "overflow-checks": "yes",
+        "strip": "debuginfo"
+      },
+      "exitCode": 0,
+      "runner": "linux-sandbox"
+    },
+    "@@+aos_tools_repository+aos_session_crates__zerocopy-derive-0.8.49//:zerocopy_derive": {
+      "cacheHit": false,
+      "compiler_options": {
+        "debug-assertions": "yes",
+        "debuginfo": "0",
+        "embed-bitcode": "no",
+        "extra-filename": "-2122728572",
+        "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+        "opt-level": "0",
+        "overflow-checks": "yes",
+        "strip": "debuginfo"
+      },
+      "exitCode": 0,
+      "runner": "linux-sandbox"
+    }
+  },
+  "qualified_checks": "/nix/store/45qxxshjs9h1r885xczlzlxsc0927p0c-aos-bazel-session-qualified-checks",
+  "runs": {
+    "developer-build": {
+      "action_cache_hits": 0,
+      "action_mnemonics": {
+        "CargoBuildScriptRun": 19,
+        "Clippy": 11,
+        "ExtractCargoTomlEnvVars": 127,
+        "Rustc": 143,
+        "Rustdoc": 2
+      },
+      "build": "/nix/store/iqwg4m6wbs2igr3xrzvab0wb7bxcld7p-aos-bazel-session-developer-tools-1",
+      "executed_actions": 302,
+      "execution_sha256": "45e5d21aba820ca1339e86b558b38dc5072dd55a37d89effe65d1dd12ae9038b"
+    },
+    "developer-tests": {
+      "action_cache_hits": 0,
+      "action_mnemonics": {
+        "Rustc": 5,
+        "TestRunner": 4
+      },
+      "build": "/nix/store/f2v8fbyj15akyg1k8mwd6ra8iqqb8mds-aos-bazel-session-format-1",
+      "executed_actions": 9,
+      "execution_sha256": "6c15e3c335f75babd3873b11c1899ce9d430f7963ba3bb588f8b163c00cf6eea"
+    },
+    "editor": {
+      "action_cache_hits": 0,
+      "action_mnemonics": {
+        "CargoBuildScriptRun": 19,
+        "ExtractCargoTomlEnvVars": 127,
+        "Rustc": 152
+      },
+      "executed_actions": 298,
+      "execution_sha256": "791ef52fd9ba8ab6d6a21ecca23dc0057b343bf765ea2d97d02ade7621c0b121"
+    },
+    "tests": {
+      "action_cache_hits": 0,
+      "action_mnemonics": {
+        "CargoBuildScriptRun": 19,
+        "ExtractCargoTomlEnvVars": 127,
+        "Rustc": 154,
+        "RustdocTestWriter": 2,
+        "TestRunner": 13
+      },
+      "build": "/nix/store/i0i4smjkyxzrpsn9nssaj5f5hciwcndf-aos-bazel-session-tests-1",
+      "executed_actions": 315,
+      "execution_sha256": "5f57da6e3fc1e81fed461f1a8d4d226e203eae3cfe3a7506b24998a24d777811"
+    },
+    "variant-all-features": {
+      "action_cache_hits": 0,
+      "action_mnemonics": {
+        "CargoBuildScriptRun": 19,
+        "ExtractCargoTomlEnvVars": 127,
+        "Rustc": 154,
+        "RustdocTestWriter": 2,
+        "TestRunner": 13
+      },
+      "executed_actions": 315,
+      "execution_sha256": "3d6d5c6b5e644d0686a947705b47f3f1b66d795e206efda8e88ba61f0a0bcbde"
+    },
+    "variant-test-double": {
+      "action_cache_hits": 0,
+      "action_mnemonics": {
+        "CargoBuildScriptRun": 19,
+        "ExtractCargoTomlEnvVars": 127,
+        "Rustc": 154,
+        "RustdocTestWriter": 2,
+        "TestRunner": 13
+      },
+      "executed_actions": 315,
+      "execution_sha256": "67da7e2766d052354884dcf02566144cf17fc27f47c9d8a1fd45a8c8641e9b78"
+    },
+    "variant-test-support": {
+      "action_cache_hits": 0,
+      "action_mnemonics": {
+        "CargoBuildScriptRun": 19,
+        "ExtractCargoTomlEnvVars": 127,
+        "Rustc": 154,
+        "RustdocTestWriter": 2,
+        "TestRunner": 13
+      },
+      "executed_actions": 315,
+      "execution_sha256": "e2aa72b10eed28b7f88981075558df441a5b91c4cc88cd7ccb244718cd9fdbea"
+    }
+  },
+  "schema_version": 1,
+  "selected_source_files": 840,
+  "status": "PASS",
+  "variants": {
+    "all-features": {
+      "doctests": {
+        "//crates/crucible/crucible-control-api:doc_all_features": {},
+        "//crates/crucible/crucible-session:doc_all_features": {}
+      },
+      "examples": [],
+      "first_party_features": {
+        "crucible-campaign": [
+          []
+        ],
+        "crucible-control-api": [
+          []
+        ],
+        "crucible-determinism": [
+          []
+        ],
+        "crucible-device": [
+          [
+            "default"
+          ]
+        ],
+        "crucible-engine": [
+          [
+            "default",
+            "test-double",
+            "test-support"
+          ]
+        ],
+        "crucible-qemu-protocol": [
+          []
+        ],
+        "crucible-qemu-shmem": [
+          []
+        ],
+        "crucible-session": [
+          [
+            "default",
+            "test-double",
+            "test-support"
+          ]
+        ],
+        "crucible-store": [
+          []
+        ]
+      },
+      "ignored_cases": 0,
+      "libtest_reports": 9,
+      "parity_sha256": "a2c9a8890cba01726acfb2af924a20ac12928bac34989214514337a7463cd6ea",
+      "test_cases": 132,
+      "upstream_feature_identities": 111
+    },
+    "test-double": {
+      "doctests": {
+        "//crates/crucible/crucible-control-api:doc_test_double": {},
+        "//crates/crucible/crucible-session:doc_test_double": {}
+      },
+      "examples": [],
+      "first_party_features": {
+        "crucible-campaign": [
+          []
+        ],
+        "crucible-control-api": [
+          []
+        ],
+        "crucible-determinism": [
+          []
+        ],
+        "crucible-device": [
+          [
+            "default"
+          ]
+        ],
+        "crucible-engine": [
+          [
+            "default",
+            "test-double",
+            "test-support"
+          ]
+        ],
+        "crucible-qemu-protocol": [
+          []
+        ],
+        "crucible-qemu-shmem": [
+          []
+        ],
+        "crucible-session": [
+          [
+            "default",
+            "test-double"
+          ]
+        ],
+        "crucible-store": [
+          []
+        ]
+      },
+      "ignored_cases": 0,
+      "libtest_reports": 9,
+      "parity_sha256": "11577781abd0b4465afd5ef39665d802ca71ca813badb911ccfaddebc555c152",
+      "test_cases": 132,
+      "upstream_feature_identities": 111
+    },
+    "test-support": {
+      "doctests": {
+        "//crates/crucible/crucible-control-api:doc_test_support": {},
+        "//crates/crucible/crucible-session:doc_test_support": {}
+      },
+      "examples": [],
+      "first_party_features": {
+        "crucible-campaign": [
+          []
+        ],
+        "crucible-control-api": [
+          []
+        ],
+        "crucible-determinism": [
+          []
+        ],
+        "crucible-device": [
+          [
+            "default"
+          ]
+        ],
+        "crucible-engine": [
+          [
+            "default",
+            "test-double",
+            "test-support"
+          ]
+        ],
+        "crucible-qemu-protocol": [
+          []
+        ],
+        "crucible-qemu-shmem": [
+          []
+        ],
+        "crucible-session": [
+          [
+            "default",
+            "test-support"
+          ]
+        ],
+        "crucible-store": [
+          []
+        ]
+      },
+      "ignored_cases": 0,
+      "libtest_reports": 9,
+      "parity_sha256": "eadfa032d41629a067d377e4b0f37d1b1c99cc0a335294d34cb2863190aca7b7",
+      "test_cases": 132,
+      "upstream_feature_identities": 111
+    }
+  }
+}

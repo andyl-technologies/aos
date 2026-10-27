@@ -1,0 +1,36 @@
+{
+  "command": "nix-build -A checks.rust.aos-test-targets --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "comparison_base_commit": "5dccc400af",
+  "compiled_changed_rust_inputs_sha256": {
+    "crates/aos/boot/aos-boot-runtime/src/boot_platform.rs": "58bad69fee973557998eed3c68c08a723339e3f4926083cea4129eb1b2418de8",
+    "crates/aos/boot/aos-boot-runtime/src/boot_platform/success.rs": "7385662af9fccf1aac46e2a0f526fc41b547fa772f1b59187024d58f16802f7c",
+    "crates/aos/boot/aos-boot-runtime/src/boot_storage.rs": "847b3a0d561a43d3f3e396909be204dc0c4ce48c73c92090c9d43825b3d8cf6e",
+    "crates/aos/boot/aos-boot-runtime/src/image_profile.rs": "63039f7e00953cb9afb25c208ca65f24d63d1b36b5b15d8f5eceda10551e6294",
+    "crates/aos/boot/aos-boot-runtime/src/image_stage.rs": "d19a15c5a7df0ba3cbd4c7df18c74e3b51afed6ebebb7bdb7122166f20bc5f0e",
+    "crates/aos/boot/aos-boot-runtime/src/image_stage/copy_up.rs": "0e251dab1964a4b1155c75fc0a080e1fe705500bde91a76efe0cf475113f3620",
+    "crates/aos/boot/aos-boot-runtime/src/initrd_archive.rs": "86e4149ac6100d4e4b74d891905d7382c6fc1fbfb18a8224ba0c8ec078bc355d",
+    "crates/aos/boot/aos-boot-runtime/src/initrd_store.rs": "5215ed6c945871c669b3c1bb49d9335d580c3daf7d907260445d99b2b0cfa1d3",
+    "crates/aos/boot/aos-boot-runtime/src/measurement_index.rs": "90080d72dfa3fa55036ae2befd14fa969a4870de53108f30241af011488f458b",
+    "crates/aos/boot/aos-boot-runtime/src/preparation.rs": "b8a2c8ea53ebfbaafdee1e2f2789f1fa94d81b18252af7b35298adb3bf051599",
+    "crates/aos/boot/aos-boot-runtime/src/process.rs": "70d539ff0fbe96a17354a9656738dd82c6e2b7c91892b5022a6e079a4b17d2f1",
+    "crates/aos/boot/aos-boot-runtime/src/recovery.rs": "677f16edb2201b045aced86eb9a97b3fe426d20d25815ecd64e531697b6b9f6f",
+    "crates/aos/boot/aos-configuration-image/src/lib.rs": "e70da4d6a57e0b42db8f4da31fb81939527886cf39d49a7e0f251bbef4879424",
+    "crates/aos/boot/aos-configuration-image/src/model.rs": "5d742a622c8c3c6e2df5a93ee5f58f9974d2caa1864c3c8e30b2f056fd7aba58",
+    "crates/aos/boot/aos-platform-metadata/src/http.rs": "c25a3b97ca6cbb7c3259f05bc0391813ec72e81275b935115f258206e05099a3",
+    "crates/aos/boot/aos-platform-metadata/src/lib.rs": "ed48b0cc43f856b73b8eb1d9233e3476c245b9315f78084078717480c0ef4215",
+    "crates/aos/boot/aos-platform-metadata/src/mount.rs": "16346519ea73f68f757eb29824268d240cda42a210301a638aed133ba30d45de",
+    "crates/aos/boot/aos-platform-metadata/src/tests.rs": "0c58c083a7a08ba09595e52bc6a317d668c79c65c6386fe594dfe8c25a5bbd22",
+    "crates/aos/boot/aos-platform-metadata/src/trust.rs": "b4f108199000e047a573879ece7028547a1fbafa4cec3ab7a51c423b6057e8d8"
+  },
+  "derivation": "/nix/store/9pfg8yf52d3pdqjg1jhy3ql5cx2b6fnj-aos-test-targets-0.1.0.drv",
+  "derivation_sha256": "8db6dc494796a2b2f2a3d141f60b6b65c3ff3936a33329840c8a630bbaa1f580",
+  "limits": [
+    "This gate compiles application unit and integration targets without executing them. Native Bazel/Cargo execution is retained separately.",
+    "The frozen source contains all nineteen boot conversion Rust edits, including scoped clock and test assertion exceptions and equivalent EFI/conditional expressions. Later conversion work is not qualified by this checkpoint."
+  ],
+  "log_sha256": "3af5721a859061c437d9d3602396a717ad2f02546b8ff737184c9185c31e76eb",
+  "output": "/nix/store/3fqlq3wxwwrr21m2nb5ym01cb8x7843z-aos-test-targets-0.1.0",
+  "schema_version": 1,
+  "source": "/nix/store/5k8c4wqfqvqys66xpcsh02sblc3av068-aos-workspace-src",
+  "status": "Required workspace Rust application unit and integration targets compiled successfully"
+}

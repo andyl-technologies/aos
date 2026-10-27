@@ -279,6 +279,7 @@ fn retryable(error: &io::Error) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::super::{Action, Boundary};
     use super::*;

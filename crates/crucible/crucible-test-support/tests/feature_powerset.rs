@@ -12,6 +12,10 @@ use toml::Value;
 
 #[test]
 fn crucible_features_resolve_for_declared_powersets() -> Result<(), Box<dyn Error>> {
+    if bazel_feature_audit("cases")? {
+        return Ok(());
+    }
+
     let workspace = workspace_manifest();
     let Some(workspace_parent) = workspace.parent() else {
         return Err("workspace manifest has no parent directory".into());
@@ -24,7 +28,9 @@ fn crucible_features_resolve_for_declared_powersets() -> Result<(), Box<dyn Erro
         .join("feature-powerset");
 
     for case in feature_cases() {
-        let mut command = Command::new(env!("CARGO"));
+        let cargo =
+            option_env!("CARGO").ok_or("Cargo feature oracle has no declared Cargo tool")?;
+        let mut command = Command::new(cargo);
         command
             .arg("check")
             .arg("--manifest-path")
@@ -57,6 +63,10 @@ fn crucible_features_resolve_for_declared_powersets() -> Result<(), Box<dyn Erro
 
 #[test]
 fn crucible_manifest_feature_layout_is_explicit() -> Result<(), Box<dyn Error>> {
+    if bazel_feature_audit("layout")? {
+        return Ok(());
+    }
+
     let manifests = load_crucible_manifests()?;
 
     assert_features(
@@ -83,6 +93,10 @@ fn crucible_manifest_feature_layout_is_explicit() -> Result<(), Box<dyn Error>> 
 
 #[test]
 fn crucible_guest_is_not_a_default_core_dependency() -> Result<(), Box<dyn Error>> {
+    if bazel_feature_audit("guest")? {
+        return Ok(());
+    }
+
     let manifests = load_crucible_manifests()?;
     let findings = default_guest_dependency_findings(&manifests, &core_packages());
 
@@ -97,6 +111,10 @@ fn crucible_guest_is_not_a_default_core_dependency() -> Result<(), Box<dyn Error
 
 #[test]
 fn shipped_crates_do_not_enable_the_test_double() -> Result<(), Box<dyn Error>> {
+    if bazel_feature_audit("test-double")? {
+        return Ok(());
+    }
+
     let manifests = load_crucible_manifests()?;
     let findings = production_test_double_dependency_findings(&manifests, &shipped_packages());
 
@@ -107,6 +125,53 @@ fn shipped_crates_do_not_enable_the_test_double() -> Result<(), Box<dyn Error>> 
     );
 
     Ok(())
+}
+
+// The declared repository contains real feature compilations and live policy
+// checks. Revalidate its complete Rust source binding against these runfiles;
+// absent or stale evidence must fail rather than fall back to Cargo.
+fn bazel_feature_audit(section: &str) -> Result<bool, Box<dyn Error>> {
+    let Some(evidence) = std::env::var_os("AOS_FEATURE_EVIDENCE") else {
+        return Ok(false);
+    };
+    let python = std::env::var_os("AOS_FEATURE_AUDIT_PYTHON")
+        .ok_or("Bazel feature audit has no declared Python tool")?;
+    let script = std::env::var_os("AOS_FEATURE_AUDIT_SCRIPT")
+        .ok_or("Bazel feature audit has no declared verification script")?;
+
+    let mut command = Command::new(python);
+    command
+        .arg(script)
+        .arg("verify")
+        .arg("--evidence")
+        .arg(evidence)
+        .arg("--root")
+        .arg(workspace::repository_root())
+        .arg("--section")
+        .arg(section)
+        .env("PYTHONDONTWRITEBYTECODE", "1");
+    for case in feature_cases() {
+        let mut features = case.features.to_vec();
+        if !case.no_default_features {
+            features.push("default");
+        }
+        features.sort_unstable();
+        command
+            .arg("--case")
+            .arg(format!("{}={}", case.name, features.join(",")));
+    }
+
+    let output = command.output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "Bazel feature audit `{section}` failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        )
+        .into());
+    }
+
+    Ok(true)
 }
 
 #[test]

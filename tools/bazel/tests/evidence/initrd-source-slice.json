@@ -1,0 +1,498 @@
+{
+  "boot_tools": {
+    "closure_manifest": {
+      "path": "/nix/store/q51xcm78af5my98myryxkkhnjrdpcq1v-aos-bazel-boot-tools-1/closure.json",
+      "sha256": "f71b806a1e9f4e021a7f02a70e265e294dbdae8c4c721964fe130f85c3afb4ae"
+    },
+    "path": "/nix/store/q51xcm78af5my98myryxkkhnjrdpcq1v-aos-bazel-boot-tools-1",
+    "selection": "Existing source-built immutable boot-tool snapshot; explicitly passed with --arg bootTools. Current runtime-graph installation is not implied."
+  },
+  "checked_inventory": {
+    "path": "tools/bazel/metadata/initrd-preparation-inventory.json",
+    "sha256": "432cd152c7791b512d78f0e80b50b0c1aaaf96ec227615bf233aca017e920bcb"
+  },
+  "configured_roots": [
+    "//crates/boot/aos-boot-runtime:standalone_package",
+    "//crates/boot/aos-boot-runtime:standalone_production_license_closure",
+    "//crates/boot/aos-boot-runtime:standalone_unit"
+  ],
+  "configured_target_count": 26,
+  "entry_point": "tools/bazel/tests/initrd-source.nix",
+  "first_party_arguments_environments_inputs_and_outputs_match": true,
+  "implementation": {
+    "path": "crates/boot/aos-boot-runtime/standalone/initrd_preparation.rs",
+    "sha256": "2b80691d80021119ea16aa925743bf7695b0bd902fadc2323961cfb9354ab826"
+  },
+  "inventories_match": true,
+  "limits": [
+    "No installed helper, runtime-closure, successful boot transaction, VM, foreign-platform, performance, default-cutover, or full RFC completion claim.",
+    "The native package selector and its comparison against the current runtime graph require separate qualification.",
+    "The conservative snapshot intentionally includes Cargo metadata; the precise compiled snapshot contains none and uses only the standalone first-party Rust file."
+  ],
+  "package_payload_bytes_match": true,
+  "policy_check": {
+    "derivation": "/nix/store/jspfi5n4azxwslprypvsz2l6zi3820am-aos-bazel-policy-checks.drv",
+    "output": "/nix/store/hgphxjhi4m5h5pa66ai26rk00as0m06k-aos-bazel-policy-checks",
+    "passed_tests": 433
+  },
+  "records": {
+    "conservative": {
+      "cache_hits": 0,
+      "cargo_files_in_workspace": [
+        "crates/boot/aos-boot-runtime/Cargo.toml",
+        "third_party/rust/activation-crucible-tests/Cargo.lock",
+        "third_party/rust/qemu-host/Cargo.lock",
+        "third_party/rust/hub-console/Cargo.lock",
+        "third_party/rust/quota/Cargo.lock",
+        "third_party/rust/hub-model-tests/Cargo.lock",
+        "third_party/rust/package-manager/Cargo.lock",
+        "third_party/rust/qemu-gpl-plugin-tests/Cargo.lock",
+        "third_party/rust/hub-worker-wasm/Cargo.lock",
+        "third_party/rust/native-bindings/Cargo.lock",
+        "third_party/rust/core/Cargo.lock",
+        "third_party/rust/hub-service-all-features/Cargo.lock",
+        "third_party/rust/hub-worker-tests/Cargo.lock",
+        "third_party/rust/hub-console-wasm/Cargo.lock",
+        "third_party/rust/release-coordination/Cargo.lock",
+        "third_party/rust/hub-db-all-features-tests/Cargo.lock",
+        "third_party/rust/aos-cli-fleet-tests/Cargo.lock",
+        "third_party/rust/activation-storage/Cargo.lock",
+        "third_party/rust/hub-worker-all-features-tests/Cargo.lock",
+        "third_party/rust/hub-worker-wasm-all-features/Cargo.lock",
+        "third_party/rust/hub-db-tests/Cargo.lock",
+        "third_party/rust/activation-core-tests/Cargo.lock",
+        "third_party/rust/qemu-test-oracle-host/Cargo.lock",
+        "third_party/rust/crucible-cli/Cargo.lock",
+        "third_party/rust/formats/Cargo.lock",
+        "third_party/rust/hub-native-tests/Cargo.lock",
+        "third_party/rust/registry-native-tests/Cargo.lock",
+        "third_party/rust/hub-worker-wasm-do-e2e/Cargo.lock",
+        "third_party/rust/registry-native/Cargo.lock",
+        "third_party/rust/qemu-gpl-tests/Cargo.lock",
+        "third_party/rust/native-foundation-minimal/Cargo.lock",
+        "third_party/rust/qemu-gpl-production/Cargo.lock",
+        "third_party/rust/native-foundation/Cargo.lock",
+        "third_party/rust/guest/Cargo.lock",
+        "third_party/rust/hub-client/Cargo.lock",
+        "third_party/rust/release-preparation/Cargo.lock",
+        "third_party/rust/control/Cargo.lock",
+        "third_party/rust/registry-web-wasm/Cargo.lock",
+        "third_party/rust/hub-native-postgres/Cargo.lock",
+        "third_party/rust/store/Cargo.lock",
+        "third_party/rust/accache/Cargo.lock",
+        "third_party/rust/hub-model/Cargo.lock",
+        "third_party/rust/deployment/Cargo.lock",
+        "third_party/rust/store-s3/Cargo.lock",
+        "third_party/rust/activation-systemd/Cargo.lock",
+        "third_party/rust/activation-core/Cargo.lock",
+        "third_party/rust/hub-db-all-features/Cargo.lock",
+        "third_party/rust/activation-crucible/Cargo.lock",
+        "third_party/rust/build-services/Cargo.lock",
+        "third_party/rust/hub-service/Cargo.lock",
+        "third_party/rust/aos-cli-tests/Cargo.lock",
+        "third_party/rust/boot-preparation/Cargo.lock",
+        "third_party/rust/hub-service-tests/Cargo.lock",
+        "third_party/rust/hub-portable/Cargo.lock",
+        "third_party/rust/aos-cli-production/Cargo.lock",
+        "third_party/rust/registry-web/Cargo.lock",
+        "third_party/rust/package-manager-tests/Cargo.lock",
+        "third_party/rust/hub-db/Cargo.lock",
+        "third_party/rust/hub-service-all-features-tests/Cargo.lock",
+        "third_party/rust/session/Cargo.lock",
+        "third_party/rust/daemon/Cargo.lock",
+        "third_party/rust/cli-support/Cargo.lock",
+        "third_party/rust/device/Cargo.lock",
+        "third_party/rust/boot-preparation-minimal/Cargo.lock",
+        "third_party/rust/native-foundation-tests/Cargo.lock",
+        "third_party/rust/engine/Cargo.lock"
+      ],
+      "compiler_input_evidence": {
+        "path": "/nix/store/8wx72lnxv5c1kkdhn8jwy8gr4gwnw1ik-aos-bazel-initrd-preparation-production-1/evidence/compiler-inputs.json",
+        "sha256": "d1cd25cf01cffa67e601d1fc2c7c902ecaef5d83b9816d3d69f227180780e954"
+      },
+      "derivation": "/nix/store/hccbf39ysvqdas3lng9xn48ywn0308l6-aos-bazel-initrd-preparation-production-1.drv",
+      "execution_evidence": {
+        "path": "/nix/store/8wx72lnxv5c1kkdhn8jwy8gr4gwnw1ik-aos-bazel-initrd-preparation-production-1/evidence/execution.json",
+        "sha256": "25a024b9c506c586f139a85ba9cddc6ee9b2bd6a5c7b35d9eaf0caab071b750c"
+      },
+      "first_party_compiler_outputs": {
+        "//crates/boot/aos-boot-runtime:standalone": [
+          {
+            "digest": {
+              "hash": "2d71e5ec5d86971c386bec2e3d745bb51a4c24797e316ede7d2bebbb6b8d45a5",
+              "hashFunctionName": "SHA-256",
+              "sizeBytes": "957984"
+            },
+            "isTool": false,
+            "path": "bazel-out/k8-fastbuild/bin/crates/boot/aos-boot-runtime/standalone",
+            "symlinkTargetPath": ""
+          }
+        ],
+        "//crates/boot/aos-boot-runtime:standalone_unit_binary": [
+          {
+            "digest": {
+              "hash": "79970d03c798e74ec93787706d0d770989ccdd9c73b2733d05b1c5213e2bd589",
+              "hashFunctionName": "SHA-256",
+              "sizeBytes": "1694320"
+            },
+            "isTool": false,
+            "path": "bazel-out/k8-fastbuild/bin/crates/boot/aos-boot-runtime/standalone_unit_binary",
+            "symlinkTargetPath": ""
+          }
+        ]
+      },
+      "first_party_rust_compiler_actions": [
+        {
+          "arguments": [
+            "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_tools/rust/bin/rustc",
+            "crates/boot/aos-boot-runtime/standalone/initrd_preparation.rs",
+            "--crate-name=aos_initrd_preparation",
+            "--crate-type=bin",
+            "--error-format=human",
+            "--out-dir=bazel-out/k8-fastbuild/bin/crates/boot/aos-boot-runtime",
+            "--codegen=opt-level=0",
+            "--codegen=debuginfo=0",
+            "--codegen=strip=none",
+            "--remap-path-prefix=${AOS_BAZEL_OUTPUT_BASE}=.",
+            "--remap-path-prefix=${AOS_ACTION_WORKING_DIRECTORY}=.",
+            "--remap-path-prefix=${AOS_EXECUTION_ROOT}=.",
+            "--emit=link=bazel-out/k8-fastbuild/bin/crates/boot/aos-boot-runtime/standalone",
+            "--emit=dep-info",
+            "--color=always",
+            "--target=x86_64-unknown-linux-gnu",
+            "-L",
+            "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_tools/rust/lib/rustlib/x86_64-unknown-linux-gnu/lib",
+            "--edition=2024",
+            "-Cembed-bitcode=no",
+            "--codegen=linker=/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+            "--codegen=link-arg=-L/nix/store/jmr87wqpiymkkmlqfy1hkv83mpfs6nvd-gcc-16.2.0-stage2/lib",
+            "--codegen=link-arg=-Wl,-rpath,/nix/store/jmr87wqpiymkkmlqfy1hkv83mpfs6nvd-gcc-16.2.0-stage2/lib",
+            "--codegen=link-arg=-lstdc++",
+            "--codegen=link-arg=-lm",
+            "--sysroot=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_tools/rust",
+            "-Copt-level=0",
+            "-Cdebuginfo=0",
+            "-Cdebug-assertions=yes",
+            "-Coverflow-checks=yes"
+          ],
+          "command_sha256": "7aa80ebd1c0ab2c73e0667b75326a0c199eb00547b74e4120114450829f25b31",
+          "environment": {
+            "AOS_BOOT_CONFIGURATION": "/nix/store/zkzv99i2r62ba7p9r51h17iv5bm6bbw5-aos-0.1.0-packageRuntime/bin/aos-boot-configuration",
+            "AOS_CONFIGURATION_BOOT": "/nix/store/2ngn37g0brvdxznk0c079gi8z5barzxq-aos-configuration-lower-0.1.0/bin/aos-configuration-boot",
+            "AOS_PACKAGE_RUNTIME": "/nix/store/zkzv99i2r62ba7p9r51h17iv5bm6bbw5-aos-0.1.0-packageRuntime/bin/aos-package-runtime",
+            "CARGO_CFG_TARGET_ARCH": "x86_64",
+            "CARGO_CFG_TARGET_OS": "linux",
+            "CARGO_CRATE_NAME": "aos_initrd_preparation",
+            "CARGO_MANIFEST_DIR": "${AOS_ACTION_WORKING_DIRECTORY}/crates/boot/aos-boot-runtime",
+            "CARGO_PKG_AUTHORS": "",
+            "CARGO_PKG_DESCRIPTION": "Retained boot preparation, image staging, boot selection, and initrd store operations",
+            "CARGO_PKG_HOMEPAGE": "",
+            "CARGO_PKG_LICENSE": "Apache-2.0",
+            "CARGO_PKG_LICENSE_FILE": "",
+            "CARGO_PKG_NAME": "aos-boot-runtime",
+            "CARGO_PKG_README": "",
+            "CARGO_PKG_REPOSITORY": "",
+            "CARGO_PKG_RUST_VERSION": "",
+            "CARGO_PKG_VERSION": "0.1.0",
+            "CARGO_PKG_VERSION_MAJOR": "0",
+            "CARGO_PKG_VERSION_MINOR": "1",
+            "CARGO_PKG_VERSION_PATCH": "0",
+            "CARGO_PKG_VERSION_PRE": "",
+            "LANG": "C",
+            "LC_ALL": "C",
+            "PATH": "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15/bin:/nix/store/6i9yb0a1q1k9qx8l3xb4xr25kf8cg4p5-coreutils-9.11/bin:/nix/store/6zgd9kcbnvnvvz1y4jwb46ys7j7i1cwn-binutils-2.41/bin:/nix/store/532aaff6i0bbc5rqp8nqmf99rabn91xv-findutils-4.11.0/bin:/nix/store/qwq9gmv4h5k991h1wra4ydkwl07977cd-grep-3.12/bin:/nix/store/km452j597r6swyr897sckswcyp5sr7kq-sed-4.10/bin:/nix/store/6im61c9yypa7ba1wdgjyk3lzx8ixj997-procps-ng-4.0.5/bin",
+            "REPOSITORY_NAME": "",
+            "SOURCE_DATE_EPOCH": "1",
+            "TZ": "UTC",
+            "ZERO_AR_DATE": "1"
+          },
+          "target_label": "//crates/boot/aos-boot-runtime:standalone"
+        },
+        {
+          "arguments": [
+            "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_tools/rust/bin/rustc",
+            "crates/boot/aos-boot-runtime/standalone/initrd_preparation.rs",
+            "--crate-name=aos_initrd_preparation",
+            "--crate-type=bin",
+            "--error-format=human",
+            "--codegen=metadata=-3135103511",
+            "--codegen=extra-filename=-3135103511",
+            "--out-dir=bazel-out/k8-fastbuild/bin/crates/boot/aos-boot-runtime",
+            "--codegen=opt-level=0",
+            "--codegen=debuginfo=0",
+            "--codegen=strip=none",
+            "--remap-path-prefix=${AOS_BAZEL_OUTPUT_BASE}=.",
+            "--remap-path-prefix=${AOS_ACTION_WORKING_DIRECTORY}=.",
+            "--remap-path-prefix=${AOS_EXECUTION_ROOT}=.",
+            "--emit=link=bazel-out/k8-fastbuild/bin/crates/boot/aos-boot-runtime/standalone_unit_binary",
+            "--emit=dep-info",
+            "--color=always",
+            "--target=x86_64-unknown-linux-gnu",
+            "-L",
+            "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_tools/rust/lib/rustlib/x86_64-unknown-linux-gnu/lib",
+            "--test",
+            "--edition=2024",
+            "-Cembed-bitcode=no",
+            "--codegen=linker=/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+            "--codegen=link-arg=-L/nix/store/jmr87wqpiymkkmlqfy1hkv83mpfs6nvd-gcc-16.2.0-stage2/lib",
+            "--codegen=link-arg=-Wl,-rpath,/nix/store/jmr87wqpiymkkmlqfy1hkv83mpfs6nvd-gcc-16.2.0-stage2/lib",
+            "--codegen=link-arg=-lstdc++",
+            "--codegen=link-arg=-lm",
+            "--sysroot=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_tools/rust",
+            "-Copt-level=0",
+            "-Cdebuginfo=0",
+            "-Cdebug-assertions=yes",
+            "-Coverflow-checks=yes"
+          ],
+          "command_sha256": "b660e11a22078403bbe6025867c2c8354cfb5fa46647ebabe5a6634f8091a6a5",
+          "environment": {
+            "AOS_BOOT_CONFIGURATION": "/nix/store/zkzv99i2r62ba7p9r51h17iv5bm6bbw5-aos-0.1.0-packageRuntime/bin/aos-boot-configuration",
+            "AOS_CONFIGURATION_BOOT": "/nix/store/2ngn37g0brvdxznk0c079gi8z5barzxq-aos-configuration-lower-0.1.0/bin/aos-configuration-boot",
+            "AOS_PACKAGE_RUNTIME": "/nix/store/zkzv99i2r62ba7p9r51h17iv5bm6bbw5-aos-0.1.0-packageRuntime/bin/aos-package-runtime",
+            "CARGO_CFG_TARGET_ARCH": "x86_64",
+            "CARGO_CFG_TARGET_OS": "linux",
+            "CARGO_CRATE_NAME": "aos_initrd_preparation",
+            "CARGO_MANIFEST_DIR": "${AOS_ACTION_WORKING_DIRECTORY}/crates/boot/aos-boot-runtime",
+            "CARGO_PKG_AUTHORS": "",
+            "CARGO_PKG_DESCRIPTION": "Retained boot preparation, image staging, boot selection, and initrd store operations",
+            "CARGO_PKG_HOMEPAGE": "",
+            "CARGO_PKG_LICENSE": "Apache-2.0",
+            "CARGO_PKG_LICENSE_FILE": "",
+            "CARGO_PKG_NAME": "aos-boot-runtime",
+            "CARGO_PKG_README": "",
+            "CARGO_PKG_REPOSITORY": "",
+            "CARGO_PKG_RUST_VERSION": "",
+            "CARGO_PKG_VERSION": "0.1.0",
+            "CARGO_PKG_VERSION_MAJOR": "0",
+            "CARGO_PKG_VERSION_MINOR": "1",
+            "CARGO_PKG_VERSION_PATCH": "0",
+            "CARGO_PKG_VERSION_PRE": "",
+            "LANG": "C",
+            "LC_ALL": "C",
+            "PATH": "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15/bin:/nix/store/6i9yb0a1q1k9qx8l3xb4xr25kf8cg4p5-coreutils-9.11/bin:/nix/store/6zgd9kcbnvnvvz1y4jwb46ys7j7i1cwn-binutils-2.41/bin:/nix/store/532aaff6i0bbc5rqp8nqmf99rabn91xv-findutils-4.11.0/bin:/nix/store/qwq9gmv4h5k991h1wra4ydkwl07977cd-grep-3.12/bin:/nix/store/km452j597r6swyr897sckswcyp5sr7kq-sed-4.10/bin:/nix/store/6im61c9yypa7ba1wdgjyk3lzx8ixj997-procps-ng-4.0.5/bin",
+            "REPOSITORY_NAME": "",
+            "SOURCE_DATE_EPOCH": "1",
+            "TZ": "UTC",
+            "ZERO_AR_DATE": "1"
+          },
+          "target_label": "//crates/boot/aos-boot-runtime:standalone_unit_binary"
+        }
+      ],
+      "inventory": {
+        "path": "/nix/store/8wx72lnxv5c1kkdhn8jwy8gr4gwnw1ik-aos-bazel-initrd-preparation-production-1/inventory.json",
+        "sha256": "432cd152c7791b512d78f0e80b50b0c1aaaf96ec227615bf233aca017e920bcb"
+      },
+      "output": "/nix/store/8wx72lnxv5c1kkdhn8jwy8gr4gwnw1ik-aos-bazel-initrd-preparation-production-1",
+      "package_payload_sha256": "2d71e5ec5d86971c386bec2e3d745bb51a4c24797e316ede7d2bebbb6b8d45a5",
+      "successful_linux_sandbox_cache_misses": 5,
+      "test_cases": [
+        "tests::admission_digest_accepts_only_canonical_sha256",
+        "tests::deployment_rejects_mutable_or_unrecognized_bundle_locations",
+        "tests::profile_generation_requires_one_exact_assignment"
+      ],
+      "workspace": "/nix/store/mf6r7fypndcmkpd9dppwfz2gxbxmk6mh-aos-bazel-workspace"
+    },
+    "precise": {
+      "cache_hits": 0,
+      "cargo_files_in_workspace": [],
+      "compiler_input_evidence": {
+        "path": "/nix/store/b7bkrgf91w9wm0jqq5phjdgzrimmhvcc-aos-bazel-initrd-preparation-production-1/evidence/compiler-inputs.json",
+        "sha256": "d1cd25cf01cffa67e601d1fc2c7c902ecaef5d83b9816d3d69f227180780e954"
+      },
+      "derivation": "/nix/store/8d4pz5w8hjky7alccd6nawaalhx8nri6-aos-bazel-initrd-preparation-production-1.drv",
+      "execution_evidence": {
+        "path": "/nix/store/b7bkrgf91w9wm0jqq5phjdgzrimmhvcc-aos-bazel-initrd-preparation-production-1/evidence/execution.json",
+        "sha256": "d2044b1eaaed6a94e4b2d41dbaa2520c18864b1eadf7ed43a14ef84eef7dbbf2"
+      },
+      "first_party_compiler_outputs": {
+        "//crates/boot/aos-boot-runtime:standalone": [
+          {
+            "digest": {
+              "hash": "2d71e5ec5d86971c386bec2e3d745bb51a4c24797e316ede7d2bebbb6b8d45a5",
+              "hashFunctionName": "SHA-256",
+              "sizeBytes": "957984"
+            },
+            "isTool": false,
+            "path": "bazel-out/k8-fastbuild/bin/crates/boot/aos-boot-runtime/standalone",
+            "symlinkTargetPath": ""
+          }
+        ],
+        "//crates/boot/aos-boot-runtime:standalone_unit_binary": [
+          {
+            "digest": {
+              "hash": "79970d03c798e74ec93787706d0d770989ccdd9c73b2733d05b1c5213e2bd589",
+              "hashFunctionName": "SHA-256",
+              "sizeBytes": "1694320"
+            },
+            "isTool": false,
+            "path": "bazel-out/k8-fastbuild/bin/crates/boot/aos-boot-runtime/standalone_unit_binary",
+            "symlinkTargetPath": ""
+          }
+        ]
+      },
+      "first_party_rust_compiler_actions": [
+        {
+          "arguments": [
+            "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_tools/rust/bin/rustc",
+            "crates/boot/aos-boot-runtime/standalone/initrd_preparation.rs",
+            "--crate-name=aos_initrd_preparation",
+            "--crate-type=bin",
+            "--error-format=human",
+            "--out-dir=bazel-out/k8-fastbuild/bin/crates/boot/aos-boot-runtime",
+            "--codegen=opt-level=0",
+            "--codegen=debuginfo=0",
+            "--codegen=strip=none",
+            "--remap-path-prefix=${AOS_BAZEL_OUTPUT_BASE}=.",
+            "--remap-path-prefix=${AOS_ACTION_WORKING_DIRECTORY}=.",
+            "--remap-path-prefix=${AOS_EXECUTION_ROOT}=.",
+            "--emit=link=bazel-out/k8-fastbuild/bin/crates/boot/aos-boot-runtime/standalone",
+            "--emit=dep-info",
+            "--color=always",
+            "--target=x86_64-unknown-linux-gnu",
+            "-L",
+            "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_tools/rust/lib/rustlib/x86_64-unknown-linux-gnu/lib",
+            "--edition=2024",
+            "-Cembed-bitcode=no",
+            "--codegen=linker=/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+            "--codegen=link-arg=-L/nix/store/jmr87wqpiymkkmlqfy1hkv83mpfs6nvd-gcc-16.2.0-stage2/lib",
+            "--codegen=link-arg=-Wl,-rpath,/nix/store/jmr87wqpiymkkmlqfy1hkv83mpfs6nvd-gcc-16.2.0-stage2/lib",
+            "--codegen=link-arg=-lstdc++",
+            "--codegen=link-arg=-lm",
+            "--sysroot=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_tools/rust",
+            "-Copt-level=0",
+            "-Cdebuginfo=0",
+            "-Cdebug-assertions=yes",
+            "-Coverflow-checks=yes"
+          ],
+          "command_sha256": "7aa80ebd1c0ab2c73e0667b75326a0c199eb00547b74e4120114450829f25b31",
+          "environment": {
+            "AOS_BOOT_CONFIGURATION": "/nix/store/zkzv99i2r62ba7p9r51h17iv5bm6bbw5-aos-0.1.0-packageRuntime/bin/aos-boot-configuration",
+            "AOS_CONFIGURATION_BOOT": "/nix/store/2ngn37g0brvdxznk0c079gi8z5barzxq-aos-configuration-lower-0.1.0/bin/aos-configuration-boot",
+            "AOS_PACKAGE_RUNTIME": "/nix/store/zkzv99i2r62ba7p9r51h17iv5bm6bbw5-aos-0.1.0-packageRuntime/bin/aos-package-runtime",
+            "CARGO_CFG_TARGET_ARCH": "x86_64",
+            "CARGO_CFG_TARGET_OS": "linux",
+            "CARGO_CRATE_NAME": "aos_initrd_preparation",
+            "CARGO_MANIFEST_DIR": "${AOS_ACTION_WORKING_DIRECTORY}/crates/boot/aos-boot-runtime",
+            "CARGO_PKG_AUTHORS": "",
+            "CARGO_PKG_DESCRIPTION": "Retained boot preparation, image staging, boot selection, and initrd store operations",
+            "CARGO_PKG_HOMEPAGE": "",
+            "CARGO_PKG_LICENSE": "Apache-2.0",
+            "CARGO_PKG_LICENSE_FILE": "",
+            "CARGO_PKG_NAME": "aos-boot-runtime",
+            "CARGO_PKG_README": "",
+            "CARGO_PKG_REPOSITORY": "",
+            "CARGO_PKG_RUST_VERSION": "",
+            "CARGO_PKG_VERSION": "0.1.0",
+            "CARGO_PKG_VERSION_MAJOR": "0",
+            "CARGO_PKG_VERSION_MINOR": "1",
+            "CARGO_PKG_VERSION_PATCH": "0",
+            "CARGO_PKG_VERSION_PRE": "",
+            "LANG": "C",
+            "LC_ALL": "C",
+            "PATH": "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15/bin:/nix/store/6i9yb0a1q1k9qx8l3xb4xr25kf8cg4p5-coreutils-9.11/bin:/nix/store/6zgd9kcbnvnvvz1y4jwb46ys7j7i1cwn-binutils-2.41/bin:/nix/store/532aaff6i0bbc5rqp8nqmf99rabn91xv-findutils-4.11.0/bin:/nix/store/qwq9gmv4h5k991h1wra4ydkwl07977cd-grep-3.12/bin:/nix/store/km452j597r6swyr897sckswcyp5sr7kq-sed-4.10/bin:/nix/store/6im61c9yypa7ba1wdgjyk3lzx8ixj997-procps-ng-4.0.5/bin",
+            "REPOSITORY_NAME": "",
+            "SOURCE_DATE_EPOCH": "1",
+            "TZ": "UTC",
+            "ZERO_AR_DATE": "1"
+          },
+          "target_label": "//crates/boot/aos-boot-runtime:standalone"
+        },
+        {
+          "arguments": [
+            "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_tools/rust/bin/rustc",
+            "crates/boot/aos-boot-runtime/standalone/initrd_preparation.rs",
+            "--crate-name=aos_initrd_preparation",
+            "--crate-type=bin",
+            "--error-format=human",
+            "--codegen=metadata=-3135103511",
+            "--codegen=extra-filename=-3135103511",
+            "--out-dir=bazel-out/k8-fastbuild/bin/crates/boot/aos-boot-runtime",
+            "--codegen=opt-level=0",
+            "--codegen=debuginfo=0",
+            "--codegen=strip=none",
+            "--remap-path-prefix=${AOS_BAZEL_OUTPUT_BASE}=.",
+            "--remap-path-prefix=${AOS_ACTION_WORKING_DIRECTORY}=.",
+            "--remap-path-prefix=${AOS_EXECUTION_ROOT}=.",
+            "--emit=link=bazel-out/k8-fastbuild/bin/crates/boot/aos-boot-runtime/standalone_unit_binary",
+            "--emit=dep-info",
+            "--color=always",
+            "--target=x86_64-unknown-linux-gnu",
+            "-L",
+            "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_tools/rust/lib/rustlib/x86_64-unknown-linux-gnu/lib",
+            "--test",
+            "--edition=2024",
+            "-Cembed-bitcode=no",
+            "--codegen=linker=/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+            "--codegen=link-arg=-L/nix/store/jmr87wqpiymkkmlqfy1hkv83mpfs6nvd-gcc-16.2.0-stage2/lib",
+            "--codegen=link-arg=-Wl,-rpath,/nix/store/jmr87wqpiymkkmlqfy1hkv83mpfs6nvd-gcc-16.2.0-stage2/lib",
+            "--codegen=link-arg=-lstdc++",
+            "--codegen=link-arg=-lm",
+            "--sysroot=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_tools/rust",
+            "-Copt-level=0",
+            "-Cdebuginfo=0",
+            "-Cdebug-assertions=yes",
+            "-Coverflow-checks=yes"
+          ],
+          "command_sha256": "b660e11a22078403bbe6025867c2c8354cfb5fa46647ebabe5a6634f8091a6a5",
+          "environment": {
+            "AOS_BOOT_CONFIGURATION": "/nix/store/zkzv99i2r62ba7p9r51h17iv5bm6bbw5-aos-0.1.0-packageRuntime/bin/aos-boot-configuration",
+            "AOS_CONFIGURATION_BOOT": "/nix/store/2ngn37g0brvdxznk0c079gi8z5barzxq-aos-configuration-lower-0.1.0/bin/aos-configuration-boot",
+            "AOS_PACKAGE_RUNTIME": "/nix/store/zkzv99i2r62ba7p9r51h17iv5bm6bbw5-aos-0.1.0-packageRuntime/bin/aos-package-runtime",
+            "CARGO_CFG_TARGET_ARCH": "x86_64",
+            "CARGO_CFG_TARGET_OS": "linux",
+            "CARGO_CRATE_NAME": "aos_initrd_preparation",
+            "CARGO_MANIFEST_DIR": "${AOS_ACTION_WORKING_DIRECTORY}/crates/boot/aos-boot-runtime",
+            "CARGO_PKG_AUTHORS": "",
+            "CARGO_PKG_DESCRIPTION": "Retained boot preparation, image staging, boot selection, and initrd store operations",
+            "CARGO_PKG_HOMEPAGE": "",
+            "CARGO_PKG_LICENSE": "Apache-2.0",
+            "CARGO_PKG_LICENSE_FILE": "",
+            "CARGO_PKG_NAME": "aos-boot-runtime",
+            "CARGO_PKG_README": "",
+            "CARGO_PKG_REPOSITORY": "",
+            "CARGO_PKG_RUST_VERSION": "",
+            "CARGO_PKG_VERSION": "0.1.0",
+            "CARGO_PKG_VERSION_MAJOR": "0",
+            "CARGO_PKG_VERSION_MINOR": "1",
+            "CARGO_PKG_VERSION_PATCH": "0",
+            "CARGO_PKG_VERSION_PRE": "",
+            "LANG": "C",
+            "LC_ALL": "C",
+            "PATH": "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15/bin:/nix/store/6i9yb0a1q1k9qx8l3xb4xr25kf8cg4p5-coreutils-9.11/bin:/nix/store/6zgd9kcbnvnvvz1y4jwb46ys7j7i1cwn-binutils-2.41/bin:/nix/store/532aaff6i0bbc5rqp8nqmf99rabn91xv-findutils-4.11.0/bin:/nix/store/qwq9gmv4h5k991h1wra4ydkwl07977cd-grep-3.12/bin:/nix/store/km452j597r6swyr897sckswcyp5sr7kq-sed-4.10/bin:/nix/store/6im61c9yypa7ba1wdgjyk3lzx8ixj997-procps-ng-4.0.5/bin",
+            "REPOSITORY_NAME": "",
+            "SOURCE_DATE_EPOCH": "1",
+            "TZ": "UTC",
+            "ZERO_AR_DATE": "1"
+          },
+          "target_label": "//crates/boot/aos-boot-runtime:standalone_unit_binary"
+        }
+      ],
+      "inventory": {
+        "path": "/nix/store/b7bkrgf91w9wm0jqq5phjdgzrimmhvcc-aos-bazel-initrd-preparation-production-1/inventory.json",
+        "sha256": "432cd152c7791b512d78f0e80b50b0c1aaaf96ec227615bf233aca017e920bcb"
+      },
+      "output": "/nix/store/b7bkrgf91w9wm0jqq5phjdgzrimmhvcc-aos-bazel-initrd-preparation-production-1",
+      "package_payload_sha256": "2d71e5ec5d86971c386bec2e3d745bb51a4c24797e316ede7d2bebbb6b8d45a5",
+      "successful_linux_sandbox_cache_misses": 5,
+      "test_cases": [
+        "tests::admission_digest_accepts_only_canonical_sha256",
+        "tests::deployment_rejects_mutable_or_unrecognized_bundle_locations",
+        "tests::profile_generation_requires_one_exact_assignment"
+      ],
+      "workspace": "/nix/store/25f36wgp774fzb8lpfhwm1icmj8ynb8k-aos-bazel-workspace"
+    }
+  },
+  "rust_implementation_unchanged_from_parent": true,
+  "schema_version": 1,
+  "scope": "Standalone initrd Bazel source selection, compilation, unit execution, package manifest, and production license-root analysis; native installation qualification is separate.",
+  "source_files": [
+    "crates/boot/aos-boot-runtime/standalone/initrd_preparation.rs",
+    "tools/bazel/testing/policy.json",
+    "tools/bazel/testing/runner.py"
+  ],
+  "source_loading_fix": {
+    "correction": "Allow an empty glob for the unselected full library when loading the standalone-only source slice. Selecting the library still requires its explicit crate_root and dependencies.",
+    "failed_prepared_lock_derivation": "/nix/store/hmdnzaqsyssj2nppk7knvipgwz4l6vc2-aos-bazel-prepared-lock-1.drv",
+    "observed_error": "glob pattern 'src/**/*.rs' didn't match anything, but allow_empty is set to False"
+  }
+}

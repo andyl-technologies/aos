@@ -1,0 +1,69 @@
+{
+  "aggregate_derivation": "/nix/store/jcnhfagcywvk2rgcq18bjqxz895zj50f-aos-bazel-checks.drv",
+  "aggregate_derivation_json_sha256": "5c38ec88d0e476437e099296463f3fd6587656514d154f52b62c30aa26428f6a",
+  "checkpoint_commit": "7d188f29a40e8305358f7fbab6669e22ac8381bb",
+  "checkpoint_file_sha256": {
+    "crates/crucible/control/crucible-control-api/BUILD.bazel": "117849e2851829207a9053604faf86155a972118e564201b4c11b96d33194482",
+    "crates/shared/aos-linux-project-quota/BUILD.bazel": "a6d9b30f18d9f0bbaf9854bf062a951d77312f16585adcc503114953c359319b",
+    "tests/build/_bazel-family-vm.nix": "85df209ea3796f79b7e6f165cdec2a42283db8205c2994b759e5aa681ab7e338",
+    "tests/build/_bazel-quota.nix": "26cf5ecec2bcdddabb40efced7dcd37fdf6086d4f3c9b810e8fdad97dc3d408d",
+    "tests/build/_bazel-session-cross.nix": "90a45f7cf10a33879e6b6646196208af3543c1fed2d2450303fdbfecdfdd182d",
+    "tests/build/_bazel-session.nix": "800a04dd35169cdf420e579e207565b0634ebf082f90a41ee8fe2a67c1341904",
+    "tests/build/bazel.nix": "ef4335721da1005779745b221e499717edd0e6a4ec9c83aea35dd5d98b52c37e",
+    "tools/bazel/metadata/quota-inventory.json": "be459ecc669547f78854e7f48b647b510c2abd6dd528a19fb1e82029c34ad9e8",
+    "tools/bazel/metadata/session-inventory.json": "2c9cb57c675b6de6da3621a6317de5d64636b9593c19c5b5983b2bc61669dfa4"
+  },
+  "command": "nix-build -A checks.build.bazel.all -A checks.eval --keep-going --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "limits": [
+    "The later control transport graph and execution are outside this checkpoint.",
+    "Performance acceptance and production consumer cutovers remain open."
+  ],
+  "outputs": [
+    "/nix/store/90m8m3fmjz9314q3qximj5zy9gqshsf6-aos-bazel-checks",
+    "/nix/store/aah8g2szam8h4ccl8dlj6fz67g2y2i8q-aos-native-evaluation-checks-0"
+  ],
+  "qualification_inputs": [
+    "/nix/store/7bf43k3g2crv7nrwv53kx7zqr2s123wz-aos-bazel-fixture-runtime",
+    "/nix/store/pdl9szbln5x00mi0lx96895d307l9ka0-aos-bazel-runner-evidence",
+    "/nix/store/9lm3wjp57ll7xlhjxqrfxgj8mqcwaam5-aos-bazel-editor-check",
+    "/nix/store/d7sy6y7xxdgs6iglla0fxqrqz9h7abxg-aos-bazel-developer-evidence",
+    "/nix/store/36mhqa3bfnyrj5gj7awrxknfbfg3yn8m-aos-bazel-developer-policy",
+    "/nix/store/9ifsvi6m63cdhzjhi5asgcwlj94f62ji-aos-bazel-package-metadata-policy",
+    "/nix/store/a5jz6hzl9n0y9phrqpjnqca73xjq1mim-aos-bazel-package-metadata-parity",
+    "/nix/store/brij2jkh4xwym7cnnzxakdxw162qk211-aos-bazel-policy-checks",
+    "/nix/store/pa63cwc32rijwkg32bvmz17cmachip1h-aos-bazel-bootstrap-shell-policy",
+    "/nix/store/l40zyqw1wlq8i26b2wdfsm6wp295iqwp-aos-bazel-source-selection",
+    "/nix/store/kmz8ac75lcq63splg4qr1863qdm0rqyd-aos-bazel-source-catalog-checks",
+    "/nix/store/pf5y61hjqzc5f9ifqpf6kby75dkpyll1-aos-bazel-sysroot-metadata",
+    "/nix/store/pikpjip7b6hndj3yfh23kjwyslvj6ic8-aos-bazel-manifest-extractor-parity",
+    "/nix/store/p4ipiqicbf5h2dg3h93gn15vjiba8bwg-aos-bazel-native-library-checks",
+    "/nix/store/vny2098q6nyjcqj4c0zi64qfkj85pa42-aos-bazel-static-runtime-checks",
+    "/nix/store/piy6ipvpil2zff1ziwwr9qa3g8zf222r-aos-bazel-source-precision-parity",
+    "/nix/store/yd3yx05jpr4zglwllqm90m8wfi2457rh-aos-bazel-license-boundary-analysis",
+    "/nix/store/gr8l0ghcxlim87a1b9rrj8wggl3pl6lc-aos-bazel-boot-pilot-checks",
+    "/nix/store/mib776nc948rzxlf57842awwplyzv855-aos-bazel-external-rust-checks",
+    "/nix/store/r6kkhh183ypjxqpkdjkvq5naxyz7da8f-aos-bazel-protocol-checks",
+    "/nix/store/jz77jh4jxrvv1601pc5xd64zg9rkcmzq-aos-bazel-shared-checks",
+    "/nix/store/jhcyq4j15swkpyby69h9hq16bhwlifrr-aos-bazel-device-qualified-checks",
+    "/nix/store/kq5lskjj47ccp0garyskagq0lb1msr6j-aos-bazel-store-qualified-checks",
+    "/nix/store/i14v5sfhz6i8dx9qxzrap93p2gd5fr4x-aos-bazel-guest-qualified-checks",
+    "/nix/store/k0z2kdl1hz92b9rvap6pd6vw3g7an24p-aos-bazel-engine-qualified-checks",
+    "/nix/store/vf22h8bb5fzkp8j3ww1ywkflm6rck0ba-aos-bazel-quota-qualified-checks",
+    "/nix/store/prrzz5i8gjsazkh63ypcpnz7rkiplcq6-aos-bazel-session-qualified-checks",
+    "/nix/store/mp8m2vq72g0qz3ff62l69fc9bvgg44hd-aos-bazel-wasm-toolchain-check",
+    "/nix/store/wswv28rlc2xaw1019qfng5qq98z7pnlr-aos-bazel-cache-recovery",
+    "/nix/store/inb4whk3w1rnljah54m26afk7nmkvr1z-aos-bazel-aarch64-toolchain-check",
+    "/nix/store/zb920hmi84q0q0nfa48g8wydkd16apiw-aos-bazel-device-aarch64-parity",
+    "/nix/store/i8xpjprpmf3kbmsxn5acxm1hpaizgzfz-aos-bazel-quota-aarch64-parity",
+    "/nix/store/8n9jhri3gpjvg3yad0plb2h5qvfalb1z-aos-bazel-session-aarch64-parity"
+  ],
+  "quota_metadata_correction": {
+    "correction_commit": "99e917c3704e3a3a56947660ad2fb46d2b0fb07c",
+    "description": "Pinned ext4 project-quota installation, verification, and release",
+    "previous_status": "Aggregate failed because the quota package declaration omitted its Cargo description.",
+    "status": "Corrected package metadata passed the aggregate comparison; Rust source and ext4 VM qualification are unchanged."
+  },
+  "schema_version": 1,
+  "scope": "All registered Bazel checks through session/control API, including native feature variants, four AArch64 families, toolchain and infrastructure checks; core evaluation checks.",
+  "status": "passed"
+}

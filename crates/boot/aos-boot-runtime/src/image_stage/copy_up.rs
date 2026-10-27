@@ -255,6 +255,11 @@ fn sync_tree(path: &Path) -> Result<()> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "Test fixtures and assertions fail immediately on unexpected errors"
+)]
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;

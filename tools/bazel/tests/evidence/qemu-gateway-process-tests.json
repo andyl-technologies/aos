@@ -1,0 +1,515 @@
+{
+  "artifact_type_contract": "/nix/store/m1jr7nrhzgg7qam70inn6vb00hhg0qan-crucible-phase1-crate-artifact-types-0",
+  "checks": {
+    "crucible_test_suite": {
+      "binaries": 267,
+      "executed": 5567,
+      "passed": 5567,
+      "run_id": "7a87fdd0-96b8-4822-a2c3-3f936f2ae4b0",
+      "skipped": 75
+    },
+    "ordinary_gateway_and_boundary_gates": [
+      "/nix/store/xsl6s9b1nwnaashmwvb13lmlnjh4ajp3-crucible-debug-gateway-0.1.0",
+      "/nix/store/nzijxap6gv6pp35169lyhy9x41567rdc-crucible-phase2-abi-conformance-0",
+      "/nix/store/ab2kf7s8i5zyrap8ki6fj0m05rxsm64g-crucible-phase1-license-boundary-0"
+    ],
+    "policy_core_evaluation_and_source_catalog": [
+      "/nix/store/b7hxzxc9y5g7njz0rlwlcq45ifn8y44i-aos-bazel-policy-checks",
+      "/nix/store/k3qy5zbhhgbd1drxc4xxayns912f0rw8-aos-native-evaluation-checks-0",
+      "/nix/store/7637mnfiy836nx6dspk9g401w3f2pmrv-aos-bazel-source-catalog-checks"
+    ],
+    "required_rust_targets": [
+      "/nix/store/j49axx9p34llx47dmwhjjk03pzxdcxf1-aos-test-targets-0.1.0"
+    ]
+  },
+  "compiler_parity": {
+    "gpl": {
+      "limits": [
+        "Bazel response and indirect wrapper input files are bound to execution digests. Working-directory, output-base, and execution-root identities remain explicit symbolic roots.",
+        "Compiler defaults and compiler/linker closure or ABI equivalence are not checked here.",
+        "Codegen, target, linker, incremental, and artifact-identity differences are retained for explicit review; this audit does not establish semantic compiler-option equivalence.",
+        "Scalar codegen options use their last explicit value. Repeated and unknown options remain in order; compiler defaults are not inferred.",
+        "The source/test key requires an unambiguous native family. Families compiling the same source in multiple execution/target configurations need an explicit role-aware comparison.",
+        "Captured Cargo invocations prove compiler execution was requested, not that every request succeeded. Runtime and compilation results require their independent gates."
+      ],
+      "paired_units": 6,
+      "report_sha256": "89b0f7a9b52581a562ad8ea966e43c3f058f5e144bb68a57f455ce68174f8d15",
+      "status": "PASS: paired first-party invocations and matching wrapper-expanded cfg/edition arguments"
+    },
+    "host": {
+      "limits": [
+        "Bazel response and indirect wrapper input files are bound to execution digests. Working-directory, output-base, and execution-root identities remain explicit symbolic roots.",
+        "Compiler defaults and compiler/linker closure or ABI equivalence are not checked here.",
+        "Codegen, target, linker, incremental, and artifact-identity differences are retained for explicit review; this audit does not establish semantic compiler-option equivalence.",
+        "Scalar codegen options use their last explicit value. Repeated and unknown options remain in order; compiler defaults are not inferred.",
+        "The source/test key requires an unambiguous native family. Families compiling the same source in multiple execution/target configurations need an explicit role-aware comparison.",
+        "Captured Cargo invocations prove compiler execution was requested, not that every request succeeded. Runtime and compilation results require their independent gates."
+      ],
+      "paired_units": 12,
+      "report_sha256": "8420c67e0986ef3d7884568cbc56561ae48990411d91438c3581bd2a84996b3a",
+      "status": "PASS: paired first-party invocations and matching wrapper-expanded cfg/edition arguments"
+    }
+  },
+  "declared_inputs": {
+    "cargo": "/nix/store/b8zw2sjgn1r3ynl9la6693f9bi78jk34-aos-bazel-qemu-process-cargo-1",
+    "host_build": "/nix/store/f68g96z3alx7m9fzb22g90byxv22xh99-aos-bazel-qemu-test-oracle-host-1",
+    "host_inventory": "/nix/store/fsps1xqkh5lzrgnnkwkwbck5ns16h6az-aos-bazel-qemu-test-oracle-host-inventory-1",
+    "schema_version": 1,
+    "test_build": "/nix/store/hni1lxazszdf2fk35gh28nmz49yim74h-aos-bazel-qemu-gateway-process-tests-1",
+    "test_inventory": "/nix/store/hig5ay74v3wr994lgg978gxp6997xgvh-aos-bazel-qemu-gateway-process-test-inventory-1",
+    "test_tools": "/nix/store/vqw7rs8m79bhdk2wlamldmxkdmyny2dq-aos-bazel-qemu-process-test-tools-1"
+  },
+  "dependency_metadata": {
+    "analysis_outputs": {
+      "activation-core": "/nix/store/63xy254yh8sw4iizfcycs6v3rn9lphp3-aos-bazel-activation-core-inventory-1",
+      "activation-core-production": "/nix/store/bkn4p82r7g6d03ddlxzld0zd23w0ycb1-aos-bazel-activation-core-production-inventory-1",
+      "activation-crucible": "/nix/store/ybcmqq7qm29y54mjhrnx3ljbj5al3r8q-aos-bazel-activation-crucible-inventory-1",
+      "activation-crucible-production": "/nix/store/yrv6rrpqm2b7hby75ivx3m3qklkimpwg-aos-bazel-activation-crucible-production-inventory-1",
+      "activation-storage": "/nix/store/80ssrsazc8848sndbivc9p8nafdjgkc1-aos-bazel-activation-storage-inventory-1",
+      "activation-storage-production": "/nix/store/d97k8hp3xjxini01g0dhjrb5zgss93kp-aos-bazel-activation-storage-production-inventory-1",
+      "activation-systemd": "/nix/store/bj26kx1mfs04fgnxi5pcpbxzp2zqfa8y-aos-bazel-activation-systemd-inventory-1",
+      "activation-systemd-parser": "/nix/store/9dcfig6445q103q6q3h9fp464mfdkbri-aos-bazel-activation-systemd-parser-inventory-1",
+      "activation-systemd-production": "/nix/store/kafrxn4lwigaw154nnra5pp27aqm89ac-aos-bazel-activation-systemd-production-inventory-1",
+      "aos-cli-fleet-tests": "/nix/store/rhai105xldm05lbldpa86mxphxz4rv32-aos-bazel-aos-cli-fleet-tests-inventory-1",
+      "aos-cli-production": "/nix/store/xw900a754qn5x2ri9py6mk2zis2jsr17-aos-bazel-aos-cli-production-inventory-1",
+      "aos-cli-tests": "/nix/store/d5hymkh6r43aa1rg09qm256j0x8i72an-aos-bazel-aos-cli-tests-inventory-1",
+      "boot-pilot": "/nix/store/950x24rc9fnvgg554k8675ml3b0xk7rf-aos-bazel-boot-pilot-inventory-1",
+      "boot-preparation": "/nix/store/hh8dpfsbpfrwylkh94qrmb622jc3mbc5-aos-bazel-boot-preparation-inventory-1",
+      "boot-preparation-minimal": "/nix/store/x519lr5xg19af618b6wzgamih4yjsqp7-aos-bazel-boot-preparation-minimal-inventory-1",
+      "boot-preparation-minimal-production": "/nix/store/g61rcvlzj1shj1h7q7zz69alzhy04b8w-aos-bazel-boot-preparation-minimal-production-inventory-1",
+      "boot-preparation-production": "/nix/store/zikhg8877c194qqs6vqwrhqphlx6fb52-aos-bazel-boot-preparation-production-inventory-1",
+      "boot-preparation-standalone": "/nix/store/0il2ai16jwgbh0pc473bvlnvfvr531w0-aos-bazel-boot-preparation-standalone-inventory-1",
+      "build-services": "/nix/store/07w00f4dzqc188h7vd0p7gfy90jimbw3-aos-bazel-build-services-inventory-1",
+      "cli-support": "/nix/store/74p6rmvgk7m4avb1d6qlz358iikms23z-aos-bazel-cli-support-inventory-1",
+      "contracts": "/nix/store/yg91l4ngsmq9lc3m43ggry35hrg1g3jk-aos-bazel-contracts-inventory-1",
+      "control": "/nix/store/3q9hk125kgdcf0l6av0iizz4b3qjz6ld-aos-bazel-control-inventory-1",
+      "crucible-cli": "/nix/store/6qyacp1cq8ldqr8m7qhgxp6qbpqs7j53-aos-bazel-crucible-cli-inventory-1",
+      "daemon": "/nix/store/7nrvp2nw8k7higykkdql7xp9z17jd11b-aos-bazel-daemon-inventory-1",
+      "deployment": "/nix/store/4yvmbbr0zr0frd5p38aw3kp8ad8qjh95-aos-bazel-deployment-inventory-1",
+      "device": "/nix/store/m980n4846jyy2xh92yvhx0glmv7a485b-aos-bazel-device-inventory-1",
+      "engine": "/nix/store/ndh2q9vchp4nnggb9bhkx78jminbmsi8-aos-bazel-engine-inventory-1",
+      "fixture": "/nix/store/rqjkydai46h7ackx2j4v767f6n9dg4ds-aos-bazel-fixture-inventory-1",
+      "formats": "/nix/store/flflzxhxqbbk5d31gf78n5m13lhm95hj-aos-bazel-formats-inventory-1",
+      "guest": "/nix/store/355slyp403wayxlwf54v0h5zsa7kj13h-aos-bazel-guest-inventory-1",
+      "hub-client": "/nix/store/xybgwy6vswzdwwgbz8538pkmcq02hv23-aos-bazel-hub-client-inventory-1",
+      "hub-console": "/nix/store/ajpaxzm3wpr4cpvvxkgha63z8x4lka9q-aos-bazel-hub-console-inventory-1",
+      "hub-console-browser": "/nix/store/ldfp9wjxakvh5x45fbmjqjpg596x9q20-aos-bazel-hub-console-browser-inventory-1",
+      "hub-db": "/nix/store/lq4vzi0fl7bnz8z9xlpm4ldxwrhfw70d-aos-bazel-hub-db-inventory-1",
+      "hub-db-all-features": "/nix/store/gxmhvvabk3s0ca1z77jfki6kmfvplav1-aos-bazel-hub-db-all-features-inventory-1",
+      "hub-db-all-features-production": "/nix/store/vhq84kv31z1q4sfh3fv68bjf90wqzb73-aos-bazel-hub-db-all-features-production-inventory-1",
+      "hub-db-production": "/nix/store/6m3h0qg9wmgrwpbq2j1rgikb7j20v925-aos-bazel-hub-db-production-inventory-1",
+      "hub-model": "/nix/store/f4f4gfqiz2mpn5m5l2lcmk35k0lcabkx-aos-bazel-hub-model-inventory-1",
+      "hub-model-production": "/nix/store/2k1brnm7d1z3jf1m08fpwihk1mwqnr6l-aos-bazel-hub-model-production-inventory-1",
+      "hub-native": "/nix/store/rs8m70zq2nx35qqhhy20v5zii5vh2jz5-aos-bazel-hub-native-inventory-1",
+      "hub-native-production": "/nix/store/64ddll862s8xw16fb8valjr11h4vl9qp-aos-bazel-hub-native-production-inventory-1",
+      "hub-portable": "/nix/store/k840wwwq1kqdmmqcd2579ka3wzh6828a-aos-bazel-hub-portable-inventory-1",
+      "hub-service": "/nix/store/wcckx71hpwrp77g134c2n8i17mspv1v3-aos-bazel-hub-service-inventory-1",
+      "hub-service-all-features": "/nix/store/y7zw4744grps457sqs59hjcq2c7lvkjf-aos-bazel-hub-service-all-features-inventory-1",
+      "hub-service-all-features-production": "/nix/store/ys0wn968l458jj5zc1vpm33hpx1ndb3v-aos-bazel-hub-service-all-features-production-inventory-1",
+      "hub-service-production": "/nix/store/7kpcghnsh91vqr0nb7ca16rq46bgg5cr-aos-bazel-hub-service-production-inventory-1",
+      "hub-worker-all-features-tests": "/nix/store/4frkzks6ji259x02k4w5drfr7lkmr90h-aos-bazel-hub-worker-all-features-tests-inventory-1",
+      "hub-worker-tests": "/nix/store/8sn9vv3q4cnh7wsq5rqzxxj7qaqkrlrb-aos-bazel-hub-worker-tests-inventory-1",
+      "hub-worker-wasm": "/nix/store/z250gk32rd46s58gnzmp6fmr0b1j7wa2-aos-bazel-hub-worker-wasm-inventory-1",
+      "hub-worker-wasm-all-features": "/nix/store/86kbl00ib10zzrm96ppln4c4mrkzrda5-aos-bazel-hub-worker-wasm-all-features-inventory-1",
+      "hub-worker-wasm-do-e2e": "/nix/store/9vq99f274bip80s1bc0v4222gpqnj390-aos-bazel-hub-worker-wasm-do-e2e-inventory-1",
+      "native-foundation": "/nix/store/y9pdsqadizwq2svvzjx6n0ix2vj2r3mq-aos-bazel-native-foundation-inventory-1",
+      "native-foundation-integration": "/nix/store/af6gqk6544vpni82k356205kn1m4qkp9-aos-bazel-native-foundation-integration-inventory-1",
+      "native-foundation-minimal": "/nix/store/rjdd593b3a4amv9pi8lf4861qk6cqsbg-aos-bazel-native-foundation-minimal-inventory-1",
+      "native-foundation-production": "/nix/store/p187vj1ylgli65w8sww5ijcam4s4czlp-aos-bazel-native-foundation-production-inventory-1",
+      "package-manager": "/nix/store/jwff87kyxv24aa9dmqp9spbg98znv7qj-aos-bazel-package-manager-inventory-1",
+      "package-manager-production": "/nix/store/4k3vwyxx6w1wgbr8j76v2c8n8wal4ccx-aos-bazel-package-manager-production-inventory-1",
+      "protocol": "/nix/store/4h1vxwfkv1bjbgwpl5q647s1pvkwbhww-aos-bazel-protocol-inventory-1",
+      "qemu-gateway-process-test": "/nix/store/al5fmlhr8k24knnwn4qqk24xb2c3q2l6-aos-bazel-qemu-gateway-process-test-inventory-1",
+      "qemu-gpl-production": "/nix/store/7a7fmic4p2jf08p6jh761x6w4kk7zzyx-aos-bazel-qemu-gpl-production-inventory-1",
+      "qemu-host": "/nix/store/nrzwi700f4rpkbn8wa775ga15gz6ym29-aos-bazel-qemu-host-inventory-1",
+      "qemu-test-oracle-host": "/nix/store/jkgyr9yp9fzy4p3jd9vbkyqyjzck7sml-aos-bazel-qemu-test-oracle-host-inventory-1",
+      "quota": "/nix/store/s3bazpr8qj3lbxbmbrdhq50n7zmliyfr-aos-bazel-quota-inventory-1",
+      "registry-native": "/nix/store/78x9qyh8klrim8z2axg9kzwi3b762bpc-aos-bazel-registry-native-inventory-1",
+      "registry-native-production": "/nix/store/7j6hx91fn277d5yjdbjpznwznkh96xnr-aos-bazel-registry-native-production-inventory-1",
+      "release-coordination": "/nix/store/bf6wyn5rx7jdqh9m4kisg4im1290krdp-aos-bazel-release-coordination-inventory-1",
+      "release-coordination-production": "/nix/store/dy2z49z030lr6wq4klf96r59gk57kmi9-aos-bazel-release-coordination-production-inventory-1",
+      "release-preparation": "/nix/store/c5hjjg1y5yf46x7251xjbaryv35bqqi7-aos-bazel-release-preparation-inventory-1",
+      "session": "/nix/store/a28lr0h8lmarv13xhk8n3mq1c88xgxms-aos-bazel-session-inventory-1",
+      "shared": "/nix/store/qlfd4p5nsrvln8ywhpxis5jzjgjlrxbi-aos-bazel-shared-inventory-1",
+      "source-catalog": "/nix/store/852m1ffks6h306191h981s03dz68bd9q-aos-bazel-source-catalog-checks",
+      "store": "/nix/store/8fc8k114ij0aqixgp5wz60k1v7xl8w3y-aos-bazel-store-inventory-1",
+      "store-s3": "/nix/store/2gi706dh83yri3mx25l2sd5zwby0y85c-aos-bazel-store-s3-inventory-1"
+    },
+    "existing_generated_files_unchanged": 14568,
+    "existing_profiles_with_unchanged_payloads": 58,
+    "inventories": {
+      "activation-core": {
+        "sha256": "d2104b739cfcc69e4a6ff98d79864aa0eb0a5922040e4dc680eff2e7426f8632",
+        "source_files": 62
+      },
+      "activation-crucible": {
+        "sha256": "45197bb3cdd1e80f6e93f3fb1c17e3191f1b8d4777750f2159db50b4d73d5018",
+        "source_files": 841
+      },
+      "activation-storage": {
+        "sha256": "a6c198384b31322cb5cbabb88a3bf99a9f5d5b055b9b5582a28ade3f461eaa28",
+        "source_files": 79
+      },
+      "activation-systemd": {
+        "sha256": "e546471a69552b2f0d0791fe7f498364ba26eeae924cc69887a688ae1599843d",
+        "source_files": 79
+      },
+      "aos-cli": {
+        "sha256": "ec6d714fac4717869cc7056c68e0ba0e6c6dd5b443af3b5ae3b9e6c2ac512a2e",
+        "source_files": 1343
+      },
+      "boot-pilot": {
+        "sha256": "47a0c7b4376c74ccb61447c76bcf11bc58124fe7b51708dccafb52a939ad35b6",
+        "source_files": 15
+      },
+      "boot-preparation": {
+        "sha256": "d1fb4ed3c867f8e4725200d4397e312695733ee3f6f1efe2e26b306168859fa8",
+        "source_files": 232
+      },
+      "build-services": {
+        "sha256": "147897c084ab89d5f3168bb2030e9b9dc7c84748ffd29d820e567f89f8b934c8",
+        "source_files": 57
+      },
+      "cli-support": {
+        "sha256": "9cdc7359ccf649f22dfe4401ff2eebe2d18e9b24957433705389fb3c6dca490a",
+        "source_files": 64
+      },
+      "contracts": {
+        "sha256": "e84b4b2cf3db731a37b3001d76d67250a999c6fd7bc8394ae926586d18681f79",
+        "source_files": 140
+      },
+      "control": {
+        "sha256": "180a690e4c9cbf2b876e8f7c117941e1fdef9430b0f32bbf4cf51d23b5c34c5a",
+        "source_files": 885
+      },
+      "crucible-cli": {
+        "sha256": "25ee82673f4c1e60340dbf3548ff5622b5ec67791c21787b4f2e25736f241a61",
+        "source_files": 1739
+      },
+      "daemon": {
+        "sha256": "9051bf6852c3a9567cb6b822efd4826a34c574c8a1cb95ce6b74fa16e2501dab",
+        "source_files": 1548
+      },
+      "deployment": {
+        "sha256": "9a66ed7760059eb072957996d1276e2c5602911b259876e0f757f0418ac0da0f",
+        "source_files": 183
+      },
+      "device": {
+        "sha256": "817a9344e2f0de4443c1b6d4054e3dc94a7fbc0dcaabb5ed029d57f0b6ccd8a6",
+        "source_files": 281
+      },
+      "engine": {
+        "sha256": "eea67f69917f1ebe1ba9ba92a92f1da8dfe23306cebb9610ea27b79b276e7075",
+        "source_files": 3785
+      },
+      "fixture": {
+        "sha256": "6f9fc362e6651beea0f64e3078e8390ecd29d95abc7f62756f75d6856bb70221",
+        "source_files": 9
+      },
+      "formats": {
+        "sha256": "80505042a4c0983f52134ec3dd606e9559676474fa79fb2e606e1666828c86ad",
+        "source_files": 73
+      },
+      "guest": {
+        "sha256": "b65be9f8322a414bf2af205038c1c69dbe1da3ada662cd07830c5e50901fa106",
+        "source_files": 295
+      },
+      "hub-client": {
+        "sha256": "23b9c6ff43dcf4da27d107cb23f5cdac5a882b91391e1cc5a91768c62a7ccd99",
+        "source_files": 10
+      },
+      "hub-console": {
+        "sha256": "a7e08b5c2594bc1449e264d5496bd6223d18f607e0ca50246f39732d8210ca85",
+        "source_files": 140
+      },
+      "hub-console-wasm": {
+        "sha256": "12e1fdd5f50e5fed1d4d608cfa00728eb4aea1bcac6e1bdfde0964797ce13a9c",
+        "source_files": 137
+      },
+      "hub-db": {
+        "sha256": "c15cdd5ad2ae07f9a0983193ef33c33124622ee664c9dab76d946ea8c2737194",
+        "source_files": 343
+      },
+      "hub-model": {
+        "sha256": "2be22cf56c9cdbf5ae207f6f47b45dbbbeadde8e4ad44aa8fec023efd4b91a7d",
+        "source_files": 91
+      },
+      "hub-native": {
+        "sha256": "067908c0e3f2e0d276fd19daba58b1484b154d30d285824800921d8bd61dee2d",
+        "source_files": 906
+      },
+      "hub-portable": {
+        "sha256": "eabf8c167b3de3e682145b15bca32bf116fffa04ff97b6a8fd9a21458b17b369",
+        "source_files": 67
+      },
+      "hub-service": {
+        "sha256": "8afcf0df507d22525a418f9b17b29e93e461809a859141b00ec2f3202cb7e092",
+        "source_files": 840
+      },
+      "hub-worker": {
+        "sha256": "24eea8254a8f98f3962f150793e609d1153bbf4c747163bc5398fd3b7cb1dc77",
+        "source_files": 755
+      },
+      "hub-worker-wasm": {
+        "sha256": "93f1d114ae8bf92cfb1a58151873c15a8bab6f940af2a115f3acefa396da3195",
+        "source_files": 630
+      },
+      "native-foundation": {
+        "sha256": "b419a97f611380c80cc7111bf594af008c9142a4a2945327205d7bf2e03b44d7",
+        "source_files": 102
+      },
+      "package-manager": {
+        "sha256": "3073c036978543977c4c09d2f569d16a1401eded2c437c0d43cc31f7a9f0a9dc",
+        "source_files": 499
+      },
+      "protocol": {
+        "sha256": "43a729ed0b777cfd58e20d48273111d2250cf157ef05443b1aa9f20f9a8d81a8",
+        "source_files": 160
+      },
+      "qemu-gateway-process-test": {
+        "sha256": "1dda0292335fc628c209d30152f370fcc849da7478161292f46304b5c1843e5a",
+        "source_files": 34
+      },
+      "qemu-gpl-production": {
+        "sha256": "e13b10a3f1179f7f2c52b688abb78a6ea17c5a6c3e1fcb584d6ed34f13e6e4b6",
+        "source_files": 268
+      },
+      "qemu-host": {
+        "sha256": "1581e4bfbb969352d6ea737b724b4fb81ca3500011fd2267a54667e92447bc50",
+        "source_files": 1127
+      },
+      "qemu-test-oracle-host": {
+        "sha256": "9839c1f675b94af84e24c269493e629927672013f4b6a4eec4cff4c0910039da",
+        "source_files": 866
+      },
+      "quota": {
+        "sha256": "62b5009a2d3ac25dbd1dbead75b427a813597b92c16e677f2aaa9a778f558105",
+        "source_files": 6
+      },
+      "registry-native": {
+        "sha256": "7f77bb307320ea8e0f57437cbaca4813a692011e7b686affd82fada4e9e60028",
+        "source_files": 372
+      },
+      "release-coordination": {
+        "sha256": "c68377780cec356305aeee8af27c845b6a4dd30813c6864f5547fae581632374",
+        "source_files": 269
+      },
+      "release-preparation": {
+        "sha256": "62071196e2421ac81df01eabf8e354eb0b5260ee676864a6515857570d5e6c7a",
+        "source_files": 182
+      },
+      "session": {
+        "sha256": "b07a7b9ab0ccee9994e35d3e3b8ebcb4516dc63a313c5d34cc93a2db479e1b4e",
+        "source_files": 841
+      },
+      "shared": {
+        "sha256": "601caf4624fb271c155896d37df7835ca71097092b9f22794397c40b73b200cf",
+        "source_files": 32
+      },
+      "store": {
+        "sha256": "4ba2014d49dbaf04b0bfe7da33ecdbe0aa4ae0133a88f9e0758cd4cce9817cf0",
+        "source_files": 272
+      },
+      "store-s3": {
+        "sha256": "abc6dfe3a3c2e4d0cf8eb0cb35036a9baf80c535d607b90e3cdb9a5bee0bf973",
+        "source_files": 54
+      }
+    },
+    "new_profiles": [
+      "qemu-gpl-tests",
+      "qemu-test-oracle-host"
+    ],
+    "sdk_profiles": 60
+  },
+  "executed_cases": 36,
+  "feature_parity": {
+    "gpl": {
+      "first_party_features": {
+        "crucible-qemu-debug-gateway": [
+          []
+        ],
+        "crucible-qemu-protocol": [
+          [
+            "test-oracle"
+          ]
+        ]
+      },
+      "report_sha256": "c81462bbcdeb0554ba359fb037ca4704a8b743be90eb5e7df86274f3e5adea70",
+      "upstream_crates": 34
+    },
+    "host": {
+      "first_party_features": {
+        "crucible-campaign": [
+          []
+        ],
+        "crucible-control-api": [
+          []
+        ],
+        "crucible-control-client": [
+          []
+        ],
+        "crucible-control-server": [
+          [
+            "default",
+            "qemu-test-oracle"
+          ]
+        ],
+        "crucible-determinism": [
+          []
+        ],
+        "crucible-device": [
+          [
+            "default"
+          ]
+        ],
+        "crucible-engine": [
+          [
+            "default"
+          ]
+        ],
+        "crucible-qemu-protocol": [
+          [
+            "test-oracle"
+          ]
+        ],
+        "crucible-qemu-shmem": [
+          []
+        ],
+        "crucible-session": [
+          [
+            "default"
+          ]
+        ],
+        "crucible-store": [
+          []
+        ]
+      },
+      "report_sha256": "d4c00bbb2584875339cc64dcd63be30d59c8e949078e0da0a1a80cdbb51ec1b9",
+      "upstream_crates": 194
+    }
+  },
+  "ignored_cases": 0,
+  "limits": [
+    "The helper executes the real Apache gateway client in a separately linked process; GPL fixtures and assertions remain in the GPL test executable.",
+    "The transport exchanges bounded owned bytes, fixed-width integers, and the existing permissive status codec. It transfers no native pointers or implementation structures.",
+    "No host cache service or remote cache is used. Ordinary qualification requests no shared disk cache mount; retained Rustc events show no cache hits.",
+    "Compiler cfg/edition agreement does not establish complete compiler-option, linker, ABI, or installed-closure equivalence.",
+    "Plugin engine-backed unit tests, AArch64 host qualification, remaining live VM/service gates, release gates, performance acceptance, and production cutover remain separate requirements.",
+    "Cargo remains the independent comparison and production builder until the migration gates pass."
+  ],
+  "protocol": {
+    "framing_cases": [
+      "test_oracle::tests::clean_eof_is_distinct_from_a_truncated_header_or_payload",
+      "test_oracle::tests::frame_matches_the_frozen_network_byte_order_vector",
+      "test_oracle::tests::interrupted_and_fragmented_streams_preserve_the_frame",
+      "test_oracle::tests::oversized_frames_are_rejected_before_reading_or_writing_payloads",
+      "test_oracle::tests::owned_payload_preserves_every_byte_and_the_maximum_length",
+      "test_oracle::tests::ready_and_request_id_rules_are_enforced_in_both_directions",
+      "test_oracle::tests::unknown_header_fields_and_reserved_bytes_are_rejected"
+    ],
+    "maximum_payload_bytes": 65536,
+    "test_xml_sha256": "d1b1a37a4e899458fb86a4e83960025c5ed660e9e494c968c84c53ad537dc058",
+    "unit_cases": 48,
+    "version": 1
+  },
+  "qualification": "/nix/store/c5xcw2yw4zy6ihgy3p25pi6wa7shdk4q-aos-bazel-qemu-gateway-process-checks",
+  "schema_version": 1,
+  "source_catalog": {
+    "crates": {
+      "packages": 77,
+      "sources": 3736
+    },
+    "external_build_actions": 0,
+    "repository": {
+      "packages": 79,
+      "sources": 3756
+    },
+    "schema_version": 1
+  },
+  "source_sha256": {
+    "crates/crucible/control/crucible-control-server/src/bin/qemu_test_oracle.rs": "12379b3f64d3c0277626992db8395b114736cdbae3e65d9269ab8f83007e3413",
+    "crates/crucible/protocol/crucible-qemu-protocol/src/test_oracle.rs": "ad5b3dac47d620cc854d24ef957a423e26c99d7f5ba4b3f01e875111857c5f6d",
+    "crates/crucible/qemu/crucible-qemu-debug-gateway/src/main.rs": "2d9318e30380358a572c7a74a66b928d3133b6bbcb27cae6261183eadc74af20",
+    "crates/crucible/qemu/crucible-qemu-debug-gateway/src/main/tests/scheduler_ownership.rs": "19fd917cb4c514d101d65bfeff028fbd281bf0b100e4ca24aaf168386bc45901",
+    "crates/crucible/qemu/crucible-qemu-debug-gateway/tests/process_lifecycle.rs": "a20ddf67529099ed8f33ebf7c1a97102ac9862e8aa8b62efcd6eccdf538336e1",
+    "crates/crucible/qemu/crucible-qemu-debug-gateway/tests/support/process_oracle.rs": "255742068584439a5d201c6348437a67ba57c46ade7e08d89f253c5782f42496",
+    "crates/crucible/testing/crucible-test-support/tests/crate_artifact_types.rs": "bd90af5078309a6aa6566780c359704f2ac5612aef1a2d11191d2231f95371ba",
+    "crates/crucible/testing/crucible-test-support/tests/support/artifact_type_binaries.rs": "3dd3643d5b2df8874788df632286f4d20cfeba355085138bd3c52e8a52064d45",
+    "pkgs/tools/crucible/crucible.nix": "e4fbfee8db7197890672a521c088695d6f904ea39ae079609e9164f88410280c",
+    "tests/build/_bazel-qemu-gateway-tests.nix": "9c007481a85d9616b66b49aa6574ca578970d3f340f85c74aac50ac2751935b4",
+    "tests/build/_bazel-qemu-process-cargo.nix": "3ec96dd080b97777310af7c1f48d3371b14f33486728b87823e5ec1d218479fc",
+    "tests/crucible/phase1-crate-artifact-types.nix": "6feb0ddf8855819244d429366f49cd6c7f46ceca9821a1b10824361c9b3d9711"
+  },
+  "status": "PASS: native x86_64 Linux gateway unit and process-lifecycle qualification",
+  "tests": {
+    "//crates/crucible/qemu/crucible-qemu-debug-gateway:bin_crucible-debug-gateway": {
+      "executed": [
+        "tests::canonical_software_breakpoint_reaches_qemu_only_as_hardware",
+        "tests::commit_rejects_candidate_hydrated_before_rsp_state_change",
+        "tests::commit_waits_for_every_scheduler_run_control_state_to_resolve",
+        "tests::diagnostics_are_bounded_on_character_boundaries",
+        "tests::direct_operator_writes_require_private_branch_authorization",
+        "tests::forwarded_rsp_queue_rejects_flood_at_fixed_capacity",
+        "tests::forwarded_rsp_queue_rejects_oversized_byte_total",
+        "tests::initial_stop_nack_replays_to_operator_without_reaching_backend",
+        "tests::negotiation_rejection_has_a_typed_correlated_error",
+        "tests::operator_disconnect_deactivates_backend_when_reconnect_fails",
+        "tests::operator_disconnect_deactivates_backend_with_ambiguous_qemu_response",
+        "tests::operator_disconnect_deactivates_backend_with_inflight_run_control",
+        "tests::packet_admitted_after_commit_barrier_reaches_only_new_backend",
+        "tests::partial_header_is_a_connection_error_without_mutating_process_state",
+        "tests::persistent_rsp_state_requires_semantic_ok_response",
+        "tests::reconnect_recovers_prepare_whose_acknowledgement_was_lost",
+        "tests::reconnect_repeats_commit_whose_acknowledgement_was_lost",
+        "tests::scheduler_ownership_tests::operator_disconnect_preserves_internal_scheduler_ownership",
+        "tests::scheduler_ownership_tests::operator_disconnect_stops_active_gdb_run_without_dropping_backend",
+        "tests::scheduler_ownership_tests::operator_run_control_reaches_scheduler_once_and_replays_stop_until_acknowledged",
+        "tests::scheduler_ownership_tests::operator_socket_routes_continue_through_scheduler_and_replays_stop",
+        "tests::scheduler_ownership_tests::operator_step_and_vcont_packets_enter_the_scheduler_queue",
+        "tests::scheduler_ownership_tests::queued_continue_is_superseded_by_operator_interrupt",
+        "tests::scheduler_ownership_tests::racing_interrupt_collapses_completed_run_into_one_correlated_stop",
+        "tests::scheduler_ownership_tests::scheduler_poll_defers_gdb_run_control_during_internal_lease",
+        "tests::truncated_payload_is_a_connection_error_without_mutating_process_state"
+      ],
+      "ignored": []
+    },
+    "//crates/crucible/qemu/crucible-qemu-debug-gateway:process_lifecycle": {
+      "executed": [
+        "apache_client_launches_negotiates_queries_and_reaps_gateway",
+        "operator_reconnect_restores_the_active_qemu_backend",
+        "owner_unix_operator_rejects_direct_writes_before_branch_fork",
+        "stable_gdb_connection_survives_backend_replacement"
+      ],
+      "ignored": []
+    },
+    "//crates/crucible/qemu/crucible-qemu-debug-gateway:unit": {
+      "executed": [
+        "tests::canonical_policy_intercepts_run_control_and_mutation",
+        "tests::failed_candidate_does_not_replace_active_backend_or_rsp_state",
+        "tests::prepare_and_commit_are_idempotent_after_lost_acknowledgements",
+        "tests::rsp_stream_decoder_consumes_maximum_ack_stream_linearly",
+        "tests::rsp_stream_decoder_handles_split_and_coalesced_units",
+        "tests::rsp_stream_decoder_rejects_invalid_checksum_and_unknown_bytes"
+      ],
+      "ignored": []
+    }
+  },
+  "uncached_execution": {
+    "gpl": {
+      "execution_report_sha256": "e84e55afeab180aa16cbd9fe4cbd008e2ccd2d4d4c1fbfa9563b34f0036e21a3",
+      "rustc_actions": 52,
+      "rustc_cache_hits": 0,
+      "rustc_runners": {
+        "linux-sandbox": 52
+      }
+    },
+    "host": {
+      "execution_report_sha256": "aeb8327215ef4e0b204c5455d80980ca6bd074a54de9179901068d0dc054dad1",
+      "rustc_actions": 237,
+      "rustc_cache_hits": 0,
+      "rustc_runners": {
+        "linux-sandbox": 237
+      }
+    }
+  }
+}

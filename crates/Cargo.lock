@@ -2910,6 +2910,7 @@ dependencies = [
  "bytes",
  "crucible-control-api",
  "crucible-control-client",
+ "crucible-determinism",
  "crucible-engine",
  "crucible-qemu-protocol",
  "crucible-qemu-shmem",
@@ -2922,6 +2923,7 @@ dependencies = [
  "rustls",
  "rustls-pemfile",
  "rustls-pki-types",
+ "serde_json",
  "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.18",
@@ -3016,7 +3018,6 @@ dependencies = [
 name = "crucible-qemu-debug-gateway"
 version = "0.1.0"
 dependencies = [
- "crucible-control-server",
  "crucible-qemu-protocol",
  "tempfile",
  "thiserror 2.0.18",
@@ -3048,7 +3049,6 @@ name = "crucible-qemu-plugin"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "crucible-engine",
  "crucible-qemu-protocol",
  "crucible-qemu-shmem",
  "hex",

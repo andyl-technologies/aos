@@ -22,7 +22,19 @@ fn guest_assertion_evaluation_stays_in_the_host() -> Result<(), Box<dyn Error>> 
         );
     }
 
-    let plugin = crates.join(PLUGIN_PACKAGE).join("src");
+    let plugin = if let Some(graph) = super::architecture::load()? {
+        let directory = crates
+            .parent()
+            .ok_or("crates/ must be inside the repository")?
+            .join(graph.package_directory(PLUGIN_PACKAGE)?)
+            .join("src");
+        if !directory.is_dir() {
+            return Err("declared Bazel plugin source input is absent".into());
+        }
+        directory
+    } else {
+        crates.join(PLUGIN_PACKAGE).join("src")
+    };
     let mut failures = Vec::new();
     visit_rust_sources(&plugin, &mut |path, source| {
         for forbidden in ["HostAssertionOutcome", "GuestMarkerAssertionState"] {

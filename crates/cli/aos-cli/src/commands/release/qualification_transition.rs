@@ -360,6 +360,8 @@ pub(super) fn verify_admission(check: AdmissionCheck<'_>) -> Result<Option<Sha25
 /// the exact staging receipt, remain fresh now, and carry the destination's
 /// review threshold; the receipt must be signed by the plan's single
 /// qualification authority.
+// Verify both artifact digests and their separate qualification/review trust roots together.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn verify_staging_evidence(
     plan: &ReleasePlan,
     manifest: &ReleaseManifestV1,

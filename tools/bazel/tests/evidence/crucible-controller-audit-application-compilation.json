@@ -1,0 +1,30 @@
+{
+  "cargo_build_messages_sha256": "cdf28ef80b2bac755a38d0d109b316bc7870e22d494cce0eca50a0bc7b9b6ea3",
+  "compiled_test_artifacts": 185,
+  "derivation": "/nix/store/7yz79cj8xrjpv8agw8hxq476zq04gnxr-aos-test-targets-0.1.0.drv",
+  "limits": [
+    "Application unit and integration target compilation only; this gate does not execute those targets.",
+    "Focused Crucible Cargo/Bazel audit execution and complete controller Clippy are separate qualifications.",
+    "This receipt does not qualify production cutover or the remaining RFC acceptance gates."
+  ],
+  "output": "/nix/store/b9180qqhyb02rgp1vk3iv9iln5gzw6j2-aos-test-targets-0.1.0",
+  "schema_version": 1,
+  "scope": "Required checks.rust.aos-test-targets compilation for the ten Rust sources changed by the controller audit migration.",
+  "source_binding": {
+    "derivation": "/nix/store/7yz79cj8xrjpv8agw8hxq476zq04gnxr-aos-test-targets-0.1.0.drv",
+    "rust_sources_sha256": {
+      "crates/crucible/crucible-test-support/tests/control_plane_boundary.rs": "ed11fc74ce205cc8f0ae2445c76d78aa28627e0bb4f36a07dce7b59770994e11",
+      "crates/crucible/crucible-test-support/tests/gate_license_boundary.rs": "cf386174c75cd0eef9d03c3e17e426a58ce1b779f4fc177645edae1f403a430d",
+      "crates/crucible/crucible-test-support/tests/gate_license_boundary/bazel.rs": "11b28c5f31248b59e4298b649bd2e68aedd15e9cd025c509b735cd757951590e",
+      "crates/crucible/crucible-test-support/tests/harness_lint.rs": "6d7aba2e3427baf32d8e6a6ea2ba89182ed3942aae6622e6814ab9bc532e9bf6",
+      "crates/crucible/crucible-test-support/tests/support/architecture.rs": "dc6b5e51e2855a10f2e45be716d1e134a3805fe18665ca1474605e51206ef589",
+      "crates/crucible/crucible-test-support/tests/support/harness_lint/common.rs": "4fb50e6d7d0754279cb4d6492c3a9dc594b7a0218b5aaf683a98ac91428b4ac0",
+      "crates/crucible/crucible-test-support/tests/support/harness_lint/confinement.rs": "36f53f90c462472a0cfb8b8c00486f4969f222206fbe3083a5020ac7cbea272e",
+      "crates/crucible/crucible-test-support/tests/support/harness_lint/declared.rs": "3bb25f7d98f84cc8af959009434f661ed0793833d060b6fa1d97f2e59b55544c",
+      "crates/crucible/crucible-test-support/tests/support/harness_lint/lint_selection.rs": "9b45429b0d4c295eeef4eb9acb6e0612986e313d18fe64f11573e14eaa187526",
+      "crates/crucible/crucible-test-support/tests/support/test_targets.rs": "6cbabaf473e5331465e01c0fce2a687c077770c267e32c48bf971b1ba039172e"
+    },
+    "source": "/nix/store/s4f82nzs2ra9j67av9w1b3a25f6xmlzd-aos-workspace-src"
+  },
+  "status": "PASS"
+}

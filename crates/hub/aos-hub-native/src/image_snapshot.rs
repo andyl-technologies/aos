@@ -22,6 +22,10 @@ use sha2::{Digest as _, Sha256};
 pub struct ImageSnapshotStore {
     directory: OwnedFd,
     path: std::path::PathBuf,
+    #[allow(
+        clippy::disallowed_types,
+        reason = "Native digest lookups retain randomized hashing outside Crucible state."
+    )]
     retained: Mutex<std::collections::HashMap<String, Arc<fs::File>>>,
     lifecycle: Arc<tokio::sync::Mutex<()>>,
 }
@@ -81,6 +85,10 @@ impl ImageSnapshotStore {
     ///
     /// Returns an error when the directory cannot be created, is linked,
     /// is not owner-private, or is not owned by the effective user.
+    #[allow(
+        clippy::disallowed_types,
+        reason = "Native digest lookups retain randomized hashing outside Crucible state."
+    )]
     pub fn open(hub_root: &Path) -> Result<Arc<Self>> {
         use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
 

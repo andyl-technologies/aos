@@ -174,10 +174,15 @@ fn invalid_actions_paths_and_inputs_fail_before_mutation() {
 
 #[test]
 fn source_built_nss_helper_resolves_exact_names_and_rejects_absence() {
-    // Cargo shell callers can omit native tooling; packaged tests always pin it.
-    if option_env!("AOS_ACCOUNT_LOOKUP").is_none() {
+    // Cargo shell callers can omit native tooling; package and Bazel tests pin it.
+    if option_env!("AOS_ACCOUNT_LOOKUP").is_none()
+        && std::env::var_os("AOS_TEST_ACCOUNT_LOOKUP").is_none()
+    {
         return;
     }
+    let helper = account_lookup_executable().unwrap();
+    assert!(helper.is_absolute() && helper.is_file());
+
     assert_eq!(account("passwd", "root").unwrap(), 0);
     let root_group = if cfg!(target_os = "macos") {
         "wheel"

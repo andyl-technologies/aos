@@ -255,6 +255,10 @@ fn parse_registration(bytes: &[u8]) -> Result<BTreeSet<PathBuf>> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "Test fixtures and assertions fail immediately on unexpected errors"
+)]
 mod tests {
     use super::*;
 
@@ -290,11 +294,11 @@ mod tests {
         }
         archive.extend_from_slice(name.as_bytes());
         archive.push(0);
-        while archive.len() % 4 != 0 {
+        while !archive.len().is_multiple_of(4) {
             archive.push(0);
         }
         archive.extend_from_slice(data);
-        while archive.len() % 4 != 0 {
+        while !archive.len().is_multiple_of(4) {
             archive.push(0);
         }
     }

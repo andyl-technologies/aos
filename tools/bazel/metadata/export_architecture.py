@@ -1,0 +1,501 @@
+"""Exports production Rust package edges from Bazel's unconfigured query graph.
+
+The structured query retains every selector branch. Only explicit Rust
+compilation dependency attributes contribute package edges; test-only rules,
+runfiles, generators' tool inputs, and implicit toolchains are excluded.
+Uncompiled source packages remain explicitly unmodeled. A separate dependency
+view retains test and build-script compilation edges for repository audits;
+those edges never contribute to the production package graph.
+Test compilation and execution records separately retain source roots, feature
+selectors, and wrapper-to-binary bindings for gate discovery without Cargo.
+Separate lint records retain configuration levels, per-compilation bindings,
+Clippy roots, and configuration-file selections without inferring inheritance.
+"""
+
+import argparse
+import hashlib
+import json
+from pathlib import Path
+
+
+RUST_RULES = {"rust_library", "rust_binary", "rust_proc_macro", "rust_shared_library", "rust_static_library"}
+DEPENDENCY_RULES = RUST_RULES | {"rust_test", "cargo_build_script", "rust_doc", "rust_doc_test", "rust_clippy"}
+PROFILE_RULES = {
+    name + "_profile_required" for name in [
+        "device", "store", "guest", "engine", "quota", "session", "control",
+        "qemu_host", "store_s3", "daemon", "crucible_cli", "formats",
+    ]
+}
+
+
+def attribute_values(attribute, expected):
+    """Unions typed selector values without interpreting condition labels as edges."""
+    if attribute["type"] == "SELECTOR_LIST":
+        selector = attribute["selectorList"]
+        if selector["type"] != expected:
+            raise ValueError("unexpected selector value type")
+        return [value for element in selector["elements"] for entry in element["entries"]
+                for value in attribute_values({**entry, "type": expected}, expected)]
+    if attribute["type"] != expected:
+        raise ValueError("unexpected architecture attribute type")
+    if expected in {"LABEL_LIST", "STRING_LIST"}:
+        return attribute.get("stringListValue", [])
+    if expected in {"LABEL", "STRING"}:
+        return [attribute["stringValue"]] if "stringValue" in attribute else []
+    raise ValueError("unsupported architecture attribute type: " + expected)
+
+
+def attributes(rule):
+    """Indexes attributes while rejecting duplicate entries in query output."""
+    result = {}
+    for attribute in rule["attribute"]:
+        if attribute["name"] in result:
+            raise ValueError("duplicate architecture rule attribute")
+        result[attribute["name"]] = attribute
+    return result
+
+
+def compilation_target(label, rule, owner):
+    """Retains artifact identity for every Rust root, including test-only copies.
+
+    Feature variants remain separate records. Consumers decide which artifacts
+    form a product surface; the exporter never hides examples or generators by
+    guessing from their target names.
+    """
+    attrs = attributes(rule)
+    if attrs["testonly"]["type"] != "BOOLEAN":
+        raise ValueError("architecture test-only selection must not be configurable")
+    roots = attribute_values(attrs["crate_root"], "LABEL")
+    if not roots:
+        # rules_rust accepts a single Rust source without an explicit crate_root.
+        # Ambiguous implicit roots must be declared before metadata can own them.
+        roots = [source for source in attribute_values(attrs["srcs"], "LABEL_LIST") if source.endswith(".rs")]
+        if len(roots) != 1:
+            raise ValueError("architecture artifact requires an unambiguous crate root: " + label)
+    prefix = "//" + owner["directory"] + ":"
+    relative_roots = []
+    for root in roots:
+        if not root.startswith(prefix):
+            raise ValueError("architecture artifact root escapes its source package: " + label)
+        relative = root.removeprefix(prefix)
+        path = Path(relative)
+        if path.is_absolute() or path.as_posix() != relative or ".." in path.parts or not relative.endswith(".rs"):
+            raise ValueError("invalid architecture artifact root: " + label)
+        relative_roots.append(relative)
+    names = attribute_values(attrs["crate_name"], "STRING")
+    if len(names) != 1:
+        raise ValueError("architecture artifact requires an unambiguous crate name: " + label)
+    return {
+        "package": owner["name"],
+        "kind": rule["ruleClass"],
+        "crate_name": names[0] or label.partition(":")[2].replace("-", "_"),
+        "crate_roots": sorted(set(relative_roots)),
+        "features": sorted(set(attribute_values(attrs["crate_features"], "STRING_LIST"))),
+        "tags": sorted(set(attribute_values(attrs["tags"], "STRING_LIST"))),
+        "test_only": attrs["testonly"].get("booleanValue", False),
+    }
+
+
+def repository_packages(directory):
+    """Reads authoritative upstream package names from pinned SDK source manifests."""
+    result = {}
+    manifests = {}
+    for path in sorted(directory.glob("*/sources.json")):
+        manifest = json.loads(path.read_text())
+        if manifest["schema_version"] != 1:
+            raise ValueError("unsupported SDK source manifest")
+        manifests[str(path.relative_to(directory))] = hashlib.sha256(path.read_bytes()).hexdigest()
+        for repository, source in manifest["sources"].items():
+            name = source["name"]
+            if repository in result and result[repository] != name:
+                raise ValueError("conflicting SDK repository package name")
+            result[repository] = name
+    if not result:
+        raise ValueError("architecture export requires pinned SDK source manifests")
+    return result, manifests
+
+
+def string_list_selection(attribute):
+    """Retains alternatives without turning their union into a guarantee."""
+    if attribute["type"] == "STRING_LIST":
+        return {"type": "STRING_LIST", "values": attribute_values(attribute, "STRING_LIST")}
+    attribute_values(attribute, "STRING_LIST")
+    elements = []
+    for element in attribute["selectorList"]["elements"]:
+        entries = element["entries"]
+        if not entries or len({entry["label"] for entry in entries}) != len(entries):
+            raise ValueError("string-list selector requires distinct nonempty branches")
+        elements.append(sorted([
+            {"condition": entry["label"], "values": entry.get("stringListValue", [])}
+            for entry in entries
+        ], key=lambda entry: entry["condition"]))
+    if not elements:
+        raise ValueError("string-list selector has no elements")
+    return {"type": "SELECTOR_LIST", "elements": elements}
+
+
+def test_metadata(rules, catalog, compilations):
+    """Exports libtest sources and runnable wrappers as separate owned records.
+
+    Unit tests reuse their crate's roots, while their feature selection comes
+    from the test rule, matching the pinned rules_rust implementation. Alias
+    branches retain every possible crate root and must stay inside the owner.
+    """
+    tests = {}
+
+    def roots(label, owner, active=()):
+        if label in active:
+            raise ValueError("test crate alias cycle")
+        if label not in rules:
+            raise ValueError("test crate is absent from query: " + label)
+        rule = rules[label]
+        attrs = attributes(rule)
+        if rule["ruleClass"] == "alias":
+            actual = attribute_values(attrs["actual"], "LABEL")
+            if not actual:
+                raise ValueError("test crate alias has no branches")
+            result = [roots(value, owner, (*active, label)) for value in actual]
+            return set().union(*(row[0] for row in result)), set().union(*(row[1] for row in result))
+        if label in compilations:
+            compilation = compilations[label]
+        elif rule["ruleClass"] == "rust_test":
+            compilation = test(label, (*active, label))
+        else:
+            raise ValueError("test crate is not a Rust compilation: " + label)
+        if compilation["package"] != owner["name"]:
+            raise ValueError("test crate escapes its source owner: " + label)
+        return set(compilation["crate_roots"]), {label}
+
+    def test(label, active=()):
+        if label in tests:
+            return tests[label]
+        rule = rules[label]
+        attrs = attributes(rule)
+        owner = catalog.get(label.partition(":")[0])
+        if owner is None:
+            raise ValueError("test compilation has no declared source package")
+        if attrs["testonly"]["type"] != "BOOLEAN" or not attrs["testonly"].get("booleanValue", False):
+            raise ValueError("test compilation must remain test-only")
+        crates = attribute_values(attrs["crate"], "LABEL") if "crate" in attrs else []
+        crate_targets = set()
+        if crates:
+            if attribute_values(attrs["crate_root"], "LABEL") or attribute_values(attrs["srcs"], "LABEL_LIST"):
+                raise ValueError("test crate cannot also declare source roots")
+            inherited = [roots(value, owner, active) for value in crates]
+            crate_roots = set().union(*(row[0] for row in inherited))
+            crate_targets = set().union(*(row[1] for row in inherited))
+        else:
+            crate_roots = set(compilation_target(label, rule, owner)["crate_roots"])
+        tests[label] = {
+            "package": owner["name"], "crate_roots": sorted(crate_roots),
+            "crate_targets": sorted(crate_targets),
+            "features": sorted(set(attribute_values(attrs["crate_features"], "STRING_LIST"))),
+            "feature_selection": string_list_selection(attrs["crate_features"]),
+            "tags": sorted(set(attribute_values(attrs["tags"], "STRING_LIST"))),
+            "test_only": True,
+        }
+        return tests[label]
+
+    for label, rule in sorted(rules.items()):
+        if rule["ruleClass"] == "rust_test":
+            test(label, (label,))
+
+    executions = {}
+    for label, rule in sorted(rules.items()):
+        if rule["ruleClass"] != "_libtest_test":
+            continue
+        attrs = attributes(rule)
+        owner = catalog.get(label.partition(":")[0])
+        if owner is None:
+            raise ValueError("test wrapper has no declared source package")
+        if attribute_values(attrs["package_name"], "STRING") != [owner["name"]]:
+            raise ValueError("test wrapper package disagrees with source ownership")
+        binaries = attribute_values(attrs["binary"], "LABEL")
+        if len(binaries) != 1 or binaries[0] not in tests or tests[binaries[0]]["package"] != owner["name"]:
+            raise ValueError("test wrapper must select one owned test compilation")
+        if attrs["testonly"]["type"] != "BOOLEAN" or not attrs["testonly"].get("booleanValue", False):
+            raise ValueError("test wrapper must remain test-only")
+        executions[label] = {
+            "package": owner["name"], "binary": binaries[0],
+            "tags": sorted(set(attribute_values(attrs["tags"], "STRING_LIST"))),
+            "argument_selection": string_list_selection(attrs["args"]),
+            "test_only": True,
+        }
+    return dict(sorted(tests.items())), executions
+
+
+def selected_attribute(attribute, expected, read_values):
+    """Retains typed attribute alternatives and concatenated selector elements."""
+    if attribute["type"] == expected:
+        return {"type": expected, "values": read_values(attribute)}
+    if attribute["type"] != "SELECTOR_LIST" or attribute["selectorList"]["type"] != expected:
+        raise ValueError("unexpected lint attribute selection type")
+    elements = []
+    for element in attribute["selectorList"]["elements"]:
+        entries = element["entries"]
+        if not entries or len({entry["label"] for entry in entries}) != len(entries):
+            raise ValueError("lint selector requires distinct nonempty branches")
+        elements.append(sorted([
+            {"condition": entry["label"], "values": read_values(entry)} for entry in entries
+        ], key=lambda entry: entry["condition"]))
+    if not elements:
+        raise ValueError("lint selector has no elements")
+    return {"type": "SELECTOR_LIST", "elements": elements}
+
+
+def label_selection(attribute, kind="LABEL"):
+    """Preserves optional labels and label lists without flattening conditions."""
+    return selected_attribute(attribute, kind, lambda entry: attribute_values({**entry, "type": kind}, kind))
+
+
+def lint_level_selection(attribute):
+    """Retains lint levels, including weakened branches, and rejects ambiguous keys."""
+    def levels(entry):
+        result = {}
+        for row in entry.get("stringDictValue", []):
+            name, level = row["key"], row["value"]
+            if not isinstance(name, str) or not name or name in result:
+                raise ValueError("invalid or duplicate lint configuration key")
+            # These are the levels accepted by the pinned rules_rust rule.
+            if not isinstance(level, str) or level not in {"allow", "warn", "deny", "forbid", "force-warn"}:
+                raise ValueError("unsupported lint configuration level")
+            result[name] = level
+        return dict(sorted(result.items()))
+
+    return selected_attribute(attribute, "STRING_DICT", levels)
+
+
+def lint_metadata(rules, catalog):
+    """Exports declared lint policy separately from compilation dependency edges."""
+    configurations = {}
+    aliases = {}
+    groups = {}
+    for label, rule in sorted(rules.items()):
+        attrs = attributes(rule)
+        if rule["ruleClass"] == "rust_lint_config":
+            configurations[label] = {
+                name: lint_level_selection(attrs[name]) for name in ["rustc", "clippy", "rustdoc"]
+            }
+        elif rule["ruleClass"] == "alias":
+            aliases[label] = label_selection(attrs["actual"])
+        elif rule["ruleClass"] == "filegroup":
+            if not label.startswith("//tools/bazel/rules:"):
+                raise ValueError("lint data group escapes the shared rules package")
+            groups[label] = label_selection(attrs["srcs"], "LABEL_LIST")
+
+    def resolve_configuration(label, active=()):
+        if label in active:
+            raise ValueError("lint configuration alias cycle")
+        if label in configurations:
+            return
+        if label not in aliases:
+            raise ValueError("unmodeled lint configuration: " + label)
+        targets = attribute_values(attributes(rules[label])["actual"], "LABEL")
+        if not targets:
+            raise ValueError("lint configuration alias has no target")
+        for target in targets:
+            resolve_configuration(target, (*active, label))
+
+    bindings = {}
+    targets = {}
+    for label, rule in sorted(rules.items()):
+        kind = rule["ruleClass"]
+        if kind not in RUST_RULES | {"rust_test", "rust_clippy"}:
+            continue
+        owner = catalog.get(label.partition(":")[0])
+        if owner is None:
+            raise ValueError("lint target has no declared source package")
+        attrs = attributes(rule)
+        identity = {"package": owner["name"], "kind": kind,
+                    "test_only": attrs["testonly"].get("booleanValue", False)}
+        if kind == "rust_clippy":
+            targets[label] = {**identity, "target_selection": label_selection(attrs["deps"], "LABEL_LIST")}
+            continue
+        config = attrs.get("lint_config", {"type": "LABEL"})
+        for configuration in attribute_values(config, "LABEL"):
+            resolve_configuration(configuration)
+        # Test compilations use their own lint_config; their crate binding does
+        # not imply that the library's lint policy is inherited.
+        bindings[label] = {
+            **identity, "configuration_selection": label_selection(config),
+            "rustc_flag_selection": string_list_selection(attrs.get("rustc_flags", {"type": "STRING_LIST"})),
+            "tag_selection": string_list_selection(attrs.get("tags", {"type": "STRING_LIST"})),
+        }
+    return {
+        "lint_target_selection": "declared Rust compilation lint bindings, lint levels, Clippy roots, and shared configuration-file groups; selectors retained",
+        "lint_configuration_count": len(configurations), "lint_configurations": configurations,
+        "lint_binding_count": len(bindings), "lint_bindings": bindings,
+        "clippy_target_count": len(targets), "clippy_targets": targets,
+        "alias_target_count": len(aliases), "alias_targets": aliases,
+        "lint_data_group_count": len(groups), "lint_data_groups": groups,
+    }
+
+
+def export(records, repositories):
+    """Retains source ownership and unions production package edges across profiles."""
+    rules = {}
+    for record in records:
+        if record["type"] != "RULE":
+            raise ValueError("architecture query must contain only rules")
+        rule = record["rule"]
+        label = rule["name"]
+        if label in rules:
+            raise ValueError("duplicate architecture query rule: " + label)
+        if rule["ruleClass"] not in DEPENDENCY_RULES | PROFILE_RULES | {"_source_package", "alias", "_libtest_test", "rust_lint_config", "filegroup"}:
+            raise ValueError("unexpected architecture query rule class")
+        rules[label] = rule
+    catalog = {}
+    names = set()
+    for label, rule in rules.items():
+        if rule["ruleClass"] != "_source_package":
+            continue
+        identities = attribute_values(attributes(rule)["identity"], "STRING")
+        if len(identities) != 1:
+            raise ValueError("source package identity must be unambiguous")
+        identity = json.loads(identities[0])
+        directory = label.partition(":")[0]
+        if not directory.startswith("//crates/") or directory in catalog or identity["name"] in names:
+            raise ValueError("duplicate or invalid architecture source ownership")
+        if not all(isinstance(identity.get(field), str) and identity[field]
+                   for field in ["name", "version", "edition", "license", "license_domain"]):
+            raise ValueError("incomplete architecture source identity")
+        names.add(identity["name"])
+        catalog[directory] = {**identity, "directory": directory.removeprefix("//")}
+    if not catalog:
+        raise ValueError("architecture query omitted source ownership")
+
+    unavailable = {
+        label: rule["ruleClass"] for label, rule in rules.items()
+        if rule["ruleClass"] in PROFILE_RULES and label.startswith("//tools/bazel/rules:")
+    }
+    resolved = {}
+    native = set()
+
+    def resolve(label, active=(), development=False):
+        if label in active:
+            raise ValueError("architecture dependency alias cycle")
+        key = (label, development)
+        if key in resolved:
+            return resolved[key]
+        owner = catalog.get(label.partition(":")[0])
+        if label in unavailable:
+            result = set()
+        elif label in rules and rules[label]["ruleClass"] == "alias":
+            actual = attribute_values(attributes(rules[label])["actual"], "LABEL")
+            result = set().union(*(resolve(value, (*active, label), development) for value in actual))
+            if not result:
+                raise ValueError("dependency alias has no modeled package: " + label)
+        elif owner and label in rules and rules[label]["ruleClass"] in (
+            DEPENDENCY_RULES if development else RUST_RULES | {"cargo_build_script"}
+        ):
+            result = {owner["name"]}
+        elif label.startswith("@") and label[1:].partition("//")[0] in repositories:
+            result = {repositories[label[1:].partition("//")[0]]}
+        elif label.startswith(("@aos_native//", "//native/")):
+            # Retain native edges separately; they are not Rust package names.
+            native.add(label)
+            result = set()
+        else:
+            raise ValueError("unmodeled architecture dependency: " + label)
+        resolved[key] = result
+        return result
+
+    production = {name: set() for name in names}
+    targets = {name: [] for name in names}
+    target_edges = {}
+    compilations = {}
+    for label, rule in sorted(rules.items()):
+        if rule["ruleClass"] not in RUST_RULES:
+            continue
+        attrs = attributes(rule)
+        owner = catalog.get(label.partition(":")[0])
+        if owner is None:
+            raise ValueError("Rust target has no declared source package")
+        compilations[label] = compilation_target(label, rule, owner)
+        if attrs["testonly"]["type"] != "BOOLEAN":
+            raise ValueError("architecture test-only selection must not be configurable")
+        if attrs["testonly"].get("booleanValue", False):
+            continue
+        name = owner["name"]
+        targets[name].append(label)
+        edges = []
+        for attribute in ["deps", "proc_macro_deps"]:
+            if attribute not in attrs:
+                continue
+            for dependency in sorted(set(attribute_values(attrs[attribute], "LABEL_LIST"))):
+                packages = sorted(resolve(dependency) - {name})
+                production[name].update(packages)
+                edges.append({"attribute": attribute, "label": dependency, "packages": packages})
+        target_edges[label] = edges
+    if not any(targets.values()):
+        raise ValueError("architecture query omitted production Rust targets")
+
+    # Preserve the production view's native membership before inspecting tests.
+    # Audits of standalone dependencies need every compilation branch, whereas
+    # release boundary audits must continue to exclude development-only edges.
+    production_native = sorted(native)
+    dependency_targets = {}
+    for label, rule in sorted(rules.items()):
+        if rule["ruleClass"] not in DEPENDENCY_RULES:
+            continue
+        owner = catalog.get(label.partition(":")[0])
+        if owner is None:
+            raise ValueError("dependency target has no declared source package")
+        attrs = attributes(rule)
+        if attrs["testonly"]["type"] != "BOOLEAN":
+            raise ValueError("dependency test-only selection must not be configurable")
+        edges = []
+        for attribute, kind in [("deps", "LABEL_LIST"), ("proc_macro_deps", "LABEL_LIST"), ("crate", "LABEL")]:
+            if attribute not in attrs:
+                continue
+            for dependency in sorted(set(attribute_values(attrs[attribute], kind))):
+                edges.append({
+                    "attribute": attribute, "label": dependency,
+                    "packages": sorted(resolve(dependency, development=True) - {owner["name"]}),
+                })
+        dependency_targets[label] = {
+            "package": owner["name"], "kind": rule["ruleClass"],
+            "test_only": attrs["testonly"].get("booleanValue", False),
+            "dependencies": edges,
+        }
+    test_compilations, test_executions = test_metadata(rules, catalog, compilations)
+    return {
+        "schema_version": 1,
+        "selection": "union of all declared production platform/feature branches",
+        "packages": sorted([
+            {**identity, "production_targets": sorted(targets[identity["name"]]),
+             "production_dependencies": sorted(production[identity["name"]]) if targets[identity["name"]] else None}
+            for identity in catalog.values()
+        ], key=lambda package: package["name"]),
+        "target_dependencies": target_edges,
+        "compilation_targets": compilations,
+        "dependency_target_selection": "union of all declared Rust production, test, build-script, documentation, and lint branches",
+        "dependency_target_count": len(dependency_targets),
+        "dependency_targets": dependency_targets,
+        "test_target_selection": "all declared Rust test compilations and libtest execution wrappers; feature selectors retained",
+        "test_compilation_count": len(test_compilations),
+        "test_compilation_targets": test_compilations,
+        "test_execution_count": len(test_executions),
+        "test_execution_targets": test_executions,
+        "unavailable_profile_targets": dict(sorted(unavailable.items())),
+        "native_dependencies": production_native,
+        **lint_metadata(rules, catalog),
+    }
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--query", type=Path, required=True)
+    parser.add_argument("--sdk-directory", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    options = parser.parse_args()
+    repositories, manifests = repository_packages(options.sdk_directory)
+    records = [json.loads(line) for line in options.query.read_text().splitlines()]
+    result = export(records, repositories)
+    result["query_sha256"] = hashlib.sha256(options.query.read_bytes()).hexdigest()
+    result["sdk_manifests_sha256"] = manifests
+    options.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+
+
+if __name__ == "__main__":
+    main()

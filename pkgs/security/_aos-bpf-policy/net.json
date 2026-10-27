@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "package": "sample",
+  "mode": "private",
+  "securityLabel": "aos-pkg-sample",
+  "tcp": {"bind": [8000], "connect": [443]},
+  "ebpf": {
+    "identity": "aos-pkg-sample",
+    "hooks": ["socket_bind", "socket_connect"],
+    "tcp": {"bind": [8000], "connect": [443]}
+  }
+}

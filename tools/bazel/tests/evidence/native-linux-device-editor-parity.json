@@ -1,0 +1,343 @@
+{
+  "checks": {
+    "aos_dev_cli": "/nix/store/3x6fqcziv450b42nfxqskxx7j95v3rx7-aos-dev-cli-check-0",
+    "cache_invalidation": "/nix/store/9ab08vbakd11zjcy6vq0733czh1kwkxv-aos-bazel-cache-invalidation-matrix",
+    "combined_all": "/nix/store/hfpsqa9xgac4rmwgd3km4kpk505qmbhw-aos-bazel-checks",
+    "concurrent_cache": "/nix/store/aiwvl06z51r6s89ir3y5hrgnrymxriyb-aos-bazel-concurrent-cache-proof",
+    "cross_derivation_cache": "/nix/store/pvavd7kdc0vn4ilg0rm2dzv7qi7fxgd8-aos-bazel-cross-derivation-cache-proof",
+    "device_all": "/nix/store/s19ags6jwy71b489f84ipza2xsn6sy7k-aos-bazel-device-qualified-checks",
+    "editor_parity": "/nix/store/9vx909dl4rz0j6iaw4fr5kjzb33bbrb7-aos-bazel-device-editor-parity",
+    "sysroot_metadata": "/nix/store/pf5y61hjqzc5f9ifqpf6kby75dkpyll1-aos-bazel-sysroot-metadata"
+  },
+  "concurrent_cache_overlap_seconds": 9.491435697,
+  "configuration_sha256": {
+    "pkgs/build-support/_bazel/modules.nix": "c8dbf2b4db70641075d36076a80abdbfba020bea868121193eee86f481f6e239",
+    "pkgs/build-support/_bazel/toolchains.nix": "84c565b9e777f1baab2d489a43bd40d35cb54cf3c3a3c2e44a6e2da9b0fc2233",
+    "tests/build/_bazel-device.nix": "64a4f8fe5eb22322b8c97b9e87f68f2c0ae07db262fc67c0b718f665b2c6563b",
+    "tests/build/_bazel-rust-family.nix": "a8fb5d61b36fa2d2e9ca6e107e1ab62dc473f31a992d70bc89d30c8e4af11b72",
+    "tests/build/_bazel-sysroot-metadata.nix": "651c87484079c3c267d08d23f12f753a78a61fa119f5cc6881c63f52bed4bca7",
+    "tests/build/bazel.nix": "d286915ed9fcd892915a2bcdf468c28ff95d85c1625fe0ecedf84a5dc0ce6f25",
+    "tools/bazel/metadata/device-inventory.json": "8797c7a47aa2055265b94da76b18dd56123ce73a66abbee5fc4078c234d632e1",
+    "tools/bazel/metadata/export_rust_project.py": "ee32197d5c0e8ae524760e65b59307427dff8b8111e63c47a4e879813e47553b",
+    "tools/bazel/tests/test_family_editor.py": "62acb490fd6c1b6b56c780c19b4fbf4b5e402899e34f611044c0ff910da4c0e5",
+    "tools/bazel/tests/test_rust_project.py": "bd9db06d088200a1c97277e19a84ff3c7755618ada55c6e22a6d5ccd5f53577f",
+    "tools/bazel/tests/test_sysroot_cargo.py": "623fc7d571fb1368f87216250602032e06a16186dfaab9c665f86d24790b3dc5",
+    "tools/bazel/tests/verify_family_editor.py": "e6144e9c569f69cccf4f78fd1a5ab3eb416195a38d6752b0975ea056a0c571e8",
+    "tools/bazel/toolchains/sysroot_cargo.py": "74b8e1b79ec9fae9a7ec9c1fae6e5cb6b6dc08a622157817487520d70c6535aa"
+  },
+  "editor": {
+    "analysis": {
+      "complete_inference": false,
+      "exprs": {
+        "partial": 0,
+        "total": 270504,
+        "unknown": 20
+      },
+      "panics": 0,
+      "pats": {
+        "partial": 0,
+        "total": 46719,
+        "unknown": 0
+      }
+    },
+    "diagnostics": [
+      [
+        "crates/crucible/engine/crucible-device/src/netlink_fault_replay_test.rs",
+        "202:43",
+        "202:44",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/engine/crucible-device/src/ninep_lifecycle_test.rs",
+        "179:20",
+        "179:22",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/engine/crucible-device/src/snapshot_codec.rs",
+        "364:69",
+        "364:70",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/protocol/crucible-qemu-protocol/src/choice/group.rs",
+        "469:55",
+        "469:57",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs",
+        "2520:23",
+        "2520:45",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/protocol/crucible-qemu-protocol/tests/descriptor_handover.rs",
+        "154:37",
+        "154:38",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/protocol/crucible-qemu-shmem/src/lib.rs",
+        "210:37",
+        "210:63",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/protocol/crucible-qemu-shmem/src/mapped_setup_region/hot_fork.rs",
+        "353:48",
+        "353:81",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/protocol/crucible-qemu-shmem/src/mapped_setup_region/hot_fork/image.rs",
+        "201:48",
+        "201:81",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/protocol/crucible-qemu-shmem/src/mapped_setup_region/hot_fork/image.rs",
+        "445:28",
+        "445:29",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/protocol/crucible-qemu-shmem/src/mapped_setup_region/hot_fork/image.rs",
+        "483:24",
+        "483:25",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/protocol/crucible-qemu-shmem/src/mapped_setup_region/hot_fork/image.rs",
+        "492:24",
+        "492:25",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_command/transport.rs",
+        "553:32",
+        "553:33",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_command/transport.rs",
+        "561:32",
+        "561:33",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_event.rs",
+        "223:27",
+        "223:29",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_instruction_evidence.rs",
+        "354:37",
+        "354:39",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_instruction_evidence/port_io.rs",
+        "68:25",
+        "68:27",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_memory_evidence/evidence.rs",
+        "378:39",
+        "378:41",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_memory_evidence/evidence.rs",
+        "379:38",
+        "379:40",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_memory_evidence/mapping.rs",
+        "297:30",
+        "297:32",
+        "type",
+        "{unknown}"
+      ]
+    ],
+    "roots": {
+      "crates/crucible/engine/crucible-determinism/src/lib.rs": [],
+      "crates/crucible/engine/crucible-determinism/tests/contract_a.rs": [],
+      "crates/crucible/engine/crucible-determinism/tests/decision_rng.rs": [],
+      "crates/crucible/engine/crucible-determinism/tests/gate_content_address.rs": [],
+      "crates/crucible/engine/crucible-determinism/tests/gate_layer0_determinism.rs": [],
+      "crates/crucible/engine/crucible-device/src/lib.rs": [
+        "default"
+      ],
+      "crates/crucible/engine/crucible-device/tests/device_harness.rs": [
+        "default"
+      ],
+      "crates/crucible/engine/crucible-device/tests/gate_layer1_injection.rs": [
+        "default"
+      ],
+      "crates/crucible/engine/crucible-device/tests/io_subnode_lifecycle.rs": [
+        "default"
+      ],
+      "crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs": [],
+      "crates/crucible/protocol/crucible-qemu-protocol/tests/codec.rs": [],
+      "crates/crucible/protocol/crucible-qemu-protocol/tests/codec_fuzz.rs": [],
+      "crates/crucible/protocol/crucible-qemu-protocol/tests/descriptor_handover.rs": [],
+      "crates/crucible/protocol/crucible-qemu-protocol/tests/frame_format.rs": [],
+      "crates/crucible/protocol/crucible-qemu-protocol/tests/gate_abi_conformance.rs": [],
+      "crates/crucible/protocol/crucible-qemu-protocol/tests/gate_layer1_injection.rs": [],
+      "crates/crucible/protocol/crucible-qemu-protocol/tests/golden_vectors.rs": [],
+      "crates/crucible/protocol/crucible-qemu-protocol/tests/handshake.rs": [],
+      "crates/crucible/protocol/crucible-qemu-protocol/tests/lifecycle.rs": [],
+      "crates/crucible/protocol/crucible-qemu-protocol/tests/setup_completion.rs": [],
+      "crates/crucible/protocol/crucible-qemu-shmem/examples/crucible-shmem-abi-header.rs": [],
+      "crates/crucible/protocol/crucible-qemu-shmem/src/lib.rs": [],
+      "crates/crucible/protocol/crucible-qemu-shmem/tests/advance_ceiling_handoff.rs": [],
+      "crates/crucible/protocol/crucible-qemu-shmem/tests/control_flags.rs": [],
+      "crates/crucible/protocol/crucible-qemu-shmem/tests/gate_abi_conformance.rs": [],
+      "crates/crucible/protocol/crucible-qemu-shmem/tests/gate_layer1_injection.rs": [],
+      "crates/crucible/protocol/crucible-qemu-shmem/tests/generated_abi_header.rs": [],
+      "crates/crucible/protocol/crucible-qemu-shmem/tests/icount_stamped_injection.rs": [],
+      "crates/crucible/protocol/crucible-qemu-shmem/tests/lookahead_gate.rs": [],
+      "crates/crucible/protocol/crucible-qemu-shmem/tests/multi_vcpu_node_slot.rs": [],
+      "crates/crucible/protocol/crucible-qemu-shmem/tests/preemption_mailbox.rs": [],
+      "crates/crucible/protocol/crucible-qemu-shmem/tests/region_layout.rs": [],
+      "crates/crucible/protocol/crucible-qemu-shmem/tests/setup_validation.rs": [],
+      "crates/crucible/protocol/crucible-qemu-shmem/tests/snapshot_restore.rs": []
+    }
+  },
+  "limitations": [
+    "The same 20 unknown expression types remain in both editors; this is parity, not complete inference.",
+    "The Cargo oracle is temporary qualification tooling. First-party Bazel compilation and editor discovery do not execute Cargo.",
+    "Foreign-target editor workflows, remaining application families and performance acceptance remain open; no production cutover."
+  ],
+  "schema_version": 1,
+  "scope": "Native Linux device-family editor semantic parity against a temporary offline Cargo oracle",
+  "source_parent_commit": "cdfaaac5fe",
+  "sysroot_metadata": {
+    "aarch64-unknown-linux-gnu": {
+      "packages": [
+        "alloc",
+        "alloctests",
+        "cc",
+        "cfg-if",
+        "compiler_builtins",
+        "core",
+        "coretests",
+        "foldhash",
+        "getopts",
+        "hashbrown",
+        "libc",
+        "panic_abort",
+        "panic_unwind",
+        "proc_macro",
+        "profiler_builtins",
+        "rand",
+        "rand_core",
+        "rand_xorshift",
+        "rustc-demangle",
+        "rustc-literal-escaper",
+        "rustc-std-workspace-alloc",
+        "rustc-std-workspace-core",
+        "rustc-std-workspace-std",
+        "shlex",
+        "std",
+        "std_detect",
+        "sysroot",
+        "test",
+        "unwind"
+      ],
+      "sha256": "c2dbbdb8939160adab18320d5d6acd004812231d5d2eb07ea6ec00c48c11cac9"
+    },
+    "wasm32-unknown-unknown": {
+      "packages": [
+        "alloc",
+        "alloctests",
+        "cc",
+        "cfg-if",
+        "compiler_builtins",
+        "core",
+        "coretests",
+        "dlmalloc",
+        "foldhash",
+        "getopts",
+        "hashbrown",
+        "libc",
+        "panic_abort",
+        "panic_unwind",
+        "proc_macro",
+        "profiler_builtins",
+        "rand",
+        "rand_core",
+        "rand_xorshift",
+        "rustc-demangle",
+        "rustc-literal-escaper",
+        "rustc-std-workspace-alloc",
+        "rustc-std-workspace-core",
+        "rustc-std-workspace-std",
+        "shlex",
+        "std",
+        "std_detect",
+        "sysroot",
+        "test",
+        "unwind"
+      ],
+      "sha256": "bbccd641284daaaa979a2d9437fd6c3324284155839931b73bdb74f6bdac2ba2"
+    },
+    "x86_64-unknown-linux-gnu": {
+      "packages": [
+        "alloc",
+        "alloctests",
+        "cc",
+        "cfg-if",
+        "compiler_builtins",
+        "core",
+        "coretests",
+        "foldhash",
+        "getopts",
+        "hashbrown",
+        "libc",
+        "panic_abort",
+        "panic_unwind",
+        "proc_macro",
+        "profiler_builtins",
+        "rand",
+        "rand_core",
+        "rand_xorshift",
+        "rustc-demangle",
+        "rustc-literal-escaper",
+        "rustc-std-workspace-alloc",
+        "rustc-std-workspace-core",
+        "rustc-std-workspace-std",
+        "shlex",
+        "std",
+        "std_detect",
+        "sysroot",
+        "test",
+        "unwind"
+      ],
+      "sha256": "c2dbbdb8939160adab18320d5d6acd004812231d5d2eb07ea6ec00c48c11cac9"
+    }
+  }
+}

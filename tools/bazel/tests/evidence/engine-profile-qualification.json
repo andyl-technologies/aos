@@ -1,0 +1,1202 @@
+{
+  "all_selected_source_bytes_match_checkout": false,
+  "cargo_profiles": {
+    "crucible_engine": {
+      "debug-assertions": "on",
+      "embed-bitcode": "no",
+      "extra-filename": "-ac314aab83601bee",
+      "incremental": "/build/target/debug/incremental",
+      "opt-level": "s",
+      "strip": "debuginfo"
+    },
+    "curve25519_dalek_derive": {
+      "embed-bitcode": "no",
+      "extra-filename": "-1ae089187b655dc8",
+      "strip": "debuginfo"
+    },
+    "serde_derive": {
+      "embed-bitcode": "no",
+      "extra-filename": "-818ab614bb7124bd",
+      "strip": "debuginfo"
+    },
+    "thiserror_impl": {
+      "embed-bitcode": "no",
+      "extra-filename": "-104cc3d2219ecb84",
+      "strip": "debuginfo"
+    },
+    "tracing_attributes": {
+      "embed-bitcode": "no",
+      "extra-filename": "-1e9f24154cd136f2",
+      "strip": "debuginfo"
+    },
+    "zerocopy_derive": {
+      "embed-bitcode": "no",
+      "extra-filename": "-04601d38d313ef28",
+      "strip": "debuginfo"
+    }
+  },
+  "cargo_trace_sha256": "e196da741264eb4700d3034d6d36f54d89a3100fb136ea1180d4f0f5b9a861f4",
+  "checkout_parent": "1bd55c281a48a80305e7c6b818ee34a203619b07",
+  "command": "nix-build default.nix -A checks.build.bazel.engine.all --no-out-link --max-jobs 2 --cores 4 --option substitute false",
+  "declarations_sha256": {
+    "tests/build/_bazel-engine.nix": "48ddd189c932ec50b441eaf53b88fab4c24ee4dfca56730ec118ef729eac48a9",
+    "tests/build/_bazel-rust-family.nix": "898d464ed7885211e148d2eca9b8a29f43a26cc3aafa20793eb6cd4f29cfff64",
+    "tests/build/_bazel-rust-test-profiles.nix": "fabfdd9201b9a2e45b9270e6b7ae0f90c7b3bfaee95dca602ce07bbbac4bf198"
+  },
+  "default": {
+    "doctests": {
+      "//crates/crucible/crucible-engine:doc": {
+        "src/model/temporal_graph/core.rs - model::temporal_graph::core::TemporalGraph::select_strategy_frontier (line 364) - compile": "ok"
+      }
+    },
+    "examples": [
+      "//crates/crucible/crucible-engine:crucible-debugger-live-fixture",
+      "//crates/crucible/crucible-engine:phase5_live_asset_fixture"
+    ],
+    "first_party_features": {
+      "crucible-campaign": [
+        []
+      ],
+      "crucible-determinism": [
+        []
+      ],
+      "crucible-device": [
+        [
+          "default"
+        ]
+      ],
+      "crucible-engine": [
+        [
+          "default"
+        ]
+      ],
+      "crucible-qemu-protocol": [
+        []
+      ],
+      "crucible-qemu-shmem": [
+        []
+      ],
+      "crucible-store": [
+        []
+      ],
+      "crucible-test-support": [
+        []
+      ]
+    },
+    "ignored_cases": 1,
+    "ignored_inventory": {
+      "//crates/crucible/crucible-engine:gate_campaign_replay": [
+        "offline_campaign_replay_consumer"
+      ]
+    },
+    "libtest_reports": 124,
+    "parity_sha256": "6736efd64a0ca265479a233f8df531478ed9d38f13d75269884d2799ff1b96e9",
+    "test_cases": 1235,
+    "upstream_feature_identities": 104
+  },
+  "editor": {
+    "aggregate_statistics_comparable": false,
+    "analysis": {
+      "complete_inference": false,
+      "exprs": {
+        "partial": 11,
+        "total": 584539,
+        "unknown": 27
+      },
+      "panics": 0,
+      "pats": {
+        "partial": 6,
+        "total": 104731,
+        "unknown": 6
+      }
+    },
+    "comparison_scope": [
+      "crates/crucible/crucible-engine"
+    ],
+    "diagnostic_multiplicity_comparable": false,
+    "diagnostics": [
+      [
+        "crates/crucible/crucible-engine/src/model/failure/replay_evidence.rs",
+        "1079:66",
+        "1079:67",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/crucible-engine/src/model/fault_signal/trace.rs",
+        "1046:24",
+        "1046:25",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/crucible-engine/src/model/fault_signal/trace.rs",
+        "1054:24",
+        "1054:25",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/crucible-engine/src/model/fault_signal/trace.rs",
+        "1062:24",
+        "1062:25",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/crucible-engine/src/model/fault_signal/trace.rs",
+        "1070:24",
+        "1070:25",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/crucible-engine/src/model/fault_signal/trace.rs",
+        "1096:24",
+        "1096:26",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/crucible-engine/src/model/fault_signal/trace_import/packet_capture.rs",
+        "243:20",
+        "243:21",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/crucible-engine/src/model/fault_signal/trace_import/packet_capture.rs",
+        "69:20",
+        "69:21",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/crucible-engine/src/model/fault_signal/trace_import/packet_capture.rs",
+        "96:27",
+        "96:28",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/crucible-engine/src/model/scenario_selectables.rs",
+        "376:20",
+        "376:21",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/crucible-engine/src/model/scenario_selectables.rs",
+        "384:20",
+        "384:21",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/crucible-engine/src/scheduler/liveness/quantum_loop.rs",
+        "55:34",
+        "55:35",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/crucible-engine/tests/source_size.rs",
+        "22:21",
+        "22:48",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/crucible-engine/tests/source_size.rs",
+        "23:20",
+        "23:46",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/crucible-engine/tests/source_size.rs",
+        "23:20",
+        "23:48",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/crucible-engine/tests/source_size.rs",
+        "23:8",
+        "23:17",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/crucible-engine/tests/source_size.rs",
+        "25:27",
+        "25:36",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/crucible-engine/tests/source_size.rs",
+        "25:27",
+        "25:92",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/crucible-engine/tests/source_size.rs",
+        "25:8",
+        "25:26",
+        "type",
+        "fn read_to_string<{unknown}>({unknown}) -> Result<String, Error>"
+      ],
+      [
+        "crates/crucible/crucible-engine/tests/source_size.rs",
+        "28:17",
+        "28:43",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/crucible-engine/tests/source_size.rs",
+        "28:17",
+        "28:56",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/crucible-engine/tests/source_size.rs",
+        "28:17",
+        "28:57",
+        "type",
+        "ControlFlow<<{unknown} as Try>::Residual, <{unknown} as Try>::Output>"
+      ],
+      [
+        "crates/crucible/crucible-engine/tests/source_size.rs",
+        "28:17",
+        "28:57",
+        "type",
+        "fn branch<{unknown}>({unknown}) -> ControlFlow<<{unknown} as Try>::Residual, <{unknown} as Try>::Output>"
+      ],
+      [
+        "crates/crucible/crucible-engine/tests/source_size.rs",
+        "28:17",
+        "28:57",
+        "type",
+        "fn from_residual<Result<(), Box<dyn Error, Global>>, {unknown}>({unknown}) -> Result<(), Box<dyn Error, Global>>"
+      ],
+      [
+        "crates/crucible/crucible-engine/tests/source_size.rs",
+        "28:17",
+        "28:57",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/crucible-engine/tests/source_size.rs",
+        "28:4",
+        "39:5",
+        "type",
+        "&mut {unknown}"
+      ],
+      [
+        "crates/crucible/crucible-engine/tests/source_size.rs",
+        "28:4",
+        "39:5",
+        "type",
+        "Option<<{unknown} as Iterator>::Item>"
+      ],
+      [
+        "crates/crucible/crucible-engine/tests/source_size.rs",
+        "28:4",
+        "39:5",
+        "type",
+        "fn next<{unknown}>(&mut {unknown}) -> Option<<{unknown} as Iterator>::Item>"
+      ],
+      [
+        "crates/crucible/crucible-engine/tests/source_size.rs",
+        "28:4",
+        "39:5",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/crucible-engine/tests/source_size.rs",
+        "28:8",
+        "28:13",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/crucible-engine/tests/source_size.rs",
+        "29:20",
+        "29:25",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/crucible-engine/tests/source_size.rs",
+        "29:20",
+        "29:26",
+        "type",
+        "ControlFlow<<{unknown} as Try>::Residual, <{unknown} as Try>::Output>"
+      ],
+      [
+        "crates/crucible/crucible-engine/tests/source_size.rs",
+        "29:20",
+        "29:26",
+        "type",
+        "fn branch<{unknown}>({unknown}) -> ControlFlow<<{unknown} as Try>::Residual, <{unknown} as Try>::Output>"
+      ],
+      [
+        "crates/crucible/crucible-engine/tests/source_size.rs",
+        "29:20",
+        "29:26",
+        "type",
+        "fn from_residual<Result<(), Box<dyn Error, Global>>, {unknown}>({unknown}) -> Result<(), Box<dyn Error, Global>>"
+      ],
+      [
+        "crates/crucible/crucible-engine/tests/source_size.rs",
+        "29:20",
+        "29:26",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/crucible-engine/tests/source_size.rs",
+        "32:15",
+        "33:28",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/crucible-engine/tests/source_size.rs",
+        "32:15",
+        "34:40",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/crucible-engine/tests/source_size.rs",
+        "35:29",
+        "35:87",
+        "type",
+        "impl Fn({unknown}) -> bool"
+      ],
+      [
+        "crates/crucible/crucible-engine/tests/source_size.rs",
+        "35:30",
+        "35:34",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/crucible-engine/tests/source_size.rs",
+        "35:36",
+        "35:40",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/crucible-engine/tests/source_size.rs",
+        "35:58",
+        "35:62",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/crucible-engine/tests/source_size.rs",
+        "body-byte:743",
+        "body-byte:1768",
+        "synthetic-type",
+        "ControlFlow<{unknown}, !>"
+      ],
+      [
+        "crates/crucible/crucible-engine/tests/source_size.rs",
+        "body-byte:743",
+        "body-byte:1768",
+        "synthetic-type",
+        "Option<{unknown}>"
+      ],
+      [
+        "crates/crucible/crucible-engine/tests/source_size.rs",
+        "body-byte:743",
+        "body-byte:1768",
+        "synthetic-type",
+        "{unknown}"
+      ]
+    ],
+    "roots": {
+      "crates/crucible/crucible-engine/examples/crucible-debugger-live-fixture.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/examples/phase5_live_asset_fixture.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/src/lib.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/assertion_determinism_nonperturbation.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/assertion_evaluation_order.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/assertion_evaluation_timing.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/assertion_lifecycle.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/assertion_log_fold.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/assertion_prefix_continuation.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/assertion_proximity_gradient.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/assertion_quiescence_leaves.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/assertion_violation_records.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/assertion_violation_reproduction.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/backend_node_routing.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/black_box_first_guarantee.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/compound_condition_combinators.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/condition_time_leaves.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/condition_vocabulary_shared.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/coverage_condition_leaf.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/debugger_live_fixture.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/deterministic_condition_evaluation.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/event_graph_control_flow.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/event_graph_replay_oracle.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/event_graph_serialization.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/event_kind_catalog.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/event_log_assertion_proximity.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/event_log_class_catalog.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/event_log_content_address.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/event_log_coverage.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/event_log_determinism.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/event_log_payload.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/event_log_reproduction_artifact.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/event_log_schema.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/event_log_tracing_bridge.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/event_log_unified.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/fault_observation_log.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/fault_reference.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/formal_trace_export.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/gate_adversarial_determinism.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/gate_basic_block_coverage.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/gate_campaign_replay.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/gate_canonical_debug_breakpoint.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/gate_checkpoint_materialization.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/gate_content_address.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/gate_coverage_feedback.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/gate_coverage_guided_corpus.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/gate_coverage_guided_fuzzing.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/gate_debug_attach.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/gate_debug_cli_surface.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/gate_debug_non_canonical_branch.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/gate_debug_target_resolver.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/gate_debug_time_travel.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/gate_failure_signature.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/gate_fleet_equivalence.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/gate_fork_replay_oracle.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/gate_guided_adaptive_exploration.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/gate_layer0_determinism.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/gate_layer1_injection.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/gate_minimization.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/gate_read_only_debug_inspection.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/gate_reproduction_artifacts.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/gate_restore_strategies.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/gate_search_reductions.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/gate_search_strategies.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/gate_signal_fault_system.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/gate_state_space_search.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/gate_unifying_view.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/guest_assertion_declarations.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/guest_host_black_box_surface.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/guest_host_channel_determinism.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/guest_host_marker_observability.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/guest_host_os_agnostic.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/guest_host_readiness.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/guest_marker_assertions.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/guest_marker_condition_leaf.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/happy_path_assertion_transport.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/host_side_assertions.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/live_qemu_search_fixture.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/memory_condition_leaf.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/observable_condition_leaves.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/observed_state_materialization.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/offline_assertion_checker.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/offline_assertion_empty.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/predicate_dsl.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/preemption_discrimination.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/property_configuration.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/property_fingerprint_neutrality.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/property_vocabulary.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/rfc0014_taxonomy_ledger.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/same_icount_tie_break.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/scenario_picosecond_duration.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/scheduler_actor.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/scheduler_all_vcpus_idle.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/scheduler_concurrency.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/scheduler_conservative_pdes.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/scheduler_control_responsive.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/scheduler_effective_horizon.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/scheduler_emit_step.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/scheduler_event_order.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/scheduler_exact_local_event.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/scheduler_horizon.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/scheduler_icount_ceiling.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/scheduler_idle_fast_forward.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/scheduler_lookahead.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/scheduler_partition_heal.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/scheduler_preemption_identity.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/scheduler_preemption_resolve.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/scheduler_quantum_loop.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/scheduler_rendezvous.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/scheduler_rendezvous_purpose.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/scheduler_resolve.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/scheduler_rr_subdivision.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/scheduler_run_ceiling.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/scheduler_topology_change.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/scheduler_topology_rendezvous.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/signal_fault_wakeup.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/source_size.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/time_shared_timeline.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/trigger_deadlines.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/trigger_node_scheduling.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/trigger_verdict_composition.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/trigger_wakeup.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/workload_load_patterns.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/workload_model.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/workload_parameterization.rs": [
+        "default"
+      ],
+      "crates/crucible/crucible-engine/tests/world_devices.rs": [
+        "default"
+      ]
+    },
+    "unattributed_cargo_diagnostics": []
+  },
+  "editor_cargo_trace_sha256": "ba57fca53e72edb1a1befe2918966f13a600f836b7306ec7dc1548197e39fd66",
+  "editor_flags": {
+    "execution": [
+      "-Copt-level=s",
+      "-Cdebuginfo=0",
+      "-Cdebug-assertions=yes",
+      "-Coverflow-checks=yes"
+    ],
+    "target": [
+      "-Copt-level=s",
+      "-Cdebuginfo=0",
+      "-Cdebug-assertions=yes",
+      "-Coverflow-checks=yes"
+    ]
+  },
+  "evidence_sha256": {
+    "default.json": "6736efd64a0ca265479a233f8df531478ed9d38f13d75269884d2799ff1b96e9",
+    "editor-parity.json": "77cca56e764287de1db966dee47bc1a14b75d9b836284486cf17ba231954a66a",
+    "execution-profiles.json": "6a7e847220931aec35f5e0fc6fb8e94ceb2204bb0af9ec4515bac32b13f24cd9",
+    "inventory.json": "af392cc41b1b5858969c27e87320a4148684063137a88b86c75affb2579dd6ba"
+  },
+  "family": "engine",
+  "limits": [
+    "The frozen engine audit source predates the separate control-server lint repair. This qualifies the retained source snapshot; the changed server file is recorded and is not qualified by this run.",
+    "Native x86_64 ordinary tests and existing feature variants, Clippy, documentation, formatting and selected-package editor comparison only.",
+    "Selected editor diagnostic identities match; raw multiplicity and aggregate Cargo statistics are not comparable across the differently sized models. Inference remains incomplete as recorded.",
+    "The selected test and macro audit checks scalar profiles against actual Cargo invocations; it does not establish complete compiler defaults, ABI, native libraries or linker equivalence.",
+    "Ordinary aos-dev enrollment, shared-cache qualification, foreign platforms, production cutover and performance acceptance remain separate."
+  ],
+  "paths": {
+    "all": "/nix/store/y4s1syxlhqkkj75r5ya5xadp25b5r9cl-aos-bazel-engine-qualified-checks",
+    "cargo": "/nix/store/lbarqhh70nvmfj18ziafss9i20g1xd0m-aos-bazel-engine-cargo-oracle-1",
+    "developer-build": "/nix/store/bih6qklmnkirl874al34rl5mv6ps6xyq-aos-bazel-engine-developer-tools-1",
+    "developer-tests": "/nix/store/8fp3pwxk6700mzznv8vpr7fp9ixfcz3b-aos-bazel-engine-format-1",
+    "editor": "/nix/store/bsc0m553gkg3shq5n6f9wi7mjjqdplbs-aos-bazel-engine-editor",
+    "editor-cargo-oracle": "/nix/store/ck7bz1gx298xj7jnh2mz2lncgcjp3iya-aos-bazel-engine-editor-cargo-oracle",
+    "editor-parity": "/nix/store/3wmsrwr8j0n9xrkzys08aaraya73n25h-aos-bazel-engine-editor-parity",
+    "editorWorkspace": {
+      "configuration": "/nix/store/yjxzmwv8gb7psb6gczmivbg211dm8jr4-aos-bazel-configuration.json",
+      "source": "/nix/store/p584baifh541gazmas0gxfpnv94ff5ks-aos-bazel-workspace"
+    },
+    "execution-profiles": "/nix/store/hrcgih3dc7pzmpiz5v8hx2rfi35hxsdq-aos-bazel-engine-execution-profiles",
+    "tests": "/nix/store/685sb7wx53jxw03fi5w931znkxgrp0nr-aos-bazel-engine-tests-1",
+    "workspace": {
+      "configuration": "/nix/store/g0wqgd8p9hq8pp99fs78f0gqzd83qmhj-aos-bazel-configuration.json",
+      "source": "/nix/store/p584baifh541gazmas0gxfpnv94ff5ks-aos-bazel-workspace"
+    }
+  },
+  "profiles": {
+    "//crates/crucible/crucible-engine:unit_binary": {
+      "cacheHit": false,
+      "compiler_options": {
+        "debug-assertions": "yes",
+        "debuginfo": "0",
+        "embed-bitcode": "no",
+        "extra-filename": "-3053388129",
+        "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+        "opt-level": "s",
+        "overflow-checks": "yes",
+        "strip": "none"
+      },
+      "exitCode": 0,
+      "runner": "linux-sandbox"
+    },
+    "@@+aos_tools_repository+aos_engine_crates__curve25519-dalek-derive-0.1.1//:curve25519_dalek_derive": {
+      "cacheHit": false,
+      "compiler_options": {
+        "debug-assertions": "yes",
+        "debuginfo": "0",
+        "embed-bitcode": "no",
+        "extra-filename": "-647045024",
+        "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+        "opt-level": "0",
+        "overflow-checks": "yes",
+        "strip": "debuginfo"
+      },
+      "exitCode": 0,
+      "runner": "linux-sandbox"
+    },
+    "@@+aos_tools_repository+aos_engine_crates__serde_derive-1.0.228//:serde_derive": {
+      "cacheHit": false,
+      "compiler_options": {
+        "debug-assertions": "yes",
+        "debuginfo": "0",
+        "embed-bitcode": "no",
+        "extra-filename": "-2207631836",
+        "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+        "opt-level": "0",
+        "overflow-checks": "yes",
+        "strip": "debuginfo"
+      },
+      "exitCode": 0,
+      "runner": "linux-sandbox"
+    },
+    "@@+aos_tools_repository+aos_engine_crates__thiserror-impl-2.0.18//:thiserror_impl": {
+      "cacheHit": false,
+      "compiler_options": {
+        "debug-assertions": "yes",
+        "debuginfo": "0",
+        "embed-bitcode": "no",
+        "extra-filename": "-550889784",
+        "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+        "opt-level": "0",
+        "overflow-checks": "yes",
+        "strip": "debuginfo"
+      },
+      "exitCode": 0,
+      "runner": "linux-sandbox"
+    },
+    "@@+aos_tools_repository+aos_engine_crates__tracing-attributes-0.1.31//:tracing_attributes": {
+      "cacheHit": false,
+      "compiler_options": {
+        "debug-assertions": "yes",
+        "debuginfo": "0",
+        "embed-bitcode": "no",
+        "extra-filename": "-370597643",
+        "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+        "opt-level": "0",
+        "overflow-checks": "yes",
+        "strip": "debuginfo"
+      },
+      "exitCode": 0,
+      "runner": "linux-sandbox"
+    },
+    "@@+aos_tools_repository+aos_engine_crates__zerocopy-derive-0.8.49//:zerocopy_derive": {
+      "cacheHit": false,
+      "compiler_options": {
+        "debug-assertions": "yes",
+        "debuginfo": "0",
+        "embed-bitcode": "no",
+        "extra-filename": "-302719952",
+        "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+        "opt-level": "0",
+        "overflow-checks": "yes",
+        "strip": "debuginfo"
+      },
+      "exitCode": 0,
+      "runner": "linux-sandbox"
+    }
+  },
+  "qualified_checks": "/nix/store/y4s1syxlhqkkj75r5ya5xadp25b5r9cl-aos-bazel-engine-qualified-checks",
+  "runs": {
+    "developer-build": {
+      "action_cache_hits": 0,
+      "action_mnemonics": {
+        "CargoBuildScriptRun": 19,
+        "Clippy": 516,
+        "ExtractCargoTomlEnvVars": 120,
+        "Rustc": 138,
+        "Rustdoc": 1
+      },
+      "build": "/nix/store/bih6qklmnkirl874al34rl5mv6ps6xyq-aos-bazel-engine-developer-tools-1",
+      "executed_actions": 794,
+      "execution_sha256": "f13477985d81a4abe801c0970a6a7b38d0508b7b2cae79b58f5178e977fd9a9c"
+    },
+    "developer-tests": {
+      "action_cache_hits": 0,
+      "action_mnemonics": {
+        "Rustc": 5,
+        "TestRunner": 2
+      },
+      "build": "/nix/store/8fp3pwxk6700mzznv8vpr7fp9ixfcz3b-aos-bazel-engine-format-1",
+      "executed_actions": 7,
+      "execution_sha256": "fc46395e0ed331e9e38a396ec3a0f885b37a77e3ce822096d1e7854f056f9470"
+    },
+    "editor": {
+      "action_cache_hits": 0,
+      "action_mnemonics": {
+        "CargoBuildScriptRun": 19,
+        "ExtractCargoTomlEnvVars": 120,
+        "Rustc": 261
+      },
+      "executed_actions": 400,
+      "execution_sha256": "18b93e8e8bbbf17b62cf71d4ac47be49dd15c00d5e7c289518fc7051ba0608b2"
+    },
+    "tests": {
+      "action_cache_hits": 0,
+      "action_mnemonics": {
+        "CargoBuildScriptRun": 19,
+        "ExtractCargoTomlEnvVars": 120,
+        "Rustc": 263,
+        "RustdocTestWriter": 1,
+        "TestRunner": 126
+      },
+      "build": "/nix/store/685sb7wx53jxw03fi5w931znkxgrp0nr-aos-bazel-engine-tests-1",
+      "executed_actions": 529,
+      "execution_sha256": "453bb47ebfbef3082e21fa331da510da0a9eefb0bda17a0d04875e7b03c0486e"
+    },
+    "variant-all-features": {
+      "action_cache_hits": 0,
+      "action_mnemonics": {
+        "CargoBuildScriptRun": 19,
+        "ExtractCargoTomlEnvVars": 120,
+        "Rustc": 267,
+        "RustdocTestWriter": 1,
+        "TestRunner": 130
+      },
+      "executed_actions": 537,
+      "execution_sha256": "e676640227cb000c2db5008da2d3c9405199e2a90c6830fdb4d7e873b60b4323"
+    },
+    "variant-test-double": {
+      "action_cache_hits": 0,
+      "action_mnemonics": {
+        "CargoBuildScriptRun": 19,
+        "ExtractCargoTomlEnvVars": 120,
+        "Rustc": 267,
+        "RustdocTestWriter": 1,
+        "TestRunner": 130
+      },
+      "executed_actions": 537,
+      "execution_sha256": "af16134edcf17a9c78dd387215c9cc977fa38dd36500fe0cc88ddfce5edf66a6"
+    },
+    "variant-test-support": {
+      "action_cache_hits": 0,
+      "action_mnemonics": {
+        "CargoBuildScriptRun": 19,
+        "ExtractCargoTomlEnvVars": 120,
+        "Rustc": 263,
+        "RustdocTestWriter": 1,
+        "TestRunner": 126
+      },
+      "executed_actions": 529,
+      "execution_sha256": "e0f69e3186087e111dcd6bd65636210cb5fd69d8707a50d91f7a1180838f95a2"
+    }
+  },
+  "schema_version": 1,
+  "selected_source_differences_from_checkout": {
+    "crates/crucible/crucible-control-server/src/server.rs": {
+      "checkout_sha256": "6f2cdfded7dd63f2be5c054cf3ee11f66a76ae715c9f32f7e908527c3ba55093",
+      "qualified_sha256": "520a673ce660709ebf648c954539a1d088e368b879ca5e91ec71afebd44e5136"
+    }
+  },
+  "selected_source_files": 3814,
+  "status": "PASS",
+  "variants": {
+    "all-features": {
+      "doctests": {
+        "//crates/crucible/crucible-engine:doc_all_features": {
+          "src/model/temporal_graph/core.rs - model::temporal_graph::core::TemporalGraph::select_strategy_frontier (line 364) - compile": "ok"
+        }
+      },
+      "examples": [
+        "//crates/crucible/crucible-engine:crucible-debugger-live-fixture_all_features",
+        "//crates/crucible/crucible-engine:phase5_live_asset_fixture_all_features"
+      ],
+      "first_party_features": {
+        "crucible-campaign": [
+          []
+        ],
+        "crucible-determinism": [
+          []
+        ],
+        "crucible-device": [
+          [
+            "default"
+          ]
+        ],
+        "crucible-engine": [
+          [
+            "default",
+            "test-double",
+            "test-support"
+          ]
+        ],
+        "crucible-qemu-protocol": [
+          []
+        ],
+        "crucible-qemu-shmem": [
+          []
+        ],
+        "crucible-store": [
+          []
+        ],
+        "crucible-test-support": [
+          []
+        ]
+      },
+      "ignored_cases": 1,
+      "ignored_inventory": {
+        "//crates/crucible/crucible-engine:gate_campaign_replay_all_features": [
+          "offline_campaign_replay_consumer"
+        ]
+      },
+      "libtest_reports": 128,
+      "parity_sha256": "bffc03afcb7b5f4e2d55b92ac3a28b122dacd61e0be45955fb82f447ecea3cc7",
+      "test_cases": 1298,
+      "upstream_feature_identities": 104
+    },
+    "test-double": {
+      "doctests": {
+        "//crates/crucible/crucible-engine:doc_test_double": {
+          "src/model/temporal_graph/core.rs - model::temporal_graph::core::TemporalGraph::select_strategy_frontier (line 364) - compile": "ok"
+        }
+      },
+      "examples": [
+        "//crates/crucible/crucible-engine:crucible-debugger-live-fixture_test_double",
+        "//crates/crucible/crucible-engine:phase5_live_asset_fixture_test_double"
+      ],
+      "first_party_features": {
+        "crucible-campaign": [
+          []
+        ],
+        "crucible-determinism": [
+          []
+        ],
+        "crucible-device": [
+          [
+            "default"
+          ]
+        ],
+        "crucible-engine": [
+          [
+            "default",
+            "test-double"
+          ]
+        ],
+        "crucible-qemu-protocol": [
+          []
+        ],
+        "crucible-qemu-shmem": [
+          []
+        ],
+        "crucible-store": [
+          []
+        ],
+        "crucible-test-support": [
+          []
+        ]
+      },
+      "ignored_cases": 1,
+      "ignored_inventory": {
+        "//crates/crucible/crucible-engine:gate_campaign_replay_test_double": [
+          "offline_campaign_replay_consumer"
+        ]
+      },
+      "libtest_reports": 128,
+      "parity_sha256": "44a1cbbb94c2fd7242b0e4558e8b3f911ba71c9506fa3252ca2d0fc67dd2e8df",
+      "test_cases": 1298,
+      "upstream_feature_identities": 104
+    },
+    "test-support": {
+      "doctests": {
+        "//crates/crucible/crucible-engine:doc_test_support": {
+          "src/model/temporal_graph/core.rs - model::temporal_graph::core::TemporalGraph::select_strategy_frontier (line 364) - compile": "ok"
+        }
+      },
+      "examples": [
+        "//crates/crucible/crucible-engine:crucible-debugger-live-fixture_test_support",
+        "//crates/crucible/crucible-engine:phase5_live_asset_fixture_test_support"
+      ],
+      "first_party_features": {
+        "crucible-campaign": [
+          []
+        ],
+        "crucible-determinism": [
+          []
+        ],
+        "crucible-device": [
+          [
+            "default"
+          ]
+        ],
+        "crucible-engine": [
+          [
+            "default",
+            "test-support"
+          ]
+        ],
+        "crucible-qemu-protocol": [
+          []
+        ],
+        "crucible-qemu-shmem": [
+          []
+        ],
+        "crucible-store": [
+          []
+        ],
+        "crucible-test-support": [
+          []
+        ]
+      },
+      "ignored_cases": 1,
+      "ignored_inventory": {
+        "//crates/crucible/crucible-engine:gate_campaign_replay_test_support": [
+          "offline_campaign_replay_consumer"
+        ]
+      },
+      "libtest_reports": 124,
+      "parity_sha256": "a174ac8bad271a40009666716d5903f596fef09d3623e802acd4ecb3712d64bd",
+      "test_cases": 1235,
+      "upstream_feature_identities": 104
+    }
+  }
+}

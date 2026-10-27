@@ -1,5 +1,9 @@
 //! End-to-end coverage for `apr keys register`.
 
+#[macro_use]
+#[path = "support/binaries.rs"]
+mod binaries;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -196,7 +200,7 @@ fn write_registry_config(home: &Path, name: &str) -> Result<()> {
 
 /// Spawn `apr` against an isolated `HOME`.
 fn apr_command(home: &Path) -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_apr"));
+    let mut cmd = Command::new(cli_binary!("CARGO_BIN_EXE_apr"));
     cmd.env("HOME", home);
     cmd
 }

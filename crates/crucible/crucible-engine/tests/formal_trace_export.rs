@@ -251,8 +251,8 @@ fn formal_trace_export_does_not_add_runtime_formal_evaluator() {
     }
     for (path, source) in [
         (
-            "crates/crucible/crucible-engine/Cargo.toml",
-            include_str!("../Cargo.toml"),
+            "crates/crucible/crucible-engine/BUILD.bazel",
+            include_str!("../BUILD.bazel"),
         ),
         ("src/backend.rs", include_str!("../src/backend.rs")),
         (

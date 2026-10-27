@@ -1,0 +1,1820 @@
+{
+  "command": "nix-build /tmp/aos-bazel-722/activation-crucible-static-cargo.nix --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "derivation": "/nix/store/3xhs9ap65vdgjfg20gcy52igdpqxqa23-aos-bazel-activation-crucible-static-cargo-baseline-1.drv",
+  "derivation_sha256": "26f26c1035a01ed832fafee20a651d0e7e45ba5170249ab4711aba2978e5a926",
+  "doctests": {
+    "aos-activation-crucible": {}
+  },
+  "executed_cases": 9,
+  "external_features": {
+    "aead@0.5.2": [
+      [
+        "alloc",
+        "getrandom",
+        "rand_core"
+      ]
+    ],
+    "aes-gcm@0.10.3": [
+      [
+        "aes",
+        "alloc",
+        "default",
+        "getrandom",
+        "rand_core",
+        "zeroize"
+      ]
+    ],
+    "aes@0.8.4": [
+      []
+    ],
+    "ahash@0.8.12": [
+      []
+    ],
+    "aho-corasick@1.1.4": [
+      [
+        "perf-literal",
+        "std"
+      ]
+    ],
+    "anyhow@1.0.102": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "arrayref@0.3.9": [
+      []
+    ],
+    "arrayvec@0.7.7": [
+      []
+    ],
+    "autocfg@1.5.1": [
+      []
+    ],
+    "bitflags@2.13.0": [
+      [
+        "std"
+      ]
+    ],
+    "blake3@1.8.5": [
+      [
+        "pure",
+        "std"
+      ]
+    ],
+    "block-buffer@0.10.4": [
+      []
+    ],
+    "cc@1.2.65": [
+      [
+        "parallel"
+      ]
+    ],
+    "cfg-if@1.0.4": [
+      []
+    ],
+    "ciborium-io@0.2.2": [
+      [
+        "alloc",
+        "std"
+      ]
+    ],
+    "ciborium-ll@0.2.2": [
+      []
+    ],
+    "ciborium@0.2.2": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "cipher@0.4.4": [
+      []
+    ],
+    "const-oid@0.9.6": [
+      []
+    ],
+    "constant_time_eq@0.4.2": [
+      [
+        "std"
+      ]
+    ],
+    "cpufeatures@0.2.17": [
+      []
+    ],
+    "cpufeatures@0.3.0": [
+      []
+    ],
+    "crypto-common@0.1.7": [
+      [
+        "getrandom",
+        "rand_core",
+        "std"
+      ]
+    ],
+    "ctr@0.9.2": [
+      []
+    ],
+    "curve25519-dalek-derive@0.1.1": [
+      []
+    ],
+    "curve25519-dalek@4.1.3": [
+      [
+        "alloc",
+        "digest",
+        "precomputed-tables",
+        "zeroize"
+      ]
+    ],
+    "der@0.7.10": [
+      [
+        "alloc",
+        "oid",
+        "std",
+        "zeroize"
+      ]
+    ],
+    "digest@0.10.7": [
+      [
+        "alloc",
+        "block-buffer",
+        "core-api",
+        "default",
+        "std"
+      ]
+    ],
+    "dyn-clone@1.0.20": [
+      []
+    ],
+    "ed25519-dalek@2.2.0": [
+      [
+        "alloc",
+        "default",
+        "fast",
+        "pkcs8",
+        "std",
+        "zeroize"
+      ]
+    ],
+    "ed25519@2.2.3": [
+      [
+        "alloc",
+        "pkcs8",
+        "std"
+      ]
+    ],
+    "equivalent@1.0.2": [
+      []
+    ],
+    "fallible-iterator@0.3.0": [
+      [
+        "alloc",
+        "default"
+      ]
+    ],
+    "fallible-streaming-iterator@0.1.9": [
+      []
+    ],
+    "fastrand@2.4.1": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "find-msvc-tools@0.1.9": [
+      []
+    ],
+    "generic-array@0.14.7": [
+      [
+        "more_lengths"
+      ]
+    ],
+    "getrandom@0.2.17": [
+      []
+    ],
+    "getrandom@0.4.2": [
+      []
+    ],
+    "ghash@0.5.1": [
+      []
+    ],
+    "half@2.7.1": [
+      []
+    ],
+    "hashbrown@0.14.5": [
+      [
+        "ahash",
+        "inline-more"
+      ]
+    ],
+    "hashbrown@0.17.1": [
+      []
+    ],
+    "hashlink@0.9.1": [
+      []
+    ],
+    "indexmap@2.14.0": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "inout@0.1.4": [
+      []
+    ],
+    "itoa@1.0.18": [
+      []
+    ],
+    "jobserver@0.1.34": [
+      []
+    ],
+    "libc@0.2.186": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "libsqlite3-sys@0.30.1": [
+      [
+        "default",
+        "min_sqlite_version_3_14_0",
+        "pkg-config",
+        "vcpkg"
+      ]
+    ],
+    "linux-raw-sys@0.12.1": [
+      [
+        "auxvec",
+        "elf",
+        "errno",
+        "general",
+        "if_ether",
+        "ioctl",
+        "net",
+        "netlink",
+        "no_std",
+        "xdp"
+      ]
+    ],
+    "memchr@2.8.2": [
+      [
+        "alloc",
+        "std"
+      ]
+    ],
+    "num-bigint@0.4.6": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "num-integer@0.1.46": [
+      [
+        "default",
+        "i128",
+        "std"
+      ]
+    ],
+    "num-traits@0.2.19": [
+      [
+        "default",
+        "i128",
+        "std"
+      ]
+    ],
+    "once_cell@1.21.4": [
+      [
+        "alloc",
+        "default",
+        "race",
+        "std"
+      ]
+    ],
+    "opaque-debug@0.3.1": [
+      []
+    ],
+    "pin-project-lite@0.2.17": [
+      []
+    ],
+    "pkcs8@0.10.2": [
+      [
+        "alloc",
+        "std"
+      ]
+    ],
+    "pkg-config@0.3.33": [
+      []
+    ],
+    "polyval@0.6.2": [
+      []
+    ],
+    "proc-macro2@1.0.106": [
+      [
+        "default",
+        "proc-macro"
+      ]
+    ],
+    "quote@1.0.46": [
+      [
+        "default",
+        "proc-macro"
+      ]
+    ],
+    "rand_core@0.6.4": [
+      [
+        "getrandom"
+      ]
+    ],
+    "ref-cast-impl@1.0.27": [
+      []
+    ],
+    "ref-cast@1.0.27": [
+      []
+    ],
+    "regex-automata@0.4.14": [
+      [
+        "alloc",
+        "dfa-onepass",
+        "hybrid",
+        "meta",
+        "nfa-backtrack",
+        "nfa-pikevm",
+        "nfa-thompson",
+        "perf-inline",
+        "perf-literal",
+        "perf-literal-multisubstring",
+        "perf-literal-substring",
+        "std",
+        "syntax",
+        "unicode",
+        "unicode-age",
+        "unicode-bool",
+        "unicode-case",
+        "unicode-gencat",
+        "unicode-perl",
+        "unicode-script",
+        "unicode-segment",
+        "unicode-word-boundary"
+      ]
+    ],
+    "regex-syntax@0.8.11": [
+      [
+        "default",
+        "std",
+        "unicode",
+        "unicode-age",
+        "unicode-bool",
+        "unicode-case",
+        "unicode-gencat",
+        "unicode-perl",
+        "unicode-script",
+        "unicode-segment"
+      ]
+    ],
+    "regex@1.12.4": [
+      [
+        "default",
+        "perf",
+        "perf-backtrack",
+        "perf-cache",
+        "perf-dfa",
+        "perf-inline",
+        "perf-literal",
+        "perf-onepass",
+        "std",
+        "unicode",
+        "unicode-age",
+        "unicode-bool",
+        "unicode-case",
+        "unicode-gencat",
+        "unicode-perl",
+        "unicode-script",
+        "unicode-segment"
+      ]
+    ],
+    "rusqlite@0.32.1": [
+      [
+        "blob"
+      ]
+    ],
+    "rustc_version@0.4.1": [
+      []
+    ],
+    "rustix@1.1.4": [
+      [
+        "alloc",
+        "default",
+        "event",
+        "fs",
+        "net",
+        "std"
+      ]
+    ],
+    "schemars@1.2.2": [
+      [
+        "default",
+        "derive",
+        "schemars_derive",
+        "std"
+      ]
+    ],
+    "schemars_derive@1.2.2": [
+      []
+    ],
+    "semver@1.0.28": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "serde@1.0.228": [
+      [
+        "alloc",
+        "default",
+        "derive",
+        "rc",
+        "serde_derive",
+        "std"
+      ]
+    ],
+    "serde_core@1.0.228": [
+      [
+        "alloc",
+        "rc",
+        "result",
+        "std"
+      ]
+    ],
+    "serde_derive@1.0.228": [
+      [
+        "default"
+      ]
+    ],
+    "serde_derive_internals@0.30.0": [
+      []
+    ],
+    "serde_json@1.0.150": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "serde_spanned@0.6.9": [
+      [
+        "serde"
+      ]
+    ],
+    "sha2@0.10.9": [
+      [
+        "compress",
+        "default",
+        "std"
+      ]
+    ],
+    "shlex@2.0.1": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "signature@2.2.0": [
+      [
+        "alloc",
+        "std"
+      ]
+    ],
+    "smallvec@1.15.2": [
+      []
+    ],
+    "spki@0.7.3": [
+      [
+        "alloc",
+        "std"
+      ]
+    ],
+    "subtle@2.6.1": [
+      []
+    ],
+    "syn@2.0.118": [
+      [
+        "clone-impls",
+        "default",
+        "derive",
+        "extra-traits",
+        "full",
+        "parsing",
+        "printing",
+        "proc-macro",
+        "visit-mut"
+      ]
+    ],
+    "syn@3.0.5": [
+      [
+        "clone-impls",
+        "default",
+        "derive",
+        "parsing",
+        "printing",
+        "proc-macro"
+      ]
+    ],
+    "tempfile@3.27.0": [
+      [
+        "default",
+        "getrandom"
+      ]
+    ],
+    "thiserror-impl@2.0.18": [
+      []
+    ],
+    "thiserror@2.0.18": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "tinyvec@1.11.0": [
+      [
+        "alloc",
+        "default",
+        "tinyvec_macros"
+      ]
+    ],
+    "tinyvec_macros@0.1.1": [
+      []
+    ],
+    "toml@0.8.23": [
+      [
+        "default",
+        "display",
+        "parse"
+      ]
+    ],
+    "toml_datetime@0.6.11": [
+      [
+        "serde"
+      ]
+    ],
+    "toml_edit@0.22.27": [
+      [
+        "display",
+        "parse",
+        "serde"
+      ]
+    ],
+    "toml_write@0.1.2": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "tracing-attributes@0.1.31": [
+      []
+    ],
+    "tracing-core@0.1.36": [
+      [
+        "once_cell",
+        "std"
+      ]
+    ],
+    "tracing@0.1.44": [
+      [
+        "attributes",
+        "default",
+        "std",
+        "tracing-attributes"
+      ]
+    ],
+    "typenum@1.20.1": [
+      []
+    ],
+    "unicode-ident@1.0.24": [
+      []
+    ],
+    "unicode-normalization@0.1.25": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "universal-hash@0.5.1": [
+      []
+    ],
+    "vcpkg@0.2.15": [
+      []
+    ],
+    "version_check@0.9.5": [
+      []
+    ],
+    "winnow@0.7.15": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "zerocopy-derive@0.8.49": [
+      []
+    ],
+    "zerocopy@0.8.49": [
+      [
+        "derive",
+        "simd",
+        "zerocopy-derive"
+      ]
+    ],
+    "zeroize@1.9.0": [
+      [
+        "alloc",
+        "default"
+      ]
+    ],
+    "zmij@1.0.21": [
+      []
+    ],
+    "zstd-safe@7.2.4": [
+      [
+        "arrays",
+        "legacy",
+        "std",
+        "zdict_builder",
+        "zstdmt"
+      ]
+    ],
+    "zstd-sys@2.0.16+zstd.1.5.7": [
+      [
+        "legacy",
+        "std",
+        "zdict_builder",
+        "zstdmt"
+      ]
+    ],
+    "zstd@0.13.3": [
+      [
+        "arrays",
+        "default",
+        "legacy",
+        "zdict_builder",
+        "zstdmt"
+      ]
+    ]
+  },
+  "first_party_features": {
+    "aos-activation": [
+      []
+    ],
+    "aos-activation-crucible": [
+      []
+    ],
+    "aos-artifact-evidence": [
+      []
+    ],
+    "aos-core": [
+      []
+    ],
+    "aos-module-format": [
+      []
+    ],
+    "crucible-campaign": [
+      []
+    ],
+    "crucible-determinism": [
+      []
+    ],
+    "crucible-device": [
+      [
+        "default"
+      ]
+    ],
+    "crucible-engine": [
+      [
+        "default",
+        "test-support"
+      ]
+    ],
+    "crucible-guest": [
+      []
+    ],
+    "crucible-qemu-protocol": [
+      []
+    ],
+    "crucible-qemu-shmem": [
+      []
+    ],
+    "crucible-store": [
+      []
+    ]
+  },
+  "first_party_source_sha256": {
+    "crates/Cargo.lock": "033bfad7de38812960028c5c2f69c2737eaa5a73dba2a810dfcf2f992268e6fd",
+    "crates/Cargo.toml": "8761ede65c4d2a37b93a130f16436aba18112776494133f86e026d2a9acb6aee",
+    "crates/aos/activation/aos-activation-crucible/Cargo.toml": "b312f73455445f17f63b05dae4621a6f80e1dce896993f6c42bdbde797316605",
+    "crates/aos/activation/aos-activation-crucible/src/lib.rs": "6bad42534a27fca276f46c8a0c83e2b925a0db97a027e25dfd92530fa1a9ddd8",
+    "crates/aos/activation/aos-activation-crucible/src/main.rs": "0f9967c34cd4227df2fc750aa1d2dc3b41fc3b3510c716f4204f70503a72b7f6",
+    "crates/aos/activation/aos-activation/Cargo.toml": "a573354dab88f40855642f005d86bab863cb6ebd2bddd68605bedfa9ea7f0410",
+    "crates/aos/activation/aos-activation/examples/module_graph_check.rs": "339b90a088ba42c184b53b5cc9bf306091c3fc093620b4921b719b3b5cd7ac5e",
+    "crates/aos/activation/aos-activation/src/activation/controller.rs": "1063cc82387771218c03179eaa1435e8d1796d2225fff0e8feebbe4791b5c0b0",
+    "crates/aos/activation/aos-activation/src/activation/inspection.rs": "870f7f70180951c4d7fb99b20270d696336e540984880fed546d81a5db0c1683",
+    "crates/aos/activation/aos-activation/src/activation/journal.rs": "959fd61843ee02e89cf8d214b8a330246e1dd73b4efaf02d341a53dea44f1b60",
+    "crates/aos/activation/aos-activation/src/activation/mod.rs": "c2b5170a67cc04c2d5567441bd53afba9a0436770aa20adc16187077e7f18b74",
+    "crates/aos/activation/aos-activation/src/activation/observer.rs": "c3b8be882375d5b6230be548f53e8772e07a7e6aacc729dcb29e3adefd8a4541",
+    "crates/aos/activation/aos-activation/src/activation/restoration.rs": "04d1daa6f24c6144cbb1e96cc45e8269f4438766fe29a70e2f43d25905427233",
+    "crates/aos/activation/aos-activation/src/activation/restoration_tests.rs": "8c4eb96ba83ffd5ff9b4ac424ef6cdb8fea0efad7ff38c6aac224fa03f335077",
+    "crates/aos/activation/aos-activation/src/activation/socket_observer.rs": "e12fa80f0d39e3a987e3ab6996c5273edb29f28cefbf7091fb9cacf1e75fdaa6",
+    "crates/aos/activation/aos-activation/src/activation/tests.rs": "cc9a83185e078414f8d06ced96db18d2561f1642c070215bac84587c21e196a0",
+    "crates/aos/activation/aos-activation/src/adapter.rs": "73a529a8347a8cd6ddadee73bb1e370c5412bb68258865f83c98fa29a79079d1",
+    "crates/aos/activation/aos-activation/src/journal/file.rs": "c128da759f8079fa8297ae29f2bd37d569575e9ac2fae58263b291d627b220a5",
+    "crates/aos/activation/aos-activation/src/journal/file/observation_tests.rs": "1536660dc936e1827b9817c289d54d74105fc06e3663072aac2dd6e50d79fd93",
+    "crates/aos/activation/aos-activation/src/journal/frame.rs": "f1dbdddeeafad6f90b955ee616e8c6ca19226e579d233b9fda033a854a1ba69b",
+    "crates/aos/activation/aos-activation/src/journal/mod.rs": "b003c030ee4de3d8dee9f9a7319e7dec34851d9f69e0a320f09727560104bd26",
+    "crates/aos/activation/aos-activation/src/lib.rs": "2f6586d523ad4ed2d61092e5967417173890a16dfbf42113a5a645f79b66be62",
+    "crates/aos/modules/aos-module-format/Cargo.toml": "865d3d1c001bd2e9316817361235bdb5bdf992514eec0e707fbcbfa093a59fda",
+    "crates/aos/modules/aos-module-format/src/diagnostic.rs": "16ce106d58218b8ba8431f8aa1baa693edf4a62500fc6309a969fdd56496069c",
+    "crates/aos/modules/aos-module-format/src/graph/mod.rs": "b2b11a93cbaed57681fbf9de632f0a1169a3d47aeb1d3cb1492b48a33b6f4468",
+    "crates/aos/modules/aos-module-format/src/graph/resolution.rs": "cc30d49ae23e651a8070fd79fae6ff9bbdb9826e7622897fba10b8269ef92d91",
+    "crates/aos/modules/aos-module-format/src/graph/tests.rs": "74b68a9bf925cf38a24ed4220804171651a28791e4ec22b0420ba3e02801a36f",
+    "crates/aos/modules/aos-module-format/src/graph/validation.rs": "fdcb8d545b0af2f001e9d19727798f2d2c531f8ccf63da161e432256b81761e4",
+    "crates/aos/modules/aos-module-format/src/graph/validation/tests.rs": "f5f1ad44802802fe675d7c278b677edb52e7d5bbc38240d2dc97a3a181a16543",
+    "crates/aos/modules/aos-module-format/src/identity.rs": "87a4198a21260e2de56626cc8300d52910470795a124dd5a62eab1f5f29da5cd",
+    "crates/aos/modules/aos-module-format/src/lib.rs": "8cd0b38729c0ea2a35cbbc283480932f7d294512d2608dd620d9b759943f4520",
+    "crates/aos/modules/aos-module-format/src/limits.rs": "6a5110b4981e4d0115910d826fe4b46f6c491e0fa8ef2babdab8032dfdbc2419",
+    "crates/aos/modules/aos-module-format/src/option.rs": "ae9b246770b273b25646c41efe661412622cbafdb6875405bf6f747b8dbe2cc4",
+    "crates/aos/modules/aos-module-format/src/schema.rs": "da5a2a78219883f2444de109e425d096253b2e7e4db6603c650fb22a5eacd60b",
+    "crates/aos/modules/aos-module-format/src/transaction_blob.rs": "c677b49f46370a4b1986d1232f939784b352e37382bbde507832fd2bb267a069",
+    "crates/aos/modules/aos-module-format/src/value.rs": "7fe4d3c24684ef8b95009b3e6cfa0efbb13da1cf9f7ae3aadae7fd7648382259",
+    "crates/crucible/engine/crucible-campaign/Cargo.toml": "6bf2aa4e6289af8444307783a96f6cf575b6ad54b82a2701909747fcdf6cc501",
+    "crates/crucible/engine/crucible-campaign/src/archive.rs": "eb77043ce24e2c3399a905c10b29f54919bce9a60d126ad9e9ec2eeba1144f72",
+    "crates/crucible/engine/crucible-campaign/src/artifact.rs": "9f70c729daa65ce389c610e7d6b2b73ed3f2ee2a0f6fac7a758d298deaf99f62",
+    "crates/crucible/engine/crucible-campaign/src/authority.rs": "b56b5b1703e4bdf0f33bfe04a96065b73b47fd9c42161677e56a09b14b25e6aa",
+    "crates/crucible/engine/crucible-campaign/src/campaign_service.rs": "913327411b1d7effddb1dd1b263ec46cec00645ca8a81ff876d2e598e79a8fc8",
+    "crates/crucible/engine/crucible-campaign/src/campaign_service/create.rs": "054188442a0e4ec57ef1e5333206bc82c9a2ee0030b5be28fda4b8c4c05c4756",
+    "crates/crucible/engine/crucible-campaign/src/campaign_service/derive.rs": "cad1a14314c2e813a85b386fea5786df7b2f15f29dd5a250882e6cc5f976fc5a",
+    "crates/crucible/engine/crucible-campaign/src/campaign_service/discovery.rs": "509627548702450f2a7d2f22826d3828a2f349ea0138a2c04af2f8bc43002f81",
+    "crates/crucible/engine/crucible-campaign/src/campaign_service/finding_triage.rs": "146e82a1a9e962029e450758f0613f7b0793d82074d02e7cc648eec5fd610155",
+    "crates/crucible/engine/crucible-campaign/src/campaign_service/get_snapshot.rs": "b10f79a63f1096e7831408fb18c1758519150c8a48aebf0da499baa023e4207e",
+    "crates/crucible/engine/crucible-campaign/src/campaign_service/list.rs": "28a1d4baa3c519c46d111d26e51d18519657cdd5b4936dd8bbabf466c89958d8",
+    "crates/crucible/engine/crucible-campaign/src/campaign_service/pin.rs": "d7988425095ae7d8531a2f7cc05549b4a98d0b4d5392998cc5b04210213b7cfd",
+    "crates/crucible/engine/crucible-campaign/src/campaign_service/query.rs": "1335580aac450d4ffd5c5cab3669795425803faf1834d8061ff096706b70c9b2",
+    "crates/crucible/engine/crucible-campaign/src/campaign_service/query/finding_occurrences.rs": "6f70211156ee60fddd1fa87f08087a34b06b61f63f9c91129e37a5b336f74663",
+    "crates/crucible/engine/crucible-campaign/src/campaign_service/query/graph.rs": "336836bed8a08b23a89d2b31c1c647fdc7604e243079827d453f552c3e5c48ce",
+    "crates/crucible/engine/crucible-campaign/src/campaign_service/query/tests.rs": "1d003f22d575fcf3a44996915a23bb32f6be914cf73150fb7e7246b3e5de3dc5",
+    "crates/crucible/engine/crucible-campaign/src/campaign_service/ranking.rs": "531d7627c80aa1fd9c0337abaafb2d38b9215853e26a7cb4b46368fa3974e1c4",
+    "crates/crucible/engine/crucible-campaign/src/campaign_service/report.rs": "4229a8cf29fd459f6b38dbb5bdf30880b2250dc1ea10469f7e3837598f18a57d",
+    "crates/crucible/engine/crucible-campaign/src/campaign_service/repository.rs": "bf28bd8783c3248d77fea3d371f0c7a6c1cd00142db4b021634b699b3ace5762",
+    "crates/crucible/engine/crucible-campaign/src/campaign_service/repository/occurrences.rs": "5b2474cdf694a4e5742e97628a60ca88f8833f24325540a5aa29fb0ab4a4c54a",
+    "crates/crucible/engine/crucible-campaign/src/campaign_service/request_attempts.rs": "ee55741cc4fe395ad2e604c1c1d679a5e708dbf00a37a43eb6875be15155fda3",
+    "crates/crucible/engine/crucible-campaign/src/campaign_service/savepoint.rs": "31cfaeeb3cac94935c9d92b7e66cf17a6ee648056c3b7ee7d0e2e9081d9228c3",
+    "crates/crucible/engine/crucible-campaign/src/campaign_service/status.rs": "068a5233d6325161f3742f61b3ba4b6965b6ff3cef524074f460a21a45fe99a9",
+    "crates/crucible/engine/crucible-campaign/src/campaign_service/tests.rs": "745044065931232cbf8f391fa5aa55c7b5bfc7c1f83899d311ef2b15eb0a1fe3",
+    "crates/crucible/engine/crucible-campaign/src/campaign_service/tests/checked_client.rs": "c251b2f929d7350a9d6bf30c8636913d76c159d9960ee6a2d68b7341ac5ebc3e",
+    "crates/crucible/engine/crucible-campaign/src/campaign_service/trace.rs": "b877c7345b6e06d7c2dc3c5646bb9dc86da8e72fdb25549532395637fa445047",
+    "crates/crucible/engine/crucible-campaign/src/campaign_service/watch.rs": "1eda06632e7f94baf6a9f1c21235604e11737d0029323460af4591450003b95b",
+    "crates/crucible/engine/crucible-campaign/src/choice.rs": "f26ee7d2015fc44a0ad26c9e51c79e775da853d7e9a8514e68430f4d07691e8d",
+    "crates/crucible/engine/crucible-campaign/src/choice/domain.rs": "1452a8583c087e9961f60b461a57532dd509bad3d8a192e702786de3d31d9645",
+    "crates/crucible/engine/crucible-campaign/src/choice/group.rs": "76568b43df1692e9d63fb1e37366909d9df2cbc3916ca14754a07be3459b6ac4",
+    "crates/crucible/engine/crucible-campaign/src/choice/group_evidence.rs": "de851043fd96ef1dd4f4f250630517a960ef786df39ca28dee83f05a407f32c9",
+    "crates/crucible/engine/crucible-campaign/src/choice/model.rs": "e934b2603dc5c6b0aa20caa9b10d1b5c90684b2586dde7691efb4430cc28384b",
+    "crates/crucible/engine/crucible-campaign/src/choice/model/tests.rs": "405c406bef17e2f8d6437e6c175b5822b630ddaba1e8c811837a0380abffc32e",
+    "crates/crucible/engine/crucible-campaign/src/codec.rs": "401975311635d320c924229330a7f01bb9cb17ce36231d0d281495e6309497b5",
+    "crates/crucible/engine/crucible-campaign/src/execution.rs": "4f618f0ffa119817666caeec3bca3650d715a504cf2341234f98d5e02f9a5895",
+    "crates/crucible/engine/crucible-campaign/src/execution/cancel.rs": "3045707a308d2b7961bd44ea42a89e2c08722c827d83e8a21865b7a1e8050898",
+    "crates/crucible/engine/crucible-campaign/src/execution/checkpoint.rs": "f1a97c4f6ecac271bddd3c0ee13f2a95e1c4b32af9a98a5a4958257245ceeb83",
+    "crates/crucible/engine/crucible-campaign/src/execution/client.rs": "db2b871b108fc9b58541731fd7926b73ec5b42f0ff0bc0f39d02671ca62f4f21",
+    "crates/crucible/engine/crucible-campaign/src/execution/resume.rs": "0d555171361cf0025c6b70e4b9b8e300b967c93411f40812937c9236a93dc949",
+    "crates/crucible/engine/crucible-campaign/src/execution/status.rs": "8cef6c1320cf3a45f5df4288152c671a2ef2bd7c4527ca6f764ad7d207229732",
+    "crates/crucible/engine/crucible-campaign/src/execution/submit.rs": "7f41326cc4ecb02d2a160da590f1dd7419374a76a1f8fc8a563ba08ac23ea3d0",
+    "crates/crucible/engine/crucible-campaign/src/execution/tests.rs": "f63e73bb6e7ef731aa3397d32718f94edce2e9ee2bd7ba30846771854aa013e0",
+    "crates/crucible/engine/crucible-campaign/src/execution/tests/retention_policy.rs": "71e6f72fed59d03743cd13864e810efd6c792e15abcf86f049cc03ee860a6abe",
+    "crates/crucible/engine/crucible-campaign/src/executor_capability.rs": "3d431abe2174aca92c2fcd538b5f7b8ab0e8855da03c64b657f5f96ad140090e",
+    "crates/crucible/engine/crucible-campaign/src/exploration.rs": "a425537c18d0f52948e0f6c343b763b51ae000548840c3a11c66d827f1210409",
+    "crates/crucible/engine/crucible-campaign/src/exploration/acceptance.rs": "6f94b17fd3e5d04d844e899fe0cfc2df5f48e2eb2e328309d6765de919a7d0b9",
+    "crates/crucible/engine/crucible-campaign/src/exploration/attempt.rs": "c2444b01ebe5d249cbcda76a3de38f90cb6595c05b9ecaa9e5874b042c560a10",
+    "crates/crucible/engine/crucible-campaign/src/exploration/guidance.rs": "24616610e91d278d1354d2063c6f0961e9ad52a74aeb4e7db0951dbb72bb43b0",
+    "crates/crucible/engine/crucible-campaign/src/exploration/planner.rs": "fa9c71659aff53dbbcb296a4cd821ac637fb19a3c0158cb14813737483b027fc",
+    "crates/crucible/engine/crucible-campaign/src/exploration/planner_budget.rs": "af43968ac2d6bb6ba80c1c3573756c7b0576dbb15a9d0a3d029d4fa26fcfa468",
+    "crates/crucible/engine/crucible-campaign/src/exploration/planner_guidance.rs": "b20c8a2be9d0835697f458e8ad227d90dc2e8c9fb7a6ef417b8879f10ac0ee5b",
+    "crates/crucible/engine/crucible-campaign/src/exploration/projection.rs": "03984ef9a6acb6ba85ec9acac8dc087592c90b016ea988d5aca6030284d07e4f",
+    "crates/crucible/engine/crucible-campaign/src/exploration/proposal.rs": "42c3a91682ecf3d3022ad37c5f6c58f8d5bc0646f066c75cce5659d327d61de2",
+    "crates/crucible/engine/crucible-campaign/src/exploration/request.rs": "cb1db59ffd6541a4bd5e264797a79b0f9adf434f09194c739d23910486204e2c",
+    "crates/crucible/engine/crucible-campaign/src/exploration/request/branch_request.rs": "22f48b10cb115a8b24b1897a445ff890ac2e598e5e1040846a8ddb819f7a78c2",
+    "crates/crucible/engine/crucible-campaign/src/extended_stop_tests.rs": "c3c6e30a0ab9b1c2e0477bbfbdc5ec01469e0c729566a10c7629e99dd4ccceea",
+    "crates/crucible/engine/crucible-campaign/src/finding.rs": "2c79e5d765612669ef84b7bf5b625985c4be7613c9de3dcd2f6bc675bee3c5f8",
+    "crates/crucible/engine/crucible-campaign/src/finding/record.rs": "40a6a6556ddcfe89801ad80900700b09c7004df0f254acdd1595e4b2e06af868",
+    "crates/crucible/engine/crucible-campaign/src/finding_candidate.rs": "24434fc521c33a90ef79ab5a783a0d11f8d7b11f08f52c8ebe92a923f31d8e8d",
+    "crates/crucible/engine/crucible-campaign/src/finding_candidate/exact_retention.rs": "cc07159c93ef8e280a7734aa899aea8b2111f4b6ed5f2224821c0ae46b47338b",
+    "crates/crucible/engine/crucible-campaign/src/finding_candidate/replay_signature.rs": "174946255654b4670c39fb615892f655f0059299715c86244a7813ca50bb7f1f",
+    "crates/crucible/engine/crucible-campaign/src/finding_triage_evidence.rs": "97bd2005f0a6b1e8a12022041970d510f250401a8468082bdb441e8c74aa412e",
+    "crates/crucible/engine/crucible-campaign/src/finding_triage_evidence/storage.rs": "74157a0772e8c9376738eaec3955528a5b16bc182db6a3921b0af31ab1af0e74",
+    "crates/crucible/engine/crucible-campaign/src/identity.rs": "d26a66934e87f875776012fd40357e2baabef8cc41c646e017e725c18ac5e3e2",
+    "crates/crucible/engine/crucible-campaign/src/lib.rs": "f2ad6f9017d6dffc0b75f56a31f27c682001d1a05928b3038a151e1fed383531",
+    "crates/crucible/engine/crucible-campaign/src/merkle.rs": "5bb1ea016ef022fda93f5cd0b4fef2eca0b854a20ee9c4e3ead97a6b92acf4ae",
+    "crates/crucible/engine/crucible-campaign/src/merkle/bulk.rs": "377c867e95faab23a9ce1442c8c93a781ae85e2d96377b6ada412a1bae3ad061",
+    "crates/crucible/engine/crucible-campaign/src/merkle/changed_positions_tests.rs": "cd6318ab7079b03c1f3b47b83b44a9366e6ed3b8bcd9d0a5717488ed8b6e0673",
+    "crates/crucible/engine/crucible-campaign/src/merkle/proof_validation.rs": "cd848d91ee954254e4c59af5a492aafaeb9f4b1150471f3ab4f993ea236387cd",
+    "crates/crucible/engine/crucible-campaign/src/model.rs": "5777dfdf193032d3e1e82e4aab3bb892108478bf775d6474b39aa767c54af620",
+    "crates/crucible/engine/crucible-campaign/src/model/budget.rs": "209067d80577ffca0bb18b6167cf1db3cf74a173f5a0260555cb284a0111264e",
+    "crates/crucible/engine/crucible-campaign/src/model/facts.rs": "a7b7409e7652d2dfc98abc5cb716d54ecf33a1c04078715c9fa856e9fc748a76",
+    "crates/crucible/engine/crucible-campaign/src/model/facts/decode.rs": "6acf49176c58657d6d9d1fa17ac306f369b7b3b3b3242c3b4dc6ebedb309edf2",
+    "crates/crucible/engine/crucible-campaign/src/object.rs": "53cf9edd7d838577d832cad90c2d5a563862c83190d91e40248f29c2fc768edf",
+    "crates/crucible/engine/crucible-campaign/src/object/validation.rs": "79d6fb3a32ab0c4336953adce39f35f9a7ab10db5aa08728464dee088e4571b0",
+    "crates/crucible/engine/crucible-campaign/src/object_profile.rs": "5bd8b27ac0dbbccf98628b06bad882d0994f82f68d672e966dc04d753cc9ba8e",
+    "crates/crucible/engine/crucible-campaign/src/objective.rs": "d575739aa31a828f461e67bce4b11eec0a0c57f17ccb981e789ed2f1c5aa73ec",
+    "crates/crucible/engine/crucible-campaign/src/objective/codec_helpers.rs": "6f3e969ec8acbf9eabf2d78582ac90ec611cb3f618f82bfd006acd2a1b51d003",
+    "crates/crucible/engine/crucible-campaign/src/objective/tests.rs": "064191443d8f3fd4f82621c91bc4105b6ecf1c0b39ceba1a4efbca1d6468c514",
+    "crates/crucible/engine/crucible-campaign/src/observation.rs": "acd9c638631e164f367e5f454f81e3b83efbc1ddebc2f1a41e335bbfda135e01",
+    "crates/crucible/engine/crucible-campaign/src/observation/record.rs": "269f7b9b2a28c80762b95d3ceb5f276a0541023d43c41ce39207f46f79b7d292",
+    "crates/crucible/engine/crucible-campaign/src/observation_stop_tests.rs": "f4d563ac082d4351fbbcd6947f93524a65fc7487e211aec52717c1188929f8bc",
+    "crates/crucible/engine/crucible-campaign/src/planner_service.rs": "de87d85f66b65b9d923e52ccf211bbbba23115f61d4ccc2959739c0adfa47267",
+    "crates/crucible/engine/crucible-campaign/src/planner_service/beam.rs": "24f4d306d1c507792a214930c35131ef3afb8750defd401e99281e87ad661df0",
+    "crates/crucible/engine/crucible-campaign/src/planner_service/closed.rs": "62a4f4e605fba7d80b347d46bd36738be57d604e002def0eccaaf9bcd8ee551c",
+    "crates/crucible/engine/crucible-campaign/src/planner_service/search.rs": "a6114f47b92541d66f4c2eaf7ab95b1cd80ceab49725ee9b0828d5d552395672",
+    "crates/crucible/engine/crucible-campaign/src/planner_service/service.rs": "b41874a0fe85ae076c9746277f0ab0fe93d8158c4a4c3a182bb05ff0160cc428",
+    "crates/crucible/engine/crucible-campaign/src/policy.rs": "f8baec4e976b36828c051134a4c12f201ce375176821f28e6562f760a26e3bc9",
+    "crates/crucible/engine/crucible-campaign/src/policy/campaign.rs": "b32ea5ed37e1eb8459a5bcf1e65161d129c652ae68a568e8b3172deadca2a81e",
+    "crates/crucible/engine/crucible-campaign/src/policy/smc.rs": "5fda78796f3fcedb0259c2ca9647ddaf708876fb973a5a5afa1f2147c39ee30f",
+    "crates/crucible/engine/crucible-campaign/src/policy/statistical.rs": "b6f105c0fc3ac46b6cd1fc6db9671cebedc1b4e1a54566481907002f010f5fe7",
+    "crates/crucible/engine/crucible-campaign/src/repository.rs": "acd5f7ead2484b271c3fcb5a6dad6bdfa8aedf6c1fed51162beb09a2b151ac08",
+    "crates/crucible/engine/crucible-campaign/src/repository/acceptance.rs": "4de532b1a73aa7ddf1a6f1b93d408ea6a173097331e77136768cfd07e9381273",
+    "crates/crucible/engine/crucible-campaign/src/repository/ancestry.rs": "6a0dcdc09825975ffccb697288e7119370b5ceaf3bba4fac39b8dc136caf258f",
+    "crates/crucible/engine/crucible-campaign/src/repository/attempt_closure.rs": "db419b0c57500b8fa4af6eabe0ed2982fab81ed1e7628b18e21f1691c753fab7",
+    "crates/crucible/engine/crucible-campaign/src/repository/budget.rs": "cbe2e5a718328a15bbbf814d32e87fd02f5e6d45f48eed54e11f195c7d81b11e",
+    "crates/crucible/engine/crucible-campaign/src/repository/candidate.rs": "5406f7f29ef149e7cf07b08b8d821d46e3bd207728a5647c3564f4bf62d0ed37",
+    "crates/crucible/engine/crucible-campaign/src/repository/closure.rs": "daf8fe909b6611d0aa4d7cd71410f742f84061a134d5c9d47a1396b0fc6b1b71",
+    "crates/crucible/engine/crucible-campaign/src/repository/closure/incremental.rs": "d88f46040a5871c5ee3f02e89762803a968ccb27014c34e120636b015af69b8e",
+    "crates/crucible/engine/crucible-campaign/src/repository/closure/successors.rs": "2dd23a34123d2d0ea650a7341798a797d3ec148f8fc4082c55464bae93a01de7",
+    "crates/crucible/engine/crucible-campaign/src/repository/discovery.rs": "b9dfc4d0f814e5a9d657290235f5ef89d8447c3cb12ba8477f47ba3e07adaf42",
+    "crates/crucible/engine/crucible-campaign/src/repository/execution.rs": "700b8418fc1d0265985e6b42e98f0289f9bb5c62e2270527b5e0f5356b281ce6",
+    "crates/crucible/engine/crucible-campaign/src/repository/executor.rs": "bb063c63d820a2661a523e61b3f79ac3f5c11b785dfef40088bdc689174c834b",
+    "crates/crucible/engine/crucible-campaign/src/repository/executor_driver.rs": "34f95738e4ccb9a2b4510315a46b87d618fd0678fcceac7345b5ef1dbf83f490",
+    "crates/crucible/engine/crucible-campaign/src/repository/executor_driver/outcomes.rs": "1aa682492a8b960b6b6c07c6b5b4c4e136e19e62e8e69821aded5a4f88c898c5",
+    "crates/crucible/engine/crucible-campaign/src/repository/fact_references.rs": "32c2fd3e9bfa91e1af338b4fb4582eb7f5d7ed3db72c20271f1c148ac1522bca",
+    "crates/crucible/engine/crucible-campaign/src/repository/fault_injection.rs": "5580f2f61179b160b58db8a693ec533d824de3885320a22787608299279c748e",
+    "crates/crucible/engine/crucible-campaign/src/repository/finding.rs": "dafe927af357c27f3d5d385fe1febea70194ce26c09587b1773757542c2b0ef2",
+    "crates/crucible/engine/crucible-campaign/src/repository/finding_candidate.rs": "3c936ece43d8c620b13e427b47843130040cbfb3b0c6c27a7fded77659a760dc",
+    "crates/crucible/engine/crucible-campaign/src/repository/finding_candidate/recovery.rs": "0ad4eec0bb8a4fbadeddf5fd2a3fff5108441c3ab03a0852cb4c9d3ffe4454cf",
+    "crates/crucible/engine/crucible-campaign/src/repository/finding_candidate/replay_evidence.rs": "1b461b93a3fc056f9abe95133f8ec6ec5b07d7782334c1c1e6b992603e62ecf3",
+    "crates/crucible/engine/crucible-campaign/src/repository/index_keys.rs": "c4492a64bc0fbcbaba796fb14dc9c8f32aee3b71f90ef4706965d560767c90f7",
+    "crates/crucible/engine/crucible-campaign/src/repository/mode_derivation.rs": "49c050078334b052eec00e2102839dfaaec9dfcc755cf881d03ab3d0d2f1ac6d",
+    "crates/crucible/engine/crucible-campaign/src/repository/objective.rs": "f5443246440f7133e5c8fe924be388583da719e227fe214042952def5b13d636",
+    "crates/crucible/engine/crucible-campaign/src/repository/observation.rs": "58fe2e88b0e018b53639e3af92b48d041cf722473b4cc45cef41ff54265c8950",
+    "crates/crucible/engine/crucible-campaign/src/repository/observation/candidate_validation.rs": "764edbb1f54353cd18fa596f052d29e7f10b7b3f8ba6282b100630099e7cecea",
+    "crates/crucible/engine/crucible-campaign/src/repository/observation/strict_order.rs": "2b39a981e37c2297b77fe3e6567e4b8c39ab04f907f8819c7e5673cfe7f61865",
+    "crates/crucible/engine/crucible-campaign/src/repository/planner_driver.rs": "99261230b5daa8c7a7c05c0b837f1f4504e4ba036d7a7cb3438ab7936d93e098",
+    "crates/crucible/engine/crucible-campaign/src/repository/planner_issue.rs": "3e046471f9999498fe950328b837da751bec42289e23a857591685c82a067d3b",
+    "crates/crucible/engine/crucible-campaign/src/repository/planner_issue/basis.rs": "a06afca229bc2cb30cbfa723cd87c4c1088a96e23db6800017a4cf34b548be6b",
+    "crates/crucible/engine/crucible-campaign/src/repository/planner_issue/validation.rs": "fe5683cc28475f0009e523f06ee0cdede9baac5a2b58d2d8b2e6e8db8d8fe52a",
+    "crates/crucible/engine/crucible-campaign/src/repository/planner_scan_index.rs": "d666a09c0c19ee853da4fa0d1684612e482260d321cd388e6f57d76b8de4be1f",
+    "crates/crucible/engine/crucible-campaign/src/repository/projection.rs": "a5e8dcae2738bfb37954d1c19f1ad4828d469c6b87a496e32412bf5f71e70e66",
+    "crates/crucible/engine/crucible-campaign/src/repository/projection/beam.rs": "20965a38235b6e8a381953170b713dd10d0c07c6958c4d0980825ea4b29efcf1",
+    "crates/crucible/engine/crucible-campaign/src/repository/projection/branch.rs": "5dbe146fd4368200f6056727c1b7cd1b8ea01e73eaef4c6bbc5c32519f12b05b",
+    "crates/crucible/engine/crucible-campaign/src/repository/projection/candidate_generation.rs": "0915f35d149ae0d47a63159162b20b5815e90dc6487d7a77922db258fcd1ad12",
+    "crates/crucible/engine/crucible-campaign/src/repository/projection/candidate_generation/integer_generators.rs": "0d1e1968ea506811e5e1c22e619c9d71afc82008fa0f200023d976e8ab0d873b",
+    "crates/crucible/engine/crucible-campaign/src/repository/queue.rs": "06c96f737cb3296a80ad5b0ad6f253f17933671156286903266782a4275e2148",
+    "crates/crucible/engine/crucible-campaign/src/repository/records.rs": "2ac2e9f5f5aa9a562dc83b9ce86a9abecd4f2b161debc29ee04c0b98fc368c22",
+    "crates/crucible/engine/crucible-campaign/src/repository/records/admission.rs": "b657cb846c9adaffc2503a9dfbd850f3b6d7416598a0f41b42215689489b5d4b",
+    "crates/crucible/engine/crucible-campaign/src/repository/records/branch.rs": "81fe985abe9b841b1e3d2b5fd4298ce50353c4171afe6ba8a1fb66d5ed2d31e0",
+    "crates/crucible/engine/crucible-campaign/src/repository/records/choice.rs": "5e978128fed62a63a19f0333c2fdc81df28de2345f560590ae3c1553b91295d4",
+    "crates/crucible/engine/crucible-campaign/src/repository/records/load.rs": "a29f5056b6b92a694749835256dcecff28e8a9c85b6cb1ac22e094b2e49faff0",
+    "crates/crucible/engine/crucible-campaign/src/repository/records/observation.rs": "3eacd95f0cec44d9b8e353ede10cae26962526f20cead0066cbf2d164599778b",
+    "crates/crucible/engine/crucible-campaign/src/repository/records/planner.rs": "9e3b63f8f847c38649cea095fdd7aba4d77fec4c866fb0035b2ba4f2aa66ef69",
+    "crates/crucible/engine/crucible-campaign/src/repository/records/storage.rs": "bea16b690c994d6939b28ce945cebf3dc20e181742ee3e2728907c5f4d63d5a6",
+    "crates/crucible/engine/crucible-campaign/src/repository/report.rs": "05397c0adeda153d5d91f7dd983c9733bebf953c5f6a660d8bde79b3692f90db",
+    "crates/crucible/engine/crucible-campaign/src/repository/request_budget.rs": "1f8fac3eb17117f285facf368f0027e3ac714b6478d5e1d2bb39576f579e8c12",
+    "crates/crucible/engine/crucible-campaign/src/repository/retention.rs": "7d53ab7b7777e9c3f5b9f2be59233f95bfea1721b4e42c9dd84c14b760c11b0c",
+    "crates/crucible/engine/crucible-campaign/src/repository/savepoint.rs": "6a019084e972b6f81ab33c5a76b781a379d1d43af91d7a58bdfb69710c4f233a",
+    "crates/crucible/engine/crucible-campaign/src/repository/statistics.rs": "04a8ff1ca5652136cfbbc7b0b5f14dbc2d2b92b03ef7595e8fc044571a74d499",
+    "crates/crucible/engine/crucible-campaign/src/repository/status.rs": "8727e59cce610cb63f32c2a9faa913040810e92d13c032ebf857d16adb23120e",
+    "crates/crucible/engine/crucible-campaign/src/repository/supervisor.rs": "429f18193b6c75cbb17556d20b3fdf12b99b5577aa9c26f5ca7b83d29d823053",
+    "crates/crucible/engine/crucible-campaign/src/repository/tests.rs": "371e05d58efa3f2d1756a4198bdd5c103d126bbf76bcdecc2f0aceff275f8546",
+    "crates/crucible/engine/crucible-campaign/src/repository/tests/budget.rs": "ba34098088b280f57d80ae99870cda5e844b69c2c8b6b45edfc22d444db0bb3f",
+    "crates/crucible/engine/crucible-campaign/src/repository/tests/budget_enforcement.rs": "869ec9699e1654e5ef32987d168341e90c4761961fcdc1b6cedf6474675ca01a",
+    "crates/crucible/engine/crucible-campaign/src/repository/tests/coordination.rs": "a5353e660bdbe4769c5201000c18c4355f279ef6a7ec562ea023c6388be4f512",
+    "crates/crucible/engine/crucible-campaign/src/repository/tests/coordination/choice_authority.rs": "12c6329c3d6a10c3a64e267f90ca2992eb87c9627fb9291dc50b2e42b0a76913",
+    "crates/crucible/engine/crucible-campaign/src/repository/tests/coordination/control.rs": "11798416b601e47afe95793ea36e90e758e8f8733ab2e699a9eaa2ee45efd95e",
+    "crates/crucible/engine/crucible-campaign/src/repository/tests/coordination/creation.rs": "b5fe289f24615b9faec2567793decdbe6a8bff0ae3fe84d24eb530ab1d158c66",
+    "crates/crucible/engine/crucible-campaign/src/repository/tests/coordination/derivation.rs": "a978ef9ccab24cf0be07b8c46de6403d76d6c65db0346e0c1426eab4d33a14b0",
+    "crates/crucible/engine/crucible-campaign/src/repository/tests/coordination/finite_proposal.rs": "32061f189226f70d9816e799165748f6f809e786fa82ba541c8b4a17e3799e9f",
+    "crates/crucible/engine/crucible-campaign/src/repository/tests/coordination/history.rs": "25849c8dfb523f0283d782ea1102cb37720e5c30441a4a1981d515f94940acdf",
+    "crates/crucible/engine/crucible-campaign/src/repository/tests/coordination/mode_derivation.rs": "5dba3e1808452148a7a665fbd8c25ce2d66bd826ae5f56242430f8fd4c8cf8d3",
+    "crates/crucible/engine/crucible-campaign/src/repository/tests/coordination/planning.rs": "0fbca83a8df6b5ffc29d067898bbfca00330ac124d58ad315dc9b0ebfcebebb4",
+    "crates/crucible/engine/crucible-campaign/src/repository/tests/coordination/planning/budget.rs": "495ee354c8a88bb403d2fa858bf549ddbbf5d58c9af87ca44efe9b73f6e39943",
+    "crates/crucible/engine/crucible-campaign/src/repository/tests/coordination/planning/budget_scale.rs": "3a92172938ee8231e884f208b8383994609770d18047972c1e44074ae96147bb",
+    "crates/crucible/engine/crucible-campaign/src/repository/tests/coordination/planning/issue_basis.rs": "0a35232db17c644e6510bd5f47a940a5251d717f53895f121e2bede282831ac6",
+    "crates/crucible/engine/crucible-campaign/src/repository/tests/coordination/planning/local_budget.rs": "8f5bdea343dfb488b659dedc5b043f7d81de656b96cce7115a3d154fab159f5c",
+    "crates/crucible/engine/crucible-campaign/src/repository/tests/coordination/planning/support.rs": "4b794f9bbaa3766db8af2b9c81c6a363ed9727e67dda8eaafb49887f35a399aa",
+    "crates/crucible/engine/crucible-campaign/src/repository/tests/coordination/service.rs": "8c4b06c2dee2a4891ff2170ac518686b4139b96d0dbcdea704177403f04de4b3",
+    "crates/crucible/engine/crucible-campaign/src/repository/tests/destructive_recovery.rs": "ff0cf9dda25ddeddfa22033d87a594c48d1ca91ebe7770b30b9fc74f8e59befe",
+    "crates/crucible/engine/crucible-campaign/src/repository/tests/discovery.rs": "aad1304f45965c59bac25e5f7569d6bb1839d8c7dcd1a55ebf9d62e2e9ddb6cb",
+    "crates/crucible/engine/crucible-campaign/src/repository/tests/execution.rs": "3549b1c50d05d6d5d4025503a6b304a8ab68092d6ee528fe032a4b79cf285f69",
+    "crates/crucible/engine/crucible-campaign/src/repository/tests/execution/admission.rs": "efa1477005b93b324d55faf0dd8b053d6c1e527ba311d119dd3fafe8ac1dca2e",
+    "crates/crucible/engine/crucible-campaign/src/repository/tests/execution/driver.rs": "a482af26093631c2612f0d366dfc6b79553ab6893595aeb60e926d362a494b2e",
+    "crates/crucible/engine/crucible-campaign/src/repository/tests/execution/driver/validation.rs": "61b61e735e9b674ce627b250def5a4737ec833f6387d7da3523230ba284d2189",
+    "crates/crucible/engine/crucible-campaign/src/repository/tests/execution/expansion.rs": "401f2684e8d5ebc2b1ddaec1818301053970a03b2edb95e15fc9a61d323518db",
+    "crates/crucible/engine/crucible-campaign/src/repository/tests/execution/publication.rs": "eaa6add674887b3bb141f5e8c95ce2b372a9316dd40d80c40e0a7ff8a01d0770",
+    "crates/crucible/engine/crucible-campaign/src/repository/tests/execution/publication/candidate.rs": "62d78fd6e2ffbac56ba5a44a07bf88621c79ab1ec25deb7a54a9884c83f52df9",
+    "crates/crucible/engine/crucible-campaign/src/repository/tests/execution/publication/retention.rs": "8094dbd22498cef3504a0364ef754c4e5324da1c442c0c626038aa2adf137c71",
+    "crates/crucible/engine/crucible-campaign/src/repository/tests/execution/resume_basis_tests.rs": "00688d3ce60c67f2bb45c7ae15702fe857a7c0a9e804f87ecab66bf28dd19212",
+    "crates/crucible/engine/crucible-campaign/src/repository/tests/execution/triage_replay_storage.rs": "a7271d3824d9378e1676fcf662866ade9b596751f6a210c16e52f9f27316eb44",
+    "crates/crucible/engine/crucible-campaign/src/repository/tests/execution/validation.rs": "3f0aea09c5ae960cdf849be26e952230f7ed5b6cd62021cf6ae4346fb0304cd9",
+    "crates/crucible/engine/crucible-campaign/src/repository/tests/planner_scan_index.rs": "f0a674bac995dcd00570fc12a46dae58a8c86293b0c4a4f489cce0e4e5029617",
+    "crates/crucible/engine/crucible-campaign/src/repository/tests/proposal_head.rs": "85252554bb6fac48452658d03a071a99f0f4f5bfc766178a83c1981196cd03e9",
+    "crates/crucible/engine/crucible-campaign/src/repository/tests/request_budget_scale.rs": "57ecb9ed9a14d8b73a4760269515ca09091c63006e3ebb003235dd9fac885b5a",
+    "crates/crucible/engine/crucible-campaign/src/repository/tests/savepoint.rs": "6abc3f2ae9120055644853767e36fb4064f88ab6935c655b5b0bdffcdf6ae615",
+    "crates/crucible/engine/crucible-campaign/src/repository/tests/savepoint/declared_stop.rs": "00f807eba5bed4d09649307e667124651ad0b2772fe0c556f6f9a33897f54ea8",
+    "crates/crucible/engine/crucible-campaign/src/repository/tests/scenario_default.rs": "e11ffaa00c0d38d06294a3e1881f096a1f70e295f8f4fc72cb0aa0c6a361d73d",
+    "crates/crucible/engine/crucible-campaign/src/repository/tests/statistics.rs": "65d694b0247189cf357c57f21d6e92f040842ea0471b42a7745896b7b379a0c1",
+    "crates/crucible/engine/crucible-campaign/src/repository/tests/statistics/estimators.rs": "7e3d8a775f010cc9d5a6f9f5c68b71a9e5be0928e6eae4c8b85bea8eb7833d4e",
+    "crates/crucible/engine/crucible-campaign/src/repository/tests/statistics/smc.rs": "f0e274ad905e5a71f3105aaa2ca2caf2777edcb83490e62dabfbb0933b95240b",
+    "crates/crucible/engine/crucible-campaign/src/repository/tests/transfer.rs": "71ef43cd6a17e13cf9f5c7f857508d75b8765a89f8c9367a2f2b40e3387cb595",
+    "crates/crucible/engine/crucible-campaign/src/repository/tests/validation.rs": "f139e3c153dc03c93dcbc4d5249eef514421f385381dc2aed87f500a6d016f84",
+    "crates/crucible/engine/crucible-campaign/src/repository/tests/validation/generator_expansion.rs": "fcd74d91bdf64b4bd8f689e9ab7b30b6096551f13a9a2c056d69d50d81770726",
+    "crates/crucible/engine/crucible-campaign/src/repository/tests/validation/generator_strategies.rs": "ff8ded11d7e5d6f629cc595522df053373df6b3a51dece00b0884eb831c92cf2",
+    "crates/crucible/engine/crucible-campaign/src/repository/tests/validation/planner_binding.rs": "f54dd4aee5011704f27c0185ddba4501385df3b66963ae392df4f0851d95e89e",
+    "crates/crucible/engine/crucible-campaign/src/repository/transactions.rs": "0190ec4fe80b512f7990e18cff2b8d54af34c47786b73283420c59b32b273ddf",
+    "crates/crucible/engine/crucible-campaign/src/repository/transactions/creation.rs": "3e33a2cf19070f6110d625bfe13e19179d7043b7656665f007488f15a2194b98",
+    "crates/crucible/engine/crucible-campaign/src/repository/transactions/discovery.rs": "edede1db8872d06d5e9181a68650c42d5b94ca25dbd5e50caea4868917401d35",
+    "crates/crucible/engine/crucible-campaign/src/repository/transactions/mutation.rs": "9baca5dfa13038e0cfcd6dee52bb7292335a5d1cc13aa46aaeb1e0134e7faf39",
+    "crates/crucible/engine/crucible-campaign/src/repository/transactions/planner.rs": "69ff10b89f2d4873632e615aedb4b6191279326d5e73bd1993ab555a0b9fde09",
+    "crates/crucible/engine/crucible-campaign/src/repository/transactions/planner/scan.rs": "47b1d7af02c4bb063580c84538b94193e6ba63ff9ec2250c2d0e944a56b4d2db",
+    "crates/crucible/engine/crucible-campaign/src/repository/transactions/publication.rs": "7ed106bf13a796f2844df17e2a4a281aab1c82d4e840b97a658549e73abb5b2f",
+    "crates/crucible/engine/crucible-campaign/src/repository/transactions/query.rs": "83d9220622157f43b99ca279a429fbc520f613e7f672d1e35e4aee942e531c25",
+    "crates/crucible/engine/crucible-campaign/src/repository/transfer.rs": "0b0d7a33ccd375d5d437af63f767f930c6e2764f02c26754800a89eb2b0a97f8",
+    "crates/crucible/engine/crucible-campaign/src/statistics.rs": "ca8ccc3ad67d8ffb6d724c28f11dbf4a59dea4d9dee194fd9a2acaffda374aa0",
+    "crates/crucible/engine/crucible-campaign/src/statistics/evidence.rs": "8bb30149aad6b00357b9c5f954fc7f43e318911028044e4a309ca12c5944711c",
+    "crates/crucible/engine/crucible-campaign/src/statistics/evidence/verify.rs": "3413e62f0d9ba596cbfac632b689056469b32c65dd5356c842641dbf2b584ad3",
+    "crates/crucible/engine/crucible-campaign/src/statistics/smc.rs": "6c8a950e541baf287c8d59e20adc2f1dabb1e848ca676f58b29b4dacd28eb7a7",
+    "crates/crucible/engine/crucible-campaign/src/tests.rs": "5de8f01e6a9fb65061eccc9b05a3aa2da677f3e8f6d5d91c88f791849bdbdd48",
+    "crates/crucible/engine/crucible-campaign/src/tests/finding_signature.rs": "2f4f3c47f22693753c2c0a79bacfef4363aa452baa712392969201a70b2928fe",
+    "crates/crucible/engine/crucible-campaign/src/tests/schema_registry.rs": "33d338b5904875275b8069462008588ae0ab61d983801e5c114bf39373749430",
+    "crates/crucible/engine/crucible-campaign/tests/gate_attempt_idempotence.rs": "28d32c7df879d9c9395b0de4bcb35b9ac567827e21f8141d7f8b8e100780cd02",
+    "crates/crucible/engine/crucible-campaign/tests/gate_branch_point_model.rs": "64f6877d70003a4115c95cf9bace6c14f98d415ce5959ec1b9dfc7456b5a51fb",
+    "crates/crucible/engine/crucible-campaign/tests/gate_branch_point_model/support.rs": "c5757e65583a34606bd914e375b49d826ee117090797a53677cbf2f2d6618042",
+    "crates/crucible/engine/crucible-campaign/tests/gate_campaign_cold_continuity.rs": "931b06b1efe2c81a8c476b424d5d19e4b9a7b820b22a02397a714fcd054f5a74",
+    "crates/crucible/engine/crucible-campaign/tests/gate_campaign_model.rs": "49bb4f9c9797d27a6d0942591ee5ef0d5a191b8cc2189033344a1e87a31ad1ae",
+    "crates/crucible/engine/crucible-campaign/tests/gate_campaign_mutation_scaling.rs": "2dfb7684ceb1f6e842b9f1cba3defddeae27b0b4118da159af7985fbe63393df",
+    "crates/crucible/engine/crucible-campaign/tests/gate_campaign_replay.rs": "c810738782900414522bb5e5c5d9f20ef7556791666a6860fc59891660bfc1e1",
+    "crates/crucible/engine/crucible-campaign/tests/gate_campaign_statistics.rs": "d3882d6c7f8cf747c844da470a1a8d199c8dca7c6b376ba678f4c9e1fc5f992d",
+    "crates/crucible/engine/crucible-campaign/tests/gate_lazy_frontier.rs": "e489d1615b7a92c184f9e678f3c7f6f231e686d7338651a67ed5e01d630122ad",
+    "crates/crucible/engine/crucible-campaign/tests/gate_lazy_frontier/cold_validation.rs": "bb0080034cbd449dae25ec417f9c9c0f196455c20ebcd537b81d43add913c40a",
+    "crates/crucible/engine/crucible-campaign/tests/gate_lazy_frontier/scale.rs": "00bade8be4b5612293c20b7636c800f15d2218a17d47e6f859c71cb4dfafdd5f",
+    "crates/crucible/engine/crucible-campaign/tests/gate_lazy_frontier/vector_issue.rs": "b03b863c30f72f87cbfdbe2fa8d6baf2f34fd264174de29d7c33cf0d51c469e7",
+    "crates/crucible/engine/crucible-campaign/tests/gate_typed_choice.rs": "73784fdb4342ddd83d9cdb95aeacb36ee8cdb6302bad2043fcccf03d7543af86",
+    "crates/crucible/engine/crucible-determinism/Cargo.toml": "138b74713f8cf72d3685acfc146cf5dd3a549875ccaeb0e5b70a07e4c8b325e5",
+    "crates/crucible/engine/crucible-determinism/src/contract_a.rs": "5568289f5c0bf17e0db20c51f3785fb4c41a743ac01424598c3c08081ade19ff",
+    "crates/crucible/engine/crucible-determinism/src/lib.rs": "5f2aa7bd6db9f30a40ae4ecbbfc272026aa251ccc4f7c5496d537adf6fc108c8",
+    "crates/crucible/engine/crucible-determinism/tests/contract_a.rs": "d6ef482730b6263e283338cb3047a509bf714b9f527f97a11d6f85c1e0fb1942",
+    "crates/crucible/engine/crucible-determinism/tests/decision_rng.rs": "4ae6a60d7db38647af1000d84fb0860b9bbf0003c11dad90a6f250be819c14fd",
+    "crates/crucible/engine/crucible-determinism/tests/gate_content_address.rs": "dd47101363f94e0599e464609bf2f1a33cb636205c7a9f4149a3c3df4e1f1cc3",
+    "crates/crucible/engine/crucible-determinism/tests/gate_layer0_determinism.rs": "2f9ddb07b731427be2d585083719dd43b23572a4c800ab8b9a7570e49e980888",
+    "crates/crucible/engine/crucible-device/Cargo.toml": "297a8eb49276270ac72349c5c14775073e59635ce2e012c38df813cfe610fe2c",
+    "crates/crucible/engine/crucible-device/src/backpressure.rs": "fe21104423f9879faf56cd7f4034b266e201c140ed6f310a52cfc0aeaaa590b0",
+    "crates/crucible/engine/crucible-device/src/block.rs": "7dfbf5c01251329d187d6d911de4f521032fc81c76a20db9d5f2e4a6b8e42a86",
+    "crates/crucible/engine/crucible-device/src/block/codec.rs": "3df06cffcdf6218d35d1b944cd4a724ec284cccc6c02e0c293bd1287338b35bc",
+    "crates/crucible/engine/crucible-device/src/block/codec/request.rs": "9fa42de5e60fb03a8eb2456b204265d5785c464071f31f465f970f8abecf1f4d",
+    "crates/crucible/engine/crucible-device/src/block/codec/response.rs": "ba7ccbd466b2ca7c7dab3c1e617d71fc307c0d58b84bfc24fa53c90eaa06c632",
+    "crates/crucible/engine/crucible-device/src/block/codec/support.rs": "e441997647563805b20505a65ec22bf42f509a9db2cca224fa85e00b5e82c491",
+    "crates/crucible/engine/crucible-device/src/block/codec/types.rs": "e1ea643cef0585341afa7654f10c019888ef40c8f8242785bb1a778f4b5cc9cc",
+    "crates/crucible/engine/crucible-device/src/block/device.rs": "5d7093c05e482ca5ff00715c371d4f5d86165785c533877809e4b4b2b7d87b6d",
+    "crates/crucible/engine/crucible-device/src/block/device/core.rs": "13525f7af64326d44fbabaf42b3de273f967f51035c30f2ce7a0fc6ec9aecea6",
+    "crates/crucible/engine/crucible-device/src/block/device/external.rs": "491fc7be3488aa2595fee8780976fa7eb004aa0ef07cec334cade986d1a18c73",
+    "crates/crucible/engine/crucible-device/src/block/device/lifecycle.rs": "d06228a42d73ec89045ef3bbc2650ed569ee9f071e182b42003d44ec2a7bc95a",
+    "crates/crucible/engine/crucible-device/src/block/device/selected_delivery.rs": "24675c1ebeeed3ae9e905fd03ae178b7081ecb243642af3726f452e81ad7b884",
+    "crates/crucible/engine/crucible-device/src/block/device/snapshot.rs": "d37b2bd54a80d5cd086befa4c1f0f951f6addf870c9dbbfbed7870ecde61bdf2",
+    "crates/crucible/engine/crucible-device/src/block/device/snapshot_runtime.rs": "a45a5f64ea8831c2e3b0862b7538964fe2d5f55c7a225fe3f0e89398550922cc",
+    "crates/crucible/engine/crucible-device/src/block/fault.rs": "56d5eeb7b28d2ef4b80080646b241ea5c5232596fc73d12209e4b04898d7631f",
+    "crates/crucible/engine/crucible-device/src/block/fault/checkpoint_codec.rs": "d15ac937f91417263cc61f9665e96cc9d2071364f8e1a0eb6d22183cbd1b6476",
+    "crates/crucible/engine/crucible-device/src/block/fault/codec_tests.rs": "9ac354e27503ca7b2264ccba01b730d307033a4e3a7fef3f792e0e93e19e83f2",
+    "crates/crucible/engine/crucible-device/src/block/fault/directive_validation.rs": "38475ea7fa8662d8361f754dc70757db54085f2cbcd453720595fb425ea7a903",
+    "crates/crucible/engine/crucible-device/src/block/fault/durability_config.rs": "36539d97222b83cf6b60f6e55567b327619e61029d758106975c20a457776d1a",
+    "crates/crucible/engine/crucible-device/src/block/fault/helpers.rs": "271525b8295833716a3b67aa2de9dc94770002f6c63a6221181b6113ad209f47",
+    "crates/crucible/engine/crucible-device/src/block/fault/observation_effects.rs": "f43a6d20321a6b37d2d71341b5c2d347ebdf892e24fb61559763004b7f208a8f",
+    "crates/crucible/engine/crucible-device/src/block/fault/observation_revision.rs": "f00746acc6813362fec19cc30d456c5f96be9c26d5a3eb89254ffef6e3187148",
+    "crates/crucible/engine/crucible-device/src/block/fault/observation_revision_tests.rs": "1db69f0f866479cb5aa7760046db867d69b5a5bd3cb2291e4626126fbcddcd47",
+    "crates/crucible/engine/crucible-device/src/block/fault/state_admission.rs": "4648b5e4502987cec41e8ecd7eb9465db0d1ed71d015fd2ece6f946a456c647f",
+    "crates/crucible/engine/crucible-device/src/block/fault/state_admission/array_rebuild.rs": "ba951ba52f77235d5733fa70dc48f87b987aa9f2dd6fa8d9648b0868059fd021",
+    "crates/crucible/engine/crucible-device/src/block/fault/state_admission/execution_services.rs": "f4308f25bfc4303ca98f980dbf84b0bb57e99f056698616d46fd11ed25c7d13b",
+    "crates/crucible/engine/crucible-device/src/block/fault/state_admission/request_continuations.rs": "11e031a15166b2221c0ef567d334517157b7bcd207656c9dd03aab7ddd49e669",
+    "crates/crucible/engine/crucible-device/src/block/fault/state_admission/request_opportunities.rs": "ca38756a07abceabe34f24a043b99ff88141c7a8c94bd707ffa6f61708f40e0c",
+    "crates/crucible/engine/crucible-device/src/block/fault/state_admission/resource_usage.rs": "d30adf261a16daa4cb2af1b639b5de7a0c2fd3a3579b8b01308b710524b2f59b",
+    "crates/crucible/engine/crucible-device/src/block/fault/state_admission/restore_validation.rs": "7a84a248738f6498a50bdc8742c4277828d48b46d47687d539bfcd2f591e3d1c",
+    "crates/crucible/engine/crucible-device/src/block/fault/state_admission/transport_recovery.rs": "3769459055cce8264006656b8a65473b45363017ad3bb22f19b83d26b5ac5c43",
+    "crates/crucible/engine/crucible-device/src/block/fault/state_execution.rs": "e6517757b45e7a527885fa983f3c237ea44de70103e04f2b48b1f005df0ba93f",
+    "crates/crucible/engine/crucible-device/src/block/fault/state_execution/payload.rs": "34e2f79010acb9c56b3292a6ee0a49cc854aac9dedda6d213236479ddd173579",
+    "crates/crucible/engine/crucible-device/src/block/fault/state_execution/persistence.rs": "0efbe36eb9aec185a0dca7eccba75cbceced87766bc7efaa015a68e23a4fb7bd",
+    "crates/crucible/engine/crucible-device/src/block/fault_tests.rs": "799ed3cfc7e1799e4b9f837623f68b721a171ce939b087da1678d2d7f753cd46",
+    "crates/crucible/engine/crucible-device/src/block/fault_tests/cache.rs": "5e4ebdd469ca34d9a8be1893d535fca0d953b995225d0ec19553fcbf30f78c62",
+    "crates/crucible/engine/crucible-device/src/block/fault_tests/media.rs": "4d95a8578617edb93d12141ad8d8b1bf90b1fea34276bfe8a2a7506ca0e56809",
+    "crates/crucible/engine/crucible-device/src/block/fault_tests/payload.rs": "414a6506f580f17fc6147f493bef829859f10f2b1e8cb6708bed01b956810908",
+    "crates/crucible/engine/crucible-device/src/block/fault_tests/pipeline.rs": "10fbf589f9893cf84f2a50e936642911e7e86956b02e9e8d51779d21647a3c96",
+    "crates/crucible/engine/crucible-device/src/block/fault_tests/resource_usage.rs": "79bf88e896a91b59072bb4fd77ecd005f30ffa4a41e011a29bfff4f8aa41c22a",
+    "crates/crucible/engine/crucible-device/src/block/fault_tests/retained.rs": "2dd35708b35a76c589eeb21edc3c7d9c0020003290b73541bec502a7c87e7ca2",
+    "crates/crucible/engine/crucible-device/src/block/fault_tests/transport.rs": "928f0a7f67974c3428c735df414bc1c8a67edcafeff8cbe832ced930c83a70a9",
+    "crates/crucible/engine/crucible-device/src/block/flash.rs": "11da8486aeefdb35d0e12753d6b3e42556e8d26e4514b17ec0d04b05f9b4e069",
+    "crates/crucible/engine/crucible-device/src/block/flash/helpers.rs": "b8491bcea408bb1019b11620050fa1f093dc1b0c10013375eca65dca8748e104",
+    "crates/crucible/engine/crucible-device/src/block/flash/types.rs": "3c96c44400f2b8b500bf4c2465b0f9d46d18495ac9503d6c2076d59303d95237",
+    "crates/crucible/engine/crucible-device/src/block/flash_test.rs": "6b2df717c7a2319720da80b617ef843d4f2f9e8ae652439be733d9c27f8d8df8",
+    "crates/crucible/engine/crucible-device/src/block/media.rs": "39292de31fdb0109cc10f63af062958f9ba0bacd86e23d4c4f9d9c4513144013",
+    "crates/crucible/engine/crucible-device/src/block/overlay.rs": "0979fa53e5f7dacf83a07f1204415045bb25772ba7250e689528763d56da8e0d",
+    "crates/crucible/engine/crucible-device/src/block/persistence.rs": "fa10e9f33664850c2c81d3723a2fd38364c310198a655c6bfa2aa9b5cf43cb5f",
+    "crates/crucible/engine/crucible-device/src/block/persistence/helpers.rs": "a6f4cb4b73e405ad9b1d65f9f75c511cb4f06aa39fbb17ef516e4b744140a0d2",
+    "crates/crucible/engine/crucible-device/src/block/persistence/runtime.rs": "fd709e4c18df58c28ab4d9890d07ced8f8cef83a1b95b02695ad7f25fca225cf",
+    "crates/crucible/engine/crucible-device/src/block/persistence/types.rs": "e88526aff566cea7692efb364863aee71db54278c2c579e33ceeba05c5ace4d9",
+    "crates/crucible/engine/crucible-device/src/block/persistence_test.rs": "170039cb5b5ce1fd311dac0a15aa8e71be1b47fab5e26bb087809d744f3b32d0",
+    "crates/crucible/engine/crucible-device/src/block/service.rs": "a5739b0fa887eeb9908892b510e774ee0ef2965596ad2b7dea3fa55a97bd6c2a",
+    "crates/crucible/engine/crucible-device/src/block/service_test.rs": "49b09abfbe6eba4411493a34a6ec2e5d7dc36ddfc86f589118bd45bfb816d5fe",
+    "crates/crucible/engine/crucible-device/src/block_lifecycle_test.rs": "831ab680332b7bd788fce489cc80a82034fe9db85a1805414c2da0c0f364ca30",
+    "crates/crucible/engine/crucible-device/src/block_overlay_codec_test.rs": "a56592e5226008875ef7e402d207257f7916c68ad97ca11a9c5b3aacff26d7d4",
+    "crates/crucible/engine/crucible-device/src/block_service_test.rs": "2329ed956161514e3a6b750063d192d071e17b025972a7a03be0a2516918bdf4",
+    "crates/crucible/engine/crucible-device/src/block_snapshot_array_test.rs": "8ce0abe3f78c0586b440309369d3beff01dfbeae449dc6d3c08ce438f2744bd9",
+    "crates/crucible/engine/crucible-device/src/block_test_support.rs": "fe8415ab20e106b804e8512191f5b4185a34afa1902194a47302732610043e88",
+    "crates/crucible/engine/crucible-device/src/clock.rs": "c597d2b47f1f692c1636b638fe2deb6b8179fb7e70b1e18749fff2f2135c0c60",
+    "crates/crucible/engine/crucible-device/src/error.rs": "c1b6509326a4df4bcfc0bbba5d980dc041deff9e7e682a6d13efc814a5eba2f1",
+    "crates/crucible/engine/crucible-device/src/fault.rs": "4da8fb805baa8b0bffa74e77d298ee3c5367b2032049587bb5a6a734b70a8119",
+    "crates/crucible/engine/crucible-device/src/harness.rs": "32aa7582ad7b1d99ef8affd594bc4fe9cbacb23709aad2eb06611d5b1178843e",
+    "crates/crucible/engine/crucible-device/src/harness/adapters.rs": "f92484d95b8c282f37fb2f04180d44815f603f648d6eca438f1968d2bc175042",
+    "crates/crucible/engine/crucible-device/src/inflight.rs": "2c0a33a73057ad9d814056aad8f48d81e83e601563275b7f6c68d95cbf269f19",
+    "crates/crucible/engine/crucible-device/src/lib.rs": "735e183b855025ec5dceaaa946382f1a66f3b2d8347f4c679ada764375d0621d",
+    "crates/crucible/engine/crucible-device/src/netlink.rs": "42fe1b3ca5526ab838f92034f9d601557d217455f03788939eff39364ea161b8",
+    "crates/crucible/engine/crucible-device/src/netlink/fault.rs": "61fe9e4db0f5c6f52582308e5fa3fb6669591c026f649475c139206b21c4abad",
+    "crates/crucible/engine/crucible-device/src/netlink/ipv4.rs": "589a384a9cd2c155af6af8a812d335c74d3362ac097628db49bc92f1b9dd8e31",
+    "crates/crucible/engine/crucible-device/src/netlink/link.rs": "4365f4d132107f165dac3bdae327d4e0b22ea7a077a5f0f070ec709bbac4d7be",
+    "crates/crucible/engine/crucible-device/src/netlink/link/codec_support.rs": "f82ff5fbb6cd322eefdc4d24ddf022bcee452f8e38a04e2d6669adb758f3b4d7",
+    "crates/crucible/engine/crucible-device/src/netlink/link/corruption.rs": "478383fcf766ae02153f399fadd6091e94c26a98035a041bd921f934e2c38eb0",
+    "crates/crucible/engine/crucible-device/src/netlink/link/delivery.rs": "b77db07d960ac698f53bc7600eaa69a39cb42317d2767096146d2721dfb9406d",
+    "crates/crucible/engine/crucible-device/src/netlink/link/emit.rs": "9a233b4abbe2c8cb0933e8f9f635b0bd0f1dd9c5ce1ddf8389bde5625098d8aa",
+    "crates/crucible/engine/crucible-device/src/netlink/link/frame.rs": "8c2b09ec02db3fc47d12aec98cd449f9db2c4714a20d00b6efdba4868dfb3d7e",
+    "crates/crucible/engine/crucible-device/src/netlink/link/snapshot.rs": "6deb73c1c1c1e0613a3a5b5faf04dcd25d012f7561da7e206984149ce3bdfa19",
+    "crates/crucible/engine/crucible-device/src/netlink/response.rs": "f7d99832ea9701a28841754846827cd7b0ce2a346099247a0eef8abbd99e291c",
+    "crates/crucible/engine/crucible-device/src/netlink/response/ipv6.rs": "23bc4235d0f1e94d301f852d132d40add132d1fd284cb4d8702e228457f40c08",
+    "crates/crucible/engine/crucible-device/src/netlink/response_test.rs": "6fad3d50eb69bddff9b1e361269da130f1d9a9b7d6a697588c13e9dde27c8a67",
+    "crates/crucible/engine/crucible-device/src/netlink_delivery_test.rs": "3922fef32e7f849957c1b868be663d72919cbb8647d4dd6290fc2d895d61ab58",
+    "crates/crucible/engine/crucible-device/src/netlink_fault_replay_test.rs": "caa23a60461bad2bd82a25b0cbc0c2d60fa2c1cf6b45241f7686eadccdbb8540",
+    "crates/crucible/engine/crucible-device/src/netlink_test_support.rs": "87992d005c30e1d8d4c110a614982c1d42d02aea482d810229050684547e2baa",
+    "crates/crucible/engine/crucible-device/src/ninep.rs": "6ffc56f261c27fac7fdbaa3899c21a619740751e670db1187140b4aecb445614",
+    "crates/crucible/engine/crucible-device/src/ninep/codec.rs": "a29ce503cb7c515229d93a999a015bc7d65403c64459f5e5eb42541ad1651ca3",
+    "crates/crucible/engine/crucible-device/src/ninep/device.rs": "bfb15628b5b724e51055f9e20c0ec586d961a470cb34b675fe9f5284aca47782",
+    "crates/crucible/engine/crucible-device/src/ninep/device/core.rs": "2bebe47980154cd9b164fcdfaf84735d9358b79e1819df1091f3aaca073e221f",
+    "crates/crucible/engine/crucible-device/src/ninep/device/request_execution.rs": "07c257eea05782fd923e8a4ccd46a0522192b53161da7b909069fdd8572ee71c",
+    "crates/crucible/engine/crucible-device/src/ninep/device/snapshot.rs": "c3f039dc297602190bfa4ed839d7758f10d6f2d499a86ad3cb34cb7d17352660",
+    "crates/crucible/engine/crucible-device/src/ninep/errno.rs": "dd06f3c51805f2d4b4a88b72b84ed133ea67e4e4347798a5d8520d1407d33319",
+    "crates/crucible/engine/crucible-device/src/ninep/fault.rs": "17fc256f84b798663643a53a761ab90fc7697003c7dfaa0b7096cb35a5fcb51f",
+    "crates/crucible/engine/crucible-device/src/ninep/fault/visibility.rs": "8b3e52f7219cf1706c3cf32e3c74f323334a7c412edfc168aae0be4a14e7f366",
+    "crates/crucible/engine/crucible-device/src/ninep/golden.rs": "8983925c49fa4cf52f71fe20738d6cfb408b080068c338c7f0abdcbc6066fdee",
+    "crates/crucible/engine/crucible-device/src/ninep/server.rs": "9a07d4c0053324aa26b13e7a9b41997292185adc81260c35f02616ea631a8775",
+    "crates/crucible/engine/crucible-device/src/ninep/server/types.rs": "4b89cbd77648b1c392ba05330f032085bdf10dc11b5f0caaf0dd579823211da8",
+    "crates/crucible/engine/crucible-device/src/ninep/tree.rs": "f3b1ef441abf07368f29cf1a914591a347b256db736d41f438fbb82513ce8f13",
+    "crates/crucible/engine/crucible-device/src/ninep_fault_policy_test.rs": "6e7ef1079be206f7fe8c468fb3bf6c081298ee5f6f629cb7ddd1a63745985145",
+    "crates/crucible/engine/crucible-device/src/ninep_lifecycle_test.rs": "713c618c27f2bd2108f2b47b93329dff28617a81c261a06d41a65c83a696cb04",
+    "crates/crucible/engine/crucible-device/src/ninep_protocol_limits_test.rs": "13289d8b4a7d2c51f73b9c4ade0f9c97d88c2ae2e6ae9e9d7621a6476b71417b",
+    "crates/crucible/engine/crucible-device/src/ninep_protocol_test.rs": "267220c03cb7370a5dbec343e52b752f99817246a236d2df94d0d70d339c4a61",
+    "crates/crucible/engine/crucible-device/src/ninep_test_support.rs": "35a2cb695a84f7f93db442861b8230b127acf4235ebb77d157171bd6bb2ca08c",
+    "crates/crucible/engine/crucible-device/src/request.rs": "7a157826c8991bfbb33f035232f232b61dd563556426e9ab24de33ef17b3b6a1",
+    "crates/crucible/engine/crucible-device/src/snapshot_codec.rs": "8d796470c2d310cf22e79db8ce936142623fca518d0a440fc4deb551e59ef666",
+    "crates/crucible/engine/crucible-device/src/subnode.rs": "bab820ee99f001473660a2c56632eed08b6a5d5217f251d2c34b9fc66b35f971",
+    "crates/crucible/engine/crucible-device/src/subnode/frame.rs": "5ce7c124e94059729d0f8430969e8ad104fe718d7a24ba93e41bc8967c91e684",
+    "crates/crucible/engine/crucible-device/src/subnode/io_core_private.rs": "63eac1b4d9a81df37566664c1fd35b9c725bef70be49495699f3524cb50705f4",
+    "crates/crucible/engine/crucible-device/src/subnode/queue_revision.rs": "79958fd0bf3a88991329f61fa2e2b428239d39ef6a446155ac5731abac89c83c",
+    "crates/crucible/engine/crucible-device/src/subnode/selected_delivery.rs": "033a6428c39b97a760734764e9b1e34360761ae04fb7e332f48b653236537387",
+    "crates/crucible/engine/crucible-device/src/subnode/snapshot.rs": "7751c65e154fffbd7c3ccc2a1e07fbc2ab342ac71e862899c0a42c96e0d2e2b0",
+    "crates/crucible/engine/crucible-device/src/subnode/snapshot/reader.rs": "4047548543baf425dc66a7f7668a7f43259fd6f8202989ce2bbeeef11ac73de6",
+    "crates/crucible/engine/crucible-device/src/subnode/snapshot/tests.rs": "8a32683f66d829bc002b4f98f1a97a4157c24012122c25334d9a6d7e1cb5fc34",
+    "crates/crucible/engine/crucible-device/tests/device_harness.rs": "17427e263947c2532af0827d4c0136495bf9300c74c500e319e533dc7c87b3a2",
+    "crates/crucible/engine/crucible-device/tests/gate_layer1_injection.rs": "c6be406e1cba938b00601698d35616788bafb872565ce885a9996440a8241963",
+    "crates/crucible/engine/crucible-device/tests/io_subnode_lifecycle.rs": "17066e22f9f36b097ddbe2f73715bd336f6aa11c1af9d8645ccc8af249b77564",
+    "crates/crucible/engine/crucible-device/tests/io_subnode_lifecycle/tail_cases.rs": "026256299f0b9ee42107000267f51220e93f25688c9a096513dcb638d843ff18",
+    "crates/crucible/engine/crucible-engine/Cargo.toml": "5482c2365976cc36e19f22398020ba9e6c1ff8a8f36ddf5447ad3b442bfa1f84",
+    "crates/crucible/engine/crucible-engine/examples/crucible-debugger-live-fixture.rs": "d90a796ce3fc84972ec7389a0b2f6bf1a744b5dba61d2c05899f3d39e2b1cc65",
+    "crates/crucible/engine/crucible-engine/examples/phase5_live_asset_fixture.rs": "41958790ebe426823276d70ab4fc88276991551f36600ef6b54b5f0d5552e6eb",
+    "crates/crucible/engine/crucible-engine/src/backend.rs": "8c018e507bca5da80bfad161795812e5f419416fdbc93262efb47e2b18a65a9b",
+    "crates/crucible/engine/crucible-engine/src/backend/error.rs": "87de0e9d3e586fe16285ad0afd65fd2dac0b5c33f8301c47ef0dbebc488a9bef",
+    "crates/crucible/engine/crucible-engine/src/backend/gdb.rs": "4ae7221a2e34f96c17646490972336200186899171c1b70abd08c0d8cc1bcbea",
+    "crates/crucible/engine/crucible-engine/src/backend/io.rs": "32df32e9c720868c1b7d78fb5f392b76a511a5efd6cfff90ecc98958b774c59c",
+    "crates/crucible/engine/crucible-engine/src/backend/io/network_checkpoint.rs": "44fcb76eaafcf4deda356fb3a2d954f5c7a5094a5c0cb902afcfb046bb4b5e5a",
+    "crates/crucible/engine/crucible-engine/src/backend/io/network_checkpoint/encode.rs": "a88c30d6e0bc270afbd8da056b9087788310a17cbc8ea12f1948e8bbb8d251e4",
+    "crates/crucible/engine/crucible-engine/src/backend/io/network_checkpoint/error.rs": "3069b69b25f0266df0c4c2bb5ffcadf2b4c63a946becc1f41494ab0c1b3248a0",
+    "crates/crucible/engine/crucible-engine/src/backend/io/network_checkpoint/writer.rs": "a56acfbe6c93b7c244a4b55f9180180d555b2a979d32776e34ad76fcfa5cb049",
+    "crates/crucible/engine/crucible-engine/src/backend/io/tests.rs": "e2f1a57fa7ae8ad2aaf81fa440881c3c075e78fc8e8dac95b6e7b626dc07b776",
+    "crates/crucible/engine/crucible-engine/src/backend/io_inventory.rs": "2cdd9ce46913c06bf5816bfb9fb1bf92481716435ea996f51be0b114ccc487c9",
+    "crates/crucible/engine/crucible-engine/src/backend/mock.rs": "37000c3ba85da1a5dafb0f779afc99d297b8e1954d3ef85557d349a8805242b6",
+    "crates/crucible/engine/crucible-engine/src/backend/tests.rs": "1def0acf7f62ee17058d181b5df64653f5a4f23ac2e209fa354f5708a106d900",
+    "crates/crucible/engine/crucible-engine/src/decision.rs": "8fbf53aac6d96a0cbbee9b79f56baa5a48343cfd5ce844f267c04a0fdb7b2ec7",
+    "crates/crucible/engine/crucible-engine/src/decision/app_random_selectable.rs": "db780336b2ce5951e48b766c7c9ca4b791ab8da939320c6cdecdb77415cfd3cc",
+    "crates/crucible/engine/crucible-engine/src/decision/network_fault_selectable.rs": "db16695342195fcb45da77714336f9279cb877538f98d52b118f8998abf491c4",
+    "crates/crucible/engine/crucible-engine/src/decision/network_fault_selectable/group_schema.rs": "95b5d5df40a99ded41438a8f81f352aac397253bc82fdc8883c0d672251129c4",
+    "crates/crucible/engine/crucible-engine/src/decision/network_fault_selectable/tests.rs": "a8715a3be00a6dd0e84a4d7d2ea0a73cec3be6b9e0c78d3d8e0203faddff9bff",
+    "crates/crucible/engine/crucible-engine/src/decision/reseed.rs": "ff0c1269da0c21902afa9ce5b596a9de9d85108bca16143cb27e49ff1e93285e",
+    "crates/crucible/engine/crucible-engine/src/decision/signal_fault_selectable.rs": "b511b44ae2124bf8c07978cbb9d6ffbc0310397eef516f3326bc05d415071e19",
+    "crates/crucible/engine/crucible-engine/src/decision/signal_fault_selectable/semantics.rs": "0d8dc6bd26ed27bb49b53b1dd2d6410081cd0d26582282edb77a59c23cb525ad",
+    "crates/crucible/engine/crucible-engine/src/device.rs": "fec07ca1d12db8864dc43f3f9730f66c50faff1b7969dd0be06bb61652ccfa27",
+    "crates/crucible/engine/crucible-engine/src/device/link_emission.rs": "27ff1bf55dbd905ca23b73a854696a80eede2082993e8abe78e6d8bf040235e6",
+    "crates/crucible/engine/crucible-engine/src/device_subnode.rs": "070d33941efef1a1795eea843f566cbf7b906bec2ca9f3fd97c94aa68237bfd8",
+    "crates/crucible/engine/crucible-engine/src/device_subnode/arrive.rs": "0baedb322e4342bdef48ae3ab70b641fcc950a9a967106ee25060c3c0fe6e037",
+    "crates/crucible/engine/crucible-engine/src/device_subnode/checkpoint.rs": "916b19926849eb76f1a2c4066be56e2c329e97f9f40a9475c0375798a894cad3",
+    "crates/crucible/engine/crucible-engine/src/device_subnode/world_layout.rs": "c35e039f354e3b3373438dbf239ac682395969144a2d9b69e651a2c80372910a",
+    "crates/crucible/engine/crucible-engine/src/event_catalog.rs": "2cfbafd973673de412c410cfb3f1df35dfc1bee628e068197d5acb986e3f5718",
+    "crates/crucible/engine/crucible-engine/src/event_catalog/catalog.rs": "ea7647a4bb44fc19a921b7b931146aaef444c28edd053397417c53fb8f528745",
+    "crates/crucible/engine/crucible-engine/src/exact_checkpoint.rs": "2dee4c9869c0112810af9527f83f68af2cd6b251184e2c5da74c991affbe4bda",
+    "crates/crucible/engine/crucible-engine/src/exact_checkpoint/codec.rs": "712f868e0364e0172eb89007afc5df9fabad0a0d41cbe35e5779f5e7fa164c03",
+    "crates/crucible/engine/crucible-engine/src/exact_checkpoint/decode.rs": "eb1b77b719e0a00977b8ca2f0ce523e9e4fdd97d032bfe87ec2d122ae40fe5d0",
+    "crates/crucible/engine/crucible-engine/src/exact_checkpoint/repository.rs": "fafbe4ec396e268877e79bf08385b775e05f375edb01d3aac0635a8c500651aa",
+    "crates/crucible/engine/crucible-engine/src/exact_checkpoint/semantics.rs": "dc8b4e363c940afe01b7a0a848575cb315ef1496723a10a09b1d5042ed1969e8",
+    "crates/crucible/engine/crucible-engine/src/exact_checkpoint/streams.rs": "b7b77dd81e9fe0eef3d22f975a9e991fe0bf798e3f1b1b84a30bb529948afc8e",
+    "crates/crucible/engine/crucible-engine/src/exact_checkpoint/tests.rs": "7892e4a37e3a4223795b907021aa92a00d437450bf19d05e9841cab2d7139ab6",
+    "crates/crucible/engine/crucible-engine/src/example_corpus.rs": "c6655edabbda7c7b1543ddb4e7c5cc5e108d43e1e7e6f064a0a68a2656192f75",
+    "crates/crucible/engine/crucible-engine/src/lib.rs": "c8ddfa8c81abaecaee1a0f5f5e71babce67ec8e73e4df573ecf885175316bd8e",
+    "crates/crucible/engine/crucible-engine/src/local_backend.rs": "6c1975945add99df74fbf2a65e885d12798f13ab3fd2978bc221af92fdf7b5fc",
+    "crates/crucible/engine/crucible-engine/src/model.rs": "53a6d6dc3fb1dcef7f7b8a371929caebbb93c91c957aebcac6d34b90a531ad9e",
+    "crates/crucible/engine/crucible-engine/src/model/adaptive_campaign.rs": "3d3dcefac02b621f86336d0af75adc19ce7639cb66931a4f877f8ebb0dd4f94d",
+    "crates/crucible/engine/crucible-engine/src/model/app_random_branching.rs": "8a4d75ab9760f48d1cb395171b914a47f0780c9132db86974d949e160f64bb82",
+    "crates/crucible/engine/crucible-engine/src/model/binary_plan.rs": "df0d83acb50918e287d281272e43abb805d9ff2f5c6e7e2bfa87409f2ad75ab5",
+    "crates/crucible/engine/crucible-engine/src/model/binary_state.rs": "58fd80cb771cc2331d0cba13bd64ff84a6f6ec5c1923717456944b6063e69ac9",
+    "crates/crucible/engine/crucible-engine/src/model/canonical.rs": "c001c2b01468b29bcde5191e0a8a96ffd862bebdba06412032d9b878e7b41cd5",
+    "crates/crucible/engine/crucible-engine/src/model/configuration.rs": "381d619a34e3bf59dd9d37a6164ebe0dcf9572badcb8bd90810f83c5a4da8569",
+    "crates/crucible/engine/crucible-engine/src/model/dag_store.rs": "837c885bae8abafbf324a57b1dcc1b07eba100f265faf88051df5ff092ef1c8d",
+    "crates/crucible/engine/crucible-engine/src/model/dag_store/local.rs": "1751640d7042bfa0875fa20db759755afb4c4201600cde0d6aa7b9df7b3e275a",
+    "crates/crucible/engine/crucible-engine/src/model/debug.rs": "e8bac5f47fedcbcb4d4f5512f1f597fabbbc3505d6268047c7a95f57c3d6d23a",
+    "crates/crucible/engine/crucible-engine/src/model/engine.rs": "8ed0467dcb7932992fbc80afe628323c2958790fe9a41c386647dd7a2656e4ed",
+    "crates/crucible/engine/crucible-engine/src/model/engine/reduction_helpers.rs": "e8c6a974b95b34819803b0c8517bad6f9f1059dfd3749c0a30efcd54168e90a2",
+    "crates/crucible/engine/crucible-engine/src/model/engine/typed_preemption_por_tests.rs": "6a06506e11def57265a5a1835933a59579142d11a48bc52f4c14a6b0b23a05d7",
+    "crates/crucible/engine/crucible-engine/src/model/exploration.rs": "fec7703f78174560969361b38c9fc97a9e613fcbfa9f587a5666d5a254ca57cb",
+    "crates/crucible/engine/crucible-engine/src/model/exploration/failure_oracle.rs": "cbb393790250594814ff1b71305ab8e2cbe6d752bbff6be91b921d2d2e2e90c8",
+    "crates/crucible/engine/crucible-engine/src/model/exploration/graph_operations.rs": "05ebcd05f334a7255361e539edb82c6c3f6b9f641d06ff3d0794820bb3b59629",
+    "crates/crucible/engine/crucible-engine/src/model/exploration/guidance.rs": "5ff3608b1968a1132d50945d71bc86895d45b9221811f97bf6c227350f97d023",
+    "crates/crucible/engine/crucible-engine/src/model/failure.rs": "621e66427884470d6f0f0682aee0a329a5cfec7e6f97e3cd9850f15a00f8ab32",
+    "crates/crucible/engine/crucible-engine/src/model/failure/material.rs": "b7eded4385217e8e3e1b9f5c2903f6431d8c0c65b0cf51f4e377bdec48dee37b",
+    "crates/crucible/engine/crucible-engine/src/model/failure/material/reporting.rs": "d53c621072f409467ba226a8506d76d40177845d8fa0e05e9ff02f098b6bac78",
+    "crates/crucible/engine/crucible-engine/src/model/failure/model.rs": "a18567baac6e61df93a37aa081c5305777dbf74d10349e67ce43b21b0ed04fef",
+    "crates/crucible/engine/crucible-engine/src/model/failure/model/clustering.rs": "1037a5215ba25d8d522b7b2d7da90f93b4ee965133ca8bb8c4b0750b4e546a4a",
+    "crates/crucible/engine/crucible-engine/src/model/failure/model/reporting.rs": "74fc6dc8d3ac5114eb1ffb5b457762a05f1652b67e6e57567121521357eaa302",
+    "crates/crucible/engine/crucible-engine/src/model/failure/model/signature.rs": "d38b78fbf9e7cc9e5089974a0ecd285cfd35f395aa07f0baa8dbd6880d3be182",
+    "crates/crucible/engine/crucible-engine/src/model/failure/model/signature_policy.rs": "c75313c2ee220d2d3e89afefacee278c4f07dd6e64a890c221983ef19d2968bb",
+    "crates/crucible/engine/crucible-engine/src/model/failure/model/triage.rs": "f81e1d73c54d0178cddbc54d06055b43e41d9cc51a960bb04ec13a95fb3bdd73",
+    "crates/crucible/engine/crucible-engine/src/model/failure/replay_evidence.rs": "fc449ea9de5cd7dce317c99cea271d66803326cacac69f41310ba7e59ab780bd",
+    "crates/crucible/engine/crucible-engine/src/model/family.rs": "4a3912281a8ae1c45320207a64cdc76561c4bffb8be90c9f869344346c1dae8d",
+    "crates/crucible/engine/crucible-engine/src/model/family/instances.rs": "12d0a479503186385ff87b0af2a7e7199a1164decd901d22c5555c62b00978f6",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/adapter_runtime.rs": "7cc3725456bb351e0e9c95fff612b989afbeacbff2a8068544ebe855f0a8670f",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/adapter_runtime/adapters.rs": "2354a9148c813f5c3901111e2ef1bd506ccc8ef903fd62506d6d8a9f5a3de4de",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/adapter_runtime/mirrored.rs": "1b93896585f5706ea292e3e1660d42b4ea71befe575f60741e0d4a83215acc57",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/adapter_runtime/runtime.rs": "d58e4063e640962478f6793225ab4c8c7a8c6dcc84f3d7ac04d45c0d6520c08e",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/adapter_runtime_test.rs": "ce85ee306495afffe9b4b0af14ec556a3af712b991796b439bd22616773ee173",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/authoring.rs": "19ffa3c699edc8bc5556c200c3e5a57ab36157d940aeee25d9178f8919a8cc05",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/authoring/binding_codec.rs": "ceebfd87355553eba52c8464f94282208a27d488ba291cb664640c7f7decad9e",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/authoring/effect_codec.rs": "945a04a1ed61fd6e7a58a9664e4cb310d8250eb14d874cc5ccbf721430c09afb",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/authoring/error.rs": "627b23cf22853a6755d28e5e216db21baccd5aa72b00569837dacafd6a67beb8",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/authoring/signal_codec.rs": "a88ad135b125600eddc4cf19da80e48835add3a050377722b2a2ac5df22c8b39",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/authoring/target_resolution.rs": "0f2773f852b5f18c386e46696b80bc7bceae625813fa5791d30806e171abae88",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/authoring/world_validation.rs": "00d271af0a26f94686000b526aabe6e15b05b3687e1abf907c4deec2c23246b8",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/binding.rs": "0b73e3e3118a38e39af5599a13d56c60809ac9cbc16cf9c71e1e78c4099bd9ad",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/binding/contract.rs": "99585fd70a8b56fecd075fbcfa80cb006e8ff6553ba78b9651c17e53c4ca2c4a",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/binding/mapping.rs": "a5a46965c1be730906873728d14ccf475be08b2ef482d527f9ecd3d812d13d59",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/binding/search.rs": "ed7fafdfd9796cb8e5eff5726470e5615ff718924b4018e9284bec4b16d10ef0",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/binding/tests.rs": "431a82f9fb2543b45ba92ffbd9684b340f662e4d96c70ee23f93d096e6b42aba",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/binding_runtime.rs": "717ba2948ce7721e1d17ab66d84e55168f6b9cf5e8a57c3fa88139e141129b45",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/binding_runtime/application.rs": "3115a1144e4a64623d63c06edffabad8dc57bbd6075e3c48b3216179c073f2fa",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/binding_runtime/checkpoint_validation.rs": "8bc664c4ed0b2b517ab46dd33d8b6231035efee5d735c5e21819d6972db08614",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/binding_runtime/construction.rs": "37c6dd994c5ca4fe26453f90acaad85c8789408f7c523ad2d30cb06b826a4a90",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/binding_runtime/error.rs": "8994f3b810b5c10ae89019502dcf9a019fd7a9e5fbef85d407f1c1d7e610fccd",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/binding_runtime/evaluation.rs": "2d3eece63331eb277a4097891c0c4ac784a264d806defbbd53fab168c557235b",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/binding_runtime/mapping_codec.rs": "caa00c52b8b12ef3ee93578dd221b97c6c6244d3c69edd5e1f6d5bbfe62aa38b",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/binding_runtime/mapping_helpers.rs": "b557c661b2e25f8997261430a712bd64646009fe5207f783cbba7fe5508ecc90",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/binding_runtime/refined_coordinate_test.rs": "644c0d27467622e4c7010d6d57685945d70cfea56cd0b500d99ddf3e2bc801cf",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/binding_runtime/replay.rs": "b9b7240734ca7230018ec13a62e5ffaf33b3573ae43c7b7b2b15b432d6020312",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/binding_runtime/rollback_test.rs": "4539f62b8ff59a9fe870394438f1ad200640706bf00f43ebe9a4910e3edbbe3c",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/binding_runtime/runtime_api.rs": "0aa9f1d109a0ab91f9c6ee2624f035b6608120164d8843d17af2ac324c2b4711",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/binding_runtime/scheduling_helpers.rs": "9a9903794c95fa2f9ff23fa04940d5d8bfe63e7c384d5df6da8ab8edb6f4e49a",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/binding_runtime/search_helpers.rs": "69d1e57572a4e8e1e6e83ee74a65aa108fd35a518d4f898daaab626f6670257e",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/binding_runtime/service_profile.rs": "08b4962bc82b0891d326dc717983bd7946435315def7ea6a08cf98d10356f77c",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/binding_runtime/transaction.rs": "bb4366d039cf2571b9fcd7daef1d91e43a1c813d891f88daa47682377189bd30",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/binding_runtime_test.rs": "551a6a71c7f9b86e16284b71eccba44a805fe287fad24e9613b3ed2e38aecb93",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/canonical.rs": "7e886578181d1c808c7b4416368e72d519b8cef7849b53a79ce1315531537486",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/canonical/pure.rs": "c4148536728e920db5c931966e5a51237500b506a01c82ebd743590346eadbb3",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/canonical/source.rs": "2dfc1c047c05dece7cafc23279a2b36bc1f6e2e97467a886c3dda2e6f7f9c6dc",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/canonical/stateful.rs": "9dab79910663518f7d4309f3250c216f5edfcfe849c04aed250715e03bac4516",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/cross_domain_campaign_test.rs": "a4af676e1979ae0512f50e2f4409f2f1c07e359c92d3fe0fab0d09e9b21371af",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/cross_domain_campaign_test/fixture.rs": "997daa1e404ebfdb70060d0cb598f2b75584bc9624f1d885eb98820c45fdb5af",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/effect.rs": "e55eb4d011f9c17526035dc58c0e6b78c61807b72dad8e21197deb9e4c01af11",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/effect_implementation.rs": "fc121c19c1de0d72161bf2e1912c78f34777fd3c9d550e83403ddacbc1c3abd2",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/effect_implementation/production_effects.rs": "6093ed44173400e362fc1bd4396f40fb1506a760c2dd5cf155a011f442b503ac",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/effect_parameters.rs": "b2712af4e991dc72336d9078094f3a9c58c3bb8969b5ae3cb6f4290c027e095e",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/effect_registry.rs": "6a909dbfb738d722cf8405ce6318e242e6e7fbf6ea50babcb6f91896e03e7ffc",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/effect_registry/vocabulary.rs": "404a7a77221967db5bd836365d9065fc21964df6a292dd1aed2b181d6ef931a9",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/error.rs": "4ceb4e8886c4500d32c6a4cec06dd65fd35ab7c48ebb796bdb1702ebcbff6401",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/evaluator.rs": "26b1464c7df139bda4e1112c8402bcfa1c1d047d8b7085c4d8cf0c59d229f720",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/evaluator/codec.rs": "59d92fa2c42dd80a346540c4ebae4c589ef47a1bf669647e442c12fe24bf423c",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/evaluator/math.rs": "2557a1989beb6939ced476b53cf684eb79e5fb0a5cb3a87df83815142b5ca61e",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/evaluator_test.rs": "db3a2673005d0912b1139a13ff34e191421372259bca53855177bb0b61c9a1f1",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/execution_runtime.rs": "c322805eb423f28fca5dd1d763966a6259cc20f420728e5bdcb77d5611a4edd0",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/execution_runtime/capacity_preflight.rs": "6d3d3399f6d5e9c86693f7c9e78f4f828e2d576270fcee15d309d15ef628df60",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/execution_runtime/owned.rs": "588fcc2700e4716f76dde0dfb0ef173045c9c526fe4c82135323b4f081ee773d",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/execution_runtime_replay_test.rs": "f18d0c8ea2f32e73bceb11cd98a533da4e3824877614cc9cbc37bf47cd8c88af",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/execution_runtime_test.rs": "82c20c7252981b60b38d8bcff1e0a388d1f7f2cb64af71d90106aa4a1fa2425e",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/execution_runtime_test_support.rs": "2f6bedeb23e41a715ed5cc985b00dc6c615d791d37bd9a718270ef84edf15565",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/fallible_decode.rs": "e13e6f7e47604f3287d1e52047d62369b828233f16766a9967cbf5d0d8b79b83",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/host_action_sink.rs": "7d01b35c4753e593b52a634f88a531f24d5fb50f3bb258a449e12efda3a2dba5",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/host_action_sink/checkpoint_codec.rs": "9f0e67ee52e6931b453fa3f10ba7919c7afda9472dd431039f8b9326beb7cc84",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/mod.rs": "5fb9abfc6903b30b7387304b314bf24267cda15a3fa0e12f8687ac9fc1795b6c",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/network_effect.rs": "1013fb06d6051a6ef9948b4c8233f33c550efc0636da96ff4cb9857d075d1163",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/node_effect.rs": "97166fe994315139a2cc6860999a603a13877b1cb467fa3cfdd7ca3579783106",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/node_effect/tests.rs": "6a3249e539fc90358e9ab78ead59193d13e6914e78f767f1f37ae574dff96338",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/opportunity.rs": "30030eb6f7b9d0b3057b34e50d8e0566f9622b9b03775bce3f23ef656cba55b3",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/opportunity/target_canonical.rs": "6d90acf5dbd4fb14157f8a7095d6418fdcd5d37c2a069826180f091399f82f96",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/opportunity/tests.rs": "16683a6fb3cd9a5c6c3350fd28a7ce3892d5bd48a6b8df2ce0132c6b4b61af6f",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/plan.rs": "3814998a6267f036d42160661f1dcabf7e8d7a8f4711a894e1c101ac829befbe",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/plan_test.rs": "b6cf3eecdf4eb085cfa202823b9feddb8161ab633ff8d65a9bce75da56a9247b",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/plan_test/resource_limits.rs": "d36517873a422406d295f2139435f8e14e5b42828d1c768d53f15a12d5afe63d",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/plan_world_resource_limits.rs": "3bd7f87147770d4b806dd27e4e9b43cafbbeab9f4b388f265124087b593f440a",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/resource_limits.rs": "b15e776f1496ccd0df1105c86bf1c94516f630af66be94a7dafc24e353e64786",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/runtime.rs": "2e6153d50bf769d63bcd8390cc4f11058b3c4d1e09c45ad53691d3e563cbf9a7",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/runtime/checkpoint.rs": "dce53d63fdc232ea4a840b470a56480d0162112c00503752619039c612dba1d1",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/runtime/checkpoint_codec.rs": "d9b1a35e45c984ea3f7ec1673125b224c51cf2ef0d29114c56778db5fe4d24e4",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/runtime/error.rs": "3268dc9929f55f1c3e7ebc5d78fabaf8cf7de65b44d2d54d887b17d76aafab07",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/runtime/observation.rs": "a9ec2bc3eb85bda87f092de0b3da0476ac25f34c09cc8efe2eab93427ed79387",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/runtime/search.rs": "99095efb98cc756c4de59b330a5b1c56e753c978a4f28bbae347a04fb4d39747",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/runtime/tests.rs": "396926bb2c847204e38c13c5265c20792e3768cac98a3bc6e1be3f9300efe13a",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/runtime/trace_codec.rs": "1dc0825a7582d16500fc32649030052bd4fc7f794f988e2387db331ae4fbb06e",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/sampler.rs": "5c867d1daa2d103da4f6afadb494ae72bdef5ad39a99858c4c6181c04b7aa03a",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/search_materialization.rs": "455759ca42c5e1734cd25f889bdb36d421932d75061a0a148937e4918a23d678",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/search_materialization/support.rs": "7bf25385b1099f33299f75690d77580a5647b2757c7eda34becff8c43c6a438a",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/search_materialization/types.rs": "46752823d0b817e7e475b7b7d1c4dbb6a8cf1da9bfc3407e609fea93a98a5fba",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/search_materialization_test.rs": "3beb542a2232333b8df94fa0a6f65d2e32cfd33a69e8dc46b10d7f5fb79cc20f",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/search_materialization_trace_test.rs": "bbf3ab84161c6eca72e51b52cb65132fe4a99f4b86b2eb184f32bad32d1b739f",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/signal_id.rs": "1281fbd873a01d69dd5fe99ba975e8fdba0d60c6f1eaa492ab2819cdce590455",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/spatial.rs": "bd4e4876636be20eb995535aa7a70c156e73f4b06c5f1874b6b44584d0b7a964",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/spatial/sampling.rs": "4b5432e7f74e267cf9c1064e5bf780de8ac30d93dd4a0ed8e8fb366776cb3842",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/storage_effect.rs": "8ab1ee32fc97b5b43d8c1d193c15664c40b3fb68b8150043f878f3ad42d4efaa",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/tests.rs": "4b1590e36d6fea5a12603e8587bc43a9d297c04b6d78f01e0d711d3ba1d5d482",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/trace.rs": "c6cca4f84e867155dc25896127e42bf999fec6953e627187b47b8e6e995cee7d",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/trace_import.rs": "76dde01ed99ccbe347e097ac5222c3a07f73b43aac711c2bdd93c7c52f467706",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/trace_import/packet_capture.rs": "bcf8d6118ad1e7258313dae43a9c5826deec703ffacc4ea608c7fb3d34bd734d",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/validation.rs": "88e0166fb7febd02bb83b0e9cde94521dc5f7468a2d47cb262979f50d715bae4",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/value_type.rs": "88f3b092085606c236994463a9ef96cea64d7d6196dbfe0b47fc87651169e0fa",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/wire.rs": "956f6da6abcf22772c20ff2187f549ede0e8f7376cb91a05a11df10abcfde2ca",
+    "crates/crucible/engine/crucible-engine/src/model/fault_signal/wire/toml_codec.rs": "a30fbe1d9ea6d4cdd5c026ba87302b1a6b479ab25f5d68d10f5872bf90a05534",
+    "crates/crucible/engine/crucible-engine/src/model/guest_assertion.rs": "8b6fd0f2b3ad56dc47cac76d134c79d0c090e32b07c9fe182e9ab4118a616433",
+    "crates/crucible/engine/crucible-engine/src/model/guidance_search.rs": "4aa342049a90d37eccfa6c12a50b11118405ec41c092800674dbb2a4e1d029fe",
+    "crates/crucible/engine/crucible-engine/src/model/material.rs": "5c42af909ec8ea96d0ac64848e85b4e8303870515612650fc66fce3ea12232ee",
+    "crates/crucible/engine/crucible-engine/src/model/material/policy_labels.rs": "278962d48b97eccaddbb54f8dfa34b376ac83aa28f339bd84ffe3796d2e2be8d",
+    "crates/crucible/engine/crucible-engine/src/model/materialized.rs": "6abf13b630b3c29a59d3bb7c555c38f11194e256a07e837739056adc18246a91",
+    "crates/crucible/engine/crucible-engine/src/model/materialized/seed.rs": "2e52fbf206a0650d88ef07abaffd2acf3ec922f921218a3024ed3d110de18d49",
+    "crates/crucible/engine/crucible-engine/src/model/measurement.rs": "319ead7496f1d894a60d0da4b92ec9414ded4bb093c3a491a60f553335261122",
+    "crates/crucible/engine/crucible-engine/src/model/measurement/runtime.rs": "73ed9a1c7fa040d387492b0bbc99633f7dad18636a15f1c5109f3a44db7e8359",
+    "crates/crucible/engine/crucible-engine/src/model/measurement/runtime/boundary.rs": "fc550ea7e19acaf95edc2bcda350d363d50a40268fd88d68ad5487bba6dc2c85",
+    "crates/crucible/engine/crucible-engine/src/model/measurement/runtime/tests.rs": "602e66b8f0bb1c8557aee13821727fe3c601bf737534cf068a2d6407df2087ba",
+    "crates/crucible/engine/crucible-engine/src/model/measurement/tests.rs": "18cd741e2f8306ababb159968d030b97c906219fcde56dcdb6be09b0832a30ac",
+    "crates/crucible/engine/crucible-engine/src/model/plan_properties.rs": "00dd0c0cb352b68a8bd76025268ead103f174714baeb9983a60e1876da01be61",
+    "crates/crucible/engine/crucible-engine/src/model/reproduction.rs": "121e072a9ba1c6f48ebe2d833eea6ecbd64b292294bf78de842a6c367cf082cb",
+    "crates/crucible/engine/crucible-engine/src/model/runtime.rs": "122ba757e10b1778369440df1c5f3462b402c0d678d3df7ee907776998a45578",
+    "crates/crucible/engine/crucible-engine/src/model/runtime/coverage_guidance.rs": "9d2b1697072164d6a70c1bc1039e366b7554471fb2b395cc963089c3bb57c124",
+    "crates/crucible/engine/crucible-engine/src/model/runtime/search.rs": "07758d73055db5cb72b99f435f1ae3690af4dfb3cce13a69099141555486b76e",
+    "crates/crucible/engine/crucible-engine/src/model/scenario.rs": "b1d0d5b1526de2510430f896918fd0d475aff462003ee62da5685fdb644e10da",
+    "crates/crucible/engine/crucible-engine/src/model/scenario/definition.rs": "762816595a007b57c7cadc5c7faea2fdfe3c16b35da776d444aa16c3ad8d87a4",
+    "crates/crucible/engine/crucible-engine/src/model/scenario_selectables.rs": "ca84d18911b4c4c9d996be9d065784ab30e5d134e26464043d1cdad749d5ac43",
+    "crates/crucible/engine/crucible-engine/src/model/store_artifacts.rs": "58eac1cb11f17a485dea0a005a2a75e2c7c99e36abb8820a87f5f2c52ebf8d63",
+    "crates/crucible/engine/crucible-engine/src/model/store_error.rs": "fa16a9bd4a3f6bdd0a31023ba07454b066bbd1cf4121121a0254f58791367edf",
+    "crates/crucible/engine/crucible-engine/src/model/temporal_graph.rs": "fd55e6dfb7b5c85b0b08d9482ba9de67e62ee696e69ff5f9de286c808e785e68",
+    "crates/crucible/engine/crucible-engine/src/model/temporal_graph/core.rs": "0a2121f186d366be27eb43c20dd0387a7b7107cbd10c946625410a95d8ef0851",
+    "crates/crucible/engine/crucible-engine/src/model/temporal_graph/core/checkpoint_cache.rs": "86a4136e72ef27828189b07059fb93c7c09fe5b4456961a33fdd7c9e83ee973d",
+    "crates/crucible/engine/crucible-engine/src/model/temporal_graph/core/debug_navigation.rs": "d8e5849e79961e52e3e8a66be7f872f1c4ff621400eeae8d2a93162a3d060a8b",
+    "crates/crucible/engine/crucible-engine/src/model/temporal_graph/core/reduced_search.rs": "84fccb3208ffaca82c87bf8a29278ccf7d16cadfadf2e4fc01398ac6abc11f28",
+    "crates/crucible/engine/crucible-engine/src/model/temporal_graph/debug_helpers.rs": "a4b561b552a40c47a6f27b98a1f43d948fee6b238ec8eb877f156afa4504f8c6",
+    "crates/crucible/engine/crucible-engine/src/model/temporal_graph/debug_storage.rs": "70ab0ec2c159fba2f81ec476ea5b1d27d3dbae5a53b437bc66be3306cf04f329",
+    "crates/crucible/engine/crucible-engine/src/model/temporal_graph/guided_search.rs": "ae5c9156804629b4bc5934c661110e91e3193a98af83d217bda289c135936504",
+    "crates/crucible/engine/crucible-engine/src/model/temporal_graph/preemption_branching.rs": "a86a069e21c6db3a735a3e60c34f175fc8fcdd43317e0ff71b709b55c48335f7",
+    "crates/crucible/engine/crucible-engine/src/model/temporal_graph/search_storage.rs": "6cd973ca6eee3a074754988b751babd3774b980b98084fb3070b0d7e76274500",
+    "crates/crucible/engine/crucible-engine/src/model/tests.rs": "d917b0a09e0dd08b2933bb30933c2a26d19418fdc373a77cbe17e999331ed773",
+    "crates/crucible/engine/crucible-engine/src/model/time.rs": "692eeee314af1bcd7e8ec873f8cc1d812166c4accc63998c42e1b75d201afac6",
+    "crates/crucible/engine/crucible-engine/src/model/toml.rs": "9e8a57e4867c1ae0f6baeac6ee15f133e287462c2ce858d91420e797b138187c",
+    "crates/crucible/engine/crucible-engine/src/model/topology_faults.rs": "c466ea4f191f7675307172ee22cacd7d7fcbb7f96ab9fd787fc289bcd89e3031",
+    "crates/crucible/engine/crucible-engine/src/model/validation.rs": "5872271df21f8458ee05a2f159e0bd588a0db8468d9945d412f6093ac3dd86f0",
+    "crates/crucible/engine/crucible-engine/src/model/workload.rs": "d8b1bf584154b0e46c2c24e99ac95662ccc7ac2bd106ec5f357f430a0fc1a0fe",
+    "crates/crucible/engine/crucible-engine/src/model/workload/correlated_failure.rs": "c416a4de14442900ad70018af47554e8c44cff289cb2065cd455bb439ee31e50",
+    "crates/crucible/engine/crucible-engine/src/model/world_faults.rs": "9dcf0df8ca272bd092060d963f35eaab8c8b26f84aa6de26576a826758169946",
+    "crates/crucible/engine/crucible-engine/src/model/world_faults/network.rs": "49345811e5e644cee31779458114d68a4b30b079228c2ac8ae4f9866851b9b92",
+    "crates/crucible/engine/crucible-engine/src/model/world_faults/node.rs": "24552190ea738cd4220f3ca4a294f477bbd5d578aec020369d46a27e86fdf614",
+    "crates/crucible/engine/crucible-engine/src/model/world_faults/node/clock.rs": "38d157ece33b3b2a94ec787ceb8d6246b8a0b038dfbd2af07a8ae562186bb675",
+    "crates/crucible/engine/crucible-engine/src/model/world_faults/node/hardware_error.rs": "898b749b4e55c28bbcb95769b68d89a53cb5ee874114216b67ff50151796d860",
+    "crates/crucible/engine/crucible-engine/src/model/world_faults/storage.rs": "09dd66f892a623d7da63c155ab2bfa596f9ad3fd3c2a08c287227493c6675ff1",
+    "crates/crucible/engine/crucible-engine/src/model/world_faults/topology.rs": "788ec42bae5af5ec86ee182890cfae0ae65a814d1aec1991baaa71f9c29b3631",
+    "crates/crucible/engine/crucible-engine/src/model/world_faults_test.rs": "aa1b102f04e2adfe7063001acd87b41805a9ed502ab70565a0da2d5c77b61294",
+    "crates/crucible/engine/crucible-engine/src/model/world_network_policy.rs": "2c30680c440269d03094263e20215a860b59f65fd974dc7cc3e996d17cfa9a4a",
+    "crates/crucible/engine/crucible-engine/src/model/world_storage_policy.rs": "7523235af62392252e0477bcc3a17f83d96fd92c4f50e2b3911a23082f17b094",
+    "crates/crucible/engine/crucible-engine/src/model/world_storage_policy/lifecycle.rs": "cd2bd8fffe20034770ae4c4fe9abab808e90daf2fe659055b75db4aa4384a5c7",
+    "crates/crucible/engine/crucible-engine/src/model/world_storage_policy/media.rs": "b80f6261cc77c7bd8bf5970d5bd64ace6365516bbc0d5c7415810477bbd799dc",
+    "crates/crucible/engine/crucible-engine/src/model/world_storage_policy_test.rs": "3a5b6c38654bee2f496cf6a8f7e189c9c82668b8ca62feaf5da3aecbc339a2c4",
+    "crates/crucible/engine/crucible-engine/src/node_time.rs": "63a1a55fdaa32a1d5b48068365edcf1ac6b1c185cbe33351e43974a5d5d60f27",
+    "crates/crucible/engine/crucible-engine/src/scheduler.rs": "9e4f6f78ae0fd9c3b42c021fd083101146d0a72e5c34e2d141da477172b21742",
+    "crates/crucible/engine/crucible-engine/src/scheduler/backend_lifecycle.rs": "c8a302940e73079c315d7fb351cbe2a9f030f51dd4e5046718ea75a8e74e71be",
+    "crates/crucible/engine/crucible-engine/src/scheduler/branch_exploration.rs": "65d641cbb767df85c6e64731fe03601cc15f7e09c40ed1dc4f04338226f2d77d",
+    "crates/crucible/engine/crucible-engine/src/scheduler/checkpoint.rs": "908ef5f4ef812634f2a3f4bd68a4e38ca9540ae65672cd46f30a39c7fdbdacbd",
+    "crates/crucible/engine/crucible-engine/src/scheduler/concurrent_prepare.rs": "b910606b1f135e0ff50b6abdfd53d04ac69621f829d6a464fc6ddb28f97fd443",
+    "crates/crucible/engine/crucible-engine/src/scheduler/control_state.rs": "c27ca346f75f65de39ec9b23ca68394da8bcaa30b211d856b990dbbaf6b86e0f",
+    "crates/crucible/engine/crucible-engine/src/scheduler/control_state/actor.rs": "3cf987fc8a8a5fc2972f63ccebe34e52ce849f6ffcdfb0bd9b77849a35c8c904",
+    "crates/crucible/engine/crucible-engine/src/scheduler/device_group_selection.rs": "036eaea1ac8b3255115960b9be00e40cb137d0f5ce79210c5032cd65dcb51c0f",
+    "crates/crucible/engine/crucible-engine/src/scheduler/device_group_selection/tests.rs": "3d7043b9e31e501fe9f4e6987ad70b59fb311640f40f3c86875d0d89be10d35d",
+    "crates/crucible/engine/crucible-engine/src/scheduler/event_codec.rs": "e49c4e75c7dc1629398d43d5ec94c60deda8551c7197659e358e40acadf55390",
+    "crates/crucible/engine/crucible-engine/src/scheduler/event_log.rs": "624c7869ebab8044277df72a6b8c3f0ed1aa4052a07b331adadec17413c21dcf",
+    "crates/crucible/engine/crucible-engine/src/scheduler/event_log/backend_loop.rs": "8cec132218442fedac7a82d05d1d405877f048b2d3763dfed5200fc477eb6acd",
+    "crates/crucible/engine/crucible-engine/src/scheduler/event_log/backend_loop/admission.rs": "871c5cc8d1c9788d5ca16454960e29fd1e594355b7ecf8b82653cb69360b61b1",
+    "crates/crucible/engine/crucible-engine/src/scheduler/event_log/backend_loop/backend_shutdown.rs": "f8add3ff0f0deda2ec68536ecb4652e5840c578e1914667376eed98da88b49d1",
+    "crates/crucible/engine/crucible-engine/src/scheduler/event_log/backend_loop/cap_boundary.rs": "b1cdfaf3f4bd120d28b1b9621ca83b63e94ae98baea7e373c3ef2b4e5badb523",
+    "crates/crucible/engine/crucible-engine/src/scheduler/event_log/backend_loop/device_group.rs": "3d4edb1f5be863d5bb5b839d6be11fc19c2d08f7dccf5789959c0331b16d566c",
+    "crates/crucible/engine/crucible-engine/src/scheduler/event_log/backend_loop/dispatch_boundary.rs": "3c4cc3eab04b71f903b3d5e7d6a49bc7626df2588ed4ec89b7bfa7a25fb07d8c",
+    "crates/crucible/engine/crucible-engine/src/scheduler/event_log/backend_loop/dispatch_boundary/tests.rs": "13556fe8b8358eb2cf4ef446a59ef128f77d494d67503e801adcb8cb8cbd7715",
+    "crates/crucible/engine/crucible-engine/src/scheduler/event_log/backend_loop/fixed_input.rs": "61e3a58d3d33f3a550fa6bd82548024b1500e9771bbf5c634c77074ef05a935f",
+    "crates/crucible/engine/crucible-engine/src/scheduler/event_log/backend_loop/held_boundary.rs": "1f58a8621c04b8c63d5617a3656eee823d0505792e79729968f473b5670e05c9",
+    "crates/crucible/engine/crucible-engine/src/scheduler/event_log/backend_loop/held_delivery.rs": "780b9d3aef7f396b09771e8ba9b4b8cfeb45f72ef3c6b4e170b6d37ce4e80fe3",
+    "crates/crucible/engine/crucible-engine/src/scheduler/event_log/backend_loop/held_lineage.rs": "0182f192744ceea4f87959e43c37f7adc991d90cd70962bdef33f46ae86fbfeb",
+    "crates/crucible/engine/crucible-engine/src/scheduler/event_log/backend_loop/held_stop.rs": "c71ab51aa45001898c0b3aa3a3c544cabb1ac722f5f639d21047aa33a7f22c93",
+    "crates/crucible/engine/crucible-engine/src/scheduler/event_log/backend_loop/host_concurrent.rs": "2f2aac107765f37799f5d6f9570c47e9d2ebeab13f5ea6382de836295039b93e",
+    "crates/crucible/engine/crucible-engine/src/scheduler/event_log/backend_loop/host_run_validation.rs": "a840eec5079e043f3da8d00ac74c605e4032ffbe4641b78c78de5c959b27f831",
+    "crates/crucible/engine/crucible-engine/src/scheduler/event_log/backend_loop/input_boundary.rs": "4b54feb82fce148fa669666c082b5b747ea4435382e8e5b2415fa71da3d9d8a9",
+    "crates/crucible/engine/crucible-engine/src/scheduler/event_log/backend_loop/io_inventory.rs": "baa7e0f85fd1a707cfe9489639ca3ef208991559aa2f59ed85dd80892b7ea8dd",
+    "crates/crucible/engine/crucible-engine/src/scheduler/event_log/backend_loop/preselection.rs": "390d0a12aed36a2a31b1ac7f2c21b1f0b4b7ec4d948b4772ff87d0af410c13dc",
+    "crates/crucible/engine/crucible-engine/src/scheduler/event_log/backend_loop/settlement.rs": "311a30a92d163d423bfbbdffe2bb8122c8d73d7e8e71db2f4f1b42eace676181",
+    "crates/crucible/engine/crucible-engine/src/scheduler/event_log/observation_append.rs": "0e05f01b9dd012db4615857bf5318ad332d50811f4246ed22345b10e09336170",
+    "crates/crucible/engine/crucible-engine/src/scheduler/event_log/projection_material.rs": "91a749cb4d833bd0dd3f885340ff9ef64d6b3041689ad590928c4bcb2e5f6871",
+    "crates/crucible/engine/crucible-engine/src/scheduler/fixed_input.rs": "57328e68c01465665498b027b7cd26597ff14eeb7e3eea75b38fd0c750b81a7c",
+    "crates/crucible/engine/crucible-engine/src/scheduler/inactive_time.rs": "8612bc9dc1f54daf135f8dcd53da8b253b99fca084ba261de3b47e5de8115c3e",
+    "crates/crucible/engine/crucible-engine/src/scheduler/io_inventory.rs": "f90bbe426cbf1c1328be80ab8301f45727e314a93c08aa37d9ee1f8a78b44feb",
+    "crates/crucible/engine/crucible-engine/src/scheduler/io_inventory/fixed_consumers.rs": "03e4de292aafd875686a18b2fbc9411966021e166de4c3e568cb1cdf68d52e6c",
+    "crates/crucible/engine/crucible-engine/src/scheduler/io_inventory/tests.rs": "68c894224fafefe4f3a05b5827603c7890b00048d88c5e7bb31f2b4321e78f2a",
+    "crates/crucible/engine/crucible-engine/src/scheduler/liveness.rs": "ef09ddbb310e4106c65e160f4bc4bedaebee6160eb2d719c3884d6044084c32a",
+    "crates/crucible/engine/crucible-engine/src/scheduler/liveness/network_branch.rs": "ffe29bbca4e5decc2973845105488c4b0e108aa4c8956259cfafcea5aabd54f4",
+    "crates/crucible/engine/crucible-engine/src/scheduler/liveness/quantum_loop.rs": "e3475deebef430363ce813eb0e7c2ae722ca509b4d46733bb11a6368d16d082b",
+    "crates/crucible/engine/crucible-engine/src/scheduler/run_admission.rs": "a1ea4611de223be6e10c6b9788de7a3a6b5a5f476c29614d702c373681e27283",
+    "crates/crucible/engine/crucible-engine/src/scheduler/run_admission/input_replan.rs": "888dcf587686f8fe35d25394a5fe69f732e07378099c888b082018770befe93a",
+    "crates/crucible/engine/crucible-engine/src/scheduler/runtime_state.rs": "e84daa2dcb1702c7282e4ec83a08fee941e5147a99e503d4e1d3bb08fbbeec6d",
+    "crates/crucible/engine/crucible-engine/src/scheduler/runtime_state/network_checkpoint.rs": "2178142a69286747e47b6193848d404f30e38d386a0e4252202cdeec0b131454",
+    "crates/crucible/engine/crucible-engine/src/scheduler/scenario.rs": "7e89e60853dc1e73d946d83414450b059ee07dfac2d6d5700fc0eba6d1cd9035",
+    "crates/crucible/engine/crucible-engine/src/scheduler/scenario/production.rs": "36a7cb38ea37aba81dd3b7014713e5b62f1a4f8240c551b9f8a3b63968779704",
+    "crates/crucible/engine/crucible-engine/src/scheduler/single_scheduler_drive.rs": "75ceda520fee2b634b3476883884c29ef840ae3a2d267145e7ba1dad7dee0fcf",
+    "crates/crucible/engine/crucible-engine/src/scheduler/single_scheduler_state.rs": "1064ae42165909fb801b6b0a1c6d98539335c5c486f8b79a525c13097c7dc444",
+    "crates/crucible/engine/crucible-engine/src/scheduler/tests.rs": "08a770ce5bb13aa3f79f7fe73569c35248486d95ac385c70a381f50a35850552",
+    "crates/crucible/engine/crucible-engine/src/scheduler/tests/cap_boundary.rs": "3be6bf0b5969fba74a5b644cb6593e8ea7b8ab86f87749db933dcd32f153ed9d",
+    "crates/crucible/engine/crucible-engine/src/scheduler/tests/concurrent.rs": "557a84246a813174dc6dd719653e8a51d6e377a96c4168d09b6a43bd13a83568",
+    "crates/crucible/engine/crucible-engine/src/scheduler/tests/concurrent/control_v3.rs": "fa3fd65445d61b309a995f357b5ed602d9740a1286b7fdd54aba3797ce56574f",
+    "crates/crucible/engine/crucible-engine/src/scheduler/tests/concurrent/held_stop.rs": "15c163e4535874209113e3a613a42d288ef227617576611e0ef3930584917aad",
+    "crates/crucible/engine/crucible-engine/src/scheduler/tests/concurrent/network_output.rs": "cb67a5f4fcd267c6c2df434caa281e0322721bc885e0bcd95503013ea64d2e53",
+    "crates/crucible/engine/crucible-engine/src/scheduler/tests/concurrent/network_output/preemption.rs": "571394b17e4605e7493bc95ab6e1b296a3361f26cb55667d5a26e29b409daf93",
+    "crates/crucible/engine/crucible-engine/src/scheduler/tests/concurrent/network_output/topology.rs": "142aa220440efd4cc3b43cd70976962c4a50595db7097e06427162d5562d0177",
+    "crates/crucible/engine/crucible-engine/src/scheduler/tests/event_log_contracts.rs": "40f78701d4ad9329c43d38d2a7a6600eef55b994450738ccc1640a663b5defaf",
+    "crates/crucible/engine/crucible-engine/src/scheduler/tests/input_replan.rs": "d42286f42cba3b629b8b971c686b3476369292da7fdb0df9bc5114d6a7ba81cb",
+    "crates/crucible/engine/crucible-engine/src/scheduler/tests/io_origin.rs": "88858d3338126b5fd29fedb0e847d25eff280655afc73be426cde5c76fa31000",
+    "crates/crucible/engine/crucible-engine/src/scheduler/tests/network_checkpoint.rs": "992938f41e8c4f5f0898b40c76722c1c6c5b4471b42de6b79a26bfd46f08f394",
+    "crates/crucible/engine/crucible-engine/src/scheduler/tests/ordering.rs": "7bf20526fe4dd2df258848dfcc572c8e1786779b929d48efc46b4aaa68c3610f",
+    "crates/crucible/engine/crucible-engine/src/scheduler/tests/production_backend.rs": "c6161d240c7a40307425bab72521fc81458e5d5c5763ee50f948c5bcc6453b03",
+    "crates/crucible/engine/crucible-engine/src/scheduler/tests/run_admission.rs": "23f93d65f2df6fb99217f874a5022001890856da5de8d4f32799b30454734d09",
+    "crates/crucible/engine/crucible-engine/src/scheduler/tests/run_admission/input_boundary.rs": "e4a34655661439094547276a82025344a400ce72daca18726aa72cc824aa1b1d",
+    "crates/crucible/engine/crucible-engine/src/scheduler/tests/run_admission/semantic_horizon.rs": "bc9fd1e9908e131c046ce35324727deafd3dd08dd80e468610ddfbc7ade0262c",
+    "crates/crucible/engine/crucible-engine/src/scheduler/topology.rs": "d784f5d525a340417acc4544c3c515c757621f3112325d183fb111e2aa82743b",
+    "crates/crucible/engine/crucible-engine/src/sim_backend.rs": "877775805615c9abfce8f805d4bbbf89754212e90deb2e114f7fbd329bb47502",
+    "crates/crucible/engine/crucible-engine/src/sim_backend/host_schedule.rs": "0bcebbc82315844974d7d32c2fe9f81fd032935cd947a62a32fba897cc710b88",
+    "crates/crucible/engine/crucible-engine/src/sim_backend/shmem.rs": "9119c02d66609157022cd1be669ae9c95187c12fbb4af6f0d3d3a26c45d5a1a3",
+    "crates/crucible/engine/crucible-engine/src/tests.rs": "d9c043ed8fe469eca67a1f2f4a89a800aa6b4a1c3ef99a78e2884dd878e63488",
+    "crates/crucible/engine/crucible-engine/src/tests/content_hash.rs": "d2ebe0b5fb8a3a8711bf31c66162612333a5cd78d973f56743efb9e300f4da29",
+    "crates/crucible/engine/crucible-engine/src/tests/model_core.rs": "4703dc9b86c0aa86a8e0bc5fce048a0a7a6ae9e2a15fd0c705d301a8df6a0e44",
+    "crates/crucible/engine/crucible-engine/src/tests/spatial_components.rs": "561f4dbf614720a7bfedeca45e3e542721df6fce90a6a37a86857c4cf49c0941",
+    "crates/crucible/engine/crucible-engine/src/tests/world_validation.rs": "3e19c898969b2334fb5568a34a6c98ed78a74a09a3e3315977640c7c78140e42",
+    "crates/crucible/engine/crucible-engine/src/tests/world_validation/temporal_graph.rs": "355e3571bb355777195faea446b453991c0b98c4e761e14d4522d48d570f6047",
+    "crates/crucible/engine/crucible-engine/src/tracing_bridge.rs": "7e8d74851f184136867931317601f81efca307cff476be0754b8726cffdd7fe4",
+    "crates/crucible/engine/crucible-engine/src/trigger.rs": "2af4011286917660d6559fcfeaa4a8f082589e9badfd89af977b0018ab457f76",
+    "crates/crucible/engine/crucible-engine/src/trigger/assertions.rs": "f2b6fe0a4c611e4881d50f162334849ea1f252d0074f2764964c491aa7a63bac",
+    "crates/crucible/engine/crucible-engine/src/trigger/conditions.rs": "062e99d9a55b744f37fdf901eaad122142ddcd24816841ab87e244f20f0d6816",
+    "crates/crucible/engine/crucible-engine/src/trigger/conditions/append.rs": "8c27f590be665f3e291d1c85a6081a36b71f140d9e657e0b927de6c850a43447",
+    "crates/crucible/engine/crucible-engine/src/trigger/conditions/host_oracle.rs": "cfd68d718a5181e3211bca35ea3db4784aad93ec2ebd6f393f7616969486d008",
+    "crates/crucible/engine/crucible-engine/src/trigger/deadlines.rs": "e5fa2328156327d3f3e9fcb6fd693e490bc1000ed809fefe573b9607175e34b2",
+    "crates/crucible/engine/crucible-engine/src/trigger/evaluation.rs": "8acfe71e33e8d5cec2c8dbf575fdd4a983cea46900780788d8a0119eef510ff2",
+    "crates/crucible/engine/crucible-engine/src/trigger/event_graph.rs": "ced10722554ffb6809ca019e37848085408e9be94ee78b1b3ed98a607b077645",
+    "crates/crucible/engine/crucible-engine/src/trigger/evidence.rs": "e1475c0b47d55c7a0635288b45e3b9318f7d4933dad481d8c6ebc30d2d0d2e82",
+    "crates/crucible/engine/crucible-engine/src/trigger/guest_assertion_declarations.rs": "d805a139d38f6afb2a01b870465c05019142798b3ca6c9e77184eae973afdf36",
+    "crates/crucible/engine/crucible-engine/src/trigger/guest_assertion_observation.rs": "b5eed357075047a282425586f00e5f175a4a05cbfc12f439ccdd67f4b8ace1b2",
+    "crates/crucible/engine/crucible-engine/src/trigger/observability.rs": "9ac42752243242ce3bc8f6c7efba951d52a2196d7ab44ef6f6ac9700bbfc0a17",
+    "crates/crucible/engine/crucible-engine/src/trigger/observation_time.rs": "ccf90e2aa6b05536c7a0a6f595ca6810abf85928dbcfe1d6f954b80515d44a27",
+    "crates/crucible/engine/crucible-engine/src/trigger/tests.rs": "e31058e3e99dc6e0bbef4893edfe9a00a1622cbf4705f70bd89dca5660dc4af0",
+    "crates/crucible/engine/crucible-engine/tests/assertion_determinism_nonperturbation.rs": "ca900d525673371e1033bc0eb1897732edde553028ba99d42b5a2f28975aefcc",
+    "crates/crucible/engine/crucible-engine/tests/assertion_evaluation_order.rs": "da270968c8bab52488c220cf70da8c988a6b2f9ac49dc784f04e1f43f5b05399",
+    "crates/crucible/engine/crucible-engine/tests/assertion_evaluation_timing.rs": "d46a251f3b8dc18e3784564ff65b986bf91c9bd707ba06a71b2801f8790da4ff",
+    "crates/crucible/engine/crucible-engine/tests/assertion_lifecycle.rs": "8bb4e8d07f58803487b30bc02abb054b55d41c92360a4a51c48a8952b197ba17",
+    "crates/crucible/engine/crucible-engine/tests/assertion_log_fold.rs": "4c6d3c67ee0f5390307d2fbb718c9ef8f10829de29074d635160fb22d43bc0d2",
+    "crates/crucible/engine/crucible-engine/tests/assertion_prefix_continuation.rs": "796234c79f782646c171a9e23c86093fab35e8b9cbc37e6c18af453cb9199521",
+    "crates/crucible/engine/crucible-engine/tests/assertion_proximity_gradient.rs": "cef32fb6b88d9feb8db0a91ef08ac405e3478204f3da8aa9d66223b0089ffd0c",
+    "crates/crucible/engine/crucible-engine/tests/assertion_quiescence_leaves.rs": "8f4c011d7781c12a2f9dbf4db04425546ff28575f2bc8413c3ba3c9218f2057c",
+    "crates/crucible/engine/crucible-engine/tests/assertion_violation_records.rs": "4a2dd48e4d8ce56354953efa23b6bf03b6d7d3c4cbe83c0a4ed8078c94c2f101",
+    "crates/crucible/engine/crucible-engine/tests/assertion_violation_reproduction.rs": "95676d73683d25b1ff24b928c2056be01017ea6a8440471af51d882c6baf9b68",
+    "crates/crucible/engine/crucible-engine/tests/backend_node_routing.rs": "2fd6f7f3ba853524b957c12ada7d543b3e55a79155b64dab1285770eebdd3fc2",
+    "crates/crucible/engine/crucible-engine/tests/black_box_first_guarantee.rs": "9b2ea7150bf00a173be7f056e827cfb8102e53aa13f62c447eaeb4cbf832fe61",
+    "crates/crucible/engine/crucible-engine/tests/compound_condition_combinators.rs": "b8c52aadbcb8ff6c53da5d108e03e47542548b5f5ef88dc734bbbf8a7658e0bc",
+    "crates/crucible/engine/crucible-engine/tests/condition_time_leaves.rs": "beb04bfbdf4c846107705fbae531892e8b12ed977bfc0c1c594664e045ddef09",
+    "crates/crucible/engine/crucible-engine/tests/condition_vocabulary_shared.rs": "c81fc071a66dadc099dc66a38d95e93b2ea81692a5acef84127c49061b1e46ff",
+    "crates/crucible/engine/crucible-engine/tests/coverage_condition_leaf.rs": "17356643365d8ef478d226e0512717f9ec0058c449393f2a5e85a4c0666d536e",
+    "crates/crucible/engine/crucible-engine/tests/debugger_live_fixture.rs": "015a1e9102d535e8f5038d9274154e424aafc133906cef19c579d078125aa4c2",
+    "crates/crucible/engine/crucible-engine/tests/deterministic_condition_evaluation.rs": "39979b4572739352c9f9c13c52cbd2f2167781395a7d415085fddf70db16fe22",
+    "crates/crucible/engine/crucible-engine/tests/event_graph_control_flow.rs": "ad79313d46cc3c96052b19cba274a1a725075de5cced85c9a0c1ec921bde7e63",
+    "crates/crucible/engine/crucible-engine/tests/event_graph_replay_oracle.rs": "f262701518069874d2b9f8a602f5aa5b3b5215763b3861bf9744a1cce0c2a335",
+    "crates/crucible/engine/crucible-engine/tests/event_graph_replay_oracle/divergence_tests.rs": "1c6df1e9acfa057d50c606a04f7bb6ec6e31851fe9bab77bd7d186d3c42842b9",
+    "crates/crucible/engine/crucible-engine/tests/event_graph_serialization.rs": "f51230061b6137dfbbe6b79c3e9bb97d1b70816a7954ade6e4c0787fbe62b8b9",
+    "crates/crucible/engine/crucible-engine/tests/event_kind_catalog.rs": "849991cce79b59abc3d9bea88f70f8ec2e3f1ce59585db76bf303865dd9c8205",
+    "crates/crucible/engine/crucible-engine/tests/event_log_assertion_proximity.rs": "82eb7d38c90053d97a1a160c74dd71384e741ae23eb4d96173c35c28e0a8dbe6",
+    "crates/crucible/engine/crucible-engine/tests/event_log_class_catalog.rs": "d851e2178a96e7c6aff8cffcb54579cb4dc64c992de45738343d76854090d070",
+    "crates/crucible/engine/crucible-engine/tests/event_log_content_address.rs": "bb7ba26359a7828f983e3e9b66e60bdfbb3c3a662c2fe09661a2967ae3bca384",
+    "crates/crucible/engine/crucible-engine/tests/event_log_coverage.rs": "f7d042d51f8adc784e5ac613fa5d383c24c29fea7531667bfe8554bb501ad34c",
+    "crates/crucible/engine/crucible-engine/tests/event_log_determinism.rs": "f0a8964cfd52c55ff55995aac8682dfb0854915d80a3648ac35fb4d349aaee48",
+    "crates/crucible/engine/crucible-engine/tests/event_log_payload.rs": "b0b6bd3d3dccc940dae9d78b59a242294d6ca6cc7c20262e133e209600d1429e",
+    "crates/crucible/engine/crucible-engine/tests/event_log_reproduction_artifact.rs": "b99e66cfdc6dc7080f6fc6c9cc6b1ca65f583c12a76f0c4948893b81457d11d0",
+    "crates/crucible/engine/crucible-engine/tests/event_log_schema.rs": "66ec80ef4a3b0e30036dc4f610a3f6695813893805de09c7bc910adde900c1f3",
+    "crates/crucible/engine/crucible-engine/tests/event_log_tracing_bridge.rs": "2841ac7db139ae659e19cf0aafabb0cf726e56a66afdf4cfeb6d4f1370d28935",
+    "crates/crucible/engine/crucible-engine/tests/event_log_unified.rs": "4daf9592e02e2fb600e67657339b2e7e845ca1c5eb00cb58cebd45d7170c50d0",
+    "crates/crucible/engine/crucible-engine/tests/fault_observation_log.rs": "9b5bdfe1f159108ed211350694c5475f70fce45a97a1eccf1d580615f7de7f39",
+    "crates/crucible/engine/crucible-engine/tests/fault_reference.rs": "9b4b0244903ccd06f09ab757ccd21fbbea5320135e012400d695618b9f84540c",
+    "crates/crucible/engine/crucible-engine/tests/formal_trace_export.rs": "0ec962b0883de554b1fba58a1f10cac2b2676f641dd599442d65767e5f4d57c0",
+    "crates/crucible/engine/crucible-engine/tests/gate_abi_conformance.rs": "7d772956233237bd7cc3fa3c3fefa88c540da568ef1fcdc87f9e466265af8f71",
+    "crates/crucible/engine/crucible-engine/tests/gate_adversarial_determinism.rs": "f452f4dc7af85bb9e4577b0221e7485697df2d04534c098a4c0a4abf3b4a961b",
+    "crates/crucible/engine/crucible-engine/tests/gate_basic_block_coverage.rs": "d66b0d3c145a4da0bd92fe5cc2134b8c82f335de4b96e97951b8d575d34f5119",
+    "crates/crucible/engine/crucible-engine/tests/gate_campaign_replay.rs": "48187573b9c8951d76d91f417335cd48c713d15dc1756a9f7110196d3078d207",
+    "crates/crucible/engine/crucible-engine/tests/gate_canonical_debug_breakpoint.rs": "f3d0b8f20e3fdc21b4021754eae51d481e3cd909ba359bb9d2415aff7cfeb967",
+    "crates/crucible/engine/crucible-engine/tests/gate_checkpoint_materialization.rs": "c14b391642be323e60ff9f81843999ebb6420cb1ac6b27182e98560e42686baf",
+    "crates/crucible/engine/crucible-engine/tests/gate_content_address.rs": "82923952453475fab94dedd93b516800bd409efbb670315ed0996d17abc0e133",
+    "crates/crucible/engine/crucible-engine/tests/gate_content_address/support.rs": "205c8397df46d758fc1909b4302d493c918c433b0b42b754e4aadd5bc480d66a",
+    "crates/crucible/engine/crucible-engine/tests/gate_coverage_feedback.rs": "2c3cd0d4f4ad3a6fbaae2e593be1cb0e9515ce640c6dd4371e1b870bf978516d",
+    "crates/crucible/engine/crucible-engine/tests/gate_coverage_guided_corpus.rs": "622ab4dace32854a22626dea735cfc85917dc06e75de89bd942f788d633d6689",
+    "crates/crucible/engine/crucible-engine/tests/gate_coverage_guided_fuzzing.rs": "41e8bca0e6692439b12483630fe91671dd01bb2c22989b6d4698028618e78277",
+    "crates/crucible/engine/crucible-engine/tests/gate_debug_attach.rs": "b3eb67abf18bae22d746ac1062674eac9dc102ed8340cd8f53ef77c6bd5a08c0",
+    "crates/crucible/engine/crucible-engine/tests/gate_debug_cli_surface.rs": "17f70d994de472eeb65670df91326b55b89bd6ed76cb3ea1ee69b4310ea2ad6f",
+    "crates/crucible/engine/crucible-engine/tests/gate_debug_non_canonical_branch.rs": "e83b3614b41174dac7e2e51024efd44323d03ce591d35985d9e6a5f90637bb5f",
+    "crates/crucible/engine/crucible-engine/tests/gate_debug_target_resolver.rs": "d40ce96fc363aa6c13a1b2cc2e51f95085f3ed99dd84a7f7dfd48c0324f36001",
+    "crates/crucible/engine/crucible-engine/tests/gate_debug_time_travel.rs": "120aacb3fe94d72b6f89a0491f80c0c5f331a173e1c22b013f1f698fb545032c",
+    "crates/crucible/engine/crucible-engine/tests/gate_e2e_determinism_concurrency.rs": "3c400e067d344361095aa9889f91f92c0d21628c9b10b275aa5860520320be35",
+    "crates/crucible/engine/crucible-engine/tests/gate_failure_signature.rs": "1d44b620c7b615a62d9e253d10f2dc8007bccbafaaa439657d4110dd3e600356",
+    "crates/crucible/engine/crucible-engine/tests/gate_failure_signature/artifacts.rs": "8b2d4e719e1903fa3c4a2498df8da550c0a38aa249e0edb20266666dd0395acf",
+    "crates/crucible/engine/crucible-engine/tests/gate_failure_signature/minimization.rs": "13162660b783a7edb1615cb2f0cb4bbcc7a96a3c6f66d6cdc5093c68261e7a52",
+    "crates/crucible/engine/crucible-engine/tests/gate_failure_signature/support.rs": "5569a6b9569b99c56bd899d782e93791f971edd937c551624c8a456708b59270",
+    "crates/crucible/engine/crucible-engine/tests/gate_fleet_equivalence.rs": "b42c0273b3f4bf8f00f4c0a8574e7a5b566460c6990e86c991afb4686c1af36f",
+    "crates/crucible/engine/crucible-engine/tests/gate_fork_replay_oracle.rs": "ee758bfdf7a28f3f56848f55e9c4186ace0e69e760602b2d53ab1f131e45dded",
+    "crates/crucible/engine/crucible-engine/tests/gate_guided_adaptive_exploration.rs": "c4fa05cf622c204aa0664ae1093f765e4eefc963a4c4e978bbf6b5534612c3de",
+    "crates/crucible/engine/crucible-engine/tests/gate_layer0_determinism.rs": "9a8152eac24d9465894b05cbdc0ca1fddea843c751ecc604136068d6c691ad9a",
+    "crates/crucible/engine/crucible-engine/tests/gate_layer1_injection.rs": "6673f50afa39919e0d7c943da41aaa31b0577029b96904d5b760da597bc85912",
+    "crates/crucible/engine/crucible-engine/tests/gate_minimization.rs": "e975994157ef634172d02902c9a51b40ee2fb3430994c3c720ab2e647e20e213",
+    "crates/crucible/engine/crucible-engine/tests/gate_read_only_debug_inspection.rs": "52b3451e4810522184674213d0d69283af57d0bb4bed00c1e6d77785d3c20585",
+    "crates/crucible/engine/crucible-engine/tests/gate_replay_oracle.rs": "cd8be74e10332f2a4c55c6c9a883a5c63752e89866e9a62c52c28f0d4a38ca29",
+    "crates/crucible/engine/crucible-engine/tests/gate_reproduction_artifacts.rs": "9cecb0400268b5694da7ee736dbde6fa45c2451c8b17abaee8c317f084ef0dca",
+    "crates/crucible/engine/crucible-engine/tests/gate_restore_strategies.rs": "e05bc3dcd35a2df18be729213ef1d04eac4ff6f8b08f12d56a5e06b8d731fece",
+    "crates/crucible/engine/crucible-engine/tests/gate_scheduler_liveness.rs": "945796e1c1f32de987b635cb340137b80ff6d278e80f1a855ac020b91eb511dd",
+    "crates/crucible/engine/crucible-engine/tests/gate_search_reductions.rs": "659f78babf258d3988729eab5cb50f44484816e23ccd91d2c9076db2566eb3fa",
+    "crates/crucible/engine/crucible-engine/tests/gate_search_strategies.rs": "1b4dd0eb1c7651f3e8a8c38b2014c8cc4def38b6b4be02f478babdd933d221d4",
+    "crates/crucible/engine/crucible-engine/tests/gate_signal_fault_system.rs": "dfa713c969cbcc7b126d274bb6e48515f9fb420e9b603d003c7564ea32d86e07",
+    "crates/crucible/engine/crucible-engine/tests/gate_state_space_search.rs": "e8e7068d71952dbb67877c3d2f254804dcacf51fd9dcfd051b65fc0a25b01e89",
+    "crates/crucible/engine/crucible-engine/tests/gate_unifying_view.rs": "925aca13f1f5a4e392e35b81370400c126c0e6aee5ca7a3264b5996c49bfc295",
+    "crates/crucible/engine/crucible-engine/tests/guest_assertion_declarations.rs": "c2b27a9c017ece7ec88fe72658b1aca0f8d8f0dacf501f2837058e186d91913e",
+    "crates/crucible/engine/crucible-engine/tests/guest_host_black_box_surface.rs": "63183fb8da54dcb6cf87525f422b7f01dd2ce73456fa518846bc098710c1a9c5",
+    "crates/crucible/engine/crucible-engine/tests/guest_host_channel_determinism.rs": "8417982f5dba9f101356055e198be0069acd3528eadc8a7ed492eacac1a7bb14",
+    "crates/crucible/engine/crucible-engine/tests/guest_host_marker_observability.rs": "aa0518afb8d1178a08633b41eb6d97c1d1e81b84d6f56dc27a142f6aedf17e43",
+    "crates/crucible/engine/crucible-engine/tests/guest_host_os_agnostic.rs": "274b247e15ae247ff3bbd9dbc6a504acc7c566f0dd7bd2ebf8217400b0dba926",
+    "crates/crucible/engine/crucible-engine/tests/guest_host_readiness.rs": "0e429188d8ae2122f0fa99ef9919d01fb7a3af54e73e121420847a29aaa2d5cc",
+    "crates/crucible/engine/crucible-engine/tests/guest_marker_assertions.rs": "babf132cb2e65d9e1c33a9d888253b744a6a0468015da5a8cfaff949f6b73bf6",
+    "crates/crucible/engine/crucible-engine/tests/guest_marker_condition_leaf.rs": "6dd6d64ee1d79a42d694bfaf1012389e4e4c700f0e2ed444f0d73b04d65a9934",
+    "crates/crucible/engine/crucible-engine/tests/happy_path_assertion_transport.rs": "aad3cc729b61e524ec77e286da7885b1048ac8dae8b0f8c540c3e489b61c5c18",
+    "crates/crucible/engine/crucible-engine/tests/host_side_assertions.rs": "cf47b21f7019876f22f112a4c3b6688faae1ba4259afe5a7c1304a1d2aa6b8a3",
+    "crates/crucible/engine/crucible-engine/tests/live_qemu_search_fixture.rs": "e17098f9484f6ea0604ec8da90290bb63cca634bb71064571abc41e13a05402c",
+    "crates/crucible/engine/crucible-engine/tests/memory_condition_leaf.rs": "24823041da0865bd62db0e16444f72e58b55a0a858d006425bc03af4c75a75ea",
+    "crates/crucible/engine/crucible-engine/tests/observable_condition_leaves.rs": "b5642beec4d6144dae054a7ac0bff03e33c064eba4a1dc2ef4eccafb02778b2b",
+    "crates/crucible/engine/crucible-engine/tests/observed_state_materialization.rs": "f67a5b138868b4195ed561dde995bf2579afeeeb1eab8534b834a941ca94a863",
+    "crates/crucible/engine/crucible-engine/tests/offline_assertion_checker.rs": "88cd28969ac8c5907c3a2c48cb52693ceefd54104a0ee921d0c441ecbb92656a",
+    "crates/crucible/engine/crucible-engine/tests/offline_assertion_empty.rs": "f1757d96fcc8f0e0922c8c4bf99e1acd4ef3cd2381900bb70f42a72c5db216f1",
+    "crates/crucible/engine/crucible-engine/tests/predicate_dsl.rs": "b39f08fc2512af0b8788eb0f4b76174dbc822a5b2e52a89e9faf7f93940170e5",
+    "crates/crucible/engine/crucible-engine/tests/preemption_discrimination.rs": "124e43c63464e9d0b7749c634d489bc1f8e1e9a6a24a33b6b01fe9ce483090ff",
+    "crates/crucible/engine/crucible-engine/tests/property_configuration.rs": "f0c4b1f72b3b46a59aa23f10f439da1883f5fe5234a3bf68df7d15adc908da75",
+    "crates/crucible/engine/crucible-engine/tests/property_fingerprint_neutrality.rs": "1633a91a7a44e9c3f50a2b9b73b82a2b8b6ca15b83adfa71b181549185769bce",
+    "crates/crucible/engine/crucible-engine/tests/property_vocabulary.rs": "90f2493edadf79bd80692acb06aa61d9754d25e4ffb4d67c6aef8a60e733cf5c",
+    "crates/crucible/engine/crucible-engine/tests/rfc0014_taxonomy_ledger.rs": "dc1c0bb73ca7c07ecebf0f1961b65eb62db6edefe67c449db701573f02f787ff",
+    "crates/crucible/engine/crucible-engine/tests/same_icount_tie_break.rs": "890a738f0de9a5a6a60608666fb9873b4b87746c62a866bf8226c5fa89658406",
+    "crates/crucible/engine/crucible-engine/tests/scenario_picosecond_duration.rs": "3cd29840f63033f03533821bc490b6bfc3a5dc2af07ef62c6ae39db305095b2a",
+    "crates/crucible/engine/crucible-engine/tests/scheduler_actor.rs": "b147fca882b7a3f6e36814da25af0b172dbb33939adf4a2eee5734c5a87fcc4d",
+    "crates/crucible/engine/crucible-engine/tests/scheduler_all_vcpus_idle.rs": "a2bcd6b16784af3acf529a8d1b79c6fbee5560276279ef22347eddec6d8b6f32",
+    "crates/crucible/engine/crucible-engine/tests/scheduler_concurrency.rs": "696cd5a976fc1e93166a14f963fc4a3fdb7b03de9c3d401a69ca3d2769d566e1",
+    "crates/crucible/engine/crucible-engine/tests/scheduler_conservative_pdes.rs": "f5168393f7dac4cfbc9716ec02b442314b08272422032c85b3fc01ce6ed83bad",
+    "crates/crucible/engine/crucible-engine/tests/scheduler_control_responsive.rs": "af6971cb81347c795bf6f502f5cd8ad6d3a2dee201265993b544d980033d4385",
+    "crates/crucible/engine/crucible-engine/tests/scheduler_effective_horizon.rs": "08b8f849a7dd4247fb1c4a4424cc8cc4777890f158f79161ee24ee1fed978bd5",
+    "crates/crucible/engine/crucible-engine/tests/scheduler_emit_step.rs": "1a358b90104277920512f2e8424d487899530c1bcf7209f0249ed80cb4af524c",
+    "crates/crucible/engine/crucible-engine/tests/scheduler_event_order.rs": "5fd95d5f5f6806e847f0fe57160baf1260011ba95b069604322da684aa6cf27b",
+    "crates/crucible/engine/crucible-engine/tests/scheduler_exact_local_event.rs": "3a4847d76fccb97f30bf772b7f23d354394c49657862031bf4d8c92c30139839",
+    "crates/crucible/engine/crucible-engine/tests/scheduler_horizon.rs": "cbc11d3ec57e2f101d0973ebe9de7056e5a195f1f0a6e56e04c2349187157942",
+    "crates/crucible/engine/crucible-engine/tests/scheduler_icount_ceiling.rs": "038e21cb2bbe0897e026a1cf7b37c9435cec733a93200f61a541f2ab0247a2ff",
+    "crates/crucible/engine/crucible-engine/tests/scheduler_idle_fast_forward.rs": "09e4b9f1b8c4f51041086c0fe19e47295dafa1f8a4f5b589c62a30fdf6e9df22",
+    "crates/crucible/engine/crucible-engine/tests/scheduler_lookahead.rs": "6c15c2ac33469d2e362df9394fa2ad4a349ffb3f821d971a35d12933f354498b",
+    "crates/crucible/engine/crucible-engine/tests/scheduler_partition_heal.rs": "97019bc2513c31de3fe248910d0697a6d8ad59a4848b0b97aa71a4671cafc6c3",
+    "crates/crucible/engine/crucible-engine/tests/scheduler_preemption_identity.rs": "377f457bd8c1d0bc6b597752c711e8e74db4267a86a9a8cc64dba1a71841a62a",
+    "crates/crucible/engine/crucible-engine/tests/scheduler_preemption_resolve.rs": "894d74bfc0b4538a8785271d629872d0452d6d4b75d1aa7f36726834e611fd04",
+    "crates/crucible/engine/crucible-engine/tests/scheduler_quantum_loop.rs": "5418e1a883b792280984e26c7effa94b595fa1d629226bd25e09dbc473fd1259",
+    "crates/crucible/engine/crucible-engine/tests/scheduler_rendezvous.rs": "8acd53108e90b0f827ce4905f6214626ffc195d94a01b384913f606c1d3da4cf",
+    "crates/crucible/engine/crucible-engine/tests/scheduler_rendezvous_purpose.rs": "2e37d39adafcbe49cafa5a02988c39321310207d5d592373f9008f6aa5e9e2ae",
+    "crates/crucible/engine/crucible-engine/tests/scheduler_resolve.rs": "3fa32f0100353b339b65d91bc7ea0afcb566bacc3cb1b037b77ea97ecadd7711",
+    "crates/crucible/engine/crucible-engine/tests/scheduler_rr_subdivision.rs": "8d1c263011328fae92320e27d9771082340a13aee1cd10a009961fb0a7594757",
+    "crates/crucible/engine/crucible-engine/tests/scheduler_run_ceiling.rs": "753016175aa3931eef29542621e2c883615d7efa2304917cde0a108fb459a380",
+    "crates/crucible/engine/crucible-engine/tests/scheduler_topology_change.rs": "180fe6d4102b287b056546aaec98f57ebe167b50e4d112fe7f611f6989bc3708",
+    "crates/crucible/engine/crucible-engine/tests/scheduler_topology_rendezvous.rs": "5cf42c88690b286c565f7aa91609fa6963c735af2db367ddbe84b0397dfa5254",
+    "crates/crucible/engine/crucible-engine/tests/signal_fault_wakeup.rs": "ce999c1cd2baa6f54ecc49e4752c66c2f18b77ee243b1d78e8871dd0a8c763a6",
+    "crates/crucible/engine/crucible-engine/tests/source_size.rs": "7ba8037c069af8a7690d283727e4ea169d532f1b9fb844fdf0caa9f1f7cddbd5",
+    "crates/crucible/engine/crucible-engine/tests/support/adaptive_campaign.rs": "0b2cb4d835a4fec241d65cb545b12fe4ccee5d2250edff7b429144d8dc16591b",
+    "crates/crucible/engine/crucible-engine/tests/support/guidance_search.rs": "62445ac4179108c8222c020b1177e305399b8b9bd5484d9a664e639c61d06d67",
+    "crates/crucible/engine/crucible-engine/tests/support/mod.rs": "02ae8f2b9e389d150409c46545f48ff3485137fdfc5eb1e104358dedcd075bf9",
+    "crates/crucible/engine/crucible-engine/tests/time_shared_timeline.rs": "2309010b2ab0502e181b72f7ffe5ebebd2fa90c908e64ed92a0e3965d3d47997",
+    "crates/crucible/engine/crucible-engine/tests/trigger_deadlines.rs": "4e521e7462232fdcfaed6a27f12994a1c4532fe81fcd1940fcf4c3b322a4d473",
+    "crates/crucible/engine/crucible-engine/tests/trigger_node_scheduling.rs": "753d094df30d1f236153284dac74d6e23d7b1e5e8dd900547056545fab68dee9",
+    "crates/crucible/engine/crucible-engine/tests/trigger_verdict_composition.rs": "88140a062fef3ddcbc22a113c81e579b612598ccb61e38f2dddb5c8668a6ed48",
+    "crates/crucible/engine/crucible-engine/tests/trigger_wakeup.rs": "7b8298654337f8cf84eaf94db8b7fdc5d3fbf615aef64839eaccc67dd58a2751",
+    "crates/crucible/engine/crucible-engine/tests/workload_load_patterns.rs": "2f28afd9313c03e659c569dfdcfffef8f8894a97d1b6db86edb55b9f5e0197d7",
+    "crates/crucible/engine/crucible-engine/tests/workload_model.rs": "0cfc47edb71afdc0cc677c131157fa651dd9583a95c0b56ccadd3dbaa8ca3d2e",
+    "crates/crucible/engine/crucible-engine/tests/workload_parameterization.rs": "fb86218286338f83f7d253832d5a8b4063e309c74d41852849619f485c839cfb",
+    "crates/crucible/engine/crucible-engine/tests/world_devices.rs": "cb71f27afdd91ff5dc69daa19e453bb0623eee839794fe0ae742e4b7035f3825",
+    "crates/crucible/guest/crucible-guest/Cargo.toml": "5e493f278da7566a203a9187f8efb38ec420c88ba100d321fc6867cdfc6f2baa",
+    "crates/crucible/guest/crucible-guest/src/group.rs": "530f8f6345785142bb6b7aeb44e4be3c049f50ea0eeaa892f2e2e6bfbf2dcd3f",
+    "crates/crucible/guest/crucible-guest/src/guest_introspection_agent.rs": "29f7c71d0e4e952507b6be6f287aba8f10bc5c6355870b399cb387547d36fbe2",
+    "crates/crucible/guest/crucible-guest/src/guest_introspection_agent/error.rs": "1767b956d388797f3b7d1a2f4db44718c465a0e7e1c213339a7dfad0d85ec25a",
+    "crates/crucible/guest/crucible-guest/src/guest_introspection_agent/failure_mapping.rs": "07f65055de2d16d7adf439438ae3102a39f829a2948d5b24ad7b2cd0dc27c9a9",
+    "crates/crucible/guest/crucible-guest/src/guest_introspection_agent/tests.rs": "ffb014a83e251990f33b081defe2f11d466901b26dfd28ff0399212ea381c793",
+    "crates/crucible/guest/crucible-guest/src/lib.rs": "028296af13d848dece54128932abb25fe7bc8fa894c6d4b585fcfa19ef11bb64",
+    "crates/crucible/guest/crucible-guest/src/main.rs": "cf60c3dd38f857da03f777f492de0895fd14e3eb6346266e86398232041b53a5",
+    "crates/crucible/guest/crucible-guest/src/selectable.rs": "093926d69c704ebc1f692d5b8758e4425a9d238285a04d37aaa01cfa3d72dc3e",
+    "crates/crucible/guest/crucible-guest/src/selectable/tests.rs": "0358abc3a57d76dc88864084cee1c511024e09cc160dbdfe8e102eba098c6923",
+    "crates/crucible/guest/crucible-guest/src/selectable_group.rs": "41a4916e4537779eb0fc048a545cf5dad454df3afe2053c88a6aa5976a9ab825",
+    "crates/crucible/guest/crucible-guest/tests/gate_abi_conformance.rs": "1dc2c6f76cf149145c028ab73812b47799f58440be62e58478596c1a9386ff31",
+    "crates/crucible/guest/crucible-guest/tests/gate_single_vm_fingerprint.rs": "9353a86c3762590533120c97a3269be1eaa3f5f7b1066239680586f4ac7d801f",
+    "crates/crucible/protocol/crucible-qemu-protocol/Cargo.toml": "2d1508f821ce81550f0fd07f9cabbf8083d7dfca4f74deda8570ea874883d8ec",
+    "crates/crucible/protocol/crucible-qemu-protocol/src/app_random_branch_plan.rs": "22db2498b3354ba18ed9d2b68697b33f79d0a004e4141ee742bc9cc9d4f05f5b",
+    "crates/crucible/protocol/crucible-qemu-protocol/src/app_random_transport.rs": "34452e7a7015d92d3e1a13abb9866e4eeba3deda77bc5c390b8f1f5de79e4c5c",
+    "crates/crucible/protocol/crucible-qemu-protocol/src/choice.rs": "a1b5e612869ef1fc41daf32b74386d330808a3fd847fa6fc8b4bcc175c82ab82",
+    "crates/crucible/protocol/crucible-qemu-protocol/src/choice/group.rs": "33511bc21ec25286bb0bb339e98c500ffb5ead89c381985fc04f5a531d1a2415",
+    "crates/crucible/protocol/crucible-qemu-protocol/src/codec_fuzz.rs": "1b13c1e9eafd3ae56e17036584f773a6f9d23ac9cdaea66d9c4d1c581b4b1a81",
+    "crates/crucible/protocol/crucible-qemu-protocol/src/debug_gateway.rs": "75c870e850dce4e2abf7ab02116dbc812bc7fef977ace2baa9e446b92157f57c",
+    "crates/crucible/protocol/crucible-qemu-protocol/src/device_group_opportunity.rs": "f15e60edc73eecf9b7f88f62813e7693b1f6d25b48a9af3d2da0cb03b8030b25",
+    "crates/crucible/protocol/crucible-qemu-protocol/src/doorbell_abi.rs": "7fba8fd49880548529dd4ede6e0255eac92027286295b338a77bcbaa8b3cb38e",
+    "crates/crucible/protocol/crucible-qemu-protocol/src/doorbell_frame.rs": "9451f37891036b7f138bb0467eaaf65520c46a3a574232abb707dc2be083e26d",
+    "crates/crucible/protocol/crucible-qemu-protocol/src/doorbell_marker.rs": "32abed4d1e5591ce9d963dca3551084db60f3e3a4bc0d3a3deaec3b4b05089b5",
+    "crates/crucible/protocol/crucible-qemu-protocol/src/golden_vectors.rs": "1ecc4536f03c02381e198f719ada1ad6db90d25edbc75d21ed9b2f4ce321c582",
+    "crates/crucible/protocol/crucible-qemu-protocol/src/guest_introspection.rs": "16e4b6f1caad903255fcf52aaab5b90ad01983663cc850f27d75621606f3b091",
+    "crates/crucible/protocol/crucible-qemu-protocol/src/guest_introspection_doorbell.rs": "3c4b5aaa2ba2522ef62aaed6fc9a73fc4a90c57c02208bdb3484daa7c31a1515",
+    "crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs": "97a8611857eb94be76feebc801c94b90f58bbcf6aa055ecbe825f8ec98cefe27",
+    "crates/crucible/protocol/crucible-qemu-protocol/src/plugin_setup_plan.rs": "0ca0492c25b6735a237830572fb7d443cc3457a1d818bcc1ed2fa12f33d9534c",
+    "crates/crucible/protocol/crucible-qemu-protocol/src/preemption.rs": "7a7a6c2ab7074bba8160f3e7175783b092f5d9a5b8219b9db975638313bd2f8a",
+    "crates/crucible/protocol/crucible-qemu-protocol/src/selectable.rs": "7e8282d22de10fb7b7a1f828bc792be6b338849ae7b2a5e7e704290e27eec9ea",
+    "crates/crucible/protocol/crucible-qemu-protocol/src/selectable/tests.rs": "e06a3a3bd4d1ff3acea229b8bf47273158661edcecbe0986a8cf1c1117c1c902",
+    "crates/crucible/protocol/crucible-qemu-protocol/src/selectable_catalog_plan.rs": "c89f8c464226801be78c0e530412519063f7340daa3912048e78047e79dfa187",
+    "crates/crucible/protocol/crucible-qemu-protocol/src/selectable_catalog_plan/tests.rs": "11235efd947e2d9b5156f14f3ff45de8fa176fdea7eaa5681911fb2f897e6445",
+    "crates/crucible/protocol/crucible-qemu-protocol/src/selectable_transport.rs": "70c4becc06f06232b15ba054590bd9101b57d3f0c0bc7c878a35507c2954c6d0",
+    "crates/crucible/protocol/crucible-qemu-protocol/tests/codec.rs": "88afd54e9c21d49abaf5d6e8f30e1abf4888d5bda585f6a453a7ef3859b4a1ef",
+    "crates/crucible/protocol/crucible-qemu-protocol/tests/codec_fuzz.rs": "698bb8436e36914e86a904adc8b3b7d5357dc9e9cea869a0f1d00587f4fffb64",
+    "crates/crucible/protocol/crucible-qemu-protocol/tests/descriptor_handover.rs": "e8b2c5215969fa44119a75ec6957ba4e9de1ff51e7dbbd60e7e172ce85100be6",
+    "crates/crucible/protocol/crucible-qemu-protocol/tests/frame_format.rs": "a02cadcd6722ce4eaa4ecbf0a1b6e003eca0f6e020134cdeb2ff1544f633e6ec",
+    "crates/crucible/protocol/crucible-qemu-protocol/tests/gate_abi_conformance.rs": "d48c630fb9ecd757f85efcd30971dafde046e9d7200d11e447a607938268fc5c",
+    "crates/crucible/protocol/crucible-qemu-protocol/tests/gate_layer1_injection.rs": "e158c24e29c18c44b59bc45ce0e99a8396b0981cc6b71f4dcc97a2c87ad61579",
+    "crates/crucible/protocol/crucible-qemu-protocol/tests/golden_vectors.rs": "5abc86991a3e88538af8d7db0c61e79aec84dc8aaa22e318c79af3bb8b1c8097",
+    "crates/crucible/protocol/crucible-qemu-protocol/tests/handshake.rs": "4e71dbcd3389f8cff9feb802842586ab20e5f94d5be32c071b13d6b4219d1837",
+    "crates/crucible/protocol/crucible-qemu-protocol/tests/lifecycle.rs": "ad273a898f8eb228b13103cd67dafb373e36403ae0ad3de677b7923553416467",
+    "crates/crucible/protocol/crucible-qemu-protocol/tests/setup_completion.rs": "3ae61dd7a5f25e408bc8ebadf03cab07d19856861324cc0cf724b0a43b4a5aa4",
+    "crates/crucible/protocol/crucible-qemu-shmem/Cargo.toml": "6b3c2bd5ee4f6041494b02cbbdf3c619fa09365c9ef1f38b37c7da298fcb7fc7",
+    "crates/crucible/protocol/crucible-qemu-shmem/examples/crucible-shmem-abi-header.rs": "b05dacc88f097a71b53cd730a504e01c0a8f701c59d67a30548dbf69d8c8afd7",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/abi_header.rs": "83b9f1ebe89004fed9d728eeddfddf8af7a2b721ffce64b993691c22cf03cdbb",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/abi_header/constants.rs": "21b7706d5a45b3df7a015da467d34a450182ac230952f312529fffdaafa4a777",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/abi_header/guest_introspection.rs": "274c880fa6e3af849e2abf4b8256a400685f79d9289913e781d1b629bd580955",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/abi_header/node_slot.rs": "d70219f5094daf2f09a4f1fd5468a6301bb1999168e45aa2622af8ca438831d4",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/lib.rs": "5176b176ccb94105f99f513246c1dcd4e8ff4b9da0ef13c2a52a92b7a1e5eb10",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/mapped_setup_region.rs": "f15f42ee50724a2d57d6d7b0c8c1fed848d30c98e9e11cdbbc7cb4091d452086",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/mapped_setup_region/basic_access.rs": "cd2e91fe873c551785956fb8e05118015b4aaea07f2d63a671ff7bc0270978f8",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/mapped_setup_region/device_rings.rs": "68ebd211392a5734a5f8102169e25b3782dacd3618cd76f7d12c0ab45c04f909",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/mapped_setup_region/errors.rs": "770a7edf1eb0ea44b93af78f8b77c3a60b82f3373c1b4e1d795f27860a970918",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/mapped_setup_region/fault_transports.rs": "083b0f87c316ebedb3a50f8bba32b0225bb6d017a22ff4fe3327a5b1d5a870ee",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/mapped_setup_region/hot_fork.rs": "0151fa20739f1da6e2e6129d51a4c08200afdebcf8e0eceaf2922084591a6bbb",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/mapped_setup_region/hot_fork/image.rs": "fb6c4da78b14ad55a21952467aaec0eb766538c3b9194d22792340b914e10fdd",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/mapped_setup_region/offsets.rs": "bc702b71081318629e01bf4318426e35020a1192d1978ae6b254316afb377f6c",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/mapped_setup_region/os_mapping.rs": "68ffbc2c6b1b34245027ecc54c1ea270d645d74c4dc049cad27fd46fd21f8a85",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/mapped_setup_region/views.rs": "a239e1a6cac3df57616ef3a2edf330a6b2d5a06f7bb2b305d34cfeaecc21f1eb",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/delivery_errors.rs": "7441066ce233aaaf46286d2aebe199f30377ebcee001d17205af4192fb05a7e7",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/delivery_errors/frame.rs": "094378178104142971b3e837cf6ce8fcc47de73a1e4a287be445291cbc823f78",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_clock_evidence.rs": "68c9423fa1f0843cfffba31af657ca564de3ebcd338861860f61c6835d65da6b",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_clock_evidence/observation.rs": "edce9873f8110021e4cf87539115052f1b261ad651d4ee5c1756cc1a9be92309",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_clock_evidence_test.rs": "040178103729aa7baa23779d6d9fa2821586a7177c83daee100acc4929aee8da",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_command.rs": "95c1f12abef316abb36e3233d80b41c15e0f2f9a4883660ad1aac8a710877d09",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_command/c_header.rs": "0713b3e14e4f10be9b08619a88a19fe01d9eccc6c6d3c5bc0662c6d4dd222892",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_command/c_header_transport.rs": "f563c0d7ae476073b2d017751c9c58634e65b2e22b693c8e0bef897acba8d500",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_command/capability.rs": "4e9413ed96ce4e2d903e8ddd462ca436f80c5fdd799d37f787035dc0d229e100",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_command/codec.rs": "fb5e95d11611298bf34cb059b830122181b86cf92895b24fcc218e81495e3bf5",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_command/envelope.rs": "0083a4423b84056e7748103aabc38f7b9a3dfe4754883af7d7ebd1f95ab7df2a",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_command/errors.rs": "87b45c8d7324e0e75a6918d6228f8cc2f0ef8233529c65db6934621ad7447383",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_command/layout.rs": "eec4db7a6076f1c297cbe89645e0be09f0d461a5d4c74f29b6f83f243e5e0452",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_command/transport.rs": "ba445ff6b125896867490a0748147e94ef01bc183f00da66636549a4df74b1c9",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_command/transport/buffered_result.rs": "f2ae4e09d5f5e0f7bef358f8ef8d4965c93c87af3fcba1a66859652532abefe8",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_command/vocabulary.rs": "2a46ce008cab75051ce03a1bef052526b2b0e72ad1c912ad1591459add23934b",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_command_test.rs": "e5b24ef431f209ce1032d09228164e75ce710bc2e1a3f27073ae4d6233a82672",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_event.rs": "4f617538b7d5c549523e39141701f2959aa19861810b9455b37a9a1d62e52c93",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_event/checkpoint.rs": "ee846d15d95d7abca60cf62954bc83e318e2ce16bebaede3d4a6ab333a8101de",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_event/preview.rs": "e188115b2d8a7aa9752d231e3f59e4561a452a52c8ec18c9b585549f55be201a",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_event/support.rs": "7c873689be864f49a51bd2df82184feec5ed20d4c6c1fb9d5068604d49ec9ae5",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_event_test.rs": "431b8bdcbcf9dd2464e9cbb861ec3f25428a8f0df06593eb2b7f5c79a5218eaa",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_instruction_evidence.rs": "ebf8b8027e76b047e2f0e87c282ccff535c29fedbae3025dd061c92db2d9c9ec",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_instruction_evidence/c_header.rs": "d5c50ce00620ff730e914d72926ba3a44cc871e6bb25d6e05f498656a2ca8d13",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_instruction_evidence/exception.rs": "328e365b7a9f9208c6af1ecb0d5e265521285a4a93ae20d31cb6f49fd213b115",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_instruction_evidence/port_io.rs": "0f3a3e315375297ed92fed8c616ce231d85dbc74b56ccf713e6d8f3b257ef853",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_instruction_evidence_test.rs": "8a28a186a664f96818252338c2996d73837ed57b48c651536e602724b9eea485",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_memory.rs": "5f22ea1fab5b6a5e9dd8238711b9078e21ceece5bf3388d4261ef2fbe618dd09",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_memory_batch.rs": "e635d5f2986cdbb918d121d1d27f9de6383ef7b4ea2b77e60fba39fb43251573",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_memory_batch/c_header.rs": "786575b521a7fd1e6686dbe59da34169bfc63734068561ca87153a06ff4a3c80",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_memory_batch_test.rs": "ede99451b38b627da3fa4326f50c07dc4f4be771bcf799f9017dac8ed98da66c",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_memory_evidence.rs": "a81ad7c08f59420f0e62fe03cfc8556b83890c5b754893f4d33f11311b8dd6de",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_memory_evidence/evidence.rs": "003a5068ac6832e243ea3d55a146b23b7f9b3e864e5a2d8bab3c5b8166365273",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_memory_evidence/mapping.rs": "4787cbe2ee330c7985f9f3329107692c77d10d4a0272866e9a00d2e07dc04754",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_memory_evidence/support.rs": "f032948a73fd108e1d0918ac1f78b4e52b14e3c33e6182e45b82e46bfba7a753",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_memory_evidence/translation.rs": "0d7c41363f88894cc6ab863764bde7dfcd0abf155a478527b3c8a7f1d51a4b32",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_memory_evidence_test.rs": "71fe1a2f66f36c0e90e50d59a6b8c3018f7d4f014a6260e313b5176f07a6f3ee",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_node.rs": "09d16b6726eaa7d06a1f96c83e5825394a592b3ccf3ac089e9d8b82e1e4cd7ed",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_node/evidence.rs": "5d4b32fc9d0dc188829c7e279667794ef4b1bbadb974ffe455bc2997ac249e27",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_node/field.rs": "e38b5a85d48611656898907b8a4b89795328dbf4def46eb678769c93265ff2ee",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_node/payload_codec.rs": "5f3b2fb82e919ef9bd556af2167b163d2d5ba40330bd5c268bfaa22f869b2fd7",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_node/payload_validation.rs": "e9d682dba94f0f0ce49fed637a4c8ef4a1246cd3831fd2bf3983cb77a5e56de5",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_node/support.rs": "109570596f1d7a2201284fb638cf916d22379dc615a77af46a0af3527c0ed3a2",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_node_test.rs": "fab770e1622567be32a20614b98d0b745078bb88f69c3a07baf4f1175e0a1fa2",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_register_evidence.rs": "46f348db6ddd49854ebaaeaa3956f4e9b968739bd4343cab620102470342720a",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_target_manifest.rs": "a76215cdbde2b3df6122ec68e8a1c15cd3d0837ee10e969220c622bcb365510f",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_target_manifest/accelerator.rs": "7f2334b2790d9f7504ec41ce08dc0f7bf30dd03576535477170b7a3fe5fcf443",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_target_manifest/c_header.rs": "f287e26dc2cc80731b63c5e6aaedcae0b06b884c3c2b5a86f4c10de0215b20d7",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_target_manifest/clock.rs": "339eadd4d3a20b25fbfc8bfdaf78d85a1a90c7dcf364aad2e0857d7609a8a64c",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_target_manifest/hardware.rs": "186ae05d421345a6d847c0f418d728d8e3e67a3777292dd61524cc6e760e3e64",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_target_manifest/helpers.rs": "8fd8553622ee5be111fda89714854258692ef45264d31602c17d4d5f877ad2d9",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_target_manifest/interrupt.rs": "25b340cd8a3432cd0f041f0b6b58e97193bf5f75592d2e2a8fbdc402fd91eb28",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_target_manifest/register.rs": "5b8950dbe9621398edc23edfaac1e98169360402e6fd2db5a52f88486a3792f4",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_target_manifest_test.rs": "ce89e76d80582985f96ef18d5a5b2a59722aa5c609dd23e5602d2dfb43444401",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_terminal_evidence.rs": "aceeae5b91c91d2b65a3ac2c42f18469d20126f564cb8e82d5c00cd7768a6037",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fingerprint_sample.rs": "96fb5bea73b591a2328a0b3586d35d4ca0a3e1183620af7e7cef53ce5aeac801",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/frame_node.rs": "dd3c97963de5ed5bceee2d8e42604c58699f28260345cdcc7e904997019cdd5d",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/frame_node/frame_entry.rs": "bd08fbfa48729814a0e018112cb010eddfc7f2d0ffe8769793802b9ce1024b9d",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/frame_node/futex.rs": "2a003b4e35251e8a59922f19f897af6a71c81931b5fea4f12d2e8c8b0c53139c",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/frame_node/layout.rs": "7cdf262852d395256121bae0dbc1e41c4a031fe07fb2d774543f1ab350b4cfc8",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/frame_node/preemption_mailbox.rs": "3b989e057012c23cfe52b1d3b4c49353cab3706d176fe03a6fc9252851d460f3",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/frame_node/runtime.rs": "b7096f4c115d571e37e09561b6270d71ad5b78edea80c6da0a2f7455676f99f8",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/frame_node/snapshot.rs": "e32b80692d35c3b4ef4358f0f3f8b5c1b1bd46fb8571cf504111f91e030c3bd0",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/region.rs": "2027e3c015bd71ead0020f5402506fc4a6422c911ca55733de17cd695d4eac4a",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/region/allocation_access.rs": "3ef8147d839015e023236660a45124bd07e5807c35ad6df29db7cd498714cf73",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/region/allocation_io.rs": "5fe013bd8df29da5d06f12e342da5400cf4f2d937c93923456aebaef21b1cc28",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/region/allocation_scheduler.rs": "da0a62973cb22266619f11094840a3a6208cbb105b724a56e924a8d27879a41a",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/region/allocation_serialization.rs": "23028a1967a18f2fa9d491c0f6d8ffe742fb55cea12b63d9c3455b901472add3",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/region/errors.rs": "a7b453d3e5fdb8a298c0c2efc112e0bd9f66680532de0220ebbefbbbc3978f3a",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/region/header.rs": "0eabc7426032b916910a8b36403970f0dbfbb5bcad296edc1b814d86a2044a90",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/region/helpers.rs": "2c6ec3cea1b85c48330a8a2e3bee15bc24520f09a13e02f627daefd6da481b1f",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/region/layout.rs": "6c12de1c1788910363c34901ce3efdbd8cef0dc6d423e45f5581b7b49db6b80d",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/region/types.rs": "36c441c954da817c90990cdf1beb49615082616f0473af7ee52b5a23fb1fb961",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/ring_accelerator.rs": "d8b7bb41b1e55e0a22001d8bebb4664ada3f53aacf05dd09b9ac59f6446baeb0",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/ring_coverage.rs": "3268c8ba157c03740fb8905b47067e6137581ea4771fb17f5cdbb14ee272d9fe",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/ring_coverage/coverage_entry.rs": "c4a4ef222dec7250bd9e3af0bed2d76deda8dd2f2d7175aa1ea0dabdd4e1acab",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/ring_coverage/snapshot.rs": "96b20d0fed6e91e13a3cc7e8cfe61d61396a1430b2adf4eb37b8976074daa6d9",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/ring_coverage/whitebox_availability_tests.rs": "25989d40ecb7c3b9c98a316e930c0e5b273d6b7743fc309ec6df05b2354f8dfd",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/ring_guest_introspection.rs": "a3f427e83336521000880131bff553b33409ef36094169671cd9c6c0b3236da9",
+    "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/ring_whitebox_marker.rs": "1b1dc99b781044c61e783bfbae8cd480154650868e16cd8f4eeff91848395861",
+    "crates/crucible/protocol/crucible-qemu-shmem/tests/advance_ceiling_handoff.rs": "14805b8106631d714482d7ceee501d11cf0bd9f9f4ba9b352e962cfb5421a979",
+    "crates/crucible/protocol/crucible-qemu-shmem/tests/advance_ceiling_handoff/support.rs": "abf26c97e2d52236118fd1902aefcaafafab4b285b78c3bc68431fc109361295",
+    "crates/crucible/protocol/crucible-qemu-shmem/tests/control_flags.rs": "f9fae4080e191c3f0f48f613d42e136efc6dc918eb964df4442b86114967de24",
+    "crates/crucible/protocol/crucible-qemu-shmem/tests/gate_abi_conformance.rs": "cdcc27bb385ad614475bf13e41e546fcd66263d90b161b582e5e326ec57d492f",
+    "crates/crucible/protocol/crucible-qemu-shmem/tests/gate_abi_conformance/decode.rs": "f53e47c237dd03c1c9c447aac17c181cf444e422d621b0b0b8e148b15b2f2e6b",
+    "crates/crucible/protocol/crucible-qemu-shmem/tests/gate_abi_conformance/encode.rs": "819a29392bb909bcb4f656b5bd0051ee1cc21565aec5517d1135511f33dd7d3d",
+    "crates/crucible/protocol/crucible-qemu-shmem/tests/gate_abi_conformance/fixture_parser.rs": "ab1f91fb718546897bf9cd1bb31266cb9812fc72d2c624070016604d5373fa82",
+    "crates/crucible/protocol/crucible-qemu-shmem/tests/gate_abi_conformance/gate_cases.rs": "fe77b877fa05f7cc1cf46fc98480a2396204eb0037608633bad15e1376f36ad4",
+    "crates/crucible/protocol/crucible-qemu-shmem/tests/gate_abi_conformance/golden_bytes.rs": "873ba43f891911a10864289fc46cfaa6b31b2ab2b3f4c21bb1bd0c2171b0a1c3",
+    "crates/crucible/protocol/crucible-qemu-shmem/tests/gate_abi_conformance/snapshot.rs": "2c9d5e100e7e14970337735968d79ceef671a40543b749be31ce5e8b32e64062",
+    "crates/crucible/protocol/crucible-qemu-shmem/tests/gate_abi_conformance/types.rs": "80c85e83b2be7c40b58b924a03007845bba05c2a15525f5b168231ce1c0e69ba",
+    "crates/crucible/protocol/crucible-qemu-shmem/tests/gate_layer1_injection.rs": "59983496204f1116b88fd2efdb733180015f22a8efb81cd127cd506ca82e5509",
+    "crates/crucible/protocol/crucible-qemu-shmem/tests/gate_layer1_injection/coverage_ring.rs": "e471ba4ecb79fb87640a001c5602c6a8af5f298abcab12f97fa89ab8aa1ce930",
+    "crates/crucible/protocol/crucible-qemu-shmem/tests/generated_abi_header.rs": "a4f86a8f9339bad2baf337a8fa34b0c47894c9b1b7ef3c07a5d66e7e59dba016",
+    "crates/crucible/protocol/crucible-qemu-shmem/tests/icount_stamped_injection.rs": "0280bd3207ec65adb4c50029a2fd49003d6889c801cca5bd2367b663de026a48",
+    "crates/crucible/protocol/crucible-qemu-shmem/tests/lookahead_gate.rs": "801de9cd4ef516c254e9ebbd0fe0250b898254697f9227558617ebf62b66b9fe",
+    "crates/crucible/protocol/crucible-qemu-shmem/tests/multi_vcpu_node_slot.rs": "35b1a550424a99867a1d05b5353c489ba09c97824ac7318e3b72ab0962db8c6d",
+    "crates/crucible/protocol/crucible-qemu-shmem/tests/preemption_mailbox.rs": "f1401f1809d9391b0ab2cdc40b19cf204220823f78279e5babe0137cda797309",
+    "crates/crucible/protocol/crucible-qemu-shmem/tests/region_layout.rs": "cb57a7f1d29c271cafa37607adbe72dbd373508b5bb4032aeffbe7d66f0bfa5a",
+    "crates/crucible/protocol/crucible-qemu-shmem/tests/region_layout/support.rs": "8c18c487fe5fc1096e370853ab5c19e8bf01dc845a39c01e62c899be948159db",
+    "crates/crucible/protocol/crucible-qemu-shmem/tests/setup_validation.rs": "51a2bca7aad5726b7c2e89dff9484bdb2375a99347cb2c69b06415a591e65ea2",
+    "crates/crucible/protocol/crucible-qemu-shmem/tests/setup_validation/support.rs": "f7dad38b5771d561c8295bedb1856f0aff693afa579f9d3986dfff0e153143e4",
+    "crates/crucible/protocol/crucible-qemu-shmem/tests/snapshot_restore.rs": "b76bccc8ecca47fe4f4fb5f8b19f1b47701a5036fa70f40d8501b321f138d1c5",
+    "crates/crucible/storage/crucible-store/Cargo.toml": "852903d46c11f3a5f9b3adefe1b2cc2b3a01bd944681bfa56b414eb43b0d551b",
+    "crates/crucible/storage/crucible-store/src/bin/crucible-fleet-store.rs": "26ffbd254d21fc3095e18c2ed9bdf2e02176d073ff03c396d92052c14d1c0737",
+    "crates/crucible/storage/crucible-store/src/cas/campaign_codec.rs": "fd0e426b6febe9e2a6b3314e060a97b91bbc8170332074f9ae27fe53f856fb50",
+    "crates/crucible/storage/crucible-store/src/cas/campaign_model.rs": "16c043788a0500fe0f3b0291e0409950cd7da9fe9f6f80440a5ce5fbabd76e6d",
+    "crates/crucible/storage/crucible-store/src/cas/campaign_store.rs": "25e229db68cadd197b10f2ffa1900e52364515ac6a2f9acfaee6499d49c87ddc",
+    "crates/crucible/storage/crucible-store/src/cas/invalidation.rs": "273057590778f15ffa0716ec3e25a32c9855e5909e3841f772db94474c1b4e11",
+    "crates/crucible/storage/crucible-store/src/cas/tests.rs": "b15af04204fa15bd7bddca36ac7a6bdc2160cd1c7f1323cd03015f51b14aa05e",
+    "crates/crucible/storage/crucible-store/src/content_envelope.rs": "ebf93a2f29015451b79cdeb9591c25d978b3ecda3ec5ec4031daa2966e6e8515",
+    "crates/crucible/storage/crucible-store/src/content_store.rs": "b13f21e35f9fb46f26c9a95dd326235e5b8af0f2102bfcbed6150fbfaf8dc6b6",
+    "crates/crucible/storage/crucible-store/src/content_store/admin.rs": "6d67b8e374082fa608fe9c0e35e75a2db8010364cd94617a5172342867f342e8",
+    "crates/crucible/storage/crucible-store/src/content_store/composition.rs": "f4e3dab3fd96c144b17eb3bc55321b9eb84bf4b9b8cf0a4ea3feb9b34a50192e",
+    "crates/crucible/storage/crucible-store/src/content_store/compressed_directory.rs": "19750a0071299ae14bb8a0057c99952fb3242d3efcfe667208ac22de34884d78",
+    "crates/crucible/storage/crucible-store/src/content_store/conformance.rs": "03f5684a02aa7c2d58a5e0c33dfb996b865e725f90743fe59928289d30d9bb7d",
+    "crates/crucible/storage/crucible-store/src/content_store/directory.rs": "4dc810ca26758f75f5a46699da524ffac4c17d893817b18d375409d4184a9ba4",
+    "crates/crucible/storage/crucible-store/src/content_store/directory/ref_admin.rs": "2e2824ecded1e5870aaa68849b87ad9e09656a820250d18fb4bf2631e83efa61",
+    "crates/crucible/storage/crucible-store/src/content_store/directory/refs.rs": "d1f1f68395799c666d408190131363bf6e3e044c2686f85f9e7d13a2a69079a3",
+    "crates/crucible/storage/crucible-store/src/content_store/encrypted_directory.rs": "66be6a2a42a05873873607b426fd2b38e174317396c33cbd9f737109918a2086",
+    "crates/crucible/storage/crucible-store/src/content_store/encrypted_directory/compressed.rs": "6c119627d0eacc80b31eb48b69f63a711214058b5be8d065def44c194a0d9773",
+    "crates/crucible/storage/crucible-store/src/content_store/graph.rs": "dd2cd5aff2a8999bb9dc60e848b151afe4ffaaa20bc8b2e1723bb82c3ac996de",
+    "crates/crucible/storage/crucible-store/src/content_store/graph/format.rs": "56abc225d67c46d546615ce4e6d78f758c916ffbbde8ca8db073ba82750a18e0",
+    "crates/crucible/storage/crucible-store/src/content_store/graph/verification.rs": "e31cf8ead4fceef0c8bbe6bfacc972b4b1598437b96f6a8a9e787f95d256d7f5",
+    "crates/crucible/storage/crucible-store/src/content_store/graph/verification_tests.rs": "407dbbd67c1f6241f46cde104751f3c9b2e14790743193740fa17a81888c6c93",
+    "crates/crucible/storage/crucible-store/src/content_store/memory.rs": "ccd16037e79e00f39c1238c4be28620ee5ce12c4ce908bf08f31f3e003ea8ae7",
+    "crates/crucible/storage/crucible-store/src/content_store/namespace.rs": "badb445e230a334c4d8baa2a980dcf417396ce98b85add65ef8334ac2e8de1af",
+    "crates/crucible/storage/crucible-store/src/content_store/packed.rs": "f7679fa6736151c27d43e5c44f60cc8fd389f7ebbf2ef394a954a97df1e5376e",
+    "crates/crucible/storage/crucible-store/src/content_store/packed/format.rs": "8d844cc5ee69d7c2b03e7fb227d668d645463abe48b409ca6dfdbb7847b55ad1",
+    "crates/crucible/storage/crucible-store/src/content_store/packed/planning.rs": "9126138d011309fd8e99d74f18fcbd5639da369f65ebacb1b5da8a72dc59be7c",
+    "crates/crucible/storage/crucible-store/src/content_store/physical_quota.rs": "18d87cdc3d036b633534b9e5bb6d4c8c6445cefb7299b2a7ad49723fda8e41df",
+    "crates/crucible/storage/crucible-store/src/content_store/profile.rs": "7289a18c09705747798fee9b5f7246f144e5ad97afb6e4b19b45e329a0fc469d",
+    "crates/crucible/storage/crucible-store/src/content_store/quota.rs": "1fe3e52c26cd9d02b6478957c2263fa77388735aa0abbb07f30b2beb286c0332",
+    "crates/crucible/storage/crucible-store/src/content_store/s3.rs": "32082d994a6e7401fc9e162877535121c17695c3f2db7fb4788b50fccd786019",
+    "crates/crucible/storage/crucible-store/src/content_store/s3/backend.rs": "63591cc4a2cd874a302c10345339d7bf479bbd27d8bcca9dd4740673a46463e4",
+    "crates/crucible/storage/crucible-store/src/content_store/s3/blob_admin.rs": "2943d9085810636f7f9d0ca22b2b440c94730553e86d2b9318d72b465c3148bd",
+    "crates/crucible/storage/crucible-store/src/content_store/s3/tests.rs": "761f25b46729996bd67e9214912094e4b8ab10460820a2136abf7e13b5acebc7",
+    "crates/crucible/storage/crucible-store/src/content_store/s3/tests/behavior.rs": "6b2f740b400fd2f5fe05443fc4a28ff0c2918f845b5de5b457e693469c455a0a",
+    "crates/crucible/storage/crucible-store/src/content_store/s3_ref.rs": "97499cda89d131e0a949512535f6b6e1e3cd9f7f9942e34a2e1b3a5bc38fd88e",
+    "crates/crucible/storage/crucible-store/src/content_store/sqlite.rs": "5a21a4aa603332ec42f0d16e4c113aec11bc6e2c09edc5819af4925bf5cd2153",
+    "crates/crucible/storage/crucible-store/src/content_store/tests.rs": "935b87048df449626b14fd32627258ce3294795fdf3b05ba45a7ee95284bf360",
+    "crates/crucible/storage/crucible-store/src/content_store/tests/directory.rs": "f10a24eee0d01a045af56e7ff3d78eb98ffc3220583e546ebe54a9a8f48a9c20",
+    "crates/crucible/storage/crucible-store/src/content_store/tests/graph_authorization.rs": "61d6f8c1eca35df8236d6c5be8224c43c782e9a00095678d23295e15b002d871",
+    "crates/crucible/storage/crucible-store/src/content_store/tests/graph_metrics.rs": "ab3cf7b915508892e0df5c625c1b3e9e168364c12782a9d2185f4e24abfd2070",
+    "crates/crucible/storage/crucible-store/src/content_store/tests/packed.rs": "878e31d0083f8e0fc07efa3100f571259774645208ad068418297f67847eb95f",
+    "crates/crucible/storage/crucible-store/src/content_store/tests/quotas.rs": "54d6bd028321a9797e8f2a48142b05717b9319b08829dfde9740780acaeefabb",
+    "crates/crucible/storage/crucible-store/src/content_store/tests/support.rs": "5bc902cee5ca4707ffb7fedae4fdb9d7570f10040b053dd76ec593afc5224158",
+    "crates/crucible/storage/crucible-store/src/content_store/tests/tier.rs": "9b437ac9e266836d1229888354b275feac1809bd6a91eb4fbe995aa187bdd2d5",
+    "crates/crucible/storage/crucible-store/src/content_store/tests/verification_and_physical_repair.rs": "b10fc46704afdfce93484793c3de748c1505e9f790af4c5b698ecb509afcd38f",
+    "crates/crucible/storage/crucible-store/src/content_store/tests/write_back.rs": "dbe212db06c073bd1c21687b6a99297a7973c8d2644a3c72a0e2be20f8916009",
+    "crates/crucible/storage/crucible-store/src/content_store/write_back.rs": "551abffe70d41f986d686f70c598467dd4ca42b05b5b5a0df93266a88df2d6ec",
+    "crates/crucible/storage/crucible-store/src/lib.rs": "9180cc42793e40f1df53d579682b4cd920340ec1cefbc928731145a514e72aec",
+    "crates/crucible/storage/crucible-store/tests/gate_campaign_continuity.rs": "240ba597e4c695fcb6051dbbcd2287885ecfd807c4d79769cce7842ccfc200c9",
+    "crates/crucible/storage/crucible-store/tests/gate_campaign_store_composition.rs": "2e9a202da85d33820f08970a1e14ce6bde6bbb7c6263e85f6f19624b4febdae9",
+    "crates/crucible/storage/crucible-store/tests/gate_campaign_store_equivalence.rs": "9980a575e853a041fe87ea8434528687f0107ff780c8618f1a2440798381f885",
+    "crates/shared/aos-artifact-evidence/Cargo.toml": "249f331d2c67207dc3d74d581105284273382b6278fb8186476f1ea353c9c329",
+    "crates/shared/aos-artifact-evidence/src/consumption.rs": "7e38f9f101fde359ad056e70f8ecba06c77137d561c29b609575eb5f8988862c",
+    "crates/shared/aos-artifact-evidence/src/diagnostic.rs": "1ad0a4401d80d32b31afdf0b16bf98e822449ff445a80191e1f827c512dfbf68",
+    "crates/shared/aos-artifact-evidence/src/document.rs": "b3223bef9a7dd87bb72f4afde800217a24317f64a45b2fb3413046c39af76078",
+    "crates/shared/aos-artifact-evidence/src/identity.rs": "a960256438697c76067c85c13c364da507ff8bdcad4fa098bea776a016915f5d",
+    "crates/shared/aos-artifact-evidence/src/lib.rs": "b96037a5a80f0563c3646bfb208cc7f5d44f979fff4cb166ae2dd0f466e15104",
+    "crates/shared/aos-artifact-evidence/src/limits.rs": "07d81f5fd738e4e3fe14613a1947f32beeeb9989b935f74b4242f56fc900950f",
+    "crates/shared/aos-artifact-evidence/src/model.rs": "6536a0109591d899397b86800199b262b8e427c460d3c5b301253850740f084d",
+    "crates/shared/aos-core/Cargo.toml": "a83ae101ada1471e2cf6e3592eff604b932b32bb6b9c08ca78e7f28a84386f0c",
+    "crates/shared/aos-core/src/digest.rs": "f2c3c762eaa35314f95fe60cc1a109083ceb2b4d1149d193243dc370a9f00403",
+    "crates/shared/aos-core/src/identity.rs": "d5b29def050947cd57a09ed3fec6c2e6af4ea3e13a1751fec2e7a4fe351f1686",
+    "crates/shared/aos-core/src/json.rs": "e4c9f02df4321930960b4c6586b8e93f0439c8f1eabe0b1e929ceb277c95fa45",
+    "crates/shared/aos-core/src/lib.rs": "14fadc5d679efeb8f0b7ea696886bbd44d5148f972fd0fedd8c030bae66c1198",
+    "crates/shared/aos-core/src/limits.rs": "d1071f9bbfe39c8cfde4b5bffb4e39e1e3ed935285d9eb7da3261151c9334c1b"
+  },
+  "ignored_cases": 0,
+  "libtest_artifacts": 2,
+  "limits": [
+    "Static release Linux Cargo semantic baseline only. Bazel, foreign and Wasm execution, performance acceptance and production cutover remain pending.",
+    "Installed command targets retain their existing names independently of their Cargo package names.",
+    "Tests that conditionally require configured native executables retain that existing behavior; dedicated provider integration gates remain required.",
+    "Private offline Cargo build state is used without shared compiler caches or services."
+  ],
+  "output": "/nix/store/ywjc5va0i7jdymnn5slx4h1xlvrwg8fr-aos-bazel-activation-crucible-static-cargo-baseline-1",
+  "packages": {
+    "aos-activation-crucible": "crates/aos/activation/aos-activation-crucible"
+  },
+  "recipe": "let\n  root = /home/dylan/src/aos/.worktrees/codex/bazel-integration-722;\n  pkgs = (import root {}).pkgs;\n  sourceCatalog = import (root + \"/tests/build/_bazel-source-catalog.nix\") {inherit pkgs;};\nin import (root + \"/tests/build/_bazel-cargo-oracle.nix\") {\n  inherit pkgs;\n  pname = \"aos-bazel-activation-crucible-static-cargo-baseline\";\n  packages = [\"aos-activation-crucible\"];\n  nativeLibraries = [pkgs.sqliteStatic pkgs.zstdStaticMultithread];\n  nativeTools = [pkgs.pkg-config];\n  cargoFlags = [\"--release\"];\n  cargoSetup = ''\n    export CARGO_BUILD_TARGET=${pkgs.stdenv.hostPlatform.config}\n    export CARGO_TARGET_${pkgs.lib.toUpper (builtins.replaceStrings [\"-\"] [\"_\"] pkgs.stdenv.hostPlatform.config)}_RUSTFLAGS=\"-C target-feature=+crt-static -C relocation-model=static -L ${pkgs.aosBazelGuestLibraries}/static/lib\"\n    export SQLITE3_LIB_DIR=${pkgs.sqliteStatic}/lib SQLITE3_INCLUDE_DIR=${pkgs.sqliteStatic}/include SQLITE3_STATIC=1 PKG_CONFIG_ALL_STATIC=1\n    cp ${sourceCatalog.crates}/share/aos/source-catalog.json crates/source_catalog.json\n    export AOS_SOURCE_CATALOG=\"$PWD/crates/source_catalog.json\"\n    export LIBSQLITE3_SYS_USE_PKG_CONFIG=1 ZSTD_SYS_USE_PKG_CONFIG=1\n  '';\n}\n",
+  "report_sha256": {
+    "cargo-messages.jsonl": "7284711ea7bb4d9ac90b50eb0e98654db286befcdf186b10e9a4d51a912bf561",
+    "cargo-tests.log": "11d12d49c68db023bc1414462ab29ed73aab304154d6c0aa393508ea3bc261ea"
+  },
+  "schema_version": 1,
+  "source": "/nix/store/a3zdshajm52mwh74h7y0vfakvm3n9riw-crucible-cargo-src",
+  "status": "Static Crucible activation Cargo tests and doctests passed before Bazel conversion",
+  "targets": {
+    "aos-activation-crucible/bin_aos-ability-crucible": {
+      "binary_sha256": "63f1f0aee8a78d36fd23bb8cea639dee2e70e4364b02ad68a1e1e079d485dbd2",
+      "executed": [],
+      "ignored": [],
+      "profile": {
+        "debug_assertions": false,
+        "debuginfo": 0,
+        "opt_level": "3",
+        "overflow_checks": false,
+        "test": true
+      }
+    },
+    "aos-activation-crucible/unit": {
+      "binary_sha256": "e4b10d9c0d5bb0be9ba5cf42b39fc0c2337d44c527ac4ac554ec17ded83805af",
+      "executed": [
+        "tests::canonical_event_receives_digest_bound_ack_after_marker_delivery",
+        "tests::configuration_path_is_explicit",
+        "tests::emitted_violation_reaches_host_verdict_and_reproduces",
+        "tests::marker_transport_failure_prevents_readiness",
+        "tests::readiness_waits_for_the_package_socket_without_manager_protocols",
+        "tests::recovered_current_result_completes_without_another_dispatch",
+        "tests::required_baseline_declarations_fail_closed",
+        "tests::returned_without_intent_emits_false_assertion_and_withholds_progress",
+        "tests::valid_boundary_chain_emits_generic_assertions_events_and_coverage"
+      ],
+      "ignored": [],
+      "profile": {
+        "debug_assertions": false,
+        "debuginfo": 0,
+        "opt_level": "3",
+        "overflow_checks": false,
+        "test": true
+      }
+    }
+  }
+}

@@ -423,6 +423,7 @@ pub fn shard(ia_hash: &str) -> Result<&str> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
 

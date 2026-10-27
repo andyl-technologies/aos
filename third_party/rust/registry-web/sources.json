@@ -1,0 +1,3016 @@
+{
+  "contracts": {
+    "third_party/rust/BUILD.bazel": "794057a113646310878fe6b961f4beafaa48e4c38eab377833837325411c1504",
+    "third_party/rust/registry-web.bzl": "844a97afc25cbce3c82fb10c36fdf43dc58e97b403b8e821fb3a10368d1a4bf2",
+    "tools/bazel/metadata/export_specs.py": "33810b02484fa4f163fd745fb57e399bccc69357843964dd5d357ac1a16fa1dc",
+    "tools/bazel/metadata/optional_dependencies.py": "2007e426ae0ded0be48d7b2c8d8d7492e8d8cb166603c597a4b6208fea51a7a4",
+    "tools/bazel/metadata/update_rust.py": "550638605ab7e116e5d2835bc42e2ae31a8a931e81cdbc262570ca2f58d83280",
+    "tools/bazel/rules/crates.bzl": "a49b8f78622988c134e0f3c0334e898dcd9399e321f7311ae374da801203b467"
+  },
+  "family": "registry-web",
+  "generated_files": {
+    "BUILD.adler2-2.0.1.bazel": "338beb230069353df08a9a8c54a0783836e7d0972f3a2581f9e67b458c260a4d",
+    "BUILD.aho-corasick-1.1.4.bazel": "68503f78cfdd89bbfdc9e2479869b81a88f1fc1e55fdefe5d263761fbd87e35e",
+    "BUILD.any_spawner-0.2.0.bazel": "cf56307f9980cd457edd9506dbff21b4facec207e2f8b0ed5f1ea0bff10ec575",
+    "BUILD.anyhow-1.0.103.bazel": "7f9ab6f87a2d6975ccac0714a655df36c10e9ccb5df7b1df6dad6dc07ffbd387",
+    "BUILD.async-lock-3.4.2.bazel": "247d6beb52700743a2fa961a70153cc0e4eab4fdf36c39a8181d8d4fbd6e690e",
+    "BUILD.async-trait-0.1.89.bazel": "fcafb6301a43889f86b6eaa370dd4f9b07dca1b6899e0040eef2169bb6001275",
+    "BUILD.attribute-derive-0.10.5.bazel": "59fafa5205eed7473ee3be0efd03d24d415787eeceeb3c00251c359d14b2ed0f",
+    "BUILD.attribute-derive-macro-0.10.5.bazel": "d184698cd8f71d5578aeeae1cdc68c308ba28c0126d9b05e22285c3187d81e49",
+    "BUILD.base64-0.22.1.bazel": "0e66ddbf82f4e04f633ed65ae666191f60f2b06633c492598d373e09e68a80b7",
+    "BUILD.base64ct-1.8.3.bazel": "5985462fbbb7e9ba6c2e439392dac0c0cb0ad1e5d4f9ebf7248cc2a33f5071c7",
+    "BUILD.bitflags-2.13.0.bazel": "4ceda05e969df64d321e494c07cc19e4296dc0af3a9dbd02afad4d0e5b086325",
+    "BUILD.block-buffer-0.10.4.bazel": "80a2abbe0dac701190bf1a08ec5e17f8216491fc543fbdbcdbc8ebae62a165ea",
+    "BUILD.bumpalo-3.20.3.bazel": "7ef40166a3981ec2bee4ee8c29ff1106f401019eec9f972294362b06578a2551",
+    "BUILD.bytes-1.11.1.bazel": "7861c424f536985a1e3f6334a9819b2ae322211378d6d0937eef217a9ab0205d",
+    "BUILD.camino-1.2.4.bazel": "640379a259853733ff588c6cdccd28a5c41f55837a7dac73ad9215cc964f7152",
+    "BUILD.cfg-if-1.0.4.bazel": "ff47edb81b8c2abba2f45ea60dae0b59e9a4646f2289fe2854a274f7a6844c13",
+    "BUILD.codee-0.3.5.bazel": "cb537c8b4acb638ed3019924db3021785e49f2dd263a7526da7a7440a9e70bfe",
+    "BUILD.collection_literals-1.0.3.bazel": "8d7c756f686f25ece4602bc2cad41d8f83d2a8411e66d4c4f5118652066695d1",
+    "BUILD.config-0.15.25.bazel": "cb737996cd1e51d978a63b705aeba258fd76cc57bea3cb0f6fcd3e456c5c51c6",
+    "BUILD.const-oid-0.9.6.bazel": "48c521f770b186d30282ebc33f8552e7ad32a92f23dee146042002d9bb176e8e",
+    "BUILD.const_format-0.2.36.bazel": "50523aa89173f3c5ecc833df4e6e1310085a3b5425ff7f104747aac855e4613d",
+    "BUILD.const_format_proc_macros-0.2.34.bazel": "02385ea7a21b38fcd9b80fa7cb141aa412353535d4c9b5f0c609a96ac576c0bb",
+    "BUILD.const_str_slice_concat-0.1.0.bazel": "daf84caf063d23a916003449e06a0dbf65b0d45299e99805e0d3708780a98795",
+    "BUILD.convert_case-0.6.0.bazel": "6f7aedd25353ce7d601ab7e5b811180799f93b58c84e561485485b672d8b214e",
+    "BUILD.convert_case-0.7.1.bazel": "7e9df83677cfd4db46baede5ebaa05ba799ad9a7541f91d8227acd5f184f2c3d",
+    "BUILD.cpufeatures-0.2.17.bazel": "25d685eb2cc689e313c99eb6da266f527985281d4991ceeded7292ee7aa6748b",
+    "BUILD.crc32fast-1.5.0.bazel": "ecc7e42d3d66653aad0fee8360c143008c2a4e7f965891ac73b97573ffd47245",
+    "BUILD.crossbeam-utils-0.8.21.bazel": "ff6653d335209bbbe702d2f87256c121999e4ed129f211c2df37799de1cc2913",
+    "BUILD.crypto-common-0.1.7.bazel": "e633c73df311c719d8d33009021f60791711de6893968ab685d504aba093f4ff",
+    "BUILD.curve25519-dalek-4.1.3.bazel": "091680bb5a7a39a34a1489e1e5d0285e0d2ef1eaa8cb1a9165bf3b81148f3346",
+    "BUILD.curve25519-dalek-derive-0.1.1.bazel": "ec2118efe2c70f709c1c4be599ee57b47f753af243b926f3c4bfce997914182d",
+    "BUILD.dashmap-6.2.1.bazel": "a9d64690e4bb0e028729cc593e1800ab2e6bf64a53fe826d2e6046107156c615",
+    "BUILD.der-0.7.10.bazel": "41beeabb9a21962bcabc1b0c3b699c7222d2b49735a9a1144e55967c16c18faa",
+    "BUILD.derive-where-1.6.1.bazel": "9f4608402bae3f7ad2edcf2df16200b45cd31eec59d478bba6e29a967d542847",
+    "BUILD.digest-0.10.7.bazel": "cccc8b907b8f40826176e588dbc10cd410ec25410092e4a9a18ee8e7374ec4b1",
+    "BUILD.displaydoc-0.2.6.bazel": "d2deae4a7f05f6d8ced9c1b0a45d664889ec44c61edd5daf3f91e926b064194e",
+    "BUILD.drain_filter_polyfill-0.1.3.bazel": "ce58a209431642800791a1e34113e3f7106e6e2057666e781f5130497e3a3a7d",
+    "BUILD.dyn-clone-1.0.20.bazel": "56378957999b953260799a014c1b4e02400abdd185ca3205dca8ea35c831b586",
+    "BUILD.ed25519-2.2.3.bazel": "6e2f44cf51b1f3188d89402c3160f2dcf13e07324fb0e170d28dad209a0ce9bb",
+    "BUILD.ed25519-dalek-2.2.0.bazel": "3b1cbfff8554acd8d4e495859765db4944e96ade0974fe6c501909be7955fa17",
+    "BUILD.either-1.16.0.bazel": "fe42d3e734f9228b954c2c57d31d4ebfa36b0525b30de4ebd16a1dbd4dba3281",
+    "BUILD.either_of-0.1.9.bazel": "e26a34c23e3e824b4eef1cf42620539d0cba5ef2ef7e1240d767055fead1f9a7",
+    "BUILD.equivalent-1.0.2.bazel": "8117731a4f9a3c794dc01afdc4da5a0dd38422153e8a843d198ddd38298afd0b",
+    "BUILD.event-listener-5.4.2.bazel": "caa1734b5ce8c1c08523bf0b1335bbc2d904de81a8a472b2876f85f6539e6244",
+    "BUILD.event-listener-strategy-0.5.4.bazel": "10204f2de27110a00064bdba102aeed6399e6073298e58f33816a2abfdf94cb0",
+    "BUILD.fiat-crypto-0.2.9.bazel": "50cb94ab5a39e8fea64e2121ed99fdcb66040d810ab5d6f6ec6176044fb66a2d",
+    "BUILD.flate2-1.1.9.bazel": "a48a099fbed2b3639ec4d31b7580b9be4786fefd37dfa65a71c3cbce4201f498",
+    "BUILD.foldhash-0.1.5.bazel": "2c2d9844061f987342d17f6537199bed75cb2bdaecf7b2a2fe2c7ec2cc289919",
+    "BUILD.form_urlencoded-1.2.2.bazel": "c5b1fc759be7af01148214d297b70c2e01bb736920cc0a6baa89c0d6cd1423a6",
+    "BUILD.futures-0.3.32.bazel": "9dad9be33e02abb661cf7f962becdfa5f316aff5d95940ce360ae8766d0f9017",
+    "BUILD.futures-channel-0.3.32.bazel": "aa0cdc2123b010e8b38964852d66e47c380836923ba726acf03271438e7b9bad",
+    "BUILD.futures-core-0.3.32.bazel": "d10d013812dbf3cb3a0d5ff69e93772c4bbabbb9ed16127da09185e9b6937723",
+    "BUILD.futures-executor-0.3.32.bazel": "4f683248f074e36eaabb01078090f6ee79443af86949ff9d5ee3a217237fad90",
+    "BUILD.futures-io-0.3.32.bazel": "5997ac4d5906beb891014753f5e1e2f9f65ca211cc8f475fe4bbaafe34e899f1",
+    "BUILD.futures-macro-0.3.32.bazel": "8aca478e6df19997b8a2d86e5d7c052983b522feb7961c14c43dca48315dd57d",
+    "BUILD.futures-sink-0.3.32.bazel": "6d5e7a27e5362205f2194d1783e11560d1d95759a51d0517b7a417d6c5a8f4b9",
+    "BUILD.futures-task-0.3.32.bazel": "ce670c47a87eacf671115f8773997be836adf234f5df1a5b4adff16f9851dc5e",
+    "BUILD.futures-util-0.3.32.bazel": "5c4a51cc9b000697c35a609f4de5fb327ad6e2f075bf546b91b15ffe612340d4",
+    "BUILD.generic-array-0.14.7.bazel": "868fd44a649d462dd640e909e9baff6f63999091a5438671a16298da8cc156c5",
+    "BUILD.getrandom-0.2.17.bazel": "278e11bc817848d2fad88ac686554764f42bffcef3da6a89d697a19aa7716e6d",
+    "BUILD.getrandom-0.4.2.bazel": "64cb3a99f0e272bc420d72331f0c327784e7fae8ac75edb17d222b2f319c350f",
+    "BUILD.gloo-net-0.6.0.bazel": "c9d221b3d531488d63963923745982cf358bd8c720f5230180e9aa4a4ea89de1",
+    "BUILD.gloo-utils-0.2.0.bazel": "2e60f787e3ad6f73bb8d2460be5364cafa13beb34e3571358f6b2c016fcbd32c",
+    "BUILD.guardian-1.3.0.bazel": "a7a2c8b1792b14e7f6d8988bde2ecfb5134889d59ce1177898c0f3e5dd65c4e5",
+    "BUILD.hashbrown-0.14.5.bazel": "37e4638f709f7cec12a52039d5620ba67875905fc99cbe37e4a57653aa7c6683",
+    "BUILD.hashbrown-0.15.5.bazel": "343acc53d985014e699b75a8a660bf838d7136f34c28a2524f306e0eb4db698d",
+    "BUILD.hashbrown-0.17.1.bazel": "8d5c7ef2ebe6113bedebbb5f5b44d7ff9737de935ac8a02b899397f4bed6c4db",
+    "BUILD.heck-0.5.0.bazel": "b8863764a5f918cc0f8c5dfc9172fe4317edc934ac6520ac0a70833b31f19c80",
+    "BUILD.hex-0.4.3.bazel": "92bddb10999eb126d6f565a8bbcc4b3b933ddec9a4c700acbbd2f5bc221847c1",
+    "BUILD.html-escape-0.2.14.bazel": "8079834b8592b28e424ef4a8954a5ad9a1abe2199374a3f8a2c479373f19c06a",
+    "BUILD.http-1.4.1.bazel": "1b57b413aa07323cf2e0576ee0ff79031b412d2680798d2d4faab2f99fb52e5a",
+    "BUILD.hydration_context-0.2.1.bazel": "a79f84c6d7eb5933ce3b4066583baf3834c8c9e713d124695d8d62e017104184",
+    "BUILD.icu_collections-2.2.0.bazel": "75d19d5619fb8df52b85e980d301c3d8c93dc4045a45d700d61b8debe2e72a1b",
+    "BUILD.icu_locale_core-2.2.0.bazel": "efffcc6da7bb04b40c8789de2b246269b206ba0335079dff3c51d114690878b3",
+    "BUILD.icu_normalizer-2.2.0.bazel": "2e6bf5d9ca33d75596ad55bb89266835dcdc54ae45e3501679941dae11cf84d3",
+    "BUILD.icu_normalizer_data-2.2.0.bazel": "ad88178a9a03060eee9a223249da05514a258302b1e38d5d1560e288dcc5e49a",
+    "BUILD.icu_properties-2.2.0.bazel": "10403282bb3ce916cd44ea0512573dc797fa4293c853304710b43539414bdab5",
+    "BUILD.icu_properties_data-2.2.0.bazel": "93478126d34aa344a2ef6b0514e69c8148507f2156f698039b7578e9a536ec1c",
+    "BUILD.icu_provider-2.2.0.bazel": "a145c1899ab05f4e9f5b690ac6d54108eaa76805d2232b09545f916464fba9fa",
+    "BUILD.id-arena-2.3.0.bazel": "4fe47f1f304a7a50c7913b93924dff91c9ff9b25bc8ba3c5f685e631e3654451",
+    "BUILD.idna-1.1.0.bazel": "8ded84bf8120648cad6d63ee9ed0c6b1dc5f614225ed5f150d94460295c3a97b",
+    "BUILD.idna_adapter-1.2.2.bazel": "0a98b5975aaef7440c34f601ca0dd1e32664e3c719048592960c80f0eeb42435",
+    "BUILD.indexmap-2.14.0.bazel": "ff40c25fc78b487f063a74890c13ba1d0df2598b1a6fa040785c8be6b9c4d3e9",
+    "BUILD.interpolator-0.5.0.bazel": "22b9c5cd5de8ba61a726046ed661b1da14cec5fb94bc663b43ab32219ff2d6af",
+    "BUILD.itertools-0.14.0.bazel": "c8eabac126a41ed6c245c8e66cec424e2db336c6e72b214539b26c0d3cd220d7",
+    "BUILD.itoa-1.0.18.bazel": "54a3b915c52d2d476dd56ad1e89ff388a303295b6e3a2a15f6b48e0eba270027",
+    "BUILD.js-sys-0.3.103.bazel": "b9bde565bd30aa43ff054bbc0b056ace7a97762637450b469eea4f594285a76d",
+    "BUILD.konst-0.2.20.bazel": "0fbf750678860e5b0790fba6ff79f0cd9d4da5ebe278c826e103c07d4f0287f3",
+    "BUILD.konst_macro_rules-0.2.19.bazel": "aecea7eb0a7df5c2708b8d0aa07e1c568a354bfcde748a0bec054cba58367a7f",
+    "BUILD.leb128fmt-0.1.0.bazel": "425faaade11b1380bd42d3f1b6037c32c137187c6c6ecedca8e48c02edeaebbf",
+    "BUILD.leptos-0.7.8.bazel": "85ded730206dc6ba3374be39fa4f149208472d78bdfb2be056beaa2deec16f65",
+    "BUILD.leptos_config-0.7.8.bazel": "4a18d28201f01e835956c524f62b303088d6c26fa328b25c318afb48e8e54c3f",
+    "BUILD.leptos_dom-0.7.8.bazel": "76d138669db511e89dd97d27cd65086da07b7b1b27ac0fc0ba3f7d827358c917",
+    "BUILD.leptos_hot_reload-0.7.8.bazel": "71ed92da3282da3fa719f0bc151c3b942e6b02a432c9f92e26c7d549bb302d0a",
+    "BUILD.leptos_macro-0.7.9.bazel": "39617cc930f0c68296054923bd448c25bf7e1dd3274292307817ec5bed519637",
+    "BUILD.leptos_router-0.7.8.bazel": "754443fdc93970509a00f1eec666c721febd9ee82d59764376fd3bf3147a2167",
+    "BUILD.leptos_router_macro-0.7.8.bazel": "69e18ed2f897f65aa045270c42b11f399295ce8ec8244cbc723249d81b438aab",
+    "BUILD.leptos_server-0.7.8.bazel": "db4c2216fad98836f958b8d2f91f0527d56603d57a751a72a8e153e71b8c9431",
+    "BUILD.libc-0.2.186.bazel": "56a2f05640e7056140e94f6a261aa2989e06d287c23e676a12034f1695bdeeb4",
+    "BUILD.linear-map-1.2.0.bazel": "a702b8479131337d2dfc5cffccc27c21edd4c960c9544b27d71b3375289733c2",
+    "BUILD.litemap-0.8.2.bazel": "366b1b472c880bb776a7eee50c6622df1d04d64d367f7d18cb47924d033e9080",
+    "BUILD.lock_api-0.4.14.bazel": "af5ac961b74748d3c7df00055768f0cf2d815494faf314c4095180bc7aa9cad4",
+    "BUILD.log-0.4.30.bazel": "c1d6fcf938edaccc09e5b187e060eb31e4d0ac61fcb23163e9b729e386d5f3c2",
+    "BUILD.manyhow-0.11.4.bazel": "1d2fa621fe911165d9fc0a313504e059e052b032620c3c03a07140055844000e",
+    "BUILD.manyhow-macros-0.11.4.bazel": "4053908a2aeb7a32c252c3c2446cf9f146d12689b396e9caadf3b58cc6f4d299",
+    "BUILD.memchr-2.8.2.bazel": "6891cddac429eb9d18cb1a1c9750a4d77119bd86c4b500e764e1c008a53e1daa",
+    "BUILD.miniz_oxide-0.8.9.bazel": "8f6a8c72b76577f3e644fc3d1c462a47f762dff9903b48f869d5a0e061f02203",
+    "BUILD.next_tuple-0.1.0.bazel": "2bd196bf2dd9ec1fd855f88e8d529e49ad2c6863fbfc8ea586aab853bd8ed336",
+    "BUILD.oco_ref-0.2.1.bazel": "5ea4236bcf38cb39f7278aaf222f737c8842003f199f3c1a7ecc217112b3a565",
+    "BUILD.once_cell-1.21.4.bazel": "82ec89e9c6433da86efaf94da20b941296b380b462794de8d2481ee6aa422b60",
+    "BUILD.or_poisoned-0.1.0.bazel": "cefe731cddb3e32ed331cf3b1553bb2b438147f7a41cc79b12232e5cdc6d9f68",
+    "BUILD.parking-2.2.1.bazel": "6e7a8ccbcbda98b7e6ab80101056249fac6ad6ee0f4cde6c55c334dc07bc22f2",
+    "BUILD.parking_lot-0.12.5.bazel": "002fba88454763b8312a17b3ea15d3083d3ff567da277c72e537c386b20338c3",
+    "BUILD.parking_lot_core-0.9.12.bazel": "bb14cb760f83add76960dfaf176617945cbd2047f311473a7b60e1079d42b0b2",
+    "BUILD.paste-1.0.15.bazel": "149fb82ce6cdfa2031a1e26a105371e396705f4445eb9f5da76fac5dcaab5f30",
+    "BUILD.pathdiff-0.2.3.bazel": "58e47f8cb211fe19cc4056f92918a1da5b23f05c3f19171293584d97e1799741",
+    "BUILD.percent-encoding-2.3.2.bazel": "de3931c699e311703ebfff84e2ee6c3611a6ebd832cb02d86f5efdca1f195f3e",
+    "BUILD.pin-project-1.1.13.bazel": "492fe7db6185e71e13eef2ae6bf9763a7fc786203369cc39bc0b39883f60c1b3",
+    "BUILD.pin-project-internal-1.1.13.bazel": "88b335398b403d884e16a18a47417fafc6c1fa01c35b63277e868a69a029909f",
+    "BUILD.pin-project-lite-0.2.17.bazel": "59111538d1bae4102bc6a7a851ef25f5676c7608f1dd1b31b5c7c0e9d07f3350",
+    "BUILD.pkcs8-0.10.2.bazel": "a61e046e6a21680349f3769a8a663d3f030a0bcf88dc86a8d780185d87f77df9",
+    "BUILD.potential_utf-0.1.5.bazel": "bbe70bdf7f1e084fde6f53c338fb642dec3ce7749c313435a52d71cca2fcd67f",
+    "BUILD.prettyplease-0.2.37.bazel": "02a389a3fa55969c81dc00a5f6f2e6b10c926393b75655e802f821026a75d733",
+    "BUILD.proc-macro-error-attr2-2.0.0.bazel": "f3903b3e1704d63bde1d6798286fa6f343a9814274de68fa460799d5a6a5b670",
+    "BUILD.proc-macro-error2-2.0.1.bazel": "994c1ac34d94813c8b6846f2ac496a5e6c970ddec4fa5423bfd562916abc321e",
+    "BUILD.proc-macro-utils-0.10.0.bazel": "edfc2177a7c819c024685b3cceeccd0633241e850cc1f3901306b096f3ebf800",
+    "BUILD.proc-macro2-1.0.106.bazel": "92e38c0df9d952e85af33e611538c5a55d494a5c39a0942ed76f7586b914f6c0",
+    "BUILD.proc-macro2-diagnostics-0.10.1.bazel": "5227f9d1dc7d13d439d9a8e51902b2b396226c9368ddf383bb064f6a987f289f",
+    "BUILD.quote-1.0.46.bazel": "5861367a6219c9e8188a490374962f1c0d154bfdca37b811bd70631ac166c8e7",
+    "BUILD.quote-use-0.8.4.bazel": "5d865b4a21108ff66b1c6fa9ae606617dc85dd78500d06754c081ffcc65fd022",
+    "BUILD.quote-use-macros-0.8.4.bazel": "d6be894ad99dfc48c77d8bd9b3c4f3c35bf950bc60ea9574c0d63dfbe34f33ec",
+    "BUILD.r-efi-6.0.0.bazel": "9a37eefdc2d2c65c85759c4feedcce23ca66738418fd9f628e366087a8b1a5b3",
+    "BUILD.rand_core-0.6.4.bazel": "1e1931f63801eaed472caa1fe7e59b1cee4fceba5b85dd2ce8460feba276bcdb",
+    "BUILD.reactive_graph-0.1.8.bazel": "dbb1c15d2a5959da8fa9046e217cc32a13bf1c7daea981c852e631730d1534f4",
+    "BUILD.reactive_stores-0.1.8.bazel": "db6dac0ef59d46736a4fa78bb12386a5bbf1d491ad3c9b3dafd2ab4bbaac587c",
+    "BUILD.reactive_stores_macro-0.1.8.bazel": "0cdbac6df81d4e9fb57ed07b465822e86d032cc7a5dc22ff9312d6185687502c",
+    "BUILD.redox_syscall-0.5.18.bazel": "056ff416c655bf94e2dfc3d322f559b62a0ca40b7a41c5d3de046dee345edad8",
+    "BUILD.regex-1.12.4.bazel": "8c3ab57b684da3cce298b96e6e71aa1dfeb945baf862a41470df9ded906eb762",
+    "BUILD.regex-automata-0.4.14.bazel": "d4e5519b09eb742c81f9d7b22b305cf76a5d460638a398ee77a737e2ce1015e5",
+    "BUILD.regex-syntax-0.8.11.bazel": "e9eb69179668041334c2869cc590b3925f4eeab04e843e876ec5afa647c52615",
+    "BUILD.rstml-0.12.1.bazel": "a0af87d4a52aba548b5df769e856af64539ab779becabdef3c414b2f9579fec0",
+    "BUILD.rustc-hash-2.1.2.bazel": "f9ccc01e8589787d030a96afb39baca94e610d03390fc736158b96e2cfd884da",
+    "BUILD.rustc_version-0.4.1.bazel": "acd0c0e5e7405a26adf73b6b62e2c060f1b5550b3c2186a12cdfba8ca3c1d72e",
+    "BUILD.rustversion-1.0.22.bazel": "204d73180b2f38a617f800d74188bb610eed7b0db9ed6cb8d68991b52a2085b3",
+    "BUILD.same-file-1.0.6.bazel": "037996510c8532ac4ff6cdbde7fa501be7e8b78d3301aba48bbfb28c0bf0cfe1",
+    "BUILD.scopeguard-1.2.0.bazel": "6d3536df57d7c2eeed14367e9cbd78876a787ccb4a2a91046b676d521fc0e669",
+    "BUILD.semver-1.0.28.bazel": "1350eea4f8ce63a10497802df6d27bd53349263ebe4cd8bb1fd44afd64cb6652",
+    "BUILD.send_wrapper-0.6.0.bazel": "139bb0303ca6aa151e1a379f79ba6f7a03f1329faf2978afe3bcbd0901f3f719",
+    "BUILD.serde-1.0.228.bazel": "5b55c402aae79281fed7ccc84abf84148070f55d120781e7057e075dadf5da35",
+    "BUILD.serde_core-1.0.228.bazel": "279b25981b0dd4ba444513ee4df6bd4a411ee7db939b95ffc957b2cd0b825048",
+    "BUILD.serde_derive-1.0.228.bazel": "5ef5b0a44394172e5ab92719f6752dffb3afc0eaf3363a4b75915de643f798ba",
+    "BUILD.serde_json-1.0.150.bazel": "4a53826ce27dbcb06314c956e617e34641e63ba499ed140ccc3fa6d725d1f590",
+    "BUILD.serde_qs-0.13.0.bazel": "b075d11a3e4f67d1e81cc7b5b1ba36eb5a7763109c638554b8e1a196b0a263ef",
+    "BUILD.serde_spanned-0.6.9.bazel": "6d47aef5808109a178e7595863cd985b90ae0c17635a636f93a356880bd1d5aa",
+    "BUILD.serde_spanned-1.1.1.bazel": "1902ca9e23534b07305ad0fcafe8103a0cd1263bb4a2e37783605d9a996c57a1",
+    "BUILD.server_fn-0.7.8.bazel": "76d8286e0f9b14136c966d25a89f944e7f65a4c1f267839d6186db558c47b12b",
+    "BUILD.server_fn_macro-0.7.8.bazel": "1587dff1ac59bd7f7443c3d4bc966424f88534ea1942852a33a42e0a1dc1a1ab",
+    "BUILD.server_fn_macro_default-0.7.8.bazel": "2545492df608c9a9af9b547ba90fd74285c17af4908d4734b448d55fbba3c74a",
+    "BUILD.sha2-0.10.9.bazel": "ffb06c21fcbb2a118b3708ba41391994348fa3b99bdcd9e93cc7292b414017af",
+    "BUILD.signature-2.2.0.bazel": "a2d5d959a6b271c93fb18667f2a5e7d3837918804726ca40e49ff1d2ddb94e51",
+    "BUILD.simd-adler32-0.3.9.bazel": "a002566453144589968703e9a19c95cc8af01c72c9546898bd5d2058fef37913",
+    "BUILD.slab-0.4.12.bazel": "90bae2a992ad5ac91aa0cee95fcdba6eec37ce0144b3337a69f8a0a01613709b",
+    "BUILD.slotmap-1.1.1.bazel": "ae6bd4cd73d094763221cbdddf85e45671f29f89b98049831cb85403e0d3ac2a",
+    "BUILD.smallvec-1.15.2.bazel": "bb7813dafc1c1ff39ff5fdbdfb00630f719698c55e5ef5d20053a1e8fc9e82eb",
+    "BUILD.spki-0.7.3.bazel": "63627c7a880fc8b01b588cc494d582e3248886f167db9fd40eb063399e042c59",
+    "BUILD.stable_deref_trait-1.2.1.bazel": "09fbdea15d014c983730015c57a0344681f41a14a447c0f98ef2ce24744b143e",
+    "BUILD.subtle-2.6.1.bazel": "9144fe97f9e10631ce3ebbd8342c889784c7338ecaf4b60fa77f26509ad2b90a",
+    "BUILD.syn-2.0.118.bazel": "4f1dc1e4f77a5da376d0c99c94d54093ff6edff78ddf1d4fd841aaf5b36d235c",
+    "BUILD.syn_derive-0.2.0.bazel": "63aecf9044d4827816c9a091faa591c6106544cf76747b3988d64d1a6c6ecb28",
+    "BUILD.synstructure-0.13.2.bazel": "1f9cf0b0cff9b9ae33535e0e28e75f9ba91a395c1eccea644fd655a9e35d7860",
+    "BUILD.tachys-0.1.9.bazel": "fa7b1571e7a3fdcb602bdcf9bc8079142df9eed1d102c986eaa8eef3c3565d1b",
+    "BUILD.thiserror-1.0.69.bazel": "7af4e16135542c203c5c2f56b445886c8b75d8b765b0dd035f206ed680425191",
+    "BUILD.thiserror-2.0.18.bazel": "bd25431db1c8d630678e7f6be2ae2c0fe0561aa55fc97e2e2007e91e1b16bf8e",
+    "BUILD.thiserror-impl-1.0.69.bazel": "c59be3a121e8f6953ad6a47dbd7027445fc45ab51b2cc9798123f68d70ff8582",
+    "BUILD.thiserror-impl-2.0.18.bazel": "da86c150ee2f8624c143359deeac5fcbb0c9c6d71b6a2ca7b3789eb9463feacd",
+    "BUILD.throw_error-0.2.0.bazel": "5a104fbedc51fb7012f0326e754928fa6751959c9f2331ddad0bcb902eab20dd",
+    "BUILD.tinystr-0.8.3.bazel": "b5d9abd5224feb6cb4e2ff6ff29be85e11fe4e3ae48f0f5d8c441c66c3dafeb0",
+    "BUILD.toml-0.8.23.bazel": "fb2a4f9df28f6716a25d9cdacd30e4fa7b78535e79fd6a003ade27e08e852209",
+    "BUILD.toml-1.1.2+spec-1.1.0.bazel": "b727ffc1ca9592bbbef1fe2ebf6d10bd85fbe30a1bc243402c2b6700d79d6394",
+    "BUILD.toml_datetime-0.6.11.bazel": "6e6d2b98bc20dc9b842a5a1b4659a055eafb70e7dcc347a0d90a75ef8b798b03",
+    "BUILD.toml_datetime-1.1.1+spec-1.1.0.bazel": "6eaf74b8f374fa4571382c3057c058e62f2e619415be99ca02eb9f118cd756d1",
+    "BUILD.toml_edit-0.22.27.bazel": "4c4701e4f54f1d8c30e88ea5a8f92754b00fc4a98900a2e1f9f3a11d31f65490",
+    "BUILD.toml_parser-1.1.2+spec-1.1.0.bazel": "392ef774b2694e7791612c9a2408398ff87d007507a7097643cbdffed002b9ee",
+    "BUILD.toml_write-0.1.2.bazel": "4b8758150047c53c88e673f530cb6cbcb1904732fde2aab6ec347a9e15f16d01",
+    "BUILD.typed-builder-0.20.1.bazel": "6994eb21a47491eab14a7c9e202545fda6f817c6892efd179e0bb9349a0711c1",
+    "BUILD.typed-builder-macro-0.20.1.bazel": "7a1f06567d1d44f81a33e5eed12436808fe3df58f665fa013788942cb8b66bf7",
+    "BUILD.typenum-1.20.1.bazel": "3e240e878fc53a4a16e0cd482ac6a8719cfe61399b321c5b1ea6296ed7cfebf3",
+    "BUILD.unicode-ident-1.0.24.bazel": "d0a1a8c4e1a1786aa71aeab708a98d673bc57e317a800548663f41fc95df88cb",
+    "BUILD.unicode-segmentation-1.13.3.bazel": "4a40514990be3d3a0dd6d111896a1860b5e0e8a349c6c15c26f0f4834b3c1670",
+    "BUILD.unicode-xid-0.2.6.bazel": "2e9439f54de79f6287ccd1aff528adf0ba706ebe83a121bba62397c78f54026a",
+    "BUILD.url-2.5.8.bazel": "c89e3c70124123ae405fd5d3f978abe03031026363796f96a204ae9ba777f1c8",
+    "BUILD.utf8_iter-1.0.4.bazel": "fdcfc71db974f35361a0a2f19f6028a26fad3f34f568bb1cec8b79b6965d0f10",
+    "BUILD.uuid-1.23.1.bazel": "82680d08d205fe313cfb522b5da41c3932e09af94ca1dad9db234f35933f1d71",
+    "BUILD.version_check-0.9.5.bazel": "022be30ed19b151b012b49c459c89b27cf8a70614cb836b02f4fb658b07f5073",
+    "BUILD.walkdir-2.5.0.bazel": "2da89bd0f0e3bee9514e470eab822da93abdd210fa3ca1dbbb1cfbbd494eb5a3",
+    "BUILD.wasi-0.11.1+wasi-snapshot-preview1.bazel": "0a15168d0b104f29a4a594bfa7ceb4e1d32092d389d4f7551b97e4e06cb57bac",
+    "BUILD.wasip2-1.0.4+wasi-0.2.12.bazel": "a149948287bf19e98b49a51992eb5486aa555f52d5d8210fe7f4dbc372f0b9bc",
+    "BUILD.wasip3-0.4.0+wasi-0.3.0-rc-2026-01-06.bazel": "1ebd9469d9993525657caa45ee7521ea5c9e0409488066cfb8c47d8779ee222e",
+    "BUILD.wasm-bindgen-0.2.126.bazel": "3897940cd643ba10d5dc164143f158d2e0b155904ad515291f6cf8996d9b708c",
+    "BUILD.wasm-bindgen-futures-0.4.76.bazel": "a73c8138f7848eeca41085f895cec211c69521801a488927c35b3fc381ca382b",
+    "BUILD.wasm-bindgen-macro-0.2.126.bazel": "e7a454d6a0a9ab7b43247489a590b164f23b43235668d89bb9b707fb7032e309",
+    "BUILD.wasm-bindgen-macro-support-0.2.126.bazel": "4fefd839218097290e1e8ce39a1653332b35a519f7a447abb3ecdc298d76a110",
+    "BUILD.wasm-bindgen-shared-0.2.126.bazel": "7e164d81ec669eb99197aa0eb172204381bfc660aca69e30d3f54d665d126c4a",
+    "BUILD.wasm-encoder-0.244.0.bazel": "912689e2178d4be4a550855a66952e7901f12675d2bd2807b10d6b713658eb90",
+    "BUILD.wasm-metadata-0.244.0.bazel": "59a1e9b9eef62d62e2ce01ef343e7ea626cc6e1d59b395a97ad0bd21ba8bcff8",
+    "BUILD.wasm-streams-0.4.2.bazel": "7c938876852bf7cd7a6da5acdaa042429924ec1559a058096560ab66df709531",
+    "BUILD.wasmparser-0.244.0.bazel": "2e5962986af74c99c919734bb9331f329b3cf7a78de50021f7dac1cff3f9f39b",
+    "BUILD.web-sys-0.3.103.bazel": "f002c6f44ec44066a38b783804c4a9222964611d44a71f2d6b0bab97b5372c1a",
+    "BUILD.winapi-util-0.1.11.bazel": "76b15f956957772043443ce158aafe6cc7e2ddf32e6137564e92fbc3362a4ccd",
+    "BUILD.windows-link-0.2.1.bazel": "c24cf4371247577af7f7aa58e4c2627bdf5bd5a290dfd18b1d2b82ede7f8bc15",
+    "BUILD.windows-sys-0.48.0.bazel": "7cee90115da8de95bedc87c7754740e51fc08e0b1f060ab4a09647d599ed6d32",
+    "BUILD.windows-targets-0.48.5.bazel": "f56e87f14ad178a12a6075ea1ae8a0d52567ffb9f7399cbf7dcf4d09c933c4fb",
+    "BUILD.windows_aarch64_gnullvm-0.48.5.bazel": "307a1aa8444eeb0933fdbf4166e7c77f69a565c7d94a40f60b5d4523885f4386",
+    "BUILD.windows_aarch64_msvc-0.48.5.bazel": "cc299ad075ce34c41b7dd78c965666ee14b05d93b65924f2a322f13e000109cb",
+    "BUILD.windows_i686_gnu-0.48.5.bazel": "8a0e02d1db66fa78c38123bd83c27b74af0cd5bdd1c5fad41555b93c7439c552",
+    "BUILD.windows_i686_msvc-0.48.5.bazel": "d5268f271c3c4065f210a0f4653e9d296657e2d2dfa5467c13e160db2e7b964c",
+    "BUILD.windows_x86_64_gnu-0.48.5.bazel": "38fb2885cfe69b06981d597a55a5de3333262819e21bd72870a6315935d2e04d",
+    "BUILD.windows_x86_64_gnullvm-0.48.5.bazel": "e57179b7cb5bdb66562123dcb41035b0319e315b17fcf633f66028cce28e0b0f",
+    "BUILD.windows_x86_64_msvc-0.48.5.bazel": "7adb7eccca8cf4f3639b5927cf898e27abb349dfdad4c494bed119c883861bd2",
+    "BUILD.winnow-0.7.15.bazel": "bb4faba9547e5c26361dc613a80655fc22898293b00790a932e8c5b4afeaf09f",
+    "BUILD.winnow-1.0.3.bazel": "011a295b80ab27c40f7aff1e5f1ebede179399eac6804d3b4c242916dbc42067",
+    "BUILD.wit-bindgen-0.51.0.bazel": "35fd1a53b78f0230c78ae7bae6cc091630b18d51583e6558962bc43c9f6364f3",
+    "BUILD.wit-bindgen-0.57.1.bazel": "37e21bd878b5246d4693be9e32a9d08fe05a32011387542ffe5475384aeea33e",
+    "BUILD.wit-bindgen-core-0.51.0.bazel": "2a1fff752ec1b9ad652382ff80985af299f1ae787b901d27e2375ee87436ca46",
+    "BUILD.wit-bindgen-rust-0.51.0.bazel": "84a1133dec728fdfd2406612d06ae16d1cbe8cdc5f1e0d8f5e6d6ee29e34ac08",
+    "BUILD.wit-bindgen-rust-macro-0.51.0.bazel": "79a3dcf20b4b24d1716cb01d5151741a90f1be8248c1a55823346b1fc7367a11",
+    "BUILD.wit-component-0.244.0.bazel": "d873cf940377920a377a2674ff5dcb01fec5709fcc58dcbf421a0a5b6c724e42",
+    "BUILD.wit-parser-0.244.0.bazel": "a5040219b0bfdc30b97dc155c4544203a78f519e02ce339609474e418740b4c2",
+    "BUILD.writeable-0.6.3.bazel": "73e875db79f5f2d32d78e68fe3d5c7e980beec904dbf8bf8b646bc39aedbde44",
+    "BUILD.xxhash-rust-0.8.15.bazel": "53ef4b3ef3e83f8aa014127b8e1b7e9063ff9bc561293521b88031dec6ac973e",
+    "BUILD.yansi-1.0.1.bazel": "afc3f95c2cc5f31a0ee8e68438ebdd9d88f3266e806137af5f4ccb213a077e4b",
+    "BUILD.yoke-0.8.3.bazel": "c23ef1462129186e784750fc7487f9830ae27593e92c6fb9d52682b5cb774df9",
+    "BUILD.yoke-derive-0.8.2.bazel": "c864f9f836536415fbfd6b130efa2546b6cd6433e150f6cf8a7a9699b15dfcb5",
+    "BUILD.zerofrom-0.1.8.bazel": "67e7630aa28f813c29a1890ad0b7a54a6da08914ea46214ffd669120cb92f0ba",
+    "BUILD.zerofrom-derive-0.1.7.bazel": "449b6baf1b73bd452df984045d6afed7054bfe57db41b96e83db4ad241c4176d",
+    "BUILD.zeroize-1.9.0.bazel": "52959b811cf79cbad33317adb60a20fcee5236f84651382b2701c83dc34a3a25",
+    "BUILD.zerotrie-0.2.4.bazel": "90b8307a70a7a744be00fdc9f76f5d79a39f2e799b53c7f78f88dab65c47c419",
+    "BUILD.zerovec-0.11.6.bazel": "52264e0cb3437060799bb95c850be048854c3e9c6649adf5fb6d91d676505de9",
+    "BUILD.zerovec-derive-0.11.3.bazel": "2eb25fcd18929dc5402b69e33a107e2c97b949ec41585c37d2d461d7a2ef90d8",
+    "BUILD.zmij-1.0.21.bazel": "f0e14097b9bd948328d0b01f82ad9e0d48b403d26e5c6b46639b6d0f8e574f10",
+    "Cargo.lock": "cdafdafa4c31518a563598c60755fe349d40bb690280a3965a0c9a4e205ede7e",
+    "aliases.bzl": "88cf629aceee0b66019faa71cefb00b0acd9ccbfb3cae875a7e280cccb5bc69c",
+    "cargo-bazel.json": "820f4b131f18a267b3ce211e1ed7468871bcb76713550421c14d13204d4bcd79",
+    "generator-config.json": "7011b2d03c05633aa6d25d7e6cd64b977f1e2b327633eb34a3271ecd80fac4dc",
+    "repositories.MODULE.bazel": "50e0ede5346625d6ca7e784623d00296e5799644742e3efebb1437e8cc5e7f2a"
+  },
+  "schema_version": 1,
+  "sources": {
+    "aos_registry_web_crates__adler2-2.0.1": {
+      "build_file": "BUILD.adler2-2.0.1.bazel",
+      "license": "0BSD OR MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "adler2",
+      "sha256": "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa",
+      "strip_prefix": "adler2-2.0.1",
+      "url": "https://static.crates.io/crates/adler2/2.0.1/download",
+      "version": "2.0.1"
+    },
+    "aos_registry_web_crates__aho-corasick-1.1.4": {
+      "build_file": "BUILD.aho-corasick-1.1.4.bazel",
+      "license": "Unlicense OR MIT",
+      "license_domain": "apache-host",
+      "name": "aho-corasick",
+      "sha256": "ddd31a130427c27518df266943a5308ed92d4b226cc639f5a8f1002816174301",
+      "strip_prefix": "aho-corasick-1.1.4",
+      "url": "https://static.crates.io/crates/aho-corasick/1.1.4/download",
+      "version": "1.1.4"
+    },
+    "aos_registry_web_crates__any_spawner-0.2.0": {
+      "build_file": "BUILD.any_spawner-0.2.0.bazel",
+      "license": "MIT",
+      "license_domain": "apache-host",
+      "name": "any_spawner",
+      "sha256": "41058deaa38c9d9dd933d6d238d825227cffa668e2839b52879f6619c63eee3b",
+      "strip_prefix": "any_spawner-0.2.0",
+      "url": "https://static.crates.io/crates/any_spawner/0.2.0/download",
+      "version": "0.2.0"
+    },
+    "aos_registry_web_crates__anyhow-1.0.103": {
+      "build_file": "BUILD.anyhow-1.0.103.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "anyhow",
+      "sha256": "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3",
+      "strip_prefix": "anyhow-1.0.103",
+      "url": "https://static.crates.io/crates/anyhow/1.0.103/download",
+      "version": "1.0.103"
+    },
+    "aos_registry_web_crates__async-lock-3.4.2": {
+      "build_file": "BUILD.async-lock-3.4.2.bazel",
+      "license": "Apache-2.0 OR MIT",
+      "license_domain": "apache-host",
+      "name": "async-lock",
+      "sha256": "290f7f2596bd5b78a9fec8088ccd89180d7f9f55b94b0576823bbbdc72ee8311",
+      "strip_prefix": "async-lock-3.4.2",
+      "url": "https://static.crates.io/crates/async-lock/3.4.2/download",
+      "version": "3.4.2"
+    },
+    "aos_registry_web_crates__async-trait-0.1.89": {
+      "build_file": "BUILD.async-trait-0.1.89.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "async-trait",
+      "sha256": "9035ad2d096bed7955a320ee7e2230574d28fd3c3a0f186cbea1ff3c7eed5dbb",
+      "strip_prefix": "async-trait-0.1.89",
+      "url": "https://static.crates.io/crates/async-trait/0.1.89/download",
+      "version": "0.1.89"
+    },
+    "aos_registry_web_crates__attribute-derive-0.10.5": {
+      "build_file": "BUILD.attribute-derive-0.10.5.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "attribute-derive",
+      "sha256": "05832cdddc8f2650cc2cc187cc2e952b8c133a48eb055f35211f61ee81502d77",
+      "strip_prefix": "attribute-derive-0.10.5",
+      "url": "https://static.crates.io/crates/attribute-derive/0.10.5/download",
+      "version": "0.10.5"
+    },
+    "aos_registry_web_crates__attribute-derive-macro-0.10.5": {
+      "build_file": "BUILD.attribute-derive-macro-0.10.5.bazel",
+      "license": "MIT",
+      "license_domain": "apache-host",
+      "name": "attribute-derive-macro",
+      "sha256": "0a7cdbbd4bd005c5d3e2e9c885e6fa575db4f4a3572335b974d8db853b6beb61",
+      "strip_prefix": "attribute-derive-macro-0.10.5",
+      "url": "https://static.crates.io/crates/attribute-derive-macro/0.10.5/download",
+      "version": "0.10.5"
+    },
+    "aos_registry_web_crates__base64-0.22.1": {
+      "build_file": "BUILD.base64-0.22.1.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "base64",
+      "sha256": "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6",
+      "strip_prefix": "base64-0.22.1",
+      "url": "https://static.crates.io/crates/base64/0.22.1/download",
+      "version": "0.22.1"
+    },
+    "aos_registry_web_crates__base64ct-1.8.3": {
+      "build_file": "BUILD.base64ct-1.8.3.bazel",
+      "license": "Apache-2.0 OR MIT",
+      "license_domain": "apache-host",
+      "name": "base64ct",
+      "sha256": "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06",
+      "strip_prefix": "base64ct-1.8.3",
+      "url": "https://static.crates.io/crates/base64ct/1.8.3/download",
+      "version": "1.8.3"
+    },
+    "aos_registry_web_crates__bitflags-2.13.0": {
+      "build_file": "BUILD.bitflags-2.13.0.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "bitflags",
+      "sha256": "b4388bee8683e3d04af747c73422af53102d2bd24d9eadb6cbc100baef4b43f8",
+      "strip_prefix": "bitflags-2.13.0",
+      "url": "https://static.crates.io/crates/bitflags/2.13.0/download",
+      "version": "2.13.0"
+    },
+    "aos_registry_web_crates__block-buffer-0.10.4": {
+      "build_file": "BUILD.block-buffer-0.10.4.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "block-buffer",
+      "sha256": "3078c7629b62d3f0439517fa394996acacc5cbc91c5a20d8c658e77abd503a71",
+      "strip_prefix": "block-buffer-0.10.4",
+      "url": "https://static.crates.io/crates/block-buffer/0.10.4/download",
+      "version": "0.10.4"
+    },
+    "aos_registry_web_crates__bumpalo-3.20.3": {
+      "build_file": "BUILD.bumpalo-3.20.3.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "bumpalo",
+      "sha256": "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649",
+      "strip_prefix": "bumpalo-3.20.3",
+      "url": "https://static.crates.io/crates/bumpalo/3.20.3/download",
+      "version": "3.20.3"
+    },
+    "aos_registry_web_crates__bytes-1.11.1": {
+      "build_file": "BUILD.bytes-1.11.1.bazel",
+      "license": "MIT",
+      "license_domain": "apache-host",
+      "name": "bytes",
+      "sha256": "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33",
+      "strip_prefix": "bytes-1.11.1",
+      "url": "https://static.crates.io/crates/bytes/1.11.1/download",
+      "version": "1.11.1"
+    },
+    "aos_registry_web_crates__camino-1.2.4": {
+      "build_file": "BUILD.camino-1.2.4.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "camino",
+      "sha256": "5f2d30e4173c4026932d51d31d6b0613b1fd3014bf3f9f8943d4ba139c437ba0",
+      "strip_prefix": "camino-1.2.4",
+      "url": "https://static.crates.io/crates/camino/1.2.4/download",
+      "version": "1.2.4"
+    },
+    "aos_registry_web_crates__cfg-if-1.0.4": {
+      "build_file": "BUILD.cfg-if-1.0.4.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "cfg-if",
+      "sha256": "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801",
+      "strip_prefix": "cfg-if-1.0.4",
+      "url": "https://static.crates.io/crates/cfg-if/1.0.4/download",
+      "version": "1.0.4"
+    },
+    "aos_registry_web_crates__codee-0.3.5": {
+      "build_file": "BUILD.codee-0.3.5.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "codee",
+      "sha256": "a9dbbdc4b4d349732bc6690de10a9de952bd39ba6a065c586e26600b6b0b91f5",
+      "strip_prefix": "codee-0.3.5",
+      "url": "https://static.crates.io/crates/codee/0.3.5/download",
+      "version": "0.3.5"
+    },
+    "aos_registry_web_crates__collection_literals-1.0.3": {
+      "build_file": "BUILD.collection_literals-1.0.3.bazel",
+      "license": "MIT",
+      "license_domain": "apache-host",
+      "name": "collection_literals",
+      "sha256": "2550f75b8cfac212855f6b1885455df8eaee8fe8e246b647d69146142e016084",
+      "strip_prefix": "collection_literals-1.0.3",
+      "url": "https://static.crates.io/crates/collection_literals/1.0.3/download",
+      "version": "1.0.3"
+    },
+    "aos_registry_web_crates__config-0.15.25": {
+      "build_file": "BUILD.config-0.15.25.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "config",
+      "sha256": "b85f248a4de22d204ceabc6299d89d2c70fbd7f09fea53c06c852369652d8139",
+      "strip_prefix": "config-0.15.25",
+      "url": "https://static.crates.io/crates/config/0.15.25/download",
+      "version": "0.15.25"
+    },
+    "aos_registry_web_crates__const-oid-0.9.6": {
+      "build_file": "BUILD.const-oid-0.9.6.bazel",
+      "license": "Apache-2.0 OR MIT",
+      "license_domain": "apache-host",
+      "name": "const-oid",
+      "sha256": "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8",
+      "strip_prefix": "const-oid-0.9.6",
+      "url": "https://static.crates.io/crates/const-oid/0.9.6/download",
+      "version": "0.9.6"
+    },
+    "aos_registry_web_crates__const_format-0.2.36": {
+      "build_file": "BUILD.const_format-0.2.36.bazel",
+      "license": "Zlib",
+      "license_domain": "apache-host",
+      "name": "const_format",
+      "sha256": "4481a617ad9a412be3b97c5d403fef8ed023103368908b9c50af598ff467cc1e",
+      "strip_prefix": "const_format-0.2.36",
+      "url": "https://static.crates.io/crates/const_format/0.2.36/download",
+      "version": "0.2.36"
+    },
+    "aos_registry_web_crates__const_format_proc_macros-0.2.34": {
+      "build_file": "BUILD.const_format_proc_macros-0.2.34.bazel",
+      "license": "Zlib",
+      "license_domain": "apache-host",
+      "name": "const_format_proc_macros",
+      "sha256": "1d57c2eccfb16dbac1f4e61e206105db5820c9d26c3c472bc17c774259ef7744",
+      "strip_prefix": "const_format_proc_macros-0.2.34",
+      "url": "https://static.crates.io/crates/const_format_proc_macros/0.2.34/download",
+      "version": "0.2.34"
+    },
+    "aos_registry_web_crates__const_str_slice_concat-0.1.0": {
+      "build_file": "BUILD.const_str_slice_concat-0.1.0.bazel",
+      "license": "MIT",
+      "license_domain": "apache-host",
+      "name": "const_str_slice_concat",
+      "sha256": "f67855af358fcb20fac58f9d714c94e2b228fe5694c1c9b4ead4a366343eda1b",
+      "strip_prefix": "const_str_slice_concat-0.1.0",
+      "url": "https://static.crates.io/crates/const_str_slice_concat/0.1.0/download",
+      "version": "0.1.0"
+    },
+    "aos_registry_web_crates__convert_case-0.6.0": {
+      "build_file": "BUILD.convert_case-0.6.0.bazel",
+      "license": "MIT",
+      "license_domain": "apache-host",
+      "name": "convert_case",
+      "sha256": "ec182b0ca2f35d8fc196cf3404988fd8b8c739a4d270ff118a398feb0cbec1ca",
+      "strip_prefix": "convert_case-0.6.0",
+      "url": "https://static.crates.io/crates/convert_case/0.6.0/download",
+      "version": "0.6.0"
+    },
+    "aos_registry_web_crates__convert_case-0.7.1": {
+      "build_file": "BUILD.convert_case-0.7.1.bazel",
+      "license": "MIT",
+      "license_domain": "apache-host",
+      "name": "convert_case",
+      "sha256": "bb402b8d4c85569410425650ce3eddc7d698ed96d39a73f941b08fb63082f1e7",
+      "strip_prefix": "convert_case-0.7.1",
+      "url": "https://static.crates.io/crates/convert_case/0.7.1/download",
+      "version": "0.7.1"
+    },
+    "aos_registry_web_crates__cpufeatures-0.2.17": {
+      "build_file": "BUILD.cpufeatures-0.2.17.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "cpufeatures",
+      "sha256": "59ed5838eebb26a2bb2e58f6d5b5316989ae9d08bab10e0e6d103e656d1b0280",
+      "strip_prefix": "cpufeatures-0.2.17",
+      "url": "https://static.crates.io/crates/cpufeatures/0.2.17/download",
+      "version": "0.2.17"
+    },
+    "aos_registry_web_crates__crc32fast-1.5.0": {
+      "build_file": "BUILD.crc32fast-1.5.0.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "crc32fast",
+      "sha256": "9481c1c90cbf2ac953f07c8d4a58aa3945c425b7185c9154d67a65e4230da511",
+      "strip_prefix": "crc32fast-1.5.0",
+      "url": "https://static.crates.io/crates/crc32fast/1.5.0/download",
+      "version": "1.5.0"
+    },
+    "aos_registry_web_crates__crossbeam-utils-0.8.21": {
+      "build_file": "BUILD.crossbeam-utils-0.8.21.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "crossbeam-utils",
+      "sha256": "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28",
+      "strip_prefix": "crossbeam-utils-0.8.21",
+      "url": "https://static.crates.io/crates/crossbeam-utils/0.8.21/download",
+      "version": "0.8.21"
+    },
+    "aos_registry_web_crates__crypto-common-0.1.7": {
+      "build_file": "BUILD.crypto-common-0.1.7.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "crypto-common",
+      "sha256": "78c8292055d1c1df0cce5d180393dc8cce0abec0a7102adb6c7b1eef6016d60a",
+      "strip_prefix": "crypto-common-0.1.7",
+      "url": "https://static.crates.io/crates/crypto-common/0.1.7/download",
+      "version": "0.1.7"
+    },
+    "aos_registry_web_crates__curve25519-dalek-4.1.3": {
+      "build_file": "BUILD.curve25519-dalek-4.1.3.bazel",
+      "license": "BSD-3-Clause",
+      "license_domain": "apache-host",
+      "name": "curve25519-dalek",
+      "sha256": "97fb8b7c4503de7d6ae7b42ab72a5a59857b4c937ec27a3d4539dba95b5ab2be",
+      "strip_prefix": "curve25519-dalek-4.1.3",
+      "url": "https://static.crates.io/crates/curve25519-dalek/4.1.3/download",
+      "version": "4.1.3"
+    },
+    "aos_registry_web_crates__curve25519-dalek-derive-0.1.1": {
+      "build_file": "BUILD.curve25519-dalek-derive-0.1.1.bazel",
+      "license": "MIT/Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "curve25519-dalek-derive",
+      "sha256": "f46882e17999c6cc590af592290432be3bce0428cb0d5f8b6715e4dc7b383eb3",
+      "strip_prefix": "curve25519-dalek-derive-0.1.1",
+      "url": "https://static.crates.io/crates/curve25519-dalek-derive/0.1.1/download",
+      "version": "0.1.1"
+    },
+    "aos_registry_web_crates__dashmap-6.2.1": {
+      "build_file": "BUILD.dashmap-6.2.1.bazel",
+      "license": "MIT",
+      "license_domain": "apache-host",
+      "name": "dashmap",
+      "sha256": "e6361d5c062261c78a176addb82d4c821ae42bed6089de0e12603cd25de2059c",
+      "strip_prefix": "dashmap-6.2.1",
+      "url": "https://static.crates.io/crates/dashmap/6.2.1/download",
+      "version": "6.2.1"
+    },
+    "aos_registry_web_crates__der-0.7.10": {
+      "build_file": "BUILD.der-0.7.10.bazel",
+      "license": "Apache-2.0 OR MIT",
+      "license_domain": "apache-host",
+      "name": "der",
+      "sha256": "e7c1832837b905bbfb5101e07cc24c8deddf52f93225eee6ead5f4d63d53ddcb",
+      "strip_prefix": "der-0.7.10",
+      "url": "https://static.crates.io/crates/der/0.7.10/download",
+      "version": "0.7.10"
+    },
+    "aos_registry_web_crates__derive-where-1.6.1": {
+      "build_file": "BUILD.derive-where-1.6.1.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "derive-where",
+      "sha256": "d08b3a0bcc0d079199cd476b2cae8435016ec11d1c0986c6901c5ac223041534",
+      "strip_prefix": "derive-where-1.6.1",
+      "url": "https://static.crates.io/crates/derive-where/1.6.1/download",
+      "version": "1.6.1"
+    },
+    "aos_registry_web_crates__digest-0.10.7": {
+      "build_file": "BUILD.digest-0.10.7.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "digest",
+      "sha256": "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292",
+      "strip_prefix": "digest-0.10.7",
+      "url": "https://static.crates.io/crates/digest/0.10.7/download",
+      "version": "0.10.7"
+    },
+    "aos_registry_web_crates__displaydoc-0.2.6": {
+      "build_file": "BUILD.displaydoc-0.2.6.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "displaydoc",
+      "sha256": "1ac70aa55017e108007fbaf5aa0f54b021c98f92ff8af59d42eda9da96e3dd4f",
+      "strip_prefix": "displaydoc-0.2.6",
+      "url": "https://static.crates.io/crates/displaydoc/0.2.6/download",
+      "version": "0.2.6"
+    },
+    "aos_registry_web_crates__drain_filter_polyfill-0.1.3": {
+      "build_file": "BUILD.drain_filter_polyfill-0.1.3.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "drain_filter_polyfill",
+      "sha256": "669a445ee724c5c69b1b06fe0b63e70a1c84bc9bb7d9696cd4f4e3ec45050408",
+      "strip_prefix": "drain_filter_polyfill-0.1.3",
+      "url": "https://static.crates.io/crates/drain_filter_polyfill/0.1.3/download",
+      "version": "0.1.3"
+    },
+    "aos_registry_web_crates__dyn-clone-1.0.20": {
+      "build_file": "BUILD.dyn-clone-1.0.20.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "dyn-clone",
+      "sha256": "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555",
+      "strip_prefix": "dyn-clone-1.0.20",
+      "url": "https://static.crates.io/crates/dyn-clone/1.0.20/download",
+      "version": "1.0.20"
+    },
+    "aos_registry_web_crates__ed25519-2.2.3": {
+      "build_file": "BUILD.ed25519-2.2.3.bazel",
+      "license": "Apache-2.0 OR MIT",
+      "license_domain": "apache-host",
+      "name": "ed25519",
+      "sha256": "115531babc129696a58c64a4fef0a8bf9e9698629fb97e9e40767d235cfbcd53",
+      "strip_prefix": "ed25519-2.2.3",
+      "url": "https://static.crates.io/crates/ed25519/2.2.3/download",
+      "version": "2.2.3"
+    },
+    "aos_registry_web_crates__ed25519-dalek-2.2.0": {
+      "build_file": "BUILD.ed25519-dalek-2.2.0.bazel",
+      "license": "BSD-3-Clause",
+      "license_domain": "apache-host",
+      "name": "ed25519-dalek",
+      "sha256": "70e796c081cee67dc755e1a36a0a172b897fab85fc3f6bc48307991f64e4eca9",
+      "strip_prefix": "ed25519-dalek-2.2.0",
+      "url": "https://static.crates.io/crates/ed25519-dalek/2.2.0/download",
+      "version": "2.2.0"
+    },
+    "aos_registry_web_crates__either-1.16.0": {
+      "build_file": "BUILD.either-1.16.0.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "either",
+      "sha256": "91622ff5e7162018101f2fea40d6ebf4a78bbe5a49736a2020649edf9693679e",
+      "strip_prefix": "either-1.16.0",
+      "url": "https://static.crates.io/crates/either/1.16.0/download",
+      "version": "1.16.0"
+    },
+    "aos_registry_web_crates__either_of-0.1.9": {
+      "build_file": "BUILD.either_of-0.1.9.bazel",
+      "license": "MIT",
+      "license_domain": "apache-host",
+      "name": "either_of",
+      "sha256": "5060e0a4cbf26a87550792688ade88e6b8aec9208613631a7a363bda7bc2d4cd",
+      "strip_prefix": "either_of-0.1.9",
+      "url": "https://static.crates.io/crates/either_of/0.1.9/download",
+      "version": "0.1.9"
+    },
+    "aos_registry_web_crates__equivalent-1.0.2": {
+      "build_file": "BUILD.equivalent-1.0.2.bazel",
+      "license": "Apache-2.0 OR MIT",
+      "license_domain": "apache-host",
+      "name": "equivalent",
+      "sha256": "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f",
+      "strip_prefix": "equivalent-1.0.2",
+      "url": "https://static.crates.io/crates/equivalent/1.0.2/download",
+      "version": "1.0.2"
+    },
+    "aos_registry_web_crates__event-listener-5.4.2": {
+      "build_file": "BUILD.event-listener-5.4.2.bazel",
+      "license": "Apache-2.0 OR MIT",
+      "license_domain": "apache-host",
+      "name": "event-listener",
+      "sha256": "5a23add41df1562121a9393cb065eab5146a1242410f23a644851e90cfd669d2",
+      "strip_prefix": "event-listener-5.4.2",
+      "url": "https://static.crates.io/crates/event-listener/5.4.2/download",
+      "version": "5.4.2"
+    },
+    "aos_registry_web_crates__event-listener-strategy-0.5.4": {
+      "build_file": "BUILD.event-listener-strategy-0.5.4.bazel",
+      "license": "Apache-2.0 OR MIT",
+      "license_domain": "apache-host",
+      "name": "event-listener-strategy",
+      "sha256": "8be9f3dfaaffdae2972880079a491a1a8bb7cbed0b8dd7a347f668b4150a3b93",
+      "strip_prefix": "event-listener-strategy-0.5.4",
+      "url": "https://static.crates.io/crates/event-listener-strategy/0.5.4/download",
+      "version": "0.5.4"
+    },
+    "aos_registry_web_crates__fiat-crypto-0.2.9": {
+      "build_file": "BUILD.fiat-crypto-0.2.9.bazel",
+      "license": "MIT OR Apache-2.0 OR BSD-1-Clause",
+      "license_domain": "apache-host",
+      "name": "fiat-crypto",
+      "sha256": "28dea519a9695b9977216879a3ebfddf92f1c08c05d984f8996aecd6ecdc811d",
+      "strip_prefix": "fiat-crypto-0.2.9",
+      "url": "https://static.crates.io/crates/fiat-crypto/0.2.9/download",
+      "version": "0.2.9"
+    },
+    "aos_registry_web_crates__flate2-1.1.9": {
+      "build_file": "BUILD.flate2-1.1.9.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "flate2",
+      "sha256": "843fba2746e448b37e26a819579957415c8cef339bf08564fe8b7ddbd959573c",
+      "strip_prefix": "flate2-1.1.9",
+      "url": "https://static.crates.io/crates/flate2/1.1.9/download",
+      "version": "1.1.9"
+    },
+    "aos_registry_web_crates__foldhash-0.1.5": {
+      "build_file": "BUILD.foldhash-0.1.5.bazel",
+      "license": "Zlib",
+      "license_domain": "apache-host",
+      "name": "foldhash",
+      "sha256": "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2",
+      "strip_prefix": "foldhash-0.1.5",
+      "url": "https://static.crates.io/crates/foldhash/0.1.5/download",
+      "version": "0.1.5"
+    },
+    "aos_registry_web_crates__form_urlencoded-1.2.2": {
+      "build_file": "BUILD.form_urlencoded-1.2.2.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "form_urlencoded",
+      "sha256": "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf",
+      "strip_prefix": "form_urlencoded-1.2.2",
+      "url": "https://static.crates.io/crates/form_urlencoded/1.2.2/download",
+      "version": "1.2.2"
+    },
+    "aos_registry_web_crates__futures-0.3.32": {
+      "build_file": "BUILD.futures-0.3.32.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "futures",
+      "sha256": "8b147ee9d1f6d097cef9ce628cd2ee62288d963e16fb287bd9286455b241382d",
+      "strip_prefix": "futures-0.3.32",
+      "url": "https://static.crates.io/crates/futures/0.3.32/download",
+      "version": "0.3.32"
+    },
+    "aos_registry_web_crates__futures-channel-0.3.32": {
+      "build_file": "BUILD.futures-channel-0.3.32.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "futures-channel",
+      "sha256": "07bbe89c50d7a535e539b8c17bc0b49bdb77747034daa8087407d655f3f7cc1d",
+      "strip_prefix": "futures-channel-0.3.32",
+      "url": "https://static.crates.io/crates/futures-channel/0.3.32/download",
+      "version": "0.3.32"
+    },
+    "aos_registry_web_crates__futures-core-0.3.32": {
+      "build_file": "BUILD.futures-core-0.3.32.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "futures-core",
+      "sha256": "7e3450815272ef58cec6d564423f6e755e25379b217b0bc688e295ba24df6b1d",
+      "strip_prefix": "futures-core-0.3.32",
+      "url": "https://static.crates.io/crates/futures-core/0.3.32/download",
+      "version": "0.3.32"
+    },
+    "aos_registry_web_crates__futures-executor-0.3.32": {
+      "build_file": "BUILD.futures-executor-0.3.32.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "futures-executor",
+      "sha256": "baf29c38818342a3b26b5b923639e7b1f4a61fc5e76102d4b1981c6dc7a7579d",
+      "strip_prefix": "futures-executor-0.3.32",
+      "url": "https://static.crates.io/crates/futures-executor/0.3.32/download",
+      "version": "0.3.32"
+    },
+    "aos_registry_web_crates__futures-io-0.3.32": {
+      "build_file": "BUILD.futures-io-0.3.32.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "futures-io",
+      "sha256": "cecba35d7ad927e23624b22ad55235f2239cfa44fd10428eecbeba6d6a717718",
+      "strip_prefix": "futures-io-0.3.32",
+      "url": "https://static.crates.io/crates/futures-io/0.3.32/download",
+      "version": "0.3.32"
+    },
+    "aos_registry_web_crates__futures-macro-0.3.32": {
+      "build_file": "BUILD.futures-macro-0.3.32.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "futures-macro",
+      "sha256": "e835b70203e41293343137df5c0664546da5745f82ec9b84d40be8336958447b",
+      "strip_prefix": "futures-macro-0.3.32",
+      "url": "https://static.crates.io/crates/futures-macro/0.3.32/download",
+      "version": "0.3.32"
+    },
+    "aos_registry_web_crates__futures-sink-0.3.32": {
+      "build_file": "BUILD.futures-sink-0.3.32.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "futures-sink",
+      "sha256": "c39754e157331b013978ec91992bde1ac089843443c49cbc7f46150b0fad0893",
+      "strip_prefix": "futures-sink-0.3.32",
+      "url": "https://static.crates.io/crates/futures-sink/0.3.32/download",
+      "version": "0.3.32"
+    },
+    "aos_registry_web_crates__futures-task-0.3.32": {
+      "build_file": "BUILD.futures-task-0.3.32.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "futures-task",
+      "sha256": "037711b3d59c33004d3856fbdc83b99d4ff37a24768fa1be9ce3538a1cde4393",
+      "strip_prefix": "futures-task-0.3.32",
+      "url": "https://static.crates.io/crates/futures-task/0.3.32/download",
+      "version": "0.3.32"
+    },
+    "aos_registry_web_crates__futures-util-0.3.32": {
+      "build_file": "BUILD.futures-util-0.3.32.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "futures-util",
+      "sha256": "389ca41296e6190b48053de0321d02a77f32f8a5d2461dd38762c0593805c6d6",
+      "strip_prefix": "futures-util-0.3.32",
+      "url": "https://static.crates.io/crates/futures-util/0.3.32/download",
+      "version": "0.3.32"
+    },
+    "aos_registry_web_crates__generic-array-0.14.7": {
+      "build_file": "BUILD.generic-array-0.14.7.bazel",
+      "license": "MIT",
+      "license_domain": "apache-host",
+      "name": "generic-array",
+      "sha256": "85649ca51fd72272d7821adaf274ad91c288277713d9c18820d8499a7ff69e9a",
+      "strip_prefix": "generic-array-0.14.7",
+      "url": "https://static.crates.io/crates/generic-array/0.14.7/download",
+      "version": "0.14.7"
+    },
+    "aos_registry_web_crates__getrandom-0.2.17": {
+      "build_file": "BUILD.getrandom-0.2.17.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "getrandom",
+      "sha256": "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0",
+      "strip_prefix": "getrandom-0.2.17",
+      "url": "https://static.crates.io/crates/getrandom/0.2.17/download",
+      "version": "0.2.17"
+    },
+    "aos_registry_web_crates__getrandom-0.4.2": {
+      "build_file": "BUILD.getrandom-0.4.2.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "getrandom",
+      "sha256": "0de51e6874e94e7bf76d726fc5d13ba782deca734ff60d5bb2fb2607c7406555",
+      "strip_prefix": "getrandom-0.4.2",
+      "url": "https://static.crates.io/crates/getrandom/0.4.2/download",
+      "version": "0.4.2"
+    },
+    "aos_registry_web_crates__gloo-net-0.6.0": {
+      "build_file": "BUILD.gloo-net-0.6.0.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "gloo-net",
+      "sha256": "c06f627b1a58ca3d42b45d6104bf1e1a03799df472df00988b6ba21accc10580",
+      "strip_prefix": "gloo-net-0.6.0",
+      "url": "https://static.crates.io/crates/gloo-net/0.6.0/download",
+      "version": "0.6.0"
+    },
+    "aos_registry_web_crates__gloo-utils-0.2.0": {
+      "build_file": "BUILD.gloo-utils-0.2.0.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "gloo-utils",
+      "sha256": "0b5555354113b18c547c1d3a98fbf7fb32a9ff4f6fa112ce823a21641a0ba3aa",
+      "strip_prefix": "gloo-utils-0.2.0",
+      "url": "https://static.crates.io/crates/gloo-utils/0.2.0/download",
+      "version": "0.2.0"
+    },
+    "aos_registry_web_crates__guardian-1.3.0": {
+      "build_file": "BUILD.guardian-1.3.0.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "guardian",
+      "sha256": "17e2ac29387b1aa07a1e448f7bb4f35b500787971e965b02842b900afa5c8f6f",
+      "strip_prefix": "guardian-1.3.0",
+      "url": "https://static.crates.io/crates/guardian/1.3.0/download",
+      "version": "1.3.0"
+    },
+    "aos_registry_web_crates__hashbrown-0.14.5": {
+      "build_file": "BUILD.hashbrown-0.14.5.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "hashbrown",
+      "sha256": "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1",
+      "strip_prefix": "hashbrown-0.14.5",
+      "url": "https://static.crates.io/crates/hashbrown/0.14.5/download",
+      "version": "0.14.5"
+    },
+    "aos_registry_web_crates__hashbrown-0.15.5": {
+      "build_file": "BUILD.hashbrown-0.15.5.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "hashbrown",
+      "sha256": "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1",
+      "strip_prefix": "hashbrown-0.15.5",
+      "url": "https://static.crates.io/crates/hashbrown/0.15.5/download",
+      "version": "0.15.5"
+    },
+    "aos_registry_web_crates__hashbrown-0.17.1": {
+      "build_file": "BUILD.hashbrown-0.17.1.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "hashbrown",
+      "sha256": "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a",
+      "strip_prefix": "hashbrown-0.17.1",
+      "url": "https://static.crates.io/crates/hashbrown/0.17.1/download",
+      "version": "0.17.1"
+    },
+    "aos_registry_web_crates__heck-0.5.0": {
+      "build_file": "BUILD.heck-0.5.0.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "heck",
+      "sha256": "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea",
+      "strip_prefix": "heck-0.5.0",
+      "url": "https://static.crates.io/crates/heck/0.5.0/download",
+      "version": "0.5.0"
+    },
+    "aos_registry_web_crates__hex-0.4.3": {
+      "build_file": "BUILD.hex-0.4.3.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "hex",
+      "sha256": "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70",
+      "strip_prefix": "hex-0.4.3",
+      "url": "https://static.crates.io/crates/hex/0.4.3/download",
+      "version": "0.4.3"
+    },
+    "aos_registry_web_crates__html-escape-0.2.14": {
+      "build_file": "BUILD.html-escape-0.2.14.bazel",
+      "license": "MIT",
+      "license_domain": "apache-host",
+      "name": "html-escape",
+      "sha256": "46c1ff2d1cbf39efe5af0900ced8a069b5e61557a17544eb0c4a50239937389e",
+      "strip_prefix": "html-escape-0.2.14",
+      "url": "https://static.crates.io/crates/html-escape/0.2.14/download",
+      "version": "0.2.14"
+    },
+    "aos_registry_web_crates__http-1.4.1": {
+      "build_file": "BUILD.http-1.4.1.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "http",
+      "sha256": "8be7462df143984c4598a256ef469b251d7d7f9e271135073e78fc535414f3d0",
+      "strip_prefix": "http-1.4.1",
+      "url": "https://static.crates.io/crates/http/1.4.1/download",
+      "version": "1.4.1"
+    },
+    "aos_registry_web_crates__hydration_context-0.2.1": {
+      "build_file": "BUILD.hydration_context-0.2.1.bazel",
+      "license": "MIT",
+      "license_domain": "apache-host",
+      "name": "hydration_context",
+      "sha256": "d35485b3dcbf7e044b8f28c73f04f13e7b509c2466fd10cb2a8a447e38f8a93a",
+      "strip_prefix": "hydration_context-0.2.1",
+      "url": "https://static.crates.io/crates/hydration_context/0.2.1/download",
+      "version": "0.2.1"
+    },
+    "aos_registry_web_crates__icu_collections-2.2.0": {
+      "build_file": "BUILD.icu_collections-2.2.0.bazel",
+      "license": "Unicode-3.0",
+      "license_domain": "apache-host",
+      "name": "icu_collections",
+      "sha256": "2984d1cd16c883d7935b9e07e44071dca8d917fd52ecc02c04d5fa0b5a3f191c",
+      "strip_prefix": "icu_collections-2.2.0",
+      "url": "https://static.crates.io/crates/icu_collections/2.2.0/download",
+      "version": "2.2.0"
+    },
+    "aos_registry_web_crates__icu_locale_core-2.2.0": {
+      "build_file": "BUILD.icu_locale_core-2.2.0.bazel",
+      "license": "Unicode-3.0",
+      "license_domain": "apache-host",
+      "name": "icu_locale_core",
+      "sha256": "92219b62b3e2b4d88ac5119f8904c10f8f61bf7e95b640d25ba3075e6cac2c29",
+      "strip_prefix": "icu_locale_core-2.2.0",
+      "url": "https://static.crates.io/crates/icu_locale_core/2.2.0/download",
+      "version": "2.2.0"
+    },
+    "aos_registry_web_crates__icu_normalizer-2.2.0": {
+      "build_file": "BUILD.icu_normalizer-2.2.0.bazel",
+      "license": "Unicode-3.0",
+      "license_domain": "apache-host",
+      "name": "icu_normalizer",
+      "sha256": "c56e5ee99d6e3d33bd91c5d85458b6005a22140021cc324cea84dd0e72cff3b4",
+      "strip_prefix": "icu_normalizer-2.2.0",
+      "url": "https://static.crates.io/crates/icu_normalizer/2.2.0/download",
+      "version": "2.2.0"
+    },
+    "aos_registry_web_crates__icu_normalizer_data-2.2.0": {
+      "build_file": "BUILD.icu_normalizer_data-2.2.0.bazel",
+      "license": "Unicode-3.0",
+      "license_domain": "apache-host",
+      "name": "icu_normalizer_data",
+      "sha256": "da3be0ae77ea334f4da67c12f149704f19f81d1adf7c51cf482943e84a2bad38",
+      "strip_prefix": "icu_normalizer_data-2.2.0",
+      "url": "https://static.crates.io/crates/icu_normalizer_data/2.2.0/download",
+      "version": "2.2.0"
+    },
+    "aos_registry_web_crates__icu_properties-2.2.0": {
+      "build_file": "BUILD.icu_properties-2.2.0.bazel",
+      "license": "Unicode-3.0",
+      "license_domain": "apache-host",
+      "name": "icu_properties",
+      "sha256": "bee3b67d0ea5c2cca5003417989af8996f8604e34fb9ddf96208a033901e70de",
+      "strip_prefix": "icu_properties-2.2.0",
+      "url": "https://static.crates.io/crates/icu_properties/2.2.0/download",
+      "version": "2.2.0"
+    },
+    "aos_registry_web_crates__icu_properties_data-2.2.0": {
+      "build_file": "BUILD.icu_properties_data-2.2.0.bazel",
+      "license": "Unicode-3.0",
+      "license_domain": "apache-host",
+      "name": "icu_properties_data",
+      "sha256": "8e2bbb201e0c04f7b4b3e14382af113e17ba4f63e2c9d2ee626b720cbce54a14",
+      "strip_prefix": "icu_properties_data-2.2.0",
+      "url": "https://static.crates.io/crates/icu_properties_data/2.2.0/download",
+      "version": "2.2.0"
+    },
+    "aos_registry_web_crates__icu_provider-2.2.0": {
+      "build_file": "BUILD.icu_provider-2.2.0.bazel",
+      "license": "Unicode-3.0",
+      "license_domain": "apache-host",
+      "name": "icu_provider",
+      "sha256": "139c4cf31c8b5f33d7e199446eff9c1e02decfc2f0eec2c8d71f65befa45b421",
+      "strip_prefix": "icu_provider-2.2.0",
+      "url": "https://static.crates.io/crates/icu_provider/2.2.0/download",
+      "version": "2.2.0"
+    },
+    "aos_registry_web_crates__id-arena-2.3.0": {
+      "build_file": "BUILD.id-arena-2.3.0.bazel",
+      "license": "MIT/Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "id-arena",
+      "sha256": "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954",
+      "strip_prefix": "id-arena-2.3.0",
+      "url": "https://static.crates.io/crates/id-arena/2.3.0/download",
+      "version": "2.3.0"
+    },
+    "aos_registry_web_crates__idna-1.1.0": {
+      "build_file": "BUILD.idna-1.1.0.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "idna",
+      "sha256": "3b0875f23caa03898994f6ddc501886a45c7d3d62d04d2d90788d47be1b1e4de",
+      "strip_prefix": "idna-1.1.0",
+      "url": "https://static.crates.io/crates/idna/1.1.0/download",
+      "version": "1.1.0"
+    },
+    "aos_registry_web_crates__idna_adapter-1.2.2": {
+      "build_file": "BUILD.idna_adapter-1.2.2.bazel",
+      "license": "Apache-2.0 OR MIT",
+      "license_domain": "apache-host",
+      "name": "idna_adapter",
+      "sha256": "cb68373c0d6620ef8105e855e7745e18b0d00d3bdb07fb532e434244cdb9a714",
+      "strip_prefix": "idna_adapter-1.2.2",
+      "url": "https://static.crates.io/crates/idna_adapter/1.2.2/download",
+      "version": "1.2.2"
+    },
+    "aos_registry_web_crates__indexmap-2.14.0": {
+      "build_file": "BUILD.indexmap-2.14.0.bazel",
+      "license": "Apache-2.0 OR MIT",
+      "license_domain": "apache-host",
+      "name": "indexmap",
+      "sha256": "d466e9454f08e4a911e14806c24e16fba1b4c121d1ea474396f396069cf949d9",
+      "strip_prefix": "indexmap-2.14.0",
+      "url": "https://static.crates.io/crates/indexmap/2.14.0/download",
+      "version": "2.14.0"
+    },
+    "aos_registry_web_crates__interpolator-0.5.0": {
+      "build_file": "BUILD.interpolator-0.5.0.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "interpolator",
+      "sha256": "71dd52191aae121e8611f1e8dc3e324dd0dd1dee1e6dd91d10ee07a3cfb4d9d8",
+      "strip_prefix": "interpolator-0.5.0",
+      "url": "https://static.crates.io/crates/interpolator/0.5.0/download",
+      "version": "0.5.0"
+    },
+    "aos_registry_web_crates__itertools-0.14.0": {
+      "build_file": "BUILD.itertools-0.14.0.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "itertools",
+      "sha256": "2b192c782037fadd9cfa75548310488aabdbf3d2da73885b31bd0abd03351285",
+      "strip_prefix": "itertools-0.14.0",
+      "url": "https://static.crates.io/crates/itertools/0.14.0/download",
+      "version": "0.14.0"
+    },
+    "aos_registry_web_crates__itoa-1.0.18": {
+      "build_file": "BUILD.itoa-1.0.18.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "itoa",
+      "sha256": "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682",
+      "strip_prefix": "itoa-1.0.18",
+      "url": "https://static.crates.io/crates/itoa/1.0.18/download",
+      "version": "1.0.18"
+    },
+    "aos_registry_web_crates__js-sys-0.3.103": {
+      "build_file": "BUILD.js-sys-0.3.103.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "js-sys",
+      "sha256": "53b44bfcdb3f8d5837a46dae1ca9660a837176eee74a28b229bc626816589102",
+      "strip_prefix": "js-sys-0.3.103",
+      "url": "https://static.crates.io/crates/js-sys/0.3.103/download",
+      "version": "0.3.103"
+    },
+    "aos_registry_web_crates__konst-0.2.20": {
+      "build_file": "BUILD.konst-0.2.20.bazel",
+      "license": "Zlib",
+      "license_domain": "apache-host",
+      "name": "konst",
+      "sha256": "128133ed7824fcd73d6e7b17957c5eb7bacb885649bd8c69708b2331a10bcefb",
+      "strip_prefix": "konst-0.2.20",
+      "url": "https://static.crates.io/crates/konst/0.2.20/download",
+      "version": "0.2.20"
+    },
+    "aos_registry_web_crates__konst_macro_rules-0.2.19": {
+      "build_file": "BUILD.konst_macro_rules-0.2.19.bazel",
+      "license": "Zlib",
+      "license_domain": "apache-host",
+      "name": "konst_macro_rules",
+      "sha256": "a4933f3f57a8e9d9da04db23fb153356ecaf00cbd14aee46279c33dc80925c37",
+      "strip_prefix": "konst_macro_rules-0.2.19",
+      "url": "https://static.crates.io/crates/konst_macro_rules/0.2.19/download",
+      "version": "0.2.19"
+    },
+    "aos_registry_web_crates__leb128fmt-0.1.0": {
+      "build_file": "BUILD.leb128fmt-0.1.0.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "leb128fmt",
+      "sha256": "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2",
+      "strip_prefix": "leb128fmt-0.1.0",
+      "url": "https://static.crates.io/crates/leb128fmt/0.1.0/download",
+      "version": "0.1.0"
+    },
+    "aos_registry_web_crates__leptos-0.7.8": {
+      "build_file": "BUILD.leptos-0.7.8.bazel",
+      "license": "MIT",
+      "license_domain": "apache-host",
+      "name": "leptos",
+      "sha256": "26b8731cb00f3f0894058155410b95c8955b17273181d2bc72600ab84edd24f1",
+      "strip_prefix": "leptos-0.7.8",
+      "url": "https://static.crates.io/crates/leptos/0.7.8/download",
+      "version": "0.7.8"
+    },
+    "aos_registry_web_crates__leptos_config-0.7.8": {
+      "build_file": "BUILD.leptos_config-0.7.8.bazel",
+      "license": "MIT",
+      "license_domain": "apache-host",
+      "name": "leptos_config",
+      "sha256": "5bae3e0ead5a7a814c8340eef7cb8b6cba364125bd8174b15dc9fe1b3cab7e03",
+      "strip_prefix": "leptos_config-0.7.8",
+      "url": "https://static.crates.io/crates/leptos_config/0.7.8/download",
+      "version": "0.7.8"
+    },
+    "aos_registry_web_crates__leptos_dom-0.7.8": {
+      "build_file": "BUILD.leptos_dom-0.7.8.bazel",
+      "license": "MIT",
+      "license_domain": "apache-host",
+      "name": "leptos_dom",
+      "sha256": "f89d4eb263bd5a9e7c49f780f17063f15aca56fd638c90b9dfd5f4739152e87d",
+      "strip_prefix": "leptos_dom-0.7.8",
+      "url": "https://static.crates.io/crates/leptos_dom/0.7.8/download",
+      "version": "0.7.8"
+    },
+    "aos_registry_web_crates__leptos_hot_reload-0.7.8": {
+      "build_file": "BUILD.leptos_hot_reload-0.7.8.bazel",
+      "license": "MIT",
+      "license_domain": "apache-host",
+      "name": "leptos_hot_reload",
+      "sha256": "e80219388501d99b246f43b6e7d08a28f327cdd34ba630a35654d917f3e1788e",
+      "strip_prefix": "leptos_hot_reload-0.7.8",
+      "url": "https://static.crates.io/crates/leptos_hot_reload/0.7.8/download",
+      "version": "0.7.8"
+    },
+    "aos_registry_web_crates__leptos_macro-0.7.9": {
+      "build_file": "BUILD.leptos_macro-0.7.9.bazel",
+      "license": "MIT",
+      "license_domain": "apache-host",
+      "name": "leptos_macro",
+      "sha256": "e621f8f5342b9bdc93bb263b839cee7405027a74560425a2dabea9de7952b1fd",
+      "strip_prefix": "leptos_macro-0.7.9",
+      "url": "https://static.crates.io/crates/leptos_macro/0.7.9/download",
+      "version": "0.7.9"
+    },
+    "aos_registry_web_crates__leptos_router-0.7.8": {
+      "build_file": "BUILD.leptos_router-0.7.8.bazel",
+      "license": "MIT",
+      "license_domain": "apache-host",
+      "name": "leptos_router",
+      "sha256": "4168ead6a9715daba953aa842795cb2ad81b6e011a15745bd3d1baf86f76de95",
+      "strip_prefix": "leptos_router-0.7.8",
+      "url": "https://static.crates.io/crates/leptos_router/0.7.8/download",
+      "version": "0.7.8"
+    },
+    "aos_registry_web_crates__leptos_router_macro-0.7.8": {
+      "build_file": "BUILD.leptos_router_macro-0.7.8.bazel",
+      "license": "MIT",
+      "license_domain": "apache-host",
+      "name": "leptos_router_macro",
+      "sha256": "e31197af38d209ffc5d9f89715381c415a1570176f8d23455fbe00d148e79640",
+      "strip_prefix": "leptos_router_macro-0.7.8",
+      "url": "https://static.crates.io/crates/leptos_router_macro/0.7.8/download",
+      "version": "0.7.8"
+    },
+    "aos_registry_web_crates__leptos_server-0.7.8": {
+      "build_file": "BUILD.leptos_server-0.7.8.bazel",
+      "license": "MIT",
+      "license_domain": "apache-host",
+      "name": "leptos_server",
+      "sha256": "66985242812ec95e224fb48effe651ba02728beca92c461a9464c811a71aab11",
+      "strip_prefix": "leptos_server-0.7.8",
+      "url": "https://static.crates.io/crates/leptos_server/0.7.8/download",
+      "version": "0.7.8"
+    },
+    "aos_registry_web_crates__libc-0.2.186": {
+      "build_file": "BUILD.libc-0.2.186.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "libc",
+      "sha256": "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66",
+      "strip_prefix": "libc-0.2.186",
+      "url": "https://static.crates.io/crates/libc/0.2.186/download",
+      "version": "0.2.186"
+    },
+    "aos_registry_web_crates__linear-map-1.2.0": {
+      "build_file": "BUILD.linear-map-1.2.0.bazel",
+      "license": "MIT/Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "linear-map",
+      "sha256": "bfae20f6b19ad527b550c223fddc3077a547fc70cda94b9b566575423fd303ee",
+      "strip_prefix": "linear-map-1.2.0",
+      "url": "https://static.crates.io/crates/linear-map/1.2.0/download",
+      "version": "1.2.0"
+    },
+    "aos_registry_web_crates__litemap-0.8.2": {
+      "build_file": "BUILD.litemap-0.8.2.bazel",
+      "license": "Unicode-3.0",
+      "license_domain": "apache-host",
+      "name": "litemap",
+      "sha256": "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0",
+      "strip_prefix": "litemap-0.8.2",
+      "url": "https://static.crates.io/crates/litemap/0.8.2/download",
+      "version": "0.8.2"
+    },
+    "aos_registry_web_crates__lock_api-0.4.14": {
+      "build_file": "BUILD.lock_api-0.4.14.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "lock_api",
+      "sha256": "224399e74b87b5f3557511d98dff8b14089b3dadafcab6bb93eab67d3aace965",
+      "strip_prefix": "lock_api-0.4.14",
+      "url": "https://static.crates.io/crates/lock_api/0.4.14/download",
+      "version": "0.4.14"
+    },
+    "aos_registry_web_crates__log-0.4.30": {
+      "build_file": "BUILD.log-0.4.30.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "log",
+      "sha256": "616ec5685824bcc94416c6d4a7a446eea774a31efd7062c8480ba6fd06d7a6e5",
+      "strip_prefix": "log-0.4.30",
+      "url": "https://static.crates.io/crates/log/0.4.30/download",
+      "version": "0.4.30"
+    },
+    "aos_registry_web_crates__manyhow-0.11.4": {
+      "build_file": "BUILD.manyhow-0.11.4.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "manyhow",
+      "sha256": "b33efb3ca6d3b07393750d4030418d594ab1139cee518f0dc88db70fec873587",
+      "strip_prefix": "manyhow-0.11.4",
+      "url": "https://static.crates.io/crates/manyhow/0.11.4/download",
+      "version": "0.11.4"
+    },
+    "aos_registry_web_crates__manyhow-macros-0.11.4": {
+      "build_file": "BUILD.manyhow-macros-0.11.4.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "manyhow-macros",
+      "sha256": "46fce34d199b78b6e6073abf984c9cf5fd3e9330145a93ee0738a7443e371495",
+      "strip_prefix": "manyhow-macros-0.11.4",
+      "url": "https://static.crates.io/crates/manyhow-macros/0.11.4/download",
+      "version": "0.11.4"
+    },
+    "aos_registry_web_crates__memchr-2.8.2": {
+      "build_file": "BUILD.memchr-2.8.2.bazel",
+      "license": "Unlicense OR MIT",
+      "license_domain": "apache-host",
+      "name": "memchr",
+      "sha256": "88904434abc2901f197fe8cc55f0445e7ded921dba5911dad2e2b39b48e663c4",
+      "strip_prefix": "memchr-2.8.2",
+      "url": "https://static.crates.io/crates/memchr/2.8.2/download",
+      "version": "2.8.2"
+    },
+    "aos_registry_web_crates__miniz_oxide-0.8.9": {
+      "build_file": "BUILD.miniz_oxide-0.8.9.bazel",
+      "license": "MIT OR Zlib OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "miniz_oxide",
+      "sha256": "1fa76a2c86f704bdb222d66965fb3d63269ce38518b83cb0575fca855ebb6316",
+      "strip_prefix": "miniz_oxide-0.8.9",
+      "url": "https://static.crates.io/crates/miniz_oxide/0.8.9/download",
+      "version": "0.8.9"
+    },
+    "aos_registry_web_crates__next_tuple-0.1.0": {
+      "build_file": "BUILD.next_tuple-0.1.0.bazel",
+      "license": "MIT",
+      "license_domain": "apache-host",
+      "name": "next_tuple",
+      "sha256": "60993920e071b0c9b66f14e2b32740a4e27ffc82854dcd72035887f336a09a28",
+      "strip_prefix": "next_tuple-0.1.0",
+      "url": "https://static.crates.io/crates/next_tuple/0.1.0/download",
+      "version": "0.1.0"
+    },
+    "aos_registry_web_crates__oco_ref-0.2.1": {
+      "build_file": "BUILD.oco_ref-0.2.1.bazel",
+      "license": "MIT",
+      "license_domain": "apache-host",
+      "name": "oco_ref",
+      "sha256": "ed0423ff9973dea4d6bd075934fdda86ebb8c05bdf9d6b0507067d4a1226371d",
+      "strip_prefix": "oco_ref-0.2.1",
+      "url": "https://static.crates.io/crates/oco_ref/0.2.1/download",
+      "version": "0.2.1"
+    },
+    "aos_registry_web_crates__once_cell-1.21.4": {
+      "build_file": "BUILD.once_cell-1.21.4.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "once_cell",
+      "sha256": "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50",
+      "strip_prefix": "once_cell-1.21.4",
+      "url": "https://static.crates.io/crates/once_cell/1.21.4/download",
+      "version": "1.21.4"
+    },
+    "aos_registry_web_crates__or_poisoned-0.1.0": {
+      "build_file": "BUILD.or_poisoned-0.1.0.bazel",
+      "license": "MIT",
+      "license_domain": "apache-host",
+      "name": "or_poisoned",
+      "sha256": "8c04f5d74368e4d0dfe06c45c8627c81bd7c317d52762d118fb9b3076f6420fd",
+      "strip_prefix": "or_poisoned-0.1.0",
+      "url": "https://static.crates.io/crates/or_poisoned/0.1.0/download",
+      "version": "0.1.0"
+    },
+    "aos_registry_web_crates__parking-2.2.1": {
+      "build_file": "BUILD.parking-2.2.1.bazel",
+      "license": "Apache-2.0 OR MIT",
+      "license_domain": "apache-host",
+      "name": "parking",
+      "sha256": "f38d5652c16fde515bb1ecef450ab0f6a219d619a7274976324d5e377f7dceba",
+      "strip_prefix": "parking-2.2.1",
+      "url": "https://static.crates.io/crates/parking/2.2.1/download",
+      "version": "2.2.1"
+    },
+    "aos_registry_web_crates__parking_lot-0.12.5": {
+      "build_file": "BUILD.parking_lot-0.12.5.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "parking_lot",
+      "sha256": "93857453250e3077bd71ff98b6a65ea6621a19bb0f559a85248955ac12c45a1a",
+      "strip_prefix": "parking_lot-0.12.5",
+      "url": "https://static.crates.io/crates/parking_lot/0.12.5/download",
+      "version": "0.12.5"
+    },
+    "aos_registry_web_crates__parking_lot_core-0.9.12": {
+      "build_file": "BUILD.parking_lot_core-0.9.12.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "parking_lot_core",
+      "sha256": "2621685985a2ebf1c516881c026032ac7deafcda1a2c9b7850dc81e3dfcb64c1",
+      "strip_prefix": "parking_lot_core-0.9.12",
+      "url": "https://static.crates.io/crates/parking_lot_core/0.9.12/download",
+      "version": "0.9.12"
+    },
+    "aos_registry_web_crates__paste-1.0.15": {
+      "build_file": "BUILD.paste-1.0.15.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "paste",
+      "sha256": "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a",
+      "strip_prefix": "paste-1.0.15",
+      "url": "https://static.crates.io/crates/paste/1.0.15/download",
+      "version": "1.0.15"
+    },
+    "aos_registry_web_crates__pathdiff-0.2.3": {
+      "build_file": "BUILD.pathdiff-0.2.3.bazel",
+      "license": "MIT/Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "pathdiff",
+      "sha256": "df94ce210e5bc13cb6651479fa48d14f601d9858cfe0467f43ae157023b938d3",
+      "strip_prefix": "pathdiff-0.2.3",
+      "url": "https://static.crates.io/crates/pathdiff/0.2.3/download",
+      "version": "0.2.3"
+    },
+    "aos_registry_web_crates__percent-encoding-2.3.2": {
+      "build_file": "BUILD.percent-encoding-2.3.2.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "percent-encoding",
+      "sha256": "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220",
+      "strip_prefix": "percent-encoding-2.3.2",
+      "url": "https://static.crates.io/crates/percent-encoding/2.3.2/download",
+      "version": "2.3.2"
+    },
+    "aos_registry_web_crates__pin-project-1.1.13": {
+      "build_file": "BUILD.pin-project-1.1.13.bazel",
+      "license": "Apache-2.0 OR MIT",
+      "license_domain": "apache-host",
+      "name": "pin-project",
+      "sha256": "2466b2336ed02bcdca6b294417127b90ec92038d1d5c4fbeac971a922e0e0924",
+      "strip_prefix": "pin-project-1.1.13",
+      "url": "https://static.crates.io/crates/pin-project/1.1.13/download",
+      "version": "1.1.13"
+    },
+    "aos_registry_web_crates__pin-project-internal-1.1.13": {
+      "build_file": "BUILD.pin-project-internal-1.1.13.bazel",
+      "license": "Apache-2.0 OR MIT",
+      "license_domain": "apache-host",
+      "name": "pin-project-internal",
+      "sha256": "c96395f0a926bc13b1c17622aaddda1ecb55d49c8f1bf9777e4d877800a43f8b",
+      "strip_prefix": "pin-project-internal-1.1.13",
+      "url": "https://static.crates.io/crates/pin-project-internal/1.1.13/download",
+      "version": "1.1.13"
+    },
+    "aos_registry_web_crates__pin-project-lite-0.2.17": {
+      "build_file": "BUILD.pin-project-lite-0.2.17.bazel",
+      "license": "Apache-2.0 OR MIT",
+      "license_domain": "apache-host",
+      "name": "pin-project-lite",
+      "sha256": "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd",
+      "strip_prefix": "pin-project-lite-0.2.17",
+      "url": "https://static.crates.io/crates/pin-project-lite/0.2.17/download",
+      "version": "0.2.17"
+    },
+    "aos_registry_web_crates__pkcs8-0.10.2": {
+      "build_file": "BUILD.pkcs8-0.10.2.bazel",
+      "license": "Apache-2.0 OR MIT",
+      "license_domain": "apache-host",
+      "name": "pkcs8",
+      "sha256": "f950b2377845cebe5cf8b5165cb3cc1a5e0fa5cfa3e1f7f55707d8fd82e0a7b7",
+      "strip_prefix": "pkcs8-0.10.2",
+      "url": "https://static.crates.io/crates/pkcs8/0.10.2/download",
+      "version": "0.10.2"
+    },
+    "aos_registry_web_crates__potential_utf-0.1.5": {
+      "build_file": "BUILD.potential_utf-0.1.5.bazel",
+      "license": "Unicode-3.0",
+      "license_domain": "apache-host",
+      "name": "potential_utf",
+      "sha256": "0103b1cef7ec0cf76490e969665504990193874ea05c85ff9bab8b911d0a0564",
+      "strip_prefix": "potential_utf-0.1.5",
+      "url": "https://static.crates.io/crates/potential_utf/0.1.5/download",
+      "version": "0.1.5"
+    },
+    "aos_registry_web_crates__prettyplease-0.2.37": {
+      "build_file": "BUILD.prettyplease-0.2.37.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "prettyplease",
+      "sha256": "479ca8adacdd7ce8f1fb39ce9ecccbfe93a3f1344b3d0d97f20bc0196208f62b",
+      "strip_prefix": "prettyplease-0.2.37",
+      "url": "https://static.crates.io/crates/prettyplease/0.2.37/download",
+      "version": "0.2.37"
+    },
+    "aos_registry_web_crates__proc-macro-error-attr2-2.0.0": {
+      "build_file": "BUILD.proc-macro-error-attr2-2.0.0.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "proc-macro-error-attr2",
+      "sha256": "96de42df36bb9bba5542fe9f1a054b8cc87e172759a1868aa05c1f3acc89dfc5",
+      "strip_prefix": "proc-macro-error-attr2-2.0.0",
+      "url": "https://static.crates.io/crates/proc-macro-error-attr2/2.0.0/download",
+      "version": "2.0.0"
+    },
+    "aos_registry_web_crates__proc-macro-error2-2.0.1": {
+      "build_file": "BUILD.proc-macro-error2-2.0.1.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "proc-macro-error2",
+      "sha256": "11ec05c52be0a07b08061f7dd003e7d7092e0472bc731b4af7bb1ef876109802",
+      "strip_prefix": "proc-macro-error2-2.0.1",
+      "url": "https://static.crates.io/crates/proc-macro-error2/2.0.1/download",
+      "version": "2.0.1"
+    },
+    "aos_registry_web_crates__proc-macro-utils-0.10.0": {
+      "build_file": "BUILD.proc-macro-utils-0.10.0.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "proc-macro-utils",
+      "sha256": "eeaf08a13de400bc215877b5bdc088f241b12eb42f0a548d3390dc1c56bb7071",
+      "strip_prefix": "proc-macro-utils-0.10.0",
+      "url": "https://static.crates.io/crates/proc-macro-utils/0.10.0/download",
+      "version": "0.10.0"
+    },
+    "aos_registry_web_crates__proc-macro2-1.0.106": {
+      "build_file": "BUILD.proc-macro2-1.0.106.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "proc-macro2",
+      "sha256": "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934",
+      "strip_prefix": "proc-macro2-1.0.106",
+      "url": "https://static.crates.io/crates/proc-macro2/1.0.106/download",
+      "version": "1.0.106"
+    },
+    "aos_registry_web_crates__proc-macro2-diagnostics-0.10.1": {
+      "build_file": "BUILD.proc-macro2-diagnostics-0.10.1.bazel",
+      "license": "MIT/Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "proc-macro2-diagnostics",
+      "sha256": "af066a9c399a26e020ada66a034357a868728e72cd426f3adcd35f80d88d88c8",
+      "strip_prefix": "proc-macro2-diagnostics-0.10.1",
+      "url": "https://static.crates.io/crates/proc-macro2-diagnostics/0.10.1/download",
+      "version": "0.10.1"
+    },
+    "aos_registry_web_crates__quote-1.0.46": {
+      "build_file": "BUILD.quote-1.0.46.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "quote",
+      "sha256": "dfbc457d0c7a0759a614551b11a6409e5951f6c7537be1f1b7682b9ae9230368",
+      "strip_prefix": "quote-1.0.46",
+      "url": "https://static.crates.io/crates/quote/1.0.46/download",
+      "version": "1.0.46"
+    },
+    "aos_registry_web_crates__quote-use-0.8.4": {
+      "build_file": "BUILD.quote-use-0.8.4.bazel",
+      "license": "MIT",
+      "license_domain": "apache-host",
+      "name": "quote-use",
+      "sha256": "9619db1197b497a36178cfc736dc96b271fe918875fbf1344c436a7e93d0321e",
+      "strip_prefix": "quote-use-0.8.4",
+      "url": "https://static.crates.io/crates/quote-use/0.8.4/download",
+      "version": "0.8.4"
+    },
+    "aos_registry_web_crates__quote-use-macros-0.8.4": {
+      "build_file": "BUILD.quote-use-macros-0.8.4.bazel",
+      "license": "MIT",
+      "license_domain": "apache-host",
+      "name": "quote-use-macros",
+      "sha256": "82ebfb7faafadc06a7ab141a6f67bcfb24cb8beb158c6fe933f2f035afa99f35",
+      "strip_prefix": "quote-use-macros-0.8.4",
+      "url": "https://static.crates.io/crates/quote-use-macros/0.8.4/download",
+      "version": "0.8.4"
+    },
+    "aos_registry_web_crates__r-efi-6.0.0": {
+      "build_file": "BUILD.r-efi-6.0.0.bazel",
+      "license": "MIT OR Apache-2.0 OR LGPL-2.1-or-later",
+      "license_domain": "apache-host",
+      "name": "r-efi",
+      "sha256": "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf",
+      "strip_prefix": "r-efi-6.0.0",
+      "url": "https://static.crates.io/crates/r-efi/6.0.0/download",
+      "version": "6.0.0"
+    },
+    "aos_registry_web_crates__rand_core-0.6.4": {
+      "build_file": "BUILD.rand_core-0.6.4.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "rand_core",
+      "sha256": "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c",
+      "strip_prefix": "rand_core-0.6.4",
+      "url": "https://static.crates.io/crates/rand_core/0.6.4/download",
+      "version": "0.6.4"
+    },
+    "aos_registry_web_crates__reactive_graph-0.1.8": {
+      "build_file": "BUILD.reactive_graph-0.1.8.bazel",
+      "license": "MIT",
+      "license_domain": "apache-host",
+      "name": "reactive_graph",
+      "sha256": "76a0ccddbc11a648bd09761801dac9e3f246ef7641130987d6120fced22515e6",
+      "strip_prefix": "reactive_graph-0.1.8",
+      "url": "https://static.crates.io/crates/reactive_graph/0.1.8/download",
+      "version": "0.1.8"
+    },
+    "aos_registry_web_crates__reactive_stores-0.1.8": {
+      "build_file": "BUILD.reactive_stores-0.1.8.bazel",
+      "license": "MIT",
+      "license_domain": "apache-host",
+      "name": "reactive_stores",
+      "sha256": "aadc7c19e3a360bf19cd595d2dc8b58ce67b9240b95a103fbc1317a8ff194237",
+      "strip_prefix": "reactive_stores-0.1.8",
+      "url": "https://static.crates.io/crates/reactive_stores/0.1.8/download",
+      "version": "0.1.8"
+    },
+    "aos_registry_web_crates__reactive_stores_macro-0.1.8": {
+      "build_file": "BUILD.reactive_stores_macro-0.1.8.bazel",
+      "license": "MIT",
+      "license_domain": "apache-host",
+      "name": "reactive_stores_macro",
+      "sha256": "221095cb028dc51fbc2833743ea8b1a585da1a2af19b440b3528027495bf1f2d",
+      "strip_prefix": "reactive_stores_macro-0.1.8",
+      "url": "https://static.crates.io/crates/reactive_stores_macro/0.1.8/download",
+      "version": "0.1.8"
+    },
+    "aos_registry_web_crates__redox_syscall-0.5.18": {
+      "build_file": "BUILD.redox_syscall-0.5.18.bazel",
+      "license": "MIT",
+      "license_domain": "apache-host",
+      "name": "redox_syscall",
+      "sha256": "ed2bf2547551a7053d6fdfafda3f938979645c44812fbfcda098faae3f1a362d",
+      "strip_prefix": "redox_syscall-0.5.18",
+      "url": "https://static.crates.io/crates/redox_syscall/0.5.18/download",
+      "version": "0.5.18"
+    },
+    "aos_registry_web_crates__regex-1.12.4": {
+      "build_file": "BUILD.regex-1.12.4.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "regex",
+      "sha256": "f1292b7759ae1cb9ec195452d1390a074f0cd8541ab7a5a8c31cd6db45d4a6ba",
+      "strip_prefix": "regex-1.12.4",
+      "url": "https://static.crates.io/crates/regex/1.12.4/download",
+      "version": "1.12.4"
+    },
+    "aos_registry_web_crates__regex-automata-0.4.14": {
+      "build_file": "BUILD.regex-automata-0.4.14.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "regex-automata",
+      "sha256": "6e1dd4122fc1595e8162618945476892eefca7b88c52820e74af6262213cae8f",
+      "strip_prefix": "regex-automata-0.4.14",
+      "url": "https://static.crates.io/crates/regex-automata/0.4.14/download",
+      "version": "0.4.14"
+    },
+    "aos_registry_web_crates__regex-syntax-0.8.11": {
+      "build_file": "BUILD.regex-syntax-0.8.11.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "regex-syntax",
+      "sha256": "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4",
+      "strip_prefix": "regex-syntax-0.8.11",
+      "url": "https://static.crates.io/crates/regex-syntax/0.8.11/download",
+      "version": "0.8.11"
+    },
+    "aos_registry_web_crates__rstml-0.12.1": {
+      "build_file": "BUILD.rstml-0.12.1.bazel",
+      "license": "MIT",
+      "license_domain": "apache-host",
+      "name": "rstml",
+      "sha256": "61cf4616de7499fc5164570d40ca4e1b24d231c6833a88bff0fe00725080fd56",
+      "strip_prefix": "rstml-0.12.1",
+      "url": "https://static.crates.io/crates/rstml/0.12.1/download",
+      "version": "0.12.1"
+    },
+    "aos_registry_web_crates__rustc-hash-2.1.2": {
+      "build_file": "BUILD.rustc-hash-2.1.2.bazel",
+      "license": "Apache-2.0 OR MIT",
+      "license_domain": "apache-host",
+      "name": "rustc-hash",
+      "sha256": "94300abf3f1ae2e2b8ffb7b58043de3d399c73fa6f4b73826402a5c457614dbe",
+      "strip_prefix": "rustc-hash-2.1.2",
+      "url": "https://static.crates.io/crates/rustc-hash/2.1.2/download",
+      "version": "2.1.2"
+    },
+    "aos_registry_web_crates__rustc_version-0.4.1": {
+      "build_file": "BUILD.rustc_version-0.4.1.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "rustc_version",
+      "sha256": "cfcb3a22ef46e85b45de6ee7e79d063319ebb6594faafcf1c225ea92ab6e9b92",
+      "strip_prefix": "rustc_version-0.4.1",
+      "url": "https://static.crates.io/crates/rustc_version/0.4.1/download",
+      "version": "0.4.1"
+    },
+    "aos_registry_web_crates__rustversion-1.0.22": {
+      "build_file": "BUILD.rustversion-1.0.22.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "rustversion",
+      "sha256": "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d",
+      "strip_prefix": "rustversion-1.0.22",
+      "url": "https://static.crates.io/crates/rustversion/1.0.22/download",
+      "version": "1.0.22"
+    },
+    "aos_registry_web_crates__same-file-1.0.6": {
+      "build_file": "BUILD.same-file-1.0.6.bazel",
+      "license": "Unlicense/MIT",
+      "license_domain": "apache-host",
+      "name": "same-file",
+      "sha256": "93fc1dc3aaa9bfed95e02e6eadabb4baf7e3078b0bd1b4d7b6b0b68378900502",
+      "strip_prefix": "same-file-1.0.6",
+      "url": "https://static.crates.io/crates/same-file/1.0.6/download",
+      "version": "1.0.6"
+    },
+    "aos_registry_web_crates__scopeguard-1.2.0": {
+      "build_file": "BUILD.scopeguard-1.2.0.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "scopeguard",
+      "sha256": "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49",
+      "strip_prefix": "scopeguard-1.2.0",
+      "url": "https://static.crates.io/crates/scopeguard/1.2.0/download",
+      "version": "1.2.0"
+    },
+    "aos_registry_web_crates__semver-1.0.28": {
+      "build_file": "BUILD.semver-1.0.28.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "semver",
+      "sha256": "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd",
+      "strip_prefix": "semver-1.0.28",
+      "url": "https://static.crates.io/crates/semver/1.0.28/download",
+      "version": "1.0.28"
+    },
+    "aos_registry_web_crates__send_wrapper-0.6.0": {
+      "build_file": "BUILD.send_wrapper-0.6.0.bazel",
+      "license": "MIT/Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "send_wrapper",
+      "sha256": "cd0b0ec5f1c1ca621c432a25813d8d60c88abe6d3e08a3eb9cf37d97a0fe3d73",
+      "strip_prefix": "send_wrapper-0.6.0",
+      "url": "https://static.crates.io/crates/send_wrapper/0.6.0/download",
+      "version": "0.6.0"
+    },
+    "aos_registry_web_crates__serde-1.0.228": {
+      "build_file": "BUILD.serde-1.0.228.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "serde",
+      "sha256": "9a8e94ea7f378bd32cbbd37198a4a91436180c5bb472411e48b5ec2e2124ae9e",
+      "strip_prefix": "serde-1.0.228",
+      "url": "https://static.crates.io/crates/serde/1.0.228/download",
+      "version": "1.0.228"
+    },
+    "aos_registry_web_crates__serde_core-1.0.228": {
+      "build_file": "BUILD.serde_core-1.0.228.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "serde_core",
+      "sha256": "41d385c7d4ca58e59fc732af25c3983b67ac852c1a25000afe1175de458b67ad",
+      "strip_prefix": "serde_core-1.0.228",
+      "url": "https://static.crates.io/crates/serde_core/1.0.228/download",
+      "version": "1.0.228"
+    },
+    "aos_registry_web_crates__serde_derive-1.0.228": {
+      "build_file": "BUILD.serde_derive-1.0.228.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "serde_derive",
+      "sha256": "d540f220d3187173da220f885ab66608367b6574e925011a9353e4badda91d79",
+      "strip_prefix": "serde_derive-1.0.228",
+      "url": "https://static.crates.io/crates/serde_derive/1.0.228/download",
+      "version": "1.0.228"
+    },
+    "aos_registry_web_crates__serde_json-1.0.150": {
+      "build_file": "BUILD.serde_json-1.0.150.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "serde_json",
+      "sha256": "e8014e44b4736ed0538adeecded0fce2a272f22dc9578a7eb6b2d9993c74cfb9",
+      "strip_prefix": "serde_json-1.0.150",
+      "url": "https://static.crates.io/crates/serde_json/1.0.150/download",
+      "version": "1.0.150"
+    },
+    "aos_registry_web_crates__serde_qs-0.13.0": {
+      "build_file": "BUILD.serde_qs-0.13.0.bazel",
+      "license": "MIT/Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "serde_qs",
+      "sha256": "cd34f36fe4c5ba9654417139a9b3a20d2e1de6012ee678ad14d240c22c78d8d6",
+      "strip_prefix": "serde_qs-0.13.0",
+      "url": "https://static.crates.io/crates/serde_qs/0.13.0/download",
+      "version": "0.13.0"
+    },
+    "aos_registry_web_crates__serde_spanned-0.6.9": {
+      "build_file": "BUILD.serde_spanned-0.6.9.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "serde_spanned",
+      "sha256": "bf41e0cfaf7226dca15e8197172c295a782857fcb97fad1808a166870dee75a3",
+      "strip_prefix": "serde_spanned-0.6.9",
+      "url": "https://static.crates.io/crates/serde_spanned/0.6.9/download",
+      "version": "0.6.9"
+    },
+    "aos_registry_web_crates__serde_spanned-1.1.1": {
+      "build_file": "BUILD.serde_spanned-1.1.1.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "serde_spanned",
+      "sha256": "6662b5879511e06e8999a8a235d848113e942c9124f211511b16466ee2995f26",
+      "strip_prefix": "serde_spanned-1.1.1",
+      "url": "https://static.crates.io/crates/serde_spanned/1.1.1/download",
+      "version": "1.1.1"
+    },
+    "aos_registry_web_crates__server_fn-0.7.8": {
+      "build_file": "BUILD.server_fn-0.7.8.bazel",
+      "license": "MIT",
+      "license_domain": "apache-host",
+      "name": "server_fn",
+      "sha256": "8d05a9e3fd8d7404985418db38c6617cc793a1a27f398d4fbc9dfe8e41b804e6",
+      "strip_prefix": "server_fn-0.7.8",
+      "url": "https://static.crates.io/crates/server_fn/0.7.8/download",
+      "version": "0.7.8"
+    },
+    "aos_registry_web_crates__server_fn_macro-0.7.8": {
+      "build_file": "BUILD.server_fn_macro-0.7.8.bazel",
+      "license": "MIT",
+      "license_domain": "apache-host",
+      "name": "server_fn_macro",
+      "sha256": "504b35e883267b3206317b46d02952ed7b8bf0e11b2e209e2eb453b609a5e052",
+      "strip_prefix": "server_fn_macro-0.7.8",
+      "url": "https://static.crates.io/crates/server_fn_macro/0.7.8/download",
+      "version": "0.7.8"
+    },
+    "aos_registry_web_crates__server_fn_macro_default-0.7.8": {
+      "build_file": "BUILD.server_fn_macro_default-0.7.8.bazel",
+      "license": "MIT",
+      "license_domain": "apache-host",
+      "name": "server_fn_macro_default",
+      "sha256": "eb8b274f568c94226a8045668554aace8142a59b8bca5414ac5a79627c825568",
+      "strip_prefix": "server_fn_macro_default-0.7.8",
+      "url": "https://static.crates.io/crates/server_fn_macro_default/0.7.8/download",
+      "version": "0.7.8"
+    },
+    "aos_registry_web_crates__sha2-0.10.9": {
+      "build_file": "BUILD.sha2-0.10.9.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "sha2",
+      "sha256": "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283",
+      "strip_prefix": "sha2-0.10.9",
+      "url": "https://static.crates.io/crates/sha2/0.10.9/download",
+      "version": "0.10.9"
+    },
+    "aos_registry_web_crates__signature-2.2.0": {
+      "build_file": "BUILD.signature-2.2.0.bazel",
+      "license": "Apache-2.0 OR MIT",
+      "license_domain": "apache-host",
+      "name": "signature",
+      "sha256": "77549399552de45a898a580c1b41d445bf730df867cc44e6c0233bbc4b8329de",
+      "strip_prefix": "signature-2.2.0",
+      "url": "https://static.crates.io/crates/signature/2.2.0/download",
+      "version": "2.2.0"
+    },
+    "aos_registry_web_crates__simd-adler32-0.3.9": {
+      "build_file": "BUILD.simd-adler32-0.3.9.bazel",
+      "license": "MIT",
+      "license_domain": "apache-host",
+      "name": "simd-adler32",
+      "sha256": "703d5c7ef118737c72f1af64ad2f6f8c5e1921f818cdcb97b8fe6fc69bf66214",
+      "strip_prefix": "simd-adler32-0.3.9",
+      "url": "https://static.crates.io/crates/simd-adler32/0.3.9/download",
+      "version": "0.3.9"
+    },
+    "aos_registry_web_crates__slab-0.4.12": {
+      "build_file": "BUILD.slab-0.4.12.bazel",
+      "license": "MIT",
+      "license_domain": "apache-host",
+      "name": "slab",
+      "sha256": "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5",
+      "strip_prefix": "slab-0.4.12",
+      "url": "https://static.crates.io/crates/slab/0.4.12/download",
+      "version": "0.4.12"
+    },
+    "aos_registry_web_crates__slotmap-1.1.1": {
+      "build_file": "BUILD.slotmap-1.1.1.bazel",
+      "license": "Zlib",
+      "license_domain": "apache-host",
+      "name": "slotmap",
+      "sha256": "bdd58c3c93c3d278ca835519292445cb4b0d4dc59ccfdf7ceadaab3f8aeb4038",
+      "strip_prefix": "slotmap-1.1.1",
+      "url": "https://static.crates.io/crates/slotmap/1.1.1/download",
+      "version": "1.1.1"
+    },
+    "aos_registry_web_crates__smallvec-1.15.2": {
+      "build_file": "BUILD.smallvec-1.15.2.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "smallvec",
+      "sha256": "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90",
+      "strip_prefix": "smallvec-1.15.2",
+      "url": "https://static.crates.io/crates/smallvec/1.15.2/download",
+      "version": "1.15.2"
+    },
+    "aos_registry_web_crates__spki-0.7.3": {
+      "build_file": "BUILD.spki-0.7.3.bazel",
+      "license": "Apache-2.0 OR MIT",
+      "license_domain": "apache-host",
+      "name": "spki",
+      "sha256": "d91ed6c858b01f942cd56b37a94b3e0a1798290327d1236e4d9cf4eaca44d29d",
+      "strip_prefix": "spki-0.7.3",
+      "url": "https://static.crates.io/crates/spki/0.7.3/download",
+      "version": "0.7.3"
+    },
+    "aos_registry_web_crates__stable_deref_trait-1.2.1": {
+      "build_file": "BUILD.stable_deref_trait-1.2.1.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "stable_deref_trait",
+      "sha256": "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596",
+      "strip_prefix": "stable_deref_trait-1.2.1",
+      "url": "https://static.crates.io/crates/stable_deref_trait/1.2.1/download",
+      "version": "1.2.1"
+    },
+    "aos_registry_web_crates__subtle-2.6.1": {
+      "build_file": "BUILD.subtle-2.6.1.bazel",
+      "license": "BSD-3-Clause",
+      "license_domain": "apache-host",
+      "name": "subtle",
+      "sha256": "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292",
+      "strip_prefix": "subtle-2.6.1",
+      "url": "https://static.crates.io/crates/subtle/2.6.1/download",
+      "version": "2.6.1"
+    },
+    "aos_registry_web_crates__syn-2.0.118": {
+      "build_file": "BUILD.syn-2.0.118.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "syn",
+      "sha256": "1b9ae57f904213ebb649ce6895b8a66c66f0203b9319718f69a5612a065b1422",
+      "strip_prefix": "syn-2.0.118",
+      "url": "https://static.crates.io/crates/syn/2.0.118/download",
+      "version": "2.0.118"
+    },
+    "aos_registry_web_crates__syn_derive-0.2.0": {
+      "build_file": "BUILD.syn_derive-0.2.0.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "syn_derive",
+      "sha256": "cdb066a04799e45f5d582e8fc6ec8e6d6896040d00898eb4e6a835196815b219",
+      "strip_prefix": "syn_derive-0.2.0",
+      "url": "https://static.crates.io/crates/syn_derive/0.2.0/download",
+      "version": "0.2.0"
+    },
+    "aos_registry_web_crates__synstructure-0.13.2": {
+      "build_file": "BUILD.synstructure-0.13.2.bazel",
+      "license": "MIT",
+      "license_domain": "apache-host",
+      "name": "synstructure",
+      "sha256": "728a70f3dbaf5bab7f0c4b1ac8d7ae5ea60a4b5549c8a5914361c99147a709d2",
+      "strip_prefix": "synstructure-0.13.2",
+      "url": "https://static.crates.io/crates/synstructure/0.13.2/download",
+      "version": "0.13.2"
+    },
+    "aos_registry_web_crates__tachys-0.1.9": {
+      "build_file": "BUILD.tachys-0.1.9.bazel",
+      "license": "MIT",
+      "license_domain": "apache-host",
+      "name": "tachys",
+      "sha256": "f66c3b70c32844a6f1e2943c72a33ebb777ad6acbeb20d1329d62e3a7806d6ec",
+      "strip_prefix": "tachys-0.1.9",
+      "url": "https://static.crates.io/crates/tachys/0.1.9/download",
+      "version": "0.1.9"
+    },
+    "aos_registry_web_crates__thiserror-1.0.69": {
+      "build_file": "BUILD.thiserror-1.0.69.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "thiserror",
+      "sha256": "b6aaf5339b578ea85b50e080feb250a3e8ae8cfcdff9a461c9ec2904bc923f52",
+      "strip_prefix": "thiserror-1.0.69",
+      "url": "https://static.crates.io/crates/thiserror/1.0.69/download",
+      "version": "1.0.69"
+    },
+    "aos_registry_web_crates__thiserror-2.0.18": {
+      "build_file": "BUILD.thiserror-2.0.18.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "thiserror",
+      "sha256": "4288b5bcbc7920c07a1149a35cf9590a2aa808e0bc1eafaade0b80947865fbc4",
+      "strip_prefix": "thiserror-2.0.18",
+      "url": "https://static.crates.io/crates/thiserror/2.0.18/download",
+      "version": "2.0.18"
+    },
+    "aos_registry_web_crates__thiserror-impl-1.0.69": {
+      "build_file": "BUILD.thiserror-impl-1.0.69.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "thiserror-impl",
+      "sha256": "4fee6c4efc90059e10f81e6d42c60a18f76588c3d74cb83a0b242a2b6c7504c1",
+      "strip_prefix": "thiserror-impl-1.0.69",
+      "url": "https://static.crates.io/crates/thiserror-impl/1.0.69/download",
+      "version": "1.0.69"
+    },
+    "aos_registry_web_crates__thiserror-impl-2.0.18": {
+      "build_file": "BUILD.thiserror-impl-2.0.18.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "thiserror-impl",
+      "sha256": "ebc4ee7f67670e9b64d05fa4253e753e016c6c95ff35b89b7941d6b856dec1d5",
+      "strip_prefix": "thiserror-impl-2.0.18",
+      "url": "https://static.crates.io/crates/thiserror-impl/2.0.18/download",
+      "version": "2.0.18"
+    },
+    "aos_registry_web_crates__throw_error-0.2.0": {
+      "build_file": "BUILD.throw_error-0.2.0.bazel",
+      "license": "MIT",
+      "license_domain": "apache-host",
+      "name": "throw_error",
+      "sha256": "e4ef8bf264c6ae02a065a4a16553283f0656bd6266fc1fcb09fd2e6b5e91427b",
+      "strip_prefix": "throw_error-0.2.0",
+      "url": "https://static.crates.io/crates/throw_error/0.2.0/download",
+      "version": "0.2.0"
+    },
+    "aos_registry_web_crates__tinystr-0.8.3": {
+      "build_file": "BUILD.tinystr-0.8.3.bazel",
+      "license": "Unicode-3.0",
+      "license_domain": "apache-host",
+      "name": "tinystr",
+      "sha256": "c8323304221c2a851516f22236c5722a72eaa19749016521d6dff0824447d96d",
+      "strip_prefix": "tinystr-0.8.3",
+      "url": "https://static.crates.io/crates/tinystr/0.8.3/download",
+      "version": "0.8.3"
+    },
+    "aos_registry_web_crates__toml-0.8.23": {
+      "build_file": "BUILD.toml-0.8.23.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "toml",
+      "sha256": "dc1beb996b9d83529a9e75c17a1686767d148d70663143c7854d8b4a09ced362",
+      "strip_prefix": "toml-0.8.23",
+      "url": "https://static.crates.io/crates/toml/0.8.23/download",
+      "version": "0.8.23"
+    },
+    "aos_registry_web_crates__toml-1.1.2-spec-1.1.0": {
+      "build_file": "BUILD.toml-1.1.2+spec-1.1.0.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "toml",
+      "sha256": "81f3d15e84cbcd896376e6730314d59fb5a87f31e4b038454184435cd57defee",
+      "strip_prefix": "toml-1.1.2+spec-1.1.0",
+      "url": "https://static.crates.io/crates/toml/1.1.2+spec-1.1.0/download",
+      "version": "1.1.2+spec-1.1.0"
+    },
+    "aos_registry_web_crates__toml_datetime-0.6.11": {
+      "build_file": "BUILD.toml_datetime-0.6.11.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "toml_datetime",
+      "sha256": "22cddaf88f4fbc13c51aebbf5f8eceb5c7c5a9da2ac40a13519eb5b0a0e8f11c",
+      "strip_prefix": "toml_datetime-0.6.11",
+      "url": "https://static.crates.io/crates/toml_datetime/0.6.11/download",
+      "version": "0.6.11"
+    },
+    "aos_registry_web_crates__toml_datetime-1.1.1-spec-1.1.0": {
+      "build_file": "BUILD.toml_datetime-1.1.1+spec-1.1.0.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "toml_datetime",
+      "sha256": "3165f65f62e28e0115a00b2ebdd37eb6f3b641855f9d636d3cd4103767159ad7",
+      "strip_prefix": "toml_datetime-1.1.1+spec-1.1.0",
+      "url": "https://static.crates.io/crates/toml_datetime/1.1.1+spec-1.1.0/download",
+      "version": "1.1.1+spec-1.1.0"
+    },
+    "aos_registry_web_crates__toml_edit-0.22.27": {
+      "build_file": "BUILD.toml_edit-0.22.27.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "toml_edit",
+      "sha256": "41fe8c660ae4257887cf66394862d21dbca4a6ddd26f04a3560410406a2f819a",
+      "strip_prefix": "toml_edit-0.22.27",
+      "url": "https://static.crates.io/crates/toml_edit/0.22.27/download",
+      "version": "0.22.27"
+    },
+    "aos_registry_web_crates__toml_parser-1.1.2-spec-1.1.0": {
+      "build_file": "BUILD.toml_parser-1.1.2+spec-1.1.0.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "toml_parser",
+      "sha256": "a2abe9b86193656635d2411dc43050282ca48aa31c2451210f4202550afb7526",
+      "strip_prefix": "toml_parser-1.1.2+spec-1.1.0",
+      "url": "https://static.crates.io/crates/toml_parser/1.1.2+spec-1.1.0/download",
+      "version": "1.1.2+spec-1.1.0"
+    },
+    "aos_registry_web_crates__toml_write-0.1.2": {
+      "build_file": "BUILD.toml_write-0.1.2.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "toml_write",
+      "sha256": "5d99f8c9a7727884afe522e9bd5edbfc91a3312b36a77b5fb8926e4c31a41801",
+      "strip_prefix": "toml_write-0.1.2",
+      "url": "https://static.crates.io/crates/toml_write/0.1.2/download",
+      "version": "0.1.2"
+    },
+    "aos_registry_web_crates__typed-builder-0.20.1": {
+      "build_file": "BUILD.typed-builder-0.20.1.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "typed-builder",
+      "sha256": "cd9d30e3a08026c78f246b173243cf07b3696d274debd26680773b6773c2afc7",
+      "strip_prefix": "typed-builder-0.20.1",
+      "url": "https://static.crates.io/crates/typed-builder/0.20.1/download",
+      "version": "0.20.1"
+    },
+    "aos_registry_web_crates__typed-builder-macro-0.20.1": {
+      "build_file": "BUILD.typed-builder-macro-0.20.1.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "typed-builder-macro",
+      "sha256": "3c36781cc0e46a83726d9879608e4cf6c2505237e263a8eb8c24502989cfdb28",
+      "strip_prefix": "typed-builder-macro-0.20.1",
+      "url": "https://static.crates.io/crates/typed-builder-macro/0.20.1/download",
+      "version": "0.20.1"
+    },
+    "aos_registry_web_crates__typenum-1.20.1": {
+      "build_file": "BUILD.typenum-1.20.1.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "typenum",
+      "sha256": "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20",
+      "strip_prefix": "typenum-1.20.1",
+      "url": "https://static.crates.io/crates/typenum/1.20.1/download",
+      "version": "1.20.1"
+    },
+    "aos_registry_web_crates__unicode-ident-1.0.24": {
+      "build_file": "BUILD.unicode-ident-1.0.24.bazel",
+      "license": "(MIT OR Apache-2.0) AND Unicode-3.0",
+      "license_domain": "apache-host",
+      "name": "unicode-ident",
+      "sha256": "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75",
+      "strip_prefix": "unicode-ident-1.0.24",
+      "url": "https://static.crates.io/crates/unicode-ident/1.0.24/download",
+      "version": "1.0.24"
+    },
+    "aos_registry_web_crates__unicode-segmentation-1.13.3": {
+      "build_file": "BUILD.unicode-segmentation-1.13.3.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "unicode-segmentation",
+      "sha256": "c6f5d3c3b1bf09027a88a6bc961fc00497d651009560b5463668dc81b0fa87a8",
+      "strip_prefix": "unicode-segmentation-1.13.3",
+      "url": "https://static.crates.io/crates/unicode-segmentation/1.13.3/download",
+      "version": "1.13.3"
+    },
+    "aos_registry_web_crates__unicode-xid-0.2.6": {
+      "build_file": "BUILD.unicode-xid-0.2.6.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "unicode-xid",
+      "sha256": "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853",
+      "strip_prefix": "unicode-xid-0.2.6",
+      "url": "https://static.crates.io/crates/unicode-xid/0.2.6/download",
+      "version": "0.2.6"
+    },
+    "aos_registry_web_crates__url-2.5.8": {
+      "build_file": "BUILD.url-2.5.8.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "url",
+      "sha256": "ff67a8a4397373c3ef660812acab3268222035010ab8680ec4215f38ba3d0eed",
+      "strip_prefix": "url-2.5.8",
+      "url": "https://static.crates.io/crates/url/2.5.8/download",
+      "version": "2.5.8"
+    },
+    "aos_registry_web_crates__utf8_iter-1.0.4": {
+      "build_file": "BUILD.utf8_iter-1.0.4.bazel",
+      "license": "Apache-2.0 OR MIT",
+      "license_domain": "apache-host",
+      "name": "utf8_iter",
+      "sha256": "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be",
+      "strip_prefix": "utf8_iter-1.0.4",
+      "url": "https://static.crates.io/crates/utf8_iter/1.0.4/download",
+      "version": "1.0.4"
+    },
+    "aos_registry_web_crates__uuid-1.23.1": {
+      "build_file": "BUILD.uuid-1.23.1.bazel",
+      "license": "Apache-2.0 OR MIT",
+      "license_domain": "apache-host",
+      "name": "uuid",
+      "sha256": "ddd74a9687298c6858e9b88ec8935ec45d22e8fd5e6394fa1bd4e99a87789c76",
+      "strip_prefix": "uuid-1.23.1",
+      "url": "https://static.crates.io/crates/uuid/1.23.1/download",
+      "version": "1.23.1"
+    },
+    "aos_registry_web_crates__version_check-0.9.5": {
+      "build_file": "BUILD.version_check-0.9.5.bazel",
+      "license": "MIT/Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "version_check",
+      "sha256": "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a",
+      "strip_prefix": "version_check-0.9.5",
+      "url": "https://static.crates.io/crates/version_check/0.9.5/download",
+      "version": "0.9.5"
+    },
+    "aos_registry_web_crates__walkdir-2.5.0": {
+      "build_file": "BUILD.walkdir-2.5.0.bazel",
+      "license": "Unlicense/MIT",
+      "license_domain": "apache-host",
+      "name": "walkdir",
+      "sha256": "29790946404f91d9c5d06f9874efddea1dc06c5efe94541a7d6863108e3a5e4b",
+      "strip_prefix": "walkdir-2.5.0",
+      "url": "https://static.crates.io/crates/walkdir/2.5.0/download",
+      "version": "2.5.0"
+    },
+    "aos_registry_web_crates__wasi-0.11.1-wasi-snapshot-preview1": {
+      "build_file": "BUILD.wasi-0.11.1+wasi-snapshot-preview1.bazel",
+      "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "license_domain": "apache-host",
+      "name": "wasi",
+      "sha256": "ccf3ec651a847eb01de73ccad15eb7d99f80485de043efb2f370cd654f4ea44b",
+      "strip_prefix": "wasi-0.11.1+wasi-snapshot-preview1",
+      "url": "https://static.crates.io/crates/wasi/0.11.1+wasi-snapshot-preview1/download",
+      "version": "0.11.1+wasi-snapshot-preview1"
+    },
+    "aos_registry_web_crates__wasip2-1.0.4-wasi-0.2.12": {
+      "build_file": "BUILD.wasip2-1.0.4+wasi-0.2.12.bazel",
+      "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "license_domain": "apache-host",
+      "name": "wasip2",
+      "sha256": "b67efb37e106e55ce722a510d6b5f9c17f083e5fc79afc2badeb12cc313d9487",
+      "strip_prefix": "wasip2-1.0.4+wasi-0.2.12",
+      "url": "https://static.crates.io/crates/wasip2/1.0.4+wasi-0.2.12/download",
+      "version": "1.0.4+wasi-0.2.12"
+    },
+    "aos_registry_web_crates__wasip3-0.4.0-wasi-0.3.0-rc-2026-01-06": {
+      "build_file": "BUILD.wasip3-0.4.0+wasi-0.3.0-rc-2026-01-06.bazel",
+      "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "license_domain": "apache-host",
+      "name": "wasip3",
+      "sha256": "5428f8bf88ea5ddc08faddef2ac4a67e390b88186c703ce6dbd955e1c145aca5",
+      "strip_prefix": "wasip3-0.4.0+wasi-0.3.0-rc-2026-01-06",
+      "url": "https://static.crates.io/crates/wasip3/0.4.0+wasi-0.3.0-rc-2026-01-06/download",
+      "version": "0.4.0+wasi-0.3.0-rc-2026-01-06"
+    },
+    "aos_registry_web_crates__wasm-bindgen-0.2.126": {
+      "build_file": "BUILD.wasm-bindgen-0.2.126.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "wasm-bindgen",
+      "sha256": "4b067c0c11094aef6b7a801c1e34a26affafdf3d051dba08456b868789aaf9a4",
+      "strip_prefix": "wasm-bindgen-0.2.126",
+      "url": "https://static.crates.io/crates/wasm-bindgen/0.2.126/download",
+      "version": "0.2.126"
+    },
+    "aos_registry_web_crates__wasm-bindgen-futures-0.4.76": {
+      "build_file": "BUILD.wasm-bindgen-futures-0.4.76.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "wasm-bindgen-futures",
+      "sha256": "c62df1340f32221cb9c54d6a27b030e3dba64361d4a95bed55f9aacb44da291d",
+      "strip_prefix": "wasm-bindgen-futures-0.4.76",
+      "url": "https://static.crates.io/crates/wasm-bindgen-futures/0.4.76/download",
+      "version": "0.4.76"
+    },
+    "aos_registry_web_crates__wasm-bindgen-macro-0.2.126": {
+      "build_file": "BUILD.wasm-bindgen-macro-0.2.126.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "wasm-bindgen-macro",
+      "sha256": "167ce5e579f6bcf889c4f7175a8a5a585de84e8ff93976ce393efa5f2837aab1",
+      "strip_prefix": "wasm-bindgen-macro-0.2.126",
+      "url": "https://static.crates.io/crates/wasm-bindgen-macro/0.2.126/download",
+      "version": "0.2.126"
+    },
+    "aos_registry_web_crates__wasm-bindgen-macro-support-0.2.126": {
+      "build_file": "BUILD.wasm-bindgen-macro-support-0.2.126.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "wasm-bindgen-macro-support",
+      "sha256": "f3997c7839262f4ef12cf90b818d6340c18e80f263f1a94bf157d0ec4420380e",
+      "strip_prefix": "wasm-bindgen-macro-support-0.2.126",
+      "url": "https://static.crates.io/crates/wasm-bindgen-macro-support/0.2.126/download",
+      "version": "0.2.126"
+    },
+    "aos_registry_web_crates__wasm-bindgen-shared-0.2.126": {
+      "build_file": "BUILD.wasm-bindgen-shared-0.2.126.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "wasm-bindgen-shared",
+      "sha256": "dc1b4cb0cc549fcf58d7dfc081778139b3d283a081644e833e84682ad71cea24",
+      "strip_prefix": "wasm-bindgen-shared-0.2.126",
+      "url": "https://static.crates.io/crates/wasm-bindgen-shared/0.2.126/download",
+      "version": "0.2.126"
+    },
+    "aos_registry_web_crates__wasm-encoder-0.244.0": {
+      "build_file": "BUILD.wasm-encoder-0.244.0.bazel",
+      "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "license_domain": "apache-host",
+      "name": "wasm-encoder",
+      "sha256": "990065f2fe63003fe337b932cfb5e3b80e0b4d0f5ff650e6985b1048f62c8319",
+      "strip_prefix": "wasm-encoder-0.244.0",
+      "url": "https://static.crates.io/crates/wasm-encoder/0.244.0/download",
+      "version": "0.244.0"
+    },
+    "aos_registry_web_crates__wasm-metadata-0.244.0": {
+      "build_file": "BUILD.wasm-metadata-0.244.0.bazel",
+      "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "license_domain": "apache-host",
+      "name": "wasm-metadata",
+      "sha256": "bb0e353e6a2fbdc176932bbaab493762eb1255a7900fe0fea1a2f96c296cc909",
+      "strip_prefix": "wasm-metadata-0.244.0",
+      "url": "https://static.crates.io/crates/wasm-metadata/0.244.0/download",
+      "version": "0.244.0"
+    },
+    "aos_registry_web_crates__wasm-streams-0.4.2": {
+      "build_file": "BUILD.wasm-streams-0.4.2.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "wasm-streams",
+      "sha256": "15053d8d85c7eccdbefef60f06769760a563c7f0a9d6902a13d35c7800b0ad65",
+      "strip_prefix": "wasm-streams-0.4.2",
+      "url": "https://static.crates.io/crates/wasm-streams/0.4.2/download",
+      "version": "0.4.2"
+    },
+    "aos_registry_web_crates__wasmparser-0.244.0": {
+      "build_file": "BUILD.wasmparser-0.244.0.bazel",
+      "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "license_domain": "apache-host",
+      "name": "wasmparser",
+      "sha256": "47b807c72e1bac69382b3a6fb3dbe8ea4c0ed87ff5629b8685ae6b9a611028fe",
+      "strip_prefix": "wasmparser-0.244.0",
+      "url": "https://static.crates.io/crates/wasmparser/0.244.0/download",
+      "version": "0.244.0"
+    },
+    "aos_registry_web_crates__web-sys-0.3.103": {
+      "build_file": "BUILD.web-sys-0.3.103.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "web-sys",
+      "sha256": "8622dcb61c0bcc9fffa6938bed81210af2da9a7e4a1a834b2e37a59b6dfb6141",
+      "strip_prefix": "web-sys-0.3.103",
+      "url": "https://static.crates.io/crates/web-sys/0.3.103/download",
+      "version": "0.3.103"
+    },
+    "aos_registry_web_crates__winapi-util-0.1.11": {
+      "build_file": "BUILD.winapi-util-0.1.11.bazel",
+      "license": "Unlicense OR MIT",
+      "license_domain": "apache-host",
+      "name": "winapi-util",
+      "sha256": "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22",
+      "strip_prefix": "winapi-util-0.1.11",
+      "url": "https://static.crates.io/crates/winapi-util/0.1.11/download",
+      "version": "0.1.11"
+    },
+    "aos_registry_web_crates__windows-link-0.2.1": {
+      "build_file": "BUILD.windows-link-0.2.1.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "windows-link",
+      "sha256": "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5",
+      "strip_prefix": "windows-link-0.2.1",
+      "url": "https://static.crates.io/crates/windows-link/0.2.1/download",
+      "version": "0.2.1"
+    },
+    "aos_registry_web_crates__windows-sys-0.48.0": {
+      "build_file": "BUILD.windows-sys-0.48.0.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "windows-sys",
+      "sha256": "677d2418bec65e3338edb076e806bc1ec15693c5d0104683f2efe857f61056a9",
+      "strip_prefix": "windows-sys-0.48.0",
+      "url": "https://static.crates.io/crates/windows-sys/0.48.0/download",
+      "version": "0.48.0"
+    },
+    "aos_registry_web_crates__windows-targets-0.48.5": {
+      "build_file": "BUILD.windows-targets-0.48.5.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "windows-targets",
+      "sha256": "9a2fa6e2155d7247be68c096456083145c183cbbbc2764150dda45a87197940c",
+      "strip_prefix": "windows-targets-0.48.5",
+      "url": "https://static.crates.io/crates/windows-targets/0.48.5/download",
+      "version": "0.48.5"
+    },
+    "aos_registry_web_crates__windows_aarch64_gnullvm-0.48.5": {
+      "build_file": "BUILD.windows_aarch64_gnullvm-0.48.5.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "windows_aarch64_gnullvm",
+      "sha256": "2b38e32f0abccf9987a4e3079dfb67dcd799fb61361e53e2882c3cbaf0d905d8",
+      "strip_prefix": "windows_aarch64_gnullvm-0.48.5",
+      "url": "https://static.crates.io/crates/windows_aarch64_gnullvm/0.48.5/download",
+      "version": "0.48.5"
+    },
+    "aos_registry_web_crates__windows_aarch64_msvc-0.48.5": {
+      "build_file": "BUILD.windows_aarch64_msvc-0.48.5.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "windows_aarch64_msvc",
+      "sha256": "dc35310971f3b2dbbf3f0690a219f40e2d9afcf64f9ab7cc1be722937c26b4bc",
+      "strip_prefix": "windows_aarch64_msvc-0.48.5",
+      "url": "https://static.crates.io/crates/windows_aarch64_msvc/0.48.5/download",
+      "version": "0.48.5"
+    },
+    "aos_registry_web_crates__windows_i686_gnu-0.48.5": {
+      "build_file": "BUILD.windows_i686_gnu-0.48.5.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "windows_i686_gnu",
+      "sha256": "a75915e7def60c94dcef72200b9a8e58e5091744960da64ec734a6c6e9b3743e",
+      "strip_prefix": "windows_i686_gnu-0.48.5",
+      "url": "https://static.crates.io/crates/windows_i686_gnu/0.48.5/download",
+      "version": "0.48.5"
+    },
+    "aos_registry_web_crates__windows_i686_msvc-0.48.5": {
+      "build_file": "BUILD.windows_i686_msvc-0.48.5.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "windows_i686_msvc",
+      "sha256": "8f55c233f70c4b27f66c523580f78f1004e8b5a8b659e05a4eb49d4166cca406",
+      "strip_prefix": "windows_i686_msvc-0.48.5",
+      "url": "https://static.crates.io/crates/windows_i686_msvc/0.48.5/download",
+      "version": "0.48.5"
+    },
+    "aos_registry_web_crates__windows_x86_64_gnu-0.48.5": {
+      "build_file": "BUILD.windows_x86_64_gnu-0.48.5.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "windows_x86_64_gnu",
+      "sha256": "53d40abd2583d23e4718fddf1ebec84dbff8381c07cae67ff7768bbf19c6718e",
+      "strip_prefix": "windows_x86_64_gnu-0.48.5",
+      "url": "https://static.crates.io/crates/windows_x86_64_gnu/0.48.5/download",
+      "version": "0.48.5"
+    },
+    "aos_registry_web_crates__windows_x86_64_gnullvm-0.48.5": {
+      "build_file": "BUILD.windows_x86_64_gnullvm-0.48.5.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "windows_x86_64_gnullvm",
+      "sha256": "0b7b52767868a23d5bab768e390dc5f5c55825b6d30b86c844ff2dc7414044cc",
+      "strip_prefix": "windows_x86_64_gnullvm-0.48.5",
+      "url": "https://static.crates.io/crates/windows_x86_64_gnullvm/0.48.5/download",
+      "version": "0.48.5"
+    },
+    "aos_registry_web_crates__windows_x86_64_msvc-0.48.5": {
+      "build_file": "BUILD.windows_x86_64_msvc-0.48.5.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "windows_x86_64_msvc",
+      "sha256": "ed94fce61571a4006852b7389a063ab983c02eb1bb37b47f8272ce92d06d9538",
+      "strip_prefix": "windows_x86_64_msvc-0.48.5",
+      "url": "https://static.crates.io/crates/windows_x86_64_msvc/0.48.5/download",
+      "version": "0.48.5"
+    },
+    "aos_registry_web_crates__winnow-0.7.15": {
+      "build_file": "BUILD.winnow-0.7.15.bazel",
+      "license": "MIT",
+      "license_domain": "apache-host",
+      "name": "winnow",
+      "sha256": "df79d97927682d2fd8adb29682d1140b343be4ac0f08fd68b7765d9c059d3945",
+      "strip_prefix": "winnow-0.7.15",
+      "url": "https://static.crates.io/crates/winnow/0.7.15/download",
+      "version": "0.7.15"
+    },
+    "aos_registry_web_crates__winnow-1.0.3": {
+      "build_file": "BUILD.winnow-1.0.3.bazel",
+      "license": "MIT",
+      "license_domain": "apache-host",
+      "name": "winnow",
+      "sha256": "0592e1c9d151f854e6fd382574c3a0855250e1d9b2f99d9281c6e6391af352f1",
+      "strip_prefix": "winnow-1.0.3",
+      "url": "https://static.crates.io/crates/winnow/1.0.3/download",
+      "version": "1.0.3"
+    },
+    "aos_registry_web_crates__wit-bindgen-0.51.0": {
+      "build_file": "BUILD.wit-bindgen-0.51.0.bazel",
+      "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "license_domain": "apache-host",
+      "name": "wit-bindgen",
+      "sha256": "d7249219f66ced02969388cf2bb044a09756a083d0fab1e566056b04d9fbcaa5",
+      "strip_prefix": "wit-bindgen-0.51.0",
+      "url": "https://static.crates.io/crates/wit-bindgen/0.51.0/download",
+      "version": "0.51.0"
+    },
+    "aos_registry_web_crates__wit-bindgen-0.57.1": {
+      "build_file": "BUILD.wit-bindgen-0.57.1.bazel",
+      "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "license_domain": "apache-host",
+      "name": "wit-bindgen",
+      "sha256": "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e",
+      "strip_prefix": "wit-bindgen-0.57.1",
+      "url": "https://static.crates.io/crates/wit-bindgen/0.57.1/download",
+      "version": "0.57.1"
+    },
+    "aos_registry_web_crates__wit-bindgen-core-0.51.0": {
+      "build_file": "BUILD.wit-bindgen-core-0.51.0.bazel",
+      "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "license_domain": "apache-host",
+      "name": "wit-bindgen-core",
+      "sha256": "ea61de684c3ea68cb082b7a88508a8b27fcc8b797d738bfc99a82facf1d752dc",
+      "strip_prefix": "wit-bindgen-core-0.51.0",
+      "url": "https://static.crates.io/crates/wit-bindgen-core/0.51.0/download",
+      "version": "0.51.0"
+    },
+    "aos_registry_web_crates__wit-bindgen-rust-0.51.0": {
+      "build_file": "BUILD.wit-bindgen-rust-0.51.0.bazel",
+      "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "license_domain": "apache-host",
+      "name": "wit-bindgen-rust",
+      "sha256": "b7c566e0f4b284dd6561c786d9cb0142da491f46a9fbed79ea69cdad5db17f21",
+      "strip_prefix": "wit-bindgen-rust-0.51.0",
+      "url": "https://static.crates.io/crates/wit-bindgen-rust/0.51.0/download",
+      "version": "0.51.0"
+    },
+    "aos_registry_web_crates__wit-bindgen-rust-macro-0.51.0": {
+      "build_file": "BUILD.wit-bindgen-rust-macro-0.51.0.bazel",
+      "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "license_domain": "apache-host",
+      "name": "wit-bindgen-rust-macro",
+      "sha256": "0c0f9bfd77e6a48eccf51359e3ae77140a7f50b1e2ebfe62422d8afdaffab17a",
+      "strip_prefix": "wit-bindgen-rust-macro-0.51.0",
+      "url": "https://static.crates.io/crates/wit-bindgen-rust-macro/0.51.0/download",
+      "version": "0.51.0"
+    },
+    "aos_registry_web_crates__wit-component-0.244.0": {
+      "build_file": "BUILD.wit-component-0.244.0.bazel",
+      "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "license_domain": "apache-host",
+      "name": "wit-component",
+      "sha256": "9d66ea20e9553b30172b5e831994e35fbde2d165325bec84fc43dbf6f4eb9cb2",
+      "strip_prefix": "wit-component-0.244.0",
+      "url": "https://static.crates.io/crates/wit-component/0.244.0/download",
+      "version": "0.244.0"
+    },
+    "aos_registry_web_crates__wit-parser-0.244.0": {
+      "build_file": "BUILD.wit-parser-0.244.0.bazel",
+      "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "license_domain": "apache-host",
+      "name": "wit-parser",
+      "sha256": "ecc8ac4bc1dc3381b7f59c34f00b67e18f910c2c0f50015669dde7def656a736",
+      "strip_prefix": "wit-parser-0.244.0",
+      "url": "https://static.crates.io/crates/wit-parser/0.244.0/download",
+      "version": "0.244.0"
+    },
+    "aos_registry_web_crates__writeable-0.6.3": {
+      "build_file": "BUILD.writeable-0.6.3.bazel",
+      "license": "Unicode-3.0",
+      "license_domain": "apache-host",
+      "name": "writeable",
+      "sha256": "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4",
+      "strip_prefix": "writeable-0.6.3",
+      "url": "https://static.crates.io/crates/writeable/0.6.3/download",
+      "version": "0.6.3"
+    },
+    "aos_registry_web_crates__xxhash-rust-0.8.15": {
+      "build_file": "BUILD.xxhash-rust-0.8.15.bazel",
+      "license": "BSL-1.0",
+      "license_domain": "apache-host",
+      "name": "xxhash-rust",
+      "sha256": "fdd20c5420375476fbd4394763288da7eb0cc0b8c11deed431a91562af7335d3",
+      "strip_prefix": "xxhash-rust-0.8.15",
+      "url": "https://static.crates.io/crates/xxhash-rust/0.8.15/download",
+      "version": "0.8.15"
+    },
+    "aos_registry_web_crates__yansi-1.0.1": {
+      "build_file": "BUILD.yansi-1.0.1.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "yansi",
+      "sha256": "cfe53a6657fd280eaa890a3bc59152892ffa3e30101319d168b781ed6529b049",
+      "strip_prefix": "yansi-1.0.1",
+      "url": "https://static.crates.io/crates/yansi/1.0.1/download",
+      "version": "1.0.1"
+    },
+    "aos_registry_web_crates__yoke-0.8.3": {
+      "build_file": "BUILD.yoke-0.8.3.bazel",
+      "license": "Unicode-3.0",
+      "license_domain": "apache-host",
+      "name": "yoke",
+      "sha256": "709fe23a0424b6a435d82152b1bd3fdfb0833487d5fa90d05d42762a9891fef5",
+      "strip_prefix": "yoke-0.8.3",
+      "url": "https://static.crates.io/crates/yoke/0.8.3/download",
+      "version": "0.8.3"
+    },
+    "aos_registry_web_crates__yoke-derive-0.8.2": {
+      "build_file": "BUILD.yoke-derive-0.8.2.bazel",
+      "license": "Unicode-3.0",
+      "license_domain": "apache-host",
+      "name": "yoke-derive",
+      "sha256": "de844c262c8848816172cef550288e7dc6c7b7814b4ee56b3e1553f275f1858e",
+      "strip_prefix": "yoke-derive-0.8.2",
+      "url": "https://static.crates.io/crates/yoke-derive/0.8.2/download",
+      "version": "0.8.2"
+    },
+    "aos_registry_web_crates__zerofrom-0.1.8": {
+      "build_file": "BUILD.zerofrom-0.1.8.bazel",
+      "license": "Unicode-3.0",
+      "license_domain": "apache-host",
+      "name": "zerofrom",
+      "sha256": "0ec05a11813ea801ff6d75110ad09cd0824ddba17dfe17128ea0d5f68e6c5272",
+      "strip_prefix": "zerofrom-0.1.8",
+      "url": "https://static.crates.io/crates/zerofrom/0.1.8/download",
+      "version": "0.1.8"
+    },
+    "aos_registry_web_crates__zerofrom-derive-0.1.7": {
+      "build_file": "BUILD.zerofrom-derive-0.1.7.bazel",
+      "license": "Unicode-3.0",
+      "license_domain": "apache-host",
+      "name": "zerofrom-derive",
+      "sha256": "11532158c46691caf0f2593ea8358fed6bbf68a0315e80aae9bd41fbade684a1",
+      "strip_prefix": "zerofrom-derive-0.1.7",
+      "url": "https://static.crates.io/crates/zerofrom-derive/0.1.7/download",
+      "version": "0.1.7"
+    },
+    "aos_registry_web_crates__zeroize-1.9.0": {
+      "build_file": "BUILD.zeroize-1.9.0.bazel",
+      "license": "Apache-2.0 OR MIT",
+      "license_domain": "apache-host",
+      "name": "zeroize",
+      "sha256": "e13c156562582aa81c60cb29407084cdb54c4164760106ab78e6c5b0858cf64e",
+      "strip_prefix": "zeroize-1.9.0",
+      "url": "https://static.crates.io/crates/zeroize/1.9.0/download",
+      "version": "1.9.0"
+    },
+    "aos_registry_web_crates__zerotrie-0.2.4": {
+      "build_file": "BUILD.zerotrie-0.2.4.bazel",
+      "license": "Unicode-3.0",
+      "license_domain": "apache-host",
+      "name": "zerotrie",
+      "sha256": "0f9152d31db0792fa83f70fb2f83148effb5c1f5b8c7686c3459e361d9bc20bf",
+      "strip_prefix": "zerotrie-0.2.4",
+      "url": "https://static.crates.io/crates/zerotrie/0.2.4/download",
+      "version": "0.2.4"
+    },
+    "aos_registry_web_crates__zerovec-0.11.6": {
+      "build_file": "BUILD.zerovec-0.11.6.bazel",
+      "license": "Unicode-3.0",
+      "license_domain": "apache-host",
+      "name": "zerovec",
+      "sha256": "90f911cbc359ab6af17377d242225f4d75119aec87ea711a880987b18cd7b239",
+      "strip_prefix": "zerovec-0.11.6",
+      "url": "https://static.crates.io/crates/zerovec/0.11.6/download",
+      "version": "0.11.6"
+    },
+    "aos_registry_web_crates__zerovec-derive-0.11.3": {
+      "build_file": "BUILD.zerovec-derive-0.11.3.bazel",
+      "license": "Unicode-3.0",
+      "license_domain": "apache-host",
+      "name": "zerovec-derive",
+      "sha256": "625dc425cab0dca6dc3c3319506e6593dcb08a9f387ea3b284dbd52a92c40555",
+      "strip_prefix": "zerovec-derive-0.11.3",
+      "url": "https://static.crates.io/crates/zerovec-derive/0.11.3/download",
+      "version": "0.11.3"
+    },
+    "aos_registry_web_crates__zmij-1.0.21": {
+      "build_file": "BUILD.zmij-1.0.21.bazel",
+      "license": "MIT",
+      "license_domain": "apache-host",
+      "name": "zmij",
+      "sha256": "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa",
+      "strip_prefix": "zmij-1.0.21",
+      "url": "https://static.crates.io/crates/zmij/1.0.21/download",
+      "version": "1.0.21"
+    }
+  },
+  "specifications": {
+    "annotations": {},
+    "approved_licenses": [
+      "(MIT OR Apache-2.0) AND Unicode-3.0",
+      "Apache-2.0 OR MIT",
+      "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "BSD-2-Clause",
+      "BSD-3-Clause",
+      "BSD-2-Clause OR Apache-2.0 OR MIT",
+      "CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception",
+      "CC0-1.0 OR MIT-0 OR Apache-2.0",
+      "MIT",
+      "MIT OR Apache-2.0",
+      "MIT OR Apache-2.0 OR LGPL-2.1-or-later",
+      "MIT OR Apache-2.0 OR Zlib",
+      "MIT/Apache-2.0",
+      "Unlicense OR MIT",
+      "Zlib",
+      "Zlib OR Apache-2.0 OR MIT"
+    ],
+    "contracts": {
+      "third_party/rust/BUILD.bazel": "794057a113646310878fe6b961f4beafaa48e4c38eab377833837325411c1504",
+      "third_party/rust/registry-web.bzl": "844a97afc25cbce3c82fb10c36fdf43dc58e97b403b8e821fb3a10368d1a4bf2",
+      "tools/bazel/metadata/export_specs.py": "33810b02484fa4f163fd745fb57e399bccc69357843964dd5d357ac1a16fa1dc",
+      "tools/bazel/rules/crates.bzl": "a49b8f78622988c134e0f3c0334e898dcd9399e321f7311ae374da801203b467"
+    },
+    "family": "registry-web",
+    "feature_variants": {
+      "indexmap": {
+        "features": [
+          "default",
+          "std"
+        ],
+        "resolved_features": [
+          "default",
+          "serde",
+          "std"
+        ],
+        "version": "2.14.0"
+      },
+      "serde": {
+        "exec_features": [
+          "default",
+          "derive",
+          "serde_derive",
+          "std"
+        ],
+        "features": [
+          "default",
+          "derive",
+          "rc",
+          "serde_derive",
+          "std"
+        ],
+        "resolved_features": [
+          "alloc",
+          "default",
+          "derive",
+          "rc",
+          "serde_derive",
+          "std"
+        ],
+        "version": "1.0.228"
+      },
+      "serde_core": {
+        "exec_features": [
+          "result",
+          "std"
+        ],
+        "features": [
+          "alloc",
+          "default",
+          "rc",
+          "result",
+          "std"
+        ],
+        "resolved_features": [
+          "alloc",
+          "default",
+          "rc",
+          "result",
+          "std"
+        ],
+        "version": "1.0.228"
+      },
+      "syn": {
+        "exec_features": [
+          "clone-impls",
+          "default",
+          "derive",
+          "extra-traits",
+          "fold",
+          "full",
+          "parsing",
+          "printing",
+          "proc-macro",
+          "visit",
+          "visit-mut"
+        ],
+        "features": [
+          "clone-impls",
+          "default",
+          "derive",
+          "extra-traits",
+          "full",
+          "parsing",
+          "printing",
+          "proc-macro",
+          "visit",
+          "visit-mut"
+        ],
+        "resolved_features": [
+          "clone-impls",
+          "default",
+          "derive",
+          "extra-traits",
+          "fold",
+          "full",
+          "parsing",
+          "printing",
+          "proc-macro",
+          "visit",
+          "visit-mut"
+        ],
+        "version": "2.0.118"
+      }
+    },
+    "host_only_licenses": [
+      "Apache-2.0"
+    ],
+    "license_domain": "apache-host",
+    "packages": {
+      "anyhow": {
+        "default-features": true,
+        "features": [],
+        "version": "=1.0.103"
+      },
+      "base64": {
+        "default-features": true,
+        "features": [],
+        "version": "=0.22.1"
+      },
+      "crc32fast": {
+        "default-features": true,
+        "features": [],
+        "version": "=1.5.0"
+      },
+      "ed25519-dalek": {
+        "default-features": true,
+        "features": [
+          "pkcs8"
+        ],
+        "version": "=2.2.0"
+      },
+      "flate2": {
+        "default-features": false,
+        "features": [
+          "rust_backend"
+        ],
+        "version": "=1.1.9"
+      },
+      "gloo-net": {
+        "default-features": false,
+        "features": [
+          "http"
+        ],
+        "version": "=0.6.0"
+      },
+      "hex": {
+        "default-features": true,
+        "features": [],
+        "version": "=0.4.3"
+      },
+      "leptos": {
+        "default-features": true,
+        "features": [
+          "csr"
+        ],
+        "version": "=0.7.8"
+      },
+      "leptos_router": {
+        "default-features": true,
+        "features": [],
+        "version": "=0.7.8"
+      },
+      "semver": {
+        "default-features": true,
+        "features": [],
+        "version": "=1.0.28"
+      },
+      "serde": {
+        "default-features": true,
+        "features": [
+          "derive",
+          "rc"
+        ],
+        "version": "=1.0.228"
+      },
+      "serde_json": {
+        "default-features": true,
+        "features": [],
+        "version": "=1.0.150"
+      },
+      "sha2": {
+        "default-features": true,
+        "features": [
+          "compress"
+        ],
+        "version": "=0.10.9"
+      },
+      "thiserror": {
+        "default-features": true,
+        "features": [],
+        "version": "=2.0.18"
+      },
+      "toml": {
+        "default-features": true,
+        "features": [],
+        "version": "=0.8.23"
+      },
+      "wasm-bindgen": {
+        "default-features": true,
+        "features": [],
+        "version": "=0.2.126"
+      },
+      "wasm-bindgen-futures": {
+        "default-features": true,
+        "features": [],
+        "version": "=0.4.76"
+      }
+    },
+    "permissive_crates": [],
+    "platforms": [
+      "x86_64-unknown-linux-gnu",
+      "aarch64-unknown-linux-gnu"
+    ],
+    "schema_version": 1
+  },
+  "tool_identity": {
+    "cargo": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+    "closure": [
+      {
+        "narHash": "sha256:1vx4iinmcss0mp8k67p979k0fkax1lqdy6vwccb3mx30i6awqqhq",
+        "path": "/nix/store/03xdp3x214a0px6gvhg4dwiq7i0fqkrm-python3-3.14.3"
+      },
+      {
+        "narHash": "sha256:0460jf7kr08j5c2s82yapqpdp17p5hk8vnb028p690n5yrd2inrb",
+        "path": "/nix/store/071yhimnxva604hfim2d7m51k593jpks-bash-5.3p15"
+      },
+      {
+        "narHash": "sha256:12j6m23lfw5ci28aglhnc9zq448nampd126x1cy8nbz71jy0vwwx",
+        "path": "/nix/store/0hsvhnbcc7rdm4ysk3wsfz7jlcawgxgz-linux-headers-6.12"
+      },
+      {
+        "narHash": "sha256:0y5gycdr52a2xc8gzxf37bika6m7kyzw3az0lqdbmz4mma49drj5",
+        "path": "/nix/store/56khy442n6yd810v2pqnjipqljlkyk0m-lz4-1.10.0"
+      },
+      {
+        "narHash": "sha256:1l1vfi4ka1v9rbc1h87mqnyn7265q7q8jibp5ic3qwx62d21phqa",
+        "path": "/nix/store/5m9w9gbdaxrkyvkn5wbbhc52mhn6k82g-bzip2-1.0.8"
+      },
+      {
+        "narHash": "sha256:1ldxnz7cyc8nlp28z6vn2xpvg3a9cdww17d3497sz4kxr3k4d258",
+        "path": "/nix/store/6i9yb0a1q1k9qx8l3xb4xr25kf8cg4p5-coreutils-9.11"
+      },
+      {
+        "narHash": "sha256:1qxndfaswmmnhz60fk4c9j7qwn6pnl0il66flxlsw4w2i4lz6xxa",
+        "path": "/nix/store/6zgd9kcbnvnvvz1y4jwb46ys7j7i1cwn-binutils-2.41"
+      },
+      {
+        "narHash": "sha256:02280799m4rzqgl7xjlf0jr1d1pn6rfzfmfj1zmilibflkamxls7",
+        "path": "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15"
+      },
+      {
+        "narHash": "sha256:0m2xdk54j7vnd7frv3msrr40qwxwsya552r00snv1byqz37za4fm",
+        "path": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39"
+      },
+      {
+        "narHash": "sha256:1jda1pw4105zkl8s5gb6zy0p08q5x029vgh2fps31f2pfq143mab",
+        "path": "/nix/store/9d5sm56jg29gcfs4xia4ynymmahw6dks-xz-5.8.3"
+      },
+      {
+        "narHash": "sha256:1d6ljajp4ih85ra4xahg006r5gs0hi2z3wj8ix8dcjll7z2wpm87",
+        "path": "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2"
+      },
+      {
+        "narHash": "sha256:0dq59r0f8vdhmqzy2zars0xq12y1sa179xfbfvl9crk1px6a94f6",
+        "path": "/nix/store/h0xfjzpmdfapqb2vydl5dnbrglvpa8ga-zstd-1.5.7"
+      },
+      {
+        "narHash": "sha256:0cdxvsdc0xmrw5bd28glv64963yz5y99ngzqbk6ihd4dw7nh05c1",
+        "path": "/nix/store/h3y381vk7dz7alj6crzc224pwpm4lvwy-glibc-2.39-dev"
+      },
+      {
+        "narHash": "sha256:0qzmhwc0pd2r6bqs2nllagxysqb2v2qf1d291c6p7p3n1jrfx9ms",
+        "path": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1"
+      },
+      {
+        "narHash": "sha256:0rmkhgqvxbrwz7pbzq0h28ldx59hzzl52q2fa6hsxm7w8jsjkx0c",
+        "path": "/nix/store/j2gvqhqbkprzaklvqg0j82h59whgsryz-workerd-cargo-bazel-0.18.0"
+      },
+      {
+        "narHash": "sha256:02fsh2ljh0rlmz41mx6aqkkvd5i239nchb1xhsmkcailkdyrlrx7",
+        "path": "/nix/store/j7nidr85ia4bc427qhlrzsr7v4rm8akz-llvm-22.1.0"
+      },
+      {
+        "narHash": "sha256:03hygpkakzvjgqd8xi0w2r2wk69wp71j955fr4shx02fs4n3nb6p",
+        "path": "/nix/store/j8g2npgq21hz9vdxk9f2jb8dfrs9vhjn-libxml2-2.15.4"
+      },
+      {
+        "narHash": "sha256:1pfsrp74ghfjpwmwqi2b4f61qfdb8zf82kafmfmcw0xg0dfwwjc3",
+        "path": "/nix/store/jmr87wqpiymkkmlqfy1hkv83mpfs6nvd-gcc-16.2.0-stage2"
+      },
+      {
+        "narHash": "sha256:05nvbvs2gvv61ppqmq3v78pxih9zmcjwi6vz001skz942q6b1z6h",
+        "path": "/nix/store/km452j597r6swyr897sckswcyp5sr7kq-sed-4.10"
+      },
+      {
+        "narHash": "sha256:1rlk00isrky422xyxjrg2v6jz1m0zmxlxnbclbdpjyivwvxkcc4f",
+        "path": "/nix/store/mrddkm4vqc2s2d7apgpf7fh9r2jwx35l-glibc-2.39-static"
+      },
+      {
+        "narHash": "sha256:0pj6qv8287npvfvpsglppjhh55ngjizh47jly7lbhmrya27a4cl0",
+        "path": "/nix/store/n0jh974sfpb4lyig998y94xsq5rrbqp4-readline-8.3p3"
+      },
+      {
+        "narHash": "sha256:0c47ja76g9kk4d086735w3k5kj8kwyky67jzp3xapr02l9v4nnh8",
+        "path": "/nix/store/nhrj0527xjrsi6zjhwfngqxif7rz1lpj-libedit-20260512-3.1"
+      },
+      {
+        "narHash": "sha256:18mj65j3wgnl4swr1w12psf6b2jmdh606vf7nvzd9gh431cs3vk5",
+        "path": "/nix/store/pwn284pvqmnffabp7z6gav441x8fz6q8-libffi-3.8.0"
+      },
+      {
+        "narHash": "sha256:17qhvs6smfarz85b6qnvxsgja71gyfvk83944zsdf3yccawg0z2i",
+        "path": "/nix/store/qwq9gmv4h5k991h1wra4ydkwl07977cd-grep-3.12"
+      },
+      {
+        "narHash": "sha256:1zqysm2wkn0arj41ang2f73p56lyq02mla4w1ycng91cy1cg724y",
+        "path": "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4"
+      },
+      {
+        "narHash": "sha256:1m8wd7jb8r8bcjyz8hqx115aygrz31w0i82gn4jwsdlpyhm91klb",
+        "path": "/nix/store/w6cwf3ns1j97c475chajmwk9v94xjzca-openssl-4.0.2"
+      },
+      {
+        "narHash": "sha256:1vv30xb54bslyj4zrhir583a9m4ysqsmgyx4vfvpibqjaz3cndvi",
+        "path": "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6"
+      }
+    ],
+    "generator": "/nix/store/j2gvqhqbkprzaklvqg0j82h59whgsryz-workerd-cargo-bazel-0.18.0/bin/cargo-bazel",
+    "path": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin:/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15/bin:/nix/store/6i9yb0a1q1k9qx8l3xb4xr25kf8cg4p5-coreutils-9.11/bin:/nix/store/qwq9gmv4h5k991h1wra4ydkwl07977cd-grep-3.12/bin:/nix/store/km452j597r6swyr897sckswcyp5sr7kq-sed-4.10/bin",
+    "rustc": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc",
+    "schema_version": 1
+  }
+}

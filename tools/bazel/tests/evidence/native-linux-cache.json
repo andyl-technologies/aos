@@ -1,0 +1,264 @@
+{
+  "actions": {
+    "cpp_app": {
+      "consumer": {
+        "action_digest": {
+          "hash": "77564e66aca42a2e0e72f77dbd4e148c0b1ce7c84200dc82b735e51efe96f0b1",
+          "hashFunctionName": "SHA256",
+          "sizeBytes": "146"
+        },
+        "cache_hit": false,
+        "fingerprint": "82a4011d5cf93c2324fb33a465796687204a1bfeec2977e01185174f5559e893",
+        "runner": "linux-sandbox"
+      },
+      "producer": {
+        "action_digest": {
+          "hash": "9a7a684815f80a53f92c02c66c313c32c3981ec37461c126da08192da725fd68",
+          "hashFunctionName": "SHA256",
+          "sizeBytes": "146"
+        },
+        "cache_hit": false,
+        "fingerprint": "c3c820e796ef582bc7461100f4f6ca3e274bf807cc5d64c95534e164558ad6c9",
+        "runner": "linux-sandbox"
+      },
+      "uncached": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "82a4011d5cf93c2324fb33a465796687204a1bfeec2977e01185174f5559e893",
+        "runner": "linux-sandbox"
+      }
+    },
+    "cpp_library": {
+      "consumer": {
+        "action_digest": {
+          "hash": "e8104eeb327f2351ae586449fa48594f1ad45524f8ee3d3d9c7864b6eec023c8",
+          "hashFunctionName": "SHA256",
+          "sizeBytes": "146"
+        },
+        "cache_hit": true,
+        "fingerprint": "fee9dfdf2119e837ce50d13ff22a25707b681ab57f24977b4474b228a892e6dd",
+        "runner": "disk cache hit"
+      },
+      "producer": {
+        "action_digest": {
+          "hash": "e8104eeb327f2351ae586449fa48594f1ad45524f8ee3d3d9c7864b6eec023c8",
+          "hashFunctionName": "SHA256",
+          "sizeBytes": "146"
+        },
+        "cache_hit": false,
+        "fingerprint": "fee9dfdf2119e837ce50d13ff22a25707b681ab57f24977b4474b228a892e6dd",
+        "runner": "linux-sandbox"
+      },
+      "uncached": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "fee9dfdf2119e837ce50d13ff22a25707b681ab57f24977b4474b228a892e6dd",
+        "runner": "linux-sandbox"
+      }
+    },
+    "fixture_macro": {
+      "consumer": {
+        "action_digest": {
+          "hash": "ab4046978a97140acf1430933db8c72dee565295e24e190ed8f1261eb7c58d74",
+          "hashFunctionName": "SHA256",
+          "sizeBytes": "146"
+        },
+        "cache_hit": true,
+        "fingerprint": "4653d10be6e0d183a0fd246c8bc8aa0cfd7fa6ca76961e7b629515563d980153",
+        "runner": "disk cache hit"
+      },
+      "producer": {
+        "action_digest": {
+          "hash": "ab4046978a97140acf1430933db8c72dee565295e24e190ed8f1261eb7c58d74",
+          "hashFunctionName": "SHA256",
+          "sizeBytes": "146"
+        },
+        "cache_hit": false,
+        "fingerprint": "4653d10be6e0d183a0fd246c8bc8aa0cfd7fa6ca76961e7b629515563d980153",
+        "runner": "linux-sandbox"
+      },
+      "uncached": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "4653d10be6e0d183a0fd246c8bc8aa0cfd7fa6ca76961e7b629515563d980153",
+        "runner": "linux-sandbox"
+      }
+    },
+    "generated": {
+      "consumer": {
+        "action_digest": {
+          "hash": "6561ffd94694014a6f2c8b84405f56041e015f071f599c3aaee1084404903838",
+          "hashFunctionName": "SHA256",
+          "sizeBytes": "146"
+        },
+        "cache_hit": true,
+        "fingerprint": "ec0dad5baa1e34366014e0b1dbf795ef6c84ddf6668f4ab429fd3d040a7fa95f",
+        "runner": "disk cache hit"
+      },
+      "producer": {
+        "action_digest": {
+          "hash": "6561ffd94694014a6f2c8b84405f56041e015f071f599c3aaee1084404903838",
+          "hashFunctionName": "SHA256",
+          "sizeBytes": "146"
+        },
+        "cache_hit": false,
+        "fingerprint": "ec0dad5baa1e34366014e0b1dbf795ef6c84ddf6668f4ab429fd3d040a7fa95f",
+        "runner": "linux-sandbox"
+      },
+      "uncached": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "ec0dad5baa1e34366014e0b1dbf795ef6c84ddf6668f4ab429fd3d040a7fa95f",
+        "runner": "linux-sandbox"
+      }
+    },
+    "generated_library": {
+      "consumer": {
+        "action_digest": {
+          "hash": "19395d9b3afdd911dead50a1892b95324db813aadd9cbe04c6ef53040cbf2066",
+          "hashFunctionName": "SHA256",
+          "sizeBytes": "146"
+        },
+        "cache_hit": true,
+        "fingerprint": "ea2df9f7c15be546a165785cfb5d8dc745c5fa0d7404543a86743d7be89b56dc",
+        "runner": "disk cache hit"
+      },
+      "producer": {
+        "action_digest": {
+          "hash": "19395d9b3afdd911dead50a1892b95324db813aadd9cbe04c6ef53040cbf2066",
+          "hashFunctionName": "SHA256",
+          "sizeBytes": "146"
+        },
+        "cache_hit": false,
+        "fingerprint": "ea2df9f7c15be546a165785cfb5d8dc745c5fa0d7404543a86743d7be89b56dc",
+        "runner": "linux-sandbox"
+      },
+      "uncached": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "ea2df9f7c15be546a165785cfb5d8dc745c5fa0d7404543a86743d7be89b56dc",
+        "runner": "linux-sandbox"
+      }
+    },
+    "native_app": {
+      "consumer": {
+        "action_digest": {
+          "hash": "dfc862988d566517d8ba9b90aec6aa275f224e9ff5a73a958365ff4eaeed0d47",
+          "hashFunctionName": "SHA256",
+          "sizeBytes": "146"
+        },
+        "cache_hit": true,
+        "fingerprint": "c75d69f0e31f382889c9e6c78d4e1307c509c25be3ec39c50aed7b3c8790cc47",
+        "runner": "disk cache hit"
+      },
+      "producer": {
+        "action_digest": {
+          "hash": "dfc862988d566517d8ba9b90aec6aa275f224e9ff5a73a958365ff4eaeed0d47",
+          "hashFunctionName": "SHA256",
+          "sizeBytes": "146"
+        },
+        "cache_hit": false,
+        "fingerprint": "c75d69f0e31f382889c9e6c78d4e1307c509c25be3ec39c50aed7b3c8790cc47",
+        "runner": "linux-sandbox"
+      },
+      "uncached": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "c75d69f0e31f382889c9e6c78d4e1307c509c25be3ec39c50aed7b3c8790cc47",
+        "runner": "linux-sandbox"
+      }
+    },
+    "rust_app": {
+      "consumer": {
+        "action_digest": {
+          "hash": "f2434af9d2c199b9b0646e8d05535537e30d4bc486613c35383c286c1d9f3048",
+          "hashFunctionName": "SHA256",
+          "sizeBytes": "146"
+        },
+        "cache_hit": false,
+        "fingerprint": "b773f1466b8bf5680029baff40bb4a2cca65be457bc24a3524a62cecc2a8d7c0",
+        "runner": "linux-sandbox"
+      },
+      "producer": {
+        "action_digest": {
+          "hash": "75bb6e11afd76cc8e3068f9cf032f1faf4720ba681b09699b7424632dd91a368",
+          "hashFunctionName": "SHA256",
+          "sizeBytes": "146"
+        },
+        "cache_hit": false,
+        "fingerprint": "301b2ff236b44be91eb04b7190da6afbc00c2acc328caa188e49bbc824b36e3c",
+        "runner": "linux-sandbox"
+      },
+      "uncached": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "b773f1466b8bf5680029baff40bb4a2cca65be457bc24a3524a62cecc2a8d7c0",
+        "runner": "linux-sandbox"
+      }
+    },
+    "rust_library": {
+      "consumer": {
+        "action_digest": {
+          "hash": "c0389d43c88f5ae7bd1081dc372d56a161764831d8dbe67630fd2f5ff7c587b4",
+          "hashFunctionName": "SHA256",
+          "sizeBytes": "146"
+        },
+        "cache_hit": true,
+        "fingerprint": "92cb22f486554ef7db29d5c905dd4edecf5af7d0b2b3489d78895aad3e7ad529",
+        "runner": "disk cache hit"
+      },
+      "producer": {
+        "action_digest": {
+          "hash": "c0389d43c88f5ae7bd1081dc372d56a161764831d8dbe67630fd2f5ff7c587b4",
+          "hashFunctionName": "SHA256",
+          "sizeBytes": "146"
+        },
+        "cache_hit": false,
+        "fingerprint": "92cb22f486554ef7db29d5c905dd4edecf5af7d0b2b3489d78895aad3e7ad529",
+        "runner": "linux-sandbox"
+      },
+      "uncached": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "92cb22f486554ef7db29d5c905dd4edecf5af7d0b2b3489d78895aad3e7ad529",
+        "runner": "linux-sandbox"
+      }
+    }
+  },
+  "artifacts": {
+    "bin/cpp-fixture": "63e027f2845c7cfe36a3fb9e8afbc5920193d165941ba0623662eeca621c2434",
+    "bin/native-fixture": "b49e6839c6c9189dfd6d7e5036622aec57df3920857a82bed3fd2559afb79dd0",
+    "bin/rust-fixture": "ccae924cf4de3559a56bae71d68ffbf6dfe20d40616436e2e5ba9eaf61f4f96c"
+  },
+  "builds": {
+    "consumer": "/nix/store/4ji2dhm91cfvnlrhsv9jdl9ragk1bbzx-aos-bazel-cache-consumer-1",
+    "producer": "/nix/store/sfcgvfk7zrvjfs0h7piw2bxy8jd5m2ig-aos-bazel-cache-producer-1",
+    "uncached": "/nix/store/hqqmk00yynh51x90pvnxbbx6y34l4r5v-aos-bazel-cache-uncached-1"
+  },
+  "schema_version": 1,
+  "summary": {
+    "consumer": {
+      "AosPythonGenerate:disk cache hit": 1,
+      "CppArchive:disk cache hit": 1,
+      "CppCompile:disk cache hit": 1,
+      "CppCompile:linux-sandbox": 1,
+      "CppLink:linux-sandbox": 1,
+      "Rustc:disk cache hit": 6,
+      "Rustc:linux-sandbox": 1
+    },
+    "producer": {
+      "AosPythonGenerate:linux-sandbox": 1,
+      "CppArchive:linux-sandbox": 1,
+      "CppCompile:linux-sandbox": 2,
+      "CppLink:linux-sandbox": 1,
+      "Rustc:linux-sandbox": 7
+    },
+    "uncached": {
+      "AosPythonGenerate:linux-sandbox": 1,
+      "CppArchive:linux-sandbox": 1,
+      "CppCompile:linux-sandbox": 2,
+      "CppLink:linux-sandbox": 1,
+      "Rustc:linux-sandbox": 7
+    }
+  }
+}

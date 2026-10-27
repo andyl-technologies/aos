@@ -17,13 +17,15 @@
   sbsigntools,
   tpm2-tools,
   util-linux,
+  callPackage,
+  buildDriver ? "rustc",
 }: let
   # These entry points freeze the complete selected boot-tool closure with
   # env!, so the standalone target is deliberately compiled outside Cargo.
   source = ../../crates/boot/aos-boot-runtime/standalone;
   packageRuntime = aos.packageRuntime;
-in
-  mkDerivation {
+  withBuildDriver = selected: callPackage ./aos-boot-preparations.nix {buildDriver = selected;};
+  rustcPackage = mkDerivation {
     platformSupport = {
       build = [
         {
@@ -67,6 +69,10 @@ in
       util-linux
     ];
     propagatedDeps = [];
+    passthru = {
+      inherit withBuildDriver;
+      buildDriver = "rustc";
+    };
     module = ./_aos-boot-preparations;
     moduleDeps = [service-management aos-boot-storage];
 
@@ -109,4 +115,9 @@ in
       license = "Apache-2.0";
       mainProgram = "aos-boot-preparations";
     };
-  }
+  };
+in
+  assert builtins.elem buildDriver ["rustc" "bazel"];
+    if buildDriver == "bazel"
+    then callPackage ./_aos-boot-preparations-bazel.nix {inherit rustcPackage;}
+    else rustcPackage

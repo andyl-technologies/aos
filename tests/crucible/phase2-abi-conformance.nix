@@ -5,7 +5,12 @@
   taskIds ? ["T-HARN-17" "T-API-11" "T-API-12" "T-PAT-8"],
   dependencies ? [],
   campaignComposition ? null,
+  abiOwnerExecutions ? pkgs.crucibleBazelAbiOwners or null,
 }: let
+  abiDriver =
+    if abiOwnerExecutions == null
+    then "cargo"
+    else "bazel";
   campaignMode =
     if campaignComposition == null
     then null
@@ -24,6 +29,14 @@
     else campaignSystem.config.aos.services.crucibleCampaign._runtimeIdentity;
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  abiVerifier = builtins.path {
+    path = ../../tools/bazel/tests;
+    name = "crucible-bazel-abi-owner-verifier";
+    filter = path: type:
+      type
+      == "regular"
+      && builtins.elem (baseNameOf path) ["verify_abi_owners.py" "verify_cache.py"];
+  };
 
   harnessLib = builtins.readFile ../../crates/crucible/crucible-test-support/src/lib.rs;
   gateTargets = builtins.readFile ../../crates/crucible/crucible-test-support/src/gate_targets.rs;
@@ -381,8 +394,18 @@ in
       pname = "crucible-phase2-abi-conformance";
       version = "0";
       LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-      runtimeDeps = [pkgs.sqlite];
-      src = crucibleSrc;
+      # Engine cross-checks execute the independently linked Apache helper.
+      CRUCIBLE_QEMU_TEST_ORACLE =
+        lib.optionalString (abiOwnerExecutions == null)
+        "${pkgs.callPackage ../../pkgs/tools/crucible/_qemu-test-oracle.nix {}}/bin/crucible-qemu-test-oracle";
+      runtimeDeps = lib.optional (abiOwnerExecutions == null) pkgs.sqlite;
+      # The Bazel owners carry their precise sources. Keeping the Cargo archive
+      # here would add unrelated manifests and source changes to their driver.
+      src =
+        if abiOwnerExecutions == null
+        then crucibleSrc
+        else null;
+      passthru = {inherit abiDriver;};
       # Use Nix's realized graph because the sandbox has no store database.
       outputChecks =
         if campaignComposition == null
@@ -396,12 +419,9 @@ in
       buildDeps =
         [
           pkgs.grep
-          pkgs.rust
-          pkgs.sed
-
-          pkgs.pkg-config
-          pkgs.sqlite
         ]
+        ++ lib.optionals (abiOwnerExecutions == null) [pkgs.rust pkgs.sed pkgs.pkg-config pkgs.sqlite]
+        ++ lib.optionals (abiOwnerExecutions != null) [pkgs.python3 abiOwnerExecutions]
         ++ dependencies
         ++ lib.optionals (campaignComposition != null) [pkgs.jq campaignToplevel];
 
@@ -409,7 +429,7 @@ in
         [
           {
             name = "unpack";
-            script = ''
+            script = lib.optionalString (abiOwnerExecutions == null) ''
               cp -R "$src" source
               chmod -R u+w source
               cd source
@@ -417,7 +437,7 @@ in
           }
           {
             name = "configure";
-            script = ''
+            script = lib.optionalString (abiOwnerExecutions == null) ''
               export CARGO_HOME="$TMPDIR/cargo"
               if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
                 cd source
@@ -434,166 +454,175 @@ in
           }
           {
             name = "run-abi-conformance-gate";
-            script = ''
-              set -eu
-              if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-                cd source
-              fi
+            script =
+              if abiOwnerExecutions != null
+              then ''
+                set -eu
+                mkdir -p "$out"
+                PYTHONDONTWRITEBYTECODE=1 ${pkgs.python3}/bin/python3 ${abiVerifier}/verify_abi_owners.py \
+                  --canonical ${./phase2-abi-conformance.nix} \
+                  --comparison ${abiOwnerExecutions} --output "$out/bazel-abi-owners.json"
+              ''
+              else ''
+                set -eu
+                if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
+                  cd source
+                fi
 
-              # Cargo treats a filter that selects zero tests as success. Each
-              # ABI owner is therefore listed first, with both its exact current
-              # cardinality and one canonical owner test checked before execution.
-              require_test_set() {
-                expected_count="$1"
-                label="$2"
-                exact_test="$3"
-                shift 3
+                # Cargo treats a filter that selects zero tests as success. Each
+                # ABI owner is therefore listed first, with both its exact current
+                # cardinality and one canonical owner test checked before execution.
+                require_test_set() {
+                  expected_count="$1"
+                  label="$2"
+                  exact_test="$3"
+                  shift 3
 
-                list_file="$TMPDIR/abi-conformance-$label-tests.list"
+                  list_file="$TMPDIR/abi-conformance-$label-tests.list"
+                  cargo test \
+                    --frozen \
+                    --offline \
+                    --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                    --manifest-path crates/Cargo.toml \
+                    "$@" \
+                    -- --list > "$list_file"
+
+                  actual_count=$(grep -c ': test$' "$list_file" || :)
+                  if [ "$actual_count" -ne "$expected_count" ]; then
+                    echo "$label registered $actual_count ABI tests; expected $expected_count" >&2
+                    cat "$list_file" >&2
+                    exit 1
+                  fi
+                  if ! grep -Fxq "$exact_test: test" "$list_file"; then
+                    echo "$label did not register canonical ABI test $exact_test" >&2
+                    cat "$list_file" >&2
+                    exit 1
+                  fi
+                }
+
+                require_test_set 4 harness \
+                  gate_abi_conformance_is_implemented_in_catalog_and_targets \
+                  -p crucible-test-support --test gate_abi_conformance
                 cargo test \
                   --frozen \
                   --offline \
                   --target-dir "$TMPDIR/crucible-abi-conformance-target" \
                   --manifest-path crates/Cargo.toml \
-                  "$@" \
-                  -- --list > "$list_file"
-
-                actual_count=$(grep -c ': test$' "$list_file" || :)
-                if [ "$actual_count" -ne "$expected_count" ]; then
-                  echo "$label registered $actual_count ABI tests; expected $expected_count" >&2
-                  cat "$list_file" >&2
-                  exit 1
-                fi
-                if ! grep -Fxq "$exact_test: test" "$list_file"; then
-                  echo "$label did not register canonical ABI test $exact_test" >&2
-                  cat "$list_file" >&2
-                  exit 1
-                fi
-              }
-
-              require_test_set 4 harness \
-                gate_abi_conformance_is_implemented_in_catalog_and_targets \
-                -p crucible-test-support --test gate_abi_conformance
-              cargo test \
-                --frozen \
-                --offline \
-                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
-                --manifest-path crates/Cargo.toml \
-                -p crucible-test-support \
-                --test gate_abi_conformance \
-                -- --test-threads=1
-              require_test_set 5 shmem \
-                gate_cases::gate_abi_conformance_checks_generated_header_and_golden_vectors \
-                -p crucible-qemu-shmem --test gate_abi_conformance
-              cargo test \
-                --frozen \
-                --offline \
-                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
-                --manifest-path crates/Cargo.toml \
-                -p crucible-qemu-shmem \
-                --test gate_abi_conformance \
-                -- --test-threads=1
-              require_test_set 18 protocol \
-                protocol_abi_conformance_runs_named_checks \
-                -p crucible-qemu-protocol --test gate_abi_conformance
-              cargo test \
-                --frozen \
-                --offline \
-                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
-                --manifest-path crates/Cargo.toml \
-                -p crucible-qemu-protocol \
-                --test gate_abi_conformance \
-                -- --test-threads=1
-              require_test_set 7 protocol-golden \
-                golden_vectors_match_canonical_codec_bytes \
-                -p crucible-qemu-protocol --test golden_vectors
-              cargo test \
-                --frozen \
-                --offline \
-                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
-                --manifest-path crates/Cargo.toml \
-                -p crucible-qemu-protocol \
-                --test golden_vectors \
-                -- --test-threads=1
-              require_test_set 3 protocol-doorbell \
-                doorbell_abi::tests::doorbell_abi_vectors_cover_x86_64_and_aarch64 \
-                -p crucible-qemu-protocol doorbell_abi
-              cargo test \
-                --frozen \
-                --offline \
-                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
-                --manifest-path crates/Cargo.toml \
-                -p crucible-qemu-protocol \
-                doorbell_abi \
-                -- --test-threads=1
-              require_test_set 6 api \
-                rpc_abi_conformance_runs_named_checks \
-                -p crucible-control-api --test gate_abi_conformance
-              cargo test \
-                --frozen \
-                --offline \
-                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
-                --manifest-path crates/Cargo.toml \
-                -p crucible-control-api \
-                --test gate_abi_conformance \
-                -- --test-threads=1
-              require_test_set 8 plugin-io-wire \
-                io_wire_fuzz::tests::io_wire_regression_corpus_exercises_block_and_9p_wire_cases \
-                -p crucible-qemu-plugin --lib io_wire_fuzz
-              cargo test \
-                --frozen \
-                --offline \
-                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
-                --manifest-path crates/Cargo.toml \
-                -p crucible-qemu-plugin \
-                --lib io_wire_fuzz \
-                -- --test-threads=1
-              require_test_set 54 plugin-doorbell \
-                whitebox_doorbell::tests::whitebox_registration_off_mode_installs_no_trap_and_preserves_black_box \
-                -p crucible-qemu-plugin --lib whitebox_doorbell
-              cargo test \
-                --frozen \
-                --offline \
-                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
-                --manifest-path crates/Cargo.toml \
-                -p crucible-qemu-plugin \
-                --lib whitebox_doorbell \
-                -- --test-threads=1
-              require_test_set 2 plugin-owner \
-                gate_abi_conformance_covers_plugin_io_wire_fuzzing \
-                -p crucible-qemu-plugin --test gate_abi_conformance
-              cargo test \
-                --frozen \
-                --offline \
-                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
-                --manifest-path crates/Cargo.toml \
-                -p crucible-qemu-plugin \
-                --test gate_abi_conformance \
-                -- --test-threads=1
-              require_test_set 5 guest \
-                guest_cli_verbs_encode_shared_marker_payloads \
-                -p crucible-guest --test gate_abi_conformance
-              cargo test \
-                --frozen \
-                --offline \
-                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
-                --manifest-path crates/Cargo.toml \
-                -p crucible-guest \
-                --test gate_abi_conformance \
-                -- --test-threads=1
-              require_test_set 2 engine \
-                gate_abi_conformance_engine_aggregates_boundary_abi_owners \
-                -p crucible-engine --features test-double --test gate_abi_conformance
-              cargo test \
-                --frozen \
-                --offline \
-                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
-                --manifest-path crates/Cargo.toml \
-                -p crucible-engine \
-                --features test-double \
-                --test gate_abi_conformance \
-                -- --test-threads=1
-            '';
+                  -p crucible-test-support \
+                  --test gate_abi_conformance \
+                  -- --test-threads=1
+                require_test_set 5 shmem \
+                  gate_cases::gate_abi_conformance_checks_generated_header_and_golden_vectors \
+                  -p crucible-qemu-shmem --test gate_abi_conformance
+                cargo test \
+                  --frozen \
+                  --offline \
+                  --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                  --manifest-path crates/Cargo.toml \
+                  -p crucible-qemu-shmem \
+                  --test gate_abi_conformance \
+                  -- --test-threads=1
+                require_test_set 18 protocol \
+                  protocol_abi_conformance_runs_named_checks \
+                  -p crucible-qemu-protocol --test gate_abi_conformance
+                cargo test \
+                  --frozen \
+                  --offline \
+                  --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                  --manifest-path crates/Cargo.toml \
+                  -p crucible-qemu-protocol \
+                  --test gate_abi_conformance \
+                  -- --test-threads=1
+                require_test_set 7 protocol-golden \
+                  golden_vectors_match_canonical_codec_bytes \
+                  -p crucible-qemu-protocol --test golden_vectors
+                cargo test \
+                  --frozen \
+                  --offline \
+                  --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                  --manifest-path crates/Cargo.toml \
+                  -p crucible-qemu-protocol \
+                  --test golden_vectors \
+                  -- --test-threads=1
+                require_test_set 3 protocol-doorbell \
+                  doorbell_abi::tests::doorbell_abi_vectors_cover_x86_64_and_aarch64 \
+                  -p crucible-qemu-protocol doorbell_abi
+                cargo test \
+                  --frozen \
+                  --offline \
+                  --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                  --manifest-path crates/Cargo.toml \
+                  -p crucible-qemu-protocol \
+                  doorbell_abi \
+                  -- --test-threads=1
+                require_test_set 6 api \
+                  rpc_abi_conformance_runs_named_checks \
+                  -p crucible-control-api --test gate_abi_conformance
+                cargo test \
+                  --frozen \
+                  --offline \
+                  --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                  --manifest-path crates/Cargo.toml \
+                  -p crucible-control-api \
+                  --test gate_abi_conformance \
+                  -- --test-threads=1
+                require_test_set 8 plugin-io-wire \
+                  io_wire_fuzz::tests::io_wire_regression_corpus_exercises_block_and_9p_wire_cases \
+                  -p crucible-qemu-plugin --lib io_wire_fuzz
+                cargo test \
+                  --frozen \
+                  --offline \
+                  --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                  --manifest-path crates/Cargo.toml \
+                  -p crucible-qemu-plugin \
+                  --lib io_wire_fuzz \
+                  -- --test-threads=1
+                require_test_set 54 plugin-doorbell \
+                  whitebox_doorbell::tests::whitebox_registration_off_mode_installs_no_trap_and_preserves_black_box \
+                  -p crucible-qemu-plugin --lib whitebox_doorbell
+                cargo test \
+                  --frozen \
+                  --offline \
+                  --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                  --manifest-path crates/Cargo.toml \
+                  -p crucible-qemu-plugin \
+                  --lib whitebox_doorbell \
+                  -- --test-threads=1
+                require_test_set 2 plugin-owner \
+                  gate_abi_conformance_covers_plugin_io_wire_fuzzing \
+                  -p crucible-qemu-plugin --test gate_abi_conformance
+                cargo test \
+                  --frozen \
+                  --offline \
+                  --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                  --manifest-path crates/Cargo.toml \
+                  -p crucible-qemu-plugin \
+                  --test gate_abi_conformance \
+                  -- --test-threads=1
+                require_test_set 5 guest \
+                  guest_cli_verbs_encode_shared_marker_payloads \
+                  -p crucible-guest --test gate_abi_conformance
+                cargo test \
+                  --frozen \
+                  --offline \
+                  --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                  --manifest-path crates/Cargo.toml \
+                  -p crucible-guest \
+                  --test gate_abi_conformance \
+                  -- --test-threads=1
+                require_test_set 2 engine \
+                  gate_abi_conformance_engine_aggregates_boundary_abi_owners \
+                  -p crucible-engine --features test-double --test gate_abi_conformance
+                cargo test \
+                  --frozen \
+                  --offline \
+                  --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                  --manifest-path crates/Cargo.toml \
+                  -p crucible-engine \
+                  --features test-double \
+                  --test gate_abi_conformance \
+                  -- --test-threads=1
+              '';
           }
           {
             name = "write-result";
@@ -605,6 +634,7 @@ in
               check=${attrPath}
               tasks=${taskList}
               gate=gate:abi-conformance
+              driver=${abiDriver}
               shmem_vectors=generated-header,layout-fixture,spsc-structure-aware,spsc-snapshot-byte-codec
               protocol_vectors=hello,hello-ack,setup-payload,setup-ack,quit
               rpc_vectors=hello-request,hello-response,attached,send-request,send-response,event-effect-applied

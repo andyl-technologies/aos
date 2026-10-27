@@ -1,0 +1,2839 @@
+{
+  "baseline": "daemon-cargo-baseline.json",
+  "doctest_cases": 0,
+  "doctest_targets": 1,
+  "executed_cases": 1111,
+  "fixture_locator_change": {
+    "assertions_and_selected_fixture_unchanged": true,
+    "baseline_sha256": "8ee6d214877d390f5c4f0b64d10a4e2a34f87e78bdd529898cd5fca2c2e8be81",
+    "bazel_lookup": "TEST_SRCDIR/TEST_WORKSPACE/tests/crucible/fixtures/e2e-determinism.scenario.toml",
+    "bazel_sha256": "35ee08b945d4d7043f58d4db50bc18b7b5f09ce3b42e13b00789e249995764ef",
+    "cargo_lookup": "Original path relative to CARGO_MANIFEST_DIR",
+    "file": "crates/crucible/control/crucible-daemon/src/qemu_campaign_lifecycle/tests/host_parallel_native.rs",
+    "only_the_fixture_locator_changed": true
+  },
+  "ignored_cases": 24,
+  "libtest_artifacts": 4,
+  "limits": [
+    "Comparison uses the retained original Cargo test binaries. A fresh Cargo execution of the locator change and full feature/editor qualification remain separate gates.",
+    "All original ignored cases remain ignored; no packaged QEMU or external S3 resources are provisioned here.",
+    "No performance or production migration claim is made."
+  ],
+  "parity": {
+    "doctests": {
+      "//crates/crucible/control/crucible-daemon:doc": {}
+    },
+    "examples": [
+      "//crates/crucible/control/crucible-daemon:crucible-e2e-determinism-scenario"
+    ],
+    "features": {
+      "aead@0.5.2": [
+        [
+          "alloc",
+          "getrandom",
+          "rand_core"
+        ]
+      ],
+      "aes-gcm@0.10.3": [
+        [
+          "aes",
+          "alloc",
+          "default",
+          "getrandom",
+          "rand_core",
+          "zeroize"
+        ]
+      ],
+      "aes@0.8.4": [
+        []
+      ],
+      "ahash@0.8.12": [
+        []
+      ],
+      "aho-corasick@1.1.4": [
+        [
+          "perf-literal",
+          "std"
+        ]
+      ],
+      "allocator-api2@0.2.21": [
+        [
+          "alloc"
+        ]
+      ],
+      "arrayref@0.3.9": [
+        []
+      ],
+      "arrayvec@0.7.7": [
+        []
+      ],
+      "atomic-waker@1.1.2": [
+        []
+      ],
+      "autocfg@1.5.1": [
+        []
+      ],
+      "aws-credential-types@1.2.14": [
+        []
+      ],
+      "aws-lc-rs@1.17.0": [
+        [
+          "aws-lc-sys",
+          "prebuilt-nasm"
+        ]
+      ],
+      "aws-lc-sys@0.41.0": [
+        [
+          "prebuilt-nasm"
+        ]
+      ],
+      "aws-runtime@1.7.4": [
+        [
+          "event-stream",
+          "http-02x",
+          "http-1x",
+          "sigv4a"
+        ]
+      ],
+      "aws-sdk-s3@1.134.0": [
+        [
+          "default-https-client",
+          "http-1x",
+          "rt-tokio",
+          "sigv4a"
+        ]
+      ],
+      "aws-sigv4@1.4.4": [
+        [
+          "default",
+          "http0-compat",
+          "http1",
+          "sign-eventstream",
+          "sign-http",
+          "sigv4a"
+        ]
+      ],
+      "aws-smithy-async@1.2.14": [
+        [
+          "rt-tokio"
+        ]
+      ],
+      "aws-smithy-checksums@0.64.8": [
+        []
+      ],
+      "aws-smithy-eventstream@0.60.20": [
+        []
+      ],
+      "aws-smithy-http-client@1.1.12": [
+        [
+          "default-client",
+          "rustls-aws-lc"
+        ]
+      ],
+      "aws-smithy-http@0.63.6": [
+        [
+          "aws-smithy-eventstream",
+          "event-stream"
+        ]
+      ],
+      "aws-smithy-json@0.62.6": [
+        []
+      ],
+      "aws-smithy-observability@0.2.6": [
+        []
+      ],
+      "aws-smithy-runtime-api-macros@1.0.0": [
+        []
+      ],
+      "aws-smithy-runtime-api@1.12.1": [
+        [
+          "client",
+          "default",
+          "http-02x",
+          "http-1x",
+          "http-auth"
+        ]
+      ],
+      "aws-smithy-runtime@1.11.3": [
+        [
+          "client",
+          "default-https-client"
+        ]
+      ],
+      "aws-smithy-schema@0.1.0": [
+        []
+      ],
+      "aws-smithy-types@1.4.8": [
+        [
+          "byte-stream-poll-next",
+          "http-body-0-4-x",
+          "http-body-1-x",
+          "rt-tokio"
+        ]
+      ],
+      "aws-smithy-xml@0.60.15": [
+        []
+      ],
+      "aws-types@1.3.16": [
+        []
+      ],
+      "axum-core@0.5.6": [
+        [
+          "tracing"
+        ]
+      ],
+      "axum-macros@0.5.1": [
+        [
+          "default"
+        ]
+      ],
+      "axum@0.8.9": [
+        [
+          "default",
+          "form",
+          "http1",
+          "json",
+          "macros",
+          "matched-path",
+          "original-uri",
+          "query",
+          "tokio",
+          "tower-log",
+          "tracing"
+        ]
+      ],
+      "base16ct@0.2.0": [
+        [
+          "alloc"
+        ]
+      ],
+      "base64-simd@0.8.0": [
+        [
+          "alloc",
+          "default",
+          "detect",
+          "std"
+        ]
+      ],
+      "base64@0.22.1": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "base64ct@1.8.3": [
+        [
+          "alloc"
+        ]
+      ],
+      "bitflags@2.13.0": [
+        [
+          "std"
+        ]
+      ],
+      "blake3@1.8.5": [
+        [
+          "pure",
+          "std"
+        ]
+      ],
+      "block-buffer@0.10.4": [
+        []
+      ],
+      "block-buffer@0.12.0": [
+        []
+      ],
+      "bytes-utils@0.1.4": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "bytes@1.11.1": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "cc@1.2.65": [
+        [
+          "parallel"
+        ]
+      ],
+      "cfg-if@1.0.4": [
+        []
+      ],
+      "ciborium-io@0.2.2": [
+        [
+          "alloc",
+          "std"
+        ]
+      ],
+      "ciborium-ll@0.2.2": [
+        []
+      ],
+      "ciborium@0.2.2": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "cipher@0.4.4": [
+        []
+      ],
+      "cmake@0.1.58": [
+        []
+      ],
+      "cmov@0.5.4": [
+        []
+      ],
+      "const-oid@0.10.2": [
+        []
+      ],
+      "const-oid@0.9.6": [
+        []
+      ],
+      "constant_time_eq@0.4.2": [
+        [
+          "std"
+        ]
+      ],
+      "cpufeatures@0.2.17": [
+        []
+      ],
+      "cpufeatures@0.3.0": [
+        []
+      ],
+      "crc-fast@1.10.0": [
+        [
+          "alloc",
+          "default",
+          "digest",
+          "ffi",
+          "panic-handler",
+          "std"
+        ]
+      ],
+      "crc32fast@1.5.0": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "crypto-bigint@0.5.5": [
+        [
+          "default",
+          "generic-array",
+          "rand",
+          "rand_core",
+          "zeroize"
+        ]
+      ],
+      "crypto-common@0.1.7": [
+        [
+          "getrandom",
+          "rand_core",
+          "std"
+        ]
+      ],
+      "crypto-common@0.2.2": [
+        []
+      ],
+      "ctr@0.9.2": [
+        []
+      ],
+      "ctutils@0.4.2": [
+        []
+      ],
+      "curve25519-dalek-derive@0.1.1": [
+        []
+      ],
+      "curve25519-dalek@4.1.3": [
+        [
+          "alloc",
+          "digest",
+          "precomputed-tables",
+          "zeroize"
+        ]
+      ],
+      "der@0.7.10": [
+        [
+          "alloc",
+          "oid",
+          "pem",
+          "std",
+          "zeroize"
+        ]
+      ],
+      "deranged@0.5.8": [
+        [
+          "default",
+          "powerfmt"
+        ]
+      ],
+      "digest@0.10.7": [
+        [
+          "alloc",
+          "block-buffer",
+          "const-oid",
+          "core-api",
+          "default",
+          "mac",
+          "oid",
+          "std",
+          "subtle"
+        ]
+      ],
+      "digest@0.11.3": [
+        [
+          "alloc",
+          "block-api",
+          "default",
+          "mac",
+          "oid"
+        ]
+      ],
+      "displaydoc@0.2.6": [
+        []
+      ],
+      "dunce@1.0.5": [
+        []
+      ],
+      "ecdsa@0.16.9": [
+        [
+          "alloc",
+          "arithmetic",
+          "der",
+          "digest",
+          "hazmat",
+          "pem",
+          "pkcs8",
+          "rfc6979",
+          "signing",
+          "spki",
+          "std",
+          "verifying"
+        ]
+      ],
+      "ed25519-dalek@2.2.0": [
+        [
+          "alloc",
+          "default",
+          "fast",
+          "pkcs8",
+          "std",
+          "zeroize"
+        ]
+      ],
+      "ed25519@2.2.3": [
+        [
+          "alloc",
+          "pkcs8",
+          "std"
+        ]
+      ],
+      "either@1.16.0": [
+        []
+      ],
+      "elliptic-curve@0.13.8": [
+        [
+          "alloc",
+          "arithmetic",
+          "digest",
+          "ff",
+          "group",
+          "hazmat",
+          "pem",
+          "pkcs8",
+          "sec1",
+          "std"
+        ]
+      ],
+      "equivalent@1.0.2": [
+        []
+      ],
+      "errno@0.3.14": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "fallible-iterator@0.3.0": [
+        [
+          "alloc",
+          "default"
+        ]
+      ],
+      "fallible-streaming-iterator@0.1.9": [
+        []
+      ],
+      "fastrand@2.4.1": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "ff@0.13.1": [
+        [
+          "alloc"
+        ]
+      ],
+      "find-msvc-tools@0.1.9": [
+        []
+      ],
+      "fnv@1.0.7": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "foldhash@0.2.0": [
+        []
+      ],
+      "form_urlencoded@1.2.2": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "fs_extra@1.3.0": [
+        []
+      ],
+      "futures-channel@0.3.32": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "futures-core@0.3.32": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "futures-macro@0.3.32": [
+        []
+      ],
+      "futures-sink@0.3.32": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "futures-task@0.3.32": [
+        [
+          "alloc",
+          "std"
+        ]
+      ],
+      "futures-util@0.3.32": [
+        [
+          "alloc",
+          "async-await",
+          "async-await-macro",
+          "default",
+          "futures-macro",
+          "slab",
+          "std"
+        ]
+      ],
+      "generic-array@0.14.7": [
+        [
+          "more_lengths",
+          "zeroize"
+        ]
+      ],
+      "getrandom@0.2.17": [
+        [
+          "std"
+        ]
+      ],
+      "getrandom@0.3.4": [
+        [
+          "std"
+        ]
+      ],
+      "getrandom@0.4.2": [
+        []
+      ],
+      "ghash@0.5.1": [
+        []
+      ],
+      "group@0.13.0": [
+        [
+          "alloc"
+        ]
+      ],
+      "h2@0.4.14": [
+        []
+      ],
+      "half@2.7.1": [
+        []
+      ],
+      "hashbrown@0.14.5": [
+        [
+          "ahash",
+          "inline-more"
+        ]
+      ],
+      "hashbrown@0.16.1": [
+        [
+          "allocator-api2",
+          "default",
+          "default-hasher",
+          "equivalent",
+          "inline-more",
+          "raw-entry"
+        ]
+      ],
+      "hashbrown@0.17.1": [
+        []
+      ],
+      "hashlink@0.9.1": [
+        []
+      ],
+      "hex@0.4.3": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "hmac@0.12.1": [
+        [
+          "reset"
+        ]
+      ],
+      "hmac@0.13.0": [
+        []
+      ],
+      "http-body-util@0.1.3": [
+        [
+          "default"
+        ]
+      ],
+      "http-body@0.4.6": [
+        []
+      ],
+      "http-body@1.0.1": [
+        []
+      ],
+      "http@0.2.12": [
+        []
+      ],
+      "http@1.4.1": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "httparse@1.10.1": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "httpdate@1.0.3": [
+        []
+      ],
+      "hybrid-array@0.4.12": [
+        []
+      ],
+      "hyper-rustls@0.27.9": [
+        [
+          "http1",
+          "http2",
+          "native-tokio",
+          "ring",
+          "rustls-native-certs",
+          "tls12"
+        ]
+      ],
+      "hyper-util@0.1.20": [
+        [
+          "client",
+          "client-legacy",
+          "client-proxy",
+          "default",
+          "http1",
+          "http2",
+          "server",
+          "server-auto",
+          "service",
+          "tokio"
+        ]
+      ],
+      "hyper@1.10.0": [
+        [
+          "client",
+          "default",
+          "http1",
+          "http2",
+          "server"
+        ]
+      ],
+      "icu_collections@2.2.0": [
+        []
+      ],
+      "icu_locale_core@2.2.0": [
+        [
+          "zerovec"
+        ]
+      ],
+      "icu_normalizer@2.2.0": [
+        [
+          "compiled_data"
+        ]
+      ],
+      "icu_normalizer_data@2.2.0": [
+        []
+      ],
+      "icu_properties@2.2.0": [
+        [
+          "compiled_data"
+        ]
+      ],
+      "icu_properties_data@2.2.0": [
+        []
+      ],
+      "icu_provider@2.2.0": [
+        [
+          "baked"
+        ]
+      ],
+      "idna@1.1.0": [
+        [
+          "alloc",
+          "compiled_data",
+          "std"
+        ]
+      ],
+      "idna_adapter@1.2.2": [
+        [
+          "compiled_data"
+        ]
+      ],
+      "indexmap@2.14.0": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "inout@0.1.4": [
+        []
+      ],
+      "ipnet@2.12.0": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "itoa@1.0.18": [
+        []
+      ],
+      "jobserver@0.1.34": [
+        []
+      ],
+      "libc@0.2.186": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "libsqlite3-sys@0.30.1": [
+        [
+          "default",
+          "min_sqlite_version_3_14_0",
+          "pkg-config",
+          "vcpkg"
+        ]
+      ],
+      "linux-raw-sys@0.12.1": [
+        [
+          "auxvec",
+          "elf",
+          "errno",
+          "general",
+          "if_ether",
+          "ioctl",
+          "net",
+          "netlink",
+          "no_std",
+          "prctl",
+          "xdp"
+        ]
+      ],
+      "litemap@0.8.2": [
+        []
+      ],
+      "log@0.4.30": [
+        []
+      ],
+      "lru@0.16.4": [
+        [
+          "default",
+          "hashbrown"
+        ]
+      ],
+      "matchit@0.8.4": [
+        [
+          "default"
+        ]
+      ],
+      "md-5@0.11.0": [
+        [
+          "alloc",
+          "default",
+          "oid"
+        ]
+      ],
+      "memchr@2.8.2": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "mime@0.3.17": [
+        []
+      ],
+      "mio@1.2.1": [
+        [
+          "net",
+          "os-ext",
+          "os-poll"
+        ]
+      ],
+      "num-bigint@0.4.6": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "num-conv@0.2.2": [
+        []
+      ],
+      "num-integer@0.1.46": [
+        [
+          "default",
+          "i128",
+          "std"
+        ]
+      ],
+      "num-traits@0.2.19": [
+        [
+          "default",
+          "i128",
+          "std"
+        ]
+      ],
+      "once_cell@1.21.4": [
+        [
+          "alloc",
+          "default",
+          "race",
+          "std"
+        ]
+      ],
+      "opaque-debug@0.3.1": [
+        []
+      ],
+      "openssl-probe@0.2.1": [
+        []
+      ],
+      "outref@0.5.2": [
+        []
+      ],
+      "p256@0.13.2": [
+        [
+          "alloc",
+          "arithmetic",
+          "default",
+          "digest",
+          "ecdsa",
+          "ecdsa-core",
+          "pem",
+          "pkcs8",
+          "sha2",
+          "sha256",
+          "std"
+        ]
+      ],
+      "pem-rfc7468@0.7.0": [
+        [
+          "alloc"
+        ]
+      ],
+      "percent-encoding@2.3.2": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "pin-project-lite@0.2.17": [
+        []
+      ],
+      "pin-utils@0.1.0": [
+        []
+      ],
+      "pkcs8@0.10.2": [
+        [
+          "alloc",
+          "pem",
+          "std"
+        ]
+      ],
+      "pkg-config@0.3.33": [
+        []
+      ],
+      "polyval@0.6.2": [
+        []
+      ],
+      "potential_utf@0.1.5": [
+        [
+          "zerovec"
+        ]
+      ],
+      "powerfmt@0.2.0": [
+        []
+      ],
+      "ppv-lite86@0.2.21": [
+        [
+          "simd",
+          "std"
+        ]
+      ],
+      "primeorder@0.13.6": [
+        []
+      ],
+      "proc-macro2@1.0.106": [
+        [
+          "default",
+          "proc-macro"
+        ]
+      ],
+      "quote@1.0.46": [
+        [
+          "default",
+          "proc-macro"
+        ]
+      ],
+      "rand@0.9.4": [
+        [
+          "alloc",
+          "default",
+          "os_rng",
+          "small_rng",
+          "std",
+          "std_rng",
+          "thread_rng"
+        ]
+      ],
+      "rand_chacha@0.9.0": [
+        [
+          "std"
+        ]
+      ],
+      "rand_core@0.6.4": [
+        [
+          "alloc",
+          "getrandom",
+          "std"
+        ]
+      ],
+      "rand_core@0.9.5": [
+        [
+          "os_rng",
+          "std"
+        ]
+      ],
+      "regex-automata@0.4.14": [
+        [
+          "alloc",
+          "dfa-onepass",
+          "hybrid",
+          "meta",
+          "nfa-backtrack",
+          "nfa-pikevm",
+          "nfa-thompson",
+          "perf-inline",
+          "perf-literal",
+          "perf-literal-multisubstring",
+          "perf-literal-substring",
+          "std",
+          "syntax",
+          "unicode",
+          "unicode-age",
+          "unicode-bool",
+          "unicode-case",
+          "unicode-gencat",
+          "unicode-perl",
+          "unicode-script",
+          "unicode-segment",
+          "unicode-word-boundary"
+        ]
+      ],
+      "regex-lite@0.1.9": [
+        [
+          "default",
+          "std",
+          "string"
+        ]
+      ],
+      "regex-syntax@0.8.11": [
+        [
+          "default",
+          "std",
+          "unicode",
+          "unicode-age",
+          "unicode-bool",
+          "unicode-case",
+          "unicode-gencat",
+          "unicode-perl",
+          "unicode-script",
+          "unicode-segment"
+        ]
+      ],
+      "regex@1.12.4": [
+        [
+          "default",
+          "perf",
+          "perf-backtrack",
+          "perf-cache",
+          "perf-dfa",
+          "perf-inline",
+          "perf-literal",
+          "perf-onepass",
+          "std",
+          "unicode",
+          "unicode-age",
+          "unicode-bool",
+          "unicode-case",
+          "unicode-gencat",
+          "unicode-perl",
+          "unicode-script",
+          "unicode-segment"
+        ]
+      ],
+      "reqwest@0.12.28": [
+        [
+          "__rustls",
+          "__rustls-ring",
+          "__tls",
+          "h2",
+          "http2",
+          "json",
+          "rustls-tls-native-roots",
+          "rustls-tls-native-roots-no-provider",
+          "stream"
+        ]
+      ],
+      "rfc6979@0.4.0": [
+        []
+      ],
+      "ring@0.17.14": [
+        [
+          "alloc",
+          "default",
+          "dev_urandom_fallback"
+        ]
+      ],
+      "rusqlite@0.32.1": [
+        [
+          "blob"
+        ]
+      ],
+      "rustc_version@0.4.1": [
+        []
+      ],
+      "rustix@1.1.4": [
+        [
+          "alloc",
+          "default",
+          "event",
+          "fs",
+          "net",
+          "param",
+          "process",
+          "std",
+          "time"
+        ]
+      ],
+      "rustls-native-certs@0.8.3": [
+        []
+      ],
+      "rustls-pemfile@2.2.0": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "rustls-pki-types@1.14.1": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "rustls-webpki@0.103.13": [
+        [
+          "alloc",
+          "aws-lc-rs",
+          "ring",
+          "std"
+        ]
+      ],
+      "rustls@0.23.40": [
+        [
+          "aws-lc-rs",
+          "aws_lc_rs",
+          "default",
+          "log",
+          "logging",
+          "prefer-post-quantum",
+          "ring",
+          "std",
+          "tls12"
+        ]
+      ],
+      "ryu@1.0.23": [
+        []
+      ],
+      "sec1@0.7.3": [
+        [
+          "alloc",
+          "default",
+          "der",
+          "pem",
+          "pkcs8",
+          "point",
+          "std",
+          "subtle",
+          "zeroize"
+        ]
+      ],
+      "semver@1.0.28": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "serde@1.0.228": [
+        [
+          "alloc",
+          "default",
+          "derive",
+          "rc",
+          "serde_derive",
+          "std"
+        ]
+      ],
+      "serde_core@1.0.228": [
+        [
+          "alloc",
+          "default",
+          "rc",
+          "result",
+          "std"
+        ]
+      ],
+      "serde_derive@1.0.228": [
+        [
+          "default"
+        ]
+      ],
+      "serde_json@1.0.150": [
+        [
+          "default",
+          "raw_value",
+          "std"
+        ]
+      ],
+      "serde_path_to_error@0.1.20": [
+        []
+      ],
+      "serde_spanned@0.6.9": [
+        [
+          "serde"
+        ]
+      ],
+      "serde_urlencoded@0.7.1": [
+        []
+      ],
+      "sha1@0.11.0": [
+        [
+          "alloc",
+          "default",
+          "oid"
+        ]
+      ],
+      "sha2@0.10.9": [
+        [
+          "compress",
+          "default",
+          "std"
+        ]
+      ],
+      "sha2@0.11.0": [
+        [
+          "alloc",
+          "default",
+          "oid"
+        ]
+      ],
+      "shlex@2.0.1": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "signal-hook-registry@1.4.8": [
+        []
+      ],
+      "signature@2.2.0": [
+        [
+          "alloc",
+          "digest",
+          "rand_core",
+          "std"
+        ]
+      ],
+      "slab@0.4.12": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "smallvec@1.15.2": [
+        [
+          "const_generics",
+          "const_new"
+        ]
+      ],
+      "socket2@0.6.4": [
+        [
+          "all"
+        ]
+      ],
+      "spin@0.10.0": [
+        [
+          "mutex",
+          "once",
+          "rwlock",
+          "spin_mutex"
+        ]
+      ],
+      "spki@0.7.3": [
+        [
+          "alloc",
+          "pem",
+          "std"
+        ]
+      ],
+      "stable_deref_trait@1.2.1": [
+        []
+      ],
+      "subtle@2.6.1": [
+        [
+          "default",
+          "i128",
+          "std"
+        ]
+      ],
+      "syn@2.0.118": [
+        [
+          "clone-impls",
+          "default",
+          "derive",
+          "extra-traits",
+          "fold",
+          "full",
+          "parsing",
+          "printing",
+          "proc-macro",
+          "visit",
+          "visit-mut"
+        ]
+      ],
+      "sync_wrapper@1.0.2": [
+        [
+          "futures",
+          "futures-core"
+        ]
+      ],
+      "synstructure@0.13.2": [
+        [
+          "default",
+          "proc-macro"
+        ]
+      ],
+      "tempfile@3.27.0": [
+        [
+          "default",
+          "getrandom"
+        ]
+      ],
+      "thiserror-impl@2.0.18": [
+        []
+      ],
+      "thiserror@2.0.18": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "time-core@0.1.8": [
+        []
+      ],
+      "time@0.3.47": [
+        [
+          "alloc",
+          "default",
+          "parsing",
+          "std"
+        ]
+      ],
+      "tinystr@0.8.3": [
+        [
+          "zerovec"
+        ]
+      ],
+      "tinyvec@1.11.0": [
+        [
+          "alloc",
+          "default",
+          "tinyvec_macros"
+        ]
+      ],
+      "tinyvec_macros@0.1.1": [
+        []
+      ],
+      "tokio-macros@2.7.0": [
+        []
+      ],
+      "tokio-rustls@0.26.4": [
+        [
+          "aws_lc_rs",
+          "default",
+          "logging",
+          "ring",
+          "tls12"
+        ]
+      ],
+      "tokio-util@0.7.18": [
+        [
+          "codec",
+          "default",
+          "io"
+        ]
+      ],
+      "tokio@1.52.3": [
+        [
+          "bytes",
+          "default",
+          "fs",
+          "io-std",
+          "io-util",
+          "libc",
+          "macros",
+          "mio",
+          "net",
+          "process",
+          "rt",
+          "rt-multi-thread",
+          "signal",
+          "signal-hook-registry",
+          "socket2",
+          "sync",
+          "time",
+          "tokio-macros"
+        ]
+      ],
+      "toml@0.8.23": [
+        [
+          "default",
+          "display",
+          "parse"
+        ]
+      ],
+      "toml_datetime@0.6.11": [
+        [
+          "serde"
+        ]
+      ],
+      "toml_edit@0.22.27": [
+        [
+          "display",
+          "parse",
+          "serde"
+        ]
+      ],
+      "toml_write@0.1.2": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "tower-http@0.6.11": [
+        [
+          "follow-redirect",
+          "futures-util",
+          "tower"
+        ]
+      ],
+      "tower-layer@0.3.3": [
+        []
+      ],
+      "tower-service@0.3.3": [
+        []
+      ],
+      "tower@0.5.3": [
+        [
+          "futures-core",
+          "futures-util",
+          "log",
+          "make",
+          "pin-project-lite",
+          "retry",
+          "sync_wrapper",
+          "timeout",
+          "tokio",
+          "tracing",
+          "util"
+        ]
+      ],
+      "tracing-attributes@0.1.31": [
+        []
+      ],
+      "tracing-core@0.1.36": [
+        [
+          "once_cell",
+          "std"
+        ]
+      ],
+      "tracing@0.1.44": [
+        [
+          "attributes",
+          "default",
+          "log",
+          "std",
+          "tracing-attributes"
+        ]
+      ],
+      "try-lock@0.2.5": [
+        []
+      ],
+      "typenum@1.20.1": [
+        [
+          "const-generics"
+        ]
+      ],
+      "unicode-ident@1.0.24": [
+        []
+      ],
+      "unicode-normalization@0.1.25": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "universal-hash@0.5.1": [
+        []
+      ],
+      "untrusted@0.9.0": [
+        []
+      ],
+      "url@2.5.8": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "utf8_iter@1.0.4": [
+        []
+      ],
+      "uuid@1.23.1": [
+        [
+          "default",
+          "rng",
+          "serde",
+          "std",
+          "v4"
+        ]
+      ],
+      "vcpkg@0.2.15": [
+        []
+      ],
+      "version_check@0.9.5": [
+        []
+      ],
+      "vsimd@0.8.0": [
+        [
+          "alloc",
+          "detect",
+          "std"
+        ]
+      ],
+      "want@0.3.1": [
+        []
+      ],
+      "winnow@0.7.15": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "writeable@0.6.3": [
+        []
+      ],
+      "xmlparser@0.13.6": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "yoke-derive@0.8.2": [
+        []
+      ],
+      "yoke@0.8.3": [
+        [
+          "derive",
+          "zerofrom"
+        ]
+      ],
+      "zerocopy-derive@0.8.49": [
+        []
+      ],
+      "zerocopy@0.8.49": [
+        [
+          "derive",
+          "simd",
+          "zerocopy-derive"
+        ]
+      ],
+      "zerofrom-derive@0.1.7": [
+        []
+      ],
+      "zerofrom@0.1.8": [
+        [
+          "derive"
+        ]
+      ],
+      "zeroize@1.9.0": [
+        [
+          "alloc",
+          "default"
+        ]
+      ],
+      "zerotrie@0.2.4": [
+        [
+          "yoke",
+          "zerofrom"
+        ]
+      ],
+      "zerovec-derive@0.11.3": [
+        []
+      ],
+      "zerovec@0.11.6": [
+        [
+          "derive",
+          "yoke"
+        ]
+      ],
+      "zmij@1.0.21": [
+        []
+      ],
+      "zstd-safe@7.2.4": [
+        [
+          "arrays",
+          "legacy",
+          "std",
+          "zdict_builder",
+          "zstdmt"
+        ]
+      ],
+      "zstd-sys@2.0.16+zstd.1.5.7": [
+        [
+          "legacy",
+          "std",
+          "zdict_builder",
+          "zstdmt"
+        ]
+      ],
+      "zstd@0.13.3": [
+        [
+          "arrays",
+          "default",
+          "legacy",
+          "zdict_builder",
+          "zstdmt"
+        ]
+      ]
+    },
+    "first_party_features": {
+      "aos-linux-project-quota": [
+        []
+      ],
+      "crucible-campaign": [
+        []
+      ],
+      "crucible-control-api": [
+        []
+      ],
+      "crucible-control-client": [
+        []
+      ],
+      "crucible-control-server": [
+        [
+          "default"
+        ]
+      ],
+      "crucible-daemon": [
+        [
+          "default"
+        ]
+      ],
+      "crucible-determinism": [
+        []
+      ],
+      "crucible-device": [
+        [
+          "default"
+        ]
+      ],
+      "crucible-engine": [
+        [
+          "default",
+          "test-double",
+          "test-support"
+        ]
+      ],
+      "crucible-guest": [
+        []
+      ],
+      "crucible-qemu-host": [
+        [
+          "default",
+          "test-support"
+        ]
+      ],
+      "crucible-qemu-protocol": [
+        []
+      ],
+      "crucible-qemu-shmem": [
+        []
+      ],
+      "crucible-session": [
+        [
+          "default"
+        ]
+      ],
+      "crucible-store": [
+        []
+      ],
+      "crucible-store-s3": [
+        []
+      ]
+    },
+    "schema_version": 1,
+    "targets": {
+      "//crates/crucible/control/crucible-daemon:gate_campaign_metadata_million": {
+        "executed": [
+          "million_admission_ancestry_capacity_probe"
+        ],
+        "ignored": [
+          "million_real_admissions_fit_compact_metadata_budget",
+          "small_real_admission_corpus_exercises_the_same_path"
+        ]
+      },
+      "//crates/crucible/control/crucible-daemon:gate_control_responsive": {
+        "executed": [
+          "gate_control_responsive_daemon_declares_in_process_sim_double_backend",
+          "gate_control_responsive_daemon_rejects_required_operation_rejection",
+          "gate_control_responsive_daemon_routes_use_api_quantum_bound"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/control/crucible-daemon:production_effect_matrix": {
+        "executed": [
+          "every_advertised_effect_is_bound_to_production_and_live_gate_evidence"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/control/crucible-daemon:unit": {
+        "executed": [
+          "anchored_fs::tests::regular_open_rejects_a_symlink",
+          "anchored_fs::tests::replacement_fences_old_directory_authority",
+          "assignment_ledger::tests::assignment_identity_conflict_never_overwrites_first_response",
+          "assignment_ledger::tests::checkpoint_states_round_trip_and_remain_gc_roots_after_restart",
+          "assignment_ledger::tests::current_checkpoint_promotion_basis_must_match_the_execution_digest",
+          "assignment_ledger::tests::current_storage_digest_binds_every_scope_under_one_domain",
+          "assignment_ledger::tests::directory_ledger_fences_a_replaced_root_and_writer_lock",
+          "assignment_ledger::tests::directory_ledger_rejects_a_replaced_attempt_shard_without_external_access",
+          "assignment_ledger::tests::directory_ledger_rejects_a_writer_lock_symlink",
+          "assignment_ledger::tests::directory_ledger_rejects_corrupt_bounded_records",
+          "assignment_ledger::tests::directory_ledger_rejects_stale_staging_at_open",
+          "assignment_ledger::tests::directory_ledger_reopens_exact_records_and_attempt_state",
+          "assignment_ledger::tests::directory_retention_generation_survives_restart_and_distinguishes_aba",
+          "assignment_ledger::tests::directory_retention_inventory_rejects_misplaced_attempt_records",
+          "assignment_ledger::tests::materialized_start_capture_basis_round_trips_and_rejects_unknown_modes",
+          "assignment_ledger::tests::memory_ledger_matches_conditional_publish_contract",
+          "assignment_ledger::tests::memory_retention_inventory_is_generation_bound_and_single_pass",
+          "assignment_ledger::tests::resumed_origin_round_trips_and_retains_input_and_output_roots",
+          "assignment_ledger::tests::scoped_capture_and_semantic_attempt_states_are_physically_isolated",
+          "assignment_ledger::tests::scoped_capture_state_rejects_semantic_and_mismatched_promotion_shapes",
+          "assignment_ledger::tests::selected_origin_round_trips_and_retains_certificate_resume_and_output_roots",
+          "assignment_ledger::tests::terminal_failure_state_round_trips_through_current_ledger_format",
+          "assignment_ledger::tests::writer_owner_drop_releases_lock_held_by_a_duplicated_descriptor",
+          "automatic_finding_runner::exact_retention::tests::assertion_boundary_requires_one_dense_violated_transition_in_terminal_quantum",
+          "automatic_finding_runner::exact_retention::tests::assertion_retention_uses_unpublished_trace_and_excludes_divergent_root",
+          "automatic_finding_runner::exact_retention::tests::campaign_catalog_bounds_matching_roots_after_configuration_partitioning",
+          "automatic_finding_runner::exact_retention::tests::matching_authenticated_roots_produce_complete_exact_pins",
+          "automatic_finding_runner::exact_retention::tests::producer_records_disabled_and_truthful_incomplete_dispositions",
+          "automatic_finding_runner::exact_retention::tests::retained_production_checkpoint_authenticates_into_complete_evidence",
+          "automatic_finding_runner::finding_signature::timeout_tests::policy_timeout_classes_keep_virtual_and_quantum_causes_distinct",
+          "automatic_finding_runner::tests::ordinary_replay_capture_preserves_exact_native_snapshot_suffix",
+          "automatic_finding_runner::tests::outcomes::authenticated_assertion_observation_stop_produces_a_finding_signature",
+          "automatic_finding_runner::tests::outcomes::automatic_finding_replays_both_passes_under_the_original_budget_and_path",
+          "automatic_finding_runner::tests::outcomes::default_runner_does_not_probe_an_ordinary_success",
+          "automatic_finding_runner::tests::outcomes::descendant_finding_replay_preserves_controls_signature_and_retained_world",
+          "automatic_finding_runner::tests::outcomes::divergence_reduction_budget_exhaustion_preserves_the_original_result",
+          "automatic_finding_runner::tests::outcomes::incompatible_reduction_trial_does_not_discard_a_later_reproduced_finding",
+          "automatic_finding_runner::tests::outcomes::paired_probe_binds_main_coverage_when_reproduced_coverage_differs",
+          "automatic_finding_runner::tests::outcomes::paired_probe_derives_fingerprint_from_actual_divergence_kind_and_node",
+          "automatic_finding_runner::tests::outcomes::post_execution_validation_failure_quarantines_main_authority",
+          "automatic_finding_runner::tests::outcomes::probe_divergence_that_does_not_reproduce_preserves_the_successful_main_result",
+          "automatic_finding_runner::tests::outcomes::probe_divergence_with_a_different_original_signature_preserves_the_main_result",
+          "automatic_finding_runner::tests::policy_timeout_capture_authenticates_host_marker_after_native_qemu_log",
+          "campaign_attachment::tests::attached_frontier_planner_rejects_a_later_explorer_change_before_invocation",
+          "campaign_attachment::tests::attachment_negotiates_before_publishing_and_runs_one_inactive_campaign",
+          "campaign_attachment::tests::beam_campaign_attaches_the_beam_planner",
+          "campaign_attachment::tests::canonical_planner_cancellation_has_an_exact_error_shape",
+          "campaign_attachment::tests::dropping_an_attached_runtime_joins_before_releasing_ownership",
+          "campaign_attachment::tests::exhaustive_campaign_attaches_the_frontier_planner",
+          "campaign_attachment::tests::incompatible_executor_rejects_before_planner_basis_publication",
+          "campaign_attachment::tests::tree_search_campaign_attaches_the_puct_planner",
+          "campaign_bootstrap::maintenance::tests::maintenance_configuration_enforces_every_closed_bound",
+          "campaign_bootstrap::maintenance::tests::maintenance_pass_obeys_the_global_write_back_limit",
+          "campaign_bootstrap::tests::authenticated_post_bind_attachment_replays_without_executor_io",
+          "campaign_bootstrap::tests::deployment_contracts::component_authorities_are_authenticated_before_repository_open",
+          "campaign_bootstrap::tests::deployment_contracts::component_authority_path_uses_the_deployment_path_profile",
+          "campaign_bootstrap::tests::deployment_contracts::default_sqlite_store_reopens",
+          "campaign_bootstrap::tests::deployment_contracts::external_store_rejects_a_nondurable_immutable_backend",
+          "campaign_bootstrap::tests::deployment_contracts::external_store_rejects_a_nondurable_ref_backend",
+          "campaign_bootstrap::tests::deployment_contracts::malformed_component_authorities_fail_before_repository_or_socket_mutation",
+          "campaign_bootstrap::tests::deployment_contracts::malformed_or_oversized_policy_is_read_only_failure",
+          "campaign_bootstrap::tests::deployment_contracts::policy_and_state_ownership_fail_before_socket_bind",
+          "campaign_bootstrap::tests::deployment_contracts::prepared_owner_imports_verified_artifacts_before_socket_bind",
+          "campaign_bootstrap::tests::deployment_contracts::prepared_read_only_owner_rejects_artifact_import",
+          "campaign_bootstrap::tests::durable_service_bootstrap_authenticates_policy_and_restarts_cleanly",
+          "campaign_bootstrap::tests::external_store_rejects_foreign_graph_maintenance_authority",
+          "campaign_bootstrap::tests::external_store_uses_the_managed_lock_without_creating_default_leafs",
+          "campaign_bootstrap::tests::finding_export_authorizer_admits_only_ledger_reads",
+          "campaign_bootstrap::tests::managed_service_retains_ref_maintenance_authority_for_its_lifetime",
+          "campaign_bootstrap::tests::managed_store_maintenance_failure_stops_the_service_with_exact_operation",
+          "campaign_bootstrap::tests::managed_store_maintenance_flushes_write_back_and_stops_promptly",
+          "campaign_bootstrap::tests::managed_store_maintenance_round_robins_and_resumes_exact_s3_cursors",
+          "campaign_bootstrap::tests::multi_runtime_bind_rejects_an_empty_set_before_endpoint_mutation",
+          "campaign_bootstrap::tests::multi_runtime_bind_rejects_duplicate_campaigns_before_endpoint_mutation",
+          "campaign_bootstrap::tests::multi_runtime_bind_sorts_unique_campaigns_and_joins_every_runtime",
+          "campaign_bootstrap::tests::packaged_executor_pool_serves_and_joins_two_campaign_runtimes",
+          "campaign_bootstrap::tests::packaged_runtime_discovery_authenticates_and_orders_the_complete_catalog",
+          "campaign_bootstrap::tests::prepared_store_gc_authority_plans_journals_and_applies_under_one_owner",
+          "campaign_bootstrap::tests::prepared_store_gc_automatically_inventories_registered_transfer_journal",
+          "campaign_bootstrap::tests::prepared_store_gc_automatically_retains_durable_hot_fallbacks_across_restart",
+          "campaign_bootstrap::tests::read_only_mode_denies_policy_granted_mutation",
+          "campaign_bootstrap::tests::read_only_owner_denies_store_maintenance_with_graph_authority",
+          "campaign_bootstrap::tests::repository_lock_excludes_a_second_socket_incarnation",
+          "campaign_bootstrap::tests::repository_owner_drop_releases_lock_held_by_a_duplicated_descriptor",
+          "campaign_bootstrap::tests::repository_transfer_identity_recovers_torn_staging_but_rejects_malformed_final",
+          "campaign_bootstrap::tests::repository_transfer_identity_survives_rename_and_distinguishes_replacement",
+          "campaign_bootstrap::tests::runtime_attachment_requires_writable_component_authority_before_executor_io",
+          "campaign_bootstrap::tests::service_shutdown_waits_for_reserved_attachment_and_rejects_its_late_install",
+          "campaign_bootstrap::tests::stopped_owner_denies_store_maintenance_without_graph_authority",
+          "campaign_bootstrap::tests::stopped_owner_finding_read_rejects_an_ungranted_operation",
+          "campaign_bootstrap::tests::stopped_owner_finding_read_uses_its_granted_deployment_policy",
+          "campaign_debug_control::tests::current_debug_messages_round_trip_and_bind_the_exact_request",
+          "campaign_debug_control::tests::debug_response_rejects_mutable_and_trailing_encodings",
+          "campaign_debug_inventory::tests::empty_current_inventory_round_trips_as_owner_only_state",
+          "campaign_debug_inventory::tests::inventory_rejects_noncurrent_or_noncanonical_bytes",
+          "campaign_debug_session::tests::checkpoint_selection_orders_complete_cost_then_role_then_root",
+          "campaign_debug_session::tests::failed_admission_lease_releases_its_preparing_reservation",
+          "campaign_debug_session::tests::failed_admission_removes_only_its_new_recovery_record",
+          "campaign_debug_session::tests::reservation_lease_releases_only_its_exact_session_generation",
+          "campaign_diagnostics::tests::panicking_sink_is_isolated_from_serving",
+          "campaign_endpoint::tests::campaign_and_executor_endpoints_share_a_directory_without_sharing_authority",
+          "campaign_endpoint::tests::endpoint_configuration_rejects_invalid_path_mode_and_owner",
+          "campaign_endpoint::tests::endpoint_rejects_writable_or_redirected_namespaces_before_bind",
+          "campaign_endpoint::tests::executor_connector_authenticates_namespace_socket_and_peer",
+          "campaign_endpoint::tests::executor_connector_rejects_namespace_and_socket_contract_drift",
+          "campaign_endpoint::tests::managed_endpoint_cleanup_never_removes_a_replacement_path",
+          "campaign_endpoint::tests::managed_endpoint_is_single_owner_restart_safe_and_exactly_cleaned",
+          "campaign_endpoint::tests::managed_endpoint_recovers_only_a_same_owner_stale_socket",
+          "campaign_finding_handoff::tests::embedded_guest_asset_materializes_once_with_private_permissions",
+          "campaign_gc::journal::tests::journal_phase_tags_are_stable_and_unknown_tags_fail_closed",
+          "campaign_gc::tests::apply_and_restart::compressed_encrypted_graph_admin_drives_plaintext_accounted_gc_across_restart",
+          "campaign_gc::tests::apply_and_restart::compressed_graph_admin_drives_plaintext_accounted_gc_across_restart",
+          "campaign_gc::tests::apply_and_restart::directory_plan_journal_and_apply_survive_full_backend_restart",
+          "campaign_gc::tests::apply_and_restart::encrypted_graph_admin_drives_plaintext_accounted_gc_across_restart",
+          "campaign_gc::tests::apply_and_restart::interrupted_apply_retains_journal_and_requires_a_fresh_plan",
+          "campaign_gc::tests::apply_and_restart::logical_quota_graph_gc_reclaims_admission_capacity_across_restart",
+          "campaign_gc::tests::apply_and_restart::packed_graph_admin_drives_restart_safe_logical_gc_without_deleting_live_pack_bytes",
+          "campaign_gc::tests::apply_and_restart::stale_ledger_generation_fails_before_deletion",
+          "campaign_gc::tests::apply_and_restart::stale_ref_and_blob_generations_fail_before_deletion",
+          "campaign_gc::tests::apply_revalidates_every_basis_then_deletes_and_completes",
+          "campaign_gc::tests::completed_status_and_control_fail_closed_on_missing_candidate_descendant",
+          "campaign_gc::tests::decoder_rejects_truncation_trailing_bytes_and_wrong_schema",
+          "campaign_gc::tests::direct_transfer_root_promoted_to_hot_root_revalidates_its_closure",
+          "campaign_gc::tests::every_administrative_generation_changes_plan_identity",
+          "campaign_gc::tests::external_journal_cancellation_is_durable_idempotent_and_terminal",
+          "campaign_gc::tests::external_journal_rejects_incomplete_and_corrupt_state",
+          "campaign_gc::tests::external_journal_reopens_exact_plan_and_durable_phase",
+          "campaign_gc::tests::finding_acknowledgement_and_gc_follow_directory_ref_before_ledger_lock_order",
+          "campaign_gc::tests::hot_checkpoint_fallback_is_a_fenced_gc_root_until_durable_removal",
+          "campaign_gc::tests::incorporated_finding_releases_exact_candidate_root_across_restart",
+          "campaign_gc::tests::manifests_reject_duplicates_trailing_bytes_and_noncanonical_order",
+          "campaign_gc::tests::pending_finding_candidate_closure_survives_gc_and_ledger_restart",
+          "campaign_gc::tests::pending_finding_restart_publishes_observation_before_finding_and_release",
+          "campaign_gc::tests::physical_quota::physical_quota_drift_stops_global_gc_before_deletion",
+          "campaign_gc::tests::plan_header_round_trips_without_changing_current_bytes",
+          "campaign_gc::tests::plan_rejects_unordered_excessive_and_inconsistent_summaries",
+          "campaign_gc::tests::planner_authenticates_roots_and_selects_only_unreachable_placements",
+          "campaign_gc::tests::policy_aware_gc_evicts_a_wrapped_read_through_cache_with_a_required_copy",
+          "campaign_gc::tests::policy_aware_gc_refuses_same_path_source_and_cache_aliases",
+          "campaign_gc::tests::policy_aware_gc_retains_write_back_staging_until_durable_journal_completion",
+          "campaign_gc::tests::required_graph_path_dominates_a_read_through_cache_role",
+          "campaign_gc::tests::root_and_candidate_manifests_round_trip_with_stable_identity",
+          "campaign_gc::tests::s3::paused_derived_s3_campaign_recovers_with_pending_write_back_transfer_and_gc",
+          "campaign_gc::tests::s3::s3_gc_retains_multiple_refs_and_transfer_during_backend_faults",
+          "campaign_gc::tests::s3::s3_graph_admin_drives_global_gc_across_restart",
+          "campaign_gc::tests::s3::s3_publication_after_planning_invalidates_apply_without_deletion",
+          "campaign_gc::tests::write_back_journal_roots_are_planned_and_revalidated_before_gc_deletion",
+          "campaign_gc::tests::write_back_roots_retain_exact_pending_objects_and_refs_retain_closures",
+          "campaign_loopback::tests::authentication::authenticated_connection_rejects_an_invalid_request_ceiling_before_policy",
+          "campaign_loopback::tests::authentication::authenticated_loopback_binds_kernel_peer_to_the_claimed_principal",
+          "campaign_loopback::tests::authentication::authenticated_runtime_control_binds_peer_policy_and_exact_response",
+          "campaign_loopback::tests::authentication::campaign_loopback_client_rejects_cross_request_occurrence_object_response",
+          "campaign_loopback::tests::authentication::campaign_loopback_preserves_authorization_before_repository_access",
+          "campaign_loopback::tests::authentication::campaign_loopback_round_trips_retained_finding_occurrence_dependencies",
+          "campaign_loopback::tests::import::verifier_import_then_create_works_on_a_blank_repository",
+          "campaign_loopback::tests::protocol::campaign_loopback_client_closes_after_a_cross_request_response",
+          "campaign_loopback::tests::protocol::campaign_loopback_client_rejects_and_closes_on_wrong_error_request_digest",
+          "campaign_loopback::tests::protocol::campaign_loopback_client_rejects_same_digest_stale_with_wrong_basis",
+          "campaign_loopback::tests::protocol::campaign_loopback_frame_header_is_frozen_and_malformed_headers_close",
+          "campaign_loopback::tests::protocol::campaign_loopback_rejects_concurrent_exchange_without_waiting",
+          "campaign_loopback::tests::protocol::campaign_loopback_rejects_partial_frames_with_a_finite_deadline",
+          "campaign_loopback::tests::protocol::campaign_loopback_server_rejects_cross_request_responses",
+          "campaign_loopback::tests::protocol::diagnostic_routing_covers_every_current_request_kind",
+          "campaign_loopback::tests::protocol::direct_and_loopback_campaign_services_are_identical",
+          "campaign_objective_driver::tests::objective_driver_rejects_noncurrent_measurement_payload_before_evaluation",
+          "campaign_policy::tests::empty_policy_is_explicitly_deny_all",
+          "campaign_policy::tests::policy_binds_effective_credentials_without_trusting_pid",
+          "campaign_policy::tests::policy_configuration_rejects_ambiguity_and_unreachable_grants",
+          "campaign_policy::tests::policy_counts_are_checked_before_retention_grows_past_the_bound",
+          "campaign_policy::tests::policy_operation_labels_cover_the_closed_service_vocabulary",
+          "campaign_policy::tests::policy_requires_exact_operation_and_campaign_scope",
+          "campaign_policy::tests::versioned_toml_policy_parses_exact_identity_and_scope",
+          "campaign_policy::tests::versioned_toml_policy_rejects_schema_fields_operations_and_size",
+          "campaign_retention::tests::semantic_and_operational_roots_share_one_terminal_inventory",
+          "campaign_runtime::tests::driver_failure_stops_and_is_returned_to_the_owner",
+          "campaign_runtime::tests::exhausted_planner_allowance_waits_instead_of_stopping_the_runtime",
+          "campaign_runtime::tests::immediate_progress_is_throttled_after_one_fixed_burst",
+          "campaign_runtime::tests::runtime_continues_bounded_progress_then_waits_for_explicit_wake",
+          "campaign_runtime::tests::runtime_poll_interval_is_strictly_bounded",
+          "campaign_runtime::tests::shutdown_interrupts_the_maximum_quiescent_wait",
+          "campaign_runtime_control::tests::attachment_message_decoder_rejects_invalid_bounds_and_shape",
+          "campaign_runtime_control::tests::attachment_message_golden_bytes_and_digest_are_stable",
+          "campaign_runtime_control::tests::attachment_messages_are_canonical_and_request_bound",
+          "campaign_server::tests::listener_bounds_workers_queue_and_interrupts_active_shutdown",
+          "campaign_server::tests::listener_configuration_is_strictly_bounded",
+          "campaign_server::tests::listener_enforces_the_immutable_unix_peer_policy_end_to_end",
+          "campaign_server::tests::listener_rejects_denied_peers_before_reading_a_request",
+          "campaign_server::tests::listener_request_ceiling_forces_reentry_through_connection_admission",
+          "campaign_server::tests::listener_reuses_one_authenticated_principal_and_joins_on_shutdown",
+          "campaign_server::tests::managed_endpoint_and_loaded_policy_form_one_authenticated_server_boundary",
+          "campaign_server::tests::shutdown_is_sticky_before_worker_startup",
+          "campaign_transfer::tests::bounded_record_reader_rejects_an_oversized_file",
+          "campaign_transfer::tests::corrupt_destination_object_retains_ownership_and_retries_after_repair",
+          "campaign_transfer::tests::durable_transfer_rejects_read_only_source_before_journaling",
+          "campaign_transfer::tests::durable_transfer_stages_source_metadata_and_retries_idempotently",
+          "campaign_transfer::tests::existing_child_directory_retries_its_parent_sync",
+          "campaign_transfer::tests::imported_promoted_checkpoint_survives_fresh_store_and_idempotent_retry",
+          "campaign_transfer::tests::invalid_publication_intent_is_rejected_before_transfer_ownership",
+          "campaign_transfer::tests::reopening_cleans_a_torn_staging_file_without_losing_complete_records",
+          "campaign_transfer::tests::reopening_retries_parent_sync_after_a_visible_journal_directory",
+          "campaign_transfer::tests::retries_reestablish_durability_after_visible_journal_mutations",
+          "campaign_transfer::tests::same_manifest_transfers_to_two_destinations_remain_independent",
+          "crucible_artifact::finding_replay::tests::duplicate_evidence_cannot_bypass_the_per_pass_entry_limit",
+          "crucible_artifact::finding_replay::tests::duplicate_replays_charge_each_raw_signature_but_deduplicate_records",
+          "crucible_artifact::finding_replay::tests::failed_byte_admission_is_atomic_and_the_same_replay_can_retry",
+          "crucible_artifact::finding_replay::tests::starting_app_random_selection_is_retained_in_exact_replay_closure",
+          "crucible_artifact::finding_replay::tests::starting_signal_fault_selection_is_retained_in_exact_replay_closure",
+          "crucible_artifact::prepared_result::triage_replay_tests::native_divergence_payload_swap_must_match_recorded_fingerprint",
+          "crucible_artifact::tests::configuration::campaign_creation::campaign_creation_refuses_obsolete_schema_and_accepts_actual_imported_basis",
+          "crucible_artifact::tests::configuration::configuration_import_rejects_forged_or_stripped_preemption_evidence",
+          "crucible_artifact::tests::configuration::crucible_payloads_reject_schema_and_identity_drift",
+          "crucible_artifact::tests::configuration::crucible_payloads_round_trip_and_rederive_semantic_ids",
+          "crucible_artifact::tests::configuration::nested_signal_fault_selections_resolve_to_one_exact_ordered_plan",
+          "crucible_artifact::tests::configuration::network_fault_selections_survive_configuration_artifact_restart",
+          "crucible_artifact::tests::configuration::resolved_app_random_model_sample_is_verified_before_execution",
+          "crucible_artifact::tests::configuration::selected_decode_refuses_a_large_domain_that_exceeds_its_remaining_budget",
+          "crucible_artifact::tests::configuration::verifier_backed_store_imports_complete_lineage_artifacts",
+          "crucible_artifact::tests::finding::finding_candidate_preparation_deduplicates_bounded_replay_records_without_writes",
+          "crucible_artifact::tests::finding::finding_replay_retains_nonempty_configuration_target_and_causal_evidence",
+          "crucible_artifact::tests::finding::verifier_backed_store_replays_finding_before_reproduction_publication",
+          "crucible_artifact::tests::publication::finding_candidate_publication_waits_for_both_replay_passes",
+          "crucible_artifact::tests::publication::prepared_finding_publishes_and_authenticates_an_admitted_observation_closure",
+          "crucible_execution::decode_budget::tests::many_branch_prefixes_exhaust_the_aggregate_decode_budget",
+          "crucible_execution::decode_budget::tests::repeated_origin_plans_exhaust_one_aggregate_budget",
+          "crucible_execution::exact_source_tests::generic_selected_source_keeps_cold_fallback_available",
+          "crucible_execution::exact_source_tests::lazy_phase_notice_skips_unadmitted_work_and_preserves_failed_writes",
+          "crucible_execution::exact_source_tests::public_exact_source_rejects_cold_fallback_and_quarantines",
+          "crucible_measurement::evidence::tests::assertion_boundary_replays_exact_trace_and_rejects_forged_fields",
+          "crucible_measurement::evidence::tests::authenticated_log_validation_precedes_guest_normalization",
+          "crucible_measurement::evidence::tests::campaign_stop_is_explicit_and_round_trips",
+          "crucible_measurement::evidence::tests::effective_byte_limit_precedes_event_log_replay",
+          "crucible_measurement::evidence::tests::evidence_decode_rejects_noncanonical_unknown_and_unsupported_input",
+          "crucible_measurement::evidence::tests::evidence_decode_rejects_oversized_declared_container_lengths",
+          "crucible_measurement::evidence::tests::guest_vector_protocol_limit_is_checked_before_normalization",
+          "crucible_measurement::evidence::tests::observation_boundary_evidence_uses_v2_and_round_trips_exact_coordinates",
+          "crucible_measurement::evidence::tests::v2_publication_round_trips_and_rederives_guest_and_model_samples",
+          "crucible_measurement::evidence::tests::v2_verifier_rejects_missing_or_wrong_binding",
+          "crucible_measurement::tests::verified_crucible_aggregate_drives_exact_campaign_objective",
+          "crucible_qemu_runner::tests::exact_origin_router_keeps_non_event_count_resumes_off_the_fresh_path",
+          "crucible_qemu_runner::tests::exact_origin_router_verifies_event_count_resumes_before_restore",
+          "exact_checkpoint_restore::captured_source_tests::production_resume_basis_requires_the_exact_attempt_prefix",
+          "exact_checkpoint_restore::guarded_replay::network_inputs::tests::replay_plan_preserves_input_decision_input_order_and_rejects_wrong_generation_or_count",
+          "exact_checkpoint_restore::guarded_replay::tests::delivery_order_keeps_interleaved_inputs_at_their_physical_counts",
+          "exact_checkpoint_restore::guarded_replay::tests::guarded_replay_reaches_two_recorded_guest_choices_and_rejects_drift",
+          "exact_checkpoint_restore::guarded_replay::tests::inbound_wake_inside_parked_ceiling_resumes_runnable_cap",
+          "exact_checkpoint_restore::guarded_replay::tests::nonselection_instruction_step_rejects_overflow_and_target_crossing",
+          "exact_checkpoint_restore::guarded_replay::tests::nonselection_instruction_steps_preserve_source_clock_calibration",
+          "exact_checkpoint_restore::guarded_replay::tests::parked_replay_clips_timer_and_choice_and_matches_ten_microsecond_oracle",
+          "exact_checkpoint_restore::guarded_replay::tests::replay_comparison_cause_survives_non_quarantine_cleanup_error",
+          "exact_checkpoint_restore::guarded_replay::tests::replay_quarantine_starts_with_bounded_initiating_failure",
+          "exact_checkpoint_restore::guarded_replay::tests::replay_realization_cause_survives_failing_operational_boundary",
+          "exact_checkpoint_restore::guarded_replay::tests::runnable_replay_keeps_ring_drain_cap_and_rejects_unrecorded_choice",
+          "exact_checkpoint_store::production::tests::aggregate_production_bytes_are_admitted_before_any_write",
+          "exact_checkpoint_store::production::tests::changed_object_after_preparation_never_publishes_the_root",
+          "exact_checkpoint_store::production::tests::choice_closure::production_choice_child_survives_store_reopen_and_rejects_malformed_preparation",
+          "exact_checkpoint_store::production::tests::choice_closure::production_root_requires_choice_child_even_when_no_selections_exist",
+          "exact_checkpoint_store::production::tests::live_replay_promotion_claim_is_scoped_to_one_execution",
+          "exact_checkpoint_store::production::tests::native_object_identity_mismatch_is_rejected_before_any_write",
+          "exact_checkpoint_store::production::tests::production_exact_capture_cancellation_after_preparation_stops_before_first_write",
+          "exact_checkpoint_store::production::tests::production_load_rejects_execution_cancellation",
+          "exact_checkpoint_store::production::tests::production_root_rejects_object_count_above_the_manifest_derived_bound",
+          "exact_checkpoint_store::production::tests::production_root_round_trips_more_than_one_index_page",
+          "exact_checkpoint_store::production::tests::production_root_v5_has_a_stable_canonical_identity",
+          "exact_checkpoint_store::production::tests::raw_root_without_authenticated_source_pair_cannot_resume",
+          "exact_checkpoint_store::production::tests::repository_backed_promotion_reuses_the_durable_raw_closure",
+          "exact_pin_retention::tests::clear_is_idempotent_and_corruption_fails_closed",
+          "exact_pin_retention::tests::exact_pin_owner_drop_releases_a_duplicated_writer_descriptor",
+          "exact_pin_retention::tests::gc_requires_current_selection_and_ignores_stale_record_after_unpin",
+          "exact_pin_retention::tests::imported_selection_never_replaces_an_existing_campaign_owner",
+          "exact_pin_retention::tests::selection_authenticates_pin_and_checkpoint_and_survives_restart",
+          "exact_pin_retention::tests::selection_rejects_unpinned_configuration_before_journal_write",
+          "executor_capability::tests::capability_facade_rejects_mismatched_advertisement",
+          "executor_capability::tests::capacity_reports_track_exact_supervisor_reservations",
+          "executor_capability::tests::lagging_watchers_never_reuse_a_sequence_for_changed_capacity",
+          "executor_loopback::tests::client_poisons_after_cross_execution_cancellation_response",
+          "executor_loopback::tests::client_poisons_after_cross_execution_checkpoint_response",
+          "executor_loopback::tests::client_poisons_after_cross_execution_status_response",
+          "executor_loopback::tests::client_rejects_a_canonical_response_for_another_request",
+          "executor_loopback::tests::component_service_failure_closes_the_stream_and_unblocks_the_client",
+          "executor_loopback::tests::direct_and_loopback_capability_negotiation_are_identical",
+          "executor_loopback::tests::direct_and_loopback_checkpoint_requests_are_identical",
+          "executor_loopback::tests::direct_and_loopback_execution_cancellation_are_identical",
+          "executor_loopback::tests::direct_and_loopback_execution_status_are_identical",
+          "executor_loopback::tests::direct_and_loopback_resume_requests_are_identical",
+          "executor_loopback::tests::frame_bounds_and_reserved_bytes_fail_before_service_invocation",
+          "executor_loopback::tests::frame_header_and_canonical_body_have_one_exact_encoding",
+          "executor_loopback::tests::invalid_typed_response_does_not_reconnect",
+          "executor_loopback::tests::one_request_ceiling_exhausts_the_single_retry",
+          "executor_loopback::tests::partial_frames_and_nonreading_peers_hit_finite_deadlines",
+          "executor_loopback::tests::reconnect_refuses_a_changed_daemon_epoch_before_resend",
+          "executor_loopback::tests::reconnect_refuses_changed_capabilities_before_resend",
+          "executor_loopback::tests::reconnectable_client_requires_initial_description_before_dispatch",
+          "executor_loopback::tests::reconnects_after_the_server_fairness_ceiling",
+          "executor_loopback::tests::response_loss_replays_exact_bytes_without_duplicate_admission",
+          "executor_pool::tests::blocking_worker_does_not_block_service_and_shutdown_cancels_it",
+          "executor_pool::tests::campaign_controls_remain_responsive_while_every_executor_slot_is_busy",
+          "executor_pool::tests::campaign_driver_pool_flight_incorporates_one_execution_without_submit_polling",
+          "executor_pool::tests::complete_prepared_journal_recovers_without_rerunning_guest_work",
+          "executor_pool::tests::completed_promotion_worker_reclaims_its_live_claim",
+          "executor_pool::tests::coupled_service_shutdown_interrupts_listener_and_joins_semantic_worker",
+          "executor_pool::tests::dropping_unserved_coupled_owner_retains_endpoint_until_semantic_join",
+          "executor_pool::tests::fixed_pool_requeues_once_then_stops_without_capacity_growth",
+          "executor_pool::tests::hidden_journal_recovery_commits_only_the_ledger_authorized_publication",
+          "executor_pool::tests::incomplete_prepared_journal_fails_closed_without_guest_execution",
+          "executor_pool::tests::operational_snapshots_are_read_only_and_revision_overflow_is_unavailable",
+          "executor_pool::tests::pending_service_cleanup_retains_endpoint_and_reservation_until_worker_exit",
+          "executor_pool::tests::production_restart_dispatch_replays_raw_roots_and_rejects_invalid_sources",
+          "executor_pool::tests::promotion_report_records_terminal_preparation_from_real_process_path",
+          "executor_pool::tests::promotion_report_records_terminal_publication_and_raw_reversion",
+          "executor_pool::tests::raw_pause_restart_rejects_an_inconsistent_execution_basis_before_repository_reads",
+          "executor_pool::tests::raw_pause_restart_rejects_capture_for_a_branch_attempt",
+          "executor_pool::tests::raw_pause_restart_rejects_capture_for_another_configuration",
+          "executor_pool::tests::raw_pause_restart_resolves_exact_materialized_start_capture",
+          "executor_pool::tests::repository_admission_does_not_hold_supervisor_actor_ownership",
+          "executor_pool::tests::repository_worker_rejects_branch_capture_before_model_execution",
+          "executor_pool::tests::retained_measurement_trace_publishes_the_named_beam_objective",
+          "executor_pool::tests::shutdown_drains_accepted_work_that_never_started",
+          "executor_pool::tests::stable_completed_journal_requires_matching_authenticated_roots_before_cleanup",
+          "executor_pool::tests::stable_journal_creation_failure_is_terminal_not_canceled",
+          "executor_pool::tests::stale_raw_promotion_is_discarded_before_worker_preparation",
+          "executor_pool::tests::terminal_worker_failure_closes_listener_and_precedes_listener_result",
+          "executor_pool::tests::transient_recovery_input_unavailability_retries_without_guest_work",
+          "executor_pool::tests::worker_completion_is_not_announced_before_model_drop_finishes",
+          "executor_pool::tests::worker_count_is_bounded_by_static_and_supervisor_capacity",
+          "executor_pool::tests::worker_panic_fails_closed_and_releases_exact_reservation",
+          "executor_server::tests::bounded_worker_pool_service_satisfies_the_listener_capability_boundary",
+          "executor_server::tests::fairness_limit_closes_only_after_the_last_complete_response",
+          "executor_server::tests::fixed_listener_serves_multiple_authenticated_requests_and_joins",
+          "executor_server::tests::fixed_workers_and_pending_queue_reject_excess_and_drain_on_shutdown",
+          "executor_server::tests::listener_configuration_enforces_every_static_bound",
+          "executor_server::tests::managed_endpoint_is_retained_until_listener_workers_join",
+          "executor_server::tests::sticky_shutdown_interrupts_an_idle_authenticated_connection",
+          "executor_server::tests::wrong_kernel_peer_is_rejected_before_component_dispatch",
+          "executor_supervisor::tests::cancellation_requires_the_exact_runtime_basis_before_signaling",
+          "executor_supervisor::tests::capacity_configuration_rejects_unusable_limits",
+          "executor_supervisor::tests::checkpoint_publication_restart_preserves_the_expected_root",
+          "executor_supervisor::tests::checkpoint_request_stages_a_gc_root_and_releases_only_after_pause",
+          "executor_supervisor::tests::compare_exchange_failures_reconcile_running_completion_and_cancellation",
+          "executor_supervisor::tests::completion_and_cancellation_races_are_idempotent",
+          "executor_supervisor::tests::completion_validation_is_fail_closed_by_default",
+          "executor_supervisor::tests::durable_completions_are_reauthenticated_or_discarded_before_reuse",
+          "executor_supervisor::tests::durable_restart_replaces_stale_running_and_preserves_completion",
+          "executor_supervisor::tests::exact_replay_running_dedup_and_capacity_are_bounded",
+          "executor_supervisor::tests::execution_cancellation_publishes_before_notifying_the_test_observer",
+          "executor_supervisor::tests::execution_cancellation_wait_fails_closed_after_poison",
+          "executor_supervisor::tests::execution_cancellation_wakes_blocked_guards_and_times_out_cleanly",
+          "executor_supervisor::tests::execution_quanta_are_enforced_as_a_per_execution_capability",
+          "executor_supervisor::tests::execution_status_is_read_only_and_requires_the_exact_runtime_basis",
+          "executor_supervisor::tests::finding_candidate_root_is_staged_atomically_and_preserved_by_completion",
+          "executor_supervisor::tests::materialized_start_capture_is_durable_and_prelatched_before_dispatch",
+          "executor_supervisor::tests::paused_execution_resumes_from_the_exact_root_and_survives_restart",
+          "executor_supervisor::tests::rejection_preflight_is_stable_and_does_not_consume_capacity",
+          "executor_supervisor::tests::response_publication_failure_never_abandons_prepared_work",
+          "executor_supervisor::tests::restart_recovers_publishing_without_losing_the_expected_observation",
+          "executor_supervisor::tests::runtime_dedup_is_lineage_scoped_and_requires_an_exact_execution_basis",
+          "executor_supervisor::tests::selected_savepoint_origin_survives_source_discard_resume_and_restart",
+          "executor_supervisor::tests::selected_savepoint_origin_without_own_checkpoint_survives_stale_epoch_recovery",
+          "executor_supervisor::tests::unauthenticated_savepoint_scope_is_stably_rejected_without_reserving_capacity",
+          "executor_worker::tests::assignment_host_watchdog_interrupts_the_same_execution_incarnation",
+          "executor_worker::tests::campaign_without_host_watchdog_retains_transport_bounds_only",
+          "executor_worker::tests::cancellation_keeps_capacity_until_the_worker_acknowledges_exit",
+          "executor_worker::tests::cancellation_wins_over_a_retryable_worker_failure",
+          "executor_worker::tests::capture_start_validation_requires_the_exact_discovery_artifact",
+          "executor_worker::tests::completed_assignment_disarms_host_watchdog_before_deadline",
+          "executor_worker::tests::execution_quantum_budget_is_shared_and_refuses_the_exact_exhausted_boundary",
+          "executor_worker::tests::execution_quantum_budget_refuses_saturated_accounting_without_wrapping",
+          "executor_worker::tests::explicit_assignment_watchdog_supersedes_default_qemu_operation_timeout",
+          "executor_worker::tests::host_watchdog_kills_live_child_and_reconciles_infrastructure_failure",
+          "executor_worker::tests::maximum_encoded_host_watchdog_does_not_overflow_monotonic_time",
+          "executor_worker::tests::operational_worker_failure_requeues_without_growing_the_bounded_queue",
+          "executor_worker::tests::terminal_worker_failure_is_durable_without_requeue",
+          "finding_production_replay::tests::canonical_capture_round_trips_and_selects_expected_divergence_side",
+          "finding_production_replay::tests::capture_enforces_small_asset_and_encoded_byte_caps",
+          "finding_production_replay::tests::capture_rejects_missing_or_extraneous_lifecycle_objects",
+          "finding_production_replay::tests::capture_rejects_progress_beyond_recipe_or_terminal_frontier",
+          "finding_production_replay::tests::continuation_event_parts_require_dense_nonoverlapping_sequences",
+          "finding_production_replay::tests::decoder_rejects_hostile_declared_container_length_before_deserialization",
+          "finding_production_replay::tests::deployment_capture_survives_removal_of_source_paths",
+          "finding_production_replay::tests::deployment_rejects_streamed_asset_before_bounded_copy",
+          "finding_production_replay::tests::deployment_static_limit_counts_duplicate_content_once",
+          "finding_production_replay::tests::network_only_finding_accepts_canonical_effect_trace",
+          "finding_production_replay::tests::paired_capture_rejects_equal_executions",
+          "finding_production_replay::tests::referenced_world_object_must_exist_and_match_its_hash",
+          "finding_production_replay::tests::signal_lifecycle_capture_requires_authenticates_and_bounds_its_store",
+          "finding_production_replay::tests::static_limit_counts_guest_and_world_roles_by_content_identity",
+          "finding_production_replay::tests::terminal_fingerprint_may_precede_but_not_exceed_shared_frontier",
+          "finding_replay_capture_store::tests::load_rejects_a_manifest_with_a_missing_chunk",
+          "finding_replay_capture_store::tests::repeated_full_size_chunk_positions_round_trip_one_shared_blob",
+          "finding_replay_capture_store::tests::shared_chunks_are_deduplicated_across_capture_roles",
+          "guest_selectable::diagnostics::tests::cloned_recorders_share_one_limit_and_emit_one_truncation_marker",
+          "guest_selectable::diagnostics::tests::configuration_rejects_zero_and_values_above_the_pool_ceiling",
+          "guest_selectable::diagnostics::tests::disabled_and_failed_diagnostic_io_leave_semantic_values_unchanged",
+          "guest_selectable::diagnostics::tests::event_line_contains_both_live_and_authenticated_replay_coordinates",
+          "guest_selectable::diagnostics::tests::rendered_events_obey_the_byte_limit_at_a_utf8_boundary",
+          "guest_selectable::tests::atomic_guest_group_crosses_registration_discovery_and_one_reply",
+          "guest_selectable::tests::integer_runtime_offer_may_narrow_but_never_broaden_scenario_domain",
+          "guest_selectable::tests::request_rejects_unknown_source_and_broadened_domain",
+          "guest_selectable::tests::scenario_request_resolves_and_builds_exact_default_reply",
+          "hot_checkpoint_fallback::tests::authenticated_demotion_preserves_the_exact_fallback_diagnostic_chain",
+          "hot_checkpoint_fallback::tests::authenticated_sink_rechecks_at_release_and_preserves_factory_on_failure",
+          "hot_checkpoint_fallback::tests::thin_fallback_authenticates_exact_artifacts_and_native_base",
+          "hot_checkpoint_fallback::tests::thin_fallback_rejects_wrong_configuration_and_missing_native_base",
+          "hot_checkpoint_manager::tests::exhausted_generation_rejects_plans_before_external_work",
+          "hot_checkpoint_manager::tests::fallback_identity_survives_planning_and_inventory_commit",
+          "hot_checkpoint_manager::tests::fork_rate_is_sticky_bounded_and_monotonic",
+          "hot_checkpoint_manager::tests::individual_limits_report_all_resource_dimensions_before_planning",
+          "hot_checkpoint_manager::tests::limits_match_the_static_pool_ceiling",
+          "hot_checkpoint_manager::tests::orderly_demotion_plan_is_foreign_and_generation_fenced",
+          "hot_checkpoint_manager::tests::orderly_demotion_releases_exact_accounting_and_coordinate",
+          "hot_checkpoint_manager::tests::pinned_candidate_can_replace_unpinned_hotter_source",
+          "hot_checkpoint_manager::tests::pins_and_multi_resource_pressure_fail_closed_without_mutation",
+          "hot_checkpoint_manager::tests::pressure_demotes_the_coldest_exact_coordinate_deterministically",
+          "hot_checkpoint_manager::tests::score_is_bounded_explainable_and_signed",
+          "hot_checkpoint_manager::tests::stale_foreign_wrong_key_and_occupied_commits_are_read_only",
+          "hot_checkpoint_manager::tests::ten_thousand_admissions_under_capacity_pressure_stay_bounded_and_secured",
+          "hot_checkpoint_manager::tests::within_budget_commit_accounts_every_resource_dimension",
+          "hot_checkpoint_retention::tests::directory_catalog_survives_restart_and_rejects_corruption",
+          "hot_checkpoint_retention::tests::directory_inventory_fence_blocks_root_replacement",
+          "hot_checkpoint_retention::tests::existing_catalog_preserves_staging_and_accepts_empty_lazy_records",
+          "hot_checkpoint_retention::tests::final_directory_catalog_owner_releases_a_duplicated_writer_descriptor",
+          "hot_checkpoint_retention::tests::memory_catalog_is_bounded_conditional_and_roots_both_tiers",
+          "managed_qemu_hot_fork_source_world_pool::tests::admission::admission_uses_measured_world_resources_and_charges_only_matching_checkouts",
+          "managed_qemu_hot_fork_source_world_pool::tests::admission::canonical_genesis_accepts_the_authenticated_nonzero_ready_point",
+          "managed_qemu_hot_fork_source_world_pool::tests::admission::canonical_genesis_rejects_a_physical_counter_foreign_to_its_ready_point",
+          "managed_qemu_hot_fork_source_world_pool::tests::admission::canonical_genesis_rejects_completed_quanta_and_preserves_its_diagnostic",
+          "managed_qemu_hot_fork_source_world_pool::tests::admission::canonical_genesis_rejects_recorded_events_and_foreign_configuration_keys",
+          "managed_qemu_hot_fork_source_world_pool::tests::admission::equal_configurations_with_distinct_exact_checkpoint_identities_are_independently_reusable",
+          "managed_qemu_hot_fork_source_world_pool::tests::admission::exact_authenticated_source_admits_an_advanced_boundary_under_its_checkpoint_key",
+          "managed_qemu_hot_fork_source_world_pool::tests::admission::genesis_reuse_requires_the_canonical_empty_event_prefix",
+          "managed_qemu_hot_fork_source_world_pool::tests::admission::pressure_demotion_reauthenticates_the_victim_catalog_record",
+          "managed_qemu_hot_fork_source_world_pool::tests::admission::resource_decline_retires_the_source_and_keeps_a_cold_fallback",
+          "managed_qemu_hot_fork_source_world_pool::tests::admission::same_configuration_at_an_advanced_frontier_is_rejected",
+          "managed_qemu_hot_fork_source_world_pool::tests::admission::wrong_world_restore_keeps_the_checked_out_source_authority_pending",
+          "managed_qemu_hot_fork_source_world_pool::tests::leases::abandoned_shared_lease_closes_admission_without_revoking_a_healthy_sibling",
+          "managed_qemu_hot_fork_source_world_pool::tests::leases::shared_source_leases_allow_bounded_siblings_and_delay_reuse_until_the_last_release",
+          "managed_qemu_hot_fork_source_world_pool::tests::leases::shared_worker_providers_release_before_orderly_shutdown_and_restart_inventory",
+          "managed_qemu_hot_fork_source_world_pool::tests::leases::source_admission_accounts_for_live_child_lease_reservations",
+          "managed_qemu_hot_fork_source_world_pool::tests::managed_demotion_preserves_the_concrete_source_failure_diagnostic",
+          "owned_advisory_lock::tests::bound_owner_detects_lock_name_replacement",
+          "owned_advisory_lock::tests::owner_drop_unlocks_a_retained_duplicate_file_description",
+          "packaged_qemu_executor::tests::invalid_campaign_fails_before_operational_owner_mutation",
+          "packaged_qemu_executor::tests::invalid_scenario_fails_before_operational_owner_mutation",
+          "packaged_qemu_executor::tests::lifecycle_recovery::actor_status_snapshots_reject_intervening_ownership_changes",
+          "packaged_qemu_executor::tests::lifecycle_recovery::competing_packaged_startup_preserves_live_native_catalogs",
+          "packaged_qemu_executor::tests::lifecycle_recovery::operational_phase_uses_exact_actor_ownership_and_durable_phase",
+          "packaged_qemu_executor::tests::lifecycle_recovery::packaged_executor_completion_is_sticky_across_owner_panic",
+          "packaged_qemu_executor::tests::lifecycle_recovery::packaged_native_catalog_recovery_covers_hot_source_lifecycles",
+          "packaged_qemu_executor::tests::lifecycle_recovery::packaged_native_catalog_recovery_finishes_a_renamed_generation",
+          "packaged_qemu_executor::tests::lifecycle_recovery::packaged_native_catalog_recovery_is_crash_safe_and_idempotent",
+          "packaged_qemu_executor::tests::lifecycle_recovery::packaged_native_catalog_recovery_rejects_conflicting_generations",
+          "packaged_qemu_executor::tests::lifecycle_recovery::packaged_native_catalog_recovery_rejects_namespace_symlinks",
+          "packaged_qemu_executor::tests::materializer_status_rejects_a_selection_for_a_superseded_pin_fact",
+          "packaged_qemu_executor::tests::packaged_attempt_failure_diagnostic_preserves_classification_and_bounded_source_chain",
+          "packaged_qemu_executor::tests::packaged_attempt_failure_diagnostic_retains_prior_failure_after_cleanup_error",
+          "packaged_qemu_executor::tests::packaged_campaign_basis_is_order_independent_and_exact",
+          "packaged_qemu_executor::tests::packaged_executor_advertises_exact_restore_with_one_owner_per_worker",
+          "packaged_qemu_executor::tests::packaged_executor_boundary_diagnostics_are_explicit_and_bounded",
+          "packaged_qemu_executor::tests::packaged_executor_config_rejects_an_empty_campaign_set",
+          "packaged_qemu_executor::tests::packaged_executor_config_rejects_workers_beyond_slots",
+          "packaged_qemu_executor::tests::packaged_executor_determinism_finding_verification_is_explicit",
+          "packaged_qemu_executor::tests::packaged_executor_serves_the_exact_composed_description_and_joins",
+          "packaged_qemu_executor::tests::packaged_hot_fork_config_preserves_launch_authentication_source",
+          "packaged_qemu_executor::tests::packaged_lifecycle_wrapper_invalidates_status_after_failed_cleanup",
+          "packaged_qemu_executor::tests::packaged_lifecycle_wrappers_track_real_preparation_shutdown_and_sealing_boundaries",
+          "packaged_qemu_executor::tests::packaged_scenario_catalog_charges_an_exact_aggregate_byte_bound",
+          "packaged_qemu_executor::tests::packaged_startup_completes_pending_observation_and_finding_handoff",
+          "packaged_qemu_executor::tests::packaged_status_lifecycle_delegates_execution_evidence_and_errors",
+          "packaged_qemu_executor::tests::valid_noncanonical_lineage_declines_genesis_hot_capture",
+          "paused_checkpoint_promotion::tests::checkpoint_replay_requires_the_exact_segmented_event_offset",
+          "paused_checkpoint_promotion::tests::forged_staged_pair_cannot_reconstitute_a_reconcile_claim",
+          "paused_checkpoint_promotion::tests::identical_replay_root_can_reconcile_a_later_pause_execution",
+          "paused_checkpoint_promotion::tests::promotion_boundary_check_rejects_mismatched_progress_before_store_work",
+          "paused_checkpoint_promotion::tests::repository_evidence_seals_stages_and_reconciles_after_native_retirement",
+          "paused_checkpoint_promotion::tests::staged_promotion_reconstitutes_its_reconcile_claim_after_store_restart",
+          "pending_finding::tests::restart_inventory_retains_one_fixed_batch_and_reports_repeatable_remainder",
+          "planner_loopback::tests::direct_and_loopback_planner_components_are_identical",
+          "planner_loopback::tests::planner_loopback_rejects_partial_frames_with_a_finite_deadline",
+          "planner_process::owner::tests::pending_cleanup_retains_the_child_and_rejects_an_overlapping_launch",
+          "planner_process::owner::tests::unwinding_transfers_the_child_to_cleanup_before_owner_drop",
+          "planner_process::pipes::tests::cancellation_interrupts_blocked_pipe_io",
+          "planner_process::pipes::tests::inherited_output_pipe_does_not_outlive_deadline_or_block_next_evaluation",
+          "planner_process::pipes::tests::unread_request_pipe_obeys_the_exchange_deadline",
+          "planner_process::tests::cancellation_is_sticky_before_process_launch",
+          "planner_process::tests::canonical_worker_dispatches_the_puct_engine_version",
+          "planner_process::tests::canonical_worker_returns_only_one_untrusted_proposal_frame",
+          "planner_process::tests::process_configuration_bounds_path_and_timeout",
+          "planner_process::tests::process_frame_header_is_exact_and_round_trips",
+          "planner_process::tests::process_frame_rejects_reserved_version_and_size_drift",
+          "planner_process::tests::worker_peak_rss_report_is_strict_and_nonzero",
+          "prepared_result_journal::tests::hidden_journal_becomes_visible_only_after_commit",
+          "prepared_result_journal::tests::journal_create_reopen_authenticate_and_remove_are_exact",
+          "prepared_result_journal::tests::journal_rejects_a_replaced_result_child_without_external_access",
+          "prepared_result_journal::tests::journal_rejects_attempt_mismatch_before_creating_lock_or_staging",
+          "prepared_result_journal::tests::journal_rejects_corrupt_incomplete_and_nonsemantic_state",
+          "prepared_result_journal::tests::journal_v2_owns_raw_measurement_leaf",
+          "prepared_result_journal::tests::key_lock_replacement_fences_hidden_commit",
+          "prepared_result_journal::tests::ledger_gated_cleanup_recovers_fixed_partial_staging_and_visible_removal",
+          "prepared_result_journal::tests::namespace_owner_and_replacement_fence_runtime_mutation",
+          "prepared_result_journal::tests::runtime_namespace_rejects_unknown_entries",
+          "qemu_baked_genesis::tests::baked_catalog_routes_by_the_complete_world_scenario_basis",
+          "qemu_baked_genesis::tests::private_replay_diagnostic_bounds_cyclic_sources",
+          "qemu_baked_genesis::tests::private_replay_mapping_retains_lifecycle_cause_and_failure_class",
+          "qemu_baked_genesis::tests::replay_oracle_legs_share_lifecycle_generation_in_distinct_directories",
+          "qemu_campaign_driver::tests::absolute_stop_at_resume_boundary_does_not_drive_another_quantum",
+          "qemu_campaign_driver::tests::any_assertion_observation_accepts_the_second_declared_assertion",
+          "qemu_campaign_driver::tests::assertion_observation_drives_past_nonmatching_quanta_to_a_new_violation",
+          "qemu_campaign_driver::tests::bounded_next_choice_intrinsic_fallback_is_not_a_choice",
+          "qemu_campaign_driver::tests::bounded_next_choice_intrinsic_fallback_wins_a_same_quantum_choice",
+          "qemu_campaign_driver::tests::bounded_next_choice_reached_accepts_a_live_preselection_handoff",
+          "qemu_campaign_driver::tests::bounded_next_choice_reaches_an_actual_choice_before_intrinsic_fallback",
+          "qemu_campaign_driver::tests::bounded_primary_retains_its_exact_predeadline_coordinate",
+          "qemu_campaign_driver::tests::checkpoint_replay_matches_the_pre_choice_pending_boundary",
+          "qemu_campaign_driver::tests::combined_stop_uses_the_first_absolute_bound",
+          "qemu_campaign_driver::tests::compound_observation_prefers_quiescence_at_the_exact_bound",
+          "qemu_campaign_driver::tests::compound_observation_uses_an_absolute_bound_from_a_nonzero_source",
+          "qemu_campaign_driver::tests::continued_origin_past_intrinsic_choice_fallback_fails_before_sealing",
+          "qemu_campaign_driver::tests::envoy_boot_arms_only_from_the_authenticated_west_semantic_marker",
+          "qemu_campaign_driver::tests::event_count_resume_excludes_origin_events_and_counts_the_same_attempt_prefix",
+          "qemu_campaign_driver::tests::event_count_seals_final_drain_coverage_into_exact_candidate",
+          "qemu_campaign_driver::tests::execution_quanta_resume_charges_only_the_suffix_and_matches_uninterrupted_evidence",
+          "qemu_campaign_driver::tests::fresh_driver_retains_verified_guest_measurement_evaluation",
+          "qemu_campaign_driver::tests::guest_marker_boundary::completion_action_pass_preempts_the_same_quantum_marker_stop",
+          "qemu_campaign_driver::tests::guest_marker_boundary::selected_guest_marker_stops_before_the_completion_action",
+          "qemu_campaign_driver::tests::guest_measurement_messages_fail_closed_on_type_and_lifecycle_mismatch",
+          "qemu_campaign_driver::tests::guest_measurement_messages_normalize_against_the_exact_scenario_contract",
+          "qemu_campaign_driver::tests::modeled_driver_rejects_a_materialized_quantum_coordinate_mismatch",
+          "qemu_campaign_driver::tests::modeled_scheduler_metrics_are_derived_from_the_canonical_log",
+          "qemu_campaign_driver::tests::named_assertion_observation_rejects_an_undeclared_event",
+          "qemu_campaign_driver::tests::named_boundary_reached_with_checkpoint_request_returns_the_semantic_stop",
+          "qemu_campaign_driver::tests::named_boundary_requires_the_exact_guest_marker",
+          "qemu_campaign_driver::tests::network_boundary::incidental_same_name_marker_is_inert_without_network_declaration",
+          "qemu_campaign_driver::tests::network_boundary::lifecycle_without_marker_proof_cannot_publish_network_choice",
+          "qemu_campaign_driver::tests::network_boundary::network_choice_rejects_duplicate_unknown_and_stale_physical_markers",
+          "qemu_campaign_driver::tests::network_boundary::network_choice_waits_for_every_parked_vm_marker",
+          "qemu_campaign_driver::tests::network_boundary::network_fault_marker_rejects_a_frame_before_the_quiescent_barrier",
+          "qemu_campaign_driver::tests::network_boundary::phase_marker_coordinate_errors_identify_the_node_and_exact_ticks",
+          "qemu_campaign_driver::tests::network_boundary::ready_marker_discovers_the_same_public_network_choice_on_repeat",
+          "qemu_campaign_driver::tests::network_boundary::ready_marker_with_nonzero_logical_offset_uses_raw_stop_proof",
+          "qemu_campaign_driver::tests::network_boundary::same_named_network_scenario_without_boot_capability_stays_serial",
+          "qemu_campaign_driver::tests::network_boundary::selected_network_group_releases_the_exact_parked_phase",
+          "qemu_campaign_driver::tests::next_choice_does_not_republish_a_selection_in_its_authenticated_start",
+          "qemu_campaign_driver::tests::next_choice_ignores_a_discovery_defaulted_in_the_same_quantum",
+          "qemu_campaign_driver::tests::next_choice_preserves_settled_defaults_before_the_unresolved_choice",
+          "qemu_campaign_driver::tests::next_choice_publishes_the_live_signal_fault_frontier_at_its_exact_parent",
+          "qemu_campaign_driver::tests::next_choice_retains_the_complete_discovery_bundle",
+          "qemu_campaign_driver::tests::observation_sealing::empty_terminal_failure_is_rejected",
+          "qemu_campaign_driver::tests::observation_sealing::matching_observation_does_not_mutate_configuration_with_a_default_guest_reply",
+          "qemu_campaign_driver::tests::observation_sealing::matching_observation_rejects_a_nonadvancing_quantum_coordinate",
+          "qemu_campaign_driver::tests::observation_sealing::non_dense_final_drain_is_rejected_before_candidate_construction",
+          "qemu_campaign_driver::tests::observation_sealing::observation_seal_rejects_a_bytes_only_offset_mutation",
+          "qemu_campaign_driver::tests::observation_sealing::observation_seal_rejects_a_forged_prefix_with_a_coherent_segment",
+          "qemu_campaign_driver::tests::observation_sealing::observation_seal_rejects_an_empty_segment_with_a_nonempty_prefix",
+          "qemu_campaign_driver::tests::observation_sealing::observation_seal_rejects_shifted_quantum_coordinates",
+          "qemu_campaign_driver::tests::observation_sealing::retained_choices_share_contracts_and_charge_unique_records_once",
+          "qemu_campaign_driver::tests::observation_sealing::retained_event_material_is_byte_bounded_before_append",
+          "qemu_campaign_driver::tests::observation_sealing::terminal_failure_preserves_grouped_reasons_in_scheduler_order",
+          "qemu_campaign_driver::tests::observation_sealing::terminal_run_projects_offline_property_verdicts",
+          "qemu_campaign_driver::tests::pending_default_reply_at_start_reaches_event_count_without_an_extra_quantum",
+          "qemu_campaign_driver::tests::pending_guest_choice_applies_and_replies_with_exact_default",
+          "qemu_campaign_driver::tests::pending_guest_choice_diagnostic_sampling_failure_is_nonsemantic",
+          "qemu_campaign_driver::tests::pending_guest_choice_stops_without_reply_and_retains_scenario_discovery",
+          "qemu_campaign_driver::tests::pending_guest_choice_waits_for_the_global_frontier",
+          "qemu_campaign_driver::tests::policy_timeout_prefers_virtual_time_at_a_shared_completed_quantum",
+          "qemu_campaign_driver::tests::policy_virtual_timeout_seals_a_typed_stop_with_retained_causal_marker",
+          "qemu_campaign_driver::tests::produced_selections_are_scoped_to_the_start_schedule_suffix",
+          "qemu_campaign_driver::tests::reached_policy_deadline_wins_over_overdue_intrinsic_fallback_at_start",
+          "qemu_campaign_driver::tests::restored_start_at_intrinsic_choice_fallback_seals_exact_timeout",
+          "qemu_campaign_driver::tests::restored_start_past_intrinsic_choice_fallback_fails_before_sealing",
+          "qemu_campaign_driver::tests::restored_terminal_verdict_wins_past_intrinsic_choice_fallback",
+          "qemu_campaign_driver::tests::restored_violation_does_not_fake_a_new_assertion_transition",
+          "qemu_campaign_driver::tests::restored_virtual_time_uses_the_scheduler_frontier_when_the_log_tail_is_earlier",
+          "qemu_campaign_driver::tests::resumed_driver_starts_from_the_actual_restored_configuration",
+          "qemu_campaign_driver::tests::savepoint_capture_ignores_prelatched_checkpoint_until_attempt_stop",
+          "qemu_campaign_driver::tests::savepoint_replay_probe_records_the_reached_boundary_before_shutdown",
+          "qemu_campaign_driver::tests::savepoint_replay_proof_rejects_quiet_progress_at_another_coordinate",
+          "qemu_campaign_driver::tests::scheduler_operational_class_survives_the_concrete_driver",
+          "qemu_campaign_driver::tests::scheduler_quiescence_observation_is_post_source_and_evidence_backed",
+          "qemu_campaign_driver::tests::signal_fault_frontier_is_not_published_after_execution_passes_it",
+          "qemu_campaign_driver::tests::sticky_checkpoint_request_stops_at_a_safe_boundary_without_driving",
+          "qemu_campaign_driver::tests::terminal_only_never_reached_failure_is_not_an_observation_match",
+          "qemu_campaign_driver::tests::terminal_verdict_precedes_a_coincident_execution_quanta_stop",
+          "qemu_campaign_driver::tests::terminal_verdict_preempts_a_coincident_assertion_observation",
+          "qemu_campaign_driver::tests::terminal_verdict_wins_over_a_coincident_checkpoint_request",
+          "qemu_campaign_driver::tests::virtual_time_boundary_caps_a_quantum_before_a_later_terminal",
+          "qemu_campaign_driver::tests::zero_progress_choice_discovery_does_not_consume_execution_quanta",
+          "qemu_campaign_lifecycle::campaign_run::executor::lock_tests::poisoned_capture_owner_rejects_new_work_but_allows_controlled_cleanup",
+          "qemu_campaign_lifecycle::campaign_run::exploration::tests::local_planner_kind_is_total_for_every_exploration_strategy",
+          "qemu_campaign_lifecycle::campaign_run::finding_export::tests::cancellation_after_nonempty_query_prevents_pending_object_transfer",
+          "qemu_campaign_lifecycle::campaign_run::finding_export::tests::cancellation_during_export_stops_after_current_transfer_without_a_partial_result",
+          "qemu_campaign_lifecycle::campaign_run::finding_export::tests::empty_snapshot_export_retains_its_authenticated_query_page",
+          "qemu_campaign_lifecycle::campaign_run::finding_export::tests::pre_canceled_export_attempts_no_transfer",
+          "qemu_campaign_lifecycle::campaign_run::replay_closure::tests::collection_charge_includes_record_framing_before_retention",
+          "qemu_campaign_lifecycle::campaign_run::tests::bounded_exploration_lazily_admits_a_full_width_integer_domain",
+          "qemu_campaign_lifecycle::campaign_run::tests::bounded_exploration_reports_a_pruned_depth_boundary",
+          "qemu_campaign_lifecycle::campaign_run::tests::bounded_exploration_stops_on_an_accepted_property_finding",
+          "qemu_campaign_lifecycle::campaign_run::tests::bounded_exploration_stops_on_an_accepted_scenario_finding",
+          "qemu_campaign_lifecycle::campaign_run::tests::bounded_exploration_uses_accepted_branch_requests_and_observations",
+          "qemu_campaign_lifecycle::campaign_run::tests::determinism_finding_verification_is_explicitly_opt_in",
+          "qemu_campaign_lifecycle::campaign_run::tests::explicit_combined_discovery_stops_at_the_first_reached_bound",
+          "qemu_campaign_lifecycle::campaign_run::tests::explicit_execution_quanta_discovery_stops_at_the_absolute_coordinate",
+          "qemu_campaign_lifecycle::campaign_run::tests::explicit_terminal_discovery_precedes_supervisor_automatic_discovery",
+          "qemu_campaign_lifecycle::campaign_run::tests::explicit_virtual_time_discovery_retains_the_first_frontier_crossing_the_deadline",
+          "qemu_campaign_lifecycle::campaign_run::tests::observation_capture_only_stops_before_any_continuation_attempt_or_quantum",
+          "qemu_campaign_lifecycle::campaign_run::tests::portable_resume_rejects_override_before_execution",
+          "qemu_campaign_lifecycle::campaign_run::tests::remote_resume_validator_reconstructs_exact_closure_and_rejects_bad_envelopes",
+          "qemu_campaign_lifecycle::campaign_run::tests::replay_closure_rejects_missing_extra_duplicate_and_tampered_records_before_start",
+          "qemu_campaign_lifecycle::campaign_run::tests::savepoint_capture_rejects_a_terminal_outcome_before_the_requested_deadline",
+          "qemu_campaign_lifecycle::campaign_run::tests::savepoint_capture_rejects_mismatched_replay_evidence",
+          "qemu_campaign_lifecycle::campaign_run::tests::savepoint_default_choice_preserves_the_requested_continuation_stop",
+          "qemu_campaign_lifecycle::campaign_run::tests::selected_schedule_replays_through_a_fresh_authenticated_repository",
+          "qemu_campaign_lifecycle::campaign_run::tests::selection_free_resume_applies_an_earlier_final_stop_after_source_admission",
+          "qemu_campaign_lifecycle::campaign_run::tests::selection_free_resume_authenticates_the_exact_source_before_continuing",
+          "qemu_campaign_lifecycle::campaign_run::tests::selection_free_resume_completes_at_the_requested_next_choice",
+          "qemu_campaign_lifecycle::campaign_run::tests::selection_free_resume_rejects_a_checkpoint_for_another_configuration",
+          "qemu_campaign_lifecycle::campaign_run::tests::selection_free_resume_rejects_terminal_before_the_source_boundary",
+          "qemu_campaign_lifecycle::campaign_run::tests::selection_free_resume_terminal_at_source_needs_no_continuation",
+          "qemu_campaign_lifecycle::campaign_run::tests::shared_owner_authenticates_completion_and_retains_terminal_evidence",
+          "qemu_campaign_lifecycle::campaign_run::tests::shared_owner_preserves_the_terminal_lifecycle_error_source",
+          "qemu_campaign_lifecycle::campaign_run::tests::supplemental_finding_source_round_trips_and_reopens_by_exact_identity",
+          "qemu_campaign_lifecycle::campaign_run::tests::terminal_discovery_selection_survives_gc_restart_and_replay",
+          "qemu_campaign_lifecycle::campaign_run::tests::unpublished_default_selection_survives_root_closure_restart_without_repository_records",
+          "qemu_campaign_lifecycle::campaign_run::tests::virtual_time_savepoint_capture_replays_and_authenticates_the_same_boundary",
+          "qemu_campaign_lifecycle::evidence::store::tests::effect_trace_limit_refusal_preserves_final_events_and_prior_evidence",
+          "qemu_campaign_lifecycle::evidence::store::tests::event_byte_limit_refusal_preserves_the_complete_snapshot",
+          "qemu_campaign_lifecycle::evidence::store::tests::post_quantum_entries_extend_evidence_without_advancing_frontier",
+          "qemu_campaign_lifecycle::evidence::store::tests::preselection_mismatch_reports_first_field_without_payload_values",
+          "qemu_campaign_lifecycle::evidence::store::tests::selected_preselection_records_only_contiguous_suffix_after_one_or_many_entries",
+          "qemu_campaign_lifecycle::evidence::store::tests::selected_preselection_rejects_stale_prefix_or_noncontiguous_suffix",
+          "qemu_campaign_lifecycle::evidence::store::tests::settled_preselection_records_only_its_authenticated_suffix",
+          "qemu_campaign_lifecycle::evidence::store::tests::terminal_fingerprint_limit_refusal_preserves_prior_evidence",
+          "qemu_campaign_lifecycle::interactive_session::tests::insufficient_resources_fail_before_host_open",
+          "qemu_campaign_lifecycle::interactive_session::tests::wrong_scenario_identity_fails_before_host_open",
+          "qemu_campaign_lifecycle::remote_observation_resume::tests::factory_applies_deployment_determinism_policy_to_authentication_campaign",
+          "qemu_campaign_lifecycle::tests::app_random_projection_ignores_a_campaign_selection_outside_its_owned_stream",
+          "qemu_campaign_lifecycle::tests::automatic_wrapper_retains_supplemental_violation_when_offline_source_also_fails",
+          "qemu_campaign_lifecycle::tests::composed_candidate_replay_retains_app_random_choice_and_measurement_leaf",
+          "qemu_campaign_lifecycle::tests::composed_candidate_replay_retains_signal_fault_choice_and_measurement_leaf",
+          "qemu_campaign_lifecycle::tests::continuation_admission::continuation_accepts_an_authenticated_observation_source_frontier",
+          "qemu_campaign_lifecycle::tests::continuation_admission::continuation_rejects_a_terminally_preempted_source_stop",
+          "qemu_campaign_lifecycle::tests::continuation_admission::fresh_runner_rejects_continuation_at_a_different_virtual_time",
+          "qemu_campaign_lifecycle::tests::continuation_admission::fresh_runner_rejects_continuation_without_exact_virtual_time_source",
+          "qemu_campaign_lifecycle::tests::continuation_admission::fresh_runner_rejects_resume_origin_before_factory_invocation",
+          "qemu_campaign_lifecycle::tests::continuation_admission::fresh_runner_rejects_unconsumed_continuation_input_before_factory_invocation",
+          "qemu_campaign_lifecycle::tests::continuation_admission::fresh_runner_replays_supported_non_genesis_start_before_driver",
+          "qemu_campaign_lifecycle::tests::continuation_admission::terminal_evidence_runner_rejects_previous_attempt_samples_after_a_factory_reset",
+          "qemu_campaign_lifecycle::tests::drifted_scenario_identity_fields_are_rejected_before_resource_installation",
+          "qemu_campaign_lifecycle::tests::exact_guard_is_transferred_to_lifecycle_launcher_hooks",
+          "qemu_campaign_lifecycle::tests::exact_resume_is_rejected_before_resource_installation",
+          "qemu_campaign_lifecycle::tests::finding_candidate_replay_continues_after_reaching_a_nonempty_schedule",
+          "qemu_campaign_lifecycle::tests::finding_candidate_replay_evaluates_the_declared_stop_after_materialization",
+          "qemu_campaign_lifecycle::tests::finding_candidate_replay_preserves_cleanup_failure_over_incompatibility",
+          "qemu_campaign_lifecycle::tests::finding_candidate_replay_reports_prefix_divergence_after_cleanup",
+          "qemu_campaign_lifecycle::tests::finding_candidate_replay_reports_preserving_and_nonpreserving_verdicts",
+          "qemu_campaign_lifecycle::tests::finding_candidate_replay_reports_terminal_prefix_after_cleanup",
+          "qemu_campaign_lifecycle::tests::finding_candidate_replay_retains_authenticated_execution_quanta_timeout",
+          "qemu_campaign_lifecycle::tests::finding_candidate_replay_shares_cancellation_and_still_cleans_up",
+          "qemu_campaign_lifecycle::tests::fresh_execution::attempt_start_verifier_rejects_unsupported_override_before_factory",
+          "qemu_campaign_lifecycle::tests::fresh_execution::attempt_start_verifier_seals_the_prefix_before_final_drain",
+          "qemu_campaign_lifecycle::tests::fresh_execution::cleanup_failure_overrides_terminal_fingerprint_capture_failure",
+          "qemu_campaign_lifecycle::tests::fresh_execution::fresh_cleanup_failure_bounds_the_original_driver_message",
+          "qemu_campaign_lifecycle::tests::fresh_execution::fresh_cleanup_failure_overrides_driver_retry_and_retains_diagnostics",
+          "qemu_campaign_lifecycle::tests::fresh_execution::fresh_replay_applies_campaign_selection_at_exact_guest_request",
+          "qemu_campaign_lifecycle::tests::fresh_execution::fresh_runner_cleans_up_after_terminal_fingerprint_capture_failure",
+          "qemu_campaign_lifecycle::tests::fresh_execution::fresh_runner_cleans_up_and_preserves_driver_failure_classification",
+          "qemu_campaign_lifecycle::tests::fresh_execution::fresh_runner_replay_divergence_cleans_up_without_calling_driver",
+          "qemu_campaign_lifecycle::tests::fresh_execution::fresh_runner_replay_honors_cancellation_before_first_quantum",
+          "qemu_campaign_lifecycle::tests::fresh_execution::fresh_runner_replay_is_bounded_by_admitted_quanta",
+          "qemu_campaign_lifecycle::tests::fresh_execution::fresh_runner_replays_authenticated_signal_fault_plan_before_driver",
+          "qemu_campaign_lifecycle::tests::fresh_execution::production_continuation_plan_consumes_the_authenticated_reseed",
+          "qemu_campaign_lifecycle::tests::fresh_execution::production_lifecycle_resource_admission_keeps_retry_and_cancel_classes",
+          "qemu_campaign_lifecycle::tests::fresh_runner_enables_live_signal_promotion_after_start_materialization",
+          "qemu_campaign_lifecycle::tests::fresh_runner_opts_only_next_choice_attempts_into_live_signal_promotion",
+          "qemu_campaign_lifecycle::tests::fresh_runner_rejects_an_unsolicited_checkpoint_before_capture",
+          "qemu_campaign_lifecycle::tests::fresh_runner_seals_only_after_runner_owned_shutdown",
+          "qemu_campaign_lifecycle::tests::genesis_start_error_retains_worker_class_and_underlying_cause",
+          "qemu_campaign_lifecycle::tests::host_parallel_native::host_parallel_source_binds_selected_guest_asset_bytes",
+          "qemu_campaign_lifecycle::tests::lifecycle_construction_failure_quarantines_installed_guard",
+          "qemu_campaign_lifecycle::tests::mismatched_cancellation_incarnation_is_released_before_rejection",
+          "qemu_campaign_lifecycle::tests::mismatched_guard_contract_is_released_before_rejection",
+          "qemu_campaign_lifecycle::tests::observed_lifecycle_does_not_publish_staged_fingerprints_when_cleanup_fails",
+          "qemu_campaign_lifecycle::tests::observed_lifecycle_rejects_a_mismatched_terminal_fingerprint_atomically",
+          "qemu_campaign_lifecycle::tests::observed_lifecycle_retains_only_successful_execution_evidence",
+          "qemu_campaign_lifecycle::tests::observed_production_lifecycle_projects_retained_failed_node_terminal_fingerprints",
+          "qemu_campaign_lifecycle::tests::paired_replay::fresh_paired_replay_keeps_selected_evidence_and_both_distinct_coverages_coherent",
+          "qemu_campaign_lifecycle::tests::paired_replay::replay_divergence_uses_reproduced_evidence_when_expected_entry_is_absent",
+          "qemu_campaign_lifecycle::tests::paired_replay::replay_divergence_uses_the_actual_first_causal_log_mismatch",
+          "qemu_campaign_lifecycle::tests::private_checkpoint_replay_reconstructs_a_selected_origin_and_reaps_on_failure",
+          "qemu_campaign_lifecycle::tests::private_fresh_replay_can_preserve_descendant_continuation_controls",
+          "qemu_campaign_lifecycle::tests::private_fresh_replay_rejects_a_candidate_shorter_than_its_descendant_controls",
+          "qemu_campaign_lifecycle::tests::promoted_portable_resume_preflight_uses_no_native_recovery_catalog",
+          "qemu_campaign_lifecycle::tests::promoted_root_without_matching_durable_selection_is_rejected_at_resume_admission",
+          "qemu_campaign_lifecycle::tests::promoted_signal_fault_branch_is_admitted_only_by_its_typed_plan",
+          "qemu_campaign_lifecycle::tests::property_failure_precedes_a_coincident_execution_quanta_timeout",
+          "qemu_campaign_lifecycle::tests::router_cold_executes_an_initial_selected_origin_when_its_source_is_absent",
+          "qemu_campaign_lifecycle::tests::router_cold_executes_continuation_control_after_authenticating_exact_source",
+          "qemu_campaign_lifecycle::tests::router_cold_replays_each_control_in_a_two_generation_continuation_chain",
+          "qemu_campaign_lifecycle::tests::router_rejects_invalid_exact_source_before_cold_continuation_allocation",
+          "qemu_campaign_lifecycle::tests::selected_start_derives_matching_scheduler_and_plugin_branch_plans",
+          "qemu_campaign_lifecycle::tests::terminal_evidence_runner_attaches_the_fresh_terminal_world_set_after_shutdown",
+          "qemu_campaign_lifecycle::tests::terminal_retention::failed_observation_retains_terminal_boundary_without_replacing_semantic_result",
+          "qemu_campaign_lifecycle::tests::terminal_retention::passed_trigger_retains_checker_failed_observation_boundary",
+          "qemu_campaign_resume::tests::admission::resume_runner_rejects_missing_root_before_factory_invocation",
+          "qemu_campaign_resume::tests::cold_fallback_distinguishes_an_absent_selected_root_from_a_missing_child",
+          "qemu_campaign_resume::tests::event_count_resume_derives_same_attempt_progress_for_discovery_and_branch_starts",
+          "qemu_campaign_resume::tests::event_count_resume_keeps_quiet_and_repeated_same_attempt_progress_exact",
+          "qemu_campaign_resume::tests::event_count_resume_rejects_a_missing_start_proof_before_factory_invocation",
+          "qemu_campaign_resume::tests::event_count_resume_rejects_foreign_or_short_inherited_prefixes",
+          "qemu_campaign_resume::tests::observed_resume_factory_retains_the_exact_terminal_world_node_set_in_the_result",
+          "qemu_campaign_resume::tests::resume_runner_preserves_exact_event_prefix_and_final_drain",
+          "qemu_campaign_resume::tests::resume_runner_rejects_suffix_only_evidence_and_still_cleans_up",
+          "qemu_campaign_resume::tests::selected_resume_materialization_carries_cold_derived_attempt_event_progress",
+          "qemu_hot_fork_reconciliation::linux::diagnostics::live_tests::disabled_admission_never_borrows_the_owned_consumer",
+          "qemu_hot_fork_reconciliation::tests::a_foreign_parent_observation_fails_before_any_release",
+          "qemu_hot_fork_reconciliation::tests::adopted_child_diagnostics_are_reported_after_resources_and_before_target_release",
+          "qemu_hot_fork_reconciliation::tests::adopted_child_error_reports_retained_bytes_once_without_another_cleanup_step",
+          "qemu_hot_fork_reconciliation::tests::diagnostic_drain_failure_quarantines_before_child_admission",
+          "qemu_hot_fork_reconciliation::tests::diagnostic_drain_failure_quarantines_before_status_observation",
+          "qemu_hot_fork_reconciliation::tests::dropping_incomplete_owner_transfers_cleanup_to_quarantine",
+          "qemu_hot_fork_reconciliation::tests::exact_terminal_cleanup_waits_for_semantic_publication",
+          "qemu_hot_fork_reconciliation::tests::explicitly_quarantined_owner_does_not_transfer_twice_on_drop",
+          "qemu_hot_fork_reconciliation::tests::io_error_type_remains_send_sync_for_worker_ownership",
+          "qemu_hot_fork_reconciliation::tests::one_step_releases_at_most_one_backend_owned_child_resource",
+          "qemu_hot_fork_reconciliation::tests::retry_resumes_at_the_first_unreleased_phase_without_rerunning_guest",
+          "qemu_hot_fork_reconciliation::tests::unadmitted_child_cannot_publish_a_modeled_observation",
+          "qemu_hot_fork_reconciliation::tests::worker_disposition_drives_the_retained_owner_to_completion",
+          "qemu_hot_fork_source_capture::tests::authenticated_source_basis_rejects_a_profile_relabel_before_launch",
+          "qemu_hot_fork_source_capture::tests::authenticated_source_basis_retains_exact_genesis_and_thin_fallback",
+          "qemu_hot_fork_source_capture::tests::exact_source_capture_preserves_canceled_start_classification",
+          "qemu_hot_fork_world::tests::child_basis_requires_exact_node_configuration_log_and_source_process",
+          "qemu_hot_fork_world::tests::partial_multi_node_assembly_never_publishes_and_quarantines_admitted_children",
+          "qemu_hot_fork_world_factory::runner::tests::cleanup_failure_is_the_primary_error_after_runner_failure",
+          "qemu_hot_fork_world_factory::tests::branch_runner::hot_world_runner_honors_an_inherited_quantum_boundary_without_driving",
+          "qemu_hot_fork_world_factory::tests::branch_runner::hot_world_runner_materializes_a_discrete_typed_branch_from_its_parent",
+          "qemu_hot_fork_world_factory::tests::branch_runner::hot_world_runner_materializes_a_guest_branch_and_enqueues_its_exact_reply",
+          "qemu_hot_fork_world_factory::tests::branch_runner::hot_world_runner_materializes_a_scheduler_source_branch_from_its_parent",
+          "qemu_hot_fork_world_factory::tests::branch_runner::hot_world_runner_materializes_an_unsigned_64_bit_branch_from_its_parent",
+          "qemu_hot_fork_world_factory::tests::branch_runner::observed_hot_fork_factory_preserves_recovery_ownership_for_quarantine",
+          "qemu_hot_fork_world_factory::tests::branch_runner::packaged_route_quarantines_a_hot_world_when_terminal_result_preparation_fails",
+          "qemu_hot_fork_world_factory::tests::branch_runner::restored_branch_drives_the_selected_configuration_after_quantum_replay",
+          "qemu_hot_fork_world_factory::tests::branch_runner::restored_guest_branch_drives_the_selected_configuration_after_replay",
+          "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::nearest_rank_p95_uses_the_nineteenth_of_twenty_samples",
+          "qemu_hot_fork_world_factory::tests::native_acceptance::native_lifecycle_bounds_cover_the_last_fault_event",
+          "qemu_hot_fork_world_factory::tests::native_acceptance::scenario::first_http_response_can_precede_permanent_nginx_failure",
+          "qemu_hot_fork_world_factory::tests::native_acceptance::scenario::native_world_binds_selected_launch_asset_bytes",
+          "qemu_hot_fork_world_factory::tests::native_acceptance::scenario::representative_world_admits_the_shared_fault_path",
+          "qemu_hot_fork_world_factory::tests::reconciliation::lifecycle::failed_target_cleanup_after_first_child_rejection_keeps_the_source_unavailable",
+          "qemu_hot_fork_world_factory::tests::reconciliation::lifecycle::indeterminate_child_failure_quarantines_complete_world_during_sibling_launch",
+          "qemu_hot_fork_world_factory::tests::reconciliation::lifecycle::powered_off_node_forks_with_the_complete_world_and_releases_on_shutdown",
+          "qemu_hot_fork_world_factory::tests::reconciliation::lifecycle::proven_first_child_rejection_restores_the_exact_source_world_for_retry",
+          "qemu_hot_fork_world_factory::tests::reconciliation::lifecycle::target_directory_rejection_restores_the_source_without_invoking_qemu",
+          "qemu_hot_fork_world_factory::tests::reconciliation::lifecycle::two_factories_keep_independent_live_children_from_one_managed_source",
+          "qemu_hot_fork_world_factory::tests::reconciliation::lifecycle::two_running_nodes_install_shutdown_reconcile_and_reuse_one_source_world",
+          "qemu_hot_fork_world_factory::tests::reconciliation::publication::hot_first_router_falls_back_only_after_decline_and_bypasses_hot_fork_for_resume_and_capture",
+          "qemu_hot_fork_world_factory::tests::reconciliation::publication::poisoned_source_owner_cannot_be_recovered_on_retry",
+          "qemu_hot_fork_world_factory::tests::reconciliation::publication::published_observation_reconciliation_makes_the_exact_source_world_reusable",
+          "qemu_hot_fork_world_factory::tests::reconciliation::publication::second_adoption_failure_retains_first_adoption_and_complete_world",
+          "qemu_hot_fork_world_factory::tests::reconciliation::publication::short_source_horizon_refuses_budget_before_guest_choice_handoff",
+          "qemu_hot_fork_world_factory::tests::reconciliation::publication::target_world_resource_preflight_rejects_before_source_checkout_or_guard_installation",
+          "qemu_hot_fork_world_factory::tests::source_provider_failure_preserves_its_diagnostic_chain",
+          "qemu_hot_fork_world_factory::tests::world_fork_atomicity::production_aggregate_release_failure_blocks_source_restore",
+          "qemu_hot_fork_world_factory::tests::world_fork_atomicity::production_source_identity_drift_blocks_restore_after_complete_rollback",
+          "qemu_hot_fork_world_factory::tests::world_fork_atomicity::production_three_node_adoption_failure_retains_the_complete_world",
+          "qemu_hot_fork_world_factory::tests::world_fork_atomicity::production_three_node_ambiguous_launch_is_fail_closed_at_every_index",
+          "qemu_hot_fork_world_factory::tests::world_fork_atomicity::production_three_node_clean_rejection_is_atomic_at_every_launch_index",
+          "qemu_hot_fork_world_factory::tests::world_fork_atomicity::rollback_deadline_covers_reap_private_release_and_cancellation_progress",
+          "qemu_hot_fork_world_factory::tests::world_fork_atomicity::rollback_retains_every_unfinished_owner_on_termination_failure",
+          "qemu_hot_fork_world_resource::tests::aggregate_finish_refuses_an_active_auxiliary_lifecycle",
+          "qemu_hot_fork_world_resource::tests::aggregate_release_waits_for_every_exact_node_target",
+          "qemu_hot_fork_world_resource::tests::auxiliary_cleanup_failure_quarantines_and_poisons_the_aggregate",
+          "qemu_hot_fork_world_resource::tests::auxiliary_lifecycle_is_a_single_reusable_sequential_lease",
+          "qemu_hot_fork_world_resource::tests::auxiliary_lifecycle_requires_complete_primary_cleanup",
+          "qemu_hot_fork_world_resource::tests::auxiliary_lifecycle_shares_one_capacity_quantum_and_cancellation",
+          "qemu_hot_fork_world_resource::tests::bound_replay_factory_reuses_one_capacity_with_fresh_private_directories",
+          "qemu_hot_fork_world_resource::tests::explicit_no_child_rollback_reopens_the_exact_slot",
+          "qemu_hot_fork_world_resource::tests::partial_world_ambiguous_failure_quarantines_the_aggregate",
+          "qemu_hot_fork_world_resource::tests::partial_world_rejection_rolls_back_only_the_unforked_node",
+          "qemu_hot_fork_world_resource::tests::unfinished_or_duplicate_node_fails_closed",
+          "qemu_lifecycle_launcher::tests::abandoned_generation_transfers_original_helper_to_attempt_quarantine",
+          "qemu_lifecycle_launcher::tests::launch_failure_bounds_recursive_and_verbose_causes",
+          "qemu_lifecycle_launcher::tests::launch_failure_preserves_rejected_asset_detail",
+          "qemu_lifecycle_launcher::tests::retained_image_helper_debt_reaps_original_process_before_removal",
+          "qemu_resource_guard::retained_workspace::tests::canceled_abandoned_phase_quarantines_and_removes_workspace",
+          "qemu_resource_guard::retained_workspace::tests::source_generation_must_reap_before_restore_lease_and_final_cleanup",
+          "qemu_resource_guard::tests::abandoned_generation_lease_permanently_quarantines_aggregate_guard",
+          "qemu_resource_guard::tests::aborting_a_replacement_restores_the_previous_generation_fence",
+          "qemu_resource_guard::tests::active_generation_prevents_aggregate_release_without_losing_lease_authority",
+          "qemu_resource_guard::tests::cancellation_signal_failure_is_a_terminal_operational_error",
+          "qemu_resource_guard::tests::cancellation_signal_panic_is_contained_and_reported",
+          "qemu_resource_guard::tests::cancellation_signals_process_synchronously_and_unregisters_on_finish",
+          "qemu_resource_guard::tests::cancellation_that_wins_before_begin_signals_and_rolls_back",
+          "qemu_resource_guard::tests::clean_selected_resource_failure_returns_the_one_shot_claim_for_retry",
+          "qemu_resource_guard::tests::composed_guard_retains_hot_fork_process_authority_without_splitting_host_resources",
+          "qemu_resource_guard::tests::dropping_a_live_guard_transfers_all_host_resources_to_quarantine",
+          "qemu_resource_guard::tests::failed_reap_quarantines_process_and_filesystem_authority_once",
+          "qemu_resource_guard::tests::fixed_workers_share_one_host_allocator_without_sharing_attempt_owners",
+          "qemu_resource_guard::tests::generation_owner_releases_only_after_exact_monotone_leases_finish",
+          "qemu_resource_guard::tests::guard_charges_the_exact_quantum_ceiling",
+          "qemu_resource_guard::tests::mismatched_host_limits_are_released_before_rejection",
+          "qemu_resource_guard::tests::no_process_abort_preserves_the_exact_generation_for_retry",
+          "qemu_resource_guard::tests::one_execution_cannot_install_two_process_hooks",
+          "qemu_resource_guard::tests::production_lifecycle_launcher_charges_the_attempt_quantum_ceiling",
+          "qemu_resource_guard::tests::production_lifecycle_launcher_preserves_cancellation_class",
+          "qemu_resource_guard::tests::replay_targets_share_one_selected_guard_and_quantum_ceiling",
+          "qemu_resource_guard::tests::selected_resource_cleanup_failure_spends_the_claim_and_quarantines",
+          "supervision::tests::fork_rate_clock_never_moves_backwards",
+          "supervision::tests::overflowing_process_allowance_is_rejected",
+          "supervision::tests::zero_process_allowance_is_already_expired",
+          "vm_lifecycle::assets::tests::different_per_node_initrd_identities_fail_closed",
+          "vm_lifecycle::assets::tests::initrd_is_selected_only_for_nodes_that_bind_its_content",
+          "vm_lifecycle::assets::tests::portable_projection_selects_and_validates_exact_guest_paths",
+          "vm_lifecycle::assets::tests::production_assets_must_match_declared_content_references",
+          "vm_lifecycle::checkpoint_dependencies::tests::budgeted_dependency_walk_enforces_lifecycle_ceiling_independently",
+          "vm_lifecycle::checkpoint_dependencies::tests::dependency_walk_rejects_a_missing_transitive_tile",
+          "vm_lifecycle::checkpoint_dependencies::tests::resumed_signal_capture_reads_authenticated_artifacts_from_new_run_store",
+          "vm_lifecycle::checkpoint_dependencies::tests::signal_hydration_rejects_changed_bytes_before_writing",
+          "vm_lifecycle::checkpoint_dependencies::tests::tiled_grid_dependency_walk_retains_manifest_and_tile",
+          "vm_lifecycle::checkpoint_recovery::tests::fresh_process_removes_only_abandoned_checkpoint_staging",
+          "vm_lifecycle::checkpoint_store::authenticated_restore::tests::authenticated_service_disposition_controls_exact_restore_run_state",
+          "vm_lifecycle::checkpoint_store::authenticated_restore::tests::replay_restore_requires_a_nonzero_authenticated_node_generation",
+          "vm_lifecycle::checkpoint_store::decode::tests::hostile_sequence_length_hint_is_rejected_before_owned_allocation",
+          "vm_lifecycle::checkpoint_store::decode::tests::nested_string_is_admitted_before_owned_copy_with_exact_coordinates",
+          "vm_lifecycle::checkpoint_store::decode::tests::production_manifest_decode_rejects_hostile_target_length_before_elements",
+          "vm_lifecycle::checkpoint_store::decode::tests::string_larger_than_default_cbor_scratch_round_trips_canonically",
+          "vm_lifecycle::checkpoint_store::io::tests::bounded_file_read_accepts_exact_limit_and_rejects_larger_input",
+          "vm_lifecycle::checkpoint_store::io::tests::bounded_file_read_observes_boundary_between_bounded_chunks",
+          "vm_lifecycle::checkpoint_store::publication::tests::abandoning_prepared_manifest_keeps_the_identity_unpublished",
+          "vm_lifecycle::checkpoint_store::publication::tests::new_checkpoint_count_is_admitted_before_publication_with_exact_coordinates",
+          "vm_lifecycle::checkpoint_store::publication::tests::prepared_manifest_is_invisible_until_explicit_publication",
+          "vm_lifecycle::checkpoint_store::publication::tests::production_publication_rename_is_visible_only_when_admitted",
+          "vm_lifecycle::checkpoint_store::publication::tests::publication_commit_tail_distinguishes_rollback_from_durability_uncertainty",
+          "vm_lifecycle::checkpoint_store::publication::tests::published_checkpoint_count_ignores_transaction_staging_directories",
+          "vm_lifecycle::checkpoint_store::read_budget::tests::checkpoint_read_allocation_failure_keeps_pre_reservation_coordinates",
+          "vm_lifecycle::checkpoint_store::read_budget::tests::checkpoint_read_budget_rejects_manifest_before_file_allocation",
+          "vm_lifecycle::checkpoint_store::recovery::tests::production_checkpoint_load_rejects_manifest_bytes_before_decode",
+          "vm_lifecycle::checkpoint_store::retirement::tests::retirement_retries_injected_parent_fsync_after_durable_rename",
+          "vm_lifecycle::checkpoint_store::retirement::tests::retirement_retries_injected_remove_failure_from_renamed_generation",
+          "vm_lifecycle::checkpoint_store::retirement::tests::retirement_retries_injected_rename_failure_with_same_authority",
+          "vm_lifecycle::checkpoint_store::retirement::tests::terminal_namespace_rejection_keeps_authority_reusable",
+          "vm_lifecycle::checkpoint_store::storage::tests::interrupted_multichunk_authentication_does_not_install_a_retained_lease",
+          "vm_lifecycle::checkpoint_store::storage::tests::retained_parent_publication_rejects_mutation_and_replacement_without_rehashing",
+          "vm_lifecycle::checkpoint_store::test_support::tests::streaming_fixture_has_distinct_dense_chunks_and_sparse_extents",
+          "vm_lifecycle::checkpoint_store::tests::all_zero_sparse_overlay_has_no_stored_chunks",
+          "vm_lifecycle::checkpoint_store::tests::captured_artifact_publication_reads_the_pinned_inode_after_path_replacement",
+          "vm_lifecycle::checkpoint_store::tests::checkpoint_set_rejects_missing_failed_node_authority",
+          "vm_lifecycle::checkpoint_store::tests::checkpoint_set_rejects_wrong_failed_node_fingerprint_owner",
+          "vm_lifecycle::checkpoint_store::tests::chunk_store_deduplicates_and_streams_complete_artifacts",
+          "vm_lifecycle::checkpoint_store::tests::chunked_artifact_stream_recreates_sparse_zero_extents",
+          "vm_lifecycle::checkpoint_store::tests::closure_identity_excludes_only_its_identity_field",
+          "vm_lifecycle::checkpoint_store::tests::closure_manifest_allows_content_deduplication_between_distinct_nodes",
+          "vm_lifecycle::checkpoint_store::tests::closure_manifest_rejects_unsorted_or_trailing_records",
+          "vm_lifecycle::checkpoint_store::tests::closure_manifest_round_trip_is_canonical",
+          "vm_lifecycle::checkpoint_store::tests::cold_genesis_catalog_checkpoint_round_trips_only_at_initial_boundary",
+          "vm_lifecycle::checkpoint_store::tests::concurrent_equal_object_publishers_converge_atomically",
+          "vm_lifecycle::checkpoint_store::tests::content_store_deduplicates_equal_objects",
+          "vm_lifecycle::checkpoint_store::tests::current_manifest_requires_sparse_overlay_and_dense_device_state",
+          "vm_lifecycle::checkpoint_store::tests::failed_node_authority_round_trips_through_the_v9_closure",
+          "vm_lifecycle::checkpoint_store::tests::failed_node_fingerprint_fields_bind_the_v9_closure_identity",
+          "vm_lifecycle::checkpoint_store::tests::file_artifact_stream_authenticates_sparse_file_contents",
+          "vm_lifecycle::checkpoint_store::tests::lifecycle_wire_reopens_passed_trigger_with_matching_checkpoint_cause",
+          "vm_lifecycle::checkpoint_store::tests::lifecycle_wire_restores_terminal_branch_and_controls",
+          "vm_lifecycle::checkpoint_store::tests::manifest_rejects_duplicate_failed_node_owners",
+          "vm_lifecycle::checkpoint_store::tests::native_checkpoint_retirement_is_crash_safe_and_idempotent",
+          "vm_lifecycle::checkpoint_store::tests::native_checkpoint_retirement_recovers_renamed_generation",
+          "vm_lifecycle::checkpoint_store::tests::paused_artifact_staging_rejects_length_before_writing_chunks",
+          "vm_lifecycle::checkpoint_store::tests::paused_artifact_staging_writes_only_deduplicated_chunks",
+          "vm_lifecycle::checkpoint_store::tests::portable_closure_inventory_streams_only_authenticated_manifest_objects",
+          "vm_lifecycle::checkpoint_store::tests::portable_object_read_observes_cancellation_between_bounded_chunks",
+          "vm_lifecycle::checkpoint_store::tests::shared_snapshot_content_does_not_authorize_a_foreign_node_target",
+          "vm_lifecycle::checkpoint_store::tests::sparse_manifest_rejects_noncanonical_extent_geometry",
+          "vm_lifecycle::checkpoint_store::tests::sparse_overlay_staging_persists_only_changed_chunks_and_reconstructs_holes",
+          "vm_lifecycle::checkpoint_store::tests::target_manifest_identity_authenticates_immutable_backing",
+          "vm_lifecycle::config::tests::bounded_scheduler_preemption_clones_consume_distinct_flights",
+          "vm_lifecycle::config::tests::bounded_scheduler_preemption_is_opt_in_and_single_flight",
+          "vm_lifecycle::config::tests::daemon_debug_evidence_follows_startup_authorization",
+          "vm_lifecycle::config::tests::recovery_root_replacement_is_clone_local",
+          "vm_lifecycle::construction::tests::event_log_hydration_rejects_changed_bytes_before_writing",
+          "vm_lifecycle::construction::tests::exact_restore_defers_network_fault_replay_to_checkpoint_identity",
+          "vm_lifecycle::construction::tests::resumed_capture_reads_authenticated_event_log_segments_from_new_run_store",
+          "vm_lifecycle::fault_implementation::tests::implementation_registries_exhaustively_partition_host_effects",
+          "vm_lifecycle::helpers::tests::app_random_restart_between_reseeds_keeps_global_boundary_and_active_seed_cursors",
+          "vm_lifecycle::helpers::tests::grouped_terminal_actions_collect_failures_before_pass",
+          "vm_lifecycle::helpers::tests::private_gdbstub_endpoint_rejects_qemu_option_delimiters",
+          "vm_lifecycle::helpers::tests::private_gdbstub_endpoint_survives_guarded_directory_rebinding",
+          "vm_lifecycle::helpers::tests::private_gdbstub_endpoint_uses_the_node_run_directory",
+          "vm_lifecycle::helpers::tests::production_guest_architecture_follows_the_authored_node_architecture",
+          "vm_lifecycle::helpers::tests::production_lifecycle_routes_fresh_launch_through_one_authority",
+          "vm_lifecycle::helpers::tests::production_qemu_executable_selects_the_guest_architecture_sibling",
+          "vm_lifecycle::helpers::tests::production_whitebox_switch_follows_the_authored_node_policy",
+          "vm_lifecycle::helpers::tests::scheduler_step_bound_counts_quanta_instead_of_instruction_slices",
+          "vm_lifecycle::helpers::tests::typed_app_random_checkpoint_restores_node_stream_cursors",
+          "vm_lifecycle::hot_fork::disk_basis::tests::child_reopens_exact_sealed_basis_and_refuses_swapped_vmstate",
+          "vm_lifecycle::hot_fork::disk_basis::tests::native_graph_files_require_full_independent_bytes_and_every_owned_inode",
+          "vm_lifecycle::hot_fork::disk_basis::tests::pinned_content_rejects_mutation_and_path_replacement",
+          "vm_lifecycle::hot_fork::disk_basis::tests::pinned_content_rejects_symlinked_name_and_external_boot_backing",
+          "vm_lifecycle::hot_fork::native_disk_seal::tests::frozen_graph_retains_original_custody_without_a_writable_seal",
+          "vm_lifecycle::hot_fork::native_disk_seal::tests::graph_edges_bind_both_writable_roots_and_each_readonly_backing",
+          "vm_lifecycle::hot_fork::resource_usage::tests::proc_accounting_requires_present_well_formed_kib_fields",
+          "vm_lifecycle::hot_fork::tests::child_held_source_world_reference_prevents_lifecycle_recovery",
+          "vm_lifecycle::hot_fork::tests::child_materialization_retains_immutable_scheduler_and_closure_backing",
+          "vm_lifecycle::hot_fork::tests::committed_lifecycle_history_does_not_block_hot_fork_capture",
+          "vm_lifecycle::hot_fork::tests::committed_lifecycle_with_a_live_journal_owner_still_blocks_hot_fork_capture",
+          "vm_lifecycle::hot_fork::tests::committed_lifecycle_with_a_staged_process_still_blocks_hot_fork_capture",
+          "vm_lifecycle::hot_fork::tests::dropping_unreconciled_preparation_failure_quarantines_its_lifecycle_owner",
+          "vm_lifecycle::hot_fork::tests::empty_backend_world_captures_complete_process_neutral_continuation",
+          "vm_lifecycle::hot_fork::tests::exact_boundary_rejects_extra_active_and_failed_host_io_owners",
+          "vm_lifecycle::hot_fork::tests::failed_node_sampling_uses_the_original_terminal_boundary",
+          "vm_lifecycle::hot_fork::tests::host_continuation_clone_cost_is_bounded_across_siblings",
+          "vm_lifecycle::hot_fork::tests::hot_fork_adoption_inventory_rejects_missing_and_foreign_children",
+          "vm_lifecycle::hot_fork::tests::hot_fork_adoption_inventory_requires_the_exact_next_generation",
+          "vm_lifecycle::hot_fork::tests::hot_fork_adoption_inventory_requires_the_powered_off_child_and_next_generation",
+          "vm_lifecycle::hot_fork::tests::hot_fork_capture_rejects_an_unfinished_checkpoint_transaction",
+          "vm_lifecycle::hot_fork::tests::hot_fork_capture_rejects_unresolved_lifecycle_ownership",
+          "vm_lifecycle::hot_fork::tests::hot_fork_continuation_rejects_a_cross_node_generation_map",
+          "vm_lifecycle::hot_fork::tests::hot_fork_preserves_failed_node_fingerprint_authority",
+          "vm_lifecycle::hot_fork::tests::hot_fork_restore_replaces_only_the_durable_run_root",
+          "vm_lifecycle::hot_fork::tests::permanently_failed_world_prepares_without_source_processes",
+          "vm_lifecycle::hot_fork::tests::powered_off_capture_does_not_silently_omit_a_missing_backend",
+          "vm_lifecycle::hot_fork::tests::powered_off_continuation_requires_the_retained_process_boundary",
+          "vm_lifecycle::hot_fork::tests::retained_service_state_without_process_authority_fails_before_preparation",
+          "vm_lifecycle::hot_fork::tests::sibling_continuations_share_captured_backing_until_one_branch_changes",
+          "vm_lifecycle::hot_fork::tests::source_world_forks_independent_process_neutral_continuations",
+          "vm_lifecycle::hot_fork::tests::unfinished_lifecycle_phases_block_hot_fork_capture",
+          "vm_lifecycle::network_faults::boundary::tests::control_service_tests::control_contributors_compose_by_minimum_bound_and_latest_committed_finish",
+          "vm_lifecycle::network_faults::boundary::tests::control_service_tests::control_overflow_executes_drop_oldest_typed_error_and_timeout_exactly",
+          "vm_lifecycle::network_faults::boundary::tests::control_service_tests::queued_association_operation_identity_survives_checkpoint_state_changes",
+          "vm_lifecycle::network_faults::boundary::tests::control_service_tests::typed_control_replacement_changes_the_real_serviced_route_result",
+          "vm_lifecycle::network_faults::boundary::tests::control_state_tests::association_executes_residence_authentication_and_handoff_timers",
+          "vm_lifecycle::network_faults::boundary::tests::control_state_tests::contact_plan_exposes_acquisition_open_and_teardown_boundaries",
+          "vm_lifecycle::network_faults::boundary::tests::control_state_tests::control_service_queues_executes_and_reports_overflow_without_bypasses",
+          "vm_lifecycle::network_faults::boundary::tests::control_state_tests::control_service_updates_reject_conflicting_overflow_and_occupied_queue_shrink",
+          "vm_lifecycle::network_faults::boundary::tests::control_state_tests::flap_blocks_frames_until_the_exact_recovery_boundary",
+          "vm_lifecycle::network_faults::boundary::tests::control_state_tests::forwarder_clear_addresses_owned_queues_and_tables",
+          "vm_lifecycle::network_faults::boundary::tests::control_state_tests::forwarder_drain_defers_outage_and_clears_tables_after_recovery",
+          "vm_lifecycle::network_faults::boundary::tests::control_state_tests::negotiated_mode_trains_then_constrains_real_frame_service",
+          "vm_lifecycle::network_faults::route::tests::burst_error_typed_effect_advances_retained_state_and_drops_frame",
+          "vm_lifecycle::network_faults::route::tests::campaign_choices::campaign_effect_trace_keeps_its_own_fingerprint_and_replays_canonically",
+          "vm_lifecycle::network_faults::route::tests::campaign_choices::primary_and_backup_selections_change_modeled_frames_and_replay_exactly",
+          "vm_lifecycle::network_faults::route::tests::campaign_choices::selected_link_down_is_a_typed_bounded_availability_outage",
+          "vm_lifecycle::network_faults::route::tests::class_queue_comparators_use_priority_weight_and_quantum",
+          "vm_lifecycle::network_faults::route::tests::custody::custody_checkpoint_rejects_broken_contact_graph_joins",
+          "vm_lifecycle::network_faults::route::tests::custody::custody_selects_and_reserves_a_bounded_multihop_contact_route",
+          "vm_lifecycle::network_faults::route::tests::custody::custody_waits_for_contact_then_conserves_shared_capacity",
+          "vm_lifecycle::network_faults::route::tests::custody::edge_cases::completed_contact_ledgers_fold_into_the_settled_cursor",
+          "vm_lifecycle::network_faults::route::tests::custody::edge_cases::custody_accounting_skips_direct_contact_propagation_and_revalidation",
+          "vm_lifecycle::network_faults::route::tests::custody::edge_cases::custody_expiry_precedes_an_unreachable_future_contact",
+          "vm_lifecycle::network_faults::route::tests::custody::edge_cases::custody_overflow_executes_every_closed_disposition",
+          "vm_lifecycle::network_faults::route::tests::custody::edge_cases::custody_priority_arbitrates_equal_contact_release_coordinates",
+          "vm_lifecycle::network_faults::route::tests::custody::edge_cases::custody_removal_releases_the_real_pending_frame_at_the_boundary",
+          "vm_lifecycle::network_faults::route::tests::custody::edge_cases::custody_resume_does_not_charge_other_queue_effects_twice",
+          "vm_lifecycle::network_faults::route::tests::custody::edge_cases::direct_contact_counter_overflow_fails_before_mutation",
+          "vm_lifecycle::network_faults::route::tests::custody::edge_cases::simultaneous_custody_queues_fail_before_state_mutation",
+          "vm_lifecycle::network_faults::route::tests::frame_effects::frame_effect_variants_mutate_production_frame_outcomes",
+          "vm_lifecycle::network_faults::route::tests::medium::protocol::detected_errors_execute_declared_retries_and_timed_link_reset",
+          "vm_lifecycle::network_faults::route::tests::medium::protocol::firewall_and_connection_state_are_bounded_exhaustive_and_timed",
+          "vm_lifecycle::network_faults::route::tests::medium::protocol::forwarding_mutations_use_selectors_canonical_recipients_and_hop_limits",
+          "vm_lifecycle::network_faults::route::tests::medium::protocol::mtu_expansion_returns_real_child_frames_before_queue_service",
+          "vm_lifecycle::network_faults::route::tests::medium::protocol::rf_channel_uses_geometry_tables_and_exact_sinr_profile",
+          "vm_lifecycle::network_faults::route::tests::medium::shared_medium_contention_retries_and_terminal_outcomes_are_exact",
+          "vm_lifecycle::network_faults::route::tests::medium::shared_medium_fixed_slots_follow_canonical_resource_order",
+          "vm_lifecycle::network_faults::route::tests::medium::shared_medium_serial_arbitration_reschedules_by_declared_order",
+          "vm_lifecycle::network_faults::route::tests::multicast_recipient_selection_is_shared_across_route_copies",
+          "vm_lifecycle::network_faults::route::tests::production_conformance::class_backpressure_preempts_without_blocking_ready_siblings",
+          "vm_lifecycle::network_faults::route::tests::production_conformance::token_bucket_preserves_ceil_surplus_without_rate_bias",
+          "vm_lifecycle::network_faults::route::tests::queue_policy_typed_effect_reserves_real_production_service",
+          "vm_lifecycle::network_faults::route::tests::queue_reschedule_preserves_exact_partially_served_work",
+          "vm_lifecycle::network_faults::route::tests::resource_limits::contact_and_restore_admission_use_authored_aggregate_coordinates",
+          "vm_lifecycle::network_faults::route::tests::resource_limits::pending_network_output_admission_uses_frame_and_pending_limits",
+          "vm_lifecycle::network_faults::route::tests::resource_limits::queue_admission_uses_aggregate_frame_and_byte_limits",
+          "vm_lifecycle::network_faults::route::tests::resource_limits::shared_medium_and_custody_admission_share_the_authored_queue_budget",
+          "vm_lifecycle::network_faults::route::tests::service_curve_integrates_across_rate_changes",
+          "vm_lifecycle::network_faults::route::tests::service_curve_typed_effect_changes_real_production_service_time",
+          "vm_lifecycle::network_faults::tests::association_control_bias_and_replacement_preserve_digest_invariants",
+          "vm_lifecycle::network_faults::tests::campaign_record_enters_canonical_resolved_trace",
+          "vm_lifecycle::network_faults::tests::continuation_digest_covers_response_and_forwarding_lineage",
+          "vm_lifecycle::network_faults::tests::control_outcome_evidence_excludes_locked_replay_authorization",
+          "vm_lifecycle::network_faults::tests::control_replacements::forwarder_and_contact_replacements_execute_only_within_world_contracts",
+          "vm_lifecycle::network_faults::tests::directional_availability_has_a_closed_lattice",
+          "vm_lifecycle::network_faults::tests::production_boundary_drops_a_preexisting_world_link_frame",
+          "vm_lifecycle::network_faults::tests::production_conformance::production_resolve_availability_suppresses_the_routed_frame",
+          "vm_lifecycle::network_faults::tests::production_fault_cursor_sequences_only_within_one_coordinate",
+          "vm_lifecycle::network_faults::tests::production_journal_sequence_never_reuses_an_a_b_a_coordinate",
+          "vm_lifecycle::network_faults::tests::production_preserve_keeps_queued_and_inflight_frames_on_the_old_profile",
+          "vm_lifecycle::network_faults::tests::production_reevaluate_retains_work_until_the_next_declared_phase",
+          "vm_lifecycle::network_faults::tests::selected_campaign_fault_drops_frames_across_successive_route_calls",
+          "vm_lifecycle::network_faults::tests::shared_medium_checkpoint_joins_pending_frames_and_hashes_every_reservation_field",
+          "vm_lifecycle::process_owners::decode_budget::tests::lifecycle_record_allocation_reports_previously_owned_record_usage",
+          "vm_lifecycle::quantum_loop::checkpoint_capture::preparation_tests::preparation_is_all_or_nothing_before_live_capture",
+          "vm_lifecycle::quantum_loop::checkpoint_capture::tests::cleanup_attempts_every_capture_in_reverse_order",
+          "vm_lifecycle::quantum_loop::checkpoint_capture::tests::cleanup_retry_preserves_delete_before_resume_order",
+          "vm_lifecycle::quantum_loop::checkpoint_capture::tests::ninth_capture_rebases_and_reconciled_publication_retires_ancestors",
+          "vm_lifecycle::quantum_loop::checkpoint_capture::tests::publication_registry_retains_only_durable_or_indeterminate_owners",
+          "vm_lifecycle::quantum_loop::checkpoint_capture::tests::reconciled_publication_requires_and_retires_to_its_authenticated_parent",
+          "vm_lifecycle::quantum_loop::checkpoint_capture::tests::repository_parent_requires_exact_authenticated_identity_for_direct_rebase",
+          "vm_lifecycle::quantum_loop::diagnostics::tests::default_lease_observer_does_not_release_or_change_generation_identity",
+          "vm_lifecycle::quantum_loop::diagnostics::tests::owned_observer_keeps_original_success_operation_error_and_guard_error",
+          "vm_lifecycle::quantum_loop::lifecycle::persistence::recovery::error::tests::decode_allocation_error_adds_the_complete_runtime_base",
+          "vm_lifecycle::quantum_loop::lifecycle::persistence::tests::fixed_journal_writer_rejects_growth_without_mutation",
+          "vm_lifecycle::quantum_loop::lifecycle::persistence::tests::fixed_journal_writer_uses_only_reserved_storage",
+          "vm_lifecycle::quantum_loop::lifecycle::persistence::tests::lifecycle_encoding_reserve_uses_the_measured_total_capacity",
+          "vm_lifecycle::quantum_loop::lifecycle::process_ownership::tests::terminal_process_ownership_binds_service_state_to_exact_transition",
+          "vm_lifecycle::quantum_loop::lifecycle::publication::tests::restored_generation_release_is_causally_gated_by_scheduler_publication",
+          "vm_lifecycle::quantum_loop::lifecycle::restart_ownership::tests::terminal_generation_selection_moves_preowned_storage",
+          "vm_lifecycle::quantum_loop::lifecycle::restart_ownership::tests::terminal_successor_launch_owns_exact_app_random_continuation",
+          "vm_lifecycle::quantum_loop::lifecycle::staging::tests::terminal_precommit_reserves_effective_successor_generation",
+          "vm_lifecycle::quantum_loop::tests::attempt_quantum_admission_preserves_retryable_class",
+          "vm_lifecycle::quantum_loop::tests::attempt_quantum_reports_modeled_and_post_boundary_failures_together",
+          "vm_lifecycle::quantum_loop::tests::checkpoint_counter_rejects_unknown_service_state_and_missing_live_backends",
+          "vm_lifecycle::quantum_loop::tests::daemon_debug_policy_accepts_an_explicit_loopback_listener",
+          "vm_lifecycle::quantum_loop::tests::daemon_debug_policy_rejects_a_non_loopback_listener",
+          "vm_lifecycle::quantum_loop::tests::exact_capture_reports_publication_and_release_failures_together",
+          "vm_lifecycle::quantum_loop::tests::exact_capture_retains_durable_identity_when_release_fails",
+          "vm_lifecycle::quantum_loop::tests::fixed_debug_policy_rejects_a_different_listener",
+          "vm_lifecycle::quantum_loop::tests::lifecycle_checkpoint_retains_failed_node_counter_origins_without_backends",
+          "vm_lifecycle::quantum_loop::tests::production_gateway_rejects_explicit_tcp_listener",
+          "vm_lifecycle::quantum_loop::tests::stopped_checkpoint_artifact_keeps_the_pinned_source_without_copying",
+          "vm_lifecycle::quantum_loop::tests::stopped_checkpoint_hash_observes_cancellation_between_bounded_chunks",
+          "vm_lifecycle::run_lock_schema_tests::run_lock_requires_current_version",
+          "vm_lifecycle::runtime::progress::tests::console_tail_is_bounded_and_cannot_attest_guest_setup",
+          "vm_lifecycle::runtime::progress::tests::disabled_and_exhausted_reporters_do_not_sample",
+          "vm_lifecycle::runtime::progress::tests::evidence_reservations_preserve_total_caps_and_small_budget_pairs",
+          "vm_lifecycle::runtime::progress::tests::only_decoded_guest_marker_records_setup_receipt",
+          "vm_lifecycle::runtime::progress::tests::periodic_exhaustion_preserves_declared_boot_evidence_within_256_reports",
+          "vm_lifecycle::runtime::progress::tests::reports_reserve_pairs_at_bounded_cadence_without_sleeping",
+          "vm_lifecycle::runtime::tests::app_random_plugin_plan_requires_the_same_scheduler_selection_set",
+          "vm_lifecycle::runtime::tests::architecture_override_does_not_inherit_the_native_kernel_cmdline",
+          "vm_lifecycle::runtime::tests::branch_reseed_changes_the_live_scheduler_seed_at_its_source_boundary",
+          "vm_lifecycle::runtime::tests::checkpoint_readiness_limits_cold_catalog_to_initial_execution_boundary",
+          "vm_lifecycle::runtime::tests::choice_free_boot_rejects_a_due_queued_choice_before_any_run",
+          "vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_accepts_a_prepared_replacement_at_the_exact_node_limit",
+          "vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_accepts_boot_successor_reservation_before_authentication",
+          "vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_accepts_both_quarantined_manifest_commit_windows",
+          "vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_allows_concurrent_sessions_for_one_scenario",
+          "vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_recovers_an_unfinished_run_before_reuse",
+          "vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_rejects_an_arbitrary_current_with_an_owned_replacement",
+          "vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_rejects_an_unowned_journal_process_identity",
+          "vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_rejects_boot_with_terminal_exit_ownership",
+          "vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_rejects_impossible_permanent_failure_ownership",
+          "vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_rejects_prepared_ownership_in_intent_or_committed_phase",
+          "vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_rejects_saturated_terminal_successor_generation",
+          "vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_rejects_split_file_intermediate_ownership",
+          "vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_rejects_unjournaled_staged_process_owner",
+          "vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_rejects_unpublishable_replacement_transitions",
+          "vm_lifecycle::runtime::tests::durable_run_state::durable_run_state_rejects_unrelated_quarantined_postcommit_owner",
+          "vm_lifecycle::runtime::tests::durable_run_state::resource_limits::durable_run_state_owned_decode_is_canonical_and_escape_free",
+          "vm_lifecycle::runtime::tests::durable_run_state::resource_limits::durable_run_state_persists_one_aggregate_envelope",
+          "vm_lifecycle::runtime::tests::durable_run_state::resource_limits::durable_run_state_preflights_aggregate_bytes_before_owned_decode",
+          "vm_lifecycle::runtime::tests::durable_run_state::resource_limits::durable_run_state_preflights_process_count_before_owned_map_decode",
+          "vm_lifecycle::runtime::tests::durable_run_state::resource_limits::durable_run_state_rejects_impossible_completed_exit_history",
+          "vm_lifecycle::runtime::tests::durable_run_state::resource_limits::durable_run_state_rejects_oversized_json_before_decode",
+          "vm_lifecycle::runtime::tests::durable_run_state::resource_limits::durable_run_state_rejects_unsupported_outer_version_before_owned_decode",
+          "vm_lifecycle::runtime::tests::durable_run_state::resource_limits::durable_run_state_writer_preserves_resource_limit_coordinates",
+          "vm_lifecycle::runtime::tests::durable_run_state_fails_closed_on_a_corrupt_journal",
+          "vm_lifecycle::runtime::tests::durable_run_state_fails_closed_on_a_corrupt_manifest",
+          "vm_lifecycle::runtime::tests::durable_run_state_rejects_empty_active_transaction_phases",
+          "vm_lifecycle::runtime::tests::empty_branch_override_retains_its_scheduler_event_and_quantum",
+          "vm_lifecycle::runtime::tests::failed_physical_marker_release_cannot_commit_checkpoint_proof",
+          "vm_lifecycle::runtime::tests::generation_lease_cleanup_continues_after_an_earlier_mismatch",
+          "vm_lifecycle::runtime::tests::held_stop::production_marker_release_settles_zero_peer_hold_and_retains_refused_park",
+          "vm_lifecycle::runtime::tests::held_stop::production_network_preselection_hides_requests_without_consuming_them",
+          "vm_lifecycle::runtime::tests::held_stop::production_peer_publication_failure_retains_evidence_and_refuses_republication",
+          "vm_lifecycle::runtime::tests::held_stop::production_pending_pause_uses_admitted_clock_mapping",
+          "vm_lifecycle::runtime::tests::held_stop::production_reply_keeps_peer_request_private_until_once_only_publication",
+          "vm_lifecycle::runtime::tests::held_stop::production_reply_refusal_retains_original_stop_and_request",
+          "vm_lifecycle::runtime::tests::held_stop::production_reply_releases_zero_peer_hold_before_network_settlement",
+          "vm_lifecycle::runtime::tests::initial_terminal_boundary::genesis_entrypoint_pass_returns_without_advancing_a_backend",
+          "vm_lifecycle::runtime::tests::initial_terminal_boundary::genesis_entrypoint_unblocks_conditional_event_after_initial_observations",
+          "vm_lifecycle::runtime::tests::initial_terminal_boundary::initial_terminal_assertion_returns_without_advancing_a_backend",
+          "vm_lifecycle::runtime::tests::lifecycle_releases_retained_resources_after_lease_before_aggregate_launcher",
+          "vm_lifecycle::runtime::tests::lifecycle_reports_launch_authority_cleanup_after_backend_shutdown",
+          "vm_lifecycle::runtime::tests::lifecycle_retains_aggregate_launcher_after_generation_lease_failure",
+          "vm_lifecycle::runtime::tests::mismatched_generation_lease_fails_closed_without_release",
+          "vm_lifecycle::runtime::tests::node_icount_coordinate_does_not_alias_a_later_same_configuration_boundary",
+          "vm_lifecycle::runtime::tests::ordered_branch_reseeds_advance_without_dropping_a_generation",
+          "vm_lifecycle::runtime::tests::ordered_branch_sequence_rejects_regressing_or_divergent_boundaries",
+          "vm_lifecycle::runtime::tests::production_debug_evidence_hydrates_only_backend_owned_runtime_fields",
+          "vm_lifecycle::runtime::tests::production_debug_evidence_matches_a_runtime_bound_at_a_later_boundary",
+          "vm_lifecycle::runtime::tests::production_debug_evidence_rejects_forged_or_partial_graph_identity",
+          "vm_lifecycle::runtime::tests::production_debug_evidence_restores_the_recorded_scheduler_frontier",
+          "vm_lifecycle::runtime::tests::production_failed_boundary_cannot_publish_a_queued_reservation",
+          "vm_lifecycle::runtime::tests::production_guest_assets_are_kept_per_architecture",
+          "vm_lifecycle::runtime::tests::production_lifecycle_authenticates_typed_signal_branch_before_checkpointing",
+          "vm_lifecycle::runtime::tests::production_lifecycle_derives_node_local_selectable_catalog_from_scenario",
+          "vm_lifecycle::runtime::tests::production_lifecycle_does_not_export_live_frontiers_without_promotion_opt_in",
+          "vm_lifecycle::runtime::tests::production_lifecycle_emits_initial_started_state_for_every_vm",
+          "vm_lifecycle::runtime::tests::production_lifecycle_lends_generation_preparation_before_path_access",
+          "vm_lifecycle::runtime::tests::production_lifecycle_pauses_on_a_new_live_signal_fault_frontier",
+          "vm_lifecycle::runtime::tests::production_lifecycle_rejects_typed_signal_branch_without_producer_choice",
+          "vm_lifecycle::runtime::tests::production_native_aarch64_assets_do_not_create_an_x86_fallback",
+          "vm_lifecycle::runtime::tests::production_queued_broadcast_reserves_before_a_backend_run",
+          "vm_lifecycle::runtime::tests::production_selected_preselection_returns_only_its_new_event_append",
+          "vm_lifecycle::runtime::tests::reaped_generation_finishes_only_its_exact_linear_lease",
+          "vm_lifecycle::runtime::tests::recorded_control_boundary_waits_until_every_node_reaches_the_exact_time",
+          "vm_lifecycle::runtime::tests::selectable_reply_pairing_rejects_another_valid_selection",
+          "vm_lifecycle::runtime::tests::trigger_deadlines::restored_trigger_state_reaches_its_deadline_with_no_active_nodes",
+          "vm_lifecycle::runtime::tests::trigger_deadlines::restored_trigger_state_rearms_the_exact_scheduler_cap_before_run",
+          "vm_lifecycle::runtime::tests::trigger_deadlines::terminal_network_pass_waits_for_the_shared_frontier_to_commit_prior_output",
+          "vm_lifecycle::runtime::tests::virtual_time_coordinate_selects_the_latest_boundary_not_after_the_target",
+          "vm_lifecycle::storage_faults::bindings::tests::logical_queue_identity_keeps_original_world_through_clone",
+          "vm_lifecycle::storage_faults::bindings::tests::matching_queue_name_cannot_rebind_to_a_different_world",
+          "vm_lifecycle::storage_faults::tests::ambiguous_shared_ninep_commit_poisons_runtime_before_return",
+          "vm_lifecycle::storage_faults::tests::ninep_result_evidence_excludes_locked_replay_authorization",
+          "vm_lifecycle::storage_faults::tests::observation_journal_drains_batches_in_global_sequence_order",
+          "vm_lifecycle::storage_faults::tests::observation_journal_retains_future_batches_across_frontiers",
+          "vm_lifecycle::storage_faults::tests::observation_journal_rolls_back_one_boundary_sequence_exactly",
+          "vm_lifecycle::storage_faults::tests::production_ninep_coordinator_mutates_result_and_visibility_state",
+          "vm_lifecycle::storage_faults::tests::storage_resource_limits_preserve_exact_coordinates_through_scheduler"
+        ],
+        "ignored": [
+          "executor_worker::tests::host_watchdog_child_fixture",
+          "planner_process::pipes::tests::child",
+          "qemu_campaign_lifecycle::tests::host_parallel_native::production_lifecycle_host_parallel_rounds_are_canonical_and_recoverable",
+          "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_hot_fork_matches_thin_and_exact_from_execution_and_exact_templates",
+          "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_hot_fork_meets_whole_world_performance_ratchets",
+          "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_hot_fork_scales_across_three_guest_memory_sizes",
+          "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_hot_fork_scales_across_three_semantic_template_depths",
+          "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_single_node_hot_fork_matches_thin_and_exact",
+          "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_single_vm_child_ready_p95_is_below_100_milliseconds",
+          "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_whole_world_survives_ten_thousand_lifecycles_without_leaks",
+          "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::siblings::production_managed_source_keeps_bounded_native_siblings_live",
+          "qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_factory_exposes_no_world_when_second_real_adoption_fails",
+          "qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_factory_exposes_no_world_when_second_real_fork_fails",
+          "qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_factory_keeps_source_private_across_repository_publication_retry",
+          "qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_factory_keeps_source_private_until_target_cleanup_retries",
+          "qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_source_preparation_failure_exposes_no_template",
+          "qemu_hot_fork_world_factory::tests::native_acceptance::final_audit::production_hot_fork_resource_roots_are_clean_after_packaged_flights",
+          "qemu_hot_fork_world_factory::tests::native_acceptance::isolation_native_negative::production_factory_rejects_aliased_child_files_with_live_qemu_source",
+          "qemu_hot_fork_world_factory::tests::native_acceptance::isolation_native_negative::production_factory_rejects_missing_child_file_with_live_qemu_source",
+          "qemu_hot_fork_world_factory::tests::native_acceptance::isolation_negative::production_factory_rejects_the_complete_isolation_negative_matrix_before_readiness",
+          "qemu_hot_fork_world_factory::tests::native_acceptance::production_factory_forks_complete_live_world_atomically",
+          "qemu_hot_fork_world_factory::tests::native_acceptance::production_source_idle_prefix_reaches_exact_tick"
+        ]
+      }
+    }
+  },
+  "report_sha256": {
+    "evidence/execution.json": "2f3191fe3f63904a44c991d8d166cb885bf2ae236d3c90a9e7290de0b96a8557",
+    "evidence/tests/index.json": "9c9d4da7464ac09ddd98daae265d5914474a340546a7fc315fe603cb86883b1c",
+    "inventory.json": "8e4f3e5a3e05f713efca5f6dc9ed5e864d633578be8ac6502f9ec21f6d63b4b0"
+  },
+  "rust_target_compilation": {
+    "derivation": "/nix/store/i6cggmsf2vn1sdh41i64ibjbamyq0f5d-aos-test-targets-0.1.0.drv",
+    "output": "/nix/store/qpkw8dajn2m5swhs399r71am6cgz14zd-aos-test-targets-0.1.0",
+    "source": "/nix/store/fn9ghrq57a3akg4rx6w2b0p0jycdi1ml-aos-workspace-src"
+  },
+  "schema_version": 1,
+  "scope": {
+    "all": "/nix/store/rv3a4c95a3ylb33768lczv34azgr475r-aos-bazel-daemon-qualified-checks",
+    "all_features": "/nix/store/3n0piclhbzw58x709q43hlc5lavvyv57-aos-bazel-daemon-all_features-parity",
+    "configuration": "/nix/store/3i3c41xs7mjda5cjysnvc84kglrgkmf1-aos-bazel-configuration.json",
+    "derivation": "/nix/store/hvyczna50yc8wy39lhbn2fq3w0pama6s-aos-bazel-daemon-qualified-checks.drv",
+    "file_sha256": {
+      "crates/crucible/control/crucible-daemon/src/qemu_campaign_lifecycle/tests/host_parallel_native.rs": "35ee08b945d4d7043f58d4db50bc18b7b5f09ce3b42e13b00789e249995764ef",
+      "tests/build/_bazel-rust-family.nix": "236efe00c06859df1c463303952c26bd16c4a4d74260fc222abdb5fab53d6f35",
+      "tools/bazel/metadata/export_rust_project.py": "d2d5010dbd2ff92fcc1929a1bc654f1b7bcf404f34a3361f33b278578c73a06d",
+      "tools/bazel/testing/runner.py": "8a18b6fb0dca658cc3f699b1e5cc1ec8b20fbcfa8e2e60fa8fa9e6f099a02adc",
+      "tools/bazel/tests/verify_family_editor.py": "fc0974e87e7c91d044af0638f821cb8c4cd5557b79737dfa3074de73207f3f34"
+    },
+    "recovery_faults": "/nix/store/wdg52nx8badhzxl67cww200ly9ilmww0-aos-bazel-daemon-recovery_faults-parity",
+    "source": "/nix/store/vmfpfga3wp53pp7ij3q3r799rbi5x34x-aos-bazel-workspace",
+    "test_support": "/nix/store/xvavab1a179hmw5zjb6fwmffkyi0kkpi-aos-bazel-daemon-test_support-parity",
+    "tested_tree_parent_commit": "5803fe11e0acf2f1e9774d0d283ea5558aaf51f0",
+    "tests": "/nix/store/cfc4f6hginncvfbdccfz28wqy7vwkpzb-aos-bazel-daemon-tests-1"
+  },
+  "status": "Default native Bazel execution, comparison with original Cargo baseline, and required Rust target compilation passed",
+  "tests": "/nix/store/cfc4f6hginncvfbdccfz28wqy7vwkpzb-aos-bazel-daemon-tests-1"
+}

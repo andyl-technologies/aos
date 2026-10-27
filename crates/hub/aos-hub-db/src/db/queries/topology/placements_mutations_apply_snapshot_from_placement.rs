@@ -520,6 +520,10 @@ impl Database {
     /// Returns an error for malformed evidence, stale placement topology, an
     /// object on another surface, duplicate objects, an oversized batch, a
     /// placement no longer being scanned, or a database failure.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Keep persisted identities and transaction inputs explicit in this existing API."
+    )]
     pub async fn record_surface_placement_scan_presences(
         &self,
         placement_id: i64,
@@ -665,6 +669,10 @@ impl Database {
     ///
     /// Returns an error for invalid state, stale topology or observation
     /// versions, or persistence failure.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Keep persisted identities and transaction inputs explicit in this existing API."
+    )]
     pub async fn finish_surface_placement_scan(
         &self,
         placement_id: i64,

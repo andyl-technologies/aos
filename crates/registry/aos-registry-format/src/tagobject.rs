@@ -117,6 +117,7 @@ fn parse_tagger_when(tagger: &str) -> Option<i64> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
 

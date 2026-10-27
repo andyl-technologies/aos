@@ -201,15 +201,14 @@ fn preserve_with(
     publication.as_file().sync_all()?;
     publication.persist(directory.join(MANIFEST))?;
     File::open(&directory)?.sync_all()?;
-    if let Some(payload) = previous.and_then(|value| value.payload) {
-        if manifest
+    if let Some(payload) = previous.and_then(|value| value.payload)
+        && manifest
             .payload
             .as_ref()
             .is_none_or(|current| current.sha256 != payload.sha256)
-        {
-            fs::remove_file(payload_path(&directory, &payload)?)?;
-            File::open(&directory)?.sync_all()?;
-        }
+    {
+        fs::remove_file(payload_path(&directory, &payload)?)?;
+        File::open(&directory)?.sync_all()?;
     }
     Ok(())
 }
@@ -476,4 +475,9 @@ impl<W: Write> Write for LimitedWriter<W> {
 
 #[cfg(test)]
 #[path = "initrd_store_tests.rs"]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "Test fixtures and assertions fail immediately on unexpected errors"
+)]
 mod tests;

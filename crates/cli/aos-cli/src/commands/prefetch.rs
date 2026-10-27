@@ -192,31 +192,24 @@ fn update_package_hash(
         return Ok(false);
     }
 
+    // Match a known old hash specifically when a package has several hash fields.
+    let hash_pattern = match old_hash {
+        Some(old) => format!(r#"hash\s*=\s*"{}""#, regex::escape(old)),
+        None => r#"hash\s*=\s*"[^"]*""#.to_owned(),
+    };
+    let hash_pattern = Regex::new(&hash_pattern).context("compiling package hash pattern")?;
+    let replacement = format!(r#"hash = "{new_hash}""#);
     let mut updated_any = false;
+
     for path in &matches {
         let content =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-
-        // When the old hash is known, match it specifically to avoid updating
-        // the wrong field in files with multiple hashes (e.g. per-arch).
-        let new_content = if let Some(old) = old_hash {
-            let old_pattern = format!(r#"hash\s*=\s*"{}""#, regex::escape(old));
-            let re = Regex::new(&old_pattern).expect("valid regex");
-            if re.is_match(&content) {
-                let replacement = format!(r#"hash = "{new_hash}""#);
-                re.replace(&content, replacement.as_str()).to_string()
-            } else {
-                continue;
-            }
-        } else {
-            let re = Regex::new(r#"hash\s*=\s*"[^"]*""#).expect("valid regex");
-            if re.is_match(&content) {
-                let replacement = format!(r#"hash = "{new_hash}""#);
-                re.replace(&content, replacement.as_str()).to_string()
-            } else {
-                continue;
-            }
-        };
+        if !hash_pattern.is_match(&content) {
+            continue;
+        }
+        let new_content = hash_pattern
+            .replace(&content, replacement.as_str())
+            .to_string();
 
         if new_content != content {
             std::fs::write(path, &new_content)
@@ -246,6 +239,8 @@ fn update_package_hash(
 /// none of the requested packages have `fetchurl` sources, or if any
 /// source fails to download from all of its mirrors (the remaining
 /// sources are still fetched and reported first).
+// This command boundary receives the source selectors and independent transfer limits.
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     nix: &NixRunner,
     printer: &Printer,

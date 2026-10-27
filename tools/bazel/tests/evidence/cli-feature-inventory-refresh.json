@@ -1,0 +1,1425 @@
+{
+  "check_command": "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-build -A checks.eval -A checks.build.bazel.policy -A checks.build.bazel.source-selection --no-out-link --keep-going --max-jobs 2 --cores 4 --option substitute false",
+  "coverage_validation_harness": "\"\"\"Publishes fresh configured selections only after checking prior coverage.\"\"\"\nfrom collections import defaultdict\nimport hashlib\nimport json\nimport re\nfrom pathlib import Path\nimport sys\nimport subprocess\n\nsys.path.insert(0, 'tools/bazel/metadata')\nfrom merge_inventory import merge\n\nroot = Path.cwd()\nscratch = Path('/tmp/aos-bazel-722')\nbase_paths = json.loads((scratch / 'cli-feature-configured-inventory-inputs.json').read_text())\ninputs = defaultdict(list)\nfor name, output in base_paths.items():\n    path = Path(output) / 'inventory.json'\n    if path.is_file():\n        inputs[name].append(path)\nmissing = []\nextra_paths = json.loads((scratch / 'cli-feature-inventory-extra-planned-outputs.json').read_text())\nsubprocess.run([\n    '/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-store',\n    '--check-validity', *sorted(set(base_paths.values()) | set(extra_paths)),\n], check=True)\nfor line in extra_paths:\n    path = Path(line) / 'inventory.json'\n    if not path.is_file():\n        missing.append(str(path))\n        continue\n    stem = Path(line).name.split('-', 1)[1]\n    if stem in ['aos-bazel-aos-cli-tests-inventory-1', 'aos-bazel-aos-cli-fleet-tests-inventory-1']:\n        name = 'aos-cli'\n    else:\n        assert stem.startswith('aos-bazel-') and stem.endswith('-feature-repair-extra-inventory-1'), stem\n        name = stem.removeprefix('aos-bazel-').removesuffix('-feature-repair-extra-inventory-1')\n    inputs[name].append(path)\nassert not missing, missing\nadditional_paths = json.loads((scratch / 'cli-feature-additional-inventory-inputs.json').read_text())\nfor name, paths in additional_paths.items():\n    assert name in base_paths, name\n    subprocess.run([\n        '/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-store',\n        '--check-validity', *paths,\n    ], check=True)\n    for output in paths:\n        path = Path(output) / 'inventory.json'\n        assert path.is_file(), path\n        inputs[name].append(path)\n\nstaged = {}\nreport = {}\nfor name, paths in sorted(inputs.items()):\n    output = root / ('tools/bazel/metadata/' + name + '-inventory.json')\n    previous = json.loads(output.read_text())\n    current = merge(root, [json.loads(path.read_text()) for path in paths])\n    def canonical_label(label):\n        if name == 'aos-cli' and any(label.startswith(\n                '@@+aos_tools_repository+aos_aos_cli_' + profile + '_crates__' + package + '-' + version + '//:')\n                for profile in ['tests','fleet_tests']\n                for package,version in [('getrandom','0.4.2'),('hashbrown','0.17.1'),('itertools','0.14.0')]):\n            return re.sub(r'__aos_(target|exec)(?=_|$)', '', label)\n        return label\n    previous_labels = {canonical_label(row['label']) for row in previous['configured_targets']}\n    current_labels = {canonical_label(row['label']) for row in current['configured_targets']}\n    checks = {\n        'targets': set(previous['targets']) <= set(current['targets']),\n        'source_files': set(previous['source_files']) <= set(current['source_files']),\n        'source_directories': set(previous['source_directories']) <= set(current['source_directories']),\n        'configured_labels': previous_labels <= current_labels,\n    }\n    if not all(checks.values()):\n        missing = {field: sorted(set(previous[field]) - set(current[field]))\n                   for field in ['targets','source_files','source_directories']}\n        missing['configured_labels'] = sorted(previous_labels - current_labels)\n        raise ValueError('missing prior configured source coverage: ' + name + ' ' + json.dumps(missing))\n    # Retain every package/version/feature/platform unit. Generated output paths\n    # and environment store paths can change with declared tool/repository inputs.\n    def units(value):\n        return {(canonical_label(row['label']), row['kind'], row['version'], row['target_cpu'], tuple(row['features']))\n                for row in value['configured_targets']}\n    absent = units(previous) - units(current)\n    repaired = []\n    if absent and name == 'aos-cli':\n        identities = {('rand','0.8.6')}\n        rows = {unit: row for row in previous['configured_targets']\n                for unit in [(canonical_label(row['label']),row['kind'],row['version'],row['target_cpu'],tuple(row['features']))]}\n        for unit in sorted(absent):\n            row = rows[unit]\n            name_tag = [tag.removeprefix('crate-name=') for tag in row['tags'] if tag.startswith('crate-name=')]\n            assert row['external'] and row['kind'] == 'rust_library', row\n            assert name_tag and (name_tag[0],row['version']) in identities, row\n            assert any(row['label'].startswith('@@+aos_tools_repository+aos_aos_cli_' + profile + '_crates__')\n                       for profile in ['tests','fleet_tests']), row\n            repaired.append({'label':row['label'],'version':row['version'],'previous_features':row['features']})\n        gate_paths = json.loads((scratch / 'cli-effective-build-profile-qualification-paths.json').read_text())\n        for profile in ['default','fleet']:\n            gate = Path(gate_paths[profile]['oracle'])\n            assert (gate/'parity.json').is_file() and (gate/'execution-profiles.json').is_file(), gate\n            assert json.loads((gate/'execution-profiles.json').read_text())['status'] == 'PASS', gate\n    elif absent:\n        raise ValueError('missing prior configured units: ' + name + ' ' + repr(sorted(absent)))\n    staged[output] = current\n    report[name] = {\n        'inputs': [str(path) for path in paths],\n        'prior_targets': len(previous['targets']), 'targets': len(current['targets']),\n        'prior_source_files': len(previous['source_files']), 'source_files': len(current['source_files']),\n        'prior_reports': len(previous['configured_targets']), 'reports': len(current['configured_targets']),\n        'unaffected_prior_configured_units_preserved': True,\n        'cli_role_aliases_compared_by_prior_canonical_label': name == 'aos-cli',\n        'repaired_cli_feature_units': repaired,\n        'inventory_sha256': hashlib.sha256((json.dumps(current,indent=2,sort_keys=True)+'\\n').encode()).hexdigest(),\n    }\n\nassert set(staged) == {root / ('tools/bazel/metadata/' + name + '-inventory.json') for name in base_paths}\nfor output, value in staged.items():\n    output.write_text(json.dumps(value,indent=2,sort_keys=True)+'\\n')\n(scratch / 'cli-feature-configured-inventory-refresh.json').write_text(\n    json.dumps({'schema_version':1,'status':'PASS','families':report},indent=2,sort_keys=True)+'\\n')\nprint('Validated and published',len(staged),'fresh configured source inventories')\n",
+  "families": {
+    "accache": {
+      "cli_role_aliases_compared_by_prior_canonical_label": false,
+      "input_sha256": {
+        "/nix/store/kbgfi6mg09v5i872qwg8pyrldv92j5w9-aos-bazel-accache-feature-repair-inventory-1/inventory.json": "01d06e0ae0ddc0124ec525860c18ca1f2fd13c8bed1b68ab07dd44346d29a046",
+        "/nix/store/wjw61p51y4v5dkygmagzdk2x16wx6fql-aos-bazel-accache-feature-repair-extra-inventory-1/inventory.json": "850b783eccc90d6de590efedca698322cc2405cdfb25c5b12c4183bfb7974392"
+      },
+      "inputs": [
+        "/nix/store/kbgfi6mg09v5i872qwg8pyrldv92j5w9-aos-bazel-accache-feature-repair-inventory-1/inventory.json",
+        "/nix/store/wjw61p51y4v5dkygmagzdk2x16wx6fql-aos-bazel-accache-feature-repair-extra-inventory-1/inventory.json"
+      ],
+      "inventory_sha256": "ab5e1fa5faebc34f8ac22a97efc1a54ec76b7d503213f7c93a48ed7f8b7704cb",
+      "prior_reports": 98,
+      "prior_source_files": 23,
+      "prior_targets": 14,
+      "repaired_cli_feature_units": [],
+      "reports": 98,
+      "source_files": 23,
+      "targets": 14,
+      "unaffected_prior_configured_units_preserved": true
+    },
+    "activation-core": {
+      "cli_role_aliases_compared_by_prior_canonical_label": false,
+      "input_sha256": {
+        "/nix/store/dzwh8li6q8rp2xmy6pxlzh271hhkbbqv-aos-bazel-activation-core-feature-repair-inventory-1/inventory.json": "94e86acc41dbd7bc49707a79c331260b5d8473ee57395abb381a7259a9c79313",
+        "/nix/store/qh5dvmn1kp9mvqhv5rsj39kqd46bzds3-aos-bazel-activation-core-feature-repair-extra-inventory-1/inventory.json": "50aab2dbcef8ef9f901458fe4e4e9fff6f17275ccb506a8482e572d73ad73334"
+      },
+      "inputs": [
+        "/nix/store/dzwh8li6q8rp2xmy6pxlzh271hhkbbqv-aos-bazel-activation-core-feature-repair-inventory-1/inventory.json",
+        "/nix/store/qh5dvmn1kp9mvqhv5rsj39kqd46bzds3-aos-bazel-activation-core-feature-repair-extra-inventory-1/inventory.json"
+      ],
+      "inventory_sha256": "40ae064b4fa76bc106195d16dd96a0de90f1ff526aac53511a8799040f5266f0",
+      "prior_reports": 237,
+      "prior_source_files": 62,
+      "prior_targets": 68,
+      "repaired_cli_feature_units": [],
+      "reports": 237,
+      "source_files": 62,
+      "targets": 68,
+      "unaffected_prior_configured_units_preserved": true
+    },
+    "activation-crucible": {
+      "cli_role_aliases_compared_by_prior_canonical_label": false,
+      "input_sha256": {
+        "/nix/store/d9ca0g7kz3gdavfayvlhfcij912lf56n-aos-bazel-activation-crucible-feature-repair-inventory-1/inventory.json": "5f2d12aba7fb63e963cb8fdc607ae6806d4d26342d63625ef4e9adc1d595160c",
+        "/nix/store/f7bjw261cn6jdfqgbgrccvi7302vgwcr-aos-bazel-activation-crucible-feature-repair-extra-inventory-1/inventory.json": "b3b81433bdac7fb7a93403371733c915526670dcd09caef426c92d26f3791b39"
+      },
+      "inputs": [
+        "/nix/store/d9ca0g7kz3gdavfayvlhfcij912lf56n-aos-bazel-activation-crucible-feature-repair-inventory-1/inventory.json",
+        "/nix/store/f7bjw261cn6jdfqgbgrccvi7302vgwcr-aos-bazel-activation-crucible-feature-repair-extra-inventory-1/inventory.json"
+      ],
+      "inventory_sha256": "e33c38f887d3ca009c129453e6870ba6b1cfdc89e4d295693209de6ba1f459c8",
+      "prior_reports": 255,
+      "prior_source_files": 841,
+      "prior_targets": 9,
+      "repaired_cli_feature_units": [],
+      "reports": 255,
+      "source_files": 841,
+      "targets": 9,
+      "unaffected_prior_configured_units_preserved": true
+    },
+    "activation-storage": {
+      "cli_role_aliases_compared_by_prior_canonical_label": false,
+      "input_sha256": {
+        "/nix/store/hw75jjha63sm5iqh3k2gasm9zib101b6-aos-bazel-activation-storage-feature-repair-inventory-1/inventory.json": "4893b54f6a4c32465027751d5e6328f44dec4d0d5a5f0929d7d913f36ba2cc12",
+        "/nix/store/zcr9hi66iljdmlcrx14d3qblqvwn8ppi-aos-bazel-activation-storage-feature-repair-extra-inventory-1/inventory.json": "ddc7d5611e119c71da56ff87f1127cdcaf1cbfbb4086fe838d42383324311993"
+      },
+      "inputs": [
+        "/nix/store/hw75jjha63sm5iqh3k2gasm9zib101b6-aos-bazel-activation-storage-feature-repair-inventory-1/inventory.json",
+        "/nix/store/zcr9hi66iljdmlcrx14d3qblqvwn8ppi-aos-bazel-activation-storage-feature-repair-extra-inventory-1/inventory.json"
+      ],
+      "inventory_sha256": "31f554058e77af50634a8d0974a2ccf5da2d06aba27d3eb9d854a679ed1413d6",
+      "prior_reports": 144,
+      "prior_source_files": 79,
+      "prior_targets": 46,
+      "repaired_cli_feature_units": [],
+      "reports": 144,
+      "source_files": 79,
+      "targets": 46,
+      "unaffected_prior_configured_units_preserved": true
+    },
+    "activation-systemd": {
+      "cli_role_aliases_compared_by_prior_canonical_label": false,
+      "input_sha256": {
+        "/nix/store/n35m6i1ysy3pax2p57a6hqp1dy49wwbg-aos-bazel-activation-systemd-feature-repair-extra-inventory-1/inventory.json": "e6cc8f77de79f71fe00e3db6dc973155038224acde5f969c41976d7f6f4145f2",
+        "/nix/store/pm6y46046j7s3h9cvgbpqlplhgvwzyp0-aos-bazel-activation-systemd-feature-repair-inventory-1/inventory.json": "2b3c6b4970b8e6523788b397c49337f134b0896dcc32f3feafdaf58c7a7bc84b"
+      },
+      "inputs": [
+        "/nix/store/pm6y46046j7s3h9cvgbpqlplhgvwzyp0-aos-bazel-activation-systemd-feature-repair-inventory-1/inventory.json",
+        "/nix/store/n35m6i1ysy3pax2p57a6hqp1dy49wwbg-aos-bazel-activation-systemd-feature-repair-extra-inventory-1/inventory.json"
+      ],
+      "inventory_sha256": "7929294b923f935c31b22759ccda4a98600de86e453440bdd13b2dc9abba1b85",
+      "prior_reports": 172,
+      "prior_source_files": 80,
+      "prior_targets": 12,
+      "repaired_cli_feature_units": [],
+      "reports": 172,
+      "source_files": 80,
+      "targets": 12,
+      "unaffected_prior_configured_units_preserved": true
+    },
+    "aos-cli": {
+      "cli_role_aliases_compared_by_prior_canonical_label": true,
+      "input_sha256": {
+        "/nix/store/7l7k3wmp7r3b8fk8n69qynqd68nkfb6x-aos-bazel-aos-cli-production-inventory-1/inventory.json": "31d9975582e8b7ccb513b14950aa2942a39d9df152af67c4dbe3cb07f492af54",
+        "/nix/store/82b2j7dgn7q7iyylj9xxfman7kgwyskg-aos-bazel-aos-cli-fleet-tests-inventory-1/inventory.json": "d810474cf8357a9e41e22bdf6f1f8f557d0795519f051bbf43885c5ab12a733c",
+        "/nix/store/dfwfah38sapzhk85sgayq8d433m0va51-aos-bazel-aos-cli-tests-inventory-1/inventory.json": "8a428e2a944d9526c98d8c876bade6afd39eb34f2e27f58fe859e2dcda616168"
+      },
+      "inputs": [
+        "/nix/store/7l7k3wmp7r3b8fk8n69qynqd68nkfb6x-aos-bazel-aos-cli-production-inventory-1/inventory.json",
+        "/nix/store/dfwfah38sapzhk85sgayq8d433m0va51-aos-bazel-aos-cli-tests-inventory-1/inventory.json",
+        "/nix/store/82b2j7dgn7q7iyylj9xxfman7kgwyskg-aos-bazel-aos-cli-fleet-tests-inventory-1/inventory.json"
+      ],
+      "inventory_sha256": "ad893c470a7374d5e2f0fc55829b8a1026c89b30233a531fab3526361e1751fd",
+      "prior_reports": 1863,
+      "prior_source_files": 1364,
+      "prior_targets": 89,
+      "repaired_cli_feature_units": [
+        {
+          "label": "@@+aos_tools_repository+aos_aos_cli_fleet_tests_crates__rand-0.8.6//:rand",
+          "previous_features": [
+            "alloc",
+            "getrandom",
+            "libc",
+            "rand_chacha",
+            "small_rng",
+            "std",
+            "std_rng"
+          ],
+          "version": "0.8.6"
+        },
+        {
+          "label": "@@+aos_tools_repository+aos_aos_cli_tests_crates__rand-0.8.6//:rand",
+          "previous_features": [
+            "alloc",
+            "getrandom",
+            "libc",
+            "rand_chacha",
+            "small_rng",
+            "std",
+            "std_rng"
+          ],
+          "version": "0.8.6"
+        }
+      ],
+      "reports": 1869,
+      "source_files": 1364,
+      "targets": 89,
+      "unaffected_prior_configured_units_preserved": true
+    },
+    "boot-preparation": {
+      "cli_role_aliases_compared_by_prior_canonical_label": false,
+      "input_sha256": {
+        "/nix/store/2i5hhpv5j1y9h18n1z2xr4cnck8dyn0l-aos-bazel-boot-preparation-feature-repair-extra-inventory-1/inventory.json": "dbf5d079b5d7b5c00bd83a3ef6e864c339e359d242cb53d19ab59ab1ba93c842",
+        "/nix/store/5p8896c4dwilcb19p4a6m7mm6xf52xx9-aos-bazel-boot-preparation-minimal-inventory-1/inventory.json": "5d2608f669d32f9233abcdcde380c0e565cdc874e99974d5575f2c744f9c970d",
+        "/nix/store/hxfxca5gk4vpp1n6a9cvp28hc55n5kyf-aos-bazel-boot-preparation-feature-repair-inventory-1/inventory.json": "5225fa4d607f6a38ed16ca6338cccbf22ad6710edbbcf2ed4afbdd0b4a488b71"
+      },
+      "inputs": [
+        "/nix/store/hxfxca5gk4vpp1n6a9cvp28hc55n5kyf-aos-bazel-boot-preparation-feature-repair-inventory-1/inventory.json",
+        "/nix/store/2i5hhpv5j1y9h18n1z2xr4cnck8dyn0l-aos-bazel-boot-preparation-feature-repair-extra-inventory-1/inventory.json",
+        "/nix/store/5p8896c4dwilcb19p4a6m7mm6xf52xx9-aos-bazel-boot-preparation-minimal-inventory-1/inventory.json"
+      ],
+      "inventory_sha256": "44ec116196999a086d1c2e65e685295a1c766efc59338a0cb53648c1909751d1",
+      "prior_reports": 721,
+      "prior_source_files": 235,
+      "prior_targets": 52,
+      "repaired_cli_feature_units": [],
+      "reports": 721,
+      "source_files": 235,
+      "targets": 52,
+      "unaffected_prior_configured_units_preserved": true
+    },
+    "build-services": {
+      "cli_role_aliases_compared_by_prior_canonical_label": false,
+      "input_sha256": {
+        "/nix/store/anhp2gbshbjd068h927p1bda4z7zafax-aos-bazel-build-services-feature-repair-extra-inventory-1/inventory.json": "27c9c46fd3f56a2f4b111cb8c62e33eb3496a7b6bf5c9a0ed658effa9a9a5a3f",
+        "/nix/store/c8qg7h9vzlpv5bif2glqfkrz2357k48w-aos-bazel-build-services-feature-repair-inventory-1/inventory.json": "f132b08bb4aad2da16ddeb7507567f11bde830dfb436cd73fdcc7bf65d2489cb"
+      },
+      "inputs": [
+        "/nix/store/c8qg7h9vzlpv5bif2glqfkrz2357k48w-aos-bazel-build-services-feature-repair-inventory-1/inventory.json",
+        "/nix/store/anhp2gbshbjd068h927p1bda4z7zafax-aos-bazel-build-services-feature-repair-extra-inventory-1/inventory.json"
+      ],
+      "inventory_sha256": "2f957c63045785da52ea400fd6451635652e610c6b4d3f4332d5285ed848cc7c",
+      "prior_reports": 312,
+      "prior_source_files": 65,
+      "prior_targets": 28,
+      "repaired_cli_feature_units": [],
+      "reports": 312,
+      "source_files": 65,
+      "targets": 28,
+      "unaffected_prior_configured_units_preserved": true
+    },
+    "cli-support": {
+      "cli_role_aliases_compared_by_prior_canonical_label": false,
+      "input_sha256": {
+        "/nix/store/dzhdh64qjl0wkrzb62j31j2lsyx53pd0-aos-bazel-cli-support-feature-repair-inventory-1/inventory.json": "5abc3617468a3a357728884e9ef98b3108895ca28deee859dffa83b900c2a465",
+        "/nix/store/jwx2fjnak10ay3l4i0kf6vx0pgjrp13p-aos-bazel-cli-support-feature-repair-extra-inventory-1/inventory.json": "f4e1f6b42dc7e049c464670d9d6aadcb2c473767e03779df3a1c3eaead5d634a"
+      },
+      "inputs": [
+        "/nix/store/dzhdh64qjl0wkrzb62j31j2lsyx53pd0-aos-bazel-cli-support-feature-repair-inventory-1/inventory.json",
+        "/nix/store/jwx2fjnak10ay3l4i0kf6vx0pgjrp13p-aos-bazel-cli-support-feature-repair-extra-inventory-1/inventory.json"
+      ],
+      "inventory_sha256": "fc7ec26595fc1b966b5f8fcf437a15e71d0fa31863a65ecd01f0661d730ce4c4",
+      "prior_reports": 209,
+      "prior_source_files": 65,
+      "prior_targets": 24,
+      "repaired_cli_feature_units": [],
+      "reports": 199,
+      "source_files": 65,
+      "targets": 24,
+      "unaffected_prior_configured_units_preserved": true
+    },
+    "contracts": {
+      "cli_role_aliases_compared_by_prior_canonical_label": false,
+      "input_sha256": {
+        "/nix/store/zs643iaiq7l9xyqm182l84vrawjn6qzy-aos-bazel-contracts-feature-repair-inventory-1/inventory.json": "926e1af08563dc03da36ab638212e205d204736c81827606277897167ee74633"
+      },
+      "inputs": [
+        "/nix/store/zs643iaiq7l9xyqm182l84vrawjn6qzy-aos-bazel-contracts-feature-repair-inventory-1/inventory.json"
+      ],
+      "inventory_sha256": "c490a44f8b488debe34c47b69afc043f4364b0db41596a084c5c89ce38e48b14",
+      "prior_reports": 152,
+      "prior_source_files": 140,
+      "prior_targets": 26,
+      "repaired_cli_feature_units": [],
+      "reports": 152,
+      "source_files": 140,
+      "targets": 26,
+      "unaffected_prior_configured_units_preserved": true
+    },
+    "control": {
+      "cli_role_aliases_compared_by_prior_canonical_label": false,
+      "input_sha256": {
+        "/nix/store/fp2b3qf48sv347v1lqmwml92b955s9g3-aos-bazel-control-feature-repair-inventory-1/inventory.json": "5ad066bb2b3d7344905f1c5b2e1349588f34cacee40942d47ebcade16ea46a91"
+      },
+      "inputs": [
+        "/nix/store/fp2b3qf48sv347v1lqmwml92b955s9g3-aos-bazel-control-feature-repair-inventory-1/inventory.json"
+      ],
+      "inventory_sha256": "ad11f7db789eb1bb63ea55c6072debed38bdeceb7c61307bfea55d111a7457f9",
+      "prior_reports": 319,
+      "prior_source_files": 888,
+      "prior_targets": 34,
+      "repaired_cli_feature_units": [],
+      "reports": 319,
+      "source_files": 888,
+      "targets": 34,
+      "unaffected_prior_configured_units_preserved": true
+    },
+    "crucible-cli": {
+      "cli_role_aliases_compared_by_prior_canonical_label": false,
+      "input_sha256": {
+        "/nix/store/gb7s4kjmf56mvamsgccwavmvg65iivwm-aos-bazel-crucible-cli-feature-repair-inventory-1/inventory.json": "7f42edee7d4307f69fdcd6ad13cd803b673bfe01ea9f69f68aa1906639b5a424"
+      },
+      "inputs": [
+        "/nix/store/gb7s4kjmf56mvamsgccwavmvg65iivwm-aos-bazel-crucible-cli-feature-repair-inventory-1/inventory.json"
+      ],
+      "inventory_sha256": "37b336f584432bc425fff33b4ded653ba0f96c0d995a20707a6314feccb21423",
+      "prior_reports": 584,
+      "prior_source_files": 1740,
+      "prior_targets": 83,
+      "repaired_cli_feature_units": [],
+      "reports": 584,
+      "source_files": 1740,
+      "targets": 83,
+      "unaffected_prior_configured_units_preserved": true
+    },
+    "daemon": {
+      "cli_role_aliases_compared_by_prior_canonical_label": false,
+      "input_sha256": {
+        "/nix/store/pssjwj1aivgj5mnk2ll3pdyl42yczw5m-aos-bazel-daemon-feature-repair-inventory-1/inventory.json": "bdc5af9759bb659e3c13d081440da3b220ff911d819ca0ae22e59358b7a9637b"
+      },
+      "inputs": [
+        "/nix/store/pssjwj1aivgj5mnk2ll3pdyl42yczw5m-aos-bazel-daemon-feature-repair-inventory-1/inventory.json"
+      ],
+      "inventory_sha256": "34782c1eb8096d29cafab88bf2e4ba640aefb1edd5968d01d53e82d8dbb96875",
+      "prior_reports": 453,
+      "prior_source_files": 1549,
+      "prior_targets": 35,
+      "repaired_cli_feature_units": [],
+      "reports": 453,
+      "source_files": 1549,
+      "targets": 35,
+      "unaffected_prior_configured_units_preserved": true
+    },
+    "deployment": {
+      "cli_role_aliases_compared_by_prior_canonical_label": false,
+      "input_sha256": {
+        "/nix/store/0s338sh4rwjcc9h85rjcf1i009gh0w1d-aos-bazel-deployment-feature-repair-inventory-1/inventory.json": "37c5dff4958ac5303af5163a355d00e46b29de4b33e0630d15f549d5bb48dcc1",
+        "/nix/store/ffq5hwcfg45cvq697l7j35r0kns2nx2k-aos-bazel-deployment-feature-repair-extra-inventory-1/inventory.json": "9e41c3207e3f4086503f80dada35d5341e8fd4eca4b45ddcf3bdc2fea02d34d6"
+      },
+      "inputs": [
+        "/nix/store/0s338sh4rwjcc9h85rjcf1i009gh0w1d-aos-bazel-deployment-feature-repair-inventory-1/inventory.json",
+        "/nix/store/ffq5hwcfg45cvq697l7j35r0kns2nx2k-aos-bazel-deployment-feature-repair-extra-inventory-1/inventory.json"
+      ],
+      "inventory_sha256": "05ef19f22602da50dbf92906f5e5e80b7daafed2683c3e9dcc4d6f9270cf0cf6",
+      "prior_reports": 135,
+      "prior_source_files": 184,
+      "prior_targets": 10,
+      "repaired_cli_feature_units": [],
+      "reports": 135,
+      "source_files": 184,
+      "targets": 10,
+      "unaffected_prior_configured_units_preserved": true
+    },
+    "device": {
+      "cli_role_aliases_compared_by_prior_canonical_label": false,
+      "input_sha256": {
+        "/nix/store/ffsy248k6jvs2ariif6w5vf9pmvibqwg-aos-bazel-device-feature-repair-inventory-1/inventory.json": "423c01b40099a8559b7baab48eff903b5747d6bfae4e8f61c5766c9bb2739bca"
+      },
+      "inputs": [
+        "/nix/store/ffsy248k6jvs2ariif6w5vf9pmvibqwg-aos-bazel-device-feature-repair-inventory-1/inventory.json"
+      ],
+      "inventory_sha256": "471258481b38f18e897ed41b70b0fa187f03c520de1e743f8ad9301fdd800454",
+      "prior_reports": 166,
+      "prior_source_files": 281,
+      "prior_targets": 54,
+      "repaired_cli_feature_units": [],
+      "reports": 166,
+      "source_files": 281,
+      "targets": 54,
+      "unaffected_prior_configured_units_preserved": true
+    },
+    "engine": {
+      "cli_role_aliases_compared_by_prior_canonical_label": false,
+      "input_sha256": {
+        "/nix/store/l9n7bhmwa269y3gplafs1y39lir6l8w7-aos-bazel-engine-feature-repair-inventory-1/inventory.json": "023df888c7528d186923eb4f529ae50ebff572263909ddc90da9c0ff3565d724"
+      },
+      "inputs": [
+        "/nix/store/l9n7bhmwa269y3gplafs1y39lir6l8w7-aos-bazel-engine-feature-repair-inventory-1/inventory.json"
+      ],
+      "inventory_sha256": "c95791c2b1e7bb9dd2b027891ea58087364807bc41aad8b47810a8c1d1d14d28",
+      "prior_reports": 1266,
+      "prior_source_files": 3815,
+      "prior_targets": 523,
+      "repaired_cli_feature_units": [],
+      "reports": 1266,
+      "source_files": 3815,
+      "targets": 523,
+      "unaffected_prior_configured_units_preserved": true
+    },
+    "formats": {
+      "cli_role_aliases_compared_by_prior_canonical_label": false,
+      "input_sha256": {
+        "/nix/store/vrvildva36baql9laamjjsc8ind8rvb4-aos-bazel-formats-feature-repair-inventory-1/inventory.json": "fdd856165764897067ed738525d4c440de81e6c256272c821f2879ca62a96ce1"
+      },
+      "inputs": [
+        "/nix/store/vrvildva36baql9laamjjsc8ind8rvb4-aos-bazel-formats-feature-repair-inventory-1/inventory.json"
+      ],
+      "inventory_sha256": "1f0485508bf2a8dea76fd80a9e9c2475709c1dec4dd9406a4908c050c80a4b0c",
+      "prior_reports": 162,
+      "prior_source_files": 73,
+      "prior_targets": 27,
+      "repaired_cli_feature_units": [],
+      "reports": 162,
+      "source_files": 73,
+      "targets": 27,
+      "unaffected_prior_configured_units_preserved": true
+    },
+    "guest": {
+      "cli_role_aliases_compared_by_prior_canonical_label": false,
+      "input_sha256": {
+        "/nix/store/bid23d1sxvkjnqizrqxxaklp3iwvjalf-aos-bazel-guest-feature-repair-inventory-1/inventory.json": "c2462434e3d7b6bc3d37c65a00a402158426f444019f173f900003d2cca778ee",
+        "/nix/store/gs4rpsicynf763kdh3h8p1piycs5pl99-aos-bazel-guest-feature-repair-extra-inventory-1/inventory.json": "b6d1f71d059f3f7be77eb887b058ca33e0bfbdda129429a80b9510b308fb61a6"
+      },
+      "inputs": [
+        "/nix/store/bid23d1sxvkjnqizrqxxaklp3iwvjalf-aos-bazel-guest-feature-repair-inventory-1/inventory.json",
+        "/nix/store/gs4rpsicynf763kdh3h8p1piycs5pl99-aos-bazel-guest-feature-repair-extra-inventory-1/inventory.json"
+      ],
+      "inventory_sha256": "a53523e5dfdeb8aa781e0870fa7de4a2f01b9ab58b2be43394cca9badefbf6ae",
+      "prior_reports": 138,
+      "prior_source_files": 295,
+      "prior_targets": 16,
+      "repaired_cli_feature_units": [],
+      "reports": 138,
+      "source_files": 295,
+      "targets": 16,
+      "unaffected_prior_configured_units_preserved": true
+    },
+    "hub-client": {
+      "cli_role_aliases_compared_by_prior_canonical_label": false,
+      "input_sha256": {
+        "/nix/store/0kfks3g81gsryw4p7hi3x5a93w6c9ypi-aos-bazel-hub-client-feature-repair-inventory-1/inventory.json": "7e125d056e932ffe79d04dc3e451a0e34b99cfb1fd59351569146116d9498a61",
+        "/nix/store/h697l1hgxxwjg77124yfhl4p30lzxmvb-aos-bazel-hub-client-feature-repair-extra-inventory-1/inventory.json": "38b0a66019386e9ac13698499b8347bf02e076fa9d36ea6431d35e2da3d089b8"
+      },
+      "inputs": [
+        "/nix/store/0kfks3g81gsryw4p7hi3x5a93w6c9ypi-aos-bazel-hub-client-feature-repair-inventory-1/inventory.json",
+        "/nix/store/h697l1hgxxwjg77124yfhl4p30lzxmvb-aos-bazel-hub-client-feature-repair-extra-inventory-1/inventory.json"
+      ],
+      "inventory_sha256": "a54ca2d96b5c467cfc639757da67789dc5c9cedd65b54b6cfb09b0de6a7d7858",
+      "prior_reports": 189,
+      "prior_source_files": 10,
+      "prior_targets": 10,
+      "repaired_cli_feature_units": [],
+      "reports": 189,
+      "source_files": 10,
+      "targets": 10,
+      "unaffected_prior_configured_units_preserved": true
+    },
+    "hub-console": {
+      "cli_role_aliases_compared_by_prior_canonical_label": false,
+      "input_sha256": {
+        "/nix/store/77kcdgbcl12kcryr5wwa6jiz7rbjqs1p-aos-bazel-hub-console-feature-repair-extra-inventory-1/inventory.json": "78cdc0073f7f977df5fec87c11162bbe0d5da3f2d980bb3b04a1e3fdfd18854c",
+        "/nix/store/rakj93r68ac1457i6fym9apps14w2ym6-aos-bazel-hub-console-feature-repair-inventory-1/inventory.json": "acfd7a93f9d1a5724710c66e639bca3bcf83dd6b5ca686366c52bf9ff35295e8"
+      },
+      "inputs": [
+        "/nix/store/rakj93r68ac1457i6fym9apps14w2ym6-aos-bazel-hub-console-feature-repair-inventory-1/inventory.json",
+        "/nix/store/77kcdgbcl12kcryr5wwa6jiz7rbjqs1p-aos-bazel-hub-console-feature-repair-extra-inventory-1/inventory.json"
+      ],
+      "inventory_sha256": "c33c656ba5d15ada85c5e7da8c00e44e325aaaba7cfdab4d80e3180df73651e1",
+      "prior_reports": 171,
+      "prior_source_files": 140,
+      "prior_targets": 21,
+      "repaired_cli_feature_units": [],
+      "reports": 171,
+      "source_files": 140,
+      "targets": 21,
+      "unaffected_prior_configured_units_preserved": true
+    },
+    "hub-db": {
+      "cli_role_aliases_compared_by_prior_canonical_label": false,
+      "input_sha256": {
+        "/nix/store/22wln85kks2lidnakm2lsij0f7qajjcp-aos-bazel-hub-db-feature-repair-extra-inventory-1/inventory.json": "6799f561847bced891a5970a6beb7dd86e52f3a193a5359248506fe45d6088c8",
+        "/nix/store/3amvsxpl07cbx0v8xynyjckibz15dpfp-aos-bazel-hub-db-feature-repair-extra-inventory-1/inventory.json": "0c1a96263e599ace86624e12b8fd28d628e6210aa790217d4d80c2d20d75f4b4",
+        "/nix/store/79cm0f4axjafcdhfxacbm36xv9fivq9p-aos-bazel-hub-db-feature-repair-extra-inventory-1/inventory.json": "da01217989d02e3caca748ca324d072dcd4c150d2e1a260cda93ddc72b3b07a0",
+        "/nix/store/hr685i62f562cdvkx50admmlh6200cqz-aos-bazel-hub-db-feature-repair-inventory-1/inventory.json": "dceb142a7945d3d26ad0482aa84b34d0d210d4f101d80c7be1dc78475b36175f"
+      },
+      "inputs": [
+        "/nix/store/hr685i62f562cdvkx50admmlh6200cqz-aos-bazel-hub-db-feature-repair-inventory-1/inventory.json",
+        "/nix/store/3amvsxpl07cbx0v8xynyjckibz15dpfp-aos-bazel-hub-db-feature-repair-extra-inventory-1/inventory.json",
+        "/nix/store/22wln85kks2lidnakm2lsij0f7qajjcp-aos-bazel-hub-db-feature-repair-extra-inventory-1/inventory.json",
+        "/nix/store/79cm0f4axjafcdhfxacbm36xv9fivq9p-aos-bazel-hub-db-feature-repair-extra-inventory-1/inventory.json"
+      ],
+      "inventory_sha256": "ea4f7ee607ce5c1178255f6373f5734cf1160e4493e3179483cbc0ee382406af",
+      "prior_reports": 946,
+      "prior_source_files": 354,
+      "prior_targets": 16,
+      "repaired_cli_feature_units": [],
+      "reports": 946,
+      "source_files": 354,
+      "targets": 16,
+      "unaffected_prior_configured_units_preserved": true
+    },
+    "hub-model": {
+      "cli_role_aliases_compared_by_prior_canonical_label": false,
+      "input_sha256": {
+        "/nix/store/bsl66gfh5nwgdpn2gg1yzx4jj50sdz8h-aos-bazel-hub-model-feature-repair-inventory-1/inventory.json": "3e3365d626a1228e84e2b445a61d202cc983245646ec70fb8a3ce487e52368f0",
+        "/nix/store/lm6diay8r5vh7sh5dyg2lh51lvpsqax4-aos-bazel-hub-model-feature-repair-extra-inventory-1/inventory.json": "abbd3adca7a688577272e0033f758f9d00ca4d612a54cd8be33d80d33cd63a1f"
+      },
+      "inputs": [
+        "/nix/store/bsl66gfh5nwgdpn2gg1yzx4jj50sdz8h-aos-bazel-hub-model-feature-repair-inventory-1/inventory.json",
+        "/nix/store/lm6diay8r5vh7sh5dyg2lh51lvpsqax4-aos-bazel-hub-model-feature-repair-extra-inventory-1/inventory.json"
+      ],
+      "inventory_sha256": "727d30e7941486f3e01ac0aabaa49121fc392b845d378bfbb71083e90fb4e9d0",
+      "prior_reports": 351,
+      "prior_source_files": 91,
+      "prior_targets": 11,
+      "repaired_cli_feature_units": [],
+      "reports": 351,
+      "source_files": 91,
+      "targets": 11,
+      "unaffected_prior_configured_units_preserved": true
+    },
+    "hub-native": {
+      "cli_role_aliases_compared_by_prior_canonical_label": false,
+      "input_sha256": {
+        "/nix/store/bm130fa8p7w0crldk5lhadhawh7kp0pl-aos-bazel-hub-native-feature-repair-extra-inventory-1/inventory.json": "3d9475081d1f36ceedf0275dde67d8096139f9a2085d20fd41e1281ccac1e1ed",
+        "/nix/store/vhpmdaz6b93bym3q7sh2iwlvzm4wab8i-aos-bazel-hub-native-feature-repair-inventory-1/inventory.json": "6c4a1bb3c46308860301ac806a688d038e07db3766f6678f5c5cf8ba1c9e84d6"
+      },
+      "inputs": [
+        "/nix/store/vhpmdaz6b93bym3q7sh2iwlvzm4wab8i-aos-bazel-hub-native-feature-repair-inventory-1/inventory.json",
+        "/nix/store/bm130fa8p7w0crldk5lhadhawh7kp0pl-aos-bazel-hub-native-feature-repair-extra-inventory-1/inventory.json"
+      ],
+      "inventory_sha256": "640d66857237208dfd6decca985ef0e44278fbf92ed1bee79b6f3c831ade3526",
+      "prior_reports": 1079,
+      "prior_source_files": 922,
+      "prior_targets": 63,
+      "repaired_cli_feature_units": [],
+      "reports": 1079,
+      "source_files": 922,
+      "targets": 63,
+      "unaffected_prior_configured_units_preserved": true
+    },
+    "hub-portable": {
+      "cli_role_aliases_compared_by_prior_canonical_label": false,
+      "input_sha256": {
+        "/nix/store/qgagwwrmgfpw0sdafzq8wixkyc60r6i5-aos-bazel-hub-portable-feature-repair-inventory-1/inventory.json": "1126f6df04c6e8e1fdc508b28cc956f79d6f8999398e188cb3a8ea57d973808b",
+        "/nix/store/z7yscnr4rs14ajinh5lr0kddrcndnm89-aos-bazel-hub-portable-feature-repair-extra-inventory-1/inventory.json": "5021bf0907e3fd8190b381f7397595ca20b619c8721fc804fe36c35bbc9e80f2"
+      },
+      "inputs": [
+        "/nix/store/qgagwwrmgfpw0sdafzq8wixkyc60r6i5-aos-bazel-hub-portable-feature-repair-inventory-1/inventory.json",
+        "/nix/store/z7yscnr4rs14ajinh5lr0kddrcndnm89-aos-bazel-hub-portable-feature-repair-extra-inventory-1/inventory.json"
+      ],
+      "inventory_sha256": "0f0454a2e9ee654679382fc9cc5f0729063a29fd683a854a08acdc349e5001c9",
+      "prior_reports": 114,
+      "prior_source_files": 67,
+      "prior_targets": 19,
+      "repaired_cli_feature_units": [],
+      "reports": 114,
+      "source_files": 67,
+      "targets": 19,
+      "unaffected_prior_configured_units_preserved": true
+    },
+    "hub-service": {
+      "cli_role_aliases_compared_by_prior_canonical_label": false,
+      "input_sha256": {
+        "/nix/store/8wd990284hbmzynd40qsdp1jkx0fn5ww-aos-bazel-hub-service-feature-repair-extra-inventory-1/inventory.json": "81d5f7652e2aea31ddd080e86872e5def34a201cdab8392c3f56501a94e61287",
+        "/nix/store/b6rlzfsyr9jbsb57smzsvqhy06zzr2wa-aos-bazel-hub-service-feature-repair-extra-inventory-1/inventory.json": "c6ced7a549cd4f567ecac651d483f731482af703f844a1e155f6827b465e53fe",
+        "/nix/store/sc8kj5i0dpdv5w0mcmgz8m2x1fjmanif-aos-bazel-hub-service-feature-repair-inventory-1/inventory.json": "437bcccf1a86196bc27bf9c11ffefdafe2a975ae52079f6b9d62beb3c9056300",
+        "/nix/store/x2rlnbaki4gdksbpd1m02p7wrli19jfm-aos-bazel-hub-service-feature-repair-extra-inventory-1/inventory.json": "06b81236c5108d7242093293c615a8468bac1657e6e4720851c5ca714de14ccf"
+      },
+      "inputs": [
+        "/nix/store/sc8kj5i0dpdv5w0mcmgz8m2x1fjmanif-aos-bazel-hub-service-feature-repair-inventory-1/inventory.json",
+        "/nix/store/x2rlnbaki4gdksbpd1m02p7wrli19jfm-aos-bazel-hub-service-feature-repair-extra-inventory-1/inventory.json",
+        "/nix/store/b6rlzfsyr9jbsb57smzsvqhy06zzr2wa-aos-bazel-hub-service-feature-repair-extra-inventory-1/inventory.json",
+        "/nix/store/8wd990284hbmzynd40qsdp1jkx0fn5ww-aos-bazel-hub-service-feature-repair-extra-inventory-1/inventory.json"
+      ],
+      "inventory_sha256": "1f6bdd6eb62db324f0bbb03afc73824a15031d829bf966ca30fb646e9361a6cf",
+      "prior_reports": 1630,
+      "prior_source_files": 856,
+      "prior_targets": 36,
+      "repaired_cli_feature_units": [],
+      "reports": 1630,
+      "source_files": 856,
+      "targets": 36,
+      "unaffected_prior_configured_units_preserved": true
+    },
+    "hub-worker": {
+      "cli_role_aliases_compared_by_prior_canonical_label": false,
+      "input_sha256": {
+        "/nix/store/fqak85j0c9pg8ynabbqmrsk63b4lvja1-aos-bazel-hub-worker-feature-repair-inventory-1/inventory.json": "f6d6b6b975c1a9a95338b1c9aad0f1d6dff9418afc9e8b7ed44e48009607b45d",
+        "/nix/store/k7fy0wssisgzn8p8y8ivgjr8y1pd9zmi-aos-bazel-hub-worker-feature-repair-extra-inventory-1/inventory.json": "054c8b87fd732dceb8fd3ce6ec2d971901d6daaf49ba2e1744e61bd0c068b078"
+      },
+      "inputs": [
+        "/nix/store/fqak85j0c9pg8ynabbqmrsk63b4lvja1-aos-bazel-hub-worker-feature-repair-inventory-1/inventory.json",
+        "/nix/store/k7fy0wssisgzn8p8y8ivgjr8y1pd9zmi-aos-bazel-hub-worker-feature-repair-extra-inventory-1/inventory.json"
+      ],
+      "inventory_sha256": "f7ad2ef3e1e5ea6344bdfe1ab04677fbffeec9f505d9c9b26074cec4e08408a4",
+      "prior_reports": 1008,
+      "prior_source_files": 771,
+      "prior_targets": 27,
+      "repaired_cli_feature_units": [],
+      "reports": 1008,
+      "source_files": 771,
+      "targets": 27,
+      "unaffected_prior_configured_units_preserved": true
+    },
+    "hub-worker-wasm": {
+      "cli_role_aliases_compared_by_prior_canonical_label": false,
+      "input_sha256": {
+        "/nix/store/apd4s5a2awsaxjfbcdgq3107szvjzk97-aos-bazel-hub-worker-wasm-feature-repair-extra-inventory-1/inventory.json": "e85d4a523e4b596b3f9b191d8052e332cbe22cebef2d5581e18d98e584d6bd77",
+        "/nix/store/c1gpf318ifhiih6yly3zn0rdsx52xxwn-aos-bazel-hub-worker-wasm-feature-repair-extra-inventory-1/inventory.json": "756d8e0d52d2bddbe1c487cbc714cad83118a51d1e49f20ac2c4c38d7b9c5c75",
+        "/nix/store/f2bf51vp677d2nl0w59drnr5qpd4g463-aos-bazel-hub-worker-wasm-feature-repair-extra-inventory-1/inventory.json": "52b24fd11c0bd764564082dda4bf473791f8f5a29c484dca412bcd502ecb2c5d",
+        "/nix/store/lw9srlq719d36x65lr8nyqnsvm9d30wl-aos-bazel-hub-worker-wasm-feature-repair-inventory-1/inventory.json": "7a8e295517bc2ff2c91220a8b2bd57ab335663995b413dbbb3f0fab45d0f5432",
+        "/nix/store/njgjrcw3c43gnxla9scn7c44wzh92kjy-aos-bazel-hub-worker-wasm-feature-repair-extra-inventory-1/inventory.json": "4093701e9441f59a7bf2d71b7eb278a1efab3d5646c6f86cc312e6bffb30453e",
+        "/nix/store/r33fi5fc5lzq9804vjrssp79icaj1wq3-aos-bazel-hub-worker-wasm-feature-repair-extra-inventory-1/inventory.json": "60ab11070a905e2ec3c6418124e0ebb937f52e536664488c50f138b591ef42a3"
+      },
+      "inputs": [
+        "/nix/store/lw9srlq719d36x65lr8nyqnsvm9d30wl-aos-bazel-hub-worker-wasm-feature-repair-inventory-1/inventory.json",
+        "/nix/store/c1gpf318ifhiih6yly3zn0rdsx52xxwn-aos-bazel-hub-worker-wasm-feature-repair-extra-inventory-1/inventory.json",
+        "/nix/store/r33fi5fc5lzq9804vjrssp79icaj1wq3-aos-bazel-hub-worker-wasm-feature-repair-extra-inventory-1/inventory.json",
+        "/nix/store/njgjrcw3c43gnxla9scn7c44wzh92kjy-aos-bazel-hub-worker-wasm-feature-repair-extra-inventory-1/inventory.json",
+        "/nix/store/f2bf51vp677d2nl0w59drnr5qpd4g463-aos-bazel-hub-worker-wasm-feature-repair-extra-inventory-1/inventory.json",
+        "/nix/store/apd4s5a2awsaxjfbcdgq3107szvjzk97-aos-bazel-hub-worker-wasm-feature-repair-extra-inventory-1/inventory.json"
+      ],
+      "inventory_sha256": "581b7a89614395769cc3fd2c1d1ce7ff7102bac818d58cb31a86b7e029397b5c",
+      "prior_reports": 1001,
+      "prior_source_files": 643,
+      "prior_targets": 20,
+      "repaired_cli_feature_units": [],
+      "reports": 1001,
+      "source_files": 643,
+      "targets": 20,
+      "unaffected_prior_configured_units_preserved": true
+    },
+    "native-foundation": {
+      "cli_role_aliases_compared_by_prior_canonical_label": false,
+      "input_sha256": {
+        "/nix/store/g4rl6xnfqwp7gv0xp16c5v8yrl82yqh1-aos-bazel-native-foundation-feature-repair-extra-inventory-1/inventory.json": "353f426e84a24ed1be90bd75812a08098e8bc98eefda195ff9d91ff50810ee81",
+        "/nix/store/hfdn52cr41rfkxykvlm35bagqgg2a1li-aos-bazel-native-foundation-feature-repair-extra-inventory-1/inventory.json": "bfd2a576bd77de1247e6dcc5740bcf02b28943e962d1ca06340535ba01b36047",
+        "/nix/store/ihd4s7r5azprv6w15zr549j2djnyvl95-aos-bazel-native-foundation-feature-repair-inventory-1/inventory.json": "5837558451512b9ec3f27450a751d1a6ca973325a3731827d35ab70a4cdf6c7c"
+      },
+      "inputs": [
+        "/nix/store/ihd4s7r5azprv6w15zr549j2djnyvl95-aos-bazel-native-foundation-feature-repair-inventory-1/inventory.json",
+        "/nix/store/g4rl6xnfqwp7gv0xp16c5v8yrl82yqh1-aos-bazel-native-foundation-feature-repair-extra-inventory-1/inventory.json",
+        "/nix/store/hfdn52cr41rfkxykvlm35bagqgg2a1li-aos-bazel-native-foundation-feature-repair-extra-inventory-1/inventory.json"
+      ],
+      "inventory_sha256": "6ddb28f9e0c2357964487d692db0a171762410d52fab714106810990b7400c5e",
+      "prior_reports": 955,
+      "prior_source_files": 105,
+      "prior_targets": 40,
+      "repaired_cli_feature_units": [],
+      "reports": 955,
+      "source_files": 105,
+      "targets": 40,
+      "unaffected_prior_configured_units_preserved": true
+    },
+    "package-manager": {
+      "cli_role_aliases_compared_by_prior_canonical_label": false,
+      "input_sha256": {
+        "/nix/store/a5kc05x4fhfbklncrqn2f10m0gpq2b45-aos-bazel-package-manager-feature-repair-inventory-1/inventory.json": "6c0d967adc5ba77c465702d77700edc26627e7b063a641bf205971a725cf465e",
+        "/nix/store/s2vq6qqygfscxjz6bq96jvgw2n9ba7bd-aos-bazel-package-manager-feature-repair-extra-inventory-1/inventory.json": "dcfef69c677a9b3edd028ee9b72e0ffa8a168128ab38ca299e471260f3da18bd"
+      },
+      "inputs": [
+        "/nix/store/a5kc05x4fhfbklncrqn2f10m0gpq2b45-aos-bazel-package-manager-feature-repair-inventory-1/inventory.json",
+        "/nix/store/s2vq6qqygfscxjz6bq96jvgw2n9ba7bd-aos-bazel-package-manager-feature-repair-extra-inventory-1/inventory.json"
+      ],
+      "inventory_sha256": "1c17b4d7d8ba5808b56fc48bf7f10ac5e532d072955c22d75a0fd9abbfee4b12",
+      "prior_reports": 881,
+      "prior_source_files": 503,
+      "prior_targets": 30,
+      "repaired_cli_feature_units": [],
+      "reports": 881,
+      "source_files": 503,
+      "targets": 30,
+      "unaffected_prior_configured_units_preserved": true
+    },
+    "protocol": {
+      "cli_role_aliases_compared_by_prior_canonical_label": false,
+      "input_sha256": {
+        "/nix/store/2m7qj2s2fzfjlqmm3n6cw5hvzsrh1a23-aos-bazel-protocol-feature-repair-inventory-1/inventory.json": "d39bb665e2474c54a1abd3984fb9721342a74ebc11d60202de54dbaecaeab9d2"
+      },
+      "inputs": [
+        "/nix/store/2m7qj2s2fzfjlqmm3n6cw5hvzsrh1a23-aos-bazel-protocol-feature-repair-inventory-1/inventory.json"
+      ],
+      "inventory_sha256": "15399fc8d4be63e0c220a438de91264475837ac103b53ac8ae288432a7e0c8b4",
+      "prior_reports": 129,
+      "prior_source_files": 160,
+      "prior_targets": 35,
+      "repaired_cli_feature_units": [],
+      "reports": 129,
+      "source_files": 160,
+      "targets": 35,
+      "unaffected_prior_configured_units_preserved": true
+    },
+    "qemu-gateway-process-test": {
+      "cli_role_aliases_compared_by_prior_canonical_label": false,
+      "input_sha256": {
+        "/nix/store/ix7cfm8zd0mvb19kpafgdlwka0r4y0br-aos-bazel-qemu-gateway-process-test-feature-repair-inventory-1/inventory.json": "c3db2dd36d7fe23286501bc9ee5f89977ab50e79a3a30de978095fe4f136235e"
+      },
+      "inputs": [
+        "/nix/store/ix7cfm8zd0mvb19kpafgdlwka0r4y0br-aos-bazel-qemu-gateway-process-test-feature-repair-inventory-1/inventory.json"
+      ],
+      "inventory_sha256": "639b362cba699c62f38f4175dde25abe0b94e0c0f7503effef0589b70cbe3415",
+      "prior_reports": 78,
+      "prior_source_files": 34,
+      "prior_targets": 8,
+      "repaired_cli_feature_units": [],
+      "reports": 78,
+      "source_files": 34,
+      "targets": 8,
+      "unaffected_prior_configured_units_preserved": true
+    },
+    "qemu-gpl-production": {
+      "cli_role_aliases_compared_by_prior_canonical_label": false,
+      "input_sha256": {
+        "/nix/store/yrq2r83f8bdr624a14s526aj8068id14-aos-bazel-qemu-gpl-production-feature-repair-inventory-1/inventory.json": "c4de51856cef8728609b98d812944e9b0a6d7ab356222198076a70cc2e3dc40b"
+      },
+      "inputs": [
+        "/nix/store/yrq2r83f8bdr624a14s526aj8068id14-aos-bazel-qemu-gpl-production-feature-repair-inventory-1/inventory.json"
+      ],
+      "inventory_sha256": "07d5415d08580709f198f0cf449ce1a1bfd4b20a2f4c53deacb7fbad40801006",
+      "prior_reports": 81,
+      "prior_source_files": 270,
+      "prior_targets": 13,
+      "repaired_cli_feature_units": [],
+      "reports": 81,
+      "source_files": 270,
+      "targets": 13,
+      "unaffected_prior_configured_units_preserved": true
+    },
+    "qemu-host": {
+      "cli_role_aliases_compared_by_prior_canonical_label": false,
+      "input_sha256": {
+        "/nix/store/5vfldf3lj5yrqhkp5mk1rfcxxi0dlg0c-aos-bazel-qemu-host-feature-repair-inventory-1/inventory.json": "44902676ff4f71da39c9cee54f4a548ec94ab72c95576a08fdf0cb745f3b384a"
+      },
+      "inputs": [
+        "/nix/store/5vfldf3lj5yrqhkp5mk1rfcxxi0dlg0c-aos-bazel-qemu-host-feature-repair-inventory-1/inventory.json"
+      ],
+      "inventory_sha256": "ba875da79dc96059cac01556c0f7f719b0e3c03085baecd89b51507b501ab603",
+      "prior_reports": 249,
+      "prior_source_files": 1127,
+      "prior_targets": 37,
+      "repaired_cli_feature_units": [],
+      "reports": 249,
+      "source_files": 1127,
+      "targets": 37,
+      "unaffected_prior_configured_units_preserved": true
+    },
+    "qemu-plugin-process-test": {
+      "cli_role_aliases_compared_by_prior_canonical_label": false,
+      "input_sha256": {
+        "/nix/store/0f0854c1k2ag3bd8h57236ld2kl6wq93-aos-bazel-qemu-plugin-process-test-feature-repair-inventory-1/inventory.json": "d121617f5385b859122ff92655efbfc46d670022320ff1eb7b31192ce1d9aeee"
+      },
+      "inputs": [
+        "/nix/store/0f0854c1k2ag3bd8h57236ld2kl6wq93-aos-bazel-qemu-plugin-process-test-feature-repair-inventory-1/inventory.json"
+      ],
+      "inventory_sha256": "eef22d7316858e12b60ba0873838ce82b1b0fc53ad35fe5d51e405726387b75c",
+      "prior_reports": 87,
+      "prior_source_files": 285,
+      "prior_targets": 8,
+      "repaired_cli_feature_units": [],
+      "reports": 87,
+      "source_files": 285,
+      "targets": 8,
+      "unaffected_prior_configured_units_preserved": true
+    },
+    "qemu-test-oracle-host": {
+      "cli_role_aliases_compared_by_prior_canonical_label": false,
+      "input_sha256": {
+        "/nix/store/3w0jn5nhz2mfqdj6c163m9ldw4as6m64-aos-bazel-qemu-test-oracle-host-feature-repair-inventory-1/inventory.json": "5b52df615a08da937be741e5d9c5a94a91ec94e02c33ac798cc8e246a1928919"
+      },
+      "inputs": [
+        "/nix/store/3w0jn5nhz2mfqdj6c163m9ldw4as6m64-aos-bazel-qemu-test-oracle-host-feature-repair-inventory-1/inventory.json"
+      ],
+      "inventory_sha256": "facec88d0517796c8b8b17273b69b2ab38bc2c131087721ff0f9f9085dca815b",
+      "prior_reports": 255,
+      "prior_source_files": 867,
+      "prior_targets": 4,
+      "repaired_cli_feature_units": [],
+      "reports": 255,
+      "source_files": 867,
+      "targets": 4,
+      "unaffected_prior_configured_units_preserved": true
+    },
+    "quota": {
+      "cli_role_aliases_compared_by_prior_canonical_label": false,
+      "input_sha256": {
+        "/nix/store/rrn7cdxlpcrpyd5irwxjxfvzw1qsv9rd-aos-bazel-quota-feature-repair-inventory-1/inventory.json": "b37194499f07df03cf618ac676d4dff1065eb2f6f948e1ea9b229a73438680fc"
+      },
+      "inputs": [
+        "/nix/store/rrn7cdxlpcrpyd5irwxjxfvzw1qsv9rd-aos-bazel-quota-feature-repair-inventory-1/inventory.json"
+      ],
+      "inventory_sha256": "b341a8aca8d0e9ac4ec2467678fe411a1aa9243ba3979601dd9d90dfcb40dcb5",
+      "prior_reports": 49,
+      "prior_source_files": 6,
+      "prior_targets": 10,
+      "repaired_cli_feature_units": [],
+      "reports": 49,
+      "source_files": 6,
+      "targets": 10,
+      "unaffected_prior_configured_units_preserved": true
+    },
+    "registry-native": {
+      "cli_role_aliases_compared_by_prior_canonical_label": false,
+      "input_sha256": {
+        "/nix/store/5k4y1nb7a6g44hsixd3aiyrrc4vv2yj5-aos-bazel-registry-native-feature-repair-extra-inventory-1/inventory.json": "104b00980a6660fbbd27b0323e8c86b5d4e3a13bc0bac5becd250a8324d07699",
+        "/nix/store/xpb8md1k6b6a5xxhnzwl9j8p4gjy6vh7-aos-bazel-registry-native-feature-repair-inventory-1/inventory.json": "72ec7bdf98109cb46b90838b8379feae780cae18fbaea51c8b984f026ec1732e"
+      },
+      "inputs": [
+        "/nix/store/xpb8md1k6b6a5xxhnzwl9j8p4gjy6vh7-aos-bazel-registry-native-feature-repair-inventory-1/inventory.json",
+        "/nix/store/5k4y1nb7a6g44hsixd3aiyrrc4vv2yj5-aos-bazel-registry-native-feature-repair-extra-inventory-1/inventory.json"
+      ],
+      "inventory_sha256": "246d1eb693dc2d2cae2d847706f5362db0f3a1f7c20912976bb376e4ec562b32",
+      "prior_reports": 842,
+      "prior_source_files": 375,
+      "prior_targets": 35,
+      "repaired_cli_feature_units": [],
+      "reports": 842,
+      "source_files": 375,
+      "targets": 35,
+      "unaffected_prior_configured_units_preserved": true
+    },
+    "registry-web": {
+      "cli_role_aliases_compared_by_prior_canonical_label": false,
+      "input_sha256": {
+        "/nix/store/8if5220nsjx444c9kavrw6kq7brfw3g2-aos-bazel-registry-web-feature-repair-inventory-1/inventory.json": "875405039b9ce8eb0b0cd664a81af7c39b549fd8fe212b1135c39c099ba69e95",
+        "/nix/store/9486bzsbfss91pd92yx0sjpc3g68f4ig-aos-bazel-registry-web-feature-repair-extra-inventory-1/inventory.json": "4dd3068a1afa485214b8fd0659e115270e95f4d0fd12cbda992a88bca1b7beeb"
+      },
+      "inputs": [
+        "/nix/store/8if5220nsjx444c9kavrw6kq7brfw3g2-aos-bazel-registry-web-feature-repair-inventory-1/inventory.json",
+        "/nix/store/9486bzsbfss91pd92yx0sjpc3g68f4ig-aos-bazel-registry-web-feature-repair-extra-inventory-1/inventory.json"
+      ],
+      "inventory_sha256": "46e97fa08ea64e67e45482c0ae2989e8991931d3e7cdc8e525ef4b05afc59852",
+      "prior_reports": 281,
+      "prior_source_files": 57,
+      "prior_targets": 14,
+      "repaired_cli_feature_units": [],
+      "reports": 281,
+      "source_files": 57,
+      "targets": 14,
+      "unaffected_prior_configured_units_preserved": true
+    },
+    "registry-web-wasm": {
+      "cli_role_aliases_compared_by_prior_canonical_label": false,
+      "input_sha256": {
+        "/nix/store/sgab1ifdp2lwagi6z4rhb3lk8i5icfl7-aos-bazel-registry-web-wasm-feature-repair-inventory-1/inventory.json": "0ce0af09837050ab302f6c87cf2fda5b51433933b75c8ef93f404d558e44a2f2",
+        "/nix/store/z9brfp932hsy81k48k2i714ac10r118n-aos-bazel-registry-web-wasm-feature-repair-extra-inventory-1/inventory.json": "725cd883e4bf0a23d91d883ea16268c74c2a4fb909790099e87f2feddc747b2f"
+      },
+      "inputs": [
+        "/nix/store/sgab1ifdp2lwagi6z4rhb3lk8i5icfl7-aos-bazel-registry-web-wasm-feature-repair-inventory-1/inventory.json",
+        "/nix/store/z9brfp932hsy81k48k2i714ac10r118n-aos-bazel-registry-web-wasm-feature-repair-extra-inventory-1/inventory.json"
+      ],
+      "inventory_sha256": "0ce0af09837050ab302f6c87cf2fda5b51433933b75c8ef93f404d558e44a2f2",
+      "prior_reports": 305,
+      "prior_source_files": 55,
+      "prior_targets": 10,
+      "repaired_cli_feature_units": [],
+      "reports": 305,
+      "source_files": 55,
+      "targets": 10,
+      "unaffected_prior_configured_units_preserved": true
+    },
+    "release-coordination": {
+      "cli_role_aliases_compared_by_prior_canonical_label": false,
+      "input_sha256": {
+        "/nix/store/a6267y5cq2a2i4agsfb8dy1waclklh87-aos-bazel-release-coordination-feature-repair-extra-inventory-1/inventory.json": "41c09aff09c8621a71deb81f449c43e84d41abfe464bf9ff50048c007cfb62a9",
+        "/nix/store/l47vclx8zfhcqgr9d5lx8a4cyjsaiqjr-aos-bazel-release-coordination-feature-repair-inventory-1/inventory.json": "e6cea0851934cb75df2d0841e07e36247ddc4514915aca14803ac91084386a85"
+      },
+      "inputs": [
+        "/nix/store/l47vclx8zfhcqgr9d5lx8a4cyjsaiqjr-aos-bazel-release-coordination-feature-repair-inventory-1/inventory.json",
+        "/nix/store/a6267y5cq2a2i4agsfb8dy1waclklh87-aos-bazel-release-coordination-feature-repair-extra-inventory-1/inventory.json"
+      ],
+      "inventory_sha256": "280373f349cccb7628ade33f0870332ed888348a780f541e3c53ea61c6957e01",
+      "prior_reports": 404,
+      "prior_source_files": 272,
+      "prior_targets": 12,
+      "repaired_cli_feature_units": [],
+      "reports": 404,
+      "source_files": 272,
+      "targets": 12,
+      "unaffected_prior_configured_units_preserved": true
+    },
+    "release-preparation": {
+      "cli_role_aliases_compared_by_prior_canonical_label": false,
+      "input_sha256": {
+        "/nix/store/3lzq6k5qpaw7pbr4q6w5dxkwcwnirslg-aos-bazel-release-preparation-feature-repair-extra-inventory-1/inventory.json": "a7de2dd965f4e813fbbfd529671830bee65a2bfbfe43871334e4fe5ab378c4d6",
+        "/nix/store/anaps1p47c7w0c5aihjzq62vg39ac6y3-aos-bazel-release-preparation-feature-repair-inventory-1/inventory.json": "199c1586fb263e90ae649bcd49b421384ce755efebfaff2b31b7bd94ed37dff3"
+      },
+      "inputs": [
+        "/nix/store/anaps1p47c7w0c5aihjzq62vg39ac6y3-aos-bazel-release-preparation-feature-repair-inventory-1/inventory.json",
+        "/nix/store/3lzq6k5qpaw7pbr4q6w5dxkwcwnirslg-aos-bazel-release-preparation-feature-repair-extra-inventory-1/inventory.json"
+      ],
+      "inventory_sha256": "022681f5a439d94a19b62d19d4df5159050c7b155f277137ac2768d4a5ba63a3",
+      "prior_reports": 211,
+      "prior_source_files": 182,
+      "prior_targets": 26,
+      "repaired_cli_feature_units": [],
+      "reports": 211,
+      "source_files": 182,
+      "targets": 26,
+      "unaffected_prior_configured_units_preserved": true
+    },
+    "session": {
+      "cli_role_aliases_compared_by_prior_canonical_label": false,
+      "input_sha256": {
+        "/nix/store/i80hwl7sadmapihj2qkbwrip50kc2c7a-aos-bazel-session-feature-repair-inventory-1/inventory.json": "95d44478635283f8a13530b71b37e11f4583134a1f3641f6eb4dfab2e80fdc07"
+      },
+      "inputs": [
+        "/nix/store/i80hwl7sadmapihj2qkbwrip50kc2c7a-aos-bazel-session-feature-repair-inventory-1/inventory.json"
+      ],
+      "inventory_sha256": "aa31817e85c0deab0a70d721a0e1aab084f8faee1e88e4c8bc914a03a5c1a650",
+      "prior_reports": 262,
+      "prior_source_files": 841,
+      "prior_targets": 58,
+      "repaired_cli_feature_units": [],
+      "reports": 262,
+      "source_files": 841,
+      "targets": 58,
+      "unaffected_prior_configured_units_preserved": true
+    },
+    "shared": {
+      "cli_role_aliases_compared_by_prior_canonical_label": false,
+      "input_sha256": {
+        "/nix/store/xvacq97x4vrbw5vlhnccp81d4l15q5mj-aos-bazel-shared-feature-repair-inventory-1/inventory.json": "57fc4ab03919d24881010a06621c09bc7735e5d25e694e1185ad04abcd6bd970"
+      },
+      "inputs": [
+        "/nix/store/xvacq97x4vrbw5vlhnccp81d4l15q5mj-aos-bazel-shared-feature-repair-inventory-1/inventory.json"
+      ],
+      "inventory_sha256": "3fb6c05c8fe8e5872c497ab0f25156636f83990435d590e5fc41e085215943ef",
+      "prior_reports": 85,
+      "prior_source_files": 32,
+      "prior_targets": 20,
+      "repaired_cli_feature_units": [],
+      "reports": 85,
+      "source_files": 32,
+      "targets": 20,
+      "unaffected_prior_configured_units_preserved": true
+    },
+    "store": {
+      "cli_role_aliases_compared_by_prior_canonical_label": false,
+      "input_sha256": {
+        "/nix/store/dqb9a7q3zfsmix98xl8f6gifc1snw9ia-aos-bazel-store-feature-repair-extra-inventory-1/inventory.json": "93901ea93e1fe98f9afbd44e2e6ed8820613b5bc2e17f8183bda9d1c212f58cf",
+        "/nix/store/qhmja76zp3gl92nvfnhsd8aph9kyaxnc-aos-bazel-store-feature-repair-inventory-1/inventory.json": "8f678b0ad7e182c055e121abe52255377c5b595d6505564a8667b443b0587bf6"
+      },
+      "inputs": [
+        "/nix/store/qhmja76zp3gl92nvfnhsd8aph9kyaxnc-aos-bazel-store-feature-repair-inventory-1/inventory.json",
+        "/nix/store/dqb9a7q3zfsmix98xl8f6gifc1snw9ia-aos-bazel-store-feature-repair-extra-inventory-1/inventory.json"
+      ],
+      "inventory_sha256": "68278abdd01383dc085f9a35d76d23b4445fd87b6a647307daed9ea35895bb1e",
+      "prior_reports": 277,
+      "prior_source_files": 272,
+      "prior_targets": 79,
+      "repaired_cli_feature_units": [],
+      "reports": 277,
+      "source_files": 272,
+      "targets": 79,
+      "unaffected_prior_configured_units_preserved": true
+    },
+    "store-s3": {
+      "cli_role_aliases_compared_by_prior_canonical_label": false,
+      "input_sha256": {
+        "/nix/store/fzcq1czvr4xzava9fszkhfpkygzpg44b-aos-bazel-store-s3-feature-repair-inventory-1/inventory.json": "09076bf9f38a20d5f8a22d7e704f566982096b69211b0ddac7604044d9434917"
+      },
+      "inputs": [
+        "/nix/store/fzcq1czvr4xzava9fszkhfpkygzpg44b-aos-bazel-store-s3-feature-repair-inventory-1/inventory.json"
+      ],
+      "inventory_sha256": "77e197482b3e8388a1baac4a02facc3a3e3f35111a3b71f3f8b4c1be10729074",
+      "prior_reports": 283,
+      "prior_source_files": 54,
+      "prior_targets": 8,
+      "repaired_cli_feature_units": [],
+      "reports": 283,
+      "source_files": 54,
+      "targets": 8,
+      "unaffected_prior_configured_units_preserved": true
+    }
+  },
+  "limits": [
+    "Inventory analysis is not compilation or runtime qualification for every refreshed family.",
+    "Two obsolete CLI rand small_rng feature units are replaced under the retained native case/profile comparisons; every unaffected prior source, root, label, and feature/platform unit is retained.",
+    "The CLI comparison canonicalizes the three reviewed versioned package role suffixes while retaining both current target and execution reports.",
+    "External compiler inventories still contain four extra execution libraries; optional-dependency pruning remains uninstalled.",
+    "The source-preservation audit checks declared URLs, checksums, license domains, generator identities, generated-file hashes, and contracts; it does not rehash every archive payload."
+  ],
+  "policy_test_count": 339,
+  "qualification": [
+    "tools/bazel/tests/evidence/cli-native-test-profiles.json",
+    "tools/bazel/tests/evidence/cli-native-test-profiles-with-build-metadata.json",
+    "tools/bazel/tests/evidence/cli-precise-source-tests.json"
+  ],
+  "registered_analysis_outputs": 84,
+  "registered_checks": {
+    "checks.build.bazel.policy": {
+      "output": "/nix/store/y00pmfdfn2ib4pqckrppw58238mw2zln-aos-bazel-policy-checks",
+      "result_sha256": "c26de83abdc9496cd1301470918ec39ecca1cf389ef0ae1c6504da1800d1c431"
+    },
+    "checks.build.bazel.source-selection": {
+      "output": "/nix/store/l40zyqw1wlq8i26b2wdfsm6wp295iqwp-aos-bazel-source-selection",
+      "result_sha256": "c26de83abdc9496cd1301470918ec39ecca1cf389ef0ae1c6504da1800d1c431"
+    },
+    "checks.eval": {
+      "output": "/nix/store/8zackq55f7fmrpqyvbikc6qnik6vyyia-aos-native-evaluation-checks-0",
+      "result_sha256": "c26de83abdc9496cd1301470918ec39ecca1cf389ef0ae1c6504da1800d1c431"
+    }
+  },
+  "schema_version": 1,
+  "scope": "Fresh configured source inventories for all 45 existing families; source-selection coverage and declared SDK provenance only.",
+  "source_preservation": {
+    "families": {
+      "accache": {
+        "changed_build_files": [],
+        "generated_files": 54,
+        "generator_identity_preserved": true,
+        "sources": 49,
+        "sources_sha256": "9893e226def382a95dc00f001b0130ad5fd1da0efe4b07712fa8e9cb44832e0e"
+      },
+      "activation-core": {
+        "changed_build_files": [],
+        "generated_files": 46,
+        "generator_identity_preserved": true,
+        "sources": 41,
+        "sources_sha256": "029462f6dcc306af0531688c050fa3a9d45fcd7887b6845db0c7fb4443fa35e6"
+      },
+      "activation-core-tests": {
+        "changed_build_files": [],
+        "generated_files": 81,
+        "generator_identity_preserved": true,
+        "sources": 76,
+        "sources_sha256": "613fee8d57a399ffe6dbda68ad985ce6f90031012e2cb6134dc62a4dc6a05670"
+      },
+      "activation-crucible": {
+        "changed_build_files": [],
+        "generated_files": 57,
+        "generator_identity_preserved": true,
+        "sources": 52,
+        "sources_sha256": "a5301a71c59aaafc4090529b4b2942583e557f498e1769f52c2d11a4b8dac4dd"
+      },
+      "activation-crucible-tests": {
+        "changed_build_files": [],
+        "generated_files": 150,
+        "generator_identity_preserved": true,
+        "sources": 145,
+        "sources_sha256": "5dd0c6513da47b78f2a1c856d760a5e169385653fb849ded9a577498491f8bf4"
+      },
+      "activation-storage": {
+        "changed_build_files": [],
+        "generated_files": 75,
+        "generator_identity_preserved": true,
+        "sources": 70,
+        "sources_sha256": "8739ef4887e7ded69f811bea0a23fefbf7674827cf8a23cedcd43db4e32a2105"
+      },
+      "activation-systemd": {
+        "changed_build_files": [],
+        "generated_files": 144,
+        "generator_identity_preserved": true,
+        "sources": 139,
+        "sources_sha256": "e66270306ad1cea52934976123c96d9254ef7949c0b94e04d00415e66688d905"
+      },
+      "aos-cli-fleet-tests": {
+        "changed_build_files": [
+          "BUILD.getrandom-0.4.2.bazel",
+          "BUILD.hashbrown-0.17.1.bazel",
+          "BUILD.itertools-0.14.0.bazel",
+          "BUILD.rand-0.8.6.bazel"
+        ],
+        "generated_files": 596,
+        "generator_identity_preserved": true,
+        "sources": 591,
+        "sources_sha256": "df2429437e0132f1f6de452b4f37c90cecf3d1a0d1544c1453ad4bc595fdba51"
+      },
+      "aos-cli-production": {
+        "changed_build_files": [],
+        "generated_files": 565,
+        "generator_identity_preserved": true,
+        "sources": 560,
+        "sources_sha256": "276eb1d813ed7b7c252385e687e252179e121713842e7880edba326281565e75"
+      },
+      "aos-cli-tests": {
+        "changed_build_files": [
+          "BUILD.getrandom-0.4.2.bazel",
+          "BUILD.hashbrown-0.17.1.bazel",
+          "BUILD.itertools-0.14.0.bazel",
+          "BUILD.rand-0.8.6.bazel"
+        ],
+        "generated_files": 596,
+        "generator_identity_preserved": true,
+        "sources": 591,
+        "sources_sha256": "6bf415c2f49391e53b89a62d8f98cf546621c2e21eb8c5714fa57ee07b80009a"
+      },
+      "boot-preparation": {
+        "changed_build_files": [],
+        "generated_files": 356,
+        "generator_identity_preserved": true,
+        "sources": 351,
+        "sources_sha256": "9c8c1aa87bc9e9a698d5ecab6d853c49731cd86bb7c26996fc69b68a6010bfa8"
+      },
+      "boot-preparation-minimal": {
+        "changed_build_files": [],
+        "generated_files": 342,
+        "generator_identity_preserved": true,
+        "sources": 337,
+        "sources_sha256": "fb7d75bbd0eb213878775a2c0fe3e2d778e4dbf44828114d0765e5aa3e488121"
+      },
+      "build-services": {
+        "changed_build_files": [],
+        "generated_files": 268,
+        "generator_identity_preserved": true,
+        "sources": 263,
+        "sources_sha256": "51ef24b20c8f6ac423b42096ba10a80273f7c1dc38237df7deec147bee236143"
+      },
+      "cli-support": {
+        "changed_build_files": [],
+        "generated_files": 264,
+        "generator_identity_preserved": true,
+        "sources": 259,
+        "sources_sha256": "c57aaa500e4321cdb38ecbf9c8d7aad0e1e03447d2acae3e90784cf3178227ee"
+      },
+      "control": {
+        "changed_build_files": [],
+        "generated_files": 287,
+        "generator_identity_preserved": true,
+        "sources": 282,
+        "sources_sha256": "03696422fc9af8342e17eb2028ff2e6ad6343238a395ad6d148ad6ffebbfbacb"
+      },
+      "core": {
+        "changed_build_files": [],
+        "generated_files": 41,
+        "generator_identity_preserved": true,
+        "sources": 36,
+        "sources_sha256": "33aa62b97ff52f9a4125439731282d9817f456cc1966dc44ca0977a892626e0b"
+      },
+      "crucible-cli": {
+        "changed_build_files": [],
+        "generated_files": 366,
+        "generator_identity_preserved": true,
+        "sources": 361,
+        "sources_sha256": "bfe3d6a467521de6cfb199e7f273fb9607d36e895e657f699c5155ad115a5937"
+      },
+      "daemon": {
+        "changed_build_files": [],
+        "generated_files": 336,
+        "generator_identity_preserved": true,
+        "sources": 331,
+        "sources_sha256": "f2f8de6ea3800fd2a038f2dcdb1b5b13167fa542f968c6c40af65beabfa9e9ad"
+      },
+      "deployment": {
+        "changed_build_files": [],
+        "generated_files": 106,
+        "generator_identity_preserved": true,
+        "sources": 101,
+        "sources_sha256": "819cef52d9273c3f2a5aac77a184a45a6121dd93a940d9fc9e16014c34125379"
+      },
+      "device": {
+        "changed_build_files": [],
+        "generated_files": 48,
+        "generator_identity_preserved": true,
+        "sources": 43,
+        "sources_sha256": "c3136cfe7e49c9ec96977ef0671794f3565b71c046fd67adc01a83048637a119"
+      },
+      "engine": {
+        "changed_build_files": [],
+        "generated_files": 143,
+        "generator_identity_preserved": true,
+        "sources": 138,
+        "sources_sha256": "6d6dd571db8d6f1901c0ef22484b668fdff12fb67d936687edb6df8635dc01a0"
+      },
+      "formats": {
+        "changed_build_files": [],
+        "generated_files": 116,
+        "generator_identity_preserved": true,
+        "sources": 111,
+        "sources_sha256": "f63249ea8d56572966a1b29be4b29f1af44ff3ad6f05271c12a569a1830b1c6a"
+      },
+      "guest": {
+        "changed_build_files": [],
+        "generated_files": 124,
+        "generator_identity_preserved": true,
+        "sources": 119,
+        "sources_sha256": "bf327ad6f17791d6b1ef1dfdb50cbbe9602c2205b8512cf80075a8f97cf27b50"
+      },
+      "hub-client": {
+        "changed_build_files": [],
+        "generated_files": 197,
+        "generator_identity_preserved": true,
+        "sources": 192,
+        "sources_sha256": "8d9882c333f829e4301e4badeba0a41382110c6ad8e0bb3ae340e7311721e623"
+      },
+      "hub-console": {
+        "changed_build_files": [],
+        "generated_files": 119,
+        "generator_identity_preserved": true,
+        "sources": 114,
+        "sources_sha256": "4f0f75cad8b8799ac997ce81d24512473f80623973a4df54063e941108c68919"
+      },
+      "hub-console-wasm": {
+        "changed_build_files": [],
+        "generated_files": 266,
+        "generator_identity_preserved": true,
+        "sources": 261,
+        "sources_sha256": "6cf62787b7e86271f0e200573ee57e3a7bd62c86068146721ad4188dec52475a"
+      },
+      "hub-db": {
+        "changed_build_files": [],
+        "generated_files": 217,
+        "generator_identity_preserved": true,
+        "sources": 212,
+        "sources_sha256": "194846b449c70966ce5b2e10d34a00066d03efd9e519517840d2c7b3be27b1d8"
+      },
+      "hub-db-all-features": {
+        "changed_build_files": [],
+        "generated_files": 252,
+        "generator_identity_preserved": true,
+        "sources": 247,
+        "sources_sha256": "58e77935e919ac844262dd5c48849a883b53bcec5e24b906b8ac22f56a12e811"
+      },
+      "hub-db-all-features-tests": {
+        "changed_build_files": [],
+        "generated_files": 263,
+        "generator_identity_preserved": true,
+        "sources": 258,
+        "sources_sha256": "41dcc6e251cd3e5ff4c302232a112ce04a68829a2e5620a6cf3aad0078661676"
+      },
+      "hub-db-tests": {
+        "changed_build_files": [],
+        "generated_files": 228,
+        "generator_identity_preserved": true,
+        "sources": 223,
+        "sources_sha256": "7b2ce75f03d0d2798abb6b478519fc25dfd4f4648dac9e2056e1bd15bbd9f2cc"
+      },
+      "hub-model": {
+        "changed_build_files": [],
+        "generated_files": 129,
+        "generator_identity_preserved": true,
+        "sources": 124,
+        "sources_sha256": "81c9b9214e07402f87c433888292d28b897a6d688d96125d3eada3ef97861e0d"
+      },
+      "hub-model-tests": {
+        "changed_build_files": [],
+        "generated_files": 172,
+        "generator_identity_preserved": true,
+        "sources": 167,
+        "sources_sha256": "ec7f89be38cbeed88c340b9b8400e17f63a27b34881961c4d852ffa6a0f91685"
+      },
+      "hub-native-postgres": {
+        "changed_build_files": [],
+        "generated_files": 463,
+        "generator_identity_preserved": true,
+        "sources": 458,
+        "sources_sha256": "712fed1f1928d44ce7c275a67ab41dd3ec07d9f9d2dc0352cfb0ee69ce6794fe"
+      },
+      "hub-native-tests": {
+        "changed_build_files": [],
+        "generated_files": 499,
+        "generator_identity_preserved": true,
+        "sources": 494,
+        "sources_sha256": "7d1500d0676292e6cac6f61540524789b07bfd6d3550169c5252eba26e103197"
+      },
+      "hub-portable": {
+        "changed_build_files": [],
+        "generated_files": 72,
+        "generator_identity_preserved": true,
+        "sources": 67,
+        "sources_sha256": "d386733d4ace1e42d69d5234b87d0e7dd468328ac8f0be603380471d1b6625d2"
+      },
+      "hub-service": {
+        "changed_build_files": [],
+        "generated_files": 293,
+        "generator_identity_preserved": true,
+        "sources": 288,
+        "sources_sha256": "d67dc600b3027faf61e0f80972f23eddeaa106201e8cc28a3d8208a7ef377edc"
+      },
+      "hub-service-all-features": {
+        "changed_build_files": [],
+        "generated_files": 317,
+        "generator_identity_preserved": true,
+        "sources": 312,
+        "sources_sha256": "127554ac341bb6baf8e6465abd09fdf87cedc340358af1325de2429daf6dd4a3"
+      },
+      "hub-service-all-features-tests": {
+        "changed_build_files": [],
+        "generated_files": 473,
+        "generator_identity_preserved": true,
+        "sources": 468,
+        "sources_sha256": "906e2887a4f02c0e17a896025eda85b40afafc0299d6626a83b653670713cb68"
+      },
+      "hub-service-tests": {
+        "changed_build_files": [],
+        "generated_files": 450,
+        "generator_identity_preserved": true,
+        "sources": 445,
+        "sources_sha256": "a90a9fe323e5234f21afe215d039feb3ceda8dbbcb64c8ac826c3f82dddf9d48"
+      },
+      "hub-worker-all-features-tests": {
+        "changed_build_files": [],
+        "generated_files": 455,
+        "generator_identity_preserved": true,
+        "sources": 450,
+        "sources_sha256": "2052fad5ffd2dc4c6362640e515a1a49b37bcd7888fba54f8c9ca849395347b5"
+      },
+      "hub-worker-tests": {
+        "changed_build_files": [],
+        "generated_files": 455,
+        "generator_identity_preserved": true,
+        "sources": 450,
+        "sources_sha256": "f7d33aabcf9a4cd47ae7c6b340dd7cba47e2faba11eaeb4fe67c6263d2bf8d89"
+      },
+      "hub-worker-wasm": {
+        "changed_build_files": [],
+        "generated_files": 273,
+        "generator_identity_preserved": true,
+        "sources": 268,
+        "sources_sha256": "fd5f64eefcf603224caabec534685693e7208856886be14eb4d0ff098dcaa19c"
+      },
+      "hub-worker-wasm-all-features": {
+        "changed_build_files": [],
+        "generated_files": 273,
+        "generator_identity_preserved": true,
+        "sources": 268,
+        "sources_sha256": "c37a73d535b7a7b7589727d1bf16fa3426940133d3c070f9a368b2b3822c9360"
+      },
+      "hub-worker-wasm-do-e2e": {
+        "changed_build_files": [],
+        "generated_files": 273,
+        "generator_identity_preserved": true,
+        "sources": 268,
+        "sources_sha256": "4c1bf73083494f6c522d046c6c4fd80849d4ae4192dccd6fc8bde598c9b4de36"
+      },
+      "native-bindings": {
+        "changed_build_files": [],
+        "generated_files": 13,
+        "generator_identity_preserved": true,
+        "sources": 8,
+        "sources_sha256": "6a11ffa27a2fae8a9a4b87285e4d81c496cad1ccbc52494d10f802f7bb458d1f"
+      },
+      "native-foundation": {
+        "changed_build_files": [],
+        "generated_files": 344,
+        "generator_identity_preserved": true,
+        "sources": 339,
+        "sources_sha256": "3b8bc8ead5baa29a973d0bceee2cf7676e34cfc5276bcedc7268bdd2d9dfa5f8"
+      },
+      "native-foundation-minimal": {
+        "changed_build_files": [],
+        "generated_files": 256,
+        "generator_identity_preserved": true,
+        "sources": 251,
+        "sources_sha256": "24abe51c470907a0a2590ff9a3bbfa33938985d412f78b32512514052c24effe"
+      },
+      "native-foundation-tests": {
+        "changed_build_files": [],
+        "generated_files": 351,
+        "generator_identity_preserved": true,
+        "sources": 346,
+        "sources_sha256": "bd8453a346370c19c73ff5f9e104124f7de6111f2958561022fa92b2dcf42f00"
+      },
+      "package-manager": {
+        "changed_build_files": [],
+        "generated_files": 401,
+        "generator_identity_preserved": true,
+        "sources": 396,
+        "sources_sha256": "8447a3724c1dc615943e1fe7663dec279896c3a418435db5292d9a7275443eb5"
+      },
+      "package-manager-tests": {
+        "changed_build_files": [],
+        "generated_files": 425,
+        "generator_identity_preserved": true,
+        "sources": 420,
+        "sources_sha256": "30ece094291b33402596e00a0d2cb3d55ae936332eb48b0591781658833015a7"
+      },
+      "qemu-gpl-plugin-tests": {
+        "changed_build_files": [],
+        "generated_files": 40,
+        "generator_identity_preserved": true,
+        "sources": 35,
+        "sources_sha256": "17bee09ebfa85bf2ec7ce989e1e3dbdf4efe78c0f6653667d67c77250464e7af"
+      },
+      "qemu-gpl-production": {
+        "changed_build_files": [],
+        "generated_files": 40,
+        "generator_identity_preserved": true,
+        "sources": 35,
+        "sources_sha256": "bab2d04951e534de9dd5e9ab3c49ce5395076005e3ab550b3bbf9ed3a9d4c365"
+      },
+      "qemu-gpl-tests": {
+        "changed_build_files": [],
+        "generated_files": 76,
+        "generator_identity_preserved": true,
+        "sources": 71,
+        "sources_sha256": "0d94fc26514df19da02204349dcb17faf1946d8d41a1a5b77834a5be01f9789c"
+      },
+      "qemu-host": {
+        "changed_build_files": [],
+        "generated_files": 143,
+        "generator_identity_preserved": true,
+        "sources": 138,
+        "sources_sha256": "15035c2c88cd6335b7877e743015f710a7a61b451358249b6e19f81ba303b8f7"
+      },
+      "qemu-test-oracle-host": {
+        "changed_build_files": [],
+        "generated_files": 266,
+        "generator_identity_preserved": true,
+        "sources": 261,
+        "sources_sha256": "67998c84016081f4e7060df3bf547b830884cc8b4f1be108f5462e92ef8bdd52"
+      },
+      "quota": {
+        "changed_build_files": [],
+        "generated_files": 18,
+        "generator_identity_preserved": true,
+        "sources": 13,
+        "sources_sha256": "b45d324fab06987af0d457bdde418caf5b55f9cb8ee6f96a2175f4750847ea47"
+      },
+      "registry-native": {
+        "changed_build_files": [],
+        "generated_files": 401,
+        "generator_identity_preserved": true,
+        "sources": 396,
+        "sources_sha256": "af480de84d1aa2f6534fc6677c11172152f6187ed5603e73e44790d04baf1f37"
+      },
+      "registry-native-tests": {
+        "changed_build_files": [],
+        "generated_files": 401,
+        "generator_identity_preserved": true,
+        "sources": 396,
+        "sources_sha256": "eca6e0038949fb2f0e926ad5fbb52aced6faad12ef17589554a011d7bdbeeb57"
+      },
+      "registry-web": {
+        "changed_build_files": [],
+        "generated_files": 245,
+        "generator_identity_preserved": true,
+        "sources": 240,
+        "sources_sha256": "7bfcb0d9c19711c9d0a31d5969faf0e83d0e31f13811de0073f8281a8e43208b"
+      },
+      "registry-web-wasm": {
+        "changed_build_files": [],
+        "generated_files": 245,
+        "generator_identity_preserved": true,
+        "sources": 240,
+        "sources_sha256": "c8d3bd081c06cf352ae4636b1fe6e70b8afb32a82b693a3e19687796fb42cf5d"
+      },
+      "release-coordination": {
+        "changed_build_files": [],
+        "generated_files": 379,
+        "generator_identity_preserved": true,
+        "sources": 374,
+        "sources_sha256": "90fc237cccf43df699684af3703149fff248b4924afa86129f23e43e88bded3a"
+      },
+      "release-preparation": {
+        "changed_build_files": [],
+        "generated_files": 190,
+        "generator_identity_preserved": true,
+        "sources": 185,
+        "sources_sha256": "3a721b0b437a35a8bd9544f210b12910ac40e63161f99232eb35032463ad58cd"
+      },
+      "session": {
+        "changed_build_files": [],
+        "generated_files": 149,
+        "generator_identity_preserved": true,
+        "sources": 144,
+        "sources_sha256": "e81d952b969ef1be956878b36ada4fdc607082847fb37108d2362794f542bacc"
+      },
+      "store": {
+        "changed_build_files": [],
+        "generated_files": 124,
+        "generator_identity_preserved": true,
+        "sources": 119,
+        "sources_sha256": "0b46447e3cd9cfc501ec0ed33d6e6d7f0efd98987179999a13fa9d65a5a915ec"
+      },
+      "store-s3": {
+        "changed_build_files": [],
+        "generated_files": 283,
+        "generator_identity_preserved": true,
+        "sources": 278,
+        "sources_sha256": "065e59cdfbe41709b5df68ff262df1d893a28224d9c0cd3a6b09f2da322ae3eb"
+      }
+    },
+    "parent": "367650905f20292f4a797d5cf10d473b95712875",
+    "schema_version": 1,
+    "scope": "Checks every declared source URL, archive checksum, generator identity, generated-file inventory, and current contract against the recorded parent. This does not rehash every archive payload.",
+    "status": "PASS"
+  },
+  "status": "PASS"
+}

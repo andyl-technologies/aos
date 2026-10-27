@@ -289,6 +289,10 @@ pub(in crate::registry_ops) fn package_provenance_trusted_keys(
     Ok((registry_name, trusted))
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keep existing publication transaction inputs explicit without changing their API"
+)]
 pub(in crate::registry_ops) fn append_package_provenance_transparency_log(
     dir: &Path,
     name: &str,
@@ -550,6 +554,10 @@ pub(in crate::registry_ops) fn head_package_provenance_transparency_log(
     git_tree_file_bytes(dir, "HEAD", PACKAGE_PROVENANCE_TRANSPARENCY_LOG)
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keep existing publication transaction inputs explicit without changing their API"
+)]
 pub(in crate::registry_ops) fn publish_provenance_statement(
     registry_name: &str,
     name: &str,

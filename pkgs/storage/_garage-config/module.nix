@@ -378,7 +378,7 @@ in {
           scope = "stack-prepared";
         };
         configuration.operations.file.effects.garage.input = {
-          path = "/etc/aos/packages/garage/garage.toml";
+          path = "/etc/packages/garage/garage.toml";
           format = "toml";
           value = serverConfig;
           mode = "0640";

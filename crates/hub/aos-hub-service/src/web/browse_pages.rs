@@ -110,9 +110,11 @@ pub(crate) fn registry_nav_at_release(slug: &str, active: &str, release: Option<
         let href = release
             .map(|value| format!("{href}?release={}", urlencode(value)))
             .unwrap_or(href);
-        let current = (key == active)
-            .then_some(" aria-current=\"page\"")
-            .unwrap_or("");
+        let current = if key == active {
+            " aria-current=\"page\""
+        } else {
+            ""
+        };
         let _ = write!(
             nav,
             "<a href=\"{}\"{}{}>{}</a>",
@@ -1177,6 +1179,10 @@ pub struct PackageDocumentationReference {
 /// `closures` carries the resolved forward and reverse dependencies the handler
 /// computed; `setup` is the same canonical consumer configuration rendered on
 /// the registry overview.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keeps the existing transport and storage context explicit."
+)]
 pub fn package_page(
     registry: &RegistryRecord,
     status: Option<&IndexStatus>,
@@ -1573,10 +1579,10 @@ pub fn cache_home(
 ) -> String {
     let slug = &cache.slug;
     let mut body = String::new();
-    let _ = write!(body, "<h1>Cache {}</h1>\n", escape(&cache.name));
-    let _ = write!(
+    let _ = writeln!(body, "<h1>Cache {}</h1>", escape(&cache.name));
+    let _ = writeln!(
         body,
-        "<p class=\"dim\">{} · priority {} · {} compression</p>\n",
+        "<p class=\"dim\">{} · priority {} · {} compression</p>",
         escape(&cache.visibility),
         cache.priority,
         escape(&cache.compression),
@@ -1598,15 +1604,15 @@ pub fn cache_home(
     body.push_str(&table(&["field", "value"], &info));
 
     body.push_str("<h2>Storage</h2>\n");
-    let _ = write!(
+    let _ = writeln!(
         body,
-        "<p>{} across {} objects</p>\n",
+        "<p>{} across {} objects</p>",
         human_size(usage.used_bytes.max(0) as u64),
         usage.object_count,
     );
-    let _ = write!(
+    let _ = writeln!(
         body,
-        "<p class=\"dim\">{} retention subscriptions · {} manual retention roots · GC policy {}</p>\n",
+        "<p class=\"dim\">{} retention subscriptions · {} manual retention roots · GC policy {}</p>",
         subscription_count,
         root_count,
         if policy.is_some() {
@@ -1623,17 +1629,17 @@ pub fn cache_home(
         Some(key) => format!("  extra-trusted-public-keys = {}\n", escape(key)),
         None => String::new(),
     };
-    let _ = write!(
+    let _ = writeln!(
         body,
-        "<pre>nix.conf:\n  extra-substituters = {}/{}\n{}</pre>\n",
+        "<pre>nix.conf:\n  extra-substituters = {}/{}\n{}</pre>",
         escape(base),
         escape(slug),
         trusted_line,
     );
 
-    let _ = write!(
+    let _ = writeln!(
         body,
-        "<p><a href=\"/{}/-/objects\">browse objects →</a></p>\n",
+        "<p><a href=\"/{}/-/objects\">browse objects →</a></p>",
         escape(slug),
     );
 
@@ -1656,12 +1662,12 @@ pub fn cache_objects(
 ) -> String {
     let slug = &cache.slug;
     let mut body = String::new();
-    let _ = write!(body, "<h1>Objects · {}</h1>\n", escape(&cache.name));
-    let _ = write!(
+    let _ = writeln!(body, "<h1>Objects · {}</h1>", escape(&cache.name));
+    let _ = writeln!(
         body,
         "<form method=\"get\" action=\"/{}/-/objects\">\
          <input type=\"search\" name=\"q\" value=\"{}\" placeholder=\"name / hash / deriver\">\
-         <button type=\"submit\">search</button></form>\n",
+         <button type=\"submit\">search</button></form>",
         escape(slug),
         escape(query.unwrap_or("")),
     );
@@ -1706,7 +1712,7 @@ pub fn cache_object(
 ) -> String {
     let slug = &cache.slug;
     let mut body = String::new();
-    let _ = write!(body, "<h1>{}</h1>\n", escape(&object.store_name));
+    let _ = writeln!(body, "<h1>{}</h1>", escape(&object.store_name));
     let mut fields = vec![
         vec!["StoreHash".to_string(), hash_value(&object.store_hash)],
         vec!["URL".to_string(), escape(&object.nar_url)],
@@ -1754,18 +1760,18 @@ pub fn cache_object(
             .collect();
         body.push_str(&table(&["store hash"], &rows));
     }
-    let _ = write!(
+    let _ = writeln!(
         body,
-        "<p><a href=\"/{}/-/closure/{}\">full transitive closure →</a></p>\n",
+        "<p><a href=\"/{}/-/closure/{}\">full transitive closure →</a></p>",
         escape(slug),
         escape(&object.store_hash),
     );
     // The NAR explorer is a native-hub feature (it decompresses + parses the
     // archive); on a worker deployment this link downloads the NAR instead.
     if !object.nar_url.is_empty() {
-        let _ = write!(
+        let _ = writeln!(
             body,
-            "<p><a href=\"/{}/{}?explore=1\">explore NAR files →</a></p>\n",
+            "<p><a href=\"/{}/{}?explore=1\">explore NAR files →</a></p>",
             escape(slug),
             escape(&object.nar_url),
         );
@@ -1795,10 +1801,10 @@ pub fn cache_closure(
 ) -> String {
     let slug = &cache.slug;
     let mut body = String::new();
-    let _ = write!(body, "<h1>Closure of {}</h1>\n", hash_value(root_hash));
-    let _ = write!(
+    let _ = writeln!(body, "<h1>Closure of {}</h1>", hash_value(root_hash));
+    let _ = writeln!(
         body,
-        "<p>{} paths · {} total</p>\n",
+        "<p>{} paths · {} total</p>",
         nodes.len(),
         human_size(total_size.max(0) as u64),
     );
@@ -1814,7 +1820,7 @@ pub fn cache_closure(
                 hash_value(&n.store_hash)
             };
             let size_cell = if n.present {
-                human_size(n.file_size.max(0) as u64)
+                human_size(n.file_size)
             } else {
                 "missing".to_string()
             };
@@ -2256,6 +2262,10 @@ fn image_download_commands(
 }
 
 /// The signed system-image catalog with end-user disk download actions.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keeps the existing transport and storage context explicit."
+)]
 pub fn images_page(
     registry: &RegistryRecord,
     status: Option<&IndexStatus>,
@@ -2434,7 +2444,7 @@ pub fn images_page(
              <tr><th scope=\"row\">store path</th><td>{store_path}</td><th scope=\"row\">NAR</th><td>{nar_identity}</td></tr>\
              <tr><th scope=\"row\">contract document</th><td>{image_info}</td><th scope=\"row\">logical image</th><td>{logical_image}</td></tr>\
              </tbody></table></details></td></tr></tbody>\n",
-            release = format!(
+            release = format_args!(
                 "<a href=\"/{}/-/releases/{}\">{}</a>",
                 escape(slug),
                 urlencode(&image.release),
@@ -2571,6 +2581,10 @@ pub fn images_page(
 }
 
 /// The releases page: every verified signed tag, newest first by semver.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keeps the existing transport and storage context explicit."
+)]
 pub fn releases_page(
     registry: &RegistryRecord,
     status: Option<&IndexStatus>,
@@ -2842,6 +2856,10 @@ pub fn health_page(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Rendering fixtures use the portable Hub clock for request timing."
+)]
 mod tests {
     use super::*;
 

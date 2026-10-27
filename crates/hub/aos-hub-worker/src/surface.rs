@@ -617,6 +617,10 @@ impl R2SurfaceProvider {
     /// with the HubDb [`Database`] and [`SecretVersionResolver`] used to resolve external
     /// S3/R2 bindings.
     #[must_use]
+    #[allow(
+        clippy::arc_with_non_send_sync,
+        reason = "Shared service APIs use Arc within the single-threaded Worker isolate"
+    )]
     pub fn new(
         bucket: Bucket,
         db: Arc<Database>,
@@ -1146,9 +1150,7 @@ impl SurfaceFetch for S3SurfaceFetch {
         }
         // A `206` carries the served range + total in `Content-Range`; a `200`
         // carries the size in `Content-Length` and serves the whole object.
-        let served;
-        let total;
-        if status == 206 {
+        let (served, total) = if status == 206 {
             let cr = response
                 .headers()
                 .get("content-range")
@@ -1166,18 +1168,17 @@ impl SurfaceFetch for S3SurfaceFetch {
                     cr.2
                 );
             }
-            served = Some((cr.0, cr.1));
-            total = cr.2;
+            (Some((cr.0, cr.1)), cr.2)
         } else {
-            served = None;
-            total = response
+            let total = response
                 .headers()
                 .get("content-length")
                 .ok()
                 .flatten()
                 .and_then(|v| v.parse::<u64>().ok())
                 .ok_or_else(|| anyhow::anyhow!("s3 200 without a Content-Length"))?;
-        }
+            (None, total)
+        };
         let strong_etag = response
             .headers()
             .get("etag")
@@ -1285,9 +1286,7 @@ impl OriginFetch for WorkerOriginFetch {
         }
         // A `206` carries the served range + total in `Content-Range`; a `200`
         // carries the size in `Content-Length` and serves the whole object.
-        let served;
-        let total;
-        if status == 206 {
+        let (served, total) = if status == 206 {
             let cr = response
                 .headers()
                 .get("content-range")
@@ -1306,18 +1305,17 @@ impl OriginFetch for WorkerOriginFetch {
                     cr.2
                 );
             }
-            served = Some((cr.0, cr.1));
-            total = cr.2;
+            (Some((cr.0, cr.1)), cr.2)
         } else {
-            served = None;
-            total = response
+            let total = response
                 .headers()
                 .get("content-length")
                 .ok()
                 .flatten()
                 .and_then(|v| v.parse::<u64>().ok())
                 .ok_or_else(|| anyhow::anyhow!("origin 200 without a Content-Length"))?;
-        }
+            (None, total)
+        };
         let stream = response
             .stream()
             .map_err(|err| anyhow::anyhow!("origin stream {url}: {err}"))?
@@ -1369,6 +1367,10 @@ impl R2SurfaceWriteProvider {
     /// provider, with the HubDb [`Database`] and [`SecretVersionResolver`] used to resolve
     /// external S3/R2 bindings.
     #[must_use]
+    #[allow(
+        clippy::arc_with_non_send_sync,
+        reason = "Shared service APIs use Arc within the single-threaded Worker isolate"
+    )]
     pub fn new(
         bucket: Bucket,
         db: Arc<Database>,

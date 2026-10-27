@@ -244,23 +244,30 @@ mod tests {
     }
 
     #[test]
-    fn declared_paths_cover_both_llvm_value_spellings() {
+    fn declared_paths_cover_both_llvm_value_spellings() -> Result<()> {
         let effects = file_effects(
             &["--extra-input=profile.txt", "--extra-output", "result.txt"],
             "Clang",
             &manifest(),
-        )
-        .unwrap();
+        )?;
 
-        assert_eq!(effects.inputs, BTreeSet::from([PathBuf::from("profile.txt")]));
-        assert_eq!(effects.outputs, BTreeSet::from([PathBuf::from("result.txt")]));
+        assert_eq!(
+            effects.inputs,
+            BTreeSet::from([PathBuf::from("profile.txt")])
+        );
+        assert_eq!(
+            effects.outputs,
+            BTreeSet::from([PathBuf::from("result.txt")])
+        );
+
+        Ok(())
     }
 
     #[test]
     fn manifest_cannot_reclassify_invocation_reports() {
-        let error = file_effects(&["--print-after=instcombine"], "Rust", &manifest())
-            .err()
-            .unwrap();
+        let Err(error) = file_effects(&["--print-after=instcombine"], "Rust", &manifest()) else {
+            panic!("the manifest must not reclassify an invocation report");
+        };
 
         assert!(error.to_string().contains("invocation report"));
     }

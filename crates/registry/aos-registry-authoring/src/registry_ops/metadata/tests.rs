@@ -441,3 +441,118 @@ fn build_package_toml_escapes_maintainer_metadata() {
         Some("raw")
     );
 }
+
+fn publication_image(format: &str) -> (TempDir, crate::registry_ops::images::PublishedImage) {
+    let fixture = TempDir::new().unwrap();
+    let targets = if format == "raw" {
+        serde_json::json!(["bare-metal"])
+    } else {
+        serde_json::json!(["qemu-kvm", "openstack"])
+    };
+    let output = write_direct_image_output(fixture.path(), format, targets);
+    rewrite_test_image_parent(&output, "2026.04", "x86_64-linux");
+    let image = inspect_test_image(format, output, "2026.04", "x86_64-linux").unwrap();
+    (fixture, image)
+}
+
+fn publication_with_images(
+    images: &[crate::registry_ops::images::PublishedImage],
+) -> anyhow::Result<String> {
+    let info = StorePathInfo {
+        path: "/nix/store/abc123-server-2026.04".into(),
+        nar_hash: "sha256:aabb".into(),
+        nar_size: 1024,
+        references: Vec::new(),
+        closure_size: 1024,
+    };
+    build_package_toml(
+        "",
+        "server",
+        "2026.04",
+        "x86_64-linux",
+        &info,
+        Some("AOS server"),
+        None,
+        Some("MIT"),
+        Some("aos-team"),
+        true,
+        None,
+        images,
+        None,
+    )
+}
+
+#[test]
+fn image_encodings_retain_their_distinct_authenticated_artifact_sets() {
+    let (_raw_fixture, raw) = publication_image("raw");
+    let (_qcow_fixture, qcow) = publication_image("qcow2");
+    assert_eq!(
+        raw.delivery.logical_image_id,
+        qcow.delivery.logical_image_id
+    );
+    assert_ne!(
+        raw.delivery.artifact_contract.artifacts,
+        qcow.delivery.artifact_contract.artifacts
+    );
+    let expected = [raw.delivery.clone(), qcow.delivery.clone()];
+
+    let content = publication_with_images(&[raw, qcow]).unwrap();
+    let parsed = aos_registry_client::registry::parse::parse_package_file(&content).unwrap();
+    let images = &parsed.versions[0].platforms["x86_64-linux"].images;
+
+    assert_eq!(images.len(), 2);
+    assert_eq!(images[0].delivery, expected[0]);
+    assert_eq!(images[1].delivery, expected[1]);
+}
+
+#[test]
+fn image_encodings_reject_different_logical_disks() {
+    let (_raw_fixture, raw) = publication_image("raw");
+    let (_qcow_fixture, mut qcow) = publication_image("qcow2");
+    qcow.delivery.logical_image_id = "f".repeat(64);
+    qcow.delivery.logical_disk_sha256 = qcow.delivery.logical_image_id.clone();
+
+    let error = publication_with_images(&[raw, qcow]).unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("one logical disk and artifact contract schema")
+    );
+}
+
+#[test]
+fn image_encodings_reject_different_provider_schemas() {
+    let (_raw_fixture, raw) = publication_image("raw");
+    let (_qcow_fixture, mut qcow) = publication_image("qcow2");
+    qcow.delivery.artifact_contract.schema = "aos.other-provider/v1".into();
+
+    let error = publication_with_images(&[raw, qcow]).unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("one logical disk and artifact contract schema")
+    );
+}
+
+#[test]
+fn image_encodings_reject_duplicate_formats() {
+    let (_first_fixture, first) = publication_image("raw");
+    let (_second_fixture, second) = publication_image("raw");
+
+    let error = publication_with_images(&[first, second]).unwrap_err();
+
+    assert!(error.to_string().contains("duplicate 'raw' image encoding"));
+}
+
+#[test]
+fn image_encodings_recheck_each_payload_before_commit() {
+    let (_raw_fixture, raw) = publication_image("raw");
+    let (_qcow_fixture, qcow) = publication_image("qcow2");
+    fs::write(Path::new(&qcow.store.path), b"replaced").unwrap();
+
+    let error = publication_with_images(&[raw, qcow]).unwrap_err();
+
+    assert!(format!("{error:#}").contains("changed"));
+}

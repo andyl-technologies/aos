@@ -7,6 +7,9 @@
 //! `render_*` helpers print the same data as human-readable tables via
 //! an `aos_cli_ui` [`Printer`].
 
+// Keep grouping maps compatible with the scanner's existing HashMap interface.
+#![allow(clippy::disallowed_types)]
+
 use std::collections::HashMap;
 
 use anyhow::Result;

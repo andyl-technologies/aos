@@ -1,0 +1,888 @@
+{
+  "action_identity_limit": "Two selected compiler actions have different ring build-product input digests despite identical commands, environments, platforms, and final executable bytes. Native intermediate reproducibility and cache qualification remain outstanding.",
+  "binaries": {
+    "//crates/crucible/crucible-control-server:transport_dependency_versions_controller_binary": "da68649c84daa8c5aaf77e006841fc561f205b0c1a5a0201bbcd14f4cf91c5b6",
+    "//crates/crucible/crucible-daemon:unit_controller_binary": "8c172e29d9d0ef1e59dbaeed43805524056463b42e3edb1c795ccfde721a4eb6",
+    "//crates/crucible/crucible-engine:source_size_controller_binary": "9410f53f1461d7e682dc62fe064612c5ea980667512d057f092840deca01a048",
+    "//crates/crucible/crucible-engine:workload_model_controller_binary": "7348a14f522727f14a412503536aa1740118a7dbb0ba0a10595b6288be622f8b"
+  },
+  "builds": {
+    "conservative": {
+      "actions": {
+        "//crates/crucible/crucible-control-server:transport_dependency_versions_controller_binary": {
+          "action_digest": null,
+          "cache_hit": false,
+          "fingerprint": "75d42519b06bf39b7fc8738ff555571ba725c43855f1756d1f727f444d39a645",
+          "runner": "linux-sandbox"
+        },
+        "//crates/crucible/crucible-daemon:unit_controller_binary": {
+          "action_digest": null,
+          "cache_hit": false,
+          "fingerprint": "e087a3d07d3227e0f52a0484977bb2f4755b3f0c036110bb1b452f900ff5dcd4",
+          "runner": "linux-sandbox"
+        },
+        "//crates/crucible/crucible-engine:source_size_controller_binary": {
+          "action_digest": null,
+          "cache_hit": false,
+          "fingerprint": "771230879b9b678f467a8b2b251e530ccdc9ea26d627eaefea107836cda89bd9",
+          "runner": "linux-sandbox"
+        },
+        "//crates/crucible/crucible-engine:workload_model_controller_binary": {
+          "action_digest": null,
+          "cache_hit": false,
+          "fingerprint": "0780ff1644160f86691c594f4b7ae8fb851653401f454f0927486c2fdb369ff8",
+          "runner": "linux-sandbox"
+        }
+      },
+      "discovery_sha256": "552ec34935e6db867a0bd7eb15dfa8b75d4978489f0a3506341ce55474ee8525",
+      "execution_sha256": "14fbd5202f2c36e07f7a806faf8f71580ab78c060bd99f95da7a7f78a71d71bd",
+      "execution_summary": {
+        "linux-sandbox": 657
+      },
+      "output": "/nix/store/hba0gliq10s7ym9md9jncaw2pq8h06ah-aos-bazel-crucible-controller-determinism-conservative-1"
+    },
+    "strict": {
+      "actions": {
+        "//crates/crucible/crucible-control-server:transport_dependency_versions_controller_binary": {
+          "action_digest": null,
+          "cache_hit": false,
+          "fingerprint": "f4e9f163c8e385633ce642a36d3f816687b2a28746b7d3a3587cdb0ec05a036d",
+          "runner": "linux-sandbox"
+        },
+        "//crates/crucible/crucible-daemon:unit_controller_binary": {
+          "action_digest": null,
+          "cache_hit": false,
+          "fingerprint": "f29d7df390f313c6deb0adaf4cdce4a5c0bbeda1dbfa78e0af97a23a83918201",
+          "runner": "linux-sandbox"
+        },
+        "//crates/crucible/crucible-engine:source_size_controller_binary": {
+          "action_digest": null,
+          "cache_hit": false,
+          "fingerprint": "771230879b9b678f467a8b2b251e530ccdc9ea26d627eaefea107836cda89bd9",
+          "runner": "linux-sandbox"
+        },
+        "//crates/crucible/crucible-engine:workload_model_controller_binary": {
+          "action_digest": null,
+          "cache_hit": false,
+          "fingerprint": "0780ff1644160f86691c594f4b7ae8fb851653401f454f0927486c2fdb369ff8",
+          "runner": "linux-sandbox"
+        }
+      },
+      "discovery_sha256": "552ec34935e6db867a0bd7eb15dfa8b75d4978489f0a3506341ce55474ee8525",
+      "execution_sha256": "7c165fedfc52dc632f8e8364bae6f80c0e9a76489b1e717acfb83263c24d8de6",
+      "execution_summary": {
+        "linux-sandbox": 657
+      },
+      "output": "/nix/store/5y91yqzf45a0lfhb1v0mgl53s3d7fn1g-aos-bazel-crucible-controller-determinism-strict-1"
+    }
+  },
+  "case_and_ignore_lists_unchanged_from": "/nix/store/wj7ahf28kb2bjn84wbcy9cx1f0nfmn4y-aos-bazel-crucible-controller-test-compilation-1",
+  "controller_graph_sha256": "fe5ebb41d8dbf7e9e35934893158e0abc6ee7648a55e3723569e5d1b65468b5e",
+  "differing_transitive_inputs": {
+    "//crates/crucible/crucible-control-server:transport_dependency_versions_controller_binary": {
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/0f1e39740815ef8c-constant_time_test.o": {
+        "conservative": {
+          "hash": "8905721183cc7f533ea54e556005ac7918d436990746766f22f2b98bb2e56e24",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "59616"
+        },
+        "strict": {
+          "hash": "295e4f3d3e4ef015f5c63b4ce9b9214836bd8700159df6ea9af6eb5ea02515f0",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "59616"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/0f1e39740815ef8c-cpu_intel.o": {
+        "conservative": {
+          "hash": "73bd7017f5d49ed1e910c4921226adb95df8420c02ce3c788c40fa06d52449a3",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "54488"
+        },
+        "strict": {
+          "hash": "b685625090e8b9be6a3c8aaa0aec714fb617798c7f089ac02ad62788d3c89b3d",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "54488"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/0f1e39740815ef8c-crypto.o": {
+        "conservative": {
+          "hash": "1b342fcdede2b6259d254dbeda6d9637520ecec2e79e6b5cc1a83b2217219f78",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "44192"
+        },
+        "strict": {
+          "hash": "76ac49b0af16be88f81424cd97f7e7e132eb1731124b46f643e3f1095a97090d",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "44200"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/0f1e39740815ef8c-mem.o": {
+        "conservative": {
+          "hash": "0a7e8c818ee3756e38d291529c42e8156b840bcb70b2af7920fe5643edf06f07",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "51040"
+        },
+        "strict": {
+          "hash": "759775a9d2fef436648c3448b081e00c4f48b0a139920ec78e3790e642c20a9f",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "51032"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/123d8a351a02283d-poly1305.o": {
+        "conservative": {
+          "hash": "90bfa6d730375c34c85964f4027f4cd3fd99d30aa1886283ba2c73f142df6de3",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "81672"
+        },
+        "strict": {
+          "hash": "3511165bdca4101e7f62a1dbbcb8e5a468e5ddab22c855edb7ef29ec9c2089e1",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "81672"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/172e8fe49fe517e0-curve25519.o": {
+        "conservative": {
+          "hash": "742a5a41aa7a60c3fb464c566f905dc24143db16d44eb892811528d8388d5609",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "1166936"
+        },
+        "strict": {
+          "hash": "469ba48da92805c2e7b7dcf1748afff915f80485ab66d6cf7dcbe8d15a1fa5ed",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "1166936"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/172e8fe49fe517e0-curve25519_64_adx.o": {
+        "conservative": {
+          "hash": "2465e694d265d3d53528509b6ece6a910d7da567a28da8af6af0c5f4107f3879",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "394632"
+        },
+        "strict": {
+          "hash": "6ccf3b6dc24dabf7cef79f23448ee178e6278df9c830453a1f897f43c4f3648e",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "394632"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/397bda854d1d7f4e-fiat_curve25519_adx_mul.o": {
+        "conservative": {
+          "hash": "7fd300b6158cfd502049ab90157c27ae31826e2e81c3bf4a8b52810252e747bd",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "3752"
+        },
+        "strict": {
+          "hash": "08f4ecfa6072d59708c7b9d94d6df5f0d8a658e336626fb01dc11ce0a6b9ffdb",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "3752"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/397bda854d1d7f4e-fiat_curve25519_adx_square.o": {
+        "conservative": {
+          "hash": "6aa6048f8db3fc82ba956aa99c4bef9fa8ca8a7d5e5469af64705b5a8f3966ad",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "3560"
+        },
+        "strict": {
+          "hash": "251bbcec02e5aa3ef1b75bdff44dc930184443438e0da6f3e4ac3527a322860c",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "3560"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/75cfd988d03b73aa-aes-gcm-avx2-x86_64-elf.o": {
+        "conservative": {
+          "hash": "e901b54db486c2e703653c92506eb0e4e10e8c7b5de5cfed2a3d5b77365411d5",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "8584"
+        },
+        "strict": {
+          "hash": "6706152a01a80726f71e6cc59a25909d886f619ef2eec061829b3a0be44a7b7f",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "8584"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/75cfd988d03b73aa-aesni-gcm-x86_64-elf.o": {
+        "conservative": {
+          "hash": "c0654983215902e5082c97bf070c304eea0803b7f6eb651d1129b82dff2d1ba2",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "7456"
+        },
+        "strict": {
+          "hash": "6e0bce4d6477002e8b3fe9da0ca7df2463b27e5bc9accd7d6de62a3a943395cd",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "7456"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/75cfd988d03b73aa-aesni-x86_64-elf.o": {
+        "conservative": {
+          "hash": "93de0e1004d6e6edc8ca95653ff881cc081edb78714e4f81cf04e945c70a53fb",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "8904"
+        },
+        "strict": {
+          "hash": "57ab544caf16431cbfd945edb6f09ec2174843c563990dee37403ccbd1f0bab2",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "8904"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/75cfd988d03b73aa-chacha-x86_64-elf.o": {
+        "conservative": {
+          "hash": "88458047c4f4367868b8058ac95bbab507e6a9ad9d2a2fde24a6ac6ca6cc0326",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "10976"
+        },
+        "strict": {
+          "hash": "93eb62cc738a804e17c98e76257994fc0f41919cfdad7bb0ba7fa1d729191ba5",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "10976"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/75cfd988d03b73aa-chacha20_poly1305_x86_64-elf.o": {
+        "conservative": {
+          "hash": "0545e6d9c2a2a865dc148ac45c0dedef30a30cda5e7d9eb1cdc8a30aa83423fc",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "55128"
+        },
+        "strict": {
+          "hash": "9116974f75efa7e731c416d645103f3aa4018614c9f2f52f714c2d919c61a431",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "55128"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/75cfd988d03b73aa-ghash-x86_64-elf.o": {
+        "conservative": {
+          "hash": "4b06224f012545871c4d473120fefab64bac24064661b68769c43e623fa98186",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "8592"
+        },
+        "strict": {
+          "hash": "441cb3548037e3d787ad13e3e326ee932c7912976018a605884b2f8840714fd5",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "8592"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/75cfd988d03b73aa-p256-x86_64-asm-elf.o": {
+        "conservative": {
+          "hash": "0548acc65e21ce89d03b18361d158016b5af25b4cdfe3d8192f4a5916fdbaa79",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "26144"
+        },
+        "strict": {
+          "hash": "f4e39bf9f6a032537ac7e649e7174337d533acd03f9f2ee2695c8dde166517dd",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "26144"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/75cfd988d03b73aa-sha256-x86_64-elf.o": {
+        "conservative": {
+          "hash": "a1cea19f10375b42caceaf7be0f677b525d48787738969349392752e0e0662a6",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "18192"
+        },
+        "strict": {
+          "hash": "a7403b435a38017b88a2df7863269e47af2057acd2727c4c4cbc6ee5eecc0e22",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "18192"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/75cfd988d03b73aa-sha512-x86_64-elf.o": {
+        "conservative": {
+          "hash": "b1bbb4c0056a5c2f892d04a7a7a38cf45bddf531532dad5fb3bf06ad0b53f234",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "14216"
+        },
+        "strict": {
+          "hash": "2a50719ee4788f84310c4eee20538d93a9da034d09cf0ad712b9fedf2ba8710a",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "14216"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/75cfd988d03b73aa-vpaes-x86_64-elf.o": {
+        "conservative": {
+          "hash": "cce19fb805ce9108da161ebd601ba12016102d9940bb377285be63363cc97d8e",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "7800"
+        },
+        "strict": {
+          "hash": "34bd1799998f7baba8381ffb926108e16f4f227d04703a403609b35f2cb7fea4",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "7800"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/75cfd988d03b73aa-x86_64-mont-elf.o": {
+        "conservative": {
+          "hash": "b4f78eb2d932183d448d52d48c64d578020de4fafa5782ea5c44fef51342f028",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "8136"
+        },
+        "strict": {
+          "hash": "16d8b02726cf57a90d4ad430edf0b9ca8cebd84ea86b45c7927fdbfcd3063e54",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "8136"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/75cfd988d03b73aa-x86_64-mont5-elf.o": {
+        "conservative": {
+          "hash": "0b4df05be30faf9a6de0188ca480f5abad5554371c76573a8c667ed33b0ef162",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "17112"
+        },
+        "strict": {
+          "hash": "db05f2e059998dd0341cc63558e324390cb4a257ac8042ad137b6b4541cff22c",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "17112"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/7ee7113b20ac8aeb-limbs.o": {
+        "conservative": {
+          "hash": "1d6649fb2a4900fae10b811ba30cbf62e0367e2422bf2d381f14c23691fd2b21",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "91896"
+        },
+        "strict": {
+          "hash": "806628bcf5f1af349a468a770e1f72851ea64538a8891d53a6570d663fbb5c65",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "91896"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/8debc3e725d2f0ed-montgomery.o": {
+        "conservative": {
+          "hash": "bbf23fe7b4e5f7106cb72d0e9292d338fc113c28b06c976e9d6bd183c99778fa",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "56104"
+        },
+        "strict": {
+          "hash": "50b04ac72782d562b4d0fa830860c7d7f4bfac1cc0944d7b3f2b2a43c2d6e256",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "56104"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/8debc3e725d2f0ed-montgomery_inv.o": {
+        "conservative": {
+          "hash": "6a0b81e61a34ea2c9f5aa0845c84558bf25e0f10379d0fda11f7c34f8b89a82e",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "51496"
+        },
+        "strict": {
+          "hash": "9cf061043bcdf6f2bdf3bc085832f879cc95f98daad2fb5cc3686d01756fa0e7",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "51496"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/c727d2a0dbf21ef5-ecp_nistz.o": {
+        "conservative": {
+          "hash": "aa6ee85e79f9d25604c3b4f091641f1bf828434e249347f6f4ddf182d8a8fa17",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "53800"
+        },
+        "strict": {
+          "hash": "1a30dede17c2bdcc48f200bb480c485808f5c31f8cabafb1c0dceb2ba26a67c2",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "53792"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/c727d2a0dbf21ef5-gfp_p256.o": {
+        "conservative": {
+          "hash": "ac4bc95663b7d8e7b7d9866af3f21d5f744472468b987f72a7fe0c33adfa2e95",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "50144"
+        },
+        "strict": {
+          "hash": "c0bdbfebac8f98691724ac48b6e6a6405d06fa06371b60e780e061905e53092c",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "50144"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/c727d2a0dbf21ef5-gfp_p384.o": {
+        "conservative": {
+          "hash": "59eec2e14fd3b1da7f57f649eef581003bce1d2f29e5980839615b99a343e025",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "141072"
+        },
+        "strict": {
+          "hash": "55d4ccefd41208fbc787caf8fbcfb889d59747c6f28a3fbef26583c631751f1a",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "141072"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/c727d2a0dbf21ef5-p256-nistz.o": {
+        "conservative": {
+          "hash": "b4661facc7431fae04c2737c64706858e1504b85dc4b306df95c90750416ec45",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "258216"
+        },
+        "strict": {
+          "hash": "ac91b4fc811072241d51f8320900a2e4240530eaac69a92863b0a9d95ea034d3",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "258216"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/c727d2a0dbf21ef5-p256.o": {
+        "conservative": {
+          "hash": "5a78efc4ce1fd41c2f25e5cacf17502684bbeb6d22453d0cb3b01203e7da5741",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "50320"
+        },
+        "strict": {
+          "hash": "1411e870ef325d2dc811fc538e049ee840d05f6c5d23f697860d21ffbe69ef3e",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "50320"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/cf1be0f3c161d833-aes_nohw.o": {
+        "conservative": {
+          "hash": "ce465e29a58e77d4e07b87f2d0d07146bcc23580a95dcb8822cbbbea22601981",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "386768"
+        },
+        "strict": {
+          "hash": "aa30efc83dda9e9947d5773d47cd330f48e3e44d0e141b8e77fbbd3b41f06f60",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "386768"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/libring_core_0_17_14_.a": {
+        "conservative": {
+          "hash": "67adb837e65832377979e25795d6bf4458cdda8ce3ff0c34ce20d5af52216161",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "3139666"
+        },
+        "strict": {
+          "hash": "25e149bcee1f3b57baf2e8a9cd4ba8334d4c2198f3475589df19797403a920ce",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "3139658"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/libring_core_0_17_14__test.a": {
+        "conservative": {
+          "hash": "32169dd2fbcf340a309185334c2618eca7960af20ed3652431fad146be875e4c",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "60032"
+        },
+        "strict": {
+          "hash": "f39e6496f3637d373b6625916322561a020a93868c7685a2cd9f406467287f71",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "60032"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/libring-887088055.rlib": {
+        "conservative": {
+          "hash": "957d1b86c8eafbd74ec86aa9c9143d1bd6f86885812a8da21ec5d04dcd7d65f0",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "5898346"
+        },
+        "strict": {
+          "hash": "1a7479b3c6783bf287387889f07f24a88bfc021778286430e9582077d097c981",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "5898338"
+        }
+      }
+    },
+    "//crates/crucible/crucible-daemon:unit_controller_binary": {
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/0f1e39740815ef8c-constant_time_test.o": {
+        "conservative": {
+          "hash": "8905721183cc7f533ea54e556005ac7918d436990746766f22f2b98bb2e56e24",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "59616"
+        },
+        "strict": {
+          "hash": "295e4f3d3e4ef015f5c63b4ce9b9214836bd8700159df6ea9af6eb5ea02515f0",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "59616"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/0f1e39740815ef8c-cpu_intel.o": {
+        "conservative": {
+          "hash": "73bd7017f5d49ed1e910c4921226adb95df8420c02ce3c788c40fa06d52449a3",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "54488"
+        },
+        "strict": {
+          "hash": "b685625090e8b9be6a3c8aaa0aec714fb617798c7f089ac02ad62788d3c89b3d",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "54488"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/0f1e39740815ef8c-crypto.o": {
+        "conservative": {
+          "hash": "1b342fcdede2b6259d254dbeda6d9637520ecec2e79e6b5cc1a83b2217219f78",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "44192"
+        },
+        "strict": {
+          "hash": "76ac49b0af16be88f81424cd97f7e7e132eb1731124b46f643e3f1095a97090d",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "44200"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/0f1e39740815ef8c-mem.o": {
+        "conservative": {
+          "hash": "0a7e8c818ee3756e38d291529c42e8156b840bcb70b2af7920fe5643edf06f07",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "51040"
+        },
+        "strict": {
+          "hash": "759775a9d2fef436648c3448b081e00c4f48b0a139920ec78e3790e642c20a9f",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "51032"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/123d8a351a02283d-poly1305.o": {
+        "conservative": {
+          "hash": "90bfa6d730375c34c85964f4027f4cd3fd99d30aa1886283ba2c73f142df6de3",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "81672"
+        },
+        "strict": {
+          "hash": "3511165bdca4101e7f62a1dbbcb8e5a468e5ddab22c855edb7ef29ec9c2089e1",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "81672"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/172e8fe49fe517e0-curve25519.o": {
+        "conservative": {
+          "hash": "742a5a41aa7a60c3fb464c566f905dc24143db16d44eb892811528d8388d5609",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "1166936"
+        },
+        "strict": {
+          "hash": "469ba48da92805c2e7b7dcf1748afff915f80485ab66d6cf7dcbe8d15a1fa5ed",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "1166936"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/172e8fe49fe517e0-curve25519_64_adx.o": {
+        "conservative": {
+          "hash": "2465e694d265d3d53528509b6ece6a910d7da567a28da8af6af0c5f4107f3879",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "394632"
+        },
+        "strict": {
+          "hash": "6ccf3b6dc24dabf7cef79f23448ee178e6278df9c830453a1f897f43c4f3648e",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "394632"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/397bda854d1d7f4e-fiat_curve25519_adx_mul.o": {
+        "conservative": {
+          "hash": "7fd300b6158cfd502049ab90157c27ae31826e2e81c3bf4a8b52810252e747bd",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "3752"
+        },
+        "strict": {
+          "hash": "08f4ecfa6072d59708c7b9d94d6df5f0d8a658e336626fb01dc11ce0a6b9ffdb",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "3752"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/397bda854d1d7f4e-fiat_curve25519_adx_square.o": {
+        "conservative": {
+          "hash": "6aa6048f8db3fc82ba956aa99c4bef9fa8ca8a7d5e5469af64705b5a8f3966ad",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "3560"
+        },
+        "strict": {
+          "hash": "251bbcec02e5aa3ef1b75bdff44dc930184443438e0da6f3e4ac3527a322860c",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "3560"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/75cfd988d03b73aa-aes-gcm-avx2-x86_64-elf.o": {
+        "conservative": {
+          "hash": "e901b54db486c2e703653c92506eb0e4e10e8c7b5de5cfed2a3d5b77365411d5",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "8584"
+        },
+        "strict": {
+          "hash": "6706152a01a80726f71e6cc59a25909d886f619ef2eec061829b3a0be44a7b7f",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "8584"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/75cfd988d03b73aa-aesni-gcm-x86_64-elf.o": {
+        "conservative": {
+          "hash": "c0654983215902e5082c97bf070c304eea0803b7f6eb651d1129b82dff2d1ba2",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "7456"
+        },
+        "strict": {
+          "hash": "6e0bce4d6477002e8b3fe9da0ca7df2463b27e5bc9accd7d6de62a3a943395cd",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "7456"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/75cfd988d03b73aa-aesni-x86_64-elf.o": {
+        "conservative": {
+          "hash": "93de0e1004d6e6edc8ca95653ff881cc081edb78714e4f81cf04e945c70a53fb",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "8904"
+        },
+        "strict": {
+          "hash": "57ab544caf16431cbfd945edb6f09ec2174843c563990dee37403ccbd1f0bab2",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "8904"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/75cfd988d03b73aa-chacha-x86_64-elf.o": {
+        "conservative": {
+          "hash": "88458047c4f4367868b8058ac95bbab507e6a9ad9d2a2fde24a6ac6ca6cc0326",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "10976"
+        },
+        "strict": {
+          "hash": "93eb62cc738a804e17c98e76257994fc0f41919cfdad7bb0ba7fa1d729191ba5",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "10976"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/75cfd988d03b73aa-chacha20_poly1305_x86_64-elf.o": {
+        "conservative": {
+          "hash": "0545e6d9c2a2a865dc148ac45c0dedef30a30cda5e7d9eb1cdc8a30aa83423fc",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "55128"
+        },
+        "strict": {
+          "hash": "9116974f75efa7e731c416d645103f3aa4018614c9f2f52f714c2d919c61a431",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "55128"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/75cfd988d03b73aa-ghash-x86_64-elf.o": {
+        "conservative": {
+          "hash": "4b06224f012545871c4d473120fefab64bac24064661b68769c43e623fa98186",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "8592"
+        },
+        "strict": {
+          "hash": "441cb3548037e3d787ad13e3e326ee932c7912976018a605884b2f8840714fd5",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "8592"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/75cfd988d03b73aa-p256-x86_64-asm-elf.o": {
+        "conservative": {
+          "hash": "0548acc65e21ce89d03b18361d158016b5af25b4cdfe3d8192f4a5916fdbaa79",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "26144"
+        },
+        "strict": {
+          "hash": "f4e39bf9f6a032537ac7e649e7174337d533acd03f9f2ee2695c8dde166517dd",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "26144"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/75cfd988d03b73aa-sha256-x86_64-elf.o": {
+        "conservative": {
+          "hash": "a1cea19f10375b42caceaf7be0f677b525d48787738969349392752e0e0662a6",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "18192"
+        },
+        "strict": {
+          "hash": "a7403b435a38017b88a2df7863269e47af2057acd2727c4c4cbc6ee5eecc0e22",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "18192"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/75cfd988d03b73aa-sha512-x86_64-elf.o": {
+        "conservative": {
+          "hash": "b1bbb4c0056a5c2f892d04a7a7a38cf45bddf531532dad5fb3bf06ad0b53f234",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "14216"
+        },
+        "strict": {
+          "hash": "2a50719ee4788f84310c4eee20538d93a9da034d09cf0ad712b9fedf2ba8710a",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "14216"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/75cfd988d03b73aa-vpaes-x86_64-elf.o": {
+        "conservative": {
+          "hash": "cce19fb805ce9108da161ebd601ba12016102d9940bb377285be63363cc97d8e",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "7800"
+        },
+        "strict": {
+          "hash": "34bd1799998f7baba8381ffb926108e16f4f227d04703a403609b35f2cb7fea4",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "7800"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/75cfd988d03b73aa-x86_64-mont-elf.o": {
+        "conservative": {
+          "hash": "b4f78eb2d932183d448d52d48c64d578020de4fafa5782ea5c44fef51342f028",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "8136"
+        },
+        "strict": {
+          "hash": "16d8b02726cf57a90d4ad430edf0b9ca8cebd84ea86b45c7927fdbfcd3063e54",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "8136"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/75cfd988d03b73aa-x86_64-mont5-elf.o": {
+        "conservative": {
+          "hash": "0b4df05be30faf9a6de0188ca480f5abad5554371c76573a8c667ed33b0ef162",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "17112"
+        },
+        "strict": {
+          "hash": "db05f2e059998dd0341cc63558e324390cb4a257ac8042ad137b6b4541cff22c",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "17112"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/7ee7113b20ac8aeb-limbs.o": {
+        "conservative": {
+          "hash": "1d6649fb2a4900fae10b811ba30cbf62e0367e2422bf2d381f14c23691fd2b21",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "91896"
+        },
+        "strict": {
+          "hash": "806628bcf5f1af349a468a770e1f72851ea64538a8891d53a6570d663fbb5c65",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "91896"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/8debc3e725d2f0ed-montgomery.o": {
+        "conservative": {
+          "hash": "bbf23fe7b4e5f7106cb72d0e9292d338fc113c28b06c976e9d6bd183c99778fa",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "56104"
+        },
+        "strict": {
+          "hash": "50b04ac72782d562b4d0fa830860c7d7f4bfac1cc0944d7b3f2b2a43c2d6e256",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "56104"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/8debc3e725d2f0ed-montgomery_inv.o": {
+        "conservative": {
+          "hash": "6a0b81e61a34ea2c9f5aa0845c84558bf25e0f10379d0fda11f7c34f8b89a82e",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "51496"
+        },
+        "strict": {
+          "hash": "9cf061043bcdf6f2bdf3bc085832f879cc95f98daad2fb5cc3686d01756fa0e7",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "51496"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/c727d2a0dbf21ef5-ecp_nistz.o": {
+        "conservative": {
+          "hash": "aa6ee85e79f9d25604c3b4f091641f1bf828434e249347f6f4ddf182d8a8fa17",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "53800"
+        },
+        "strict": {
+          "hash": "1a30dede17c2bdcc48f200bb480c485808f5c31f8cabafb1c0dceb2ba26a67c2",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "53792"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/c727d2a0dbf21ef5-gfp_p256.o": {
+        "conservative": {
+          "hash": "ac4bc95663b7d8e7b7d9866af3f21d5f744472468b987f72a7fe0c33adfa2e95",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "50144"
+        },
+        "strict": {
+          "hash": "c0bdbfebac8f98691724ac48b6e6a6405d06fa06371b60e780e061905e53092c",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "50144"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/c727d2a0dbf21ef5-gfp_p384.o": {
+        "conservative": {
+          "hash": "59eec2e14fd3b1da7f57f649eef581003bce1d2f29e5980839615b99a343e025",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "141072"
+        },
+        "strict": {
+          "hash": "55d4ccefd41208fbc787caf8fbcfb889d59747c6f28a3fbef26583c631751f1a",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "141072"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/c727d2a0dbf21ef5-p256-nistz.o": {
+        "conservative": {
+          "hash": "b4661facc7431fae04c2737c64706858e1504b85dc4b306df95c90750416ec45",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "258216"
+        },
+        "strict": {
+          "hash": "ac91b4fc811072241d51f8320900a2e4240530eaac69a92863b0a9d95ea034d3",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "258216"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/c727d2a0dbf21ef5-p256.o": {
+        "conservative": {
+          "hash": "5a78efc4ce1fd41c2f25e5cacf17502684bbeb6d22453d0cb3b01203e7da5741",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "50320"
+        },
+        "strict": {
+          "hash": "1411e870ef325d2dc811fc538e049ee840d05f6c5d23f697860d21ffbe69ef3e",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "50320"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/cf1be0f3c161d833-aes_nohw.o": {
+        "conservative": {
+          "hash": "ce465e29a58e77d4e07b87f2d0d07146bcc23580a95dcb8822cbbbea22601981",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "386768"
+        },
+        "strict": {
+          "hash": "aa30efc83dda9e9947d5773d47cd330f48e3e44d0e141b8e77fbbd3b41f06f60",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "386768"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/libring_core_0_17_14_.a": {
+        "conservative": {
+          "hash": "67adb837e65832377979e25795d6bf4458cdda8ce3ff0c34ce20d5af52216161",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "3139666"
+        },
+        "strict": {
+          "hash": "25e149bcee1f3b57baf2e8a9cd4ba8334d4c2198f3475589df19797403a920ce",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "3139658"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/_bs.out_dir/libring_core_0_17_14__test.a": {
+        "conservative": {
+          "hash": "32169dd2fbcf340a309185334c2618eca7960af20ed3652431fad146be875e4c",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "60032"
+        },
+        "strict": {
+          "hash": "f39e6496f3637d373b6625916322561a020a93868c7685a2cd9f406467287f71",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "60032"
+        }
+      },
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_controller_tests_crates__ring-0.17.14/libring-887088055.rlib": {
+        "conservative": {
+          "hash": "957d1b86c8eafbd74ec86aa9c9143d1bd6f86885812a8da21ec5d04dcd7d65f0",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "5898346"
+        },
+        "strict": {
+          "hash": "1a7479b3c6783bf287387889f07f24a88bfc021778286430e9582077d097c981",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "5898338"
+        }
+      }
+    }
+  },
+  "discovered_cases": 1151,
+  "ignored_cases": 22,
+  "public_controller_cutover_qualified": false,
+  "schema_version": 1,
+  "scope": "The four remaining controller test binaries that previously embedded scheduling-dependent manifest directories. Compilation and case discovery only.",
+  "strict_conservative_action_identity_equal": false,
+  "strict_conservative_binary_equal": true,
+  "test_execution_qualified": false,
+  "whole_controller_byte_parity_qualified": false
+}

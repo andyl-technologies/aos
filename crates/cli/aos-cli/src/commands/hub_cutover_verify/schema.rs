@@ -184,15 +184,16 @@ fn audit_schema_at(schema: &Value, path: &str, depth: usize) -> Result<()> {
             bail!("unsupported_schema_keyword at {path}/{name}");
         }
     }
-    if let Some(reference) = object.get("$ref").and_then(Value::as_str) {
-        if reference != "#" && !reference.starts_with("#/") {
-            bail!("non-local schema reference at {path}");
-        }
+    if let Some(reference) = object.get("$ref").and_then(Value::as_str)
+        && reference != "#"
+        && !reference.starts_with("#/")
+    {
+        bail!("non-local schema reference at {path}");
     }
-    if let Some(format) = object.get("format").and_then(Value::as_str) {
-        if !matches!(format, "utc-date-time" | "https-or-path-uri") {
-            bail!("unsupported schema format: {format}");
-        }
+    if let Some(format) = object.get("format").and_then(Value::as_str)
+        && !matches!(format, "utc-date-time" | "https-or-path-uri")
+    {
+        bail!("unsupported schema format: {format}");
     }
     if let Some(pattern) = object.get("pattern").and_then(Value::as_str) {
         regex::Regex::new(pattern).with_context(|| format!("unsupported Rust regex at {path}"))?;
@@ -216,10 +217,10 @@ fn audit_schema_at(schema: &Value, path: &str, depth: usize) -> Result<()> {
         "then",
         "else",
     ] {
-        if let Some(child) = object.get(keyword) {
-            if child.is_object() || child.is_boolean() {
-                audit_schema_at(child, &format!("{path}/{keyword}"), depth + 1)?;
-            }
+        if let Some(child) = object.get(keyword)
+            && (child.is_object() || child.is_boolean())
+        {
+            audit_schema_at(child, &format!("{path}/{keyword}"), depth + 1)?;
         }
     }
     for keyword in ["allOf", "anyOf", "oneOf"] {
@@ -280,14 +281,13 @@ fn matches_schema(root: &Value, schema: &Value, instance: &Value, path: &str) ->
     {
         bail!("const_mismatch at {path}");
     }
-    if let Some(values) = object.get("enum") {
-        if !values
+    if let Some(values) = object.get("enum")
+        && !values
             .as_array()
             .ok_or_else(|| anyhow!("enum must be an array"))?
             .contains(instance)
-        {
-            bail!("enum_mismatch at {path}");
-        }
+    {
+        bail!("enum_mismatch at {path}");
     }
     for keyword in ["allOf", "anyOf", "oneOf"] {
         if let Some(branches) = object.get(keyword) {
@@ -516,10 +516,10 @@ fn validate_string(
     {
         bail!("maxLength mismatch at {path}");
     }
-    if let Some(pattern) = schema.get("pattern").and_then(Value::as_str) {
-        if !regex::Regex::new(pattern)?.is_match(text) {
-            bail!("pattern mismatch at {path}");
-        }
+    if let Some(pattern) = schema.get("pattern").and_then(Value::as_str)
+        && !regex::Regex::new(pattern)?.is_match(text)
+    {
+        bail!("pattern mismatch at {path}");
     }
     if let Some(format) = schema.get("format").and_then(Value::as_str) {
         match format {

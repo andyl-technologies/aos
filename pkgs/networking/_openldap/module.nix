@@ -372,7 +372,7 @@ in {
           })
           usedCredentials);
         configuration.operations.file.effects.openldap.input = {
-          path = "/etc/aos/packages/openldap/slapd.conf";
+          path = "/etc/packages/openldap/slapd.conf";
           fragments = configurationFragmentsFor cfg.tls.enable;
           mode = "0600";
           owner = account;

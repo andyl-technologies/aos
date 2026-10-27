@@ -782,7 +782,7 @@ mod tests {
 
     #[test]
     fn uploads_order_payloads_before_pointers_and_head_last() {
-        let mut objects = vec![
+        let mut objects = [
             input("HEAD", "mutable_pointer"),
             input("info/refs", "mutable_pointer"),
             input("objects/info/packs", "mutable_pointer"),

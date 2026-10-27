@@ -1,0 +1,4512 @@
+{
+  "accache_statistics": {
+    "0": {
+      "bypass": 10,
+      "miss": 3
+    },
+    "1": {
+      "bypass": 10,
+      "miss": 3
+    },
+    "2": {
+      "bypass": 10,
+      "miss": 3
+    }
+  },
+  "all_checks": "/nix/store/iilb9i2ymwndv5vp2vfdqc2b1cngxw9f-aos-bazel-checks",
+  "benchmark_cleanup_tests": 4,
+  "budgets": "not established; requires family end-to-end acceptance measurements",
+  "check": "/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1",
+  "configuration": {
+    "accache": "/nix/store/706pmxqfnysgf9f0ffw6w36bh5p32vzv-accache-0.1.0/bin/accache",
+    "accache_manifest": "/nix/store/y38pc1z7dzmi4skc86i4bk84bggm8ja5-accache-nix-manifest-1/manifest.json",
+    "bazel_config": "/nix/store/c0dzq2wv64yhw194pr50wyzwskln1wd7-aos-bazel-configuration.json",
+    "bazel_source": "/nix/store/mby4bjpd8vx1lngdxwyzwgyhqy5vislx-aos-bazel-workspace",
+    "cargo": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+    "cargo_source": "/nix/store/ravnqcjkar01kdwh4civ82zwinwv50vk-crucible-cargo-src",
+    "jobs": 4,
+    "launcher": "/nix/store/bx41sy2pmmkg6z1qpgln8v1myrqafysf-launcher.py",
+    "prepared_lock": "/nix/store/dfmqy243g2p64gggli8r62zc6s1jk2va-aos-bazel-prepared-lock-1/MODULE.bazel.lock",
+    "profiles": {
+      "bazel": "Bazel fastbuild defaults, local disk action cache, private output base",
+      "bazel-server": "Bazel fastbuild, private persistent JVM, 2 GiB heap limit, 60-second idle limit, explicit shutdown",
+      "cargo-incremental": "Cargo dev defaults, incremental, no compiler wrapper",
+      "cargo-incremental-debug0": "Cargo dev with debug=0, incremental, no compiler wrapper",
+      "cargo-nonincremental-accache": "Cargo dev defaults, nonincremental, local accache"
+    },
+    "rustc": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc",
+    "trial": "boot-server-bounded-20261022-a",
+    "vendor": "/nix/store/iv2pbjym87cqx1dw6a76n9sljz23k7lf-aos-workspace-vendor",
+    "versions": {
+      "bazel": "9.2.0",
+      "rust": "1.98.1"
+    }
+  },
+  "configuration_sha256": {
+    "tests/build/_bazel-performance.nix": "f50fc2da10eeaf0763d28c0f3ec70a565681d7b5c767562f3751788b3ff56fc5",
+    "tools/bazel/bench/measure_pilot.py": "00cec2f9afc1c7682017dd1ffc53c9d02539a041cb36ad98f4b437a454bdf212",
+    "tools/bazel/bench/test_measure_pilot.py": "8a267391fb4af7ffa268456249170e2e6b8591b8892ad404dc4658e852909efb",
+    "tools/bazel/launcher.py": "04d324d490a576d3c628b9955a88dc30d2a37a81d7895aa77196e62b1867ee0b",
+    "tools/bazel/tests/test_launcher.py": "93bc55a25b1ae8538e08101067bcbce4be52b5ac267e6bca9266f3f7f543dea5"
+  },
+  "cpu_count": 512,
+  "distributions": {
+    "bazel-server:cold": {
+      "maximum": 8.940285203003441,
+      "median": 8.338472751012887,
+      "minimum": 7.622397746992647,
+      "samples": [
+        8.940285203003441,
+        8.338472751012887,
+        7.622397746992647
+      ]
+    },
+    "bazel-server:fresh-build-directory": {
+      "maximum": 5.467948281991994,
+      "median": 5.315390101008234,
+      "minimum": 4.91523911600234,
+      "samples": [
+        5.315390101008234,
+        5.467948281991994,
+        4.91523911600234
+      ]
+    },
+    "bazel-server:implementation-edit": {
+      "maximum": 0.6687036600051215,
+      "median": 0.6150282830058131,
+      "minimum": 0.5945831369899679,
+      "samples": [
+        0.6687036600051215,
+        0.5945831369899679,
+        0.6150282830058131
+      ]
+    },
+    "bazel-server:public-api-edit": {
+      "maximum": 1.250340889004292,
+      "median": 1.124055584994494,
+      "minimum": 1.0265370580018498,
+      "samples": [
+        1.250340889004292,
+        1.124055584994494,
+        1.0265370580018498
+      ]
+    },
+    "bazel-server:second-worktree": {
+      "maximum": 5.7549236429913435,
+      "median": 5.235238962006406,
+      "minimum": 4.7704181039880496,
+      "samples": [
+        5.7549236429913435,
+        5.235238962006406,
+        4.7704181039880496
+      ]
+    },
+    "bazel-server:warm": {
+      "maximum": 0.3842297730006976,
+      "median": 0.3279209100001026,
+      "minimum": 0.2874288839957444,
+      "samples": [
+        0.3279209100001026,
+        0.2874288839957444,
+        0.3842297730006976
+      ]
+    },
+    "bazel:cold": {
+      "maximum": 8.148776513000485,
+      "median": 8.08728504399187,
+      "minimum": 7.44499031000305,
+      "samples": [
+        8.148776513000485,
+        8.08728504399187,
+        7.44499031000305
+      ]
+    },
+    "bazel:fresh-build-directory": {
+      "maximum": 4.95307808900543,
+      "median": 4.677427074013394,
+      "minimum": 4.560661231007543,
+      "samples": [
+        4.95307808900543,
+        4.560661231007543,
+        4.677427074013394
+      ]
+    },
+    "bazel:implementation-edit": {
+      "maximum": 4.203947336995043,
+      "median": 4.133936389000155,
+      "minimum": 4.0251955239946255,
+      "samples": [
+        4.203947336995043,
+        4.0251955239946255,
+        4.133936389000155
+      ]
+    },
+    "bazel:public-api-edit": {
+      "maximum": 5.182431747991359,
+      "median": 4.733142366007087,
+      "minimum": 4.605513364003855,
+      "samples": [
+        4.733142366007087,
+        5.182431747991359,
+        4.605513364003855
+      ]
+    },
+    "bazel:second-worktree": {
+      "maximum": 4.766294778994052,
+      "median": 4.490437487009331,
+      "minimum": 4.454395307999221,
+      "samples": [
+        4.766294778994052,
+        4.490437487009331,
+        4.454395307999221
+      ]
+    },
+    "bazel:warm": {
+      "maximum": 4.01762523400248,
+      "median": 4.000438160990598,
+      "minimum": 3.5938165489933454,
+      "samples": [
+        4.000438160990598,
+        3.5938165489933454,
+        4.01762523400248
+      ]
+    },
+    "cargo-incremental-debug0:cold": {
+      "maximum": 0.7579780029918766,
+      "median": 0.7141259930067463,
+      "minimum": 0.6821671200013952,
+      "samples": [
+        0.7579780029918766,
+        0.7141259930067463,
+        0.6821671200013952
+      ]
+    },
+    "cargo-incremental-debug0:fresh-build-directory": {
+      "maximum": 0.7690376070095226,
+      "median": 0.7001749310002197,
+      "minimum": 0.6826573900034418,
+      "samples": [
+        0.7690376070095226,
+        0.7001749310002197,
+        0.6826573900034418
+      ]
+    },
+    "cargo-incremental-debug0:implementation-edit": {
+      "maximum": 0.4625162970041856,
+      "median": 0.38083364799967967,
+      "minimum": 0.3719997930020327,
+      "samples": [
+        0.38083364799967967,
+        0.3719997930020327,
+        0.4625162970041856
+      ]
+    },
+    "cargo-incremental-debug0:public-api-edit": {
+      "maximum": 0.49931330399704166,
+      "median": 0.459678277009516,
+      "minimum": 0.4472005569987232,
+      "samples": [
+        0.49931330399704166,
+        0.459678277009516,
+        0.4472005569987232
+      ]
+    },
+    "cargo-incremental-debug0:second-worktree": {
+      "maximum": 0.2749301680014469,
+      "median": 0.24651622500095982,
+      "minimum": 0.21983527700649574,
+      "samples": [
+        0.2749301680014469,
+        0.24651622500095982,
+        0.21983527700649574
+      ]
+    },
+    "cargo-incremental-debug0:warm": {
+      "maximum": 0.28153800099971704,
+      "median": 0.23961948699434288,
+      "minimum": 0.22631316901242826,
+      "samples": [
+        0.28153800099971704,
+        0.23961948699434288,
+        0.22631316901242826
+      ]
+    },
+    "cargo-incremental:cold": {
+      "maximum": 1.0882669320126297,
+      "median": 0.8783216459996765,
+      "minimum": 0.8074359869933687,
+      "samples": [
+        1.0882669320126297,
+        0.8783216459996765,
+        0.8074359869933687
+      ]
+    },
+    "cargo-incremental:fresh-build-directory": {
+      "maximum": 0.8651767039991682,
+      "median": 0.827063860007911,
+      "minimum": 0.758641060005175,
+      "samples": [
+        0.8651767039991682,
+        0.827063860007911,
+        0.758641060005175
+      ]
+    },
+    "cargo-incremental:implementation-edit": {
+      "maximum": 0.4664091849990655,
+      "median": 0.4355810810084222,
+      "minimum": 0.40781813200737815,
+      "samples": [
+        0.4664091849990655,
+        0.4355810810084222,
+        0.40781813200737815
+      ]
+    },
+    "cargo-incremental:public-api-edit": {
+      "maximum": 0.5757472350087482,
+      "median": 0.5073047620098805,
+      "minimum": 0.4903928120038472,
+      "samples": [
+        0.5757472350087482,
+        0.5073047620098805,
+        0.4903928120038472
+      ]
+    },
+    "cargo-incremental:second-worktree": {
+      "maximum": 0.3149122540053213,
+      "median": 0.2502160420117434,
+      "minimum": 0.23028463899390772,
+      "samples": [
+        0.3149122540053213,
+        0.2502160420117434,
+        0.23028463899390772
+      ]
+    },
+    "cargo-incremental:warm": {
+      "maximum": 0.3318141650088364,
+      "median": 0.26488575800613035,
+      "minimum": 0.23428543999034446,
+      "samples": [
+        0.3318141650088364,
+        0.26488575800613035,
+        0.23428543999034446
+      ]
+    },
+    "cargo-nonincremental-accache:cold": {
+      "maximum": 1.1553951559908455,
+      "median": 0.9998744869953953,
+      "minimum": 0.9572784789925208,
+      "samples": [
+        1.1553951559908455,
+        0.9572784789925208,
+        0.9998744869953953
+      ]
+    },
+    "cargo-nonincremental-accache:fresh-build-directory": {
+      "maximum": 1.0606034999946132,
+      "median": 0.9451444449950941,
+      "minimum": 0.9358845230017323,
+      "samples": [
+        1.0606034999946132,
+        0.9451444449950941,
+        0.9358845230017323
+      ]
+    },
+    "cargo-nonincremental-accache:implementation-edit": {
+      "maximum": 0.4383589170029154,
+      "median": 0.42187546199420467,
+      "minimum": 0.4170182300003944,
+      "samples": [
+        0.4170182300003944,
+        0.42187546199420467,
+        0.4383589170029154
+      ]
+    },
+    "cargo-nonincremental-accache:public-api-edit": {
+      "maximum": 1.0089000750012929,
+      "median": 0.9455720989935799,
+      "minimum": 0.900912769997376,
+      "samples": [
+        1.0089000750012929,
+        0.900912769997376,
+        0.9455720989935799
+      ]
+    },
+    "cargo-nonincremental-accache:second-worktree": {
+      "maximum": 0.25521193898748606,
+      "median": 0.24754698798642494,
+      "minimum": 0.24741829300182872,
+      "samples": [
+        0.25521193898748606,
+        0.24741829300182872,
+        0.24754698798642494
+      ]
+    },
+    "cargo-nonincremental-accache:warm": {
+      "maximum": 0.2759077100054128,
+      "median": 0.27184670499991626,
+      "minimum": 0.2527425619919086,
+      "samples": [
+        0.27184670499991626,
+        0.2759077100054128,
+        0.2527425619919086
+      ]
+    }
+  },
+  "license_boundary": "/nix/store/ipfgqxf5vhwpb5makli56afmp4i629rz-crucible-green-before-advance-checks-crucible-phase1-gates-licenseBoundary-0",
+  "limitations": [
+    "Nix evaluation, preparation, inventory export, and installation excluded",
+    "Filesystem page cache and shared-host contention uncontrolled",
+    "Waited launcher/client resource usage and persistent JVM counters are separate fields",
+    "Persistent analysis is opt-in; no production builder cutover is qualified by these samples"
+  ],
+  "platform": [
+    "Linux",
+    "localhost",
+    "6.18.57",
+    "#1-NixOS SMP PREEMPT_DYNAMIC Thu Oct 15 09:58:20 UTC 2026",
+    "x86_64"
+  ],
+  "python_policy_tests": 51,
+  "rust_targets": "/nix/store/agzj1gwf81mch6f1jny04pizxvli1fvr-aos-test-targets-0.1.0",
+  "samples": [
+    {
+      "block_inputs": 14535,
+      "block_outputs": 20006,
+      "cargo_artifacts": {
+        "rebuilt": 2
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/0-cargo-incremental/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/0-cargo-incremental/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        65.75537109375,
+        86.68310546875,
+        123.97412109375
+      ],
+      "mode": "cargo-incremental",
+      "peak_rss_kib": 139936,
+      "repetition": 0,
+      "scenario": "cold",
+      "system_seconds": 0.38593099999999997,
+      "user_seconds": 0.829133,
+      "wall_seconds": 1.0882669320126297
+    },
+    {
+      "block_inputs": 0,
+      "block_outputs": 4,
+      "cargo_artifacts": {
+        "fresh": 2
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/0-cargo-incremental/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/0-cargo-incremental/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        65.75537109375,
+        86.68310546875,
+        123.97412109375
+      ],
+      "mode": "cargo-incremental",
+      "peak_rss_kib": 90164,
+      "repetition": 0,
+      "scenario": "warm",
+      "system_seconds": 0.128715,
+      "user_seconds": 0.19797499999999998,
+      "wall_seconds": 0.3318141650088364
+    },
+    {
+      "block_inputs": 0,
+      "block_outputs": 5405,
+      "cargo_artifacts": {
+        "fresh": 1,
+        "rebuilt": 1
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/0-cargo-incremental/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/0-cargo-incremental/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        65.75537109375,
+        86.68310546875,
+        123.97412109375
+      ],
+      "mode": "cargo-incremental",
+      "peak_rss_kib": 98700,
+      "repetition": 0,
+      "scenario": "implementation-edit",
+      "system_seconds": 0.218031,
+      "user_seconds": 0.2488,
+      "wall_seconds": 0.4664091849990655
+    },
+    {
+      "block_inputs": 0,
+      "block_outputs": 16065,
+      "cargo_artifacts": {
+        "rebuilt": 2
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/0-cargo-incremental/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/0-cargo-incremental/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        65.75537109375,
+        86.68310546875,
+        123.97412109375
+      ],
+      "mode": "cargo-incremental",
+      "peak_rss_kib": 123400,
+      "repetition": 0,
+      "scenario": "public-api-edit",
+      "system_seconds": 0.294655,
+      "user_seconds": 0.301793,
+      "wall_seconds": 0.5757472350087482
+    },
+    {
+      "block_inputs": 0,
+      "block_outputs": 4,
+      "cargo_artifacts": {
+        "fresh": 2
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/0-cargo-incremental/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/0-cargo-incremental/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        66.49609375,
+        86.48876953125,
+        123.7109375
+      ],
+      "mode": "cargo-incremental",
+      "peak_rss_kib": 81972,
+      "repetition": 0,
+      "scenario": "second-worktree",
+      "system_seconds": 0.099546,
+      "user_seconds": 0.210774,
+      "wall_seconds": 0.3149122540053213
+    },
+    {
+      "block_inputs": 0,
+      "block_outputs": 19914,
+      "cargo_artifacts": {
+        "rebuilt": 2
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/0-cargo-incremental/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/0-cargo-incremental/cargo-fresh-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        66.49609375,
+        86.48876953125,
+        123.7109375
+      ],
+      "mode": "cargo-incremental",
+      "peak_rss_kib": 144076,
+      "repetition": 0,
+      "scenario": "fresh-build-directory",
+      "system_seconds": 0.344789,
+      "user_seconds": 0.803071,
+      "wall_seconds": 0.8651767039991682
+    },
+    {
+      "actions": {
+        "Rustc:executed": 4
+      },
+      "block_inputs": 2140,
+      "block_outputs": 276341,
+      "command": [
+        "/nix/store/03xdp3x214a0px6gvhg4dwiq7i0fqkrm-python3-3.14.3/bin/python3",
+        "/nix/store/bx41sy2pmmkg6z1qpgln8v1myrqafysf-launcher.py",
+        "--config",
+        "/nix/store/c0dzq2wv64yhw194pr50wyzwskln1wd7-aos-bazel-configuration.json",
+        "--workspace",
+        "/build/performance/0-bazel/first-worktree",
+        "--output-base",
+        "/build/performance/0-bazel/bazel-first",
+        "--nix-sandbox",
+        "--cache",
+        "/build/performance/0-bazel/bazel-cache",
+        "--metrics",
+        "/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/0-bazel/cold/launcher.json",
+        "--",
+        "build",
+        "//crates/aos/boot/aos-boot-identity:package",
+        "--execution_log_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/0-bazel/cold/execution.json",
+        "--build_event_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/0-bazel/cold/events.json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/0-bazel/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/0-bazel/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        66.455078125,
+        85.80224609375,
+        123.08740234375
+      ],
+      "mode": "bazel",
+      "peak_rss_kib": 672236,
+      "repetition": 0,
+      "scenario": "cold",
+      "system_seconds": 4.362077,
+      "user_seconds": 29.468448,
+      "wall_seconds": 8.148776513000485
+    },
+    {
+      "actions": {},
+      "block_inputs": 585,
+      "block_outputs": 5613,
+      "command": [
+        "/nix/store/03xdp3x214a0px6gvhg4dwiq7i0fqkrm-python3-3.14.3/bin/python3",
+        "/nix/store/bx41sy2pmmkg6z1qpgln8v1myrqafysf-launcher.py",
+        "--config",
+        "/nix/store/c0dzq2wv64yhw194pr50wyzwskln1wd7-aos-bazel-configuration.json",
+        "--workspace",
+        "/build/performance/0-bazel/first-worktree",
+        "--output-base",
+        "/build/performance/0-bazel/bazel-first",
+        "--nix-sandbox",
+        "--cache",
+        "/build/performance/0-bazel/bazel-cache",
+        "--metrics",
+        "/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/0-bazel/warm/launcher.json",
+        "--",
+        "build",
+        "//crates/aos/boot/aos-boot-identity:package",
+        "--execution_log_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/0-bazel/warm/execution.json",
+        "--build_event_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/0-bazel/warm/events.json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/0-bazel/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/0-bazel/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        65.85791015625,
+        85.35693359375,
+        122.7431640625
+      ],
+      "mode": "bazel",
+      "peak_rss_kib": 401484,
+      "repetition": 0,
+      "scenario": "warm",
+      "system_seconds": 2.786385,
+      "user_seconds": 18.514196,
+      "wall_seconds": 4.000438160990598
+    },
+    {
+      "actions": {
+        "Rustc:executed": 1
+      },
+      "block_inputs": 192,
+      "block_outputs": 9908,
+      "command": [
+        "/nix/store/03xdp3x214a0px6gvhg4dwiq7i0fqkrm-python3-3.14.3/bin/python3",
+        "/nix/store/bx41sy2pmmkg6z1qpgln8v1myrqafysf-launcher.py",
+        "--config",
+        "/nix/store/c0dzq2wv64yhw194pr50wyzwskln1wd7-aos-bazel-configuration.json",
+        "--workspace",
+        "/build/performance/0-bazel/first-worktree",
+        "--output-base",
+        "/build/performance/0-bazel/bazel-first",
+        "--nix-sandbox",
+        "--cache",
+        "/build/performance/0-bazel/bazel-cache",
+        "--metrics",
+        "/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/0-bazel/implementation-edit/launcher.json",
+        "--",
+        "build",
+        "//crates/aos/boot/aos-boot-identity:package",
+        "--execution_log_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/0-bazel/implementation-edit/execution.json",
+        "--build_event_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/0-bazel/implementation-edit/events.json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/0-bazel/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/0-bazel/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        65.85791015625,
+        85.35693359375,
+        122.7431640625
+      ],
+      "mode": "bazel",
+      "peak_rss_kib": 534760,
+      "repetition": 0,
+      "scenario": "implementation-edit",
+      "system_seconds": 2.8266109999999998,
+      "user_seconds": 19.71944,
+      "wall_seconds": 4.203947336995043
+    },
+    {
+      "actions": {
+        "Rustc:executed": 2
+      },
+      "block_inputs": 5739,
+      "block_outputs": 21021,
+      "command": [
+        "/nix/store/03xdp3x214a0px6gvhg4dwiq7i0fqkrm-python3-3.14.3/bin/python3",
+        "/nix/store/bx41sy2pmmkg6z1qpgln8v1myrqafysf-launcher.py",
+        "--config",
+        "/nix/store/c0dzq2wv64yhw194pr50wyzwskln1wd7-aos-bazel-configuration.json",
+        "--workspace",
+        "/build/performance/0-bazel/first-worktree",
+        "--output-base",
+        "/build/performance/0-bazel/bazel-first",
+        "--nix-sandbox",
+        "--cache",
+        "/build/performance/0-bazel/bazel-cache",
+        "--metrics",
+        "/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/0-bazel/public-api-edit/launcher.json",
+        "--",
+        "build",
+        "//crates/aos/boot/aos-boot-identity:package",
+        "--execution_log_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/0-bazel/public-api-edit/execution.json",
+        "--build_event_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/0-bazel/public-api-edit/events.json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/0-bazel/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/0-bazel/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        65.068359375,
+        84.869140625,
+        122.38427734375
+      ],
+      "mode": "bazel",
+      "peak_rss_kib": 487500,
+      "repetition": 0,
+      "scenario": "public-api-edit",
+      "system_seconds": 2.878914,
+      "user_seconds": 20.764784,
+      "wall_seconds": 4.733142366007087
+    },
+    {
+      "actions": {
+        "Rustc:restored": 4
+      },
+      "block_inputs": 649,
+      "block_outputs": 255533,
+      "command": [
+        "/nix/store/03xdp3x214a0px6gvhg4dwiq7i0fqkrm-python3-3.14.3/bin/python3",
+        "/nix/store/bx41sy2pmmkg6z1qpgln8v1myrqafysf-launcher.py",
+        "--config",
+        "/nix/store/c0dzq2wv64yhw194pr50wyzwskln1wd7-aos-bazel-configuration.json",
+        "--workspace",
+        "/build/performance/0-bazel/second-worktree",
+        "--output-base",
+        "/build/performance/0-bazel/bazel-second",
+        "--nix-sandbox",
+        "--cache",
+        "/build/performance/0-bazel/bazel-cache",
+        "--metrics",
+        "/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/0-bazel/second-worktree/launcher.json",
+        "--",
+        "build",
+        "//crates/aos/boot/aos-boot-identity:package",
+        "--execution_log_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/0-bazel/second-worktree/execution.json",
+        "--build_event_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/0-bazel/second-worktree/events.json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/0-bazel/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/0-bazel/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        65.86376953125,
+        84.705078125,
+        122.12939453125
+      ],
+      "mode": "bazel",
+      "peak_rss_kib": 594864,
+      "repetition": 0,
+      "scenario": "second-worktree",
+      "system_seconds": 2.825488,
+      "user_seconds": 19.566124,
+      "wall_seconds": 4.766294778994052
+    },
+    {
+      "actions": {
+        "Rustc:restored": 4
+      },
+      "block_inputs": 704,
+      "block_outputs": 255532,
+      "command": [
+        "/nix/store/03xdp3x214a0px6gvhg4dwiq7i0fqkrm-python3-3.14.3/bin/python3",
+        "/nix/store/bx41sy2pmmkg6z1qpgln8v1myrqafysf-launcher.py",
+        "--config",
+        "/nix/store/c0dzq2wv64yhw194pr50wyzwskln1wd7-aos-bazel-configuration.json",
+        "--workspace",
+        "/build/performance/0-bazel/second-worktree",
+        "--output-base",
+        "/build/performance/0-bazel/bazel-fresh",
+        "--nix-sandbox",
+        "--cache",
+        "/build/performance/0-bazel/bazel-cache",
+        "--metrics",
+        "/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/0-bazel/fresh-build-directory/launcher.json",
+        "--",
+        "build",
+        "//crates/aos/boot/aos-boot-identity:package",
+        "--execution_log_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/0-bazel/fresh-build-directory/execution.json",
+        "--build_event_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/0-bazel/fresh-build-directory/events.json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/0-bazel/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/0-bazel/cargo-fresh-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        64.03271484375,
+        84.0126953125,
+        121.7041015625
+      ],
+      "mode": "bazel",
+      "peak_rss_kib": 635864,
+      "repetition": 0,
+      "scenario": "fresh-build-directory",
+      "system_seconds": 2.567129,
+      "user_seconds": 20.332661,
+      "wall_seconds": 4.95307808900543
+    },
+    {
+      "block_inputs": 11096,
+      "block_outputs": 10190,
+      "cargo_artifacts": {
+        "rebuilt": 2
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "ACCACHE_DIR": "/build/performance/0-cargo-nonincremental-accache/accache",
+        "ACCACHE_MANIFEST": "/nix/store/y38pc1z7dzmi4skc86i4bk84bggm8ja5-accache-nix-manifest-1/manifest.json",
+        "ACCACHE_STATE_DIR": "/build/performance/0-cargo-nonincremental-accache/accache-state",
+        "CARGO_HOME": "/build/performance/0-cargo-nonincremental-accache/cargo-home",
+        "CARGO_INCREMENTAL": "0",
+        "CARGO_TARGET_DIR": "/build/performance/0-cargo-nonincremental-accache/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc",
+        "RUSTC_WRAPPER": "/nix/store/706pmxqfnysgf9f0ffw6w36bh5p32vzv-accache-0.1.0/bin/accache"
+      },
+      "load_average": [
+        62.66845703125,
+        83.39794921875,
+        121.302734375
+      ],
+      "mode": "cargo-nonincremental-accache",
+      "peak_rss_kib": 148152,
+      "repetition": 0,
+      "scenario": "cold",
+      "system_seconds": 0.367388,
+      "user_seconds": 0.735779,
+      "wall_seconds": 1.1553951559908455
+    },
+    {
+      "block_inputs": 0,
+      "block_outputs": 4,
+      "cargo_artifacts": {
+        "fresh": 2
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "ACCACHE_DIR": "/build/performance/0-cargo-nonincremental-accache/accache",
+        "ACCACHE_MANIFEST": "/nix/store/y38pc1z7dzmi4skc86i4bk84bggm8ja5-accache-nix-manifest-1/manifest.json",
+        "ACCACHE_STATE_DIR": "/build/performance/0-cargo-nonincremental-accache/accache-state",
+        "CARGO_HOME": "/build/performance/0-cargo-nonincremental-accache/cargo-home",
+        "CARGO_INCREMENTAL": "0",
+        "CARGO_TARGET_DIR": "/build/performance/0-cargo-nonincremental-accache/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc",
+        "RUSTC_WRAPPER": "/nix/store/706pmxqfnysgf9f0ffw6w36bh5p32vzv-accache-0.1.0/bin/accache"
+      },
+      "load_average": [
+        62.66845703125,
+        83.39794921875,
+        121.302734375
+      ],
+      "mode": "cargo-nonincremental-accache",
+      "peak_rss_kib": 90164,
+      "repetition": 0,
+      "scenario": "warm",
+      "system_seconds": 0.09909,
+      "user_seconds": 0.16941299999999998,
+      "wall_seconds": 0.27184670499991626
+    },
+    {
+      "block_inputs": 0,
+      "block_outputs": 3034,
+      "cargo_artifacts": {
+        "fresh": 1,
+        "rebuilt": 1
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "ACCACHE_DIR": "/build/performance/0-cargo-nonincremental-accache/accache",
+        "ACCACHE_MANIFEST": "/nix/store/y38pc1z7dzmi4skc86i4bk84bggm8ja5-accache-nix-manifest-1/manifest.json",
+        "ACCACHE_STATE_DIR": "/build/performance/0-cargo-nonincremental-accache/accache-state",
+        "CARGO_HOME": "/build/performance/0-cargo-nonincremental-accache/cargo-home",
+        "CARGO_INCREMENTAL": "0",
+        "CARGO_TARGET_DIR": "/build/performance/0-cargo-nonincremental-accache/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc",
+        "RUSTC_WRAPPER": "/nix/store/706pmxqfnysgf9f0ffw6w36bh5p32vzv-accache-0.1.0/bin/accache"
+      },
+      "load_average": [
+        62.66845703125,
+        83.39794921875,
+        121.302734375
+      ],
+      "mode": "cargo-nonincremental-accache",
+      "peak_rss_kib": 115160,
+      "repetition": 0,
+      "scenario": "implementation-edit",
+      "system_seconds": 0.17299199999999998,
+      "user_seconds": 0.240011,
+      "wall_seconds": 0.4170182300003944
+    },
+    {
+      "block_inputs": 0,
+      "block_outputs": 10080,
+      "cargo_artifacts": {
+        "rebuilt": 2
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "ACCACHE_DIR": "/build/performance/0-cargo-nonincremental-accache/accache",
+        "ACCACHE_MANIFEST": "/nix/store/y38pc1z7dzmi4skc86i4bk84bggm8ja5-accache-nix-manifest-1/manifest.json",
+        "ACCACHE_STATE_DIR": "/build/performance/0-cargo-nonincremental-accache/accache-state",
+        "CARGO_HOME": "/build/performance/0-cargo-nonincremental-accache/cargo-home",
+        "CARGO_INCREMENTAL": "0",
+        "CARGO_TARGET_DIR": "/build/performance/0-cargo-nonincremental-accache/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc",
+        "RUSTC_WRAPPER": "/nix/store/706pmxqfnysgf9f0ffw6w36bh5p32vzv-accache-0.1.0/bin/accache"
+      },
+      "load_average": [
+        62.66845703125,
+        83.39794921875,
+        121.302734375
+      ],
+      "mode": "cargo-nonincremental-accache",
+      "peak_rss_kib": 143960,
+      "repetition": 0,
+      "scenario": "public-api-edit",
+      "system_seconds": 0.344228,
+      "user_seconds": 0.709499,
+      "wall_seconds": 1.0089000750012929
+    },
+    {
+      "block_inputs": 0,
+      "block_outputs": 4,
+      "cargo_artifacts": {
+        "fresh": 2
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "ACCACHE_DIR": "/build/performance/0-cargo-nonincremental-accache/accache",
+        "ACCACHE_MANIFEST": "/nix/store/y38pc1z7dzmi4skc86i4bk84bggm8ja5-accache-nix-manifest-1/manifest.json",
+        "ACCACHE_STATE_DIR": "/build/performance/0-cargo-nonincremental-accache/accache-state",
+        "CARGO_HOME": "/build/performance/0-cargo-nonincremental-accache/cargo-home",
+        "CARGO_INCREMENTAL": "0",
+        "CARGO_TARGET_DIR": "/build/performance/0-cargo-nonincremental-accache/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc",
+        "RUSTC_WRAPPER": "/nix/store/706pmxqfnysgf9f0ffw6w36bh5p32vzv-accache-0.1.0/bin/accache"
+      },
+      "load_average": [
+        61.49365234375,
+        82.81005859375,
+        120.90869140625
+      ],
+      "mode": "cargo-nonincremental-accache",
+      "peak_rss_kib": 90164,
+      "repetition": 0,
+      "scenario": "second-worktree",
+      "system_seconds": 0.084813,
+      "user_seconds": 0.16594499999999998,
+      "wall_seconds": 0.25521193898748606
+    },
+    {
+      "block_inputs": 0,
+      "block_outputs": 10084,
+      "cargo_artifacts": {
+        "rebuilt": 2
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "ACCACHE_DIR": "/build/performance/0-cargo-nonincremental-accache/accache",
+        "ACCACHE_MANIFEST": "/nix/store/y38pc1z7dzmi4skc86i4bk84bggm8ja5-accache-nix-manifest-1/manifest.json",
+        "ACCACHE_STATE_DIR": "/build/performance/0-cargo-nonincremental-accache/accache-state",
+        "CARGO_HOME": "/build/performance/0-cargo-nonincremental-accache/cargo-home",
+        "CARGO_INCREMENTAL": "0",
+        "CARGO_TARGET_DIR": "/build/performance/0-cargo-nonincremental-accache/cargo-fresh-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc",
+        "RUSTC_WRAPPER": "/nix/store/706pmxqfnysgf9f0ffw6w36bh5p32vzv-accache-0.1.0/bin/accache"
+      },
+      "load_average": [
+        61.49365234375,
+        82.81005859375,
+        120.90869140625
+      ],
+      "mode": "cargo-nonincremental-accache",
+      "peak_rss_kib": 139880,
+      "repetition": 0,
+      "scenario": "fresh-build-directory",
+      "system_seconds": 0.40365599999999996,
+      "user_seconds": 0.6825629999999999,
+      "wall_seconds": 1.0606034999946132
+    },
+    {
+      "block_inputs": 256,
+      "block_outputs": 12492,
+      "cargo_artifacts": {
+        "rebuilt": 2
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/0-cargo-incremental-debug0/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_TARGET_DIR": "/build/performance/0-cargo-incremental-debug0/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        59.5322265625,
+        82.04931640625,
+        120.4580078125
+      ],
+      "mode": "cargo-incremental-debug0",
+      "peak_rss_kib": 139936,
+      "repetition": 0,
+      "scenario": "cold",
+      "system_seconds": 0.293844,
+      "user_seconds": 0.630497,
+      "wall_seconds": 0.7579780029918766
+    },
+    {
+      "block_inputs": 0,
+      "block_outputs": 4,
+      "cargo_artifacts": {
+        "fresh": 2
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/0-cargo-incremental-debug0/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_TARGET_DIR": "/build/performance/0-cargo-incremental-debug0/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        59.5322265625,
+        82.04931640625,
+        120.4580078125
+      ],
+      "mode": "cargo-incremental-debug0",
+      "peak_rss_kib": 90164,
+      "repetition": 0,
+      "scenario": "warm",
+      "system_seconds": 0.09822299999999999,
+      "user_seconds": 0.177843,
+      "wall_seconds": 0.28153800099971704
+    },
+    {
+      "block_inputs": 0,
+      "block_outputs": 3725,
+      "cargo_artifacts": {
+        "fresh": 1,
+        "rebuilt": 1
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/0-cargo-incremental-debug0/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_TARGET_DIR": "/build/performance/0-cargo-incremental-debug0/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        59.5322265625,
+        82.04931640625,
+        120.4580078125
+      ],
+      "mode": "cargo-incremental-debug0",
+      "peak_rss_kib": 98848,
+      "repetition": 0,
+      "scenario": "implementation-edit",
+      "system_seconds": 0.17005699999999999,
+      "user_seconds": 0.212026,
+      "wall_seconds": 0.38083364799967967
+    },
+    {
+      "block_inputs": 64,
+      "block_outputs": 11515,
+      "cargo_artifacts": {
+        "rebuilt": 2
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/0-cargo-incremental-debug0/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_TARGET_DIR": "/build/performance/0-cargo-incremental-debug0/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        59.5322265625,
+        82.04931640625,
+        120.4580078125
+      ],
+      "mode": "cargo-incremental-debug0",
+      "peak_rss_kib": 115288,
+      "repetition": 0,
+      "scenario": "public-api-edit",
+      "system_seconds": 0.226686,
+      "user_seconds": 0.293141,
+      "wall_seconds": 0.49931330399704166
+    },
+    {
+      "block_inputs": 0,
+      "block_outputs": 4,
+      "cargo_artifacts": {
+        "fresh": 2
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/0-cargo-incremental-debug0/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_TARGET_DIR": "/build/performance/0-cargo-incremental-debug0/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        59.5322265625,
+        82.04931640625,
+        120.4580078125
+      ],
+      "mode": "cargo-incremental-debug0",
+      "peak_rss_kib": 81972,
+      "repetition": 0,
+      "scenario": "second-worktree",
+      "system_seconds": 0.087396,
+      "user_seconds": 0.182947,
+      "wall_seconds": 0.2749301680014469
+    },
+    {
+      "block_inputs": 128,
+      "block_outputs": 12396,
+      "cargo_artifacts": {
+        "rebuilt": 2
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/0-cargo-incremental-debug0/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_TARGET_DIR": "/build/performance/0-cargo-incremental-debug0/cargo-fresh-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        57.5673828125,
+        81.26806640625,
+        119.99853515625
+      ],
+      "mode": "cargo-incremental-debug0",
+      "peak_rss_kib": 123516,
+      "repetition": 0,
+      "scenario": "fresh-build-directory",
+      "system_seconds": 0.26469899999999996,
+      "user_seconds": 0.6744359999999999,
+      "wall_seconds": 0.7690376070095226
+    },
+    {
+      "actions": {
+        "Rustc:executed": 4
+      },
+      "block_inputs": 2048,
+      "block_outputs": 235923,
+      "command": [
+        "/nix/store/03xdp3x214a0px6gvhg4dwiq7i0fqkrm-python3-3.14.3/bin/python3",
+        "/nix/store/bx41sy2pmmkg6z1qpgln8v1myrqafysf-launcher.py",
+        "--config",
+        "/build/performance/0-bazel-server/server-config.json",
+        "--workspace",
+        "/build/performance/0-bazel-server/first-worktree",
+        "--output-base",
+        "/build/performance/0-bazel-server/bazel-first",
+        "--nix-sandbox",
+        "--cache",
+        "/build/performance/0-bazel-server/bazel-cache",
+        "--metrics",
+        "/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/0-bazel-server/cold/launcher.json",
+        "--",
+        "build",
+        "//crates/aos/boot/aos-boot-identity:package",
+        "--execution_log_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/0-bazel-server/cold/execution.json",
+        "--build_event_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/0-bazel-server/cold/events.json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/0-bazel-server/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/0-bazel-server/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        57.201171875,
+        80.79833984375,
+        119.638671875
+      ],
+      "mode": "bazel-server",
+      "peak_rss_kib": 143432,
+      "repetition": 0,
+      "resource_scope": "waited launcher/client descendants; JVM resources recorded separately",
+      "scenario": "cold",
+      "server_after": {
+        "children_system_seconds": 0.64,
+        "children_user_seconds": 4.73,
+        "peak_rss_kib": 928724,
+        "pid": 4211,
+        "rss_kib": 928724,
+        "system_seconds": 3.36,
+        "user_seconds": 23.54
+      },
+      "server_before": null,
+      "system_seconds": 0.150761,
+      "user_seconds": 0.37367,
+      "wall_seconds": 8.940285203003441
+    },
+    {
+      "actions": {},
+      "block_inputs": 0,
+      "block_outputs": 35,
+      "command": [
+        "/nix/store/03xdp3x214a0px6gvhg4dwiq7i0fqkrm-python3-3.14.3/bin/python3",
+        "/nix/store/bx41sy2pmmkg6z1qpgln8v1myrqafysf-launcher.py",
+        "--config",
+        "/build/performance/0-bazel-server/server-config.json",
+        "--workspace",
+        "/build/performance/0-bazel-server/first-worktree",
+        "--output-base",
+        "/build/performance/0-bazel-server/bazel-first",
+        "--nix-sandbox",
+        "--cache",
+        "/build/performance/0-bazel-server/bazel-cache",
+        "--metrics",
+        "/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/0-bazel-server/warm/launcher.json",
+        "--",
+        "build",
+        "//crates/aos/boot/aos-boot-identity:package",
+        "--execution_log_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/0-bazel-server/warm/execution.json",
+        "--build_event_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/0-bazel-server/warm/events.json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/0-bazel-server/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/0-bazel-server/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        57.201171875,
+        80.79833984375,
+        119.638671875
+      ],
+      "mode": "bazel-server",
+      "peak_rss_kib": 32164,
+      "repetition": 0,
+      "resource_scope": "waited launcher/client descendants; JVM resources recorded separately",
+      "scenario": "warm",
+      "server_after": {
+        "children_system_seconds": 0.64,
+        "children_user_seconds": 4.73,
+        "peak_rss_kib": 954316,
+        "pid": 4211,
+        "rss_kib": 954316,
+        "system_seconds": 3.7,
+        "user_seconds": 25.37
+      },
+      "server_before": {
+        "children_system_seconds": 0.64,
+        "children_user_seconds": 4.73,
+        "peak_rss_kib": 933076,
+        "pid": 4211,
+        "rss_kib": 933076,
+        "system_seconds": 3.36,
+        "user_seconds": 23.74
+      },
+      "system_seconds": 0.044208,
+      "user_seconds": 0.053236,
+      "wall_seconds": 0.3279209100001026
+    },
+    {
+      "actions": {
+        "Rustc:executed": 1
+      },
+      "block_inputs": 0,
+      "block_outputs": 35,
+      "command": [
+        "/nix/store/03xdp3x214a0px6gvhg4dwiq7i0fqkrm-python3-3.14.3/bin/python3",
+        "/nix/store/bx41sy2pmmkg6z1qpgln8v1myrqafysf-launcher.py",
+        "--config",
+        "/build/performance/0-bazel-server/server-config.json",
+        "--workspace",
+        "/build/performance/0-bazel-server/first-worktree",
+        "--output-base",
+        "/build/performance/0-bazel-server/bazel-first",
+        "--nix-sandbox",
+        "--cache",
+        "/build/performance/0-bazel-server/bazel-cache",
+        "--metrics",
+        "/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/0-bazel-server/implementation-edit/launcher.json",
+        "--",
+        "build",
+        "//crates/aos/boot/aos-boot-identity:package",
+        "--execution_log_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/0-bazel-server/implementation-edit/execution.json",
+        "--build_event_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/0-bazel-server/implementation-edit/events.json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/0-bazel-server/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/0-bazel-server/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        59.5078125,
+        80.884765625,
+        119.45751953125
+      ],
+      "mode": "bazel-server",
+      "peak_rss_kib": 32164,
+      "repetition": 0,
+      "resource_scope": "waited launcher/client descendants; JVM resources recorded separately",
+      "scenario": "implementation-edit",
+      "server_after": {
+        "children_system_seconds": 0.79,
+        "children_user_seconds": 4.82,
+        "peak_rss_kib": 967740,
+        "pid": 4211,
+        "rss_kib": 967740,
+        "system_seconds": 4.1,
+        "user_seconds": 26.36
+      },
+      "server_before": {
+        "children_system_seconds": 0.64,
+        "children_user_seconds": 4.73,
+        "peak_rss_kib": 954316,
+        "pid": 4211,
+        "rss_kib": 954316,
+        "system_seconds": 3.7,
+        "user_seconds": 25.37
+      },
+      "system_seconds": 0.053377999999999995,
+      "user_seconds": 0.05994,
+      "wall_seconds": 0.6687036600051215
+    },
+    {
+      "actions": {
+        "Rustc:executed": 2
+      },
+      "block_inputs": 0,
+      "block_outputs": 35,
+      "command": [
+        "/nix/store/03xdp3x214a0px6gvhg4dwiq7i0fqkrm-python3-3.14.3/bin/python3",
+        "/nix/store/bx41sy2pmmkg6z1qpgln8v1myrqafysf-launcher.py",
+        "--config",
+        "/build/performance/0-bazel-server/server-config.json",
+        "--workspace",
+        "/build/performance/0-bazel-server/first-worktree",
+        "--output-base",
+        "/build/performance/0-bazel-server/bazel-first",
+        "--nix-sandbox",
+        "--cache",
+        "/build/performance/0-bazel-server/bazel-cache",
+        "--metrics",
+        "/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/0-bazel-server/public-api-edit/launcher.json",
+        "--",
+        "build",
+        "//crates/aos/boot/aos-boot-identity:package",
+        "--execution_log_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/0-bazel-server/public-api-edit/execution.json",
+        "--build_event_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/0-bazel-server/public-api-edit/events.json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/0-bazel-server/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/0-bazel-server/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        59.5078125,
+        80.884765625,
+        119.45751953125
+      ],
+      "mode": "bazel-server",
+      "peak_rss_kib": 32164,
+      "repetition": 0,
+      "resource_scope": "waited launcher/client descendants; JVM resources recorded separately",
+      "scenario": "public-api-edit",
+      "server_after": {
+        "children_system_seconds": 1.0,
+        "children_user_seconds": 5.07,
+        "peak_rss_kib": 978420,
+        "pid": 4211,
+        "rss_kib": 978420,
+        "system_seconds": 4.61,
+        "user_seconds": 27.56
+      },
+      "server_before": {
+        "children_system_seconds": 0.79,
+        "children_user_seconds": 4.82,
+        "peak_rss_kib": 967900,
+        "pid": 4211,
+        "rss_kib": 967900,
+        "system_seconds": 4.1,
+        "user_seconds": 26.42
+      },
+      "system_seconds": 0.053412999999999995,
+      "user_seconds": 0.059083,
+      "wall_seconds": 1.250340889004292
+    },
+    {
+      "actions": {
+        "Rustc:restored": 4
+      },
+      "block_inputs": 320,
+      "block_outputs": 235922,
+      "command": [
+        "/nix/store/03xdp3x214a0px6gvhg4dwiq7i0fqkrm-python3-3.14.3/bin/python3",
+        "/nix/store/bx41sy2pmmkg6z1qpgln8v1myrqafysf-launcher.py",
+        "--config",
+        "/build/performance/0-bazel-server/server-config.json",
+        "--workspace",
+        "/build/performance/0-bazel-server/second-worktree",
+        "--output-base",
+        "/build/performance/0-bazel-server/bazel-second",
+        "--nix-sandbox",
+        "--cache",
+        "/build/performance/0-bazel-server/bazel-cache",
+        "--metrics",
+        "/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/0-bazel-server/second-worktree/launcher.json",
+        "--",
+        "build",
+        "//crates/aos/boot/aos-boot-identity:package",
+        "--execution_log_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/0-bazel-server/second-worktree/execution.json",
+        "--build_event_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/0-bazel-server/second-worktree/events.json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/0-bazel-server/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/0-bazel-server/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        71.79931640625,
+        83.078125,
+        119.9599609375
+      ],
+      "mode": "bazel-server",
+      "peak_rss_kib": 143432,
+      "repetition": 0,
+      "resource_scope": "waited launcher/client descendants; JVM resources recorded separately",
+      "scenario": "second-worktree",
+      "server_after": {
+        "children_system_seconds": 0.03,
+        "children_user_seconds": 0.04,
+        "peak_rss_kib": 898532,
+        "pid": 5822,
+        "rss_kib": 898532,
+        "system_seconds": 3.13,
+        "user_seconds": 25.72
+      },
+      "server_before": null,
+      "system_seconds": 0.216462,
+      "user_seconds": 0.349558,
+      "wall_seconds": 5.7549236429913435
+    },
+    {
+      "actions": {
+        "Rustc:restored": 4
+      },
+      "block_inputs": 128,
+      "block_outputs": 235922,
+      "command": [
+        "/nix/store/03xdp3x214a0px6gvhg4dwiq7i0fqkrm-python3-3.14.3/bin/python3",
+        "/nix/store/bx41sy2pmmkg6z1qpgln8v1myrqafysf-launcher.py",
+        "--config",
+        "/build/performance/0-bazel-server/server-config.json",
+        "--workspace",
+        "/build/performance/0-bazel-server/second-worktree",
+        "--output-base",
+        "/build/performance/0-bazel-server/bazel-fresh",
+        "--nix-sandbox",
+        "--cache",
+        "/build/performance/0-bazel-server/bazel-cache",
+        "--metrics",
+        "/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/0-bazel-server/fresh-build-directory/launcher.json",
+        "--",
+        "build",
+        "//crates/aos/boot/aos-boot-identity:package",
+        "--execution_log_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/0-bazel-server/fresh-build-directory/execution.json",
+        "--build_event_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/0-bazel-server/fresh-build-directory/events.json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/0-bazel-server/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/0-bazel-server/cargo-fresh-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        72.1357421875,
+        82.96044921875,
+        119.7236328125
+      ],
+      "mode": "bazel-server",
+      "peak_rss_kib": 143432,
+      "repetition": 0,
+      "resource_scope": "waited launcher/client descendants; JVM resources recorded separately",
+      "scenario": "fresh-build-directory",
+      "server_after": {
+        "children_system_seconds": 0.04,
+        "children_user_seconds": 0.04,
+        "peak_rss_kib": 908984,
+        "pid": 6429,
+        "rss_kib": 908984,
+        "system_seconds": 3.58,
+        "user_seconds": 22.23
+      },
+      "server_before": null,
+      "system_seconds": 0.145693,
+      "user_seconds": 0.35192199999999996,
+      "wall_seconds": 5.315390101008234
+    },
+    {
+      "actions": {
+        "Rustc:executed": 4
+      },
+      "block_inputs": 208,
+      "block_outputs": 275518,
+      "command": [
+        "/nix/store/03xdp3x214a0px6gvhg4dwiq7i0fqkrm-python3-3.14.3/bin/python3",
+        "/nix/store/bx41sy2pmmkg6z1qpgln8v1myrqafysf-launcher.py",
+        "--config",
+        "/nix/store/c0dzq2wv64yhw194pr50wyzwskln1wd7-aos-bazel-configuration.json",
+        "--workspace",
+        "/build/performance/1-bazel/first-worktree",
+        "--output-base",
+        "/build/performance/1-bazel/bazel-first",
+        "--nix-sandbox",
+        "--cache",
+        "/build/performance/1-bazel/bazel-cache",
+        "--metrics",
+        "/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/1-bazel/cold/launcher.json",
+        "--",
+        "build",
+        "//crates/aos/boot/aos-boot-identity:package",
+        "--execution_log_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/1-bazel/cold/execution.json",
+        "--build_event_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/1-bazel/cold/events.json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/1-bazel/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/1-bazel/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        72.04736328125,
+        82.5830078125,
+        119.20654296875
+      ],
+      "mode": "bazel",
+      "peak_rss_kib": 704972,
+      "repetition": 1,
+      "scenario": "cold",
+      "system_seconds": 3.900039,
+      "user_seconds": 24.004772,
+      "wall_seconds": 8.08728504399187
+    },
+    {
+      "actions": {},
+      "block_inputs": 0,
+      "block_outputs": 5613,
+      "command": [
+        "/nix/store/03xdp3x214a0px6gvhg4dwiq7i0fqkrm-python3-3.14.3/bin/python3",
+        "/nix/store/bx41sy2pmmkg6z1qpgln8v1myrqafysf-launcher.py",
+        "--config",
+        "/nix/store/c0dzq2wv64yhw194pr50wyzwskln1wd7-aos-bazel-configuration.json",
+        "--workspace",
+        "/build/performance/1-bazel/first-worktree",
+        "--output-base",
+        "/build/performance/1-bazel/bazel-first",
+        "--nix-sandbox",
+        "--cache",
+        "/build/performance/1-bazel/bazel-cache",
+        "--metrics",
+        "/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/1-bazel/warm/launcher.json",
+        "--",
+        "build",
+        "//crates/aos/boot/aos-boot-identity:package",
+        "--execution_log_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/1-bazel/warm/execution.json",
+        "--build_event_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/1-bazel/warm/events.json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/1-bazel/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/1-bazel/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        73.8056640625,
+        82.77294921875,
+        119.07080078125
+      ],
+      "mode": "bazel",
+      "peak_rss_kib": 522464,
+      "repetition": 1,
+      "scenario": "warm",
+      "system_seconds": 2.639769,
+      "user_seconds": 18.08176,
+      "wall_seconds": 3.5938165489933454
+    },
+    {
+      "actions": {
+        "Rustc:executed": 1
+      },
+      "block_inputs": 0,
+      "block_outputs": 9906,
+      "command": [
+        "/nix/store/03xdp3x214a0px6gvhg4dwiq7i0fqkrm-python3-3.14.3/bin/python3",
+        "/nix/store/bx41sy2pmmkg6z1qpgln8v1myrqafysf-launcher.py",
+        "--config",
+        "/nix/store/c0dzq2wv64yhw194pr50wyzwskln1wd7-aos-bazel-configuration.json",
+        "--workspace",
+        "/build/performance/1-bazel/first-worktree",
+        "--output-base",
+        "/build/performance/1-bazel/bazel-first",
+        "--nix-sandbox",
+        "--cache",
+        "/build/performance/1-bazel/bazel-cache",
+        "--metrics",
+        "/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/1-bazel/implementation-edit/launcher.json",
+        "--",
+        "build",
+        "//crates/aos/boot/aos-boot-identity:package",
+        "--execution_log_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/1-bazel/implementation-edit/execution.json",
+        "--build_event_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/1-bazel/implementation-edit/events.json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/1-bazel/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/1-bazel/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        73.74072265625,
+        82.6103515625,
+        118.8232421875
+      ],
+      "mode": "bazel",
+      "peak_rss_kib": 541668,
+      "repetition": 1,
+      "scenario": "implementation-edit",
+      "system_seconds": 2.859947,
+      "user_seconds": 18.173519,
+      "wall_seconds": 4.0251955239946255
+    },
+    {
+      "actions": {
+        "Rustc:executed": 2
+      },
+      "block_inputs": 0,
+      "block_outputs": 21022,
+      "command": [
+        "/nix/store/03xdp3x214a0px6gvhg4dwiq7i0fqkrm-python3-3.14.3/bin/python3",
+        "/nix/store/bx41sy2pmmkg6z1qpgln8v1myrqafysf-launcher.py",
+        "--config",
+        "/nix/store/c0dzq2wv64yhw194pr50wyzwskln1wd7-aos-bazel-configuration.json",
+        "--workspace",
+        "/build/performance/1-bazel/first-worktree",
+        "--output-base",
+        "/build/performance/1-bazel/bazel-first",
+        "--nix-sandbox",
+        "--cache",
+        "/build/performance/1-bazel/bazel-cache",
+        "--metrics",
+        "/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/1-bazel/public-api-edit/launcher.json",
+        "--",
+        "build",
+        "//crates/aos/boot/aos-boot-identity:package",
+        "--execution_log_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/1-bazel/public-api-edit/execution.json",
+        "--build_event_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/1-bazel/public-api-edit/events.json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/1-bazel/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/1-bazel/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        73.44091796875,
+        82.40087890625,
+        118.560546875
+      ],
+      "mode": "bazel",
+      "peak_rss_kib": 561600,
+      "repetition": 1,
+      "scenario": "public-api-edit",
+      "system_seconds": 3.082729,
+      "user_seconds": 18.475352,
+      "wall_seconds": 5.182431747991359
+    },
+    {
+      "actions": {
+        "Rustc:restored": 4
+      },
+      "block_inputs": 320,
+      "block_outputs": 255530,
+      "command": [
+        "/nix/store/03xdp3x214a0px6gvhg4dwiq7i0fqkrm-python3-3.14.3/bin/python3",
+        "/nix/store/bx41sy2pmmkg6z1qpgln8v1myrqafysf-launcher.py",
+        "--config",
+        "/nix/store/c0dzq2wv64yhw194pr50wyzwskln1wd7-aos-bazel-configuration.json",
+        "--workspace",
+        "/build/performance/1-bazel/second-worktree",
+        "--output-base",
+        "/build/performance/1-bazel/bazel-second",
+        "--nix-sandbox",
+        "--cache",
+        "/build/performance/1-bazel/bazel-cache",
+        "--metrics",
+        "/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/1-bazel/second-worktree/launcher.json",
+        "--",
+        "build",
+        "//crates/aos/boot/aos-boot-identity:package",
+        "--execution_log_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/1-bazel/second-worktree/execution.json",
+        "--build_event_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/1-bazel/second-worktree/events.json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/1-bazel/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/1-bazel/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        73.44091796875,
+        82.40087890625,
+        118.560546875
+      ],
+      "mode": "bazel",
+      "peak_rss_kib": 632736,
+      "repetition": 1,
+      "scenario": "second-worktree",
+      "system_seconds": 2.6845689999999998,
+      "user_seconds": 18.910187,
+      "wall_seconds": 4.490437487009331
+    },
+    {
+      "actions": {
+        "Rustc:restored": 4
+      },
+      "block_inputs": 0,
+      "block_outputs": 255532,
+      "command": [
+        "/nix/store/03xdp3x214a0px6gvhg4dwiq7i0fqkrm-python3-3.14.3/bin/python3",
+        "/nix/store/bx41sy2pmmkg6z1qpgln8v1myrqafysf-launcher.py",
+        "--config",
+        "/nix/store/c0dzq2wv64yhw194pr50wyzwskln1wd7-aos-bazel-configuration.json",
+        "--workspace",
+        "/build/performance/1-bazel/second-worktree",
+        "--output-base",
+        "/build/performance/1-bazel/bazel-fresh",
+        "--nix-sandbox",
+        "--cache",
+        "/build/performance/1-bazel/bazel-cache",
+        "--metrics",
+        "/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/1-bazel/fresh-build-directory/launcher.json",
+        "--",
+        "build",
+        "//crates/aos/boot/aos-boot-identity:package",
+        "--execution_log_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/1-bazel/fresh-build-directory/execution.json",
+        "--build_event_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/1-bazel/fresh-build-directory/events.json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/1-bazel/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/1-bazel/cargo-fresh-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        72.3642578125,
+        82.02880859375,
+        118.24560546875
+      ],
+      "mode": "bazel",
+      "peak_rss_kib": 299956,
+      "repetition": 1,
+      "scenario": "fresh-build-directory",
+      "system_seconds": 2.485353,
+      "user_seconds": 21.848108,
+      "wall_seconds": 4.560661231007543
+    },
+    {
+      "block_inputs": 0,
+      "block_outputs": 10190,
+      "cargo_artifacts": {
+        "rebuilt": 2
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "ACCACHE_DIR": "/build/performance/1-cargo-nonincremental-accache/accache",
+        "ACCACHE_MANIFEST": "/nix/store/y38pc1z7dzmi4skc86i4bk84bggm8ja5-accache-nix-manifest-1/manifest.json",
+        "ACCACHE_STATE_DIR": "/build/performance/1-cargo-nonincremental-accache/accache-state",
+        "CARGO_HOME": "/build/performance/1-cargo-nonincremental-accache/cargo-home",
+        "CARGO_INCREMENTAL": "0",
+        "CARGO_TARGET_DIR": "/build/performance/1-cargo-nonincremental-accache/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc",
+        "RUSTC_WRAPPER": "/nix/store/706pmxqfnysgf9f0ffw6w36bh5p32vzv-accache-0.1.0/bin/accache"
+      },
+      "load_average": [
+        70.1728515625,
+        81.4140625,
+        117.85205078125
+      ],
+      "mode": "cargo-nonincremental-accache",
+      "peak_rss_kib": 148108,
+      "repetition": 1,
+      "scenario": "cold",
+      "system_seconds": 0.33269899999999997,
+      "user_seconds": 0.666181,
+      "wall_seconds": 0.9572784789925208
+    },
+    {
+      "block_inputs": 0,
+      "block_outputs": 3,
+      "cargo_artifacts": {
+        "fresh": 2
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "ACCACHE_DIR": "/build/performance/1-cargo-nonincremental-accache/accache",
+        "ACCACHE_MANIFEST": "/nix/store/y38pc1z7dzmi4skc86i4bk84bggm8ja5-accache-nix-manifest-1/manifest.json",
+        "ACCACHE_STATE_DIR": "/build/performance/1-cargo-nonincremental-accache/accache-state",
+        "CARGO_HOME": "/build/performance/1-cargo-nonincremental-accache/cargo-home",
+        "CARGO_INCREMENTAL": "0",
+        "CARGO_TARGET_DIR": "/build/performance/1-cargo-nonincremental-accache/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc",
+        "RUSTC_WRAPPER": "/nix/store/706pmxqfnysgf9f0ffw6w36bh5p32vzv-accache-0.1.0/bin/accache"
+      },
+      "load_average": [
+        70.1728515625,
+        81.4140625,
+        117.85205078125
+      ],
+      "mode": "cargo-nonincremental-accache",
+      "peak_rss_kib": 90164,
+      "repetition": 1,
+      "scenario": "warm",
+      "system_seconds": 0.096706,
+      "user_seconds": 0.175838,
+      "wall_seconds": 0.2759077100054128
+    },
+    {
+      "block_inputs": 0,
+      "block_outputs": 3034,
+      "cargo_artifacts": {
+        "fresh": 1,
+        "rebuilt": 1
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "ACCACHE_DIR": "/build/performance/1-cargo-nonincremental-accache/accache",
+        "ACCACHE_MANIFEST": "/nix/store/y38pc1z7dzmi4skc86i4bk84bggm8ja5-accache-nix-manifest-1/manifest.json",
+        "ACCACHE_STATE_DIR": "/build/performance/1-cargo-nonincremental-accache/accache-state",
+        "CARGO_HOME": "/build/performance/1-cargo-nonincremental-accache/cargo-home",
+        "CARGO_INCREMENTAL": "0",
+        "CARGO_TARGET_DIR": "/build/performance/1-cargo-nonincremental-accache/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc",
+        "RUSTC_WRAPPER": "/nix/store/706pmxqfnysgf9f0ffw6w36bh5p32vzv-accache-0.1.0/bin/accache"
+      },
+      "load_average": [
+        70.1728515625,
+        81.4140625,
+        117.85205078125
+      ],
+      "mode": "cargo-nonincremental-accache",
+      "peak_rss_kib": 115324,
+      "repetition": 1,
+      "scenario": "implementation-edit",
+      "system_seconds": 0.173695,
+      "user_seconds": 0.243138,
+      "wall_seconds": 0.42187546199420467
+    },
+    {
+      "block_inputs": 0,
+      "block_outputs": 10080,
+      "cargo_artifacts": {
+        "rebuilt": 2
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "ACCACHE_DIR": "/build/performance/1-cargo-nonincremental-accache/accache",
+        "ACCACHE_MANIFEST": "/nix/store/y38pc1z7dzmi4skc86i4bk84bggm8ja5-accache-nix-manifest-1/manifest.json",
+        "ACCACHE_STATE_DIR": "/build/performance/1-cargo-nonincremental-accache/accache-state",
+        "CARGO_HOME": "/build/performance/1-cargo-nonincremental-accache/cargo-home",
+        "CARGO_INCREMENTAL": "0",
+        "CARGO_TARGET_DIR": "/build/performance/1-cargo-nonincremental-accache/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc",
+        "RUSTC_WRAPPER": "/nix/store/706pmxqfnysgf9f0ffw6w36bh5p32vzv-accache-0.1.0/bin/accache"
+      },
+      "load_average": [
+        70.1728515625,
+        81.4140625,
+        117.85205078125
+      ],
+      "mode": "cargo-nonincremental-accache",
+      "peak_rss_kib": 148108,
+      "repetition": 1,
+      "scenario": "public-api-edit",
+      "system_seconds": 0.317652,
+      "user_seconds": 0.631871,
+      "wall_seconds": 0.900912769997376
+    },
+    {
+      "block_inputs": 0,
+      "block_outputs": 4,
+      "cargo_artifacts": {
+        "fresh": 2
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "ACCACHE_DIR": "/build/performance/1-cargo-nonincremental-accache/accache",
+        "ACCACHE_MANIFEST": "/nix/store/y38pc1z7dzmi4skc86i4bk84bggm8ja5-accache-nix-manifest-1/manifest.json",
+        "ACCACHE_STATE_DIR": "/build/performance/1-cargo-nonincremental-accache/accache-state",
+        "CARGO_HOME": "/build/performance/1-cargo-nonincremental-accache/cargo-home",
+        "CARGO_INCREMENTAL": "0",
+        "CARGO_TARGET_DIR": "/build/performance/1-cargo-nonincremental-accache/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc",
+        "RUSTC_WRAPPER": "/nix/store/706pmxqfnysgf9f0ffw6w36bh5p32vzv-accache-0.1.0/bin/accache"
+      },
+      "load_average": [
+        69.51806640625,
+        81.09130859375,
+        117.5517578125
+      ],
+      "mode": "cargo-nonincremental-accache",
+      "peak_rss_kib": 94260,
+      "repetition": 1,
+      "scenario": "second-worktree",
+      "system_seconds": 0.087368,
+      "user_seconds": 0.15516,
+      "wall_seconds": 0.24741829300182872
+    },
+    {
+      "block_inputs": 0,
+      "block_outputs": 10084,
+      "cargo_artifacts": {
+        "rebuilt": 2
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "ACCACHE_DIR": "/build/performance/1-cargo-nonincremental-accache/accache",
+        "ACCACHE_MANIFEST": "/nix/store/y38pc1z7dzmi4skc86i4bk84bggm8ja5-accache-nix-manifest-1/manifest.json",
+        "ACCACHE_STATE_DIR": "/build/performance/1-cargo-nonincremental-accache/accache-state",
+        "CARGO_HOME": "/build/performance/1-cargo-nonincremental-accache/cargo-home",
+        "CARGO_INCREMENTAL": "0",
+        "CARGO_TARGET_DIR": "/build/performance/1-cargo-nonincremental-accache/cargo-fresh-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc",
+        "RUSTC_WRAPPER": "/nix/store/706pmxqfnysgf9f0ffw6w36bh5p32vzv-accache-0.1.0/bin/accache"
+      },
+      "load_average": [
+        69.51806640625,
+        81.09130859375,
+        117.5517578125
+      ],
+      "mode": "cargo-nonincremental-accache",
+      "peak_rss_kib": 148140,
+      "repetition": 1,
+      "scenario": "fresh-build-directory",
+      "system_seconds": 0.37018599999999996,
+      "user_seconds": 0.620329,
+      "wall_seconds": 0.9451444449950941
+    },
+    {
+      "block_inputs": 0,
+      "block_outputs": 12492,
+      "cargo_artifacts": {
+        "rebuilt": 2
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/1-cargo-incremental-debug0/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_TARGET_DIR": "/build/performance/1-cargo-incremental-debug0/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        69.51806640625,
+        81.09130859375,
+        117.5517578125
+      ],
+      "mode": "cargo-incremental-debug0",
+      "peak_rss_kib": 144036,
+      "repetition": 1,
+      "scenario": "cold",
+      "system_seconds": 0.26856599999999997,
+      "user_seconds": 0.608834,
+      "wall_seconds": 0.7141259930067463
+    },
+    {
+      "block_inputs": 0,
+      "block_outputs": 3,
+      "cargo_artifacts": {
+        "fresh": 2
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/1-cargo-incremental-debug0/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_TARGET_DIR": "/build/performance/1-cargo-incremental-debug0/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        69.51806640625,
+        81.09130859375,
+        117.5517578125
+      ],
+      "mode": "cargo-incremental-debug0",
+      "peak_rss_kib": 90164,
+      "repetition": 1,
+      "scenario": "warm",
+      "system_seconds": 0.09897299999999999,
+      "user_seconds": 0.136466,
+      "wall_seconds": 0.23961948699434288
+    },
+    {
+      "block_inputs": 0,
+      "block_outputs": 3725,
+      "cargo_artifacts": {
+        "fresh": 1,
+        "rebuilt": 1
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/1-cargo-incremental-debug0/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_TARGET_DIR": "/build/performance/1-cargo-incremental-debug0/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        69.31640625,
+        80.85693359375,
+        117.27978515625
+      ],
+      "mode": "cargo-incremental-debug0",
+      "peak_rss_kib": 94720,
+      "repetition": 1,
+      "scenario": "implementation-edit",
+      "system_seconds": 0.162344,
+      "user_seconds": 0.211528,
+      "wall_seconds": 0.3719997930020327
+    },
+    {
+      "block_inputs": 0,
+      "block_outputs": 11515,
+      "cargo_artifacts": {
+        "rebuilt": 2
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/1-cargo-incremental-debug0/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_TARGET_DIR": "/build/performance/1-cargo-incremental-debug0/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        69.31640625,
+        80.85693359375,
+        117.27978515625
+      ],
+      "mode": "cargo-incremental-debug0",
+      "peak_rss_kib": 123560,
+      "repetition": 1,
+      "scenario": "public-api-edit",
+      "system_seconds": 0.22206499999999998,
+      "user_seconds": 0.258645,
+      "wall_seconds": 0.459678277009516
+    },
+    {
+      "block_inputs": 0,
+      "block_outputs": 4,
+      "cargo_artifacts": {
+        "fresh": 2
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/1-cargo-incremental-debug0/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_TARGET_DIR": "/build/performance/1-cargo-incremental-debug0/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        69.31640625,
+        80.85693359375,
+        117.27978515625
+      ],
+      "mode": "cargo-incremental-debug0",
+      "peak_rss_kib": 86068,
+      "repetition": 1,
+      "scenario": "second-worktree",
+      "system_seconds": 0.1017,
+      "user_seconds": 0.141334,
+      "wall_seconds": 0.24651622500095982
+    },
+    {
+      "block_inputs": 0,
+      "block_outputs": 12396,
+      "cargo_artifacts": {
+        "rebuilt": 2
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/1-cargo-incremental-debug0/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_TARGET_DIR": "/build/performance/1-cargo-incremental-debug0/cargo-fresh-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        69.31640625,
+        80.85693359375,
+        117.27978515625
+      ],
+      "mode": "cargo-incremental-debug0",
+      "peak_rss_kib": 139972,
+      "repetition": 1,
+      "scenario": "fresh-build-directory",
+      "system_seconds": 0.303386,
+      "user_seconds": 0.576988,
+      "wall_seconds": 0.7001749310002197
+    },
+    {
+      "actions": {
+        "Rustc:executed": 4
+      },
+      "block_inputs": 0,
+      "block_outputs": 235923,
+      "command": [
+        "/nix/store/03xdp3x214a0px6gvhg4dwiq7i0fqkrm-python3-3.14.3/bin/python3",
+        "/nix/store/bx41sy2pmmkg6z1qpgln8v1myrqafysf-launcher.py",
+        "--config",
+        "/build/performance/1-bazel-server/server-config.json",
+        "--workspace",
+        "/build/performance/1-bazel-server/first-worktree",
+        "--output-base",
+        "/build/performance/1-bazel-server/bazel-first",
+        "--nix-sandbox",
+        "--cache",
+        "/build/performance/1-bazel-server/bazel-cache",
+        "--metrics",
+        "/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/1-bazel-server/cold/launcher.json",
+        "--",
+        "build",
+        "//crates/aos/boot/aos-boot-identity:package",
+        "--execution_log_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/1-bazel-server/cold/execution.json",
+        "--build_event_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/1-bazel-server/cold/events.json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/1-bazel-server/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/1-bazel-server/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        82.52294921875,
+        83.220703125,
+        117.65380859375
+      ],
+      "mode": "bazel-server",
+      "peak_rss_kib": 143432,
+      "repetition": 1,
+      "resource_scope": "waited launcher/client descendants; JVM resources recorded separately",
+      "scenario": "cold",
+      "server_after": {
+        "children_system_seconds": 0.62,
+        "children_user_seconds": 4.91,
+        "peak_rss_kib": 928872,
+        "pid": 11134,
+        "rss_kib": 928872,
+        "system_seconds": 3.07,
+        "user_seconds": 19.67
+      },
+      "server_before": null,
+      "system_seconds": 0.167329,
+      "user_seconds": 0.347999,
+      "wall_seconds": 8.338472751012887
+    },
+    {
+      "actions": {},
+      "block_inputs": 0,
+      "block_outputs": 35,
+      "command": [
+        "/nix/store/03xdp3x214a0px6gvhg4dwiq7i0fqkrm-python3-3.14.3/bin/python3",
+        "/nix/store/bx41sy2pmmkg6z1qpgln8v1myrqafysf-launcher.py",
+        "--config",
+        "/build/performance/1-bazel-server/server-config.json",
+        "--workspace",
+        "/build/performance/1-bazel-server/first-worktree",
+        "--output-base",
+        "/build/performance/1-bazel-server/bazel-first",
+        "--nix-sandbox",
+        "--cache",
+        "/build/performance/1-bazel-server/bazel-cache",
+        "--metrics",
+        "/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/1-bazel-server/warm/launcher.json",
+        "--",
+        "build",
+        "//crates/aos/boot/aos-boot-identity:package",
+        "--execution_log_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/1-bazel-server/warm/execution.json",
+        "--build_event_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/1-bazel-server/warm/events.json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/1-bazel-server/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/1-bazel-server/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        82.52294921875,
+        83.220703125,
+        117.65380859375
+      ],
+      "mode": "bazel-server",
+      "peak_rss_kib": 34692,
+      "repetition": 1,
+      "resource_scope": "waited launcher/client descendants; JVM resources recorded separately",
+      "scenario": "warm",
+      "server_after": {
+        "children_system_seconds": 0.62,
+        "children_user_seconds": 4.91,
+        "peak_rss_kib": 958100,
+        "pid": 11134,
+        "rss_kib": 958100,
+        "system_seconds": 3.42,
+        "user_seconds": 21.58
+      },
+      "server_before": {
+        "children_system_seconds": 0.62,
+        "children_user_seconds": 4.91,
+        "peak_rss_kib": 935132,
+        "pid": 11134,
+        "rss_kib": 935132,
+        "system_seconds": 3.08,
+        "user_seconds": 19.83
+      },
+      "system_seconds": 0.045416,
+      "user_seconds": 0.058779,
+      "wall_seconds": 0.2874288839957444
+    },
+    {
+      "actions": {
+        "Rustc:executed": 1
+      },
+      "block_inputs": 0,
+      "block_outputs": 35,
+      "command": [
+        "/nix/store/03xdp3x214a0px6gvhg4dwiq7i0fqkrm-python3-3.14.3/bin/python3",
+        "/nix/store/bx41sy2pmmkg6z1qpgln8v1myrqafysf-launcher.py",
+        "--config",
+        "/build/performance/1-bazel-server/server-config.json",
+        "--workspace",
+        "/build/performance/1-bazel-server/first-worktree",
+        "--output-base",
+        "/build/performance/1-bazel-server/bazel-first",
+        "--nix-sandbox",
+        "--cache",
+        "/build/performance/1-bazel-server/bazel-cache",
+        "--metrics",
+        "/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/1-bazel-server/implementation-edit/launcher.json",
+        "--",
+        "build",
+        "//crates/aos/boot/aos-boot-identity:package",
+        "--execution_log_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/1-bazel-server/implementation-edit/execution.json",
+        "--build_event_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/1-bazel-server/implementation-edit/events.json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/1-bazel-server/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/1-bazel-server/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        82.52294921875,
+        83.220703125,
+        117.65380859375
+      ],
+      "mode": "bazel-server",
+      "peak_rss_kib": 34692,
+      "repetition": 1,
+      "resource_scope": "waited launcher/client descendants; JVM resources recorded separately",
+      "scenario": "implementation-edit",
+      "server_after": {
+        "children_system_seconds": 0.75,
+        "children_user_seconds": 5.01,
+        "peak_rss_kib": 964492,
+        "pid": 11134,
+        "rss_kib": 964492,
+        "system_seconds": 3.8,
+        "user_seconds": 22.54
+      },
+      "server_before": {
+        "children_system_seconds": 0.62,
+        "children_user_seconds": 4.91,
+        "peak_rss_kib": 958108,
+        "pid": 11134,
+        "rss_kib": 958108,
+        "system_seconds": 3.42,
+        "user_seconds": 21.59
+      },
+      "system_seconds": 0.04076,
+      "user_seconds": 0.057658999999999995,
+      "wall_seconds": 0.5945831369899679
+    },
+    {
+      "actions": {
+        "Rustc:executed": 2
+      },
+      "block_inputs": 0,
+      "block_outputs": 35,
+      "command": [
+        "/nix/store/03xdp3x214a0px6gvhg4dwiq7i0fqkrm-python3-3.14.3/bin/python3",
+        "/nix/store/bx41sy2pmmkg6z1qpgln8v1myrqafysf-launcher.py",
+        "--config",
+        "/build/performance/1-bazel-server/server-config.json",
+        "--workspace",
+        "/build/performance/1-bazel-server/first-worktree",
+        "--output-base",
+        "/build/performance/1-bazel-server/bazel-first",
+        "--nix-sandbox",
+        "--cache",
+        "/build/performance/1-bazel-server/bazel-cache",
+        "--metrics",
+        "/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/1-bazel-server/public-api-edit/launcher.json",
+        "--",
+        "build",
+        "//crates/aos/boot/aos-boot-identity:package",
+        "--execution_log_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/1-bazel-server/public-api-edit/execution.json",
+        "--build_event_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/1-bazel-server/public-api-edit/events.json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/1-bazel-server/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/1-bazel-server/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        82.52294921875,
+        83.220703125,
+        117.65380859375
+      ],
+      "mode": "bazel-server",
+      "peak_rss_kib": 34692,
+      "repetition": 1,
+      "resource_scope": "waited launcher/client descendants; JVM resources recorded separately",
+      "scenario": "public-api-edit",
+      "server_after": {
+        "children_system_seconds": 0.97,
+        "children_user_seconds": 5.27,
+        "peak_rss_kib": 974256,
+        "pid": 11134,
+        "rss_kib": 974256,
+        "system_seconds": 4.32,
+        "user_seconds": 23.39
+      },
+      "server_before": {
+        "children_system_seconds": 0.75,
+        "children_user_seconds": 5.01,
+        "peak_rss_kib": 964512,
+        "pid": 11134,
+        "rss_kib": 964512,
+        "system_seconds": 3.8,
+        "user_seconds": 22.57
+      },
+      "system_seconds": 0.035661,
+      "user_seconds": 0.053852,
+      "wall_seconds": 1.124055584994494
+    },
+    {
+      "actions": {
+        "Rustc:restored": 4
+      },
+      "block_inputs": 128,
+      "block_outputs": 235922,
+      "command": [
+        "/nix/store/03xdp3x214a0px6gvhg4dwiq7i0fqkrm-python3-3.14.3/bin/python3",
+        "/nix/store/bx41sy2pmmkg6z1qpgln8v1myrqafysf-launcher.py",
+        "--config",
+        "/build/performance/1-bazel-server/server-config.json",
+        "--workspace",
+        "/build/performance/1-bazel-server/second-worktree",
+        "--output-base",
+        "/build/performance/1-bazel-server/bazel-second",
+        "--nix-sandbox",
+        "--cache",
+        "/build/performance/1-bazel-server/bazel-cache",
+        "--metrics",
+        "/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/1-bazel-server/second-worktree/launcher.json",
+        "--",
+        "build",
+        "//crates/aos/boot/aos-boot-identity:package",
+        "--execution_log_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/1-bazel-server/second-worktree/execution.json",
+        "--build_event_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/1-bazel-server/second-worktree/events.json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/1-bazel-server/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/1-bazel-server/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        81.03955078125,
+        82.9013671875,
+        117.365234375
+      ],
+      "mode": "bazel-server",
+      "peak_rss_kib": 143432,
+      "repetition": 1,
+      "resource_scope": "waited launcher/client descendants; JVM resources recorded separately",
+      "scenario": "second-worktree",
+      "server_after": {
+        "children_system_seconds": 0.03,
+        "children_user_seconds": 0.03,
+        "peak_rss_kib": 912992,
+        "pid": 12788,
+        "rss_kib": 912992,
+        "system_seconds": 3.12,
+        "user_seconds": 31.4
+      },
+      "server_before": null,
+      "system_seconds": 0.190292,
+      "user_seconds": 0.346549,
+      "wall_seconds": 5.235238962006406
+    },
+    {
+      "actions": {
+        "Rustc:restored": 4
+      },
+      "block_inputs": 0,
+      "block_outputs": 235922,
+      "command": [
+        "/nix/store/03xdp3x214a0px6gvhg4dwiq7i0fqkrm-python3-3.14.3/bin/python3",
+        "/nix/store/bx41sy2pmmkg6z1qpgln8v1myrqafysf-launcher.py",
+        "--config",
+        "/build/performance/1-bazel-server/server-config.json",
+        "--workspace",
+        "/build/performance/1-bazel-server/second-worktree",
+        "--output-base",
+        "/build/performance/1-bazel-server/bazel-fresh",
+        "--nix-sandbox",
+        "--cache",
+        "/build/performance/1-bazel-server/bazel-cache",
+        "--metrics",
+        "/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/1-bazel-server/fresh-build-directory/launcher.json",
+        "--",
+        "build",
+        "//crates/aos/boot/aos-boot-identity:package",
+        "--execution_log_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/1-bazel-server/fresh-build-directory/execution.json",
+        "--build_event_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/1-bazel-server/fresh-build-directory/events.json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/1-bazel-server/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/1-bazel-server/cargo-fresh-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        76.8017578125,
+        81.9326171875,
+        116.68017578125
+      ],
+      "mode": "bazel-server",
+      "peak_rss_kib": 143432,
+      "repetition": 1,
+      "resource_scope": "waited launcher/client descendants; JVM resources recorded separately",
+      "scenario": "fresh-build-directory",
+      "server_after": {
+        "children_system_seconds": 0.04,
+        "children_user_seconds": 0.05,
+        "peak_rss_kib": 913520,
+        "pid": 13343,
+        "rss_kib": 913520,
+        "system_seconds": 2.84,
+        "user_seconds": 30.16
+      },
+      "server_before": null,
+      "system_seconds": 0.228927,
+      "user_seconds": 0.337505,
+      "wall_seconds": 5.467948281991994
+    },
+    {
+      "block_inputs": 896,
+      "block_outputs": 20006,
+      "cargo_artifacts": {
+        "rebuilt": 2
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/1-cargo-incremental/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/1-cargo-incremental/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        76.8017578125,
+        81.9326171875,
+        116.68017578125
+      ],
+      "mode": "cargo-incremental",
+      "peak_rss_kib": 127572,
+      "repetition": 1,
+      "scenario": "cold",
+      "system_seconds": 0.327206,
+      "user_seconds": 0.900666,
+      "wall_seconds": 0.8783216459996765
+    },
+    {
+      "block_inputs": 0,
+      "block_outputs": 4,
+      "cargo_artifacts": {
+        "fresh": 2
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/1-cargo-incremental/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/1-cargo-incremental/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        76.8017578125,
+        81.9326171875,
+        116.68017578125
+      ],
+      "mode": "cargo-incremental",
+      "peak_rss_kib": 90164,
+      "repetition": 1,
+      "scenario": "warm",
+      "system_seconds": 0.101103,
+      "user_seconds": 0.159271,
+      "wall_seconds": 0.26488575800613035
+    },
+    {
+      "block_inputs": 0,
+      "block_outputs": 5405,
+      "cargo_artifacts": {
+        "fresh": 1,
+        "rebuilt": 1
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/1-cargo-incremental/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/1-cargo-incremental/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        76.3369140625,
+        81.7509765625,
+        116.4345703125
+      ],
+      "mode": "cargo-incremental",
+      "peak_rss_kib": 98776,
+      "repetition": 1,
+      "scenario": "implementation-edit",
+      "system_seconds": 0.17757399999999998,
+      "user_seconds": 0.257382,
+      "wall_seconds": 0.4355810810084222
+    },
+    {
+      "block_inputs": 64,
+      "block_outputs": 16065,
+      "cargo_artifacts": {
+        "rebuilt": 2
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/1-cargo-incremental/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/1-cargo-incremental/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        76.3369140625,
+        81.7509765625,
+        116.4345703125
+      ],
+      "mode": "cargo-incremental",
+      "peak_rss_kib": 123408,
+      "repetition": 1,
+      "scenario": "public-api-edit",
+      "system_seconds": 0.247615,
+      "user_seconds": 0.277812,
+      "wall_seconds": 0.5073047620098805
+    },
+    {
+      "block_inputs": 0,
+      "block_outputs": 4,
+      "cargo_artifacts": {
+        "fresh": 2
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/1-cargo-incremental/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/1-cargo-incremental/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        76.3369140625,
+        81.7509765625,
+        116.4345703125
+      ],
+      "mode": "cargo-incremental",
+      "peak_rss_kib": 94260,
+      "repetition": 1,
+      "scenario": "second-worktree",
+      "system_seconds": 0.09898399999999999,
+      "user_seconds": 0.146373,
+      "wall_seconds": 0.2502160420117434
+    },
+    {
+      "block_inputs": 64,
+      "block_outputs": 19914,
+      "cargo_artifacts": {
+        "rebuilt": 2
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/1-cargo-incremental/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/1-cargo-incremental/cargo-fresh-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        76.3369140625,
+        81.7509765625,
+        116.4345703125
+      ],
+      "mode": "cargo-incremental",
+      "peak_rss_kib": 135800,
+      "repetition": 1,
+      "scenario": "fresh-build-directory",
+      "system_seconds": 0.319605,
+      "user_seconds": 0.7760589999999999,
+      "wall_seconds": 0.827063860007911
+    },
+    {
+      "block_inputs": 0,
+      "block_outputs": 10190,
+      "cargo_artifacts": {
+        "rebuilt": 2
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "ACCACHE_DIR": "/build/performance/2-cargo-nonincremental-accache/accache",
+        "ACCACHE_MANIFEST": "/nix/store/y38pc1z7dzmi4skc86i4bk84bggm8ja5-accache-nix-manifest-1/manifest.json",
+        "ACCACHE_STATE_DIR": "/build/performance/2-cargo-nonincremental-accache/accache-state",
+        "CARGO_HOME": "/build/performance/2-cargo-nonincremental-accache/cargo-home",
+        "CARGO_INCREMENTAL": "0",
+        "CARGO_TARGET_DIR": "/build/performance/2-cargo-nonincremental-accache/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc",
+        "RUSTC_WRAPPER": "/nix/store/706pmxqfnysgf9f0ffw6w36bh5p32vzv-accache-0.1.0/bin/accache"
+      },
+      "load_average": [
+        84.23779296875,
+        83.29931640625,
+        116.74951171875
+      ],
+      "mode": "cargo-nonincremental-accache",
+      "peak_rss_kib": 148108,
+      "repetition": 2,
+      "scenario": "cold",
+      "system_seconds": 0.338856,
+      "user_seconds": 0.700369,
+      "wall_seconds": 0.9998744869953953
+    },
+    {
+      "block_inputs": 0,
+      "block_outputs": 4,
+      "cargo_artifacts": {
+        "fresh": 2
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "ACCACHE_DIR": "/build/performance/2-cargo-nonincremental-accache/accache",
+        "ACCACHE_MANIFEST": "/nix/store/y38pc1z7dzmi4skc86i4bk84bggm8ja5-accache-nix-manifest-1/manifest.json",
+        "ACCACHE_STATE_DIR": "/build/performance/2-cargo-nonincremental-accache/accache-state",
+        "CARGO_HOME": "/build/performance/2-cargo-nonincremental-accache/cargo-home",
+        "CARGO_INCREMENTAL": "0",
+        "CARGO_TARGET_DIR": "/build/performance/2-cargo-nonincremental-accache/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc",
+        "RUSTC_WRAPPER": "/nix/store/706pmxqfnysgf9f0ffw6w36bh5p32vzv-accache-0.1.0/bin/accache"
+      },
+      "load_average": [
+        84.23779296875,
+        83.29931640625,
+        116.74951171875
+      ],
+      "mode": "cargo-nonincremental-accache",
+      "peak_rss_kib": 94260,
+      "repetition": 2,
+      "scenario": "warm",
+      "system_seconds": 0.08986799999999999,
+      "user_seconds": 0.15819999999999998,
+      "wall_seconds": 0.2527425619919086
+    },
+    {
+      "block_inputs": 0,
+      "block_outputs": 3034,
+      "cargo_artifacts": {
+        "fresh": 1,
+        "rebuilt": 1
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "ACCACHE_DIR": "/build/performance/2-cargo-nonincremental-accache/accache",
+        "ACCACHE_MANIFEST": "/nix/store/y38pc1z7dzmi4skc86i4bk84bggm8ja5-accache-nix-manifest-1/manifest.json",
+        "ACCACHE_STATE_DIR": "/build/performance/2-cargo-nonincremental-accache/accache-state",
+        "CARGO_HOME": "/build/performance/2-cargo-nonincremental-accache/cargo-home",
+        "CARGO_INCREMENTAL": "0",
+        "CARGO_TARGET_DIR": "/build/performance/2-cargo-nonincremental-accache/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc",
+        "RUSTC_WRAPPER": "/nix/store/706pmxqfnysgf9f0ffw6w36bh5p32vzv-accache-0.1.0/bin/accache"
+      },
+      "load_average": [
+        84.23779296875,
+        83.29931640625,
+        116.74951171875
+      ],
+      "mode": "cargo-nonincremental-accache",
+      "peak_rss_kib": 115204,
+      "repetition": 2,
+      "scenario": "implementation-edit",
+      "system_seconds": 0.16047799999999998,
+      "user_seconds": 0.27230699999999997,
+      "wall_seconds": 0.4383589170029154
+    },
+    {
+      "block_inputs": 64,
+      "block_outputs": 10080,
+      "cargo_artifacts": {
+        "rebuilt": 2
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "ACCACHE_DIR": "/build/performance/2-cargo-nonincremental-accache/accache",
+        "ACCACHE_MANIFEST": "/nix/store/y38pc1z7dzmi4skc86i4bk84bggm8ja5-accache-nix-manifest-1/manifest.json",
+        "ACCACHE_STATE_DIR": "/build/performance/2-cargo-nonincremental-accache/accache-state",
+        "CARGO_HOME": "/build/performance/2-cargo-nonincremental-accache/cargo-home",
+        "CARGO_INCREMENTAL": "0",
+        "CARGO_TARGET_DIR": "/build/performance/2-cargo-nonincremental-accache/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc",
+        "RUSTC_WRAPPER": "/nix/store/706pmxqfnysgf9f0ffw6w36bh5p32vzv-accache-0.1.0/bin/accache"
+      },
+      "load_average": [
+        84.23779296875,
+        83.29931640625,
+        116.74951171875
+      ],
+      "mode": "cargo-nonincremental-accache",
+      "peak_rss_kib": 152280,
+      "repetition": 2,
+      "scenario": "public-api-edit",
+      "system_seconds": 0.314573,
+      "user_seconds": 0.6729539999999999,
+      "wall_seconds": 0.9455720989935799
+    },
+    {
+      "block_inputs": 0,
+      "block_outputs": 4,
+      "cargo_artifacts": {
+        "fresh": 2
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "ACCACHE_DIR": "/build/performance/2-cargo-nonincremental-accache/accache",
+        "ACCACHE_MANIFEST": "/nix/store/y38pc1z7dzmi4skc86i4bk84bggm8ja5-accache-nix-manifest-1/manifest.json",
+        "ACCACHE_STATE_DIR": "/build/performance/2-cargo-nonincremental-accache/accache-state",
+        "CARGO_HOME": "/build/performance/2-cargo-nonincremental-accache/cargo-home",
+        "CARGO_INCREMENTAL": "0",
+        "CARGO_TARGET_DIR": "/build/performance/2-cargo-nonincremental-accache/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc",
+        "RUSTC_WRAPPER": "/nix/store/706pmxqfnysgf9f0ffw6w36bh5p32vzv-accache-0.1.0/bin/accache"
+      },
+      "load_average": [
+        81.896484375,
+        82.8291015625,
+        116.41748046875
+      ],
+      "mode": "cargo-nonincremental-accache",
+      "peak_rss_kib": 90164,
+      "repetition": 2,
+      "scenario": "second-worktree",
+      "system_seconds": 0.096914,
+      "user_seconds": 0.142681,
+      "wall_seconds": 0.24754698798642494
+    },
+    {
+      "block_inputs": 0,
+      "block_outputs": 10084,
+      "cargo_artifacts": {
+        "rebuilt": 2
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "ACCACHE_DIR": "/build/performance/2-cargo-nonincremental-accache/accache",
+        "ACCACHE_MANIFEST": "/nix/store/y38pc1z7dzmi4skc86i4bk84bggm8ja5-accache-nix-manifest-1/manifest.json",
+        "ACCACHE_STATE_DIR": "/build/performance/2-cargo-nonincremental-accache/accache-state",
+        "CARGO_HOME": "/build/performance/2-cargo-nonincremental-accache/cargo-home",
+        "CARGO_INCREMENTAL": "0",
+        "CARGO_TARGET_DIR": "/build/performance/2-cargo-nonincremental-accache/cargo-fresh-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc",
+        "RUSTC_WRAPPER": "/nix/store/706pmxqfnysgf9f0ffw6w36bh5p32vzv-accache-0.1.0/bin/accache"
+      },
+      "load_average": [
+        81.896484375,
+        82.8291015625,
+        116.41748046875
+      ],
+      "mode": "cargo-nonincremental-accache",
+      "peak_rss_kib": 148116,
+      "repetition": 2,
+      "scenario": "fresh-build-directory",
+      "system_seconds": 0.32650999999999997,
+      "user_seconds": 0.652114,
+      "wall_seconds": 0.9358845230017323
+    },
+    {
+      "block_inputs": 64,
+      "block_outputs": 12492,
+      "cargo_artifacts": {
+        "rebuilt": 2
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/2-cargo-incremental-debug0/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_TARGET_DIR": "/build/performance/2-cargo-incremental-debug0/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        81.896484375,
+        82.8291015625,
+        116.41748046875
+      ],
+      "mode": "cargo-incremental-debug0",
+      "peak_rss_kib": 140040,
+      "repetition": 2,
+      "scenario": "cold",
+      "system_seconds": 0.264619,
+      "user_seconds": 0.564627,
+      "wall_seconds": 0.6821671200013952
+    },
+    {
+      "block_inputs": 0,
+      "block_outputs": 4,
+      "cargo_artifacts": {
+        "fresh": 2
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/2-cargo-incremental-debug0/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_TARGET_DIR": "/build/performance/2-cargo-incremental-debug0/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        81.896484375,
+        82.8291015625,
+        116.41748046875
+      ],
+      "mode": "cargo-incremental-debug0",
+      "peak_rss_kib": 94260,
+      "repetition": 2,
+      "scenario": "warm",
+      "system_seconds": 0.08379199999999999,
+      "user_seconds": 0.139127,
+      "wall_seconds": 0.22631316901242826
+    },
+    {
+      "block_inputs": 0,
+      "block_outputs": 3725,
+      "cargo_artifacts": {
+        "fresh": 1,
+        "rebuilt": 1
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/2-cargo-incremental-debug0/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_TARGET_DIR": "/build/performance/2-cargo-incremental-debug0/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        81.896484375,
+        82.8291015625,
+        116.41748046875
+      ],
+      "mode": "cargo-incremental-debug0",
+      "peak_rss_kib": 98824,
+      "repetition": 2,
+      "scenario": "implementation-edit",
+      "system_seconds": 0.180286,
+      "user_seconds": 0.205832,
+      "wall_seconds": 0.4625162970041856
+    },
+    {
+      "block_inputs": 0,
+      "block_outputs": 11514,
+      "cargo_artifacts": {
+        "rebuilt": 2
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/2-cargo-incremental-debug0/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_TARGET_DIR": "/build/performance/2-cargo-incremental-debug0/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        78.4609375,
+        82.10107421875,
+        116.00146484375
+      ],
+      "mode": "cargo-incremental-debug0",
+      "peak_rss_kib": 123560,
+      "repetition": 2,
+      "scenario": "public-api-edit",
+      "system_seconds": 0.20579499999999998,
+      "user_seconds": 0.253568,
+      "wall_seconds": 0.4472005569987232
+    },
+    {
+      "block_inputs": 0,
+      "block_outputs": 4,
+      "cargo_artifacts": {
+        "fresh": 2
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/2-cargo-incremental-debug0/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_TARGET_DIR": "/build/performance/2-cargo-incremental-debug0/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        78.4609375,
+        82.10107421875,
+        116.00146484375
+      ],
+      "mode": "cargo-incremental-debug0",
+      "peak_rss_kib": 94260,
+      "repetition": 2,
+      "scenario": "second-worktree",
+      "system_seconds": 0.077765,
+      "user_seconds": 0.139172,
+      "wall_seconds": 0.21983527700649574
+    },
+    {
+      "block_inputs": 0,
+      "block_outputs": 12396,
+      "cargo_artifacts": {
+        "rebuilt": 2
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/2-cargo-incremental-debug0/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_TARGET_DIR": "/build/performance/2-cargo-incremental-debug0/cargo-fresh-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        78.4609375,
+        82.10107421875,
+        116.00146484375
+      ],
+      "mode": "cargo-incremental-debug0",
+      "peak_rss_kib": 139964,
+      "repetition": 2,
+      "scenario": "fresh-build-directory",
+      "system_seconds": 0.288978,
+      "user_seconds": 0.57543,
+      "wall_seconds": 0.6826573900034418
+    },
+    {
+      "actions": {
+        "Rustc:executed": 4
+      },
+      "block_inputs": 0,
+      "block_outputs": 235923,
+      "command": [
+        "/nix/store/03xdp3x214a0px6gvhg4dwiq7i0fqkrm-python3-3.14.3/bin/python3",
+        "/nix/store/bx41sy2pmmkg6z1qpgln8v1myrqafysf-launcher.py",
+        "--config",
+        "/build/performance/2-bazel-server/server-config.json",
+        "--workspace",
+        "/build/performance/2-bazel-server/first-worktree",
+        "--output-base",
+        "/build/performance/2-bazel-server/bazel-first",
+        "--nix-sandbox",
+        "--cache",
+        "/build/performance/2-bazel-server/bazel-cache",
+        "--metrics",
+        "/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/2-bazel-server/cold/launcher.json",
+        "--",
+        "build",
+        "//crates/aos/boot/aos-boot-identity:package",
+        "--execution_log_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/2-bazel-server/cold/execution.json",
+        "--build_event_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/2-bazel-server/cold/events.json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/2-bazel-server/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/2-bazel-server/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        85.748046875,
+        83.45361328125,
+        116.0732421875
+      ],
+      "mode": "bazel-server",
+      "peak_rss_kib": 143432,
+      "repetition": 2,
+      "resource_scope": "waited launcher/client descendants; JVM resources recorded separately",
+      "scenario": "cold",
+      "server_after": {
+        "children_system_seconds": 0.58,
+        "children_user_seconds": 4.69,
+        "peak_rss_kib": 931000,
+        "pid": 15107,
+        "rss_kib": 931000,
+        "system_seconds": 3.88,
+        "user_seconds": 25.65
+      },
+      "server_before": null,
+      "system_seconds": 0.140979,
+      "user_seconds": 0.348875,
+      "wall_seconds": 7.622397746992647
+    },
+    {
+      "actions": {},
+      "block_inputs": 0,
+      "block_outputs": 35,
+      "command": [
+        "/nix/store/03xdp3x214a0px6gvhg4dwiq7i0fqkrm-python3-3.14.3/bin/python3",
+        "/nix/store/bx41sy2pmmkg6z1qpgln8v1myrqafysf-launcher.py",
+        "--config",
+        "/build/performance/2-bazel-server/server-config.json",
+        "--workspace",
+        "/build/performance/2-bazel-server/first-worktree",
+        "--output-base",
+        "/build/performance/2-bazel-server/bazel-first",
+        "--nix-sandbox",
+        "--cache",
+        "/build/performance/2-bazel-server/bazel-cache",
+        "--metrics",
+        "/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/2-bazel-server/warm/launcher.json",
+        "--",
+        "build",
+        "//crates/aos/boot/aos-boot-identity:package",
+        "--execution_log_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/2-bazel-server/warm/execution.json",
+        "--build_event_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/2-bazel-server/warm/events.json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/2-bazel-server/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/2-bazel-server/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        85.748046875,
+        83.45361328125,
+        116.0732421875
+      ],
+      "mode": "bazel-server",
+      "peak_rss_kib": 34692,
+      "repetition": 2,
+      "resource_scope": "waited launcher/client descendants; JVM resources recorded separately",
+      "scenario": "warm",
+      "server_after": {
+        "children_system_seconds": 0.58,
+        "children_user_seconds": 4.69,
+        "peak_rss_kib": 960500,
+        "pid": 15107,
+        "rss_kib": 960500,
+        "system_seconds": 4.31,
+        "user_seconds": 27.1
+      },
+      "server_before": {
+        "children_system_seconds": 0.58,
+        "children_user_seconds": 4.69,
+        "peak_rss_kib": 934800,
+        "pid": 15107,
+        "rss_kib": 934800,
+        "system_seconds": 3.89,
+        "user_seconds": 25.86
+      },
+      "system_seconds": 0.047980999999999996,
+      "user_seconds": 0.056366,
+      "wall_seconds": 0.3842297730006976
+    },
+    {
+      "actions": {
+        "Rustc:executed": 1
+      },
+      "block_inputs": 0,
+      "block_outputs": 35,
+      "command": [
+        "/nix/store/03xdp3x214a0px6gvhg4dwiq7i0fqkrm-python3-3.14.3/bin/python3",
+        "/nix/store/bx41sy2pmmkg6z1qpgln8v1myrqafysf-launcher.py",
+        "--config",
+        "/build/performance/2-bazel-server/server-config.json",
+        "--workspace",
+        "/build/performance/2-bazel-server/first-worktree",
+        "--output-base",
+        "/build/performance/2-bazel-server/bazel-first",
+        "--nix-sandbox",
+        "--cache",
+        "/build/performance/2-bazel-server/bazel-cache",
+        "--metrics",
+        "/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/2-bazel-server/implementation-edit/launcher.json",
+        "--",
+        "build",
+        "//crates/aos/boot/aos-boot-identity:package",
+        "--execution_log_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/2-bazel-server/implementation-edit/execution.json",
+        "--build_event_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/2-bazel-server/implementation-edit/events.json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/2-bazel-server/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/2-bazel-server/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        85.748046875,
+        83.45361328125,
+        116.0732421875
+      ],
+      "mode": "bazel-server",
+      "peak_rss_kib": 34692,
+      "repetition": 2,
+      "resource_scope": "waited launcher/client descendants; JVM resources recorded separately",
+      "scenario": "implementation-edit",
+      "server_after": {
+        "children_system_seconds": 0.69,
+        "children_user_seconds": 4.79,
+        "peak_rss_kib": 966012,
+        "pid": 15107,
+        "rss_kib": 966012,
+        "system_seconds": 4.74,
+        "user_seconds": 28.38
+      },
+      "server_before": {
+        "children_system_seconds": 0.58,
+        "children_user_seconds": 4.69,
+        "peak_rss_kib": 960568,
+        "pid": 15107,
+        "rss_kib": 960568,
+        "system_seconds": 4.31,
+        "user_seconds": 27.21
+      },
+      "system_seconds": 0.038643,
+      "user_seconds": 0.058178,
+      "wall_seconds": 0.6150282830058131
+    },
+    {
+      "actions": {
+        "Rustc:executed": 2
+      },
+      "block_inputs": 0,
+      "block_outputs": 35,
+      "command": [
+        "/nix/store/03xdp3x214a0px6gvhg4dwiq7i0fqkrm-python3-3.14.3/bin/python3",
+        "/nix/store/bx41sy2pmmkg6z1qpgln8v1myrqafysf-launcher.py",
+        "--config",
+        "/build/performance/2-bazel-server/server-config.json",
+        "--workspace",
+        "/build/performance/2-bazel-server/first-worktree",
+        "--output-base",
+        "/build/performance/2-bazel-server/bazel-first",
+        "--nix-sandbox",
+        "--cache",
+        "/build/performance/2-bazel-server/bazel-cache",
+        "--metrics",
+        "/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/2-bazel-server/public-api-edit/launcher.json",
+        "--",
+        "build",
+        "//crates/aos/boot/aos-boot-identity:package",
+        "--execution_log_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/2-bazel-server/public-api-edit/execution.json",
+        "--build_event_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/2-bazel-server/public-api-edit/events.json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/2-bazel-server/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/2-bazel-server/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        85.748046875,
+        83.45361328125,
+        116.0732421875
+      ],
+      "mode": "bazel-server",
+      "peak_rss_kib": 34692,
+      "repetition": 2,
+      "resource_scope": "waited launcher/client descendants; JVM resources recorded separately",
+      "scenario": "public-api-edit",
+      "server_after": {
+        "children_system_seconds": 0.89,
+        "children_user_seconds": 5.03,
+        "peak_rss_kib": 984964,
+        "pid": 15107,
+        "rss_kib": 984964,
+        "system_seconds": 5.25,
+        "user_seconds": 29.49
+      },
+      "server_before": {
+        "children_system_seconds": 0.69,
+        "children_user_seconds": 4.79,
+        "peak_rss_kib": 966624,
+        "pid": 15107,
+        "rss_kib": 966624,
+        "system_seconds": 4.74,
+        "user_seconds": 28.44
+      },
+      "system_seconds": 0.048152,
+      "user_seconds": 0.052586,
+      "wall_seconds": 1.0265370580018498
+    },
+    {
+      "actions": {
+        "Rustc:restored": 4
+      },
+      "block_inputs": 0,
+      "block_outputs": 235922,
+      "command": [
+        "/nix/store/03xdp3x214a0px6gvhg4dwiq7i0fqkrm-python3-3.14.3/bin/python3",
+        "/nix/store/bx41sy2pmmkg6z1qpgln8v1myrqafysf-launcher.py",
+        "--config",
+        "/build/performance/2-bazel-server/server-config.json",
+        "--workspace",
+        "/build/performance/2-bazel-server/second-worktree",
+        "--output-base",
+        "/build/performance/2-bazel-server/bazel-second",
+        "--nix-sandbox",
+        "--cache",
+        "/build/performance/2-bazel-server/bazel-cache",
+        "--metrics",
+        "/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/2-bazel-server/second-worktree/launcher.json",
+        "--",
+        "build",
+        "//crates/aos/boot/aos-boot-identity:package",
+        "--execution_log_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/2-bazel-server/second-worktree/execution.json",
+        "--build_event_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/2-bazel-server/second-worktree/events.json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/2-bazel-server/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/2-bazel-server/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        82.88525390625,
+        82.89794921875,
+        115.71826171875
+      ],
+      "mode": "bazel-server",
+      "peak_rss_kib": 143432,
+      "repetition": 2,
+      "resource_scope": "waited launcher/client descendants; JVM resources recorded separately",
+      "scenario": "second-worktree",
+      "server_after": {
+        "children_system_seconds": 0.03,
+        "children_user_seconds": 0.04,
+        "peak_rss_kib": 902796,
+        "pid": 16701,
+        "rss_kib": 902796,
+        "system_seconds": 2.7,
+        "user_seconds": 28.2
+      },
+      "server_before": null,
+      "system_seconds": 0.15034899999999998,
+      "user_seconds": 0.328422,
+      "wall_seconds": 4.7704181039880496
+    },
+    {
+      "actions": {
+        "Rustc:restored": 4
+      },
+      "block_inputs": 0,
+      "block_outputs": 235922,
+      "command": [
+        "/nix/store/03xdp3x214a0px6gvhg4dwiq7i0fqkrm-python3-3.14.3/bin/python3",
+        "/nix/store/bx41sy2pmmkg6z1qpgln8v1myrqafysf-launcher.py",
+        "--config",
+        "/build/performance/2-bazel-server/server-config.json",
+        "--workspace",
+        "/build/performance/2-bazel-server/second-worktree",
+        "--output-base",
+        "/build/performance/2-bazel-server/bazel-fresh",
+        "--nix-sandbox",
+        "--cache",
+        "/build/performance/2-bazel-server/bazel-cache",
+        "--metrics",
+        "/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/2-bazel-server/fresh-build-directory/launcher.json",
+        "--",
+        "build",
+        "//crates/aos/boot/aos-boot-identity:package",
+        "--execution_log_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/2-bazel-server/fresh-build-directory/execution.json",
+        "--build_event_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/2-bazel-server/fresh-build-directory/events.json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/2-bazel-server/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/2-bazel-server/cargo-fresh-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        79.85107421875,
+        82.2685546875,
+        115.33837890625
+      ],
+      "mode": "bazel-server",
+      "peak_rss_kib": 143432,
+      "repetition": 2,
+      "resource_scope": "waited launcher/client descendants; JVM resources recorded separately",
+      "scenario": "fresh-build-directory",
+      "server_after": {
+        "children_system_seconds": 0.03,
+        "children_user_seconds": 0.04,
+        "peak_rss_kib": 912108,
+        "pid": 17269,
+        "rss_kib": 912108,
+        "system_seconds": 2.92,
+        "user_seconds": 24.25
+      },
+      "server_before": null,
+      "system_seconds": 0.137368,
+      "user_seconds": 0.349896,
+      "wall_seconds": 4.91523911600234
+    },
+    {
+      "block_inputs": 0,
+      "block_outputs": 20006,
+      "cargo_artifacts": {
+        "rebuilt": 2
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/2-cargo-incremental/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/2-cargo-incremental/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        76.57958984375,
+        81.5498046875,
+        114.92822265625
+      ],
+      "mode": "cargo-incremental",
+      "peak_rss_kib": 135920,
+      "repetition": 2,
+      "scenario": "cold",
+      "system_seconds": 0.29206299999999996,
+      "user_seconds": 0.7539199999999999,
+      "wall_seconds": 0.8074359869933687
+    },
+    {
+      "block_inputs": 0,
+      "block_outputs": 3,
+      "cargo_artifacts": {
+        "fresh": 2
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/2-cargo-incremental/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/2-cargo-incremental/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        76.57958984375,
+        81.5498046875,
+        114.92822265625
+      ],
+      "mode": "cargo-incremental",
+      "peak_rss_kib": 86048,
+      "repetition": 2,
+      "scenario": "warm",
+      "system_seconds": 0.087576,
+      "user_seconds": 0.141957,
+      "wall_seconds": 0.23428543999034446
+    },
+    {
+      "block_inputs": 0,
+      "block_outputs": 5406,
+      "cargo_artifacts": {
+        "fresh": 1,
+        "rebuilt": 1
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/2-cargo-incremental/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/2-cargo-incremental/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        76.57958984375,
+        81.5498046875,
+        114.92822265625
+      ],
+      "mode": "cargo-incremental",
+      "peak_rss_kib": 102908,
+      "repetition": 2,
+      "scenario": "implementation-edit",
+      "system_seconds": 0.171114,
+      "user_seconds": 0.237971,
+      "wall_seconds": 0.40781813200737815
+    },
+    {
+      "block_inputs": 0,
+      "block_outputs": 16064,
+      "cargo_artifacts": {
+        "rebuilt": 2
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/2-cargo-incremental/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/2-cargo-incremental/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        76.57958984375,
+        81.5498046875,
+        114.92822265625
+      ],
+      "mode": "cargo-incremental",
+      "peak_rss_kib": 123440,
+      "repetition": 2,
+      "scenario": "public-api-edit",
+      "system_seconds": 0.23538499999999998,
+      "user_seconds": 0.266777,
+      "wall_seconds": 0.4903928120038472
+    },
+    {
+      "block_inputs": 0,
+      "block_outputs": 4,
+      "cargo_artifacts": {
+        "fresh": 2
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/2-cargo-incremental/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/2-cargo-incremental/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        76.57958984375,
+        81.5498046875,
+        114.92822265625
+      ],
+      "mode": "cargo-incremental",
+      "peak_rss_kib": 86068,
+      "repetition": 2,
+      "scenario": "second-worktree",
+      "system_seconds": 0.088875,
+      "user_seconds": 0.13836099999999998,
+      "wall_seconds": 0.23028463899390772
+    },
+    {
+      "block_inputs": 0,
+      "block_outputs": 19914,
+      "cargo_artifacts": {
+        "rebuilt": 2
+      },
+      "command": [
+        "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/cargo",
+        "build",
+        "--manifest-path",
+        "crates/Cargo.toml",
+        "--frozen",
+        "--offline",
+        "--jobs",
+        "4",
+        "-p",
+        "aos-boot-identity",
+        "--bin",
+        "aos-boot-identity",
+        "--message-format=json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/2-cargo-incremental/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/2-cargo-incremental/cargo-fresh-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        73.32958984375,
+        80.79345703125,
+        114.50390625
+      ],
+      "mode": "cargo-incremental",
+      "peak_rss_kib": 135880,
+      "repetition": 2,
+      "scenario": "fresh-build-directory",
+      "system_seconds": 0.284676,
+      "user_seconds": 0.727663,
+      "wall_seconds": 0.758641060005175
+    },
+    {
+      "actions": {
+        "Rustc:executed": 4
+      },
+      "block_inputs": 208,
+      "block_outputs": 275516,
+      "command": [
+        "/nix/store/03xdp3x214a0px6gvhg4dwiq7i0fqkrm-python3-3.14.3/bin/python3",
+        "/nix/store/bx41sy2pmmkg6z1qpgln8v1myrqafysf-launcher.py",
+        "--config",
+        "/nix/store/c0dzq2wv64yhw194pr50wyzwskln1wd7-aos-bazel-configuration.json",
+        "--workspace",
+        "/build/performance/2-bazel/first-worktree",
+        "--output-base",
+        "/build/performance/2-bazel/bazel-first",
+        "--nix-sandbox",
+        "--cache",
+        "/build/performance/2-bazel/bazel-cache",
+        "--metrics",
+        "/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/2-bazel/cold/launcher.json",
+        "--",
+        "build",
+        "//crates/aos/boot/aos-boot-identity:package",
+        "--execution_log_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/2-bazel/cold/execution.json",
+        "--build_event_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/2-bazel/cold/events.json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/2-bazel/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/2-bazel/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        70.01953125,
+        79.9833984375,
+        114.060546875
+      ],
+      "mode": "bazel",
+      "peak_rss_kib": 349176,
+      "repetition": 2,
+      "scenario": "cold",
+      "system_seconds": 3.369802,
+      "user_seconds": 25.622615,
+      "wall_seconds": 7.44499031000305
+    },
+    {
+      "actions": {},
+      "block_inputs": 64,
+      "block_outputs": 5615,
+      "command": [
+        "/nix/store/03xdp3x214a0px6gvhg4dwiq7i0fqkrm-python3-3.14.3/bin/python3",
+        "/nix/store/bx41sy2pmmkg6z1qpgln8v1myrqafysf-launcher.py",
+        "--config",
+        "/nix/store/c0dzq2wv64yhw194pr50wyzwskln1wd7-aos-bazel-configuration.json",
+        "--workspace",
+        "/build/performance/2-bazel/first-worktree",
+        "--output-base",
+        "/build/performance/2-bazel/bazel-first",
+        "--nix-sandbox",
+        "--cache",
+        "/build/performance/2-bazel/bazel-cache",
+        "--metrics",
+        "/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/2-bazel/warm/launcher.json",
+        "--",
+        "build",
+        "//crates/aos/boot/aos-boot-identity:package",
+        "--execution_log_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/2-bazel/warm/execution.json",
+        "--build_event_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/2-bazel/warm/events.json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/2-bazel/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/2-bazel/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        77.46533203125,
+        81.36181640625,
+        114.32373046875
+      ],
+      "mode": "bazel",
+      "peak_rss_kib": 415064,
+      "repetition": 2,
+      "scenario": "warm",
+      "system_seconds": 3.134276,
+      "user_seconds": 23.477818,
+      "wall_seconds": 4.01762523400248
+    },
+    {
+      "actions": {
+        "Rustc:executed": 1
+      },
+      "block_inputs": 576,
+      "block_outputs": 9908,
+      "command": [
+        "/nix/store/03xdp3x214a0px6gvhg4dwiq7i0fqkrm-python3-3.14.3/bin/python3",
+        "/nix/store/bx41sy2pmmkg6z1qpgln8v1myrqafysf-launcher.py",
+        "--config",
+        "/nix/store/c0dzq2wv64yhw194pr50wyzwskln1wd7-aos-bazel-configuration.json",
+        "--workspace",
+        "/build/performance/2-bazel/first-worktree",
+        "--output-base",
+        "/build/performance/2-bazel/bazel-first",
+        "--nix-sandbox",
+        "--cache",
+        "/build/performance/2-bazel/bazel-cache",
+        "--metrics",
+        "/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/2-bazel/implementation-edit/launcher.json",
+        "--",
+        "build",
+        "//crates/aos/boot/aos-boot-identity:package",
+        "--execution_log_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/2-bazel/implementation-edit/execution.json",
+        "--build_event_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/2-bazel/implementation-edit/events.json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/2-bazel/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/2-bazel/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        75.826171875,
+        80.95703125,
+        114.015625
+      ],
+      "mode": "bazel",
+      "peak_rss_kib": 443328,
+      "repetition": 2,
+      "scenario": "implementation-edit",
+      "system_seconds": 2.702474,
+      "user_seconds": 17.721922,
+      "wall_seconds": 4.133936389000155
+    },
+    {
+      "actions": {
+        "Rustc:executed": 2
+      },
+      "block_inputs": 0,
+      "block_outputs": 21023,
+      "command": [
+        "/nix/store/03xdp3x214a0px6gvhg4dwiq7i0fqkrm-python3-3.14.3/bin/python3",
+        "/nix/store/bx41sy2pmmkg6z1qpgln8v1myrqafysf-launcher.py",
+        "--config",
+        "/nix/store/c0dzq2wv64yhw194pr50wyzwskln1wd7-aos-bazel-configuration.json",
+        "--workspace",
+        "/build/performance/2-bazel/first-worktree",
+        "--output-base",
+        "/build/performance/2-bazel/bazel-first",
+        "--nix-sandbox",
+        "--cache",
+        "/build/performance/2-bazel/bazel-cache",
+        "--metrics",
+        "/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/2-bazel/public-api-edit/launcher.json",
+        "--",
+        "build",
+        "//crates/aos/boot/aos-boot-identity:package",
+        "--execution_log_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/2-bazel/public-api-edit/execution.json",
+        "--build_event_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/2-bazel/public-api-edit/events.json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/2-bazel/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/2-bazel/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        73.037109375,
+        80.29345703125,
+        113.623046875
+      ],
+      "mode": "bazel",
+      "peak_rss_kib": 489928,
+      "repetition": 2,
+      "scenario": "public-api-edit",
+      "system_seconds": 3.140822,
+      "user_seconds": 20.239739,
+      "wall_seconds": 4.605513364003855
+    },
+    {
+      "actions": {
+        "Rustc:restored": 4
+      },
+      "block_inputs": 521,
+      "block_outputs": 255529,
+      "command": [
+        "/nix/store/03xdp3x214a0px6gvhg4dwiq7i0fqkrm-python3-3.14.3/bin/python3",
+        "/nix/store/bx41sy2pmmkg6z1qpgln8v1myrqafysf-launcher.py",
+        "--config",
+        "/nix/store/c0dzq2wv64yhw194pr50wyzwskln1wd7-aos-bazel-configuration.json",
+        "--workspace",
+        "/build/performance/2-bazel/second-worktree",
+        "--output-base",
+        "/build/performance/2-bazel/bazel-second",
+        "--nix-sandbox",
+        "--cache",
+        "/build/performance/2-bazel/bazel-cache",
+        "--metrics",
+        "/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/2-bazel/second-worktree/launcher.json",
+        "--",
+        "build",
+        "//crates/aos/boot/aos-boot-identity:package",
+        "--execution_log_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/2-bazel/second-worktree/execution.json",
+        "--build_event_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/2-bazel/second-worktree/events.json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/2-bazel/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/2-bazel/cargo-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        78.1591796875,
+        81.2353515625,
+        113.7490234375
+      ],
+      "mode": "bazel",
+      "peak_rss_kib": 672668,
+      "repetition": 2,
+      "scenario": "second-worktree",
+      "system_seconds": 2.406691,
+      "user_seconds": 18.412089,
+      "wall_seconds": 4.454395307999221
+    },
+    {
+      "actions": {
+        "Rustc:restored": 4
+      },
+      "block_inputs": 64,
+      "block_outputs": 255530,
+      "command": [
+        "/nix/store/03xdp3x214a0px6gvhg4dwiq7i0fqkrm-python3-3.14.3/bin/python3",
+        "/nix/store/bx41sy2pmmkg6z1qpgln8v1myrqafysf-launcher.py",
+        "--config",
+        "/nix/store/c0dzq2wv64yhw194pr50wyzwskln1wd7-aos-bazel-configuration.json",
+        "--workspace",
+        "/build/performance/2-bazel/second-worktree",
+        "--output-base",
+        "/build/performance/2-bazel/bazel-fresh",
+        "--nix-sandbox",
+        "--cache",
+        "/build/performance/2-bazel/bazel-cache",
+        "--metrics",
+        "/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/2-bazel/fresh-build-directory/launcher.json",
+        "--",
+        "build",
+        "//crates/aos/boot/aos-boot-identity:package",
+        "--execution_log_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/2-bazel/fresh-build-directory/execution.json",
+        "--build_event_json_file=/nix/store/h5d5j4hqm4mpvn8x5d702nzb7g2sgwls-aos-bazel-pilot-performance-1/2-bazel/fresh-build-directory/events.json"
+      ],
+      "compiler_environment": {
+        "CARGO_HOME": "/build/performance/2-bazel/cargo-home",
+        "CARGO_INCREMENTAL": "1",
+        "CARGO_TARGET_DIR": "/build/performance/2-bazel/cargo-fresh-target",
+        "RUSTC": "/nix/store/i2xxcg34f9jnbr830l8158y31vksjazn-rust-1.98.1/bin/rustc"
+      },
+      "load_average": [
+        78.1591796875,
+        81.2353515625,
+        113.7490234375
+      ],
+      "mode": "bazel",
+      "peak_rss_kib": 557364,
+      "repetition": 2,
+      "scenario": "fresh-build-directory",
+      "system_seconds": 2.480485,
+      "user_seconds": 18.60327,
+      "wall_seconds": 4.677427074013394
+    }
+  ],
+  "schema_version": 1,
+  "scope": "boot-identity compile commands; excludes Nix evaluation, preparation, and installation"
+}

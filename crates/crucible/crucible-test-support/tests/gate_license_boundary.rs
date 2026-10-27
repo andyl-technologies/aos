@@ -1,11 +1,14 @@
 //! Enforces `gate:license-boundary` for the Crucible/QEMU process boundary.
 //!
-//! The gate is intentionally static and package-independent: it reads Cargo
-//! metadata, source text, the public interface manifest, the generated C view,
-//! and committed golden bytes without linking the QEMU plugin or importing
-//! QEMU internals.
+//! The gate is static: it reads declared Bazel graph and closure inputs, source
+//! text, the public interface manifest, the generated C view, and golden bytes.
+//! Cargo-only execution retains its independent metadata oracle. Neither path
+//! links the QEMU plugin or imports QEMU internals.
 
 #![forbid(unsafe_code)]
+
+#[path = "support/architecture.rs"]
+mod architecture;
 
 #[path = "support/workspace.rs"]
 mod workspace;
@@ -24,6 +27,8 @@ const PLUGIN_PACKAGE: &str = "crucible-qemu-plugin";
 const DEBUG_GATEWAY_PACKAGE: &str = "crucible-qemu-debug-gateway";
 const BOUNDARY_PACKAGES: &[&str] = &["crucible-qemu-protocol", "crucible-qemu-shmem"];
 
+#[path = "gate_license_boundary/bazel.rs"]
+mod bazel;
 #[path = "gate_license_boundary/contributor_authorization.rs"]
 mod contributor_authorization;
 #[path = "gate_license_boundary/dependencies.rs"]
@@ -135,6 +140,9 @@ fn qemu_patch_created_files_match_license_inventory() -> Result<(), Box<dyn Erro
 
 #[test]
 fn cargo_metadata_preserves_component_licenses() -> Result<(), Box<dyn Error>> {
+    if let Some(graph) = architecture::load()? {
+        return bazel::component_licenses(&graph);
+    }
     let crates = workspace_crates_dir()?;
     let workspace: Value = fs::read_to_string(crates.join("Cargo.toml"))?.parse()?;
     assert_eq!(
@@ -180,47 +188,11 @@ fn cargo_metadata_preserves_component_licenses() -> Result<(), Box<dyn Error>> {
 fn gpl_side_internal_dependencies_are_only_permissive_boundary_crates() -> Result<(), Box<dyn Error>>
 {
     let crates = workspace_crates_dir()?;
-    let workspace: Value = fs::read_to_string(crates.join("Cargo.toml"))?.parse()?;
-    let workspace_dependencies = workspace["workspace"]["dependencies"]
-        .as_table()
-        .ok_or("workspace.dependencies must be a table")?;
-    let mut failures = Vec::new();
-
-    for gpl_package in [PLUGIN_PACKAGE, DEBUG_GATEWAY_PACKAGE] {
-        let manifest_path = workspace::package_directory(&crates, gpl_package)?.join("Cargo.toml");
-        let manifest: Value = fs::read_to_string(&manifest_path)?.parse()?;
-        dependencies::visit_production_dependency_tables(
-            &manifest,
-            &mut |table_name, dependencies| {
-                for (name, dependency) in dependencies {
-                    let package = dependencies::resolved_dependency_package(
-                        name,
-                        dependency,
-                        workspace_dependencies,
-                    );
-                    let is_internal_crucible =
-                        package == "crucible-engine" || package.starts_with("crucible-");
-                    if is_internal_crucible && !BOUNDARY_PACKAGES.contains(&package) {
-                        failures.push(format!(
-                            "{gpl_package}: production {table_name} entry `{package}` crosses the GPL boundary"
-                        ));
-                    }
-                }
-            },
-        )?;
-    }
-
-    for boundary in BOUNDARY_PACKAGES {
-        let boundary_manifest: Value = fs::read_to_string(
-            workspace::package_directory(&crates, boundary)?.join("Cargo.toml"),
-        )?
-        .parse()?;
-        assert_eq!(
-            boundary_manifest["package"]["license"].as_str(),
-            Some(BOUNDARY_LICENSE),
-            "{boundary} must remain GPL-compatible"
-        );
-    }
+    let failures = if let Some(graph) = architecture::load()? {
+        bazel::internal_boundaries(&graph)?
+    } else {
+        cargo_internal_boundaries(&crates)?
+    };
 
     let plugin_package = fs::read_to_string(
         crates
@@ -232,11 +204,16 @@ fn gpl_side_internal_dependencies_are_only_permissive_boundary_crates() -> Resul
         plugin_package.contains("LICENSES/MIT.txt"),
         "the GPL plugin package must retain the MIT notice for its dual-licensed boundary crates"
     );
+    let gateway_builder = if architecture::load()?.is_some() {
+        "pkgs/emulation/_crucible-qemu-bazel-installed.nix"
+    } else {
+        "pkgs/tools/crucible/_debug-gateway.nix"
+    };
     let gateway_package = fs::read_to_string(
         crates
             .parent()
             .ok_or("crates/ must be inside the repository")?
-            .join("pkgs/tools/crucible/crucible.nix"),
+            .join(gateway_builder),
     )?;
     for marker in [
         "LICENSES/GPL-2.0-only.txt",
@@ -262,13 +239,27 @@ fn apache_host_crates_do_not_define_qemu_plugin_abi() -> Result<(), Box<dyn Erro
     let crates = workspace_crates_dir()?;
     let mut failures = Vec::new();
 
-    for entry in workspace::package_entries(&crates)? {
-        let entry = entry?;
-        let package_dir = entry.path();
-        if !package_dir.join("Cargo.toml").is_file() {
-            continue;
-        }
-        let package = entry.file_name().to_string_lossy().into_owned();
+    let packages = if let Some(graph) = architecture::load()? {
+        let root = crates
+            .parent()
+            .ok_or("crates/ must be inside the repository")?;
+        graph
+            .package_names()
+            .map(|name| Ok((name.to_owned(), root.join(graph.package_directory(name)?))))
+            .collect::<Result<Vec<_>, std::io::Error>>()?
+    } else {
+        workspace::package_entries(&crates)?
+            .into_iter()
+            .map(|entry| {
+                let entry = entry?;
+                Ok((
+                    entry.file_name().to_string_lossy().into_owned(),
+                    entry.path(),
+                ))
+            })
+            .collect::<Result<Vec<_>, std::io::Error>>()?
+    };
+    for (package, package_dir) in packages {
         if package == PLUGIN_PACKAGE {
             continue;
         }
@@ -432,29 +423,10 @@ fn independent_fixture_parser_matches_all_abi_views() -> Result<(), Box<dyn Erro
 #[test]
 fn boundary_artifacts_and_code_docs_remain_explicit() -> Result<(), Box<dyn Error>> {
     let crates = workspace_crates_dir()?;
-    let plugin: Value = fs::read_to_string(
-        workspace::package_directory(&crates, PLUGIN_PACKAGE)?.join("Cargo.toml"),
-    )?
-    .parse()?;
-    let plugin_artifacts = plugin["lib"]["crate-type"]
-        .as_array()
-        .ok_or("plugin crate-type must be an array")?;
-    assert_eq!(
-        plugin_artifacts.as_slice(),
-        [Value::String(String::from("cdylib"))]
-    );
-
-    for boundary in BOUNDARY_PACKAGES {
-        let manifest: Value = fs::read_to_string(
-            workspace::package_directory(&crates, boundary)?.join("Cargo.toml"),
-        )?
-        .parse()?;
-        assert!(
-            manifest
-                .get("lib")
-                .and_then(|lib| lib.get("crate-type"))
-                .is_none()
-        );
+    if let Some(graph) = architecture::load()? {
+        bazel::artifact_types(&graph)?;
+    } else {
+        cargo_artifact_types(&crates)?;
     }
 
     let docs = [
@@ -506,10 +478,85 @@ fn boundary_artifacts_and_code_docs_remain_explicit() -> Result<(), Box<dyn Erro
     Ok(())
 }
 
+fn cargo_internal_boundaries(crates: &Path) -> Result<Vec<String>, Box<dyn Error>> {
+    let workspace: Value = fs::read_to_string(crates.join("Cargo.toml"))?.parse()?;
+    let workspace_dependencies = workspace["workspace"]["dependencies"]
+        .as_table()
+        .ok_or("workspace.dependencies must be a table")?;
+    let mut failures = Vec::new();
+
+    for gpl_package in [PLUGIN_PACKAGE, DEBUG_GATEWAY_PACKAGE] {
+        let manifest_path = workspace::package_directory(crates, gpl_package)?.join("Cargo.toml");
+        let manifest: Value = fs::read_to_string(&manifest_path)?.parse()?;
+        dependencies::visit_production_dependency_tables(
+            &manifest,
+            &mut |table_name, dependencies| {
+                for (name, dependency) in dependencies {
+                    let package = dependencies::resolved_dependency_package(
+                        name,
+                        dependency,
+                        workspace_dependencies,
+                    );
+                    let is_internal_crucible =
+                        package == "crucible-engine" || package.starts_with("crucible-");
+                    if is_internal_crucible && !BOUNDARY_PACKAGES.contains(&package) {
+                        failures.push(format!(
+                            "{gpl_package}: production {table_name} entry `{package}` crosses the GPL boundary"
+                        ));
+                    }
+                }
+            },
+        )?;
+    }
+
+    for boundary in BOUNDARY_PACKAGES {
+        let boundary_manifest: Value =
+            fs::read_to_string(workspace::package_directory(crates, boundary)?.join("Cargo.toml"))?
+                .parse()?;
+        assert_eq!(
+            boundary_manifest["package"]["license"].as_str(),
+            Some(BOUNDARY_LICENSE),
+            "{boundary} must remain GPL-compatible"
+        );
+    }
+
+    Ok(failures)
+}
+
+fn cargo_artifact_types(crates: &Path) -> Result<(), Box<dyn Error>> {
+    let plugin: Value = fs::read_to_string(
+        workspace::package_directory(crates, PLUGIN_PACKAGE)?.join("Cargo.toml"),
+    )?
+    .parse()?;
+    let plugin_artifacts = plugin["lib"]["crate-type"]
+        .as_array()
+        .ok_or("plugin crate-type must be an array")?;
+    assert_eq!(
+        plugin_artifacts.as_slice(),
+        [Value::String(String::from("cdylib"))]
+    );
+
+    for boundary in BOUNDARY_PACKAGES {
+        let manifest: Value =
+            fs::read_to_string(workspace::package_directory(crates, boundary)?.join("Cargo.toml"))?
+                .parse()?;
+        assert!(
+            manifest
+                .get("lib")
+                .and_then(|lib| lib.get("crate-type"))
+                .is_none()
+        );
+    }
+
+    Ok(())
+}
+
 fn expected_license(package: &str) -> &'static str {
     match package {
         PLUGIN_PACKAGE | DEBUG_GATEWAY_PACKAGE => PLUGIN_LICENSE,
         "crucible-qemu-protocol" | "crucible-qemu-shmem" => BOUNDARY_LICENSE,
+        // Preserve the upstream license of the workspace's native binding.
+        "libssh2-sys" => "MIT OR Apache-2.0",
         _ => APACHE_LICENSE,
     }
 }
@@ -539,6 +586,9 @@ fn string_set(value: &Value) -> Result<BTreeSet<&str>, Box<dyn Error>> {
 }
 
 fn workspace_crates_dir() -> Result<PathBuf, Box<dyn Error>> {
+    if architecture::load()?.is_some() {
+        return Ok(std::env::current_dir()?.join("crates"));
+    }
     Ok(workspace::crates_directory())
 }
 

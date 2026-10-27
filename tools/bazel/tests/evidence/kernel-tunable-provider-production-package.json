@@ -1,0 +1,2044 @@
+{
+  "broader_native_evaluation_gate": {
+    "derivation": "/nix/store/b8j0nz3q4pymj0kri3wj2dwvzkmd7p9q-aos-native-evaluation-checks-0.drv",
+    "identical_to_completed_passing_gate": true,
+    "output": "/nix/store/6bz9648q4x7n62qgbkcwag90sarnagg7-aos-native-evaluation-checks-0"
+  },
+  "candidate_build_requisites": 2834,
+  "compilations": {
+    "production": {
+      "derivation": "/nix/store/wlv5ag7n5n6aw8qfi6ai4fi7nfdhwxd9-aos-bazel-kernel-tunable-provider-production-1.drv",
+      "first_party_rust_compilations": 3,
+      "fresh_linux_sandbox_actions": 78,
+      "output": "/nix/store/y2dkf8gn2f5p8z6vrbllxh8s0jgf1kfv-aos-bazel-kernel-tunable-provider-production-1",
+      "retained_evidence_sha256": {
+        "actions.json": "23483d319ee0db2c14273d9b77c204af6f2a3533f44f9f5fb134eec32858bc56",
+        "compiler-inputs.json": "f7e1ff971e2f6e6f1ef9a8874116297cc6c4e8a49efd3c1bda55485b1d04b166",
+        "execution.json": "967a00decdd6589c3d4f67de2ec328f729cf1f87f145bfe2f4d5e2aff4ec3514"
+      }
+    },
+    "release_tests": {
+      "derivation": "/nix/store/4fq07jmwp0rg6may09wgvvdmk7n2apbm-aos-bazel-kernel-tunable-provider-release-tests-1.drv",
+      "first_party_rust_compilations": 5,
+      "fresh_linux_sandbox_actions": 112,
+      "output": "/nix/store/6608984awc4bgxxa5cnnvbvcjzy2fcsp-aos-bazel-kernel-tunable-provider-release-tests-1",
+      "retained_evidence_sha256": {
+        "actions.json": "3fda3144adbe2d10db2daeec3cc202daf24e6ed2fc95c9eeee6155ff7b07faa8",
+        "compiler-inputs.json": "374c29edd601384258a74f76ce279785a9691065cf257943b37eef7e7f48d1be",
+        "execution.json": "d8c4a5ec66ec8cd67cb0623e5b16264eb4dec66949cea9e2f6882a6bd5cdd68a"
+      }
+    }
+  },
+  "dependency_profiles": {
+    "actual_compiled_features_compared_with_ordinary_package_and_independent_test_oracle": true,
+    "all_69_existing_source_pins_generated_maps_and_generator_identities_unchanged": true,
+    "existing_module_pins_and_lock_unchanged": true,
+    "production": "kernel-tunable",
+    "published_specification_profiles": [
+      "accache",
+      "activation-core",
+      "activation-core-tests",
+      "activation-crucible",
+      "activation-crucible-tests",
+      "activation-storage",
+      "activation-systemd",
+      "aos-cli-fleet-tests",
+      "aos-cli-production",
+      "aos-cli-tests",
+      "boot-preparation",
+      "boot-preparation-minimal",
+      "build-services",
+      "cli-support",
+      "configuration-image",
+      "configuration-image-tests",
+      "control",
+      "core",
+      "crucible-cli",
+      "daemon",
+      "deployment",
+      "device",
+      "engine",
+      "formats",
+      "guest",
+      "hub-client",
+      "hub-console",
+      "hub-console-wasm",
+      "hub-db",
+      "hub-db-all-features",
+      "hub-db-all-features-tests",
+      "hub-db-tests",
+      "hub-model",
+      "hub-model-tests",
+      "hub-native-postgres",
+      "hub-native-tests",
+      "hub-portable",
+      "hub-service",
+      "hub-service-all-features",
+      "hub-service-all-features-tests",
+      "hub-service-tests",
+      "hub-worker-all-features-tests",
+      "hub-worker-tests",
+      "hub-worker-wasm",
+      "hub-worker-wasm-all-features",
+      "hub-worker-wasm-do-e2e",
+      "kernel-tunable",
+      "kernel-tunable-tests",
+      "native-bindings",
+      "native-foundation",
+      "native-foundation-minimal",
+      "native-foundation-tests",
+      "package-manager",
+      "package-manager-tests",
+      "preparation-provider",
+      "preparation-provider-tests",
+      "qemu-gpl-plugin-tests",
+      "qemu-gpl-production",
+      "qemu-gpl-tests",
+      "qemu-host",
+      "qemu-test-oracle-host",
+      "quota",
+      "registry-native",
+      "registry-native-tests",
+      "registry-web",
+      "registry-web-wasm",
+      "release-coordination",
+      "release-preparation",
+      "session",
+      "store",
+      "store-s3"
+    ],
+    "refresh": {
+      "native_test_feature_variants": {
+        "serde": "native compiler features without alloc",
+        "serde_core": "native compiler features without alloc",
+        "syn": "derive-only parser"
+      },
+      "new_profiles": {
+        "kernel-tunable": 24,
+        "kernel-tunable-tests": 59
+      },
+      "new_specification_build": "/nix/store/97jq1xnv82bbbz2gmvwpvpnjz7gkb44w-aos-bazel-kernel-tunable-profile-specifications-1",
+      "old_specification_build": "/nix/store/864azx1k3ykj0h91xan9zj223f69gd9f-aos-bazel-preparation-provider-profile-specifications-1",
+      "source_inventory_refresh": [
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/accache-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "crates/activation/aos-activation-sysctl/BUILD.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/activation-core-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/activation-crucible-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/activation-storage-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/activation-systemd-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/aos-cli-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/boot-pilot-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/boot-preparation-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/boot-preparation-provider-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/boot-transaction-storage-provider-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/build-services-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/cli-support-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/configuration-image-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/contracts-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/control-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/crucible-cli-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/daemon-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/deployment-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/device-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "crates/activation/aos-activation-sysctl/BUILD.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/engine-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/feature-powerset-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/fixture-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/formats-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/guest-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/hub-client-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/hub-console-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/hub-console-wasm-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/hub-db-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/hub-model-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/hub-native-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/hub-portable-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/hub-service-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/hub-worker-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/hub-worker-wasm-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/initrd-preparation-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/native-foundation-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/package-manager-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/protocol-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/qemu-gateway-process-test-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/qemu-gpl-production-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/qemu-host-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/qemu-plugin-process-test-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/qemu-test-oracle-host-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/quota-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/registry-native-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/registry-web-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/registry-web-wasm-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/release-coordination-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/release-preparation-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/session-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/shared-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/static-storage-providers-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/storage-provisioning-provider-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/store-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/store-s3-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "crates/activation/aos-activation-sysctl/BUILD.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/test-support-audit-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/test-support-inventory.json"
+        },
+        {
+          "added_contracts": [
+            "third_party/rust/kernel-tunable-tests/aliases.bzl",
+            "third_party/rust/kernel-tunable-tests/repositories.MODULE.bazel",
+            "third_party/rust/kernel-tunable.bzl",
+            "third_party/rust/kernel-tunable/aliases.bzl",
+            "third_party/rust/kernel-tunable/repositories.MODULE.bazel"
+          ],
+          "changed_contracts": [
+            "MODULE.bazel",
+            "third_party/rust/BUILD.bazel",
+            "tools/bazel/rules/BUILD.bazel",
+            "tools/bazel/rules/profiles.bzl"
+          ],
+          "path": "tools/bazel/metadata/zfs-provider-inventory.json"
+        }
+      ],
+      "unchanged_existing_generated_files": 16334,
+      "unchanged_existing_profile_definitions": 69,
+      "unchanged_implementation_selections": true
+    },
+    "release_tests": "kernel-tunable-tests"
+  },
+  "developer_cli": {
+    "new_update_deps_profiles": [
+      "kernel-tunable",
+      "kernel-tunable-tests"
+    ],
+    "previously_missing_update_deps_profiles_restored": [
+      "configuration-image",
+      "configuration-image-tests",
+      "preparation-provider",
+      "preparation-provider-tests"
+    ],
+    "qualification": "/nix/store/vx1hflr0vbr8g11y8dcyj9m5gc551hlw-aos-dev-cli-check-0",
+    "result": "PASS",
+    "unknown_profile_rejected": true
+  },
+  "driver_selection": {
+    "bazel": "/nix/store/xfn2l4qrq7ijd0rrkmhy5ra8hv6gpk81-aos-kernel-tunable-provider-0.1.0.drv",
+    "cargo_constructor_artifacts_dummy_source_and_vendor_not_evaluated": true,
+    "fallback": "/nix/store/2ayxq34jmxpjy1sa76hhc25i7gzlvq9m-aos-kernel-tunable-provider-0.1.0.drv",
+    "invalid_driver_rejected": true,
+    "module_runtime_and_qualification_declarations_preserved": true,
+    "ordinary": "/nix/store/2ayxq34jmxpjy1sa76hhc25i7gzlvq9m-aos-kernel-tunable-provider-0.1.0.drv"
+  },
+  "enrolled_qualification_matches_completed_build": true,
+  "entry_point": "checks.build.bazel.kernel-tunable-provider-production.all",
+  "executed_release_test_and_macro_profiles": {
+    "actions": {
+      "//crates/activation/aos-activation-sysctl:static_bin_binary": {
+        "cacheHit": false,
+        "compiler_options": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-1734963285",
+          "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "opt-level": "3",
+          "overflow-checks": "no",
+          "relocation-model": "static",
+          "strip": "none"
+        },
+        "exitCode": 0,
+        "runner": "linux-sandbox"
+      },
+      "//crates/activation/aos-activation-sysctl:static_unit_binary": {
+        "cacheHit": false,
+        "compiler_options": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-1148511688",
+          "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "opt-level": "3",
+          "overflow-checks": "no",
+          "relocation-model": "static",
+          "strip": "none"
+        },
+        "exitCode": 0,
+        "runner": "linux-sandbox"
+      },
+      "@@+aos_tools_repository+aos_kernel_tunable_tests_crates__serde_derive-1.0.228//:serde_derive": {
+        "cacheHit": false,
+        "compiler_options": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-3129940570",
+          "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "opt-level": "0",
+          "overflow-checks": "no",
+          "strip": "debuginfo"
+        },
+        "exitCode": 0,
+        "runner": "linux-sandbox"
+      },
+      "@@+aos_tools_repository+aos_kernel_tunable_tests_crates__thiserror-impl-2.0.18//:thiserror_impl": {
+        "cacheHit": false,
+        "compiler_options": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-203884926",
+          "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "opt-level": "0",
+          "overflow-checks": "no",
+          "strip": "debuginfo"
+        },
+        "exitCode": 0,
+        "runner": "linux-sandbox"
+      }
+    },
+    "build": "/nix/store/6608984awc4bgxxa5cnnvbvcjzy2fcsp-aos-bazel-kernel-tunable-provider-release-tests-1",
+    "cargo": "/nix/store/zf3b5hr4w530gn5hjzrs0bawbj9v1w9a-aos-bazel-kernel-tunable-provider-production-cargo-oracle-1",
+    "cargo_actions": {
+      "aos_activation_sysctl": {
+        "arguments": [
+          "rustc",
+          "--crate-name",
+          "aos_activation_sysctl",
+          "--edition=2024",
+          "activation/aos-activation-sysctl/src/lib.rs",
+          "--error-format=json",
+          "--json=diagnostic-rendered-ansi,artifacts,future-incompat",
+          "--emit=dep-info,link",
+          "-C",
+          "opt-level=3",
+          "-C",
+          "embed-bitcode=no",
+          "--test",
+          "--check-cfg",
+          "cfg(docsrs,test)",
+          "--check-cfg",
+          "cfg(feature, values())",
+          "-C",
+          "metadata=80c40d529ed29626",
+          "-C",
+          "extra-filename=-a05c65252099c9df",
+          "--out-dir",
+          "/build/target/x86_64-unknown-linux-gnu/release/deps",
+          "--target",
+          "x86_64-unknown-linux-gnu",
+          "-C",
+          "strip=debuginfo",
+          "-L",
+          "dependency=/build/target/x86_64-unknown-linux-gnu/release/deps",
+          "-L",
+          "dependency=/build/target/release/deps",
+          "--extern",
+          "anyhow=/build/target/x86_64-unknown-linux-gnu/release/deps/libanyhow-4d13e2828bba4632.rlib",
+          "--extern",
+          "aos_core=/build/target/x86_64-unknown-linux-gnu/release/deps/libaos_core-2522bca084b0cc2a.rlib",
+          "--extern",
+          "serde=/build/target/x86_64-unknown-linux-gnu/release/deps/libserde-711142b175cd1d0e.rlib",
+          "--extern",
+          "serde_json=/build/target/x86_64-unknown-linux-gnu/release/deps/libserde_json-4644d0f854ae146c.rlib",
+          "--extern",
+          "tempfile=/build/target/x86_64-unknown-linux-gnu/release/deps/libtempfile-ef80f6d65809a091.rlib",
+          "-C",
+          "target-feature=+crt-static",
+          "-C",
+          "relocation-model=static",
+          "-L",
+          "/nix/store/vid9pc17cwcv06aai6yrlyq5ii60qp65-aos-bazel-static-libraries-1/static/lib"
+        ],
+        "compiler_options": {
+          "embed-bitcode": "no",
+          "extra-filename": "-a05c65252099c9df",
+          "opt-level": "3",
+          "relocation-model": "static",
+          "strip": "debuginfo"
+        }
+      },
+      "aos_kernel_tunable_provider": {
+        "arguments": [
+          "rustc",
+          "--crate-name",
+          "aos_kernel_tunable_provider",
+          "--edition=2024",
+          "activation/aos-activation-sysctl/src/main.rs",
+          "--error-format=json",
+          "--json=diagnostic-rendered-ansi,artifacts,future-incompat",
+          "--emit=dep-info,link",
+          "-C",
+          "opt-level=3",
+          "-C",
+          "embed-bitcode=no",
+          "--test",
+          "--check-cfg",
+          "cfg(docsrs,test)",
+          "--check-cfg",
+          "cfg(feature, values())",
+          "-C",
+          "metadata=267930526ef8acf6",
+          "-C",
+          "extra-filename=-a82cbe7bb6415019",
+          "--out-dir",
+          "/build/target/x86_64-unknown-linux-gnu/release/deps",
+          "--target",
+          "x86_64-unknown-linux-gnu",
+          "-C",
+          "strip=debuginfo",
+          "-L",
+          "dependency=/build/target/x86_64-unknown-linux-gnu/release/deps",
+          "-L",
+          "dependency=/build/target/release/deps",
+          "--extern",
+          "anyhow=/build/target/x86_64-unknown-linux-gnu/release/deps/libanyhow-4d13e2828bba4632.rlib",
+          "--extern",
+          "aos_activation_sysctl=/build/target/x86_64-unknown-linux-gnu/release/deps/libaos_activation_sysctl-f0c80d540a43d10b.rlib",
+          "--extern",
+          "aos_core=/build/target/x86_64-unknown-linux-gnu/release/deps/libaos_core-2522bca084b0cc2a.rlib",
+          "--extern",
+          "serde=/build/target/x86_64-unknown-linux-gnu/release/deps/libserde-711142b175cd1d0e.rlib",
+          "--extern",
+          "serde_json=/build/target/x86_64-unknown-linux-gnu/release/deps/libserde_json-4644d0f854ae146c.rlib",
+          "--extern",
+          "tempfile=/build/target/x86_64-unknown-linux-gnu/release/deps/libtempfile-ef80f6d65809a091.rlib",
+          "-C",
+          "target-feature=+crt-static",
+          "-C",
+          "relocation-model=static",
+          "-L",
+          "/nix/store/vid9pc17cwcv06aai6yrlyq5ii60qp65-aos-bazel-static-libraries-1/static/lib"
+        ],
+        "compiler_options": {
+          "embed-bitcode": "no",
+          "extra-filename": "-a82cbe7bb6415019",
+          "opt-level": "3",
+          "relocation-model": "static",
+          "strip": "debuginfo"
+        }
+      },
+      "serde_derive": {
+        "arguments": [
+          "rustc",
+          "--crate-name",
+          "serde_derive",
+          "--edition=2021",
+          "/nix/store/bi02z79nilmx60wdpjzw28g7ffsw5jnv-aos-workspace-vendor/source-registry-0/serde_derive-1.0.228/src/lib.rs",
+          "--error-format=json",
+          "--json=diagnostic-rendered-ansi,artifacts,future-incompat",
+          "--crate-type",
+          "proc-macro",
+          "--emit=dep-info,link",
+          "-C",
+          "prefer-dynamic",
+          "-C",
+          "embed-bitcode=no",
+          "-C",
+          "debug-assertions=off",
+          "--cfg",
+          "feature=\"default\"",
+          "--check-cfg",
+          "cfg(docsrs,test)",
+          "--check-cfg",
+          "cfg(feature, values(\"default\", \"deserialize_in_place\"))",
+          "-C",
+          "metadata=7251362fc480c1e6",
+          "-C",
+          "extra-filename=-18561e4675320f61",
+          "--out-dir",
+          "/build/target/release/deps",
+          "-C",
+          "strip=debuginfo",
+          "-L",
+          "dependency=/build/target/release/deps",
+          "--extern",
+          "proc_macro2=/build/target/release/deps/libproc_macro2-abb2be69adaa0af9.rlib",
+          "--extern",
+          "quote=/build/target/release/deps/libquote-2b50be8d5619ef9c.rlib",
+          "--extern",
+          "syn=/build/target/release/deps/libsyn-fb82b5dc8d8ab19a.rlib",
+          "--extern",
+          "proc_macro",
+          "--cap-lints",
+          "allow"
+        ],
+        "compiler_options": {
+          "debug-assertions": "off",
+          "embed-bitcode": "no",
+          "extra-filename": "-18561e4675320f61",
+          "strip": "debuginfo"
+        }
+      },
+      "thiserror_impl": {
+        "arguments": [
+          "rustc",
+          "--crate-name",
+          "thiserror_impl",
+          "--edition=2021",
+          "/nix/store/bi02z79nilmx60wdpjzw28g7ffsw5jnv-aos-workspace-vendor/source-registry-0/thiserror-impl-2.0.18/src/lib.rs",
+          "--error-format=json",
+          "--json=diagnostic-rendered-ansi,artifacts,future-incompat",
+          "--crate-type",
+          "proc-macro",
+          "--emit=dep-info,link",
+          "-C",
+          "prefer-dynamic",
+          "-C",
+          "embed-bitcode=no",
+          "-C",
+          "debug-assertions=off",
+          "--check-cfg",
+          "cfg(docsrs,test)",
+          "--check-cfg",
+          "cfg(feature, values())",
+          "-C",
+          "metadata=99654fda423801a1",
+          "-C",
+          "extra-filename=-80b90e813577f698",
+          "--out-dir",
+          "/build/target/release/deps",
+          "-C",
+          "strip=debuginfo",
+          "-L",
+          "dependency=/build/target/release/deps",
+          "--extern",
+          "proc_macro2=/build/target/release/deps/libproc_macro2-abb2be69adaa0af9.rlib",
+          "--extern",
+          "quote=/build/target/release/deps/libquote-2b50be8d5619ef9c.rlib",
+          "--extern",
+          "syn=/build/target/release/deps/libsyn-fb82b5dc8d8ab19a.rlib",
+          "--extern",
+          "proc_macro",
+          "--cap-lints",
+          "allow"
+        ],
+        "compiler_options": {
+          "debug-assertions": "off",
+          "embed-bitcode": "no",
+          "extra-filename": "-80b90e813577f698",
+          "strip": "debuginfo"
+        }
+      }
+    },
+    "cargo_trace_sha256": "5b797d8b72fc83a08312a4129972a559eafed515766e97291d6ffa97a9fca2f8",
+    "evidence_sha256": {
+      "actions.json": "3fda3144adbe2d10db2daeec3cc202daf24e6ed2fc95c9eeee6155ff7b07faa8",
+      "compiler-inputs.json": "374c29edd601384258a74f76ce279785a9691065cf257943b37eef7e7f48d1be",
+      "execution.json": "d8c4a5ec66ec8cd67cb0623e5b16264eb4dec66949cea9e2f6882a6bd5cdd68a"
+    },
+    "limits": [
+      "Checks selected target and macro profiles, not complete compiler/default, native ABI, linker, editor, production, or performance equivalence."
+    ],
+    "schema_version": 1,
+    "status": "PASS"
+  },
+  "installed_package_report": {
+    "cli_parity": [
+      {
+        "arguments": [],
+        "status": 1,
+        "stderr_sha256": "4a89a6c2439e986bf7564c659a71bb056842cbd4b18203d0da9dfe4d23b578ff",
+        "stdin_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdin_size": 0
+      },
+      {
+        "arguments": [
+          "--help"
+        ],
+        "status": 1,
+        "stderr_sha256": "4a89a6c2439e986bf7564c659a71bb056842cbd4b18203d0da9dfe4d23b578ff",
+        "stdin_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdin_size": 0
+      },
+      {
+        "arguments": [
+          "invalid"
+        ],
+        "status": 1,
+        "stderr_sha256": "4a89a6c2439e986bf7564c659a71bb056842cbd4b18203d0da9dfe4d23b578ff",
+        "stdin_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdin_size": 0
+      },
+      {
+        "arguments": [
+          "apply"
+        ],
+        "status": 1,
+        "stderr_sha256": "7bc667f6527dade0ab417535315731e01b21396da26f1e889b2b9ced7724aedb",
+        "stdin_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdin_size": 0
+      },
+      {
+        "arguments": [
+          "remove"
+        ],
+        "status": 1,
+        "stderr_sha256": "7bc667f6527dade0ab417535315731e01b21396da26f1e889b2b9ced7724aedb",
+        "stdin_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdin_size": 0
+      },
+      {
+        "arguments": [
+          "observe"
+        ],
+        "status": 1,
+        "stderr_sha256": "7bc667f6527dade0ab417535315731e01b21396da26f1e889b2b9ced7724aedb",
+        "stdin_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdin_size": 0
+      },
+      {
+        "arguments": [
+          "apply"
+        ],
+        "status": 1,
+        "stderr_sha256": "16a0949d55dfc8377e3775877710af64a2e90bc15da655d4ec1574d14169525e",
+        "stdin_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "stdin_size": 2
+      },
+      {
+        "arguments": [
+          "observe"
+        ],
+        "status": 1,
+        "stderr_sha256": "59ba31783d56b0c9b207f91f446b2e4c147c691ef65e4cf1886b31f74d507e4b",
+        "stdin_sha256": "9408817bc040328d1c403ff97e94cea3dfd3a361b2fb7ecc7af75ff3a5157139",
+        "stdin_size": 262145
+      }
+    ],
+    "doctest_parity": {
+      "//crates/activation/aos-activation-sysctl:doc_static": {}
+    },
+    "features": {
+      "production": {
+        "features": {
+          "anyhow@1.0.103": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "block-buffer@0.10.4": [
+            []
+          ],
+          "cfg-if@1.0.4": [
+            []
+          ],
+          "cpufeatures@0.2.17": [
+            []
+          ],
+          "crypto-common@0.1.7": [
+            [
+              "std"
+            ]
+          ],
+          "digest@0.10.7": [
+            [
+              "alloc",
+              "block-buffer",
+              "core-api",
+              "default",
+              "std"
+            ]
+          ],
+          "generic-array@0.14.7": [
+            [
+              "more_lengths"
+            ]
+          ],
+          "itoa@1.0.18": [
+            []
+          ],
+          "memchr@2.8.2": [
+            [
+              "alloc",
+              "std"
+            ]
+          ],
+          "proc-macro2@1.0.106": [
+            [
+              "default",
+              "proc-macro"
+            ]
+          ],
+          "quote@1.0.46": [
+            [
+              "default",
+              "proc-macro"
+            ]
+          ],
+          "serde@1.0.228": [
+            [
+              "default",
+              "derive",
+              "rc",
+              "serde_derive",
+              "std"
+            ]
+          ],
+          "serde_core@1.0.228": [
+            [
+              "rc",
+              "result",
+              "std"
+            ]
+          ],
+          "serde_derive@1.0.228": [
+            [
+              "default"
+            ]
+          ],
+          "serde_json@1.0.150": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "sha2@0.10.9": [
+            [
+              "compress",
+              "default",
+              "std"
+            ]
+          ],
+          "syn@2.0.118": [
+            [
+              "clone-impls",
+              "default",
+              "derive",
+              "parsing",
+              "printing",
+              "proc-macro"
+            ]
+          ],
+          "thiserror-impl@2.0.18": [
+            []
+          ],
+          "thiserror@2.0.18": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "typenum@1.20.1": [
+            []
+          ],
+          "unicode-ident@1.0.24": [
+            []
+          ],
+          "version_check@0.9.5": [
+            []
+          ],
+          "zmij@1.0.21": [
+            []
+          ]
+        },
+        "first_party_features": {
+          "aos-activation-sysctl": [
+            []
+          ],
+          "aos-core": [
+            []
+          ]
+        }
+      },
+      "release_tests": {
+        "features": {
+          "anyhow@1.0.103": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "bitflags@2.13.0": [
+            [
+              "std"
+            ]
+          ],
+          "block-buffer@0.10.4": [
+            []
+          ],
+          "cfg-if@1.0.4": [
+            []
+          ],
+          "cpufeatures@0.2.17": [
+            []
+          ],
+          "crypto-common@0.1.7": [
+            [
+              "std"
+            ]
+          ],
+          "digest@0.10.7": [
+            [
+              "alloc",
+              "block-buffer",
+              "core-api",
+              "default",
+              "std"
+            ]
+          ],
+          "fastrand@2.4.1": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "generic-array@0.14.7": [
+            [
+              "more_lengths"
+            ]
+          ],
+          "getrandom@0.4.2": [
+            []
+          ],
+          "itoa@1.0.18": [
+            []
+          ],
+          "libc@0.2.186": [
+            []
+          ],
+          "linux-raw-sys@0.12.1": [
+            [
+              "auxvec",
+              "elf",
+              "errno",
+              "general",
+              "ioctl",
+              "no_std"
+            ]
+          ],
+          "memchr@2.8.2": [
+            [
+              "alloc",
+              "std"
+            ]
+          ],
+          "once_cell@1.21.4": [
+            [
+              "alloc",
+              "race",
+              "std"
+            ]
+          ],
+          "proc-macro2@1.0.106": [
+            [
+              "default",
+              "proc-macro"
+            ]
+          ],
+          "quote@1.0.46": [
+            [
+              "default",
+              "proc-macro"
+            ]
+          ],
+          "rustix@1.1.4": [
+            [
+              "alloc",
+              "default",
+              "fs",
+              "std"
+            ]
+          ],
+          "serde@1.0.228": [
+            [
+              "default",
+              "derive",
+              "rc",
+              "serde_derive",
+              "std"
+            ]
+          ],
+          "serde_core@1.0.228": [
+            [
+              "rc",
+              "result",
+              "std"
+            ]
+          ],
+          "serde_derive@1.0.228": [
+            [
+              "default"
+            ]
+          ],
+          "serde_json@1.0.150": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "sha2@0.10.9": [
+            [
+              "compress",
+              "default",
+              "std"
+            ]
+          ],
+          "syn@2.0.118": [
+            [
+              "clone-impls",
+              "default",
+              "derive",
+              "parsing",
+              "printing",
+              "proc-macro"
+            ]
+          ],
+          "tempfile@3.27.0": [
+            [
+              "default",
+              "getrandom"
+            ]
+          ],
+          "thiserror-impl@2.0.18": [
+            []
+          ],
+          "thiserror@2.0.18": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "typenum@1.20.1": [
+            []
+          ],
+          "unicode-ident@1.0.24": [
+            []
+          ],
+          "version_check@0.9.5": [
+            []
+          ],
+          "zmij@1.0.21": [
+            []
+          ]
+        },
+        "first_party_features": {
+          "aos-activation-sysctl": [
+            []
+          ],
+          "aos-core": [
+            []
+          ]
+        }
+      }
+    },
+    "first_party_rust_compilations": 3,
+    "installed": {
+      "bazel": {
+        "out/bin": {
+          "kind": "directory",
+          "mode": 365
+        },
+        "out/bin/aos-kernel-tunable-provider": {
+          "contract": {
+            "class": "ELF64",
+            "interpreter": [],
+            "machine": "Advanced Micro Devices X86-64",
+            "needed": [],
+            "resolved_libraries": [],
+            "rpath_directories": [],
+            "type": "EXEC"
+          },
+          "kind": "elf",
+          "mode": 365
+        },
+        "out/nix-support": {
+          "kind": "directory",
+          "mode": 365
+        },
+        "out/nix-support/aos-target-platform": {
+          "kind": "file",
+          "mode": 292,
+          "sha256": "d3b7abad38647ed804b5017c5b990acab7c85648b552a97043d4d86c70ce1f9d"
+        }
+      },
+      "ordinary": {
+        "out/bin": {
+          "kind": "directory",
+          "mode": 365
+        },
+        "out/bin/aos-kernel-tunable-provider": {
+          "contract": {
+            "class": "ELF64",
+            "interpreter": [],
+            "machine": "Advanced Micro Devices X86-64",
+            "needed": [],
+            "resolved_libraries": [],
+            "rpath_directories": [],
+            "type": "EXEC"
+          },
+          "kind": "elf",
+          "mode": 365
+        },
+        "out/nix-support": {
+          "kind": "directory",
+          "mode": 365
+        },
+        "out/nix-support/aos-target-platform": {
+          "kind": "file",
+          "mode": 292,
+          "sha256": "d3b7abad38647ed804b5017c5b990acab7c85648b552a97043d4d86c70ce1f9d"
+        }
+      }
+    },
+    "limits": [
+      "Native static installation, exact native features, release tests and bounded input rejection only.",
+      "Live procfs convergence, foreign hosts, numeric performance budgets and default cutover remain separate gates."
+    ],
+    "link_arguments": [
+      "bazel-out/k8-opt-exec/bin/external/rules_rust+/util/process_wrapper/process_wrapper",
+      "--arg-file",
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__anyhow-1.0.103/_bs.linksearchpaths",
+      "--arg-file",
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__serde_core-1.0.228/_bs.linksearchpaths",
+      "--arg-file",
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__serde-1.0.228/_bs.linksearchpaths",
+      "--arg-file",
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__zmij-1.0.21/_bs.linksearchpaths",
+      "--arg-file",
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__serde_json-1.0.150/_bs.linksearchpaths",
+      "--arg-file",
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__generic-array-0.14.7/_bs.linksearchpaths",
+      "--arg-file",
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__thiserror-2.0.18/_bs.linksearchpaths",
+      "--subst",
+      "pwd=${pwd}",
+      "--subst",
+      "exec_root=${exec_root}",
+      "--subst",
+      "output_base=${output_base}",
+      "--subst",
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__anyhow-1.0.103/_bs.out_dir=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__anyhow-1.0.103/_bs.out_dir",
+      "--subst",
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__serde_core-1.0.228/_bs.out_dir=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__serde_core-1.0.228/_bs.out_dir",
+      "--subst",
+      "bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__proc-macro2-1.0.106/_bs.out_dir=bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__proc-macro2-1.0.106/_bs.out_dir",
+      "--subst",
+      "bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__quote-1.0.46/_bs.out_dir=bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__quote-1.0.46/_bs.out_dir",
+      "--subst",
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__serde-1.0.228/_bs.out_dir=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__serde-1.0.228/_bs.out_dir",
+      "--subst",
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__zmij-1.0.21/_bs.out_dir=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__zmij-1.0.21/_bs.out_dir",
+      "--subst",
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__serde_json-1.0.150/_bs.out_dir=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__serde_json-1.0.150/_bs.out_dir",
+      "--subst",
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__generic-array-0.14.7/_bs.out_dir=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__generic-array-0.14.7/_bs.out_dir",
+      "--subst",
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__thiserror-2.0.18/_bs.out_dir=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__thiserror-2.0.18/_bs.out_dir",
+      "--",
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_tools/rust/bin/rustc",
+      "crates/activation/aos-activation-sysctl/src/main.rs",
+      "--crate-name=aos_kernel_tunable_provider",
+      "--crate-type=bin",
+      "--error-format=human",
+      "--out-dir=bazel-out/k8-fastbuild/bin/crates/activation/aos-activation-sysctl",
+      "--codegen=opt-level=0",
+      "--codegen=debuginfo=0",
+      "--codegen=strip=none",
+      "--remap-path-prefix=${output_base}=.",
+      "--remap-path-prefix=${pwd}=.",
+      "--remap-path-prefix=${exec_root}=.",
+      "--emit=link=bazel-out/k8-fastbuild/bin/crates/activation/aos-activation-sysctl/static_provider",
+      "--emit=dep-info",
+      "--color=always",
+      "--target=x86_64-unknown-linux-gnu",
+      "-L",
+      "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_tools/rust/lib/rustlib/x86_64-unknown-linux-gnu/lib",
+      "--edition=2024",
+      "-Cembed-bitcode=no",
+      "--codegen=linker=/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+      "--codegen=link-arg=-L/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib",
+      "--codegen=link-arg=-Wl,-rpath,/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib",
+      "--codegen=link-arg=-lstdc++",
+      "--codegen=link-arg=-lm",
+      "--codegen=link-arg=-L/nix/store/vid9pc17cwcv06aai6yrlyq5ii60qp65-aos-bazel-static-libraries-1/static/lib",
+      "--codegen=link-arg=-static",
+      "--codegen=link-arg=-no-pie",
+      "--extern=aos_activation_sysctl=bazel-out/k8-fastbuild/bin/crates/activation/aos-activation-sysctl/libaos_activation_sysctl-2218846049.rlib",
+      "--extern=aos_core=bazel-out/k8-fastbuild/bin/crates/core/aos-core/libaos_core-2583899516.rlib",
+      "--extern=anyhow=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__anyhow-1.0.103/libanyhow-1427871605.rlib",
+      "--extern=serde=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__serde-1.0.228/libserde-817287492.rlib",
+      "--extern=serde_json=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__serde_json-1.0.150/libserde_json-184078265.rlib",
+      "-Ldependency=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__serde_core-1.0.228",
+      "-Ldependency=bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__serde_derive-1.0.228",
+      "-Ldependency=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__itoa-1.0.18",
+      "-Ldependency=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__memchr-2.8.2",
+      "-Ldependency=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__zmij-1.0.21",
+      "-Ldependency=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__typenum-1.20.1",
+      "-Ldependency=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__generic-array-0.14.7",
+      "-Ldependency=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__block-buffer-0.10.4",
+      "-Ldependency=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__crypto-common-0.1.7",
+      "-Ldependency=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__cfg-if-1.0.4",
+      "-Ldependency=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__digest-0.10.7",
+      "-Ldependency=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__cpufeatures-0.2.17",
+      "-Ldependency=bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__thiserror-impl-2.0.18",
+      "-Ldependency=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__anyhow-1.0.103",
+      "-Ldependency=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__serde-1.0.228",
+      "-Ldependency=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__serde_json-1.0.150",
+      "-Ldependency=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__sha2-0.10.9",
+      "-Ldependency=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_kernel_tunable_crates__thiserror-2.0.18",
+      "-Ldependency=bazel-out/k8-fastbuild/bin/crates/core/aos-core",
+      "-Ldependency=bazel-out/k8-fastbuild/bin/crates/activation/aos-activation-sysctl",
+      "--sysroot=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_tools/rust",
+      "-Copt-level=3",
+      "-Cdebuginfo=0",
+      "-Cdebug-assertions=no",
+      "-Coverflow-checks=no",
+      "-Ctarget-feature=+crt-static",
+      "-Crelocation-model=static"
+    ],
+    "packages": {
+      "bazel": {
+        "out": "/nix/store/b6pi3kh99879n91flxd7ilb5q5hiwshh-aos-kernel-tunable-provider-0.1.0"
+      },
+      "ordinary": {
+        "out": "/nix/store/63vl4m5x0q820s5pnvmi35f41pn42bdx-aos-kernel-tunable-provider-0.1.0"
+      }
+    },
+    "runtime_closures": {
+      "changes": {
+        "out": {
+          "added": [],
+          "removed": []
+        }
+      },
+      "closures": {
+        "bazel": {
+          "out": [
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+            "@output:out@"
+          ]
+        },
+        "ordinary": {
+          "out": [
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+            "@output:out@"
+          ]
+        }
+      }
+    },
+    "sandboxed_cache_miss_actions": 78,
+    "schema_version": 1,
+    "source_selection": {
+      "first_party_cargo_files": [],
+      "workspace": "/nix/store/98lr3nc6ybi54xi40w8psnyacvbbafa9-aos-bazel-workspace"
+    },
+    "static_inputs_sha256": {
+      "static/closure.json": "6b8c12ca0c92c9a55beb56d7bf816c30b96e2a5cde4f4997a5bbda87f4477a18",
+      "static/lib/libc.a": "883923139dd9d8d3b63db94b3c18e5d8a5df2bd39446a256be68891923eda5c4",
+      "static/lib/libgcc_eh.a": "318c92168f80ad55a49b68b075220a2d31888c6c1795085507884be58222476a",
+      "static/lib/libm.a": "0c2434478139e22d73d542e6d1b59e652e8140409b91e3c28324955a2e1d6324"
+    },
+    "test_parity": {
+      "schema_version": 1,
+      "targets": {
+        "//crates/activation/aos-activation-sysctl:static_bin": {
+          "executed": [],
+          "ignored": []
+        },
+        "//crates/activation/aos-activation-sysctl:static_unit": {
+          "executed": [
+            "tests::interrupted_write_is_observed_before_retry_without_losing_baseline",
+            "tests::malformed_keys_fail_before_any_mutation",
+            "tests::reconfiguration_restores_removed_keys_and_teardown_restores_baselines"
+          ],
+          "ignored": []
+        }
+      }
+    }
+  },
+  "limits": [
+    "Cargo remains the default. Live procfs convergence, foreign hosts, numeric performance acceptance and default cutover remain separate gates.",
+    "Three library cases compare fixture-backed convergence, reconfiguration, rollback after interrupted writes, malformed-key rejection and baseline restoration. The command-test and doctest targets are empty and explicitly retained.",
+    "The actual installed Cargo package is the production feature oracle. An independent Cargo release build runs unit tests and doctests and retains its actual compiler commands.",
+    "Fresh Linux sandbox execution does not establish concurrent shared-cache performance.",
+    "No Rust source changes. The completed application test-target compilation for current Rust bytes is recorded in test-support-spec-index-full-rust-compilation.json."
+  ],
+  "own_cargo_package_and_artifacts_required": false,
+  "policy_checks": "/nix/store/a6ncq5k5ijlg8lldkbsp8y8hwgd2zyhm-aos-bazel-policy-checks",
+  "policy_tests": 437,
+  "qualification": "/nix/store/my8fkccf4mnwx54s5b0waxcalls18ajp-aos-bazel-kernel-tunable-provider-production-package-checks",
+  "qualification_derivation": "/nix/store/8xv4ch6g01bp88z5fvky2av22bvir635-aos-bazel-kernel-tunable-provider-production-package-checks.drv",
+  "release_tests_required_by_installed_candidate": true,
+  "schema_version": 1,
+  "selector_introduction_preserved_cargo_identity_for_identical_sources": {
+    "after": "/nix/store/2ayxq34jmxpjy1sa76hhc25i7gzlvq9m-aos-kernel-tunable-provider-0.1.0.drv",
+    "before": "/nix/store/2ayxq34jmxpjy1sa76hhc25i7gzlvq9m-aos-kernel-tunable-provider-0.1.0.drv"
+  },
+  "source_selection": {
+    "checked_inventory": "tools/bazel/metadata/kernel-tunable-provider-inventory.json",
+    "configured_reports": 109,
+    "conservative_inventory_outputs": [
+      "/nix/store/4cfk4dmn8zaig48sxm17pla859dqi36b-aos-bazel-kernel-tunable-provider-production-inventory-1",
+      "/nix/store/c9qdbxabsfqic382xvg2m1zjj3h4yghz-aos-bazel-kernel-tunable-provider-release-tests-inventory-1"
+    ],
+    "declaration_contracts": 184,
+    "precise_and_conservative_inventories_equal": true,
+    "precise_inventory_outputs": [
+      "/nix/store/3qhrq1bifi7ky8m5flr5aw7ysl99i3af-aos-bazel-kernel-tunable-provider-production-inventory-1",
+      "/nix/store/qsyjhxd4i20cli9jvs30mgqdfv6yg0vl-aos-bazel-kernel-tunable-provider-release-tests-inventory-1"
+    ],
+    "requested_roots": 6,
+    "source_files": 9,
+    "unchanged_existing_inventory_selections": 58
+  },
+  "status": "PASS",
+  "unchanged_rust_source_coverage": {
+    "compiled_application_test_targets": 185,
+    "matching_current_files": 3773,
+    "receipt": "test-support-spec-index-full-rust-compilation.json"
+  }
+}

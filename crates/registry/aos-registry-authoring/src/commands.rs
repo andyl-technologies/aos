@@ -6,6 +6,10 @@ use std::path::PathBuf;
 
 /// Registry workspace and authoring commands exposed by `apr`.
 #[derive(Subcommand)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Command arguments are parsed once; preserve the existing public CLI model"
+)]
 pub enum RegistryCommand {
     // ----- Registry Lifecycle -----
     /// Initialize a new empty registry
@@ -931,6 +935,10 @@ pub enum StoreCommand {
 
 /// Static cache subcommands.
 #[derive(Subcommand)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Command arguments are parsed once; preserve the existing public CLI model"
+)]
 pub enum CacheCommand {
     /// Generate static narinfo/NAR files for every registry store path
     Generate {

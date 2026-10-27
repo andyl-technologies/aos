@@ -1,0 +1,341 @@
+load("//tools/bazel/rules:clippy.bzl", "aos_package_clippy")
+load("//tools/bazel/rules:compile.bzl", "rust_library")
+load("//tools/bazel/rules:license.bzl", "aos_license_check")
+load("//tools/bazel/rules:package.bzl", "aos_package")
+load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")
+load("//tools/bazel/rules:source_package.bzl", "aos_source_package")
+load("//tools/bazel/rules:test.bzl", "aos_rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_doc_test")
+
+RUST_PACKAGE = aos_rust_package(
+    name = "crucible-test-support",
+    version = "0.1.0",
+    edition = "2024",
+    license_expression = "Apache-2.0",
+    license_domain = "apache-host",
+)
+
+rust_library(
+    name = "lib",
+    package = RUST_PACKAGE,
+    testonly = True,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "crucible_test_support",
+    crate_root = "src/lib.rs",
+    srcs = glob(["src/**/*.rs"]),
+    compile_data = [
+        "//crates/crucible/crucible-qemu-shmem:src/abi_version.in",
+        "//crates/crucible/crucible-qemu-protocol:src/control_protocol_version.in",
+    ],
+    visibility = ["//crates/crucible:__subpackages__"],
+)
+
+exports_files(
+    ["tests/support/workspace.rs"],
+    visibility = ["//crates/crucible/crucible-engine:__pkg__"],
+)
+
+aos_rust_test(
+    name = "unit",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate = ":lib",
+)
+
+# Repository audits and the feature-powerset driver need their own declared
+# source/tool inputs. These fixtures execute the harness directly without them.
+[
+    aos_rust_test(
+        name = target,
+        package = RUST_PACKAGE,
+        lint_config = "//tools/bazel/rules:workspace_lints",
+        crate_root = "tests/" + target + ".rs",
+        srcs = ["tests/" + target + ".rs"],
+        deps = [":lib"],
+    )
+    for target in [
+        "adversarial_host_fixture",
+        "fingerprint_definition",
+        "gate_abi_conformance",
+        "gate_adversarial_determinism",
+        "gate_divergence_bisect",
+        "gate_e2e_determinism",
+        "gate_layer0_determinism",
+        "reproduction_artifact",
+    ]
+]
+
+rust_doc_test(
+    name = "doc",
+    crate = ":lib",
+)
+
+# Runtime ownership comes from the declared catalog. Keep the unused Cargo
+# fallback relative: rules_rust's absolute default embeds a sandbox sequence
+# number in env!("CARGO_MANIFEST_DIR"), making audit binaries depend on scheduling.
+SOURCE_AUDIT_COMPILER_ENV = {"CARGO_MANIFEST_DIR": "crates/crucible/crucible-test-support"}
+
+# The full controller includes every harness integration root, including the
+# audits whose Cargo-dependent runtime inputs still need migration. These
+# declarations establish compilation coverage, not passing runtime parity.
+CONTROLLER_DEVELOPMENT_DEPENDENCIES = [
+    "//third_party/rust:core_" + name
+    for name in ["rustix", "serde", "serde_json", "sha2", "tempfile", "toml"]
+]
+CONTROLLER_INTEGRATIONS = glob(["tests/*.rs"])
+CONTROLLER_COMPILE_INPUTS = [
+    "//crates/crucible/crucible-engine:source_package",
+    "//tests/crucible:controller_audit_inputs",
+    "//docs/rfcs/0020-crucible-campaigns:controller_audit_inputs",
+    "//:qemu_plugin_gate_audit",
+]
+
+aos_rust_test(
+    name = "unit_controller",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate = ":lib",
+    deps = CONTROLLER_DEVELOPMENT_DEPENDENCIES,
+)
+
+[
+    aos_rust_test(
+        name = source.removeprefix("tests/").removesuffix(".rs") + "_controller",
+        package = RUST_PACKAGE,
+        lint_config = "//tools/bazel/rules:workspace_lints",
+        crate_root = source,
+        srcs = [source] + glob([source.removesuffix(".rs") + "/**/*.rs", "tests/support/**/*.rs"], allow_empty = True),
+        compile_data = CONTROLLER_COMPILE_INPUTS,
+        rustc_env = SOURCE_AUDIT_COMPILER_ENV,
+        env = {"AOS_SOURCE_CATALOG": "crates/source_catalog.json"},
+        runfile_env = {
+            "AOS_FEATURE_EVIDENCE": "@aos_controller_features//:features.json",
+            "AOS_FEATURE_AUDIT_SCRIPT": "@aos_controller_features//:controller_feature_evidence.py",
+            "AOS_FEATURE_AUDIT_PYTHON": "@aos_tools//:python",
+        } if source == "tests/feature_powerset.rs" else {
+            "AOS_BAZEL_ARCHITECTURE": "@aos_architecture//:architecture.json",
+            "AOS_BAZEL_LICENSE_CLOSURES": "@aos_architecture//:license-closures.json",
+        } if source == "tests/gate_license_boundary.rs" else {
+            "AOS_BAZEL_ARCHITECTURE": "@aos_architecture//:architecture.json",
+            "AOS_BAZEL_CLIPPY_CONFIG": "//tools/bazel/rules:clippy_config",
+        } if source == "tests/harness_lint.rs" else {
+            "AOS_BAZEL_ARCHITECTURE": "@aos_architecture//:architecture.json",
+        } if source in [
+            "tests/control_plane_boundary.rs",
+            "tests/crate_layer_graph.rs",
+            "tests/crate_artifact_types.rs",
+            "tests/harness_components.rs",
+            "tests/standalone_dependencies.rs",
+            "tests/single_scheduler_boundary.rs",
+            "tests/gate_target_mapping.rs",
+            "tests/campaign_gate_traceability.rs",
+        ] else {},
+        data = ["//crates:source_catalog"] + CONTROLLER_COMPILE_INPUTS + [
+            "//tests/crucible:engineering-hygiene-baseline.txt",
+            "//tests/crucible:testing-standards-baseline.txt",
+            "//docs/rfcs/0010-crucible:spec_index_audit",
+        ] + (["@aos_controller_features//:tools"] if source == "tests/feature_powerset.rs" else []) + ([
+            "//:license_boundary_audit_inputs",
+            "//crates/crucible/crucible-qemu-shmem:license_boundary_audit_inputs",
+        ] if source == "tests/gate_license_boundary.rs" else []) + ([
+            "//tests/crucible:campaign_traceability_inputs",
+        ] if source == "tests/campaign_gate_traceability.rs" else []) + ([
+            "//:harness_lint_audit_inputs",
+            "//tests/crucible:harness_lint_inputs",
+            "//docs/rfcs/0014-signal-driven-fault-model:harness_lint_inputs",
+            "//docs/users/crucible:harness_lint_inputs",
+            "//crates:harness_lint_inputs",
+            "//crates/crucible/crucible-qemu-shmem:license_boundary_audit_inputs",
+            "//crates:gate_manifest_reference",
+            "//crates/crucible/crucible-cli:gate_manifest_reference",
+            "//crates/crucible/crucible-control-api:gate_manifest_reference",
+            "//crates/crucible/crucible-control-server:gate_manifest_reference",
+            "//crates/crucible/crucible-daemon:gate_manifest_reference",
+            "//crates/crucible/crucible-device:gate_manifest_reference",
+            "//crates/crucible/crucible-engine:gate_manifest_reference",
+            "//crates/crucible/crucible-guest:gate_manifest_reference",
+            "//crates/crucible/crucible-qemu-host:gate_manifest_reference",
+            "//crates/crucible/crucible-qemu-plugin:gate_manifest_reference",
+            "//crates/crucible/crucible-qemu-protocol:gate_manifest_reference",
+            "//crates/crucible/crucible-session:gate_manifest_reference",
+            "//crates/crucible/crucible-store:gate_manifest_reference",
+        ] if source == "tests/harness_lint.rs" else []),
+        deps = [":lib"] + CONTROLLER_DEVELOPMENT_DEPENDENCIES,
+    )
+    for source in CONTROLLER_INTEGRATIONS
+]
+
+CONTROLLER_TESTS = [":unit_controller"] + [
+    ":" + source.removeprefix("tests/").removesuffix(".rs") + "_controller"
+    for source in CONTROLLER_INTEGRATIONS
+]
+
+test_suite(name = "controller_tests", tests = CONTROLLER_TESTS)
+
+aos_license_check(
+    name = "controller_test_license_closure",
+    testonly = True,
+    roots = [":lib"] + [target + "_binary" for target in CONTROLLER_TESTS],
+    license_domain = RUST_PACKAGE.license_domain,
+)
+
+aos_rust_test(
+    name = "crate_unsafe_fence",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_root = "tests/crate_unsafe_fence.rs",
+    srcs = [
+        "tests/crate_unsafe_fence.rs",
+        "tests/support/crate_unsafe_fence.rs",
+        "tests/support/workspace.rs",
+    ],
+    env = {"AOS_SOURCE_CATALOG": "crates/source_catalog.json"},
+    rustc_env = SOURCE_AUDIT_COMPILER_ENV,
+    data = ["//crates:source_catalog"],
+    deps = [
+        ":lib",
+        "//third_party/rust:core_serde",
+        "//third_party/rust:core_serde_json",
+        "//third_party/rust:core_toml",
+    ],
+)
+
+aos_rust_test(
+    name = "concurrency_abi_oracle_standards",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_root = "tests/concurrency_abi_oracle_standards.rs",
+    srcs = [
+        "tests/concurrency_abi_oracle_standards.rs",
+        "tests/support/concurrency_abi_oracle_standards.rs",
+        "tests/support/workspace.rs",
+    ],
+    env = {"AOS_SOURCE_CATALOG": "crates/source_catalog.json"},
+    rustc_env = SOURCE_AUDIT_COMPILER_ENV,
+    data = ["//crates:source_catalog"],
+    deps = [
+        ":lib",
+        "//third_party/rust:core_serde",
+        "//third_party/rust:core_serde_json",
+        "//third_party/rust:core_toml",
+    ],
+)
+
+aos_rust_test(
+    name = "harness_lint_annotations",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_root = "tests/harness_lint_annotations.rs",
+    srcs = [
+        "tests/harness_lint_annotations.rs",
+        "tests/support/harness_lint/allow.rs",
+        "tests/support/harness_lint/common.rs",
+        "tests/support/harness_lint/error_logging.rs",
+        "tests/support/harness_lint/guidance.rs",
+        "tests/support/harness_lint/lex.rs",
+        "tests/support/harness_lint/scan.rs",
+        "tests/support/source_sections.rs",
+        "tests/support/workspace.rs",
+    ],
+    env = {"AOS_SOURCE_CATALOG": "crates/source_catalog.json"},
+    rustc_env = SOURCE_AUDIT_COMPILER_ENV,
+    data = ["//crates:source_catalog"],
+    deps = [
+        ":lib",
+        "//third_party/rust:core_serde",
+        "//third_party/rust:core_serde_json",
+        "//third_party/rust:core_toml",
+    ],
+)
+
+aos_rust_test(
+    name = "determinism_core_coverage",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_root = "tests/determinism_core_coverage.rs",
+    srcs = [
+        "tests/determinism_core_coverage.rs",
+        "tests/support/workspace.rs",
+    ],
+    env = {"AOS_SOURCE_CATALOG": "crates/source_catalog.json"},
+    rustc_env = SOURCE_AUDIT_COMPILER_ENV,
+    data = ["//crates:source_catalog"],
+    deps = [
+        ":lib",
+        "//third_party/rust:core_serde",
+        "//third_party/rust:core_serde_json",
+        "//third_party/rust:core_toml",
+    ],
+)
+
+aos_rust_test(
+    name = "testing_standards",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_root = "tests/testing_standards.rs",
+    srcs = [
+        "tests/testing_standards.rs",
+        "tests/support/testing_standards.rs",
+        "tests/support/testing_standards/source_inventory.rs",
+        "tests/support/workspace.rs",
+    ],
+    env = {"AOS_SOURCE_CATALOG": "crates/source_catalog.json"},
+    rustc_env = SOURCE_AUDIT_COMPILER_ENV,
+    data = [
+        "//crates:source_catalog",
+        "//tests/crucible:testing-standards-baseline.txt",
+    ],
+    deps = [
+        ":lib",
+        "//third_party/rust:core_serde",
+        "//third_party/rust:core_serde_json",
+        "//third_party/rust:core_toml",
+    ],
+)
+
+aos_rust_test(
+    name = "crate_spec_index",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_root = "tests/crate_spec_index.rs",
+    srcs = [
+        "tests/crate_spec_index.rs",
+        "tests/support/workspace.rs",
+    ],
+    env = {"AOS_SOURCE_CATALOG": "crates/source_catalog.json"},
+    rustc_env = SOURCE_AUDIT_COMPILER_ENV,
+    data = [
+        "//crates:source_catalog",
+        "//docs/rfcs/0010-crucible:spec_index_audit",
+    ],
+    deps = [
+        ":lib",
+        "//third_party/rust:core_serde",
+        "//third_party/rust:core_serde_json",
+        "//third_party/rust:core_toml",
+    ],
+)
+
+aos_package(
+    name = "source_audit_binaries",
+    package = RUST_PACKAGE,
+    testonly = True,
+    artifacts = {
+        ":crate_unsafe_fence_binary": "bin/crate_unsafe_fence",
+        ":concurrency_abi_oracle_standards_binary": "bin/concurrency_abi_oracle_standards",
+        ":harness_lint_annotations_binary": "bin/harness_lint_annotations",
+        ":determinism_core_coverage_binary": "bin/determinism_core_coverage",
+        ":testing_standards_binary": "bin/testing_standards",
+        ":crate_spec_index_binary": "bin/crate_spec_index",
+    },
+    executables = ["bin/crate_unsafe_fence", "bin/concurrency_abi_oracle_standards", "bin/harness_lint_annotations", "bin/determinism_core_coverage", "bin/testing_standards", "bin/crate_spec_index"],
+)
+
+aos_source_package(
+    name = "source_package",
+    package = RUST_PACKAGE,
+    srcs = glob(["**/*.rs"]),
+    visibility = ["//visibility:public"],
+)
+
+aos_package_clippy(name = "clippy_all")

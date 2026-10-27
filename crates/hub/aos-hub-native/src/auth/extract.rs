@@ -10,6 +10,7 @@
 //! - [`SessionAuth`] requires a valid `__Host-aos_session` cookie (human
 //!   plane); [`MaybeSession`] is its optional sibling for anonymous-capable
 //!   pages.
+//!
 //! OAuth device, refresh, and provisioning grants are handled by the shared
 //! runtime-neutral router in `aos-hub-service` so native and Worker deployments
 //! expose one contract.

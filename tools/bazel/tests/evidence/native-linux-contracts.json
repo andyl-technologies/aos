@@ -1,0 +1,909 @@
+{
+  "command": "nix-build tools/bazel/tests/contracts.nix -A all -A inventory --keep-going --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "editor_export_correction": {
+    "behavior": "Empty analyzer source lists now use the compiler-declared first-party package boundary when it contains the crate root. Explicit generated-source roots remain unchanged.",
+    "exporter_sha256": "e775c56751fa43d5b4833ad4c2c0975c34daef32ee253b8bd0a02fdfe28f7ed1",
+    "finding": "The integration suite declares a path module in a sibling src/ tree. Restricting its editor source root to tests/ prevented the analyzer from resolving two expressions that Cargo resolves.",
+    "policy_tests": 150,
+    "regression_tests_sha256": "266a384da79e8424d1b64addac8507245af1e48742759161261090ea54c62b90"
+  },
+  "editor_parity": {
+    "aggregate_statistics_comparable": false,
+    "analysis": {
+      "complete_inference": false,
+      "exprs": {
+        "partial": 0,
+        "total": 103933,
+        "unknown": 1
+      },
+      "panics": 0,
+      "pats": {
+        "partial": 0,
+        "total": 16924,
+        "unknown": 0
+      }
+    },
+    "bazel_diagnostics": [
+      [
+        "crates/aos/release/aos-release-format/src/signing.rs",
+        "671:20",
+        "671:22",
+        "type",
+        "{unknown}"
+      ]
+    ],
+    "cargo_analysis": {
+      "complete_inference": false,
+      "exprs": {
+        "partial": 0,
+        "total": 159791,
+        "unknown": 8
+      },
+      "panics": 0,
+      "pats": {
+        "partial": 0,
+        "total": 26579,
+        "unknown": 0
+      }
+    },
+    "cargo_selected_diagnostics": [
+      [
+        "crates/aos/release/aos-release-format/src/signing.rs",
+        "671:20",
+        "671:22",
+        "type",
+        "{unknown}"
+      ]
+    ],
+    "comparison_scope": [
+      "crates/aos/boot/aos-storage-layout",
+      "crates/aos/modules/aos-module-docs",
+      "crates/aos/packages/aos-deployment-format",
+      "crates/aos/release/aos-release-format"
+    ],
+    "diagnostic_multiplicity_comparable": false,
+    "diagnostics": [
+      [
+        "crates/aos/release/aos-release-format/src/signing.rs",
+        "671:20",
+        "671:22",
+        "type",
+        "{unknown}"
+      ]
+    ],
+    "roots": {
+      "crates/aos/boot/aos-storage-layout/src/lib.rs": [],
+      "crates/aos/modules/aos-module-docs/src/lib.rs": [],
+      "crates/aos/packages/aos-deployment-format/src/lib.rs": [],
+      "crates/aos/release/aos-release-format/src/lib.rs": [],
+      "crates/aos/release/aos-release-format/tests/nix_inventory.rs": [],
+      "crates/aos/release/aos-release-format/tests/qualification.rs": []
+    },
+    "unattributed_cargo_diagnostics": [],
+    "unselected_cargo_diagnostics": [
+      [
+        "crates/aos/registry/aos-registry-format/src/object.rs",
+        "45:22",
+        "45:24",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/aos/registry/aos-registry-format/src/pack_index.rs",
+        "188:22",
+        "188:37",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/aos/registry/aos-registry-format/src/pack_index.rs",
+        "656:22",
+        "656:24",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/aos/registry/aos-registry-format/src/pack_index.rs",
+        "669:32",
+        "669:34",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/aos/registry/aos-registry-format/src/pack_index.rs",
+        "722:27",
+        "722:29",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/aos/registry/aos-registry-format/src/pack_index.rs",
+        "746:32",
+        "746:34",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/aos/registry/aos-registry-format/src/pack_index.rs",
+        "806:30",
+        "806:31",
+        "type",
+        "{unknown}"
+      ]
+    ]
+  },
+  "empty_doctest_targets": 4,
+  "executed_cases": 225,
+  "executed_doctests": 0,
+  "ignored_cases": 1,
+  "libtest_artifacts": 6,
+  "limits": [
+    "The pre-existing Nix inventory case remains explicitly ignored and inventoried; its complete-checkout evaluation gate is still separate.",
+    "Editor parity preserves the single selected unknown-type location and all raw diagnostics. Complete inference is not claimed.",
+    "The required workspace Rust compilation and broader editor/metadata regression checks were running separately at this checkpoint.",
+    "Full compiler invocation and codegen-unit equivalence, Wasm/foreign qualification, performance acceptance and production cutover remain pending."
+  ],
+  "report": {
+    "doctests": {
+      "//crates/aos/boot/aos-storage-layout:doc": {},
+      "//crates/aos/modules/aos-module-docs:doc": {},
+      "//crates/aos/packages/aos-deployment-format:doc": {},
+      "//crates/aos/release/aos-release-format:doc": {}
+    },
+    "examples": [],
+    "features": {
+      "adler2@2.0.1": [
+        []
+      ],
+      "aho-corasick@1.1.4": [
+        [
+          "perf-literal",
+          "std"
+        ]
+      ],
+      "anyhow@1.0.102": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "base64@0.22.1": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "bitflags@2.13.0": [
+        [
+          "std"
+        ]
+      ],
+      "block-buffer@0.10.4": [
+        []
+      ],
+      "cfg-if@1.0.4": [
+        []
+      ],
+      "const-oid@0.9.6": [
+        []
+      ],
+      "cpufeatures@0.2.17": [
+        []
+      ],
+      "crc32fast@1.5.0": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "crypto-common@0.1.7": [
+        [
+          "std"
+        ]
+      ],
+      "curve25519-dalek-derive@0.1.1": [
+        []
+      ],
+      "curve25519-dalek@4.1.3": [
+        [
+          "alloc",
+          "digest",
+          "precomputed-tables",
+          "zeroize"
+        ]
+      ],
+      "der@0.7.10": [
+        [
+          "alloc",
+          "oid",
+          "std",
+          "zeroize"
+        ]
+      ],
+      "digest@0.10.7": [
+        [
+          "alloc",
+          "block-buffer",
+          "core-api",
+          "default",
+          "std"
+        ]
+      ],
+      "dyn-clone@1.0.20": [
+        []
+      ],
+      "ed25519-dalek@2.2.0": [
+        [
+          "alloc",
+          "default",
+          "fast",
+          "pkcs8",
+          "std",
+          "zeroize"
+        ]
+      ],
+      "ed25519@2.2.3": [
+        [
+          "alloc",
+          "pkcs8",
+          "std"
+        ]
+      ],
+      "equivalent@1.0.2": [
+        []
+      ],
+      "fastrand@2.4.1": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "flate2@1.1.9": [
+        [
+          "any_impl",
+          "miniz_oxide",
+          "rust_backend"
+        ]
+      ],
+      "generic-array@0.14.7": [
+        [
+          "more_lengths"
+        ]
+      ],
+      "getrandom@0.4.2": [
+        []
+      ],
+      "hashbrown@0.17.1": [
+        []
+      ],
+      "hex@0.4.3": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "humantime@2.3.0": [
+        []
+      ],
+      "indexmap@2.14.0": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "itoa@1.0.18": [
+        []
+      ],
+      "libc@0.2.186": [
+        []
+      ],
+      "linux-raw-sys@0.12.1": [
+        [
+          "auxvec",
+          "elf",
+          "errno",
+          "general",
+          "ioctl",
+          "no_std"
+        ]
+      ],
+      "memchr@2.8.2": [
+        [
+          "alloc",
+          "std"
+        ]
+      ],
+      "miniz_oxide@0.8.9": [
+        [
+          "simd",
+          "simd-adler32",
+          "with-alloc"
+        ]
+      ],
+      "once_cell@1.21.4": [
+        [
+          "alloc",
+          "race",
+          "std"
+        ]
+      ],
+      "pkcs8@0.10.2": [
+        [
+          "alloc",
+          "std"
+        ]
+      ],
+      "proc-macro2@1.0.106": [
+        [
+          "default",
+          "proc-macro"
+        ]
+      ],
+      "quote@1.0.46": [
+        [
+          "default",
+          "proc-macro"
+        ]
+      ],
+      "ref-cast-impl@1.0.27": [
+        []
+      ],
+      "ref-cast@1.0.27": [
+        []
+      ],
+      "regex-automata@0.4.14": [
+        [
+          "alloc",
+          "dfa-onepass",
+          "hybrid",
+          "meta",
+          "nfa-backtrack",
+          "nfa-pikevm",
+          "nfa-thompson",
+          "perf-inline",
+          "perf-literal",
+          "perf-literal-multisubstring",
+          "perf-literal-substring",
+          "std",
+          "syntax",
+          "unicode",
+          "unicode-age",
+          "unicode-bool",
+          "unicode-case",
+          "unicode-gencat",
+          "unicode-perl",
+          "unicode-script",
+          "unicode-segment",
+          "unicode-word-boundary"
+        ]
+      ],
+      "regex-syntax@0.8.11": [
+        [
+          "default",
+          "std",
+          "unicode",
+          "unicode-age",
+          "unicode-bool",
+          "unicode-case",
+          "unicode-gencat",
+          "unicode-perl",
+          "unicode-script",
+          "unicode-segment"
+        ]
+      ],
+      "regex@1.12.4": [
+        [
+          "default",
+          "perf",
+          "perf-backtrack",
+          "perf-cache",
+          "perf-dfa",
+          "perf-inline",
+          "perf-literal",
+          "perf-onepass",
+          "std",
+          "unicode",
+          "unicode-age",
+          "unicode-bool",
+          "unicode-case",
+          "unicode-gencat",
+          "unicode-perl",
+          "unicode-script",
+          "unicode-segment"
+        ]
+      ],
+      "rustc_version@0.4.1": [
+        []
+      ],
+      "rustix@1.1.4": [
+        [
+          "alloc",
+          "default",
+          "fs",
+          "std"
+        ]
+      ],
+      "schemars@1.2.2": [
+        [
+          "default",
+          "derive",
+          "schemars_derive",
+          "std"
+        ]
+      ],
+      "schemars_derive@1.2.2": [
+        []
+      ],
+      "semver@1.0.28": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "serde@1.0.228": [
+        [
+          "alloc",
+          "default",
+          "derive",
+          "rc",
+          "serde_derive",
+          "std"
+        ]
+      ],
+      "serde_core@1.0.228": [
+        [
+          "alloc",
+          "rc",
+          "result",
+          "std"
+        ]
+      ],
+      "serde_derive@1.0.228": [
+        [
+          "default"
+        ]
+      ],
+      "serde_derive_internals@0.30.0": [
+        []
+      ],
+      "serde_json@1.0.150": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "serde_spanned@0.6.9": [
+        [
+          "serde"
+        ]
+      ],
+      "sha2@0.10.9": [
+        [
+          "compress",
+          "default",
+          "std"
+        ]
+      ],
+      "signature@2.2.0": [
+        [
+          "alloc",
+          "std"
+        ]
+      ],
+      "simd-adler32@0.3.9": [
+        []
+      ],
+      "spki@0.7.3": [
+        [
+          "alloc",
+          "std"
+        ]
+      ],
+      "subtle@2.6.1": [
+        []
+      ],
+      "syn@2.0.118": [
+        [
+          "clone-impls",
+          "default",
+          "derive",
+          "full",
+          "parsing",
+          "printing",
+          "proc-macro"
+        ]
+      ],
+      "syn@3.0.5": [
+        [
+          "clone-impls",
+          "default",
+          "derive",
+          "parsing",
+          "printing",
+          "proc-macro"
+        ]
+      ],
+      "tempfile@3.27.0": [
+        [
+          "default",
+          "getrandom"
+        ]
+      ],
+      "thiserror-impl@2.0.18": [
+        []
+      ],
+      "thiserror@2.0.18": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "toml@0.8.23": [
+        [
+          "default",
+          "display",
+          "parse"
+        ]
+      ],
+      "toml_datetime@0.6.11": [
+        [
+          "serde"
+        ]
+      ],
+      "toml_edit@0.22.27": [
+        [
+          "display",
+          "parse",
+          "serde"
+        ]
+      ],
+      "toml_write@0.1.2": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "typenum@1.20.1": [
+        []
+      ],
+      "unicode-ident@1.0.24": [
+        []
+      ],
+      "version_check@0.9.5": [
+        []
+      ],
+      "winnow@0.7.15": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "zeroize@1.9.0": [
+        [
+          "alloc"
+        ]
+      ],
+      "zmij@1.0.21": [
+        []
+      ]
+    },
+    "first_party_features": {
+      "aos-artifact-evidence": [
+        []
+      ],
+      "aos-core": [
+        []
+      ],
+      "aos-deployment-format": [
+        []
+      ],
+      "aos-module-docs": [
+        []
+      ],
+      "aos-module-format": [
+        []
+      ],
+      "aos-oci-types": [
+        []
+      ],
+      "aos-registry-format": [
+        []
+      ],
+      "aos-release-format": [
+        []
+      ],
+      "aos-storage-layout": [
+        []
+      ]
+    },
+    "schema_version": 1,
+    "targets": {
+      "//crates/aos/boot/aos-storage-layout:unit": {
+        "executed": [
+          "tests::authorized_input_binds_exact_operator_bytes",
+          "tests::canonical_plan_assigns_uuid_and_preserves_nullable_fields",
+          "tests::canonical_plan_preserves_explicit_partition_uuid",
+          "tests::completed_marker_requires_exact_source_and_uuid",
+          "tests::fallback_input_cannot_smuggle_an_operator_module",
+          "tests::non_completed_marker_cannot_claim_committed_fields",
+          "tests::observed_facts_cannot_fill_authorization_fields",
+          "tests::observed_facts_digest_does_not_grant_authorization",
+          "topology::tests::storage_encryption_follows_measured_boot_policy",
+          "topology::tests::storage_topology_admits_xfs_data_volumes_only",
+          "topology::tests::storage_topology_rejects_invalid_arrays",
+          "topology::tests::storage_topology_renders_arrays_and_volumes"
+        ],
+        "ignored": []
+      },
+      "//crates/aos/modules/aos-module-docs:unit": {
+        "executed": [
+          "nar::tests::accepts_the_exact_single_file_profile",
+          "nar::tests::native_deployment_member_preserves_exact_bytes_with_or_without_metadata",
+          "nar::tests::native_directory_preserves_exact_reference_and_builder_metadata",
+          "nar::tests::native_directory_rejects_truncation_trailing_bytes_and_other_entries",
+          "nar::tests::native_member_rejects_links_unknown_names_and_missing_documents",
+          "nar::tests::native_qualification_member_preserves_exact_bytes",
+          "nar::tests::rejects_directory_and_truncation_without_panicking",
+          "nar::tests::rejects_executable_nodes_trailing_data_and_nonzero_padding",
+          "nar::tests::symlink_roots_reject_invalid_targets_padding_and_trailing_data",
+          "nar::tests::symlink_roots_reject_reordered_or_additional_fields",
+          "nar::tests::typed_roots_borrow_exact_bytes_and_leave_links_unresolved",
+          "runtime::comparison::tests::compares_contract_changes_without_treating_prose_as_semantics",
+          "runtime::comparison::tests::package_and_os_range_changes_report_semantic_changes",
+          "runtime::compatibility::tests::build_metadata_does_not_change_release_precedence",
+          "runtime::compatibility::tests::captured_previous_policy_is_part_of_exception_snapshot",
+          "runtime::compatibility::tests::captured_tilde_policy_allows_breaks_at_minor_boundary_only",
+          "runtime::compatibility::tests::caret_zero_versions_preserve_minor_and_patch_compatibility_boundaries",
+          "runtime::compatibility::tests::changed_opaque_types_require_review",
+          "runtime::compatibility::tests::closed_result_additions_require_review_but_open_result_additions_are_safe",
+          "runtime::compatibility::tests::crossing_previous_compatibility_range_acknowledges_breaks_without_hiding_diagnostics",
+          "runtime::compatibility::tests::duplicate_owner_identities_and_public_paths_are_rejected",
+          "runtime::compatibility::tests::exact_policy_pins_semantic_version_without_pinning_build_artifact",
+          "runtime::compatibility::tests::exceptions_are_bound_to_exact_structural_snapshots_and_release_versions",
+          "runtime::compatibility::tests::invalid_exceptions_and_release_mismatches_fail_closed",
+          "runtime::compatibility::tests::new_input_fields_require_defaults",
+          "runtime::compatibility::tests::next_release_policy_cannot_relax_previous_consumers_range",
+          "runtime::compatibility::tests::option_addition_with_default_is_safe_and_default_removal_is_not",
+          "runtime::compatibility::tests::os_checks_only_base_owned_interfaces",
+          "runtime::compatibility::tests::os_zero_versions_use_caret_semantics_without_package_policy",
+          "runtime::compatibility::tests::package_checks_exclude_other_owners_hidden_options_and_handler_only_ownership",
+          "runtime::compatibility::tests::prose_handler_selection_and_default_order_do_not_change_interface_snapshot",
+          "runtime::compatibility::tests::removed_inputs_defaults_and_changed_refinements_require_review",
+          "runtime::compatibility::tests::removed_operations_require_review_and_new_operations_are_safe",
+          "runtime::contracts::tests::absent_optional_metadata_keeps_native_references_valid",
+          "runtime::contracts::tests::duplicate_package_and_os_requirements_are_rejected",
+          "runtime::contracts::tests::generated_package_policy_rejects_arbitrary_ranges_and_mismatched_versions",
+          "runtime::contracts::tests::generated_package_version_requirements_preserve_normalized_recipe_policy",
+          "runtime::contracts::tests::input_default_paths_are_preserved_and_bounded",
+          "runtime::contracts::tests::invalid_ranges_owners_and_os_versions_are_rejected",
+          "runtime::contracts::tests::metadata_preserves_package_and_os_requirement_strings",
+          "runtime::contracts::tests::ranges_obey_shared_text_and_comparator_bounds",
+          "runtime::contracts::tests::removed_ability_versions_and_missing_package_ranges_are_rejected",
+          "runtime::deployment::tests::native_release_graph_preserves_exact_reference_bytes",
+          "runtime::deployment::tests::native_report_binds_declarations_and_types_reporter_assertions",
+          "runtime::deployment::tests::native_report_rejects_wrong_pins_and_excessive_lifetime",
+          "runtime::render::tests::checked_selection_shows_actual_inputs_revisions_and_composed_result_links",
+          "runtime::render::tests::legacy_transaction_shows_default_installation_phase",
+          "runtime::render::tests::package_and_os_requirements_link_the_same_reference",
+          "runtime::render::tests::recursive_reference_shows_options_contracts_and_inverse_owner_roles",
+          "runtime::render::tests::shared_base_and_operation_links_stay_inside_each_package_reference",
+          "runtime::tests::native_reference_preserves_package_identity_and_escapes_markup",
+          "runtime::tests::operation_reference_links_each_definition_owner",
+          "runtime::tests::rejects_missing_scope_and_obsolete_formats",
+          "runtime::tests::transaction_retirement_is_required_checked_and_rendered_as_desired_intent"
+        ],
+        "ignored": []
+      },
+      "//crates/aos/packages/aos-deployment-format:unit": {
+        "executed": [
+          "admission::tests::checks_digest_and_exact_context_coverage",
+          "admission::tests::rejects_duplicate_roots_and_noncanonical_references",
+          "inventory::tests::installed_meta_round_trip",
+          "inventory::tests::installed_meta_without_apm_section",
+          "model::resolution_tests::generated_package_requirement_is_bound_to_catalog_and_module_identity",
+          "model::resolution_tests::os_constraint_matches_signed_discovery_metadata",
+          "model::resolution_tests::ranged_requests_survive_exact_runtime_record_projection"
+        ],
+        "ignored": []
+      },
+      "//crates/aos/release/aos-release-format:nix_inventory": {
+        "executed": [],
+        "ignored": [
+          "source_inventory_materializes_the_linux_release_and_retains_reviewed_deferrals"
+        ]
+      },
+      "//crates/aos/release/aos-release-format:qualification": {
+        "executed": [
+          "arm64_container_evidence_requires_the_complete_tcg_topology",
+          "change_scope_narrows_smoke_claims",
+          "contract_identity_is_its_rust_canonical_encoding",
+          "contract_rejects_weakened_platform_and_profile_obligations",
+          "gates_follow_the_destination_profile",
+          "omitted_or_reclassified_mandatory_requirement_is_rejected",
+          "release_class_and_channel_kind_derive_from_names",
+          "shipped_contract_has_the_exact_destination_table",
+          "unknown_and_duplicate_contract_fields_fail_closed"
+        ],
+        "ignored": []
+      },
+      "//crates/aos/release/aos-release-format:unit": {
+        "executed": [
+          "artifact::tests::bundle_paths_reject_aliases_and_traversal",
+          "artifact::tests::store_roots_reject_member_paths_and_traversal",
+          "artifact_profile::tests::artifact_destinations_cannot_cross_registry_or_epoch_boundaries",
+          "artifact_profile::tests::baked_channels_follow_the_registry_tier",
+          "artifact_profile::tests::main_edge_artifacts_keep_their_warning_while_supported_channels_may_drop_it",
+          "artifact_profile::tests::root_owner_signers_decode_by_default_and_must_be_planned_provenance_keys",
+          "artifact_profile::tests::testing_clients_cannot_fall_back_to_main_or_drop_their_warning",
+          "assurance_tests::actual_environment_must_match_every_required_dimension",
+          "assurance_tests::capability_evidence_is_bound_to_exact_metadata_bytes_and_observed_image",
+          "assurance_tests::cases_hash_only_under_their_own_schema",
+          "assurance_tests::cloud_instance_and_region_are_recorded_scope_dimensions",
+          "assurance_tests::cpu_family_scope_and_exact_sku_scope_have_distinct_membership",
+          "assurance_tests::cycle_measurements_cannot_be_replaced_by_affirmative_checks",
+          "assurance_tests::each_configuration_requires_its_own_complete_observation_window",
+          "assurance_tests::optional_assessments_preserve_missing_and_failed_results_without_awarding_execution",
+          "assurance_tests::report_assurance_is_recomputed_and_cannot_be_self_promoted_or_downgraded",
+          "build::tests::not_checked_round_trips_and_only_testing_accepts_it",
+          "build::tests::not_reproduced_round_trips_with_its_kebab_case_spelling",
+          "build::tests::production_tier_rejects_every_not_reproduced_output",
+          "build::tests::testing_tier_records_not_reproduced_outputs",
+          "build::tests::validation_applies_the_plan_registry_tier",
+          "evidence::tests::executor_request_closes_public_objects_and_subjects",
+          "fitness::tests::attestation_age_follows_the_profile_demand",
+          "fitness::tests::attestations_require_exact_passing_checks_and_planned_signers",
+          "fitness::tests::bindings_must_match_live_identities",
+          "fitness::tests::destinations_require_every_demanded_kind",
+          "inventory::tests::inventory_accepts_target_policy_decision_shape",
+          "inventory::tests::inventory_materializes_the_closed_plan_matrix",
+          "inventory::tests::inventory_rejects_implicit_or_reordered_targets",
+          "inventory::tests::inventory_rejects_policy_inputs_on_eligible_decisions",
+          "inventory::tests::inventory_rejects_publishable_package_without_source_evidence",
+          "inventory::tests::inventory_validates_the_exact_selected_platform_roster",
+          "inventory::tests::native_release_models_reject_legacy_contract_slots",
+          "native_adapter_matrix_tests::adoption_evaluation_is_mandatory_and_separate_from_target_custody",
+          "native_adapter_matrix_tests::aggregate_check_and_operation_denominators_are_derived",
+          "native_adapter_matrix_tests::cell_population_and_order_are_exact",
+          "native_adapter_matrix_tests::central_phase_rejects_failed_cells_and_prepared_environment_mutation",
+          "native_adapter_matrix_tests::committed_identities_and_postconditions_are_exact",
+          "native_adapter_matrix_tests::configured_lifetime_changes_are_identity_bearing_without_rust_reexpansion",
+          "native_adapter_matrix_tests::exact_cells_derive_the_matrix_result",
+          "native_adapter_matrix_tests::matrix_case_requires_a_frozen_predecessor",
+          "native_adapter_matrix_tests::matrix_environment_is_typed_and_bound_to_case_and_executor",
+          "native_adapter_matrix_tests::native_composition_environment_identity_preserves_graph_semantics",
+          "native_adapter_matrix_tests::native_subject_cannot_claim_unconfigured_lifetimes",
+          "native_adapter_matrix_tests::native_subject_rejects_foreign_executable_and_forged_effect_identity",
+          "native_adapter_matrix_tests::native_wire_rejects_undeclared_handler_claims",
+          "native_adapter_matrix_tests::observation_cannot_substitute_another_adopted_baseline",
+          "native_adapter_matrix_tests::passing_postconditions_require_independent_subject_bound_probes",
+          "native_adapter_matrix_tests::production_probes_cannot_be_replayed_across_cells",
+          "native_adapter_matrix_tests::referential_validation_rejects_matrix_drift",
+          "native_adapter_matrix_tests::required_operation_selection_is_closed_nonempty_and_ordered",
+          "native_adapter_matrix_tests::specification_order_and_partition_are_enforced",
+          "native_adapter_matrix_tests::unknown_status_and_regression_fields_are_rejected",
+          "native_adapter_matrix_tests::unqualified_environment_can_only_retain_a_failed_matrix",
+          "plan::destinations::tests::final_versions_plan_candidate_and_stable_and_per_train_channels",
+          "plan::destinations::tests::production_tier_plans_edge_versions_on_its_own_edge_destinations",
+          "plan::destinations::tests::surfaces_are_distinct_and_static_staging_cannot_feed_a_hub",
+          "plan::destinations::tests::testing_tier_rejects_candidate_releases",
+          "plan::request::tests::first_release_requests_round_trip_the_flag",
+          "plan::request::tests::ordinary_requests_omit_the_first_release_flag",
+          "platform::tests::image_platform_set_rejects_darwin",
+          "platform::tests::package_platform_set_is_closed",
+          "platform::tests::platform_parser_uses_the_canonical_spelling",
+          "profile_override::tests::overrides_cannot_lower_soak_below_a_day_or_touch_fixed_fields",
+          "profile_override::tests::threshold_signed_overrides_bind_into_the_plan",
+          "qualification::deferral_tests::a_deferred_artifact_in_the_manifest_is_rejected",
+          "qualification::deferral_tests::an_empty_deferral_list_keeps_the_contract_encoding",
+          "qualification::deferral_tests::complete_matrix_profiles_reject_a_deferral",
+          "qualification::deferral_tests::deferred_contract_keeps_optional_claim_free_targets",
+          "qualification::deferral_tests::deferred_platforms_ship_only_blocked_or_inapplicable_cells",
+          "qualification::deferral_tests::deferred_platforms_yield_no_qualification_case",
+          "qualification::deferral_tests::released_platforms_still_require_their_targets",
+          "qualification::plan_tests::blocked_package_cells_do_not_require_an_execution_image",
+          "qualification::plan_tests::execution_image_requires_every_published_package_platform",
+          "qualification::plan_tests::published_execution_images_must_exist_before_building",
+          "qualification_document::tests::native_recipe_is_closed_and_has_exact_selector_inventory",
+          "qualification_evidence::k3s_tests::k3s_case_binds_native_packages_image_and_container",
+          "qualification_evidence::k3s_tests::k3s_missing_or_ambiguous_inputs_fail_closed",
+          "qualification_evidence::k3s_tests::k3s_policy_rejects_missing_role_and_unrelated_subject",
+          "qualification_evidence::tests::case_expansion_skips_unclassified_not_applicable_manifest_packages",
+          "qualification_evidence::tests::completion_requires_measured_soak_and_nonzero_operation_denominators",
+          "qualification_evidence::tests::effective_profile_must_match_the_planned_destination",
+          "qualification_evidence::tests::gates_follow_each_destination_profile",
+          "qualification_evidence::tests::independent_review_follows_the_destination_review_threshold",
+          "qualification_evidence::tests::missing_oci_artifact_and_removed_plan_gate_fail_closed",
+          "qualification_evidence::tests::observations_cannot_be_replayed_for_changed_bytes_with_the_same_artifact_ids",
+          "qualification_evidence::tests::package_cases_inherit_the_strongest_runtime_consumer_role",
+          "qualification_evidence::tests::qualification_admission_is_fresh_and_bound_to_the_destination_ring",
+          "qualification_evidence::tests::qualification_binds_private_plan_without_requesting_it_as_a_public_object",
+          "qualification_evidence::tests::qualification_classifies_eligible_and_blocked_packages",
+          "qualification_evidence::tests::qualification_rejects_missing_failed_replayed_and_stale_observations",
+          "qualification_evidence::tests::qualification_snapshot_expands_recovery_image_package_cases_without_a_predecessor",
+          "qualification_evidence::tests::qualification_snapshot_uses_current_build_policy_but_cannot_be_published",
+          "qualification_evidence::tests::recovery_package_case_binds_the_matching_image_and_predecessor",
+          "qualification_evidence::tests::shared_contract_has_exact_package_image_and_release_cases",
+          "qualification_evidence::tests::smoke_drops_image_claims_when_the_release_is_not_image_affecting",
+          "qualification_evidence::tests::soak_profile_requires_a_week_of_observation_for_qualified_claims",
+          "receipt::tests::channel_receipts_accept_per_train_channels_by_kind",
+          "receipt::tests::completion_receipt_requires_sorted_rollout_and_passing_handoff",
+          "receipt::tests::registry_bootstrap_intent_is_environment_and_commit_bound",
+          "receipt::tests::signed_receipt_verification_rejects_payload_changes",
+          "receipt::tests::surface_receipts_bind_the_plan",
+          "record::tests::composed_records_bind_their_evidence_and_round_trip",
+          "record::tests::record_paths_follow_the_delegated_role",
+          "registry::tests::channel_kind_is_the_prefix_before_the_first_dash",
+          "registry::tests::registry_tier_uses_kebab_case_on_the_wire",
+          "registry::tests::testing_carries_edge_only_and_production_carries_every_kind",
+          "registry::tests::testing_root_resets_advance_the_registry_identity",
+          "sbom::tests::sbom_is_deterministic_and_links_planned_dependencies",
+          "signing::tests::boot_operations_require_linux_platform_context",
+          "signing::tests::canonical_metadata_payloads_retain_domain_separation",
+          "signing::tests::channel_context_accepts_per_train_channels_by_kind",
+          "signing::tests::public_key_payload_signatures_are_detached_operations",
+          "signing::tests::raw_ed25519_payload_mode_is_confined_to_explicit_wire_formats",
+          "signing::tests::raw_release_evidence_signing_rejects_other_kinds_and_roles",
+          "signing::tests::registry_catalog_metadata_is_separate_from_bundle_tuf_authority",
+          "signing::tests::release_evidence_role_signs_raw_evidence_digests",
+          "signing::tests::request_rejects_weak_nonce_and_algorithm_confusion",
+          "signing::tests::role_specific_context_cannot_be_replayed",
+          "signing::tests::surface_receipt_role_signs_only_receipt_payloads",
+          "signing::tests::surface_receipt_role_signs_raw_receipt_digests",
+          "state::tests::can_publish_follows_the_plan_and_contract_after_roles",
+          "state::tests::destinations_interleave_after_finalization",
+          "state::tests::entries_reject_malformed_destinations_and_unknown_schemas",
+          "state::tests::production_destinations_follow_a_staging_publication",
+          "tuf::staging::tests::captures_exact_identity_without_claiming_root_trust",
+          "tuf::staging::tests::rejects_changed_inventory_missing_role_and_unsafe_pointer",
+          "tuf::tests::authoring_constructors_bind_exact_predecessor_envelopes",
+          "tuf::tests::canonical_delegations_are_disjoint_and_terminating",
+          "tuf::tests::new_snapshot_continuity_moves_the_timestamp_to_a_later_release",
+          "tuf::tests::production_root_requires_role_separation_and_strong_offline_thresholds",
+          "tuf::tests::same_snapshot_refresh_keeps_its_exact_binding",
+          "tuf::tests::snapshot_version_regression_is_rejected",
+          "tuf::tests::testing_root_accepts_independent_single_key_roles",
+          "tuf::tests::timestamp_version_skips_and_repeats_are_rejected",
+          "tuf::tests::timestamp_window_cannot_exceed_forty_eight_hours",
+          "verify::tests::complete_release_fixture_verifies",
+          "verify::tests::package_artifact_requires_its_exact_signed_narinfo",
+          "verify::tests::release_fixture_rejects_extra_and_changed_files",
+          "verify::tests::release_fixture_rejects_signature_replay",
+          "verify::tests::release_plan_rejects_a_destination_without_its_gates",
+          "verify::tests::signed_plans_keep_their_exact_canonical_bytes",
+          "verify::tests::target_package_versions_bind_outputs_and_reject_unpublished_targets"
+        ],
+        "ignored": []
+      }
+    }
+  },
+  "report_sha256": {
+    "editor-parity.json": "1831f7fb7a750e0d747811eae7b8773ef9ed1b76610610eccc5e969b1a722fed",
+    "evidence/execution.json": "0933da2411ee43cd204c0b2cba28c3a0179e612db48a66ce809eaaa12afe7716",
+    "evidence/tests/index.json": "6562df883fe0235a021db51ba2b4751fbd9540dff4d2bcebda7e028f70f5e864",
+    "inventory.json": "cc33c83f3326406fb4b346fe67199e4339c8bb797987d556f048544f43414f39",
+    "parity.json": "a7291b86dd2388e70165de332ce274d861dd9aeb80324a09a49776f6c6904ddf"
+  },
+  "schema_version": 1,
+  "scope": {
+    "all": "/nix/store/bh5j7lpsx9b9kbm6015jy5y3n02jz2yy-aos-bazel-contracts-qualified-checks",
+    "cargo": "/nix/store/nvmc62piv1q0gfy90sgzf70b24hpb3xy-aos-bazel-contracts-cargo-oracle-1",
+    "configuration": "/nix/store/7rg665cj2dvlfafzbyn3z3ij257bqd8k-aos-bazel-configuration.json",
+    "derivation": "/nix/store/fr1ai95lbpsd2vp926i22ch4517r6a2l-aos-bazel-contracts-qualified-checks.drv",
+    "inventory": "/nix/store/d67jdggxvvh1rsli102dhszgjv587wsa-aos-bazel-contracts-inventory-1",
+    "source": "/nix/store/nia40rv72vcnfhjrvl5qxdqxqsvip1yf-aos-bazel-workspace",
+    "tests": "/nix/store/zzq0hg3w9dkw0p3z08yrgb80ikb81bsm-aos-bazel-contracts-tests-1"
+  },
+  "semantic_rustc_flags": [
+    "-Copt-level=s",
+    "-Cdebuginfo=0",
+    "-Cdebug-assertions=yes",
+    "-Coverflow-checks=yes"
+  ],
+  "status": "Native execution, fresh Cargo case and feature parity, developer checks, license closures and editor parity passed"
+}

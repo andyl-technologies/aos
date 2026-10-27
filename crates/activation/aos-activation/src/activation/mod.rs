@@ -14,9 +14,11 @@ mod observer;
 mod socket_observer;
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests;
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod restoration_tests;
 
 use std::collections::{BTreeMap, BTreeSet};

@@ -192,6 +192,8 @@ pub(super) async fn cache_coverage(printer: &Printer, command: &HubCacheCoverage
     }
 }
 
+// The typed plan/apply pair is shared across the same coverage CLI selectors.
+#[allow(clippy::too_many_arguments)]
 async fn run_coverage_operation(
     printer: &Printer,
     access: &crate::cli::HubAccessArgs,

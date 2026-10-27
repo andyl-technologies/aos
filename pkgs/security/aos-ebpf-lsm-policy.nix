@@ -13,8 +13,11 @@
   json-c,
   patchelf,
   buildPackages,
+  callPackage,
+  buildDriver ? "cargo",
 }: let
   version = "0.1.0";
+  withBuildDriver = selected: callPackage ./aos-ebpf-lsm-policy.nix {buildDriver = selected;};
   cargoDeps = aosWorkspaceVendor;
   targetTriple =
     {
@@ -66,8 +69,7 @@
     or (throw "aos-ebpf-lsm-policy: unsupported system '${stdenv.system}'");
   bpfSource = ./aos-ebpf-lsm-policy.bpf.c;
   loaderSource = ./aos-ebpf-lsm-policy.c;
-in
-  mkAosCargoPackage {
+  packageArguments = {
     platformSupport = {
       build = [
         {
@@ -154,20 +156,24 @@ in
       fi
     '';
 
-    passthru.evidenceSources = [
-      (builtins.path {
-        path = ./aos-ebpf-lsm-policy.nix;
-        name = "aos-ebpf-lsm-policy.nix";
-      })
-      (builtins.path {
-        path = bpfSource;
-        name = "aos-ebpf-lsm-policy.bpf.c";
-      })
-      (builtins.path {
-        path = loaderSource;
-        name = "aos-ebpf-lsm-policy.c";
-      })
-    ];
+    passthru = {
+      inherit withBuildDriver;
+      buildDriver = "cargo";
+      evidenceSources = [
+        (builtins.path {
+          path = ./aos-ebpf-lsm-policy.nix;
+          name = "aos-ebpf-lsm-policy.nix";
+        })
+        (builtins.path {
+          path = bpfSource;
+          name = "aos-ebpf-lsm-policy.bpf.c";
+        })
+        (builtins.path {
+          path = loaderSource;
+          name = "aos-ebpf-lsm-policy.c";
+        })
+      ];
+    };
 
     checks = {
       testing,
@@ -210,4 +216,15 @@ in
       description = "Load fleet-managed BPF-LSM policy artifacts";
       license = "MIT";
     };
-  }
+  };
+  cargoPackage = mkAosCargoPackage packageArguments;
+in
+  assert builtins.elem buildDriver ["cargo" "bazel"];
+    if buildDriver == "bazel"
+    then
+      callPackage ./_aos-bpf-policy-bazel.nix {
+        inherit packageArguments;
+        cargoFallback = cargoPackage;
+        providerPackage = "aos-activation-bpf-lsm";
+      }
+    else cargoPackage

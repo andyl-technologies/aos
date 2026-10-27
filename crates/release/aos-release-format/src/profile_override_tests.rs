@@ -117,7 +117,10 @@ fn threshold_signed_overrides_bind_into_the_plan() -> anyhow::Result<()> {
         )
     };
 
-    assert!(verify(&[first.clone()]).is_err(), "below threshold");
+    assert!(
+        verify(std::slice::from_ref(&first)).is_err(),
+        "below threshold"
+    );
     assert!(
         verify(&[first.clone(), first.clone()]).is_err(),
         "repeated signer"

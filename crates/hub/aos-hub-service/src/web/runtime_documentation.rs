@@ -29,6 +29,10 @@ document.querySelector('#runtime-file')?.addEventListener('change', async (event
   input.value = await file.text();
 });"#;
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Uses the portable Hub clock for request timing and runtime budgets."
+)]
 fn page(content: &str) -> String {
     let body = format!(
         r#"<h1>Runtime abilities</h1>

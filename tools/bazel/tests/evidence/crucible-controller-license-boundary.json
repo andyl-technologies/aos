@@ -1,0 +1,368 @@
+{
+  "application_compilation_source_binding": {
+    "derivation": "/nix/store/h6af6wkpan7ai2s207ibma919qxj623m-aos-test-targets-0.1.0.drv",
+    "rust_sources_sha256": {
+      "crates/crucible/crucible-test-support/tests/gate_license_boundary.rs": "6f8548b2bd77a805132a8922a2ee5839f41b2f0880ca3bc25f27316141ac6f63",
+      "crates/crucible/crucible-test-support/tests/gate_license_boundary/bazel.rs": "8eb646c25f74e95beef08f6192c0adf68431ff28031c51347f72f7fa5b88ab28",
+      "crates/crucible/crucible-test-support/tests/gate_license_boundary/dependencies.rs": "fb78d6abb41d290e69c6e2d0373ad009dc97af3976d35a4aa2eddd557135bec0",
+      "crates/crucible/crucible-test-support/tests/gate_license_boundary/guest_assertions.rs": "c1a53f7db55d6b61fc82dabf2a6244442710988d6cf1e5efa7d5c96553367a1f",
+      "crates/crucible/crucible-test-support/tests/support/architecture.rs": "d5d066469ca9e44423b903caddc77b524cb626d55ca2951ec16ec4bcb3971311"
+    },
+    "source": "/nix/store/9vjzwrsa3lwgahfnbfqn3zzny6a6jp32-aos-workspace-src"
+  },
+  "application_compilation_validation": {
+    "binding_scope": "Historical license boundary checkpoint Rust sources; later reader changes require their own source-bound checks.",
+    "cargo_build_messages_sha256": "cdf28ef80b2bac755a38d0d109b316bc7870e22d494cce0eca50a0bc7b9b6ea3",
+    "compiled_test_artifacts": 185,
+    "derivation": "/nix/store/h6af6wkpan7ai2s207ibma919qxj623m-aos-test-targets-0.1.0.drv",
+    "output": "/nix/store/ldgflqk595fdv8xjf9dbwbdi8ki2fmxx-aos-test-targets-0.1.0",
+    "scope": "Required aos/aos-* application unit and integration target compilation; the focused Cargo/Bazel gate separately compiles and executes the Crucible license boundary audits.",
+    "source_binding": {
+      "derivation": "/nix/store/h6af6wkpan7ai2s207ibma919qxj623m-aos-test-targets-0.1.0.drv",
+      "rust_sources_sha256": {
+        "crates/crucible/crucible-test-support/tests/gate_license_boundary.rs": "6f8548b2bd77a805132a8922a2ee5839f41b2f0880ca3bc25f27316141ac6f63",
+        "crates/crucible/crucible-test-support/tests/gate_license_boundary/bazel.rs": "8eb646c25f74e95beef08f6192c0adf68431ff28031c51347f72f7fa5b88ab28",
+        "crates/crucible/crucible-test-support/tests/gate_license_boundary/dependencies.rs": "fb78d6abb41d290e69c6e2d0373ad009dc97af3976d35a4aa2eddd557135bec0",
+        "crates/crucible/crucible-test-support/tests/gate_license_boundary/guest_assertions.rs": "c1a53f7db55d6b61fc82dabf2a6244442710988d6cf1e5efa7d5c96553367a1f",
+        "crates/crucible/crucible-test-support/tests/support/architecture.rs": "d5d066469ca9e44423b903caddc77b524cb626d55ca2951ec16ec4bcb3971311"
+      },
+      "source": "/nix/store/9vjzwrsa3lwgahfnbfqn3zzny6a6jp32-aos-workspace-src"
+    },
+    "status": "PASS"
+  },
+  "architecture_reader_regression": {
+    "derivation": "/nix/store/zpg0brlcb67c4ldpbkcfc8c7805pc1xj-aos-bazel-crucible-controller-architecture-parity.drv",
+    "evidence_sha256": "b75f4be2514a652e29f6b917192a26cc87174d024576b924ab9e96b6867991ed",
+    "executed_cases": 14,
+    "output": "/nix/store/hby6py8nql2a5ncg4agl8vf0zq0fsws1-aos-bazel-crucible-controller-architecture-parity",
+    "rejected_controls": 12
+  },
+  "backend_controls": {
+    "actual_graph_cases": [
+      "apache_host_crates_do_not_define_qemu_plugin_abi",
+      "bazel::tests::configured_closures_apply_the_existing_external_license_choices",
+      "bazel::tests::configured_closures_reject_stale_or_incomplete_source_identities",
+      "bazel::tests::configured_closures_reject_unapproved_local_boundary_packages",
+      "boundary_artifacts_and_code_docs_remain_explicit",
+      "cargo_metadata_preserves_component_licenses",
+      "contributor_authorization::contributor_authorization_policy_is_explicit_and_fail_closed",
+      "dependencies::boundary_crate_source_scanner_rejects_qemu_headers_and_callbacks",
+      "dependencies::debug_gateway_distributed_dependency_graph_has_gpl2_compatible_license_choices",
+      "dependencies::dependency_boundary_scans_normal_build_and_target_tables",
+      "dependencies::external_license_choice_parser_accepts_only_an_independently_approved_branch",
+      "dependencies::non_gpl_crates_cannot_depend_on_qemu_side_implementation_crates",
+      "dependencies::permissive_boundary_dependency_graphs_remain_implementation_neutral",
+      "dependencies::plugin_distributed_dependency_graph_has_gpl2_compatible_license_choices",
+      "dependencies::resolved_graph_rejects_local_apache_and_external_gpl_boundary_regressions",
+      "gpl_side_internal_dependencies_are_only_permissive_boundary_crates",
+      "guest_assertions::guest_assertion_evaluation_stays_in_the_host",
+      "independent_fixture_parser_matches_all_abi_views",
+      "public_shmem_interface_is_process_shaped",
+      "qemu_patch_created_files_match_license_inventory",
+      "repository_publishes_each_declared_license_scope"
+    ],
+    "rejected": {
+      "apache-plugin-edge": {
+        "diagnostic": "forbidden QEMU-side package",
+        "exit_code": 101
+      },
+      "boundary-external-gpl": {
+        "diagnostic": "has no approved compatible choice",
+        "exit_code": 101
+      },
+      "component-license": {
+        "diagnostic": "declared Bazel component license drift",
+        "exit_code": 101
+      },
+      "gpl-host-edge": {
+        "diagnostic": "crosses the GPL boundary",
+        "exit_code": 101
+      },
+      "guest-semantics-in-plugin": {
+        "diagnostic": "GPL-side observation code contains host assertion semantic",
+        "exit_code": 101
+      },
+      "missing-closure-file": {
+        "diagnostic": "No such file or directory",
+        "exit_code": 101
+      },
+      "missing-closures": {
+        "diagnostic": "Bazel license audit omitted its configured closure input",
+        "exit_code": 101
+      },
+      "missing-graph": {
+        "diagnostic": "Bazel audit omitted its declared architecture input",
+        "exit_code": 101
+      },
+      "missing-plugin-source": {
+        "diagnostic": "declared Bazel plugin source input is absent",
+        "exit_code": 101
+      },
+      "missing-sdk-source-hash": {
+        "diagnostic": "no pinned source identity",
+        "exit_code": 101
+      },
+      "plugin-artifact-kind": {
+        "diagnostic": "declared Bazel library artifact",
+        "exit_code": 101
+      },
+      "plugin-external-apache": {
+        "diagnostic": "has no approved compatible choice",
+        "exit_code": 101
+      },
+      "plugin-local-apache": {
+        "diagnostic": "not an approved boundary dependency",
+        "exit_code": 101
+      },
+      "stale-architecture-binding": {
+        "exit_code": 101
+      }
+    }
+  },
+  "builds": {
+    "conservative": {
+      "actions": {
+        "Rustc": {
+          "action_digest": null,
+          "cache_hit": false,
+          "fingerprint": "a7a24adf3d4df205a0b9279d12799de5a9c625a732d2f1505b7a3ec7bd7f82d7",
+          "runner": "linux-sandbox"
+        },
+        "TestRunner": {
+          "action_digest": null,
+          "cache_hit": false,
+          "fingerprint": "34287e4f36ba9e8416fe540f75de3e47453009f0cd6357a1f3c8f17057186fca",
+          "runner": "linux-sandbox"
+        }
+      },
+      "cases": {
+        "schema_version": 1,
+        "targets": {
+          "//crates/crucible/crucible-test-support:gate_license_boundary_controller": {
+            "executed": [
+              "apache_host_crates_do_not_define_qemu_plugin_abi",
+              "bazel::tests::configured_closures_apply_the_existing_external_license_choices",
+              "bazel::tests::configured_closures_reject_stale_or_incomplete_source_identities",
+              "bazel::tests::configured_closures_reject_unapproved_local_boundary_packages",
+              "boundary_artifacts_and_code_docs_remain_explicit",
+              "cargo_metadata_preserves_component_licenses",
+              "contributor_authorization::contributor_authorization_policy_is_explicit_and_fail_closed",
+              "dependencies::boundary_crate_source_scanner_rejects_qemu_headers_and_callbacks",
+              "dependencies::debug_gateway_distributed_dependency_graph_has_gpl2_compatible_license_choices",
+              "dependencies::dependency_boundary_scans_normal_build_and_target_tables",
+              "dependencies::external_license_choice_parser_accepts_only_an_independently_approved_branch",
+              "dependencies::non_gpl_crates_cannot_depend_on_qemu_side_implementation_crates",
+              "dependencies::permissive_boundary_dependency_graphs_remain_implementation_neutral",
+              "dependencies::plugin_distributed_dependency_graph_has_gpl2_compatible_license_choices",
+              "dependencies::resolved_graph_rejects_local_apache_and_external_gpl_boundary_regressions",
+              "gpl_side_internal_dependencies_are_only_permissive_boundary_crates",
+              "guest_assertions::guest_assertion_evaluation_stays_in_the_host",
+              "independent_fixture_parser_matches_all_abi_views",
+              "public_shmem_interface_is_process_shaped",
+              "qemu_patch_created_files_match_license_inventory",
+              "repository_publishes_each_declared_license_scope"
+            ],
+            "ignored": []
+          }
+        }
+      },
+      "declared_inputs": {
+        "architecture.json": {
+          "paths": [
+            "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-test-support/gate_license_boundary_controller.runfiles/+aos_tools_repository+aos_architecture/architecture.json"
+          ],
+          "sha256": "9778045077a96477b72520b28c40f121b360c406bf2ceaf3b9c972e147ad99c1"
+        },
+        "license-closures.json": {
+          "paths": [
+            "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-test-support/gate_license_boundary_controller.runfiles/+aos_tools_repository+aos_architecture/license-closures.json"
+          ],
+          "sha256": "64afc08a842fb8a961302ef625915e33c00404fe3c4e646fbadc502c5aaf4683"
+        }
+      },
+      "derivation": "/nix/store/xrsgkqm6bdpygh6yasg0yqc1gmiqaxxw-aos-bazel-crucible-controller-license-boundary-1.drv",
+      "execution_sha256": "4502b56e41a91716c78bf4647580b580ba4f65714225cb62003d90b342a3f92f",
+      "output": "/nix/store/6ixhryxr9r87c90kh8rmd574kfrg0xsx-aos-bazel-crucible-controller-license-boundary-1",
+      "runtime_data_sha256": {
+        "AGENTS.md": "db2791cc195b2048c69d093293e3f3ea76cf45a36a31948434d9018fe6d820fd",
+        "CONTRIBUTING.md": "7932daef74191b17bfca98b7d7d2f609d1ccd07ce8b6c887628d8e5f2801e7ba",
+        "LICENSES/Apache-2.0.txt": "8ef4e829628813fd7846d4d0864c56828a51365ae02e044f53d533803ca0c361",
+        "LICENSES/GPL-2.0-only.txt": "edaef632cbb643e4e7a221717a6c441a4c1a7c918e6e4d56debc3d8739b233f6",
+        "LICENSES/GPL-2.0-or-later.txt": "edaef632cbb643e4e7a221717a6c441a4c1a7c918e6e4d56debc3d8739b233f6",
+        "LICENSES/MIT.txt": "870e9af81db5f172ac6b8040b0cd42e686bb63ffd736cc0a81fe16f5ff73b15c",
+        "README.md": "61e035130b474db539d65a5aeedeeac281bfa89b63f8a8b5309c589d62bd142d",
+        "crates/crucible/crucible-qemu-shmem/include/crucible_shmem_abi.h": "1dc465a755a9d9e8195a7e3cd22ecadcc1496fff89a2e19bcf7ffb7b9c9b8dcd",
+        "crates/crucible/crucible-qemu-shmem/interface/crucible-shmem-abi.toml": "eced8ef8528e18cbfa2dce64beaf50e7a25626cd4fe83f741ba1e8ac159dccba",
+        "crates/crucible/crucible-qemu-shmem/src/abi_version.in": "f4ccd05b3271c386ee55d9876c7450012a3b361e5065c09dc22075e38b3cc35c",
+        "crates/crucible/crucible-qemu-shmem/tests/fixtures/shmem_abi_golden.fixture": "b588f520033e9069335639b3c47869f9536fd4da8c95b67410bd02754dafcb47",
+        "docs/legal/external-contributor-license-agreement.md": "e53d1724719226a529f45f5b90babeb70345fc0b889456ff48b896948c6184e0",
+        "docs/legal/licensing.md": "ddd0522137a8f602fb33e357a91fbf73bceff7e5da7a2443dd531ae8b4d383cc",
+        "docs/maintainers/README.md": "098b5ffb7ef647456f1bea5af1c2b071ce4ba0ca7953129fd26f66e4f09d315d",
+        "docs/maintainers/contributor-licensing.md": "0766b7b1cb81660ec6c695792dcfb6b768b3ac0e744714a3679e97d6aefd92e8",
+        "pkgs/emulation/_crucible-qemu-bazel-installed.nix": "abd4089f3263e6d37047dcb484923861a52813db5fe4164911b444b705373101",
+        "pkgs/emulation/crucible-qemu-plugin.nix": "90548dd14ab4f8c63bea7622819caaec33ee3524d5f349cb6d0a62e3e4c650da",
+        "pkgs/emulation/qemu-patches/LICENSES.md": "2ad2490a85be8a5d5bb7ecd1f06f8b5e343b401871eb4a885151c8984953289f",
+        "pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch": "3492f9060ed975d4a99531dbcb20db7d65d92b233752a14daa920cae0b8d8e30",
+        "pkgs/tools/crucible/_debug-gateway.nix": "15856ea41238eb59d5005f6de8fd37200c2e2813ce21f588bc78d7d938c8705f"
+      },
+      "selected_source_count": 3756,
+      "source": "/nix/store/38rj8pg6f9x1rwv0i8kxqxji4npx3dd9-aos-bazel-workspace",
+      "source_receipt_sha256": "db5f2a5db1f5efd0b3768bb38ef00f11d7a84648077d4606bc7a312c7b109e08"
+    },
+    "strict": {
+      "actions": {
+        "Rustc": {
+          "action_digest": null,
+          "cache_hit": false,
+          "fingerprint": "a7a24adf3d4df205a0b9279d12799de5a9c625a732d2f1505b7a3ec7bd7f82d7",
+          "runner": "linux-sandbox"
+        },
+        "TestRunner": {
+          "action_digest": null,
+          "cache_hit": false,
+          "fingerprint": "34287e4f36ba9e8416fe540f75de3e47453009f0cd6357a1f3c8f17057186fca",
+          "runner": "linux-sandbox"
+        }
+      },
+      "cases": {
+        "schema_version": 1,
+        "targets": {
+          "//crates/crucible/crucible-test-support:gate_license_boundary_controller": {
+            "executed": [
+              "apache_host_crates_do_not_define_qemu_plugin_abi",
+              "bazel::tests::configured_closures_apply_the_existing_external_license_choices",
+              "bazel::tests::configured_closures_reject_stale_or_incomplete_source_identities",
+              "bazel::tests::configured_closures_reject_unapproved_local_boundary_packages",
+              "boundary_artifacts_and_code_docs_remain_explicit",
+              "cargo_metadata_preserves_component_licenses",
+              "contributor_authorization::contributor_authorization_policy_is_explicit_and_fail_closed",
+              "dependencies::boundary_crate_source_scanner_rejects_qemu_headers_and_callbacks",
+              "dependencies::debug_gateway_distributed_dependency_graph_has_gpl2_compatible_license_choices",
+              "dependencies::dependency_boundary_scans_normal_build_and_target_tables",
+              "dependencies::external_license_choice_parser_accepts_only_an_independently_approved_branch",
+              "dependencies::non_gpl_crates_cannot_depend_on_qemu_side_implementation_crates",
+              "dependencies::permissive_boundary_dependency_graphs_remain_implementation_neutral",
+              "dependencies::plugin_distributed_dependency_graph_has_gpl2_compatible_license_choices",
+              "dependencies::resolved_graph_rejects_local_apache_and_external_gpl_boundary_regressions",
+              "gpl_side_internal_dependencies_are_only_permissive_boundary_crates",
+              "guest_assertions::guest_assertion_evaluation_stays_in_the_host",
+              "independent_fixture_parser_matches_all_abi_views",
+              "public_shmem_interface_is_process_shaped",
+              "qemu_patch_created_files_match_license_inventory",
+              "repository_publishes_each_declared_license_scope"
+            ],
+            "ignored": []
+          }
+        }
+      },
+      "declared_inputs": {
+        "architecture.json": {
+          "paths": [
+            "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-test-support/gate_license_boundary_controller.runfiles/+aos_tools_repository+aos_architecture/architecture.json"
+          ],
+          "sha256": "9778045077a96477b72520b28c40f121b360c406bf2ceaf3b9c972e147ad99c1"
+        },
+        "license-closures.json": {
+          "paths": [
+            "bazel-out/k8-fastbuild/bin/crates/crucible/crucible-test-support/gate_license_boundary_controller.runfiles/+aos_tools_repository+aos_architecture/license-closures.json"
+          ],
+          "sha256": "64afc08a842fb8a961302ef625915e33c00404fe3c4e646fbadc502c5aaf4683"
+        }
+      },
+      "derivation": "/nix/store/k3x6y3z8i6iq89slvadrrjhiazrzwnjm-aos-bazel-crucible-controller-license-boundary-1.drv",
+      "execution_sha256": "806be962adac20c2b3120b16df40cce7ab39adab76c18e34f1e6c8c85b9f4b04",
+      "output": "/nix/store/axiaiir8fn5jbpk4698111chh3myqmy3-aos-bazel-crucible-controller-license-boundary-1",
+      "runtime_data_sha256": {
+        "AGENTS.md": "db2791cc195b2048c69d093293e3f3ea76cf45a36a31948434d9018fe6d820fd",
+        "CONTRIBUTING.md": "7932daef74191b17bfca98b7d7d2f609d1ccd07ce8b6c887628d8e5f2801e7ba",
+        "LICENSES/Apache-2.0.txt": "8ef4e829628813fd7846d4d0864c56828a51365ae02e044f53d533803ca0c361",
+        "LICENSES/GPL-2.0-only.txt": "edaef632cbb643e4e7a221717a6c441a4c1a7c918e6e4d56debc3d8739b233f6",
+        "LICENSES/GPL-2.0-or-later.txt": "edaef632cbb643e4e7a221717a6c441a4c1a7c918e6e4d56debc3d8739b233f6",
+        "LICENSES/MIT.txt": "870e9af81db5f172ac6b8040b0cd42e686bb63ffd736cc0a81fe16f5ff73b15c",
+        "README.md": "61e035130b474db539d65a5aeedeeac281bfa89b63f8a8b5309c589d62bd142d",
+        "crates/crucible/crucible-qemu-shmem/include/crucible_shmem_abi.h": "1dc465a755a9d9e8195a7e3cd22ecadcc1496fff89a2e19bcf7ffb7b9c9b8dcd",
+        "crates/crucible/crucible-qemu-shmem/interface/crucible-shmem-abi.toml": "eced8ef8528e18cbfa2dce64beaf50e7a25626cd4fe83f741ba1e8ac159dccba",
+        "crates/crucible/crucible-qemu-shmem/src/abi_version.in": "f4ccd05b3271c386ee55d9876c7450012a3b361e5065c09dc22075e38b3cc35c",
+        "crates/crucible/crucible-qemu-shmem/tests/fixtures/shmem_abi_golden.fixture": "b588f520033e9069335639b3c47869f9536fd4da8c95b67410bd02754dafcb47",
+        "docs/legal/external-contributor-license-agreement.md": "e53d1724719226a529f45f5b90babeb70345fc0b889456ff48b896948c6184e0",
+        "docs/legal/licensing.md": "ddd0522137a8f602fb33e357a91fbf73bceff7e5da7a2443dd531ae8b4d383cc",
+        "docs/maintainers/README.md": "098b5ffb7ef647456f1bea5af1c2b071ce4ba0ca7953129fd26f66e4f09d315d",
+        "docs/maintainers/contributor-licensing.md": "0766b7b1cb81660ec6c695792dcfb6b768b3ac0e744714a3679e97d6aefd92e8",
+        "pkgs/emulation/_crucible-qemu-bazel-installed.nix": "abd4089f3263e6d37047dcb484923861a52813db5fe4164911b444b705373101",
+        "pkgs/emulation/crucible-qemu-plugin.nix": "90548dd14ab4f8c63bea7622819caaec33ee3524d5f349cb6d0a62e3e4c650da",
+        "pkgs/emulation/qemu-patches/LICENSES.md": "2ad2490a85be8a5d5bb7ecd1f06f8b5e343b401871eb4a885151c8984953289f",
+        "pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch": "3492f9060ed975d4a99531dbcb20db7d65d92b233752a14daa920cae0b8d8e30",
+        "pkgs/tools/crucible/_debug-gateway.nix": "15856ea41238eb59d5005f6de8fd37200c2e2813ce21f588bc78d7d938c8705f"
+      },
+      "selected_source_count": 3756,
+      "source": "/nix/store/jj4v5qa94c8z51xjhazwnl3q3dfcsv3q-aos-bazel-workspace",
+      "source_receipt_sha256": "db5f2a5db1f5efd0b3768bb38ef00f11d7a84648077d4606bc7a312c7b109e08"
+    }
+  },
+  "closures": {
+    "path": "/nix/store/16qax5rl5agdl5yaw71j4gykvrfylsjs-aos-bazel-controller-audit-inputs/license-closures.json",
+    "sha256": "64afc08a842fb8a961302ef625915e33c00404fe3c4e646fbadc502c5aaf4683"
+  },
+  "graph": {
+    "path": "/nix/store/16qax5rl5agdl5yaw71j4gykvrfylsjs-aos-bazel-controller-audit-inputs/architecture.json",
+    "sha256": "9778045077a96477b72520b28c40f121b360c406bf2ceaf3b9c972e147ad99c1"
+  },
+  "inventory_receipt": "tools/bazel/tests/evidence/crucible-controller-license-inventories.json",
+  "inventory_receipt_sha256": "569c74195a4ae53c6d7219200309707491318480efea8bc8256ec9987bc79ec8",
+  "limits": [
+    "The static license audit only; ABI, native-library licensing, runtime, and publication gates remain separate.",
+    "Cargo remains an independent oracle and is unavailable to graph-backend control executions."
+  ],
+  "migration_regression": {
+    "bazel_builder": "pkgs/emulation/_crucible-qemu-bazel-installed.nix",
+    "cargo_builder": "pkgs/tools/crucible/_debug-gateway.nix",
+    "description": "The gateway extraction moved license packaging markers out of crucible.nix; the existing audit now follows each builder to the same required markers.",
+    "introduced_by": "e5b73131c4",
+    "required_markers_unchanged": true
+  },
+  "oracle": "/nix/store/qnnpkm015w0746xjmlcfvdn7fyi5gi42-aos-bazel-crucible-controller-license-cargo-oracle-1",
+  "oracle_derivation": "/nix/store/acrjjmvibxyr3z2nnjzg3adbwwp78jkl-aos-bazel-crucible-controller-license-cargo-oracle-1.drv",
+  "pending_checkpoint_validation": [],
+  "public_controller_cutover_qualified": false,
+  "qualification_derivation": "/nix/store/cn4ks9zv72ghmgqg63ah41p0wzdsg6y9-aos-bazel-crucible-controller-license-parity.drv",
+  "qualification_helper_sha256": {
+    "verify_cache.py": "48679f851e2b8f7789104114cbd52c62798f908b3313d636531546da7f7bed02",
+    "verify_compiler_sources.py": "5163f1d80c3a05d2aaa661109882c21a6c3280a9506dad4845b2b4256dae4030",
+    "verify_controller_architecture.py": "2cbac337975b7c5d75ac89ef5653930a94d2c9f4fa627462ed00fe99c87703d1",
+    "verify_controller_license.py": "baa0556777415d71cbb1ec50a9ebc75c4a6d972c9decff1d73f5d1655ac1bca3",
+    "verify_pilot.py": "19d94d835b764d92881c5797d7d8e9251b9b6965a1c7aeb41030db6a7e207e50",
+    "verify_source_audits.py": "b1d3653e56dac963773f7fea110ebfb8aa085f78def0774e1c75e5c231690468"
+  },
+  "qualification_helper_source": "/nix/store/9v61114d5jf8c38qkl91qcp4ndcckibl-aos-controller-license-qualification-tools",
+  "qualification_output": "/nix/store/rr9hrrpilgmd0f8p6idhg22jhhf7ja6y-aos-bazel-crucible-controller-license-parity",
+  "schema_version": 1,
+  "scope": "Existing static Crucible license-boundary audit converted to declared Bazel graph, configured package closures, policy files and ABI fixtures.",
+  "source_sha256": {
+    "BUILD.bazel": "294e8300706ff3b3aa12d14c827fe92e18723e5f513c296e4aacdfe63d0b4556",
+    "crates/crucible/crucible-qemu-shmem/BUILD.bazel": "c6f066e9fb2cfcce66451cef7d77889b434e75bb3118637557f6df86213d7be9",
+    "crates/crucible/crucible-test-support/BUILD.bazel": "628759dccd0ada5fe08ede05aaa149f55234944c5758819a9186121db1e3baac",
+    "crates/crucible/crucible-test-support/tests/gate_license_boundary.rs": "6f8548b2bd77a805132a8922a2ee5839f41b2f0880ca3bc25f27316141ac6f63",
+    "crates/crucible/crucible-test-support/tests/gate_license_boundary/bazel.rs": "8eb646c25f74e95beef08f6192c0adf68431ff28031c51347f72f7fa5b88ab28",
+    "crates/crucible/crucible-test-support/tests/gate_license_boundary/dependencies.rs": "fb78d6abb41d290e69c6e2d0373ad009dc97af3976d35a4aa2eddd557135bec0",
+    "crates/crucible/crucible-test-support/tests/gate_license_boundary/guest_assertions.rs": "c1a53f7db55d6b61fc82dabf2a6244442710988d6cf1e5efa7d5c96553367a1f",
+    "crates/crucible/crucible-test-support/tests/support/architecture.rs": "d5d066469ca9e44423b903caddc77b524cb626d55ca2951ec16ec4bcb3971311",
+    "tests/build/_bazel-crucible-controller-audit-inputs.nix": "87bea798053cb34af98d3a26aad2ba9318347d55390c3f723649ad096271af52",
+    "tests/build/_bazel-crucible-controller-license-cargo.nix": "5427a478d2bdf0c1dc73e7ad68bddef4f4d644666019e8100dd05b160008dc1d",
+    "tests/build/_bazel-crucible-controller-tests.nix": "9fa68560f2cc29d09fb01598ca6b0e6e34e2cbb723047bc021fa620df2227fb4",
+    "tools/bazel/tests/crucible-controller.nix": "2f58b9084ce44a741fdbd808010c0663a65189e3e12a8fcf60a08f4fa827993d",
+    "tools/bazel/tests/verify_cache.py": "48679f851e2b8f7789104114cbd52c62798f908b3313d636531546da7f7bed02",
+    "tools/bazel/tests/verify_compiler_sources.py": "5163f1d80c3a05d2aaa661109882c21a6c3280a9506dad4845b2b4256dae4030",
+    "tools/bazel/tests/verify_controller_architecture.py": "2cbac337975b7c5d75ac89ef5653930a94d2c9f4fa627462ed00fe99c87703d1",
+    "tools/bazel/tests/verify_controller_license.py": "baa0556777415d71cbb1ec50a9ebc75c4a6d972c9decff1d73f5d1655ac1bca3",
+    "tools/bazel/tests/verify_pilot.py": "19d94d835b764d92881c5797d7d8e9251b9b6965a1c7aeb41030db6a7e207e50",
+    "tools/bazel/tests/verify_source_audits.py": "b1d3653e56dac963773f7fea110ebfb8aa085f78def0774e1c75e5c231690468"
+  },
+  "status": "PASS",
+  "validation": {
+    "core_evaluation_output": "/nix/store/8wp43is6mcn2d8ln4lmd2gc38qwqg1j3-aos-native-evaluation-checks-0",
+    "current_dependency_sdk_profiles": 79,
+    "current_source_inventories": 80,
+    "helper_tests": 513,
+    "helper_tests_status": "PASS"
+  }
+}

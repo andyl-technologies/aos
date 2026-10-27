@@ -1,0 +1,835 @@
+{
+  "clippy_derivation": "/nix/store/y6c050an9dxil5vr20bvqfw2m70b334w-aos-bazel-aos-cli-tests-developer-1.drv",
+  "clippy_log_sha256": "caa96ab4a39c2b4b7b9e1ac40ec4739aae9a03d58a58e915f31f6725c3ce32b6",
+  "core_evaluation_log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "core_evaluation_output": "/nix/store/skniiphwzyralc1mscmb4wd9qli9zzqh-aos-native-evaluation-checks-0",
+  "core_evaluation_status": "PASS",
+  "diagnostics": [
+    {
+      "column": 9,
+      "line": 126,
+      "message": "unnecessary use of `clone` to create a slice from a reference",
+      "source": "crates/aos/cli/aos-cli/tests/apr_keys_generate_cli.rs"
+    },
+    {
+      "column": 5,
+      "line": 75,
+      "message": "enclosing `Ok` and `?` operator are unneeded",
+      "source": "crates/aos/cli/aos-cli/tests/cli_separation.rs"
+    },
+    {
+      "column": 6,
+      "line": 9,
+      "message": "enum `Source` is never used",
+      "source": "crates/aos/cli/aos-cli/tests/../src/cli/doc.rs"
+    },
+    {
+      "column": 19,
+      "line": 25,
+      "message": "method `documentation_command` is never used",
+      "source": "crates/aos/cli/aos-cli/tests/../src/cli/doc.rs"
+    },
+    {
+      "column": 1,
+      "line": 33,
+      "message": "large size difference between variants",
+      "source": "crates/aos/cli/aos-cli/tests/../src/cli/container.rs"
+    },
+    {
+      "column": 1,
+      "line": 755,
+      "message": "large size difference between variants",
+      "source": "crates/aos/cli/aos-cli/tests/../src/cli/hub.rs"
+    },
+    {
+      "column": 1,
+      "line": 2368,
+      "message": "large size difference between variants",
+      "source": "crates/aos/cli/aos-cli/tests/../src/cli/hub.rs"
+    },
+    {
+      "column": 1,
+      "line": 341,
+      "message": "large size difference between variants",
+      "source": "crates/aos/cli/aos-cli/tests/../src/cli/hub_container.rs"
+    },
+    {
+      "column": 1,
+      "line": 375,
+      "message": "large size difference between variants",
+      "source": "crates/aos/cli/aos-cli/tests/../src/cli/hub_retained_control.rs"
+    },
+    {
+      "column": 1,
+      "line": 395,
+      "message": "large size difference between variants",
+      "source": "crates/aos/cli/aos-cli/tests/../src/cli/hub_retained_control.rs"
+    },
+    {
+      "column": 1,
+      "line": 26,
+      "message": "large size difference between variants",
+      "source": "crates/aos/cli/aos-cli/tests/../src/cli/maintain.rs"
+    },
+    {
+      "column": 1,
+      "line": 29,
+      "message": "large size difference between variants",
+      "source": "crates/aos/cli/aos-cli/tests/../src/cli/release.rs"
+    },
+    {
+      "column": 24,
+      "line": 175,
+      "message": "use of a disallowed method `std::time::Instant::now`",
+      "source": "crates/aos/cli/aos-cli/tests/documentation_cli.rs"
+    },
+    {
+      "column": 25,
+      "line": 181,
+      "message": "use of a disallowed method `std::time::Instant::now`",
+      "source": "crates/aos/cli/aos-cli/tests/documentation_cli.rs"
+    },
+    {
+      "column": 5,
+      "line": 1177,
+      "message": "enclosing `Ok` and `?` operator are unneeded",
+      "source": "crates/aos/cli/aos-cli/tests/container_native_publication.rs"
+    },
+    {
+      "column": 1,
+      "line": 33,
+      "message": "large size difference between variants",
+      "source": "crates/aos/cli/aos-cli/src/cli/container.rs"
+    },
+    {
+      "column": 1,
+      "line": 755,
+      "message": "large size difference between variants",
+      "source": "crates/aos/cli/aos-cli/src/cli/hub.rs"
+    },
+    {
+      "column": 1,
+      "line": 2368,
+      "message": "large size difference between variants",
+      "source": "crates/aos/cli/aos-cli/src/cli/hub.rs"
+    },
+    {
+      "column": 1,
+      "line": 341,
+      "message": "large size difference between variants",
+      "source": "crates/aos/cli/aos-cli/src/cli/hub_container.rs"
+    },
+    {
+      "column": 1,
+      "line": 375,
+      "message": "large size difference between variants",
+      "source": "crates/aos/cli/aos-cli/src/cli/hub_retained_control.rs"
+    },
+    {
+      "column": 1,
+      "line": 395,
+      "message": "large size difference between variants",
+      "source": "crates/aos/cli/aos-cli/src/cli/hub_retained_control.rs"
+    },
+    {
+      "column": 1,
+      "line": 26,
+      "message": "large size difference between variants",
+      "source": "crates/aos/cli/aos-cli/src/cli/maintain.rs"
+    },
+    {
+      "column": 1,
+      "line": 29,
+      "message": "large size difference between variants",
+      "source": "crates/aos/cli/aos-cli/src/cli/release.rs"
+    },
+    {
+      "column": 21,
+      "line": 94,
+      "message": "this `if` statement can be collapsed",
+      "source": "crates/aos/cli/aos-cli/src/commands/ability.rs"
+    },
+    {
+      "column": 1,
+      "line": 130,
+      "message": "this function has too many arguments (8/7)",
+      "source": "crates/aos/cli/aos-cli/src/commands/build.rs"
+    },
+    {
+      "column": 1,
+      "line": 36,
+      "message": "this function has too many arguments (10/7)",
+      "source": "crates/aos/cli/aos-cli/src/commands/gc.rs"
+    },
+    {
+      "column": 15,
+      "line": 300,
+      "message": "use of a disallowed method `std::time::SystemTime::now`",
+      "source": "crates/aos/cli/aos-cli/src/commands/gc.rs"
+    },
+    {
+      "column": 19,
+      "line": 44,
+      "message": "use of a disallowed method `std::time::Instant::now`",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub/auth.rs"
+    },
+    {
+      "column": 20,
+      "line": 47,
+      "message": "use of a disallowed method `std::time::Instant::elapsed`",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub/auth.rs"
+    },
+    {
+      "column": 1,
+      "line": 52,
+      "message": "this function has too many arguments (9/7)",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub/cache/mutation.rs"
+    },
+    {
+      "column": 1,
+      "line": 195,
+      "message": "this function has too many arguments (8/7)",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub/cache/population.rs"
+    },
+    {
+      "column": 1,
+      "line": 19,
+      "message": "this function has too many arguments (10/7)",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub/cache/retention.rs"
+    },
+    {
+      "column": 43,
+      "line": 153,
+      "message": "use of a disallowed method `std::time::SystemTime::now`",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub/documentation.rs"
+    },
+    {
+      "column": 34,
+      "line": 361,
+      "message": "redundant closure",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub/endpoint.rs"
+    },
+    {
+      "column": 34,
+      "line": 150,
+      "message": "redundant closure",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub/gateway.rs"
+    },
+    {
+      "column": 34,
+      "line": 316,
+      "message": "use of a disallowed type `std::collections::HashMap`",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub/instance.rs"
+    },
+    {
+      "column": 1,
+      "line": 420,
+      "message": "this function has too many arguments (14/7)",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub/instance.rs"
+    },
+    {
+      "column": 5,
+      "line": 514,
+      "message": "this `if` statement can be collapsed",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub/instance.rs"
+    },
+    {
+      "column": 5,
+      "line": 618,
+      "message": "this `if` statement can be collapsed",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub/instance.rs"
+    },
+    {
+      "column": 59,
+      "line": 128,
+      "message": "use of a disallowed method `rand::random`",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub/mutation.rs"
+    },
+    {
+      "column": 32,
+      "line": 257,
+      "message": "use of a disallowed method `rand::random`",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub/mutation.rs"
+    },
+    {
+      "column": 54,
+      "line": 264,
+      "message": "use of a disallowed method `rand::random`",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub/mutation.rs"
+    },
+    {
+      "column": 1,
+      "line": 339,
+      "message": "this function has too many arguments (9/7)",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub/mutation.rs"
+    },
+    {
+      "column": 1,
+      "line": 442,
+      "message": "this function has too many arguments (8/7)",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub/mutation.rs"
+    },
+    {
+      "column": 23,
+      "line": 242,
+      "message": "struct update has no effect, all the fields in the struct have already been specified",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub/network_policy.rs"
+    },
+    {
+      "column": 19,
+      "line": 26,
+      "message": "use of a disallowed method `std::time::Instant::now`",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub/operation.rs"
+    },
+    {
+      "column": 58,
+      "line": 31,
+      "message": "use of a disallowed method `std::time::Instant::elapsed`",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub/operation.rs"
+    },
+    {
+      "column": 1,
+      "line": 15,
+      "message": "this function has too many arguments (9/7)",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub/placement/policy.rs"
+    },
+    {
+      "column": 19,
+      "line": 152,
+      "message": "use of a disallowed method `std::time::Instant::now`",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub/registry_delete.rs"
+    },
+    {
+      "column": 45,
+      "line": 156,
+      "message": "use of a disallowed method `std::time::Instant::elapsed`",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub/registry_delete.rs"
+    },
+    {
+      "column": 23,
+      "line": 553,
+      "message": "struct update has no effect, all the fields in the struct have already been specified",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub/route.rs"
+    },
+    {
+      "column": 23,
+      "line": 581,
+      "message": "struct update has no effect, all the fields in the struct have already been specified",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub/route.rs"
+    },
+    {
+      "column": 23,
+      "line": 655,
+      "message": "struct update has no effect, all the fields in the struct have already been specified",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub/route.rs"
+    },
+    {
+      "column": 1,
+      "line": 997,
+      "message": "this function has too many arguments (8/7)",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub_cutover_verify/bundle.rs"
+    },
+    {
+      "column": 50,
+      "line": 1490,
+      "message": "deref which would be done by auto-deref",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub_cutover_verify/bundle.rs"
+    },
+    {
+      "column": 13,
+      "line": 2584,
+      "message": "the borrowed expression implements the required traits",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub_cutover_verify/bundle.rs"
+    },
+    {
+      "column": 6,
+      "line": 2809,
+      "message": "very complex type used. Consider factoring parts into `type` definitions",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub_cutover_verify/bundle.rs"
+    },
+    {
+      "column": 44,
+      "line": 54,
+      "message": "using `chunks_exact` with a constant chunk size",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub_cutover_verify/canonical.rs"
+    },
+    {
+      "column": 5,
+      "line": 63,
+      "message": "this `if` statement can be collapsed",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub_cutover_verify/canonical.rs"
+    },
+    {
+      "column": 5,
+      "line": 86,
+      "message": "this `if` statement can be collapsed",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub_cutover_verify/canonical.rs"
+    },
+    {
+      "column": 38,
+      "line": 111,
+      "message": "using `chunks_exact` with a constant chunk size",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub_cutover_verify/canonical.rs"
+    },
+    {
+      "column": 9,
+      "line": 121,
+      "message": "this `if` statement can be collapsed",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub_cutover_verify/canonical.rs"
+    },
+    {
+      "column": 34,
+      "line": 6,
+      "message": "use of a disallowed type `std::collections::HashSet`",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub_cutover_verify/schema.rs"
+    },
+    {
+      "column": 5,
+      "line": 187,
+      "message": "this `if` statement can be collapsed",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub_cutover_verify/schema.rs"
+    },
+    {
+      "column": 5,
+      "line": 192,
+      "message": "this `if` statement can be collapsed",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub_cutover_verify/schema.rs"
+    },
+    {
+      "column": 9,
+      "line": 219,
+      "message": "this `if` statement can be collapsed",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub_cutover_verify/schema.rs"
+    },
+    {
+      "column": 5,
+      "line": 283,
+      "message": "this `if` statement can be collapsed",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub_cutover_verify/schema.rs"
+    },
+    {
+      "column": 21,
+      "line": 483,
+      "message": "use of a disallowed type `std::collections::HashSet`",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub_cutover_verify/schema.rs"
+    },
+    {
+      "column": 5,
+      "line": 519,
+      "message": "this `if` statement can be collapsed",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub_cutover_verify/schema.rs"
+    },
+    {
+      "column": 44,
+      "line": 9,
+      "message": "use of a disallowed type `std::collections::HashSet`",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub_cutover_verify/semantics.rs"
+    },
+    {
+      "column": 25,
+      "line": 1300,
+      "message": "use of a disallowed type `std::collections::HashSet`",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub_cutover_verify/semantics.rs"
+    },
+    {
+      "column": 9,
+      "line": 1540,
+      "message": "this `if` statement can be collapsed",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub_cutover_verify/semantics.rs"
+    },
+    {
+      "column": 29,
+      "line": 2233,
+      "message": "expression can be simplified using `Option::unwrap_or()`",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub_cutover_verify/semantics.rs"
+    },
+    {
+      "column": 16,
+      "line": 2258,
+      "message": "manual implementation of `.is_multiple_of()`",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub_cutover_verify/semantics.rs"
+    },
+    {
+      "column": 34,
+      "line": 2258,
+      "message": "manual implementation of `.is_multiple_of()`",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub_cutover_verify/semantics.rs"
+    },
+    {
+      "column": 53,
+      "line": 2258,
+      "message": "manual implementation of `.is_multiple_of()`",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub_cutover_verify/semantics.rs"
+    },
+    {
+      "column": 17,
+      "line": 2739,
+      "message": "use of a disallowed type `std::collections::HashSet`",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub_cutover_verify/semantics.rs"
+    },
+    {
+      "column": 35,
+      "line": 294,
+      "message": "the borrowed expression implements the required traits",
+      "source": "crates/aos/cli/aos-cli/src/commands/hub_cutover_verify/mod.rs"
+    },
+    {
+      "column": 34,
+      "line": 292,
+      "message": "use of a disallowed method `std::time::Instant::now`",
+      "source": "crates/aos/cli/aos-cli/src/commands/image.rs"
+    },
+    {
+      "column": 36,
+      "line": 298,
+      "message": "use of a disallowed method `std::time::Instant::elapsed`",
+      "source": "crates/aos/cli/aos-cli/src/commands/image.rs"
+    },
+    {
+      "column": 19,
+      "line": 420,
+      "message": "use of a disallowed method `std::time::Instant::now`",
+      "source": "crates/aos/cli/aos-cli/src/commands/image.rs"
+    },
+    {
+      "column": 53,
+      "line": 448,
+      "message": "use of a disallowed method `std::time::Instant::elapsed`",
+      "source": "crates/aos/cli/aos-cli/src/commands/image.rs"
+    },
+    {
+      "column": 19,
+      "line": 93,
+      "message": "use of a disallowed method `std::time::Instant::now`",
+      "source": "crates/aos/cli/aos-cli/src/commands/prefetch.rs"
+    },
+    {
+      "column": 26,
+      "line": 110,
+      "message": "use of a disallowed method `std::time::Instant::elapsed`",
+      "source": "crates/aos/cli/aos-cli/src/commands/prefetch.rs"
+    },
+    {
+      "column": 22,
+      "line": 212,
+      "message": "compiling a regex in a loop",
+      "source": "crates/aos/cli/aos-cli/src/commands/prefetch.rs"
+    },
+    {
+      "column": 1,
+      "line": 249,
+      "message": "this function has too many arguments (8/7)",
+      "source": "crates/aos/cli/aos-cli/src/commands/prefetch.rs"
+    },
+    {
+      "column": 22,
+      "line": 259,
+      "message": "use of a disallowed method `std::time::Instant::now`",
+      "source": "crates/aos/cli/aos-cli/src/commands/prefetch.rs"
+    },
+    {
+      "column": 24,
+      "line": 265,
+      "message": "use of a disallowed method `std::time::Instant::elapsed`",
+      "source": "crates/aos/cli/aos-cli/src/commands/prefetch.rs"
+    },
+    {
+      "column": 22,
+      "line": 311,
+      "message": "use of a disallowed method `std::time::Instant::now`",
+      "source": "crates/aos/cli/aos-cli/src/commands/prefetch.rs"
+    },
+    {
+      "column": 35,
+      "line": 373,
+      "message": "use of a disallowed method `std::time::Instant::elapsed`",
+      "source": "crates/aos/cli/aos-cli/src/commands/prefetch.rs"
+    },
+    {
+      "column": 1,
+      "line": 14,
+      "message": "use of a disallowed type `std::collections::HashMap`",
+      "source": "crates/aos/cli/aos-cli/src/commands/profile.rs"
+    },
+    {
+      "column": 23,
+      "line": 109,
+      "message": "use of a disallowed type `std::collections::HashMap`",
+      "source": "crates/aos/cli/aos-cli/src/commands/profile.rs"
+    },
+    {
+      "column": 6,
+      "line": 294,
+      "message": "very complex type used. Consider factoring parts into `type` definitions",
+      "source": "crates/aos/cli/aos-cli/src/commands/release/assemble/images.rs"
+    },
+    {
+      "column": 9,
+      "line": 110,
+      "message": "this `if` statement can be collapsed",
+      "source": "crates/aos/cli/aos-cli/src/commands/release/assemble/mod.rs"
+    },
+    {
+      "column": 31,
+      "line": 474,
+      "message": "using `clone` on type `Sha256Digest` which implements the `Copy` trait",
+      "source": "crates/aos/cli/aos-cli/src/commands/release/assemble/mod.rs"
+    },
+    {
+      "column": 21,
+      "line": 47,
+      "message": "use of a disallowed method `std::time::SystemTime::now`",
+      "source": "crates/aos/cli/aos-cli/src/commands/release/build.rs"
+    },
+    {
+      "column": 50,
+      "line": 154,
+      "message": "use of a disallowed method `std::time::SystemTime::now`",
+      "source": "crates/aos/cli/aos-cli/src/commands/release/build.rs"
+    },
+    {
+      "column": 8,
+      "line": 232,
+      "message": "use of a disallowed method `std::time::SystemTime::now`",
+      "source": "crates/aos/cli/aos-cli/src/commands/release/channel/advance.rs"
+    },
+    {
+      "column": 33,
+      "line": 255,
+      "message": "use of a disallowed method `rand::random`",
+      "source": "crates/aos/cli/aos-cli/src/commands/release/finalize.rs"
+    },
+    {
+      "column": 33,
+      "line": 255,
+      "message": "use of a disallowed method `rand::random`",
+      "source": "crates/aos/cli/aos-cli/src/commands/release/finalize_cache.rs"
+    },
+    {
+      "column": 37,
+      "line": 197,
+      "message": "use of a disallowed method `rand::random`",
+      "source": "crates/aos/cli/aos-cli/src/commands/release/finalize_image.rs"
+    },
+    {
+      "column": 37,
+      "line": 407,
+      "message": "use of a disallowed method `rand::random`",
+      "source": "crates/aos/cli/aos-cli/src/commands/release/finalize_registry.rs"
+    },
+    {
+      "column": 18,
+      "line": 87,
+      "message": "use of a disallowed method `std::time::SystemTime::now`",
+      "source": "crates/aos/cli/aos-cli/src/commands/release/porcelain/advance.rs"
+    },
+    {
+      "column": 18,
+      "line": 310,
+      "message": "use of a disallowed method `std::time::SystemTime::now`",
+      "source": "crates/aos/cli/aos-cli/src/commands/release/porcelain/advance.rs"
+    },
+    {
+      "column": 29,
+      "line": 71,
+      "message": "use of a disallowed method `rand::random`",
+      "source": "crates/aos/cli/aos-cli/src/commands/release/porcelain/evidence.rs"
+    },
+    {
+      "column": 15,
+      "line": 113,
+      "message": "use of a disallowed method `std::time::SystemTime::now`",
+      "source": "crates/aos/cli/aos-cli/src/commands/release/porcelain/explain.rs"
+    },
+    {
+      "column": 15,
+      "line": 141,
+      "message": "use of a disallowed method `std::time::SystemTime::now`",
+      "source": "crates/aos/cli/aos-cli/src/commands/release/porcelain/fitness.rs"
+    },
+    {
+      "column": 14,
+      "line": 111,
+      "message": "use of a disallowed method `std::time::SystemTime::now`",
+      "source": "crates/aos/cli/aos-cli/src/commands/release/porcelain/status.rs"
+    },
+    {
+      "column": 40,
+      "line": 312,
+      "message": "usage of `bool::then` in `filter_map`",
+      "source": "crates/aos/cli/aos-cli/src/commands/release/porcelain/steps.rs"
+    },
+    {
+      "column": 17,
+      "line": 640,
+      "message": "use of a disallowed method `rand::random`",
+      "source": "crates/aos/cli/aos-cli/src/commands/release/porcelain/steps.rs"
+    },
+    {
+      "column": 19,
+      "line": 649,
+      "message": "use of a disallowed method `std::time::SystemTime::now`",
+      "source": "crates/aos/cli/aos-cli/src/commands/release/porcelain/steps.rs"
+    },
+    {
+      "column": 19,
+      "line": 332,
+      "message": "use of a disallowed method `std::time::SystemTime::now`",
+      "source": "crates/aos/cli/aos-cli/src/commands/release/porcelain/surface_metadata.rs"
+    },
+    {
+      "column": 19,
+      "line": 400,
+      "message": "use of a disallowed method `std::time::SystemTime::now`",
+      "source": "crates/aos/cli/aos-cli/src/commands/release/porcelain/surface_metadata.rs"
+    },
+    {
+      "column": 38,
+      "line": 479,
+      "message": "use of a disallowed method `std::time::SystemTime::now`",
+      "source": "crates/aos/cli/aos-cli/src/commands/release/porcelain/surface_metadata.rs"
+    },
+    {
+      "column": 15,
+      "line": 735,
+      "message": "use of a disallowed method `std::time::SystemTime::now`",
+      "source": "crates/aos/cli/aos-cli/src/commands/release/publish.rs"
+    },
+    {
+      "column": 47,
+      "line": 305,
+      "message": "the borrowed expression implements the required traits",
+      "source": "crates/aos/cli/aos-cli/src/commands/release/qualification_executor.rs"
+    },
+    {
+      "column": 9,
+      "line": 559,
+      "message": "this `if` statement can be collapsed",
+      "source": "crates/aos/cli/aos-cli/src/commands/release/qualification_executor.rs"
+    },
+    {
+      "column": 13,
+      "line": 574,
+      "message": "this `if` statement can be collapsed",
+      "source": "crates/aos/cli/aos-cli/src/commands/release/qualification_executor.rs"
+    },
+    {
+      "column": 26,
+      "line": 632,
+      "message": "clamp-like pattern without using clamp function",
+      "source": "crates/aos/cli/aos-cli/src/commands/release/qualification_executor.rs"
+    },
+    {
+      "column": 1,
+      "line": 710,
+      "message": "this function has too many arguments (8/7)",
+      "source": "crates/aos/cli/aos-cli/src/commands/release/qualification_run.rs"
+    },
+    {
+      "column": 1,
+      "line": 363,
+      "message": "this function has too many arguments (8/7)",
+      "source": "crates/aos/cli/aos-cli/src/commands/release/qualification_transition.rs"
+    },
+    {
+      "column": 17,
+      "line": 763,
+      "message": "use of a disallowed method `rand::random`",
+      "source": "crates/aos/cli/aos-cli/src/commands/release/surface/static_.rs"
+    },
+    {
+      "column": 15,
+      "line": 62,
+      "message": "use of a disallowed method `std::time::SystemTime::now`",
+      "source": "crates/aos/cli/aos-cli/src/commands/release/timestamp.rs"
+    },
+    {
+      "column": 15,
+      "line": 201,
+      "message": "use of a disallowed method `std::time::SystemTime::now`",
+      "source": "crates/aos/cli/aos-cli/src/commands/release/timestamp.rs"
+    },
+    {
+      "column": 33,
+      "line": 396,
+      "message": "use of a disallowed method `rand::random`",
+      "source": "crates/aos/cli/aos-cli/src/commands/release/timestamp.rs"
+    },
+    {
+      "column": 1,
+      "line": 228,
+      "message": "this function has too many arguments (8/7)",
+      "source": "crates/aos/cli/aos-cli/src/commands/release/tuf.rs"
+    },
+    {
+      "column": 33,
+      "line": 394,
+      "message": "use of a disallowed method `rand::random`",
+      "source": "crates/aos/cli/aos-cli/src/commands/release/tuf.rs"
+    },
+    {
+      "column": 36,
+      "line": 204,
+      "message": "use of a disallowed method `rand::random`",
+      "source": "crates/aos/cli/aos-cli/src/commands/serve.rs"
+    },
+    {
+      "column": 39,
+      "line": 318,
+      "message": "use of a disallowed method `std::time::Instant::now`",
+      "source": "crates/aos/cli/aos-cli/src/commands/test.rs"
+    },
+    {
+      "column": 37,
+      "line": 328,
+      "message": "use of a disallowed method `std::time::Instant::elapsed`",
+      "source": "crates/aos/cli/aos-cli/src/commands/test.rs"
+    },
+    {
+      "column": 25,
+      "line": 80,
+      "message": "use of a disallowed type `std::collections::HashSet`",
+      "source": "crates/aos/cli/aos-cli/src/commands/why_depends.rs"
+    },
+    {
+      "column": 5,
+      "line": 330,
+      "message": "this `if` statement can be collapsed",
+      "source": "crates/aos/cli/aos-cli/src/entry.rs"
+    },
+    {
+      "column": 9,
+      "line": 1555,
+      "message": "field assignment outside of initializer for an instance created with Default::default()",
+      "source": "crates/aos/cli/aos-cli/src/commands/image.rs"
+    },
+    {
+      "column": 9,
+      "line": 1557,
+      "message": "field assignment outside of initializer for an instance created with Default::default()",
+      "source": "crates/aos/cli/aos-cli/src/commands/image.rs"
+    },
+    {
+      "column": 56,
+      "line": 342,
+      "message": "use of a disallowed method `std::time::SystemTime::now`",
+      "source": "crates/aos/cli/aos-cli/src/commands/release/channel/advance.rs"
+    },
+    {
+      "column": 27,
+      "line": 785,
+      "message": "useless use of `vec!`",
+      "source": "crates/aos/cli/aos-cli/src/commands/release/surface/static_.rs"
+    }
+  ],
+  "format_output": "/nix/store/ndd8wgllcmpiidlas0dav6mlmff6f7s6-aos-bazel-aos-cli-tests-format-1",
+  "format_status": "PASS",
+  "policy_tests": {
+    "count": 221,
+    "log_sha256": "5d5076f1e8ae597c8ff6ec366b6bcbe993fcc4fae96168b42ba32d9f18e0a350",
+    "status": "PASS"
+  },
+  "schema_version": 1,
+  "scope": "Developer checkpoint against the retained pre-final-fixture source snapshot; no lint policy was relaxed.",
+  "status": "FAIL: CLI Clippy diagnostics remain a qualification gate"
+}

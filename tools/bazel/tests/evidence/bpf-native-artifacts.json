@@ -1,0 +1,2635 @@
+{
+  "artifact_sha256": {
+    "lib/bpf/aos-ebpf-lsm-task-audit.bpf.o": "83dd6975390b164211ea1ad67a439c622b59d03955dbcc29851684e3acc4948b",
+    "lib/bpf/aos-ebpf-net-policy.bpf.o": "d9ed863895e85d38141d14e94da78f61cc34969e2ce16d96b2e86d04d7dc0c2c",
+    "libexec/aos-ebpf-lsm-loader": "d7a8ebfc44c9734778f476abe14e563d244a5c6e3669791852e74b2150567196",
+    "libexec/aos-ebpf-net-policy-loader": "9592493311efc64aa6a2605aff3d97356ae805e2b48dab3a805d24473d794a13"
+  },
+  "implementation_parent": "1b4b01af147fbc94eb008fed5009a40394715b3e",
+  "input_sha256": {
+    "MODULE.bazel": "58cda7d635284bb6274b4ba95a4ff63716cf5246eb71da8a560239e484f56e51",
+    "MODULE.bazel.lock": "d20d3945b6b74f8752950bd7369d3d601684a19a541a12b32313780d3b0f9e40",
+    "pkgs/build-support/_bazel/bpf-tools.nix": "d00603cd9ee0e80440d7633646293174d16a9d443c3be32ca94a56d33ca5be2b",
+    "pkgs/build-support/_bazel/default.nix": "1fd2f33b6cb62f36886251d6cc57b616ac3d7e048675b1f35c8f39c462810748",
+    "pkgs/default.nix": "a15828d5cbb8251fbae71f6b2d0426fdc3f070a72b88a518a65db5dddf6d195e",
+    "pkgs/security/BUILD.bazel": "e9763e22c40fe7092986bbbbad396aceb0f0aa2f082b6304e752cc9c068247fc",
+    "pkgs/security/aos-ebpf-lsm-policy.bpf.c": "e2f208d6e9ccba2722126025cec9195ba888ce35da4b2b9c09fff78e743d3451",
+    "pkgs/security/aos-ebpf-lsm-policy.c": "94578ee360f0269f935df81b9f494d18670a729a8518d3af6eb51d7e418e01a2",
+    "pkgs/security/aos-ebpf-lsm-policy.nix": "3bfc6041a146c7ff4b99c98d37004d7d8b7129c54eb0cb20e5d9dc90fcb77b56",
+    "pkgs/security/aos-ebpf-net-policy.bpf.c": "75c747fb29f4e0e6e01314dd0530a7de603fe0986d01631fd3f0cde2f5720ed8",
+    "pkgs/security/aos-ebpf-net-policy.c": "7107320824387238adcecaee460ccf2b91994b76cdc26b9c1c3da419fab0f274",
+    "pkgs/security/aos-ebpf-net-policy.nix": "ca4a1fa6f052e2fe77002906949fd6da199bc2a093fd4a3b1841384cff5db870",
+    "tests/build/_bazel-bpf-native.nix": "d4f3cfc489e5f043b4df6f18ef39b0c48d4e165e77f835b03c1a90487fea69bd",
+    "tests/build/bazel.nix": "03371a3061fe94cb07b87b4045cc6d6bcdadf4b89147eff6a4cb08f33b1be9d6",
+    "third_party/bazel/modules.json": "4996e0a2e9d2370fb92f16841ffac5eac9aa5b3408b5a6d924de9f9400218121",
+    "tools/bazel/metadata/bpf-native-inventory.json": "afca8d6918b3ac08cddb2e51bb451ca9045ef97e35eea7ee123243a30a985065",
+    "tools/bazel/rules/bpf.bzl": "b1ba3f536d62a8a1745394052ecaca77e017e03e1c7ea0a77d235e5de78c7bba",
+    "tools/bazel/rules/license.bzl": "2cf4347c5c4364090328d118e060691b5562368b702364a617f9f88763077106",
+    "tools/bazel/tests/bpf-native.nix": "40e32e4d13a69fc3a150c4ee58d24e492a6d9bfb54606992cec24c1c7a8738ac",
+    "tools/bazel/tests/bpf_object.py": "5472158e30a14a58c4337c3a53869155e48268921bbce958e216341b9d952f8e",
+    "tools/bazel/tests/test_bpf_object.py": "2ed2f8b46f145bf6d641e2654ba4f9e44e2f4a43e0f5aa74a3bfc9c6ecb878ca",
+    "tools/bazel/tests/verify_bpf_native.py": "73c9c6a6b372830ace9a072b3e15a9cc7f65597d9df2f038341fcb60f25861aa"
+  },
+  "metadata": {
+    "dependency_sdks_unchanged": 74,
+    "existing_source_selections_unchanged": 64,
+    "new_source_inventory": {
+      "contracts": 191,
+      "reports": 6,
+      "source_files": 4,
+      "targets": 6
+    },
+    "sdk_specification_export": "/nix/store/8b4hg2vlm7wxy4mfhg7fy68ayxrdg5xk-aos-bazel-systemd-provider-profile-specifications-1",
+    "source_inventories_checked": 65,
+    "source_registry_and_module_lock_pins_unchanged": true
+  },
+  "native_qualification": {
+    "actions": {
+      "executed": [
+        {
+          "bound_inputs": [
+            {
+              "digest": {
+                "hash": "8216f2ffd1d051605f2a4f991855355476eaa5400511ab4a845b170786039a29",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "3710"
+              },
+              "isTool": false,
+              "path": "external/+aos_tools_repository+aos_tools/closure.json",
+              "symlinkTargetPath": ""
+            },
+            {
+              "digest": {
+                "hash": "5723ba248c7a7603b3dddc7bccf0e2d79d6e430ae0b886fce82270a4920e3d4a",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "4792"
+              },
+              "isTool": false,
+              "path": "external/+aos_tools_repository+aos_tools/bin/cc",
+              "symlinkTargetPath": ""
+            },
+            {
+              "digest": {
+                "hash": "94578ee360f0269f935df81b9f494d18670a729a8518d3af6eb51d7e418e01a2",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "15330"
+              },
+              "isTool": false,
+              "path": "pkgs/security/aos-ebpf-lsm-policy.c",
+              "symlinkTargetPath": ""
+            }
+          ],
+          "command": [
+            "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+            "-U_FORTIFY_SOURCE",
+            "-MD",
+            "-MF",
+            "bazel-out/k8-fastbuild/bin/pkgs/security/_objs/aos-ebpf-lsm-loader/aos-ebpf-lsm-policy.pic.d",
+            "-frandom-seed=bazel-out/k8-fastbuild/bin/pkgs/security/_objs/aos-ebpf-lsm-loader/aos-ebpf-lsm-policy.pic.o",
+            "-fPIC",
+            "-iquote",
+            ".",
+            "-iquote",
+            "bazel-out/k8-fastbuild/bin",
+            "-iquote",
+            "external/+aos_tools_repository+aos_bpf_tools",
+            "-iquote",
+            "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_bpf_tools",
+            "-iquote",
+            "external/+aos_tools_repository+aos_bpf_native",
+            "-iquote",
+            "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_bpf_native",
+            "-iquote",
+            "external/rules_cc+",
+            "-iquote",
+            "bazel-out/k8-fastbuild/bin/external/rules_cc+",
+            "-iquote",
+            "external/bazel_tools",
+            "-iquote",
+            "bazel-out/k8-fastbuild/bin/external/bazel_tools",
+            "-Iexternal/+aos_tools_repository+aos_bpf_tools/kernel/include",
+            "-Ibazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_bpf_tools/kernel/include",
+            "-Iexternal/+aos_tools_repository+aos_bpf_native/bpf/include",
+            "-Ibazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_bpf_native/bpf/include",
+            "-Iexternal/+aos_tools_repository+aos_bpf_native/json/include",
+            "-Ibazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_bpf_native/json/include",
+            "-O2",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-c",
+            "pkgs/security/aos-ebpf-lsm-policy.c",
+            "-o",
+            "bazel-out/k8-fastbuild/bin/pkgs/security/_objs/aos-ebpf-lsm-loader/aos-ebpf-lsm-policy.pic.o"
+          ],
+          "label": "//pkgs/security:aos-ebpf-lsm-loader",
+          "mnemonic": "CppCompile",
+          "outputs": [
+            {
+              "digest": {
+                "hash": "5a0a1552cac198dffe9fb88cd321f3fce63ae4c89b00a1d7bf228005a3f8ea97",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "18592"
+              },
+              "isTool": false,
+              "path": "bazel-out/k8-fastbuild/bin/pkgs/security/_objs/aos-ebpf-lsm-loader/aos-ebpf-lsm-policy.pic.o",
+              "symlinkTargetPath": ""
+            },
+            {
+              "digest": {
+                "hash": "32aaaf1bb7be1876367daadafb6e8e770fd4b54cde80f325568d3f714fc80e49",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "14575"
+              },
+              "isTool": false,
+              "path": "bazel-out/k8-fastbuild/bin/pkgs/security/_objs/aos-ebpf-lsm-loader/aos-ebpf-lsm-policy.pic.d",
+              "symlinkTargetPath": ""
+            }
+          ],
+          "runner": "linux-sandbox"
+        },
+        {
+          "bound_inputs": [
+            {
+              "digest": {
+                "hash": "8216f2ffd1d051605f2a4f991855355476eaa5400511ab4a845b170786039a29",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "3710"
+              },
+              "isTool": false,
+              "path": "external/+aos_tools_repository+aos_tools/closure.json",
+              "symlinkTargetPath": ""
+            },
+            {
+              "digest": {
+                "hash": "5723ba248c7a7603b3dddc7bccf0e2d79d6e430ae0b886fce82270a4920e3d4a",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "4792"
+              },
+              "isTool": false,
+              "path": "external/+aos_tools_repository+aos_tools/bin/cc",
+              "symlinkTargetPath": ""
+            },
+            {
+              "digest": {
+                "hash": "7107320824387238adcecaee460ccf2b91994b76cdc26b9c1c3da419fab0f274",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "15389"
+              },
+              "isTool": false,
+              "path": "pkgs/security/aos-ebpf-net-policy.c",
+              "symlinkTargetPath": ""
+            }
+          ],
+          "command": [
+            "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+            "-U_FORTIFY_SOURCE",
+            "-MD",
+            "-MF",
+            "bazel-out/k8-fastbuild/bin/pkgs/security/_objs/aos-ebpf-net-policy-loader/aos-ebpf-net-policy.pic.d",
+            "-frandom-seed=bazel-out/k8-fastbuild/bin/pkgs/security/_objs/aos-ebpf-net-policy-loader/aos-ebpf-net-policy.pic.o",
+            "-fPIC",
+            "-iquote",
+            ".",
+            "-iquote",
+            "bazel-out/k8-fastbuild/bin",
+            "-iquote",
+            "external/+aos_tools_repository+aos_bpf_tools",
+            "-iquote",
+            "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_bpf_tools",
+            "-iquote",
+            "external/+aos_tools_repository+aos_bpf_native",
+            "-iquote",
+            "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_bpf_native",
+            "-iquote",
+            "external/rules_cc+",
+            "-iquote",
+            "bazel-out/k8-fastbuild/bin/external/rules_cc+",
+            "-iquote",
+            "external/bazel_tools",
+            "-iquote",
+            "bazel-out/k8-fastbuild/bin/external/bazel_tools",
+            "-Iexternal/+aos_tools_repository+aos_bpf_tools/kernel/include",
+            "-Ibazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_bpf_tools/kernel/include",
+            "-Iexternal/+aos_tools_repository+aos_bpf_native/bpf/include",
+            "-Ibazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_bpf_native/bpf/include",
+            "-Iexternal/+aos_tools_repository+aos_bpf_native/json/include",
+            "-Ibazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_bpf_native/json/include",
+            "-O2",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-c",
+            "pkgs/security/aos-ebpf-net-policy.c",
+            "-o",
+            "bazel-out/k8-fastbuild/bin/pkgs/security/_objs/aos-ebpf-net-policy-loader/aos-ebpf-net-policy.pic.o"
+          ],
+          "label": "//pkgs/security:aos-ebpf-net-policy-loader",
+          "mnemonic": "CppCompile",
+          "outputs": [
+            {
+              "digest": {
+                "hash": "6cbe42daa3733ae90ebe34a2499bb15fb4453ac40d64c048d068deff531ccebd",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "20800"
+              },
+              "isTool": false,
+              "path": "bazel-out/k8-fastbuild/bin/pkgs/security/_objs/aos-ebpf-net-policy-loader/aos-ebpf-net-policy.pic.o",
+              "symlinkTargetPath": ""
+            },
+            {
+              "digest": {
+                "hash": "0abb7602861d5d147cbe8d5c51f735f46a550af639569d357bfa8d4461d3d66b",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "13993"
+              },
+              "isTool": false,
+              "path": "bazel-out/k8-fastbuild/bin/pkgs/security/_objs/aos-ebpf-net-policy-loader/aos-ebpf-net-policy.pic.d",
+              "symlinkTargetPath": ""
+            }
+          ],
+          "runner": "linux-sandbox"
+        },
+        {
+          "bound_inputs": [
+            {
+              "digest": {
+                "hash": "8216f2ffd1d051605f2a4f991855355476eaa5400511ab4a845b170786039a29",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "3710"
+              },
+              "isTool": false,
+              "path": "external/+aos_tools_repository+aos_tools/closure.json",
+              "symlinkTargetPath": ""
+            },
+            {
+              "digest": {
+                "hash": "5723ba248c7a7603b3dddc7bccf0e2d79d6e430ae0b886fce82270a4920e3d4a",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "4792"
+              },
+              "isTool": false,
+              "path": "external/+aos_tools_repository+aos_tools/bin/cc",
+              "symlinkTargetPath": ""
+            },
+            {
+              "digest": {
+                "hash": "d5612b693514669bba2b511193a9940744033cf898ae821da5bb118a36157bc4",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "1892"
+              },
+              "isTool": false,
+              "path": "external/+aos_tools_repository+aos_bpf_native/bpf/closure.json",
+              "symlinkTargetPath": ""
+            },
+            {
+              "digest": {
+                "hash": "410f83d82c95c02e3e3de004fc04419e54b0a5519c3f4ec59cbe2a5209aeb187",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "469104"
+              },
+              "isTool": false,
+              "path": "bazel-out/k8-fastbuild/bin/_solib_x86_64/_U_A_A+aos_Utools_Urepository+aos_Ubpf_Unative_S_S_Cbpf_Uimport___Ubpf_Slib/libbpf.so",
+              "symlinkTargetPath": ""
+            },
+            {
+              "digest": {
+                "hash": "917d937f0475cc07d2124e151799df969ea7095b9aeaada5fd3ca8a92bfdf44e",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "740"
+              },
+              "isTool": false,
+              "path": "external/+aos_tools_repository+aos_bpf_native/json/closure.json",
+              "symlinkTargetPath": ""
+            },
+            {
+              "digest": {
+                "hash": "923a0d3c33c38a252473bd609cca5835898dec8c80eb07697bf87b160647944f",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "80144"
+              },
+              "isTool": false,
+              "path": "bazel-out/k8-fastbuild/bin/_solib_x86_64/_U_A_A+aos_Utools_Urepository+aos_Ubpf_Unative_S_S_Cjson_Uimport___Ujson_Slib/libjson-c.so",
+              "symlinkTargetPath": ""
+            }
+          ],
+          "command": [
+            "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+            "-o",
+            "bazel-out/k8-fastbuild/bin/pkgs/security/aos-ebpf-lsm-loader",
+            "-Xlinker",
+            "-rpath",
+            "-Xlinker",
+            "$ORIGIN/../../_solib_x86_64/_U_A_A+aos_Utools_Urepository+aos_Ubpf_Unative_S_S_Cbpf_Uimport___Ubpf_Slib",
+            "-Xlinker",
+            "-rpath",
+            "-Xlinker",
+            "$ORIGIN/aos-ebpf-lsm-loader.runfiles/_main/_solib_x86_64/_U_A_A+aos_Utools_Urepository+aos_Ubpf_Unative_S_S_Cbpf_Uimport___Ubpf_Slib",
+            "-Xlinker",
+            "-rpath",
+            "-Xlinker",
+            "$ORIGIN/../../_solib_x86_64/_U_A_A+aos_Utools_Urepository+aos_Ubpf_Unative_S_S_Cjson_Uimport___Ujson_Slib",
+            "-Xlinker",
+            "-rpath",
+            "-Xlinker",
+            "$ORIGIN/aos-ebpf-lsm-loader.runfiles/_main/_solib_x86_64/_U_A_A+aos_Utools_Urepository+aos_Ubpf_Unative_S_S_Cjson_Uimport___Ujson_Slib",
+            "-Lbazel-out/k8-fastbuild/bin/_solib_x86_64/_U_A_A+aos_Utools_Urepository+aos_Ubpf_Unative_S_S_Cbpf_Uimport___Ubpf_Slib",
+            "-Lbazel-out/k8-fastbuild/bin/_solib_x86_64/_U_A_A+aos_Utools_Urepository+aos_Ubpf_Unative_S_S_Cjson_Uimport___Ujson_Slib",
+            "-Wl,-S",
+            "-L/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib",
+            "-Wl,-rpath,/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib",
+            "bazel-out/k8-fastbuild/bin/pkgs/security/_objs/aos-ebpf-lsm-loader/aos-ebpf-lsm-policy.pic.o",
+            "-lbpf",
+            "-ljson-c",
+            "-Wl,--as-needed",
+            "-Wl,-rpath,/nix/store/wmhl64l9s8hlrgy79jz5pw576innjg28-libbpf-1.7.0/lib",
+            "-Wl,-rpath,/nix/store/xlksghymivfpm6ji4f6q2s4h7vq1gwdl-json-c-0.19/lib",
+            "-lstdc++",
+            "-lm"
+          ],
+          "label": "//pkgs/security:aos-ebpf-lsm-loader",
+          "mnemonic": "CppLink",
+          "outputs": [
+            {
+              "digest": {
+                "hash": "d7a8ebfc44c9734778f476abe14e563d244a5c6e3669791852e74b2150567196",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "26464"
+              },
+              "isTool": false,
+              "path": "bazel-out/k8-fastbuild/bin/pkgs/security/aos-ebpf-lsm-loader",
+              "symlinkTargetPath": ""
+            }
+          ],
+          "runner": "linux-sandbox"
+        },
+        {
+          "bound_inputs": [
+            {
+              "digest": {
+                "hash": "8b7654a0e86c3fcdc858f2fe0242050a186377c0930b4fe89fc76d18126c1d2c",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "2707"
+              },
+              "isTool": false,
+              "path": "external/+aos_tools_repository+aos_bpf_tools/closure.json",
+              "symlinkTargetPath": ""
+            },
+            {
+              "digest": {
+                "hash": "436549ffa330be75d333479b23828daaf535b6534ee1d356966ed13a94159031",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "174216"
+              },
+              "isTool": true,
+              "path": "external/+aos_tools_repository+aos_bpf_tools/bin/clang",
+              "symlinkTargetPath": ""
+            },
+            {
+              "digest": {
+                "hash": "c04becd1316ef33c5460dd37c0fe5cf748cc3d0bf09c90c2ba27c9e515c99405",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "286467"
+              },
+              "isTool": false,
+              "path": "external/+aos_tools_repository+aos_bpf_tools/kernel/include/linux/bpf.h",
+              "symlinkTargetPath": ""
+            },
+            {
+              "digest": {
+                "hash": "04575f99655917175eef6f44ecc50c081f4e4bfe9b1242d5ecc82f2a57cb3865",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "16601"
+              },
+              "isTool": false,
+              "path": "external/+aos_tools_repository+aos_bpf_tools/libbpf/include/bpf/bpf_helpers.h",
+              "symlinkTargetPath": ""
+            },
+            {
+              "digest": {
+                "hash": "e2f208d6e9ccba2722126025cec9195ba888ce35da4b2b9c09fff78e743d3451",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "411"
+              },
+              "isTool": false,
+              "path": "pkgs/security/aos-ebpf-lsm-policy.bpf.c",
+              "symlinkTargetPath": ""
+            }
+          ],
+          "command": [
+            "external/+aos_tools_repository+aos_bpf_tools/bin/clang",
+            "-target",
+            "bpf",
+            "-O2",
+            "-g",
+            "-D__TARGET_ARCH_x86",
+            "-I/nix/store/xwivsx4j4k1vwsf317k80dpv1lx1sqkr-linux-headers-7.2.3/include",
+            "-I/nix/store/wmhl64l9s8hlrgy79jz5pw576innjg28-libbpf-1.7.0/include",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-Wno-unused-parameter",
+            "-fdebug-compilation-dir=.",
+            "-c",
+            "pkgs/security/aos-ebpf-lsm-policy.bpf.c",
+            "-o",
+            "bazel-out/k8-fastbuild/bin/pkgs/security/aos-ebpf-lsm-policy.bpf.debug.o"
+          ],
+          "label": "//pkgs/security:aos-ebpf-lsm-policy.bpf",
+          "mnemonic": "AosBpfCompile",
+          "outputs": [
+            {
+              "digest": {
+                "hash": "14dd847de8a8f9c27372bada4e4cf99ca5c47e3334a5c2d1640d467fc3afb1c4",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "3696"
+              },
+              "isTool": false,
+              "path": "bazel-out/k8-fastbuild/bin/pkgs/security/aos-ebpf-lsm-policy.bpf.debug.o",
+              "symlinkTargetPath": ""
+            }
+          ],
+          "runner": "linux-sandbox"
+        },
+        {
+          "bound_inputs": [
+            {
+              "digest": {
+                "hash": "8b7654a0e86c3fcdc858f2fe0242050a186377c0930b4fe89fc76d18126c1d2c",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "2707"
+              },
+              "isTool": false,
+              "path": "external/+aos_tools_repository+aos_bpf_tools/closure.json",
+              "symlinkTargetPath": ""
+            },
+            {
+              "digest": {
+                "hash": "3725ad02849f86a2d5352a5e41f680626251397ddd8e5b14fbc9e47cba930da4",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "243800"
+              },
+              "isTool": true,
+              "path": "external/+aos_tools_repository+aos_bpf_tools/bin/llvm-strip",
+              "symlinkTargetPath": ""
+            }
+          ],
+          "command": [
+            "external/+aos_tools_repository+aos_bpf_tools/bin/llvm-strip",
+            "-g",
+            "-o",
+            "bazel-out/k8-fastbuild/bin/pkgs/security/aos-ebpf-lsm-policy.bpf.o",
+            "bazel-out/k8-fastbuild/bin/pkgs/security/aos-ebpf-lsm-policy.bpf.debug.o"
+          ],
+          "label": "//pkgs/security:aos-ebpf-lsm-policy.bpf",
+          "mnemonic": "AosBpfStrip",
+          "outputs": [
+            {
+              "digest": {
+                "hash": "83dd6975390b164211ea1ad67a439c622b59d03955dbcc29851684e3acc4948b",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "1560"
+              },
+              "isTool": false,
+              "path": "bazel-out/k8-fastbuild/bin/pkgs/security/aos-ebpf-lsm-policy.bpf.o",
+              "symlinkTargetPath": ""
+            }
+          ],
+          "runner": "linux-sandbox"
+        },
+        {
+          "bound_inputs": [
+            {
+              "digest": {
+                "hash": "8216f2ffd1d051605f2a4f991855355476eaa5400511ab4a845b170786039a29",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "3710"
+              },
+              "isTool": false,
+              "path": "external/+aos_tools_repository+aos_tools/closure.json",
+              "symlinkTargetPath": ""
+            },
+            {
+              "digest": {
+                "hash": "5723ba248c7a7603b3dddc7bccf0e2d79d6e430ae0b886fce82270a4920e3d4a",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "4792"
+              },
+              "isTool": false,
+              "path": "external/+aos_tools_repository+aos_tools/bin/cc",
+              "symlinkTargetPath": ""
+            },
+            {
+              "digest": {
+                "hash": "d5612b693514669bba2b511193a9940744033cf898ae821da5bb118a36157bc4",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "1892"
+              },
+              "isTool": false,
+              "path": "external/+aos_tools_repository+aos_bpf_native/bpf/closure.json",
+              "symlinkTargetPath": ""
+            },
+            {
+              "digest": {
+                "hash": "410f83d82c95c02e3e3de004fc04419e54b0a5519c3f4ec59cbe2a5209aeb187",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "469104"
+              },
+              "isTool": false,
+              "path": "bazel-out/k8-fastbuild/bin/_solib_x86_64/_U_A_A+aos_Utools_Urepository+aos_Ubpf_Unative_S_S_Cbpf_Uimport___Ubpf_Slib/libbpf.so",
+              "symlinkTargetPath": ""
+            },
+            {
+              "digest": {
+                "hash": "917d937f0475cc07d2124e151799df969ea7095b9aeaada5fd3ca8a92bfdf44e",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "740"
+              },
+              "isTool": false,
+              "path": "external/+aos_tools_repository+aos_bpf_native/json/closure.json",
+              "symlinkTargetPath": ""
+            },
+            {
+              "digest": {
+                "hash": "923a0d3c33c38a252473bd609cca5835898dec8c80eb07697bf87b160647944f",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "80144"
+              },
+              "isTool": false,
+              "path": "bazel-out/k8-fastbuild/bin/_solib_x86_64/_U_A_A+aos_Utools_Urepository+aos_Ubpf_Unative_S_S_Cjson_Uimport___Ujson_Slib/libjson-c.so",
+              "symlinkTargetPath": ""
+            }
+          ],
+          "command": [
+            "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+            "-o",
+            "bazel-out/k8-fastbuild/bin/pkgs/security/aos-ebpf-net-policy-loader",
+            "-Xlinker",
+            "-rpath",
+            "-Xlinker",
+            "$ORIGIN/../../_solib_x86_64/_U_A_A+aos_Utools_Urepository+aos_Ubpf_Unative_S_S_Cbpf_Uimport___Ubpf_Slib",
+            "-Xlinker",
+            "-rpath",
+            "-Xlinker",
+            "$ORIGIN/aos-ebpf-net-policy-loader.runfiles/_main/_solib_x86_64/_U_A_A+aos_Utools_Urepository+aos_Ubpf_Unative_S_S_Cbpf_Uimport___Ubpf_Slib",
+            "-Xlinker",
+            "-rpath",
+            "-Xlinker",
+            "$ORIGIN/../../_solib_x86_64/_U_A_A+aos_Utools_Urepository+aos_Ubpf_Unative_S_S_Cjson_Uimport___Ujson_Slib",
+            "-Xlinker",
+            "-rpath",
+            "-Xlinker",
+            "$ORIGIN/aos-ebpf-net-policy-loader.runfiles/_main/_solib_x86_64/_U_A_A+aos_Utools_Urepository+aos_Ubpf_Unative_S_S_Cjson_Uimport___Ujson_Slib",
+            "-Lbazel-out/k8-fastbuild/bin/_solib_x86_64/_U_A_A+aos_Utools_Urepository+aos_Ubpf_Unative_S_S_Cbpf_Uimport___Ubpf_Slib",
+            "-Lbazel-out/k8-fastbuild/bin/_solib_x86_64/_U_A_A+aos_Utools_Urepository+aos_Ubpf_Unative_S_S_Cjson_Uimport___Ujson_Slib",
+            "-Wl,-S",
+            "-L/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib",
+            "-Wl,-rpath,/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib",
+            "bazel-out/k8-fastbuild/bin/pkgs/security/_objs/aos-ebpf-net-policy-loader/aos-ebpf-net-policy.pic.o",
+            "-lbpf",
+            "-ljson-c",
+            "-Wl,--as-needed",
+            "-Wl,-rpath,/nix/store/wmhl64l9s8hlrgy79jz5pw576innjg28-libbpf-1.7.0/lib",
+            "-Wl,-rpath,/nix/store/xlksghymivfpm6ji4f6q2s4h7vq1gwdl-json-c-0.19/lib",
+            "-lstdc++",
+            "-lm"
+          ],
+          "label": "//pkgs/security:aos-ebpf-net-policy-loader",
+          "mnemonic": "CppLink",
+          "outputs": [
+            {
+              "digest": {
+                "hash": "9592493311efc64aa6a2605aff3d97356ae805e2b48dab3a805d24473d794a13",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "30800"
+              },
+              "isTool": false,
+              "path": "bazel-out/k8-fastbuild/bin/pkgs/security/aos-ebpf-net-policy-loader",
+              "symlinkTargetPath": ""
+            }
+          ],
+          "runner": "linux-sandbox"
+        },
+        {
+          "bound_inputs": [
+            {
+              "digest": {
+                "hash": "8b7654a0e86c3fcdc858f2fe0242050a186377c0930b4fe89fc76d18126c1d2c",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "2707"
+              },
+              "isTool": false,
+              "path": "external/+aos_tools_repository+aos_bpf_tools/closure.json",
+              "symlinkTargetPath": ""
+            },
+            {
+              "digest": {
+                "hash": "436549ffa330be75d333479b23828daaf535b6534ee1d356966ed13a94159031",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "174216"
+              },
+              "isTool": true,
+              "path": "external/+aos_tools_repository+aos_bpf_tools/bin/clang",
+              "symlinkTargetPath": ""
+            },
+            {
+              "digest": {
+                "hash": "c04becd1316ef33c5460dd37c0fe5cf748cc3d0bf09c90c2ba27c9e515c99405",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "286467"
+              },
+              "isTool": false,
+              "path": "external/+aos_tools_repository+aos_bpf_tools/kernel/include/linux/bpf.h",
+              "symlinkTargetPath": ""
+            },
+            {
+              "digest": {
+                "hash": "04575f99655917175eef6f44ecc50c081f4e4bfe9b1242d5ecc82f2a57cb3865",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "16601"
+              },
+              "isTool": false,
+              "path": "external/+aos_tools_repository+aos_bpf_tools/libbpf/include/bpf/bpf_helpers.h",
+              "symlinkTargetPath": ""
+            },
+            {
+              "digest": {
+                "hash": "75c747fb29f4e0e6e01314dd0530a7de603fe0986d01631fd3f0cde2f5720ed8",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "1140"
+              },
+              "isTool": false,
+              "path": "pkgs/security/aos-ebpf-net-policy.bpf.c",
+              "symlinkTargetPath": ""
+            }
+          ],
+          "command": [
+            "external/+aos_tools_repository+aos_bpf_tools/bin/clang",
+            "-target",
+            "bpf",
+            "-O2",
+            "-g",
+            "-D__TARGET_ARCH_x86",
+            "-I/nix/store/xwivsx4j4k1vwsf317k80dpv1lx1sqkr-linux-headers-7.2.3/include",
+            "-I/nix/store/wmhl64l9s8hlrgy79jz5pw576innjg28-libbpf-1.7.0/include",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-Wno-unused-parameter",
+            "-fdebug-compilation-dir=.",
+            "-c",
+            "pkgs/security/aos-ebpf-net-policy.bpf.c",
+            "-o",
+            "bazel-out/k8-fastbuild/bin/pkgs/security/aos-ebpf-net-policy.bpf.debug.o"
+          ],
+          "label": "//pkgs/security:aos-ebpf-net-policy.bpf",
+          "mnemonic": "AosBpfCompile",
+          "outputs": [
+            {
+              "digest": {
+                "hash": "f82a4b5f583c4075eb5a99fd865804c5974e6deef056e0d2a7597b6472de9d36",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "12496"
+              },
+              "isTool": false,
+              "path": "bazel-out/k8-fastbuild/bin/pkgs/security/aos-ebpf-net-policy.bpf.debug.o",
+              "symlinkTargetPath": ""
+            }
+          ],
+          "runner": "linux-sandbox"
+        },
+        {
+          "bound_inputs": [
+            {
+              "digest": {
+                "hash": "8b7654a0e86c3fcdc858f2fe0242050a186377c0930b4fe89fc76d18126c1d2c",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "2707"
+              },
+              "isTool": false,
+              "path": "external/+aos_tools_repository+aos_bpf_tools/closure.json",
+              "symlinkTargetPath": ""
+            },
+            {
+              "digest": {
+                "hash": "3725ad02849f86a2d5352a5e41f680626251397ddd8e5b14fbc9e47cba930da4",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "243800"
+              },
+              "isTool": true,
+              "path": "external/+aos_tools_repository+aos_bpf_tools/bin/llvm-strip",
+              "symlinkTargetPath": ""
+            }
+          ],
+          "command": [
+            "external/+aos_tools_repository+aos_bpf_tools/bin/llvm-strip",
+            "-g",
+            "-o",
+            "bazel-out/k8-fastbuild/bin/pkgs/security/aos-ebpf-net-policy.bpf.o",
+            "bazel-out/k8-fastbuild/bin/pkgs/security/aos-ebpf-net-policy.bpf.debug.o"
+          ],
+          "label": "//pkgs/security:aos-ebpf-net-policy.bpf",
+          "mnemonic": "AosBpfStrip",
+          "outputs": [
+            {
+              "digest": {
+                "hash": "d9ed863895e85d38141d14e94da78f61cc34969e2ce16d96b2e86d04d7dc0c2c",
+                "hashFunctionName": "SHA-256",
+                "sizeBytes": "5312"
+              },
+              "isTool": false,
+              "path": "bazel-out/k8-fastbuild/bin/pkgs/security/aos-ebpf-net-policy.bpf.o",
+              "symlinkTargetPath": ""
+            }
+          ],
+          "runner": "linux-sandbox"
+        }
+      ],
+      "negative_controls": [
+        {
+          "case": "cache-hit",
+          "rejected": "native BPF action was cached, failed, or ran outside Linux sandbox"
+        },
+        {
+          "case": "local-runner",
+          "rejected": "native BPF action was cached, failed, or ran outside Linux sandbox"
+        },
+        {
+          "case": "changed-source",
+          "rejected": "native BPF action omitted or changed input: pkgs/security/aos-ebpf-lsm-policy.bpf.c"
+        },
+        {
+          "case": "changed-tool-closure",
+          "rejected": "native BPF action omitted or changed input: aos_bpf_tools/closure.json"
+        }
+      ]
+    },
+    "command_cases": [
+      {
+        "case": "no-arguments",
+        "policy": "lsm",
+        "status": 2,
+        "stderr_sha256": "feb2ce0d9d9a0a0ab63bdeacac8b84bfd7c28c76ff8e0e911a8acff22ae7243f",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "case": "help",
+        "policy": "lsm",
+        "status": 0,
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "feb2ce0d9d9a0a0ab63bdeacac8b84bfd7c28c76ff8e0e911a8acff22ae7243f"
+      },
+      {
+        "case": "missing-object",
+        "policy": "lsm",
+        "status": 2,
+        "stderr_sha256": "feb2ce0d9d9a0a0ab63bdeacac8b84bfd7c28c76ff8e0e911a8acff22ae7243f",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "case": "unknown-option",
+        "policy": "lsm",
+        "status": 2,
+        "stderr_sha256": "9f7980b632f2372b8b695f9095ef2b8bd7ef8772e91b3187b93588aeb21e4c50",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "case": "baseline-valid",
+        "policy": "lsm",
+        "status": 0,
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "case": "baseline-malformed-json",
+        "policy": "lsm",
+        "status": 1,
+        "stderr_sha256": "471efd229bff3f42706601ae908581df618e2133c0af83209c8ca218fa906812",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "case": "baseline-absent-policy",
+        "policy": "lsm",
+        "status": 1,
+        "stderr_sha256": "cbc1c28b056f27264e12b8e248a3d7d53ce8ebea6a065643128b6610a84f57ff",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "case": "baseline-unknown-mode",
+        "policy": "lsm",
+        "status": 2,
+        "stderr_sha256": "51e272ab6b2820bbd7fb4efec89b3e26bcab229420c2d3194017abca2493ffd2",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "case": "baseline-missing-pin-directory",
+        "policy": "lsm",
+        "status": 2,
+        "stderr_sha256": "feb2ce0d9d9a0a0ab63bdeacac8b84bfd7c28c76ff8e0e911a8acff22ae7243f",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "case": "baseline-foreign-object",
+        "policy": "lsm",
+        "status": 1,
+        "stderr_sha256": "dd734a07b6e4bb3a0e56d8debd3e96c91beed726fd76423e039b8389f0939e74",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "case": "bazel-valid",
+        "policy": "lsm",
+        "status": 0,
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "case": "bazel-malformed-json",
+        "policy": "lsm",
+        "status": 1,
+        "stderr_sha256": "471efd229bff3f42706601ae908581df618e2133c0af83209c8ca218fa906812",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "case": "bazel-absent-policy",
+        "policy": "lsm",
+        "status": 1,
+        "stderr_sha256": "cbc1c28b056f27264e12b8e248a3d7d53ce8ebea6a065643128b6610a84f57ff",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "case": "bazel-unknown-mode",
+        "policy": "lsm",
+        "status": 2,
+        "stderr_sha256": "51e272ab6b2820bbd7fb4efec89b3e26bcab229420c2d3194017abca2493ffd2",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "case": "bazel-missing-pin-directory",
+        "policy": "lsm",
+        "status": 2,
+        "stderr_sha256": "feb2ce0d9d9a0a0ab63bdeacac8b84bfd7c28c76ff8e0e911a8acff22ae7243f",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "case": "bazel-foreign-object",
+        "policy": "lsm",
+        "status": 1,
+        "stderr_sha256": "dd734a07b6e4bb3a0e56d8debd3e96c91beed726fd76423e039b8389f0939e74",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "case": "truncated-object",
+        "policy": "lsm",
+        "status": 1,
+        "stderr_sha256": "88ef6dd2f64a85213072c6f1dbaf7d03cb760a9cdaffa47ac3517fb3e9d4d48e",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "case": "absent-object",
+        "policy": "lsm",
+        "status": 1,
+        "stderr_sha256": "b4a85269e2a2ebf47a4f39c764a56835d68efcbbc5905d0a9ab8e1ffab94e06f",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "case": "no-arguments",
+        "policy": "net",
+        "status": 2,
+        "stderr_sha256": "e0a6487c6db2820cd0ba25b9c4ee0e30878d497b42420f8a3e46ee49953f811c",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "case": "help",
+        "policy": "net",
+        "status": 0,
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "e0a6487c6db2820cd0ba25b9c4ee0e30878d497b42420f8a3e46ee49953f811c"
+      },
+      {
+        "case": "missing-object",
+        "policy": "net",
+        "status": 2,
+        "stderr_sha256": "e0a6487c6db2820cd0ba25b9c4ee0e30878d497b42420f8a3e46ee49953f811c",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "case": "unknown-option",
+        "policy": "net",
+        "status": 2,
+        "stderr_sha256": "1c92a2d62f62fba9aedd72f5ec83a20dd06f20b89ca2f72a69efd88e776db7f8",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "case": "baseline-valid",
+        "policy": "net",
+        "status": 0,
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "case": "baseline-malformed-json",
+        "policy": "net",
+        "status": 1,
+        "stderr_sha256": "afe680d044a7ebc98e6b08e357f0272e2cba747d01b34cc997cebb93e301dab2",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "case": "baseline-absent-policy",
+        "policy": "net",
+        "status": 1,
+        "stderr_sha256": "215e5eef79658dff9db8140480bc0b9cbb346d6673b15c6f114f3d8c9aaf1bd7",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "case": "baseline-unknown-mode",
+        "policy": "net",
+        "status": 2,
+        "stderr_sha256": "250e9ec19b8b3e002306dab93191a486d768468c8dc0618d9a5e653abbaa650d",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "case": "baseline-missing-pin-directory",
+        "policy": "net",
+        "status": 2,
+        "stderr_sha256": "32c761cf4caf1568a5097441c1e81b1c7364dd81cd9d97ab6993e286aa9356e3",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "case": "baseline-foreign-object",
+        "policy": "net",
+        "status": 1,
+        "stderr_sha256": "9d6f79372ae9a6b9f40badd98f8a3bdd1dbf6d0010c23570e178231126d36945",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "case": "bazel-valid",
+        "policy": "net",
+        "status": 0,
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "case": "bazel-malformed-json",
+        "policy": "net",
+        "status": 1,
+        "stderr_sha256": "afe680d044a7ebc98e6b08e357f0272e2cba747d01b34cc997cebb93e301dab2",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "case": "bazel-absent-policy",
+        "policy": "net",
+        "status": 1,
+        "stderr_sha256": "215e5eef79658dff9db8140480bc0b9cbb346d6673b15c6f114f3d8c9aaf1bd7",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "case": "bazel-unknown-mode",
+        "policy": "net",
+        "status": 2,
+        "stderr_sha256": "250e9ec19b8b3e002306dab93191a486d768468c8dc0618d9a5e653abbaa650d",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "case": "bazel-missing-pin-directory",
+        "policy": "net",
+        "status": 2,
+        "stderr_sha256": "32c761cf4caf1568a5097441c1e81b1c7364dd81cd9d97ab6993e286aa9356e3",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "case": "bazel-foreign-object",
+        "policy": "net",
+        "status": 1,
+        "stderr_sha256": "9d6f79372ae9a6b9f40badd98f8a3bdd1dbf6d0010c23570e178231126d36945",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "case": "truncated-object",
+        "policy": "net",
+        "status": 1,
+        "stderr_sha256": "dbcbe9e5eaf8b0090abddc812c689febecc52eb202715bb3b57102187aa19472",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "case": "absent-object",
+        "policy": "net",
+        "status": 1,
+        "stderr_sha256": "b15e2bfe49e5e4dc47957a20271eac45a69169d289bc76d6e249a9af51761f9a",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    ],
+    "contracts": {
+      "lsm": {
+        "elf": {
+          "baseline": {
+            "elf_type_machine_version": [
+              3,
+              62,
+              1
+            ],
+            "interpreter": [
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2"
+            ],
+            "needed": [
+              "libbpf.so.1",
+              "libc.so.6",
+              "libjson-c.so.5"
+            ],
+            "resolved_libraries": [
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6",
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libm.so.6",
+              "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib/libz.so.1",
+              "/nix/store/g4xk54msqxzvmmnhpss1nabnmw706q86-elfutils-0.196/lib/libelf.so.1",
+              "/nix/store/h0xfjzpmdfapqb2vydl5dnbrglvpa8ga-zstd-1.5.7/lib/libzstd.so.1",
+              "/nix/store/wmhl64l9s8hlrgy79jz5pw576innjg28-libbpf-1.7.0/lib/libbpf.so.1",
+              "/nix/store/xlksghymivfpm6ji4f6q2s4h7vq1gwdl-json-c-0.19/lib/libjson-c.so.5"
+            ],
+            "rpath_directories": [
+              "/nix/store/4bncpy3qxdxf6z0hfcb88adylyxbvpn5-aos-bpf-native-original-recipe-oracle/lib",
+              "/nix/store/5m9w9gbdaxrkyvkn5wbbhc52mhn6k82g-bzip2-1.0.8/lib",
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib",
+              "/nix/store/9d5sm56jg29gcfs4xia4ynymmahw6dks-xz-5.8.3/lib",
+              "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib",
+              "/nix/store/g4xk54msqxzvmmnhpss1nabnmw706q86-elfutils-0.196/lib",
+              "/nix/store/h0xfjzpmdfapqb2vydl5dnbrglvpa8ga-zstd-1.5.7/lib",
+              "/nix/store/wmhl64l9s8hlrgy79jz5pw576innjg28-libbpf-1.7.0/lib",
+              "/nix/store/xlksghymivfpm6ji4f6q2s4h7vq1gwdl-json-c-0.19/lib"
+            ]
+          },
+          "bazel": {
+            "elf_type_machine_version": [
+              3,
+              62,
+              1
+            ],
+            "interpreter": [
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2"
+            ],
+            "needed": [
+              "libbpf.so.1",
+              "libc.so.6",
+              "libjson-c.so.5"
+            ],
+            "resolved_libraries": [
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6",
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libm.so.6",
+              "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib/libz.so.1",
+              "/nix/store/g4xk54msqxzvmmnhpss1nabnmw706q86-elfutils-0.196/lib/libelf.so.1",
+              "/nix/store/h0xfjzpmdfapqb2vydl5dnbrglvpa8ga-zstd-1.5.7/lib/libzstd.so.1",
+              "/nix/store/wmhl64l9s8hlrgy79jz5pw576innjg28-libbpf-1.7.0/lib/libbpf.so.1",
+              "/nix/store/xlksghymivfpm6ji4f6q2s4h7vq1gwdl-json-c-0.19/lib/libjson-c.so.5"
+            ],
+            "rpath_directories": [
+              "$ORIGIN/../../_solib_x86_64/_U_A_A+aos_Utools_Urepository+aos_Ubpf_Unative_S_S_Cbpf_Uimport___Ubpf_Slib",
+              "$ORIGIN/../../_solib_x86_64/_U_A_A+aos_Utools_Urepository+aos_Ubpf_Unative_S_S_Cjson_Uimport___Ujson_Slib",
+              "$ORIGIN/aos-ebpf-lsm-loader.runfiles/_main/_solib_x86_64/_U_A_A+aos_Utools_Urepository+aos_Ubpf_Unative_S_S_Cbpf_Uimport___Ubpf_Slib",
+              "$ORIGIN/aos-ebpf-lsm-loader.runfiles/_main/_solib_x86_64/_U_A_A+aos_Utools_Urepository+aos_Ubpf_Unative_S_S_Cjson_Uimport___Ujson_Slib",
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib",
+              "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib",
+              "/nix/store/wmhl64l9s8hlrgy79jz5pw576innjg28-libbpf-1.7.0/lib",
+              "/nix/store/xlksghymivfpm6ji4f6q2s4h7vq1gwdl-json-c-0.19/lib"
+            ]
+          }
+        },
+        "object": {
+          "allocated_sections": {
+            ".text": {
+              "flags": 6,
+              "hex": "",
+              "kind": 1,
+              "size": 0
+            },
+            "license": {
+              "flags": 3,
+              "hex": "4475616c204253442f47504c00",
+              "kind": 1,
+              "size": 13
+            },
+            "lsm/file_mprotect": {
+              "flags": 6,
+              "hex": "79101800000000009500000000000000",
+              "kind": 1,
+              "size": 16
+            }
+          },
+          "btf_extensions": {
+            "core": [],
+            "functions": [
+              {
+                "records": [
+                  [
+                    0,
+                    5
+                  ]
+                ],
+                "section": "lsm/file_mprotect"
+              }
+            ],
+            "lines": [
+              {
+                "records": [
+                  [
+                    0,
+                    "aos-ebpf-lsm-policy.bpf.c",
+                    "int BPF_PROG(aos_lsm_file_mprotect,",
+                    9221
+                  ],
+                  [
+                    8,
+                    "aos-ebpf-lsm-policy.bpf.c",
+                    "int BPF_PROG(aos_lsm_file_mprotect,",
+                    9221
+                  ]
+                ],
+                "section": "lsm/file_mprotect"
+              }
+            ]
+          },
+          "btf_types": [
+            {
+              "info": 33554432,
+              "name": "",
+              "payload": [],
+              "size_or_type": 2
+            },
+            {
+              "info": 16777216,
+              "name": "unsigned long long",
+              "payload": [
+                64
+              ],
+              "size_or_type": 8
+            },
+            {
+              "info": 218103809,
+              "name": "",
+              "payload": [
+                "ctx",
+                1
+              ],
+              "size_or_type": 4
+            },
+            {
+              "info": 16777216,
+              "name": "int",
+              "payload": [
+                16777248
+              ],
+              "size_or_type": 4
+            },
+            {
+              "info": 201326593,
+              "name": "aos_lsm_file_mprotect",
+              "payload": [],
+              "size_or_type": 3
+            },
+            {
+              "info": 16777216,
+              "name": "char",
+              "payload": [
+                16777224
+              ],
+              "size_or_type": 1
+            },
+            {
+              "info": 50331648,
+              "name": "",
+              "payload": [
+                6,
+                8,
+                13
+              ],
+              "size_or_type": 0
+            },
+            {
+              "info": 16777216,
+              "name": "__ARRAY_SIZE_TYPE__",
+              "payload": [
+                32
+              ],
+              "size_or_type": 4
+            },
+            {
+              "info": 234881024,
+              "name": "LICENSE",
+              "payload": [
+                1
+              ],
+              "size_or_type": 7
+            },
+            {
+              "info": 251658241,
+              "name": "license",
+              "payload": [
+                9,
+                0,
+                13
+              ],
+              "size_or_type": 0
+            }
+          ],
+          "relocations": {
+            ".rel.BTF": [
+              [
+                188,
+                4,
+                {
+                  "info": 17,
+                  "name": "LICENSE",
+                  "section": "license",
+                  "size": 13,
+                  "value": 0,
+                  "visibility": 0
+                }
+              ]
+            ],
+            ".rel.BTF.ext": [
+              [
+                44,
+                4,
+                {
+                  "info": 3,
+                  "name": "",
+                  "section": "lsm/file_mprotect",
+                  "size": 0,
+                  "value": 0,
+                  "visibility": 0
+                }
+              ],
+              [
+                64,
+                4,
+                {
+                  "info": 3,
+                  "name": "",
+                  "section": "lsm/file_mprotect",
+                  "size": 0,
+                  "value": 0,
+                  "visibility": 0
+                }
+              ],
+              [
+                80,
+                4,
+                {
+                  "info": 3,
+                  "name": "",
+                  "section": "lsm/file_mprotect",
+                  "size": 0,
+                  "value": 0,
+                  "visibility": 0
+                }
+              ]
+            ]
+          }
+        },
+        "objects": {
+          "baseline": "d144354dd56703d36f196043f2f216d785bb04402c808fcbeb51c0fb2378dd76",
+          "bazel": "83dd6975390b164211ea1ad67a439c622b59d03955dbcc29851684e3acc4948b"
+        },
+        "source_locations": {
+          "baseline": [
+            "/build/aos-ebpf-lsm-policy.bpf.c"
+          ],
+          "bazel": [
+            "./pkgs/security/aos-ebpf-lsm-policy.bpf.c"
+          ]
+        }
+      },
+      "net": {
+        "elf": {
+          "baseline": {
+            "elf_type_machine_version": [
+              3,
+              62,
+              1
+            ],
+            "interpreter": [
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2"
+            ],
+            "needed": [
+              "libbpf.so.1",
+              "libc.so.6",
+              "libjson-c.so.5"
+            ],
+            "resolved_libraries": [
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6",
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libm.so.6",
+              "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib/libz.so.1",
+              "/nix/store/g4xk54msqxzvmmnhpss1nabnmw706q86-elfutils-0.196/lib/libelf.so.1",
+              "/nix/store/h0xfjzpmdfapqb2vydl5dnbrglvpa8ga-zstd-1.5.7/lib/libzstd.so.1",
+              "/nix/store/wmhl64l9s8hlrgy79jz5pw576innjg28-libbpf-1.7.0/lib/libbpf.so.1",
+              "/nix/store/xlksghymivfpm6ji4f6q2s4h7vq1gwdl-json-c-0.19/lib/libjson-c.so.5"
+            ],
+            "rpath_directories": [
+              "/nix/store/4bncpy3qxdxf6z0hfcb88adylyxbvpn5-aos-bpf-native-original-recipe-oracle/lib",
+              "/nix/store/5m9w9gbdaxrkyvkn5wbbhc52mhn6k82g-bzip2-1.0.8/lib",
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib",
+              "/nix/store/9d5sm56jg29gcfs4xia4ynymmahw6dks-xz-5.8.3/lib",
+              "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib",
+              "/nix/store/g4xk54msqxzvmmnhpss1nabnmw706q86-elfutils-0.196/lib",
+              "/nix/store/h0xfjzpmdfapqb2vydl5dnbrglvpa8ga-zstd-1.5.7/lib",
+              "/nix/store/wmhl64l9s8hlrgy79jz5pw576innjg28-libbpf-1.7.0/lib",
+              "/nix/store/xlksghymivfpm6ji4f6q2s4h7vq1gwdl-json-c-0.19/lib"
+            ]
+          },
+          "bazel": {
+            "elf_type_machine_version": [
+              3,
+              62,
+              1
+            ],
+            "interpreter": [
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2"
+            ],
+            "needed": [
+              "libbpf.so.1",
+              "libc.so.6",
+              "libjson-c.so.5"
+            ],
+            "resolved_libraries": [
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6",
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libm.so.6",
+              "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib/libz.so.1",
+              "/nix/store/g4xk54msqxzvmmnhpss1nabnmw706q86-elfutils-0.196/lib/libelf.so.1",
+              "/nix/store/h0xfjzpmdfapqb2vydl5dnbrglvpa8ga-zstd-1.5.7/lib/libzstd.so.1",
+              "/nix/store/wmhl64l9s8hlrgy79jz5pw576innjg28-libbpf-1.7.0/lib/libbpf.so.1",
+              "/nix/store/xlksghymivfpm6ji4f6q2s4h7vq1gwdl-json-c-0.19/lib/libjson-c.so.5"
+            ],
+            "rpath_directories": [
+              "$ORIGIN/../../_solib_x86_64/_U_A_A+aos_Utools_Urepository+aos_Ubpf_Unative_S_S_Cbpf_Uimport___Ubpf_Slib",
+              "$ORIGIN/../../_solib_x86_64/_U_A_A+aos_Utools_Urepository+aos_Ubpf_Unative_S_S_Cjson_Uimport___Ujson_Slib",
+              "$ORIGIN/aos-ebpf-net-policy-loader.runfiles/_main/_solib_x86_64/_U_A_A+aos_Utools_Urepository+aos_Ubpf_Unative_S_S_Cbpf_Uimport___Ubpf_Slib",
+              "$ORIGIN/aos-ebpf-net-policy-loader.runfiles/_main/_solib_x86_64/_U_A_A+aos_Utools_Urepository+aos_Ubpf_Unative_S_S_Cjson_Uimport___Ujson_Slib",
+              "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib",
+              "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib",
+              "/nix/store/wmhl64l9s8hlrgy79jz5pw576innjg28-libbpf-1.7.0/lib",
+              "/nix/store/xlksghymivfpm6ji4f6q2s4h7vq1gwdl-json-c-0.19/lib"
+            ]
+          }
+        },
+        "object": {
+          "allocated_sections": {
+            ".maps": {
+              "flags": 3,
+              "hex": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+              "kind": 1,
+              "size": 64
+            },
+            ".text": {
+              "flags": 6,
+              "hex": "",
+              "kind": 1,
+              "size": 0
+            },
+            "cgroup/bind4": {
+              "flags": 6,
+              "hex": "b400000001000000611224000000000056020b00060000006111180000000000631afcff00000000bfa200000000000007020000fcffffff180100000000000000000000000000008500000001000000bf01000000000000b4000000010000005501010000000000b4000000000000009500000000000000",
+              "kind": 1,
+              "size": 120
+            },
+            "cgroup/bind6": {
+              "flags": 6,
+              "hex": "b400000001000000611224000000000056020b00060000006111180000000000631afcff00000000bfa200000000000007020000fcffffff180100000000000000000000000000008500000001000000bf01000000000000b4000000010000005501010000000000b4000000000000009500000000000000",
+              "kind": 1,
+              "size": 120
+            },
+            "cgroup/connect4": {
+              "flags": 6,
+              "hex": "b400000001000000611224000000000056020b00060000006111180000000000631afcff00000000bfa200000000000007020000fcffffff180100000000000000000000000000008500000001000000bf01000000000000b4000000010000005501010000000000b4000000000000009500000000000000",
+              "kind": 1,
+              "size": 120
+            },
+            "cgroup/connect6": {
+              "flags": 6,
+              "hex": "b400000001000000611224000000000056020b00060000006111180000000000631afcff00000000bfa200000000000007020000fcffffff180100000000000000000000000000008500000001000000bf01000000000000b4000000010000005501010000000000b4000000000000009500000000000000",
+              "kind": 1,
+              "size": 120
+            },
+            "license": {
+              "flags": 3,
+              "hex": "4475616c204253442f47504c00",
+              "kind": 1,
+              "size": 13
+            }
+          },
+          "btf_extensions": {
+            "core": [],
+            "functions": [
+              {
+                "records": [
+                  [
+                    0,
+                    23
+                  ]
+                ],
+                "section": "cgroup/bind4"
+              },
+              {
+                "records": [
+                  [
+                    0,
+                    25
+                  ]
+                ],
+                "section": "cgroup/bind6"
+              },
+              {
+                "records": [
+                  [
+                    0,
+                    27
+                  ]
+                ],
+                "section": "cgroup/connect4"
+              },
+              {
+                "records": [
+                  [
+                    0,
+                    29
+                  ]
+                ],
+                "section": "cgroup/connect6"
+              }
+            ],
+            "lines": [
+              {
+                "records": [
+                  [
+                    0,
+                    "aos-ebpf-net-policy.bpf.c",
+                    "int aos_bind4(struct bpf_sock_addr *ctx)",
+                    34816
+                  ],
+                  [
+                    8,
+                    "aos-ebpf-net-policy.bpf.c",
+                    "  if (ctx->protocol != IPPROTO_TCP)",
+                    25612
+                  ],
+                  [
+                    16,
+                    "aos-ebpf-net-policy.bpf.c",
+                    "  if (ctx->protocol != IPPROTO_TCP)",
+                    25621
+                  ],
+                  [
+                    24,
+                    "aos-ebpf-net-policy.bpf.c",
+                    "  port = ctx->user_port;",
+                    28687
+                  ],
+                  [
+                    32,
+                    "aos-ebpf-net-policy.bpf.c",
+                    "  port = ctx->user_port;",
+                    28680
+                  ],
+                  [
+                    56,
+                    "aos-ebpf-net-policy.bpf.c",
+                    "  allowed = bpf_map_lookup_elem(ports, &port);",
+                    29709
+                  ],
+                  [
+                    96,
+                    "aos-ebpf-net-policy.bpf.c",
+                    "  return allowed != 0;",
+                    30738
+                  ],
+                  [
+                    112,
+                    "aos-ebpf-net-policy.bpf.c",
+                    "  return allow_tcp_port(ctx, &bind_ports);",
+                    36867
+                  ]
+                ],
+                "section": "cgroup/bind4"
+              },
+              {
+                "records": [
+                  [
+                    0,
+                    "aos-ebpf-net-policy.bpf.c",
+                    "int aos_bind6(struct bpf_sock_addr *ctx)",
+                    40960
+                  ],
+                  [
+                    8,
+                    "aos-ebpf-net-policy.bpf.c",
+                    "  if (ctx->protocol != IPPROTO_TCP)",
+                    25612
+                  ],
+                  [
+                    16,
+                    "aos-ebpf-net-policy.bpf.c",
+                    "  if (ctx->protocol != IPPROTO_TCP)",
+                    25621
+                  ],
+                  [
+                    24,
+                    "aos-ebpf-net-policy.bpf.c",
+                    "  port = ctx->user_port;",
+                    28687
+                  ],
+                  [
+                    32,
+                    "aos-ebpf-net-policy.bpf.c",
+                    "  port = ctx->user_port;",
+                    28680
+                  ],
+                  [
+                    56,
+                    "aos-ebpf-net-policy.bpf.c",
+                    "  allowed = bpf_map_lookup_elem(ports, &port);",
+                    29709
+                  ],
+                  [
+                    96,
+                    "aos-ebpf-net-policy.bpf.c",
+                    "  return allowed != 0;",
+                    30738
+                  ],
+                  [
+                    112,
+                    "aos-ebpf-net-policy.bpf.c",
+                    "  return allow_tcp_port(ctx, &bind_ports);",
+                    43011
+                  ]
+                ],
+                "section": "cgroup/bind6"
+              },
+              {
+                "records": [
+                  [
+                    0,
+                    "aos-ebpf-net-policy.bpf.c",
+                    "int aos_connect4(struct bpf_sock_addr *ctx)",
+                    47104
+                  ],
+                  [
+                    8,
+                    "aos-ebpf-net-policy.bpf.c",
+                    "  if (ctx->protocol != IPPROTO_TCP)",
+                    25612
+                  ],
+                  [
+                    16,
+                    "aos-ebpf-net-policy.bpf.c",
+                    "  if (ctx->protocol != IPPROTO_TCP)",
+                    25621
+                  ],
+                  [
+                    24,
+                    "aos-ebpf-net-policy.bpf.c",
+                    "  port = ctx->user_port;",
+                    28687
+                  ],
+                  [
+                    32,
+                    "aos-ebpf-net-policy.bpf.c",
+                    "  port = ctx->user_port;",
+                    28680
+                  ],
+                  [
+                    56,
+                    "aos-ebpf-net-policy.bpf.c",
+                    "  allowed = bpf_map_lookup_elem(ports, &port);",
+                    29709
+                  ],
+                  [
+                    96,
+                    "aos-ebpf-net-policy.bpf.c",
+                    "  return allowed != 0;",
+                    30738
+                  ],
+                  [
+                    112,
+                    "aos-ebpf-net-policy.bpf.c",
+                    "  return allow_tcp_port(ctx, &connect_ports);",
+                    49155
+                  ]
+                ],
+                "section": "cgroup/connect4"
+              },
+              {
+                "records": [
+                  [
+                    0,
+                    "aos-ebpf-net-policy.bpf.c",
+                    "int aos_connect6(struct bpf_sock_addr *ctx)",
+                    53248
+                  ],
+                  [
+                    8,
+                    "aos-ebpf-net-policy.bpf.c",
+                    "  if (ctx->protocol != IPPROTO_TCP)",
+                    25612
+                  ],
+                  [
+                    16,
+                    "aos-ebpf-net-policy.bpf.c",
+                    "  if (ctx->protocol != IPPROTO_TCP)",
+                    25621
+                  ],
+                  [
+                    24,
+                    "aos-ebpf-net-policy.bpf.c",
+                    "  port = ctx->user_port;",
+                    28687
+                  ],
+                  [
+                    32,
+                    "aos-ebpf-net-policy.bpf.c",
+                    "  port = ctx->user_port;",
+                    28680
+                  ],
+                  [
+                    56,
+                    "aos-ebpf-net-policy.bpf.c",
+                    "  allowed = bpf_map_lookup_elem(ports, &port);",
+                    29709
+                  ],
+                  [
+                    96,
+                    "aos-ebpf-net-policy.bpf.c",
+                    "  return allowed != 0;",
+                    30738
+                  ],
+                  [
+                    112,
+                    "aos-ebpf-net-policy.bpf.c",
+                    "  return allow_tcp_port(ctx, &connect_ports);",
+                    55299
+                  ]
+                ],
+                "section": "cgroup/connect6"
+              }
+            ]
+          },
+          "btf_types": [
+            {
+              "info": 33554432,
+              "name": "",
+              "payload": [],
+              "size_or_type": 3
+            },
+            {
+              "info": 16777216,
+              "name": "int",
+              "payload": [
+                16777248
+              ],
+              "size_or_type": 4
+            },
+            {
+              "info": 50331648,
+              "name": "",
+              "payload": [
+                2,
+                4,
+                1
+              ],
+              "size_or_type": 0
+            },
+            {
+              "info": 16777216,
+              "name": "__ARRAY_SIZE_TYPE__",
+              "payload": [
+                32
+              ],
+              "size_or_type": 4
+            },
+            {
+              "info": 33554432,
+              "name": "",
+              "payload": [],
+              "size_or_type": 6
+            },
+            {
+              "info": 50331648,
+              "name": "",
+              "payload": [
+                2,
+                4,
+                65535
+              ],
+              "size_or_type": 0
+            },
+            {
+              "info": 33554432,
+              "name": "",
+              "payload": [],
+              "size_or_type": 8
+            },
+            {
+              "info": 134217728,
+              "name": "__u32",
+              "payload": [],
+              "size_or_type": 9
+            },
+            {
+              "info": 16777216,
+              "name": "unsigned int",
+              "payload": [
+                32
+              ],
+              "size_or_type": 4
+            },
+            {
+              "info": 33554432,
+              "name": "",
+              "payload": [],
+              "size_or_type": 11
+            },
+            {
+              "info": 134217728,
+              "name": "__u8",
+              "payload": [],
+              "size_or_type": 12
+            },
+            {
+              "info": 16777216,
+              "name": "unsigned char",
+              "payload": [
+                8
+              ],
+              "size_or_type": 1
+            },
+            {
+              "info": 67108868,
+              "name": "",
+              "payload": [
+                "type",
+                1,
+                0,
+                "max_entries",
+                5,
+                64,
+                "key",
+                7,
+                128,
+                "value",
+                10,
+                192
+              ],
+              "size_or_type": 32
+            },
+            {
+              "info": 234881024,
+              "name": "bind_ports",
+              "payload": [
+                1
+              ],
+              "size_or_type": 13
+            },
+            {
+              "info": 67108868,
+              "name": "",
+              "payload": [
+                "type",
+                1,
+                0,
+                "max_entries",
+                5,
+                64,
+                "key",
+                7,
+                128,
+                "value",
+                10,
+                192
+              ],
+              "size_or_type": 32
+            },
+            {
+              "info": 234881024,
+              "name": "connect_ports",
+              "payload": [
+                1
+              ],
+              "size_or_type": 15
+            },
+            {
+              "info": 33554432,
+              "name": "",
+              "payload": [],
+              "size_or_type": 18
+            },
+            {
+              "info": 67108874,
+              "name": "bpf_sock_addr",
+              "payload": [
+                "user_family",
+                8,
+                0,
+                "user_ip4",
+                8,
+                32,
+                "user_ip6",
+                19,
+                64,
+                "user_port",
+                8,
+                192,
+                "family",
+                8,
+                224,
+                "type",
+                8,
+                256,
+                "protocol",
+                8,
+                288,
+                "msg_src_ip4",
+                8,
+                320,
+                "msg_src_ip6",
+                19,
+                352,
+                "",
+                20,
+                512
+              ],
+              "size_or_type": 72
+            },
+            {
+              "info": 50331648,
+              "name": "",
+              "payload": [
+                8,
+                4,
+                4
+              ],
+              "size_or_type": 0
+            },
+            {
+              "info": 83886081,
+              "name": "",
+              "payload": [
+                "sk",
+                21,
+                0
+              ],
+              "size_or_type": 8
+            },
+            {
+              "info": 33554432,
+              "name": "",
+              "payload": [],
+              "size_or_type": 35
+            },
+            {
+              "info": 218103809,
+              "name": "",
+              "payload": [
+                "ctx",
+                17
+              ],
+              "size_or_type": 2
+            },
+            {
+              "info": 201326593,
+              "name": "aos_bind4",
+              "payload": [],
+              "size_or_type": 22
+            },
+            {
+              "info": 218103809,
+              "name": "",
+              "payload": [
+                "ctx",
+                17
+              ],
+              "size_or_type": 2
+            },
+            {
+              "info": 201326593,
+              "name": "aos_bind6",
+              "payload": [],
+              "size_or_type": 24
+            },
+            {
+              "info": 218103809,
+              "name": "",
+              "payload": [
+                "ctx",
+                17
+              ],
+              "size_or_type": 2
+            },
+            {
+              "info": 201326593,
+              "name": "aos_connect4",
+              "payload": [],
+              "size_or_type": 26
+            },
+            {
+              "info": 218103809,
+              "name": "",
+              "payload": [
+                "ctx",
+                17
+              ],
+              "size_or_type": 2
+            },
+            {
+              "info": 201326593,
+              "name": "aos_connect6",
+              "payload": [],
+              "size_or_type": 28
+            },
+            {
+              "info": 16777216,
+              "name": "char",
+              "payload": [
+                16777224
+              ],
+              "size_or_type": 1
+            },
+            {
+              "info": 50331648,
+              "name": "",
+              "payload": [
+                30,
+                4,
+                13
+              ],
+              "size_or_type": 0
+            },
+            {
+              "info": 234881024,
+              "name": "LICENSE",
+              "payload": [
+                1
+              ],
+              "size_or_type": 31
+            },
+            {
+              "info": 251658242,
+              "name": ".maps",
+              "payload": [
+                14,
+                0,
+                32,
+                16,
+                0,
+                32
+              ],
+              "size_or_type": 0
+            },
+            {
+              "info": 251658241,
+              "name": "license",
+              "payload": [
+                32,
+                0,
+                13
+              ],
+              "size_or_type": 0
+            },
+            {
+              "info": 117440512,
+              "name": "bpf_sock",
+              "payload": [],
+              "size_or_type": 0
+            }
+          ],
+          "relocations": {
+            ".rel.BTF": [
+              [
+                764,
+                4,
+                {
+                  "info": 17,
+                  "name": "bind_ports",
+                  "section": ".maps",
+                  "size": 32,
+                  "value": 0,
+                  "visibility": 0
+                }
+              ],
+              [
+                776,
+                4,
+                {
+                  "info": 17,
+                  "name": "connect_ports",
+                  "section": ".maps",
+                  "size": 32,
+                  "value": 32,
+                  "visibility": 0
+                }
+              ],
+              [
+                800,
+                4,
+                {
+                  "info": 17,
+                  "name": "LICENSE",
+                  "section": "license",
+                  "size": 13,
+                  "value": 0,
+                  "visibility": 0
+                }
+              ]
+            ],
+            ".rel.BTF.ext": [
+              [
+                44,
+                4,
+                {
+                  "info": 3,
+                  "name": "",
+                  "section": "cgroup/bind4",
+                  "size": 0,
+                  "value": 0,
+                  "visibility": 0
+                }
+              ],
+              [
+                60,
+                4,
+                {
+                  "info": 3,
+                  "name": "",
+                  "section": "cgroup/bind6",
+                  "size": 0,
+                  "value": 0,
+                  "visibility": 0
+                }
+              ],
+              [
+                76,
+                4,
+                {
+                  "info": 3,
+                  "name": "",
+                  "section": "cgroup/connect4",
+                  "size": 0,
+                  "value": 0,
+                  "visibility": 0
+                }
+              ],
+              [
+                92,
+                4,
+                {
+                  "info": 3,
+                  "name": "",
+                  "section": "cgroup/connect6",
+                  "size": 0,
+                  "value": 0,
+                  "visibility": 0
+                }
+              ],
+              [
+                112,
+                4,
+                {
+                  "info": 3,
+                  "name": "",
+                  "section": "cgroup/bind4",
+                  "size": 0,
+                  "value": 0,
+                  "visibility": 0
+                }
+              ],
+              [
+                128,
+                4,
+                {
+                  "info": 3,
+                  "name": "",
+                  "section": "cgroup/bind4",
+                  "size": 0,
+                  "value": 0,
+                  "visibility": 0
+                }
+              ],
+              [
+                144,
+                4,
+                {
+                  "info": 3,
+                  "name": "",
+                  "section": "cgroup/bind4",
+                  "size": 0,
+                  "value": 0,
+                  "visibility": 0
+                }
+              ],
+              [
+                160,
+                4,
+                {
+                  "info": 3,
+                  "name": "",
+                  "section": "cgroup/bind4",
+                  "size": 0,
+                  "value": 0,
+                  "visibility": 0
+                }
+              ],
+              [
+                176,
+                4,
+                {
+                  "info": 3,
+                  "name": "",
+                  "section": "cgroup/bind4",
+                  "size": 0,
+                  "value": 0,
+                  "visibility": 0
+                }
+              ],
+              [
+                192,
+                4,
+                {
+                  "info": 3,
+                  "name": "",
+                  "section": "cgroup/bind4",
+                  "size": 0,
+                  "value": 0,
+                  "visibility": 0
+                }
+              ],
+              [
+                208,
+                4,
+                {
+                  "info": 3,
+                  "name": "",
+                  "section": "cgroup/bind4",
+                  "size": 0,
+                  "value": 0,
+                  "visibility": 0
+                }
+              ],
+              [
+                224,
+                4,
+                {
+                  "info": 3,
+                  "name": "",
+                  "section": "cgroup/bind4",
+                  "size": 0,
+                  "value": 0,
+                  "visibility": 0
+                }
+              ],
+              [
+                248,
+                4,
+                {
+                  "info": 3,
+                  "name": "",
+                  "section": "cgroup/bind6",
+                  "size": 0,
+                  "value": 0,
+                  "visibility": 0
+                }
+              ],
+              [
+                264,
+                4,
+                {
+                  "info": 3,
+                  "name": "",
+                  "section": "cgroup/bind6",
+                  "size": 0,
+                  "value": 0,
+                  "visibility": 0
+                }
+              ],
+              [
+                280,
+                4,
+                {
+                  "info": 3,
+                  "name": "",
+                  "section": "cgroup/bind6",
+                  "size": 0,
+                  "value": 0,
+                  "visibility": 0
+                }
+              ],
+              [
+                296,
+                4,
+                {
+                  "info": 3,
+                  "name": "",
+                  "section": "cgroup/bind6",
+                  "size": 0,
+                  "value": 0,
+                  "visibility": 0
+                }
+              ],
+              [
+                312,
+                4,
+                {
+                  "info": 3,
+                  "name": "",
+                  "section": "cgroup/bind6",
+                  "size": 0,
+                  "value": 0,
+                  "visibility": 0
+                }
+              ],
+              [
+                328,
+                4,
+                {
+                  "info": 3,
+                  "name": "",
+                  "section": "cgroup/bind6",
+                  "size": 0,
+                  "value": 0,
+                  "visibility": 0
+                }
+              ],
+              [
+                344,
+                4,
+                {
+                  "info": 3,
+                  "name": "",
+                  "section": "cgroup/bind6",
+                  "size": 0,
+                  "value": 0,
+                  "visibility": 0
+                }
+              ],
+              [
+                360,
+                4,
+                {
+                  "info": 3,
+                  "name": "",
+                  "section": "cgroup/bind6",
+                  "size": 0,
+                  "value": 0,
+                  "visibility": 0
+                }
+              ],
+              [
+                384,
+                4,
+                {
+                  "info": 3,
+                  "name": "",
+                  "section": "cgroup/connect4",
+                  "size": 0,
+                  "value": 0,
+                  "visibility": 0
+                }
+              ],
+              [
+                400,
+                4,
+                {
+                  "info": 3,
+                  "name": "",
+                  "section": "cgroup/connect4",
+                  "size": 0,
+                  "value": 0,
+                  "visibility": 0
+                }
+              ],
+              [
+                416,
+                4,
+                {
+                  "info": 3,
+                  "name": "",
+                  "section": "cgroup/connect4",
+                  "size": 0,
+                  "value": 0,
+                  "visibility": 0
+                }
+              ],
+              [
+                432,
+                4,
+                {
+                  "info": 3,
+                  "name": "",
+                  "section": "cgroup/connect4",
+                  "size": 0,
+                  "value": 0,
+                  "visibility": 0
+                }
+              ],
+              [
+                448,
+                4,
+                {
+                  "info": 3,
+                  "name": "",
+                  "section": "cgroup/connect4",
+                  "size": 0,
+                  "value": 0,
+                  "visibility": 0
+                }
+              ],
+              [
+                464,
+                4,
+                {
+                  "info": 3,
+                  "name": "",
+                  "section": "cgroup/connect4",
+                  "size": 0,
+                  "value": 0,
+                  "visibility": 0
+                }
+              ],
+              [
+                480,
+                4,
+                {
+                  "info": 3,
+                  "name": "",
+                  "section": "cgroup/connect4",
+                  "size": 0,
+                  "value": 0,
+                  "visibility": 0
+                }
+              ],
+              [
+                496,
+                4,
+                {
+                  "info": 3,
+                  "name": "",
+                  "section": "cgroup/connect4",
+                  "size": 0,
+                  "value": 0,
+                  "visibility": 0
+                }
+              ],
+              [
+                520,
+                4,
+                {
+                  "info": 3,
+                  "name": "",
+                  "section": "cgroup/connect6",
+                  "size": 0,
+                  "value": 0,
+                  "visibility": 0
+                }
+              ],
+              [
+                536,
+                4,
+                {
+                  "info": 3,
+                  "name": "",
+                  "section": "cgroup/connect6",
+                  "size": 0,
+                  "value": 0,
+                  "visibility": 0
+                }
+              ],
+              [
+                552,
+                4,
+                {
+                  "info": 3,
+                  "name": "",
+                  "section": "cgroup/connect6",
+                  "size": 0,
+                  "value": 0,
+                  "visibility": 0
+                }
+              ],
+              [
+                568,
+                4,
+                {
+                  "info": 3,
+                  "name": "",
+                  "section": "cgroup/connect6",
+                  "size": 0,
+                  "value": 0,
+                  "visibility": 0
+                }
+              ],
+              [
+                584,
+                4,
+                {
+                  "info": 3,
+                  "name": "",
+                  "section": "cgroup/connect6",
+                  "size": 0,
+                  "value": 0,
+                  "visibility": 0
+                }
+              ],
+              [
+                600,
+                4,
+                {
+                  "info": 3,
+                  "name": "",
+                  "section": "cgroup/connect6",
+                  "size": 0,
+                  "value": 0,
+                  "visibility": 0
+                }
+              ],
+              [
+                616,
+                4,
+                {
+                  "info": 3,
+                  "name": "",
+                  "section": "cgroup/connect6",
+                  "size": 0,
+                  "value": 0,
+                  "visibility": 0
+                }
+              ],
+              [
+                632,
+                4,
+                {
+                  "info": 3,
+                  "name": "",
+                  "section": "cgroup/connect6",
+                  "size": 0,
+                  "value": 0,
+                  "visibility": 0
+                }
+              ]
+            ],
+            ".relcgroup/bind4": [
+              [
+                56,
+                1,
+                {
+                  "info": 17,
+                  "name": "bind_ports",
+                  "section": ".maps",
+                  "size": 32,
+                  "value": 0,
+                  "visibility": 0
+                }
+              ]
+            ],
+            ".relcgroup/bind6": [
+              [
+                56,
+                1,
+                {
+                  "info": 17,
+                  "name": "bind_ports",
+                  "section": ".maps",
+                  "size": 32,
+                  "value": 0,
+                  "visibility": 0
+                }
+              ]
+            ],
+            ".relcgroup/connect4": [
+              [
+                56,
+                1,
+                {
+                  "info": 17,
+                  "name": "connect_ports",
+                  "section": ".maps",
+                  "size": 32,
+                  "value": 32,
+                  "visibility": 0
+                }
+              ]
+            ],
+            ".relcgroup/connect6": [
+              [
+                56,
+                1,
+                {
+                  "info": 17,
+                  "name": "connect_ports",
+                  "section": ".maps",
+                  "size": 32,
+                  "value": 32,
+                  "visibility": 0
+                }
+              ]
+            ]
+          }
+        },
+        "objects": {
+          "baseline": "36bf271456f4c57fc901b568ad86bc3439992137e8108c1b793bc514906f1351",
+          "bazel": "d9ed863895e85d38141d14e94da78f61cc34969e2ce16d96b2e86d04d7dc0c2c"
+        },
+        "source_locations": {
+          "baseline": [
+            "/build/aos-ebpf-net-policy.bpf.c"
+          ],
+          "bazel": [
+            "./pkgs/security/aos-ebpf-net-policy.bpf.c"
+          ]
+        }
+      }
+    },
+    "kernel_attachment_qualified": false,
+    "rust_provider_package_qualified": false,
+    "schema_version": 1,
+    "scope": "native-artifacts-and-userspace-validation"
+  },
+  "ordinary_cargo_baselines": [
+    {
+      "derivation": "/nix/store/vxcy3jwzys8yh2yz283w07864wwhwxsi-aos-ebpf-lsm-policy-0.1.0.drv",
+      "output": "/nix/store/vklv0snshilhigvzpssq95nxq7c0ik4a-aos-ebpf-lsm-policy-0.1.0"
+    },
+    {
+      "derivation": "/nix/store/kvgsphrsl75s8d0vljgr1mv1i0wljkay-aos-ebpf-net-policy-0.1.0.drv",
+      "output": "/nix/store/bxap27bd82m9ma6m8hl45zybb322wba0-aos-ebpf-net-policy-0.1.0"
+    }
+  ],
+  "ordinary_package_unit_cases_passed": {
+    "lsm": 3,
+    "network": 3
+  },
+  "platform": "x86_64-linux",
+  "policy_cases": 446,
+  "precise_and_conservative_artifacts_byte_identical": true,
+  "proofs": {
+    "check": {
+      "build": "/nix/store/psa1x4frgzf9iln575mrp23y127rr091-aos-bazel-bpf-native-1",
+      "build_derivation": "/nix/store/vnnyw49kqkxrpygkxnpb6gak9npgbx8s-aos-bazel-bpf-native-1.drv",
+      "check": "/nix/store/yhscv1akly33vq70z32scd304wnd0gzc-aos-bazel-bpf-native-checks",
+      "derivation": "/nix/store/jdqb9af18kd4ap7mkqn5ibb9xv08f5wn-aos-bazel-bpf-native-checks.drv",
+      "platform_rejection": {
+        "derivation": "/nix/store/wr93i9lhp03q1d9g55mk8071z89p3pbc-aos-bazel-bpf-native-platform-rejection.drv",
+        "log_sha256": {
+          "foreign_cpu": "0d5ce075097df3f4872a24aac2c6c3b5f60c4adf5295e6be7235e1c3459ae8da",
+          "foreign_os": "ba0f50b8ca80fe1dff3c470d61f713c0a62a795d3c38c901429044c70ac84dda"
+        },
+        "output": "/nix/store/nl5rdzbp2w79m3019wrnindndb6li3yc-aos-bazel-bpf-native-platform-rejection"
+      },
+      "report_sha256": "487e8a9e7f7b3d54ba9adef5db991a49d100a4c5739319e2de7fa5cc1e403a08"
+    },
+    "conservative-check": {
+      "build": "/nix/store/bwikjkxbvdzp3nbhm7j948ibdlmzgrbl-aos-bazel-bpf-native-1",
+      "build_derivation": "/nix/store/xqvcr40jp2n35z391y2v9sapaglhrm0j-aos-bazel-bpf-native-1.drv",
+      "check": "/nix/store/rv3prhi4vdylj6gg6622m5jf5qrckajl-aos-bazel-bpf-native-checks",
+      "derivation": "/nix/store/sq3jpwcbllrij1yadlyvjcnp4d42n9jn-aos-bazel-bpf-native-checks.drv",
+      "platform_rejection": {
+        "derivation": "/nix/store/dipvprq1vxlrb4v4qpnv7g3xxn63d6bl-aos-bazel-bpf-native-platform-rejection.drv",
+        "log_sha256": {
+          "foreign_cpu": "7f30174d1321992a06a0ed1ea122f2afb3c49b9be8ff02fcb93e060b88e0a424",
+          "foreign_os": "9d55bbb2fd913aea522ef45f81508d116f3b253649d41024ab94921ca892e0eb"
+        },
+        "output": "/nix/store/lym5axjrps9ljfc354qxvrxjijxf6972-aos-bazel-bpf-native-platform-rejection"
+      },
+      "report_sha256": "0c7bbfa6c051e8d7d3118edfecc8e67dd5d735e34c69fecadc2ae8a50b0be5a2"
+    }
+  },
+  "regression_checks": {
+    "cli": {
+      "derivation": "/nix/store/j9bjnbvbb5lpccz9lnfckbkk3fcqmrsn-aos-dev-cli-check-0.drv",
+      "output": "/nix/store/ssm6yb4209ans9f1glg6mbsmx1xj69k6-aos-dev-cli-check-0"
+    },
+    "eval-check": {
+      "derivation": "/nix/store/mf8dzdbw4872yi1c169ga9677k04zsad-aos-native-evaluation-checks-0.drv",
+      "output": "/nix/store/zcwihdx4ldd1c70hml5nxgxvipyhhprg-aos-native-evaluation-checks-0"
+    },
+    "policy": {
+      "derivation": "/nix/store/iks8k7ql4r43d69yq2hk2q0spm3zk79g-aos-bazel-policy-checks.drv",
+      "output": "/nix/store/dp01s8jjhrgn21ypl5x3g72i9qvyx55d-aos-bazel-policy-checks"
+    }
+  },
+  "remaining_gates": [
+    "complete Rust provider package conversion",
+    "installed package/runtime closure parity",
+    "kernel attachment and effects",
+    "foreign-host qualification",
+    "numeric performance acceptance",
+    "production default cutover",
+    "repository-wide Cargo removal"
+  ],
+  "schema_version": 1,
+  "scope": "BPF C objects and C userspace loaders; production Rust providers remain Cargo",
+  "source_inventory": {
+    "contracts": 191,
+    "reports": 6,
+    "roots": 6,
+    "source_files": [
+      "pkgs/security/aos-ebpf-lsm-policy.bpf.c",
+      "pkgs/security/aos-ebpf-lsm-policy.c",
+      "pkgs/security/aos-ebpf-net-policy.bpf.c",
+      "pkgs/security/aos-ebpf-net-policy.c"
+    ]
+  },
+  "status": "PASS_NATIVE_ARTIFACTS_AND_USERSPACE_VALIDATION_ONLY"
+}

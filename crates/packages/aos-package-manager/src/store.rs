@@ -541,10 +541,10 @@ fn atomic_symlink(target: &str, link_path: &Path) -> Result<()> {
     use std::os::unix::fs::symlink;
 
     // If the symlink already points to the correct target, nothing to do.
-    if let Ok(existing) = std::fs::read_link(link_path) {
-        if existing.to_string_lossy() == target {
-            return Ok(());
-        }
+    if let Ok(existing) = std::fs::read_link(link_path)
+        && existing.to_string_lossy() == target
+    {
+        return Ok(());
     }
 
     // Build a temp path next to the final link location.

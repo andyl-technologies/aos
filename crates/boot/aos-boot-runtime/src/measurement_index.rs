@@ -440,6 +440,10 @@ fn sha256_file(path: &Path) -> Result<String> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "Test fixtures and assertions fail immediately on unexpected errors"
+)]
 mod tests {
     use super::*;
 

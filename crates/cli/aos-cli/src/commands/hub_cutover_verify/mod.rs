@@ -291,7 +291,7 @@ fn open_running_executable() -> Result<RunningExecutable> {
     // executable inode; O_NOFOLLOW would reject the only trustworthy OS
     // handle and must therefore not be used here.
     options.custom_flags(libc::O_CLOEXEC);
-    let mut handle = options.open(&path)?;
+    let mut handle = options.open(path)?;
     let before = handle.metadata()?;
     if !before.is_file() {
         anyhow::bail!("running executable handle is not a regular file");

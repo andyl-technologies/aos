@@ -60,6 +60,10 @@ pub const SUDO_WINDOW_SECS: i64 = 15 * 60;
 /// The returned value is the cookie value handed to the browser; only its
 /// SHA-256 hash (via [`crate::auth::token::sha256_hex`]) is persisted.
 #[must_use]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Hub credentials require unpredictable host entropy"
+)]
 pub fn new_session_secret() -> String {
     let bytes: [u8; 32] = rand::rng().random();
     hex::encode(bytes)

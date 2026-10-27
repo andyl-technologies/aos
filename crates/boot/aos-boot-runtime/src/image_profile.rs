@@ -110,6 +110,10 @@ pub(crate) fn private_directory(parent: &Path, name: &str) -> Result<PathBuf> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "Test fixtures and assertions fail immediately on unexpected errors"
+)]
 mod tests {
     use super::*;
     use std::os::unix::fs::symlink;

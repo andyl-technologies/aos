@@ -1,6 +1,48 @@
 {pkgs}: let
   repositoryRoot = ../..;
   repositoryRootString = toString repositoryRoot;
+  bazelLaunchers = [
+    "aosBazelLauncher"
+    "aosBazelGuestLauncher"
+    "aosBazelGuestEditorLauncher"
+    "aosBazelEngineLauncher"
+    "aosBazelQuotaLauncher"
+    "aosBazelQuotaEditorLauncher"
+    "aosBazelSessionLauncher"
+    "aosBazelControlLauncher"
+    "aosBazelQemuHostLauncher"
+    "aosBazelStoreS3Launcher"
+    "aosBazelDaemonLauncher"
+    "aosBazelFormatsLauncher"
+    "aosBazelContractsLauncher"
+    "aosBazelNativeFoundationLauncher"
+    "aosBazelActivationCoreLauncher"
+    "aosBazelActivationStorageLauncher"
+    "aosBazelCliSupportLauncher"
+    "aosBazelPackageManagerLauncher"
+    "aosBazelBootPreparationLauncher"
+    "aosBazelReleaseCoordinationLauncher"
+    "aosBazelAccacheLauncher"
+    "aosBazelAccacheEditorLauncher"
+    "aosBazelRegistryNativeLauncher"
+    "aosBazelReleasePreparationLauncher"
+    "aosBazelHubNativeLauncher"
+    "aosBazelHubServiceLauncher"
+    "aosBazelHubServiceAllFeaturesLauncher"
+    "aosBazelHubDbLauncher"
+    "aosBazelHubDbAllFeaturesLauncher"
+    "aosBazelHubConsoleLauncher"
+    "aosBazelHubConsoleWasmLauncher"
+    "aosBazelHubClientLauncher"
+    "aosBazelHubModelLauncher"
+    "aosBazelHubPortableLauncher"
+    "aosBazelDeploymentLauncher"
+    "aosBazelBuildServicesLauncher"
+    "aosBazelActivationCrucibleLauncher"
+    "aosBazelActivationCrucibleEditorLauncher"
+    "aosBazelActivationSystemdLauncher"
+    "aosBazelCrucibleCliLauncher"
+  ];
   src = builtins.path {
     path = repositoryRoot;
     name = "aos-dev-cli-source";
@@ -22,27 +64,30 @@
       || builtins.match "${repositoryRootString}/tools/dev/lib/[^/]+\\.bash" pathString != null;
   };
 in
-  pkgs.mkDerivation {
-    pname = "aos-dev-cli-check";
-    version = "0";
-    inherit src;
-    buildDeps = [
-      pkgs.bash
-      pkgs.coreutils
-      pkgs.findutils
-      pkgs.gawk
-      pkgs.grep
-      pkgs.sed
-      pkgs.util-linux
-    ];
-    phases = [
-      {
-        name = "check";
-        script = ''
-          ${pkgs.bash}/bin/bash "$src/tools/dev/tests/cli.bash" "$src" "$TMPDIR/aos-dev-test"
-          mkdir -p "$out"
-          echo PASS > "$out/result"
-        '';
-      }
-    ];
-  }
+  # The subprocess harness stubs Nix. Check the actual package exports too,
+  # so a correctly dispatched family cannot conceal a missing launcher.
+  assert builtins.all (name: builtins.hasAttr name pkgs && pkgs.${name}.type == "derivation") bazelLaunchers;
+    pkgs.mkDerivation {
+      pname = "aos-dev-cli-check";
+      version = "0";
+      inherit src;
+      buildDeps = [
+        pkgs.bash
+        pkgs.coreutils
+        pkgs.findutils
+        pkgs.gawk
+        pkgs.grep
+        pkgs.sed
+        pkgs.util-linux
+      ];
+      phases = [
+        {
+          name = "check";
+          script = ''
+            ${pkgs.bash}/bin/bash "$src/tools/dev/tests/cli.bash" "$src" "$TMPDIR/aos-dev-test"
+            mkdir -p "$out"
+            echo PASS > "$out/result"
+          '';
+        }
+      ];
+    }

@@ -13,6 +13,7 @@ mod resolution;
 mod validation;
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests;
 
 use std::collections::{BTreeMap, BTreeSet};

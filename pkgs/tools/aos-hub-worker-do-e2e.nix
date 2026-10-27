@@ -40,16 +40,21 @@
   coreutils,
   diffutils,
   grep,
+  iproute2,
   nodejs,
   nix,
   workerd-source,
   bash,
+  workerDist ? null,
 }: let
   # The worker built with the `do-e2e` probe endpoint compiled in (never in the
   # production/default build). Built via `callPackage` with an explicit
   # `cargoFeatures` rather than `.override`, which the repo's wrapped
   # `mkDerivation` does not thread into a discovered package's function args.
-  dist = callPackage ./aos-hub-worker-dist.nix {cargoFeatures = "do-e2e";};
+  dist =
+    if workerDist == null
+    then callPackage ./aos-hub-worker-dist.nix {cargoFeatures = "do-e2e";}
+    else workerDist;
 
   egressFixture = ./aos-hub-direct-egress-fixture.mjs;
   stateFixture = ./aos-hub-worker-state-fixture.mjs;
@@ -178,10 +183,20 @@
       return { status: r.status, body: await r.text() };
     }
     let last = null;
+    let connectionError = null;
     for (let i = 0; i < 80; i++) {
-      try { last = await bootstrap(); break; } catch { await new Promise((r) => setTimeout(r, 250)); }
+      try {
+        last = await bootstrap();
+        break;
+      } catch (error) {
+        connectionError = error;
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
     }
-    if (!last) { console.error("workerd never accepted a connection"); process.exit(1); }
+    if (!last) {
+      console.error("workerd never accepted a connection", connectionError);
+      process.exit(1);
+    }
     if (last.status !== 200) { console.error(last.body); process.exit(1); }
     const deploymentIdentity = await fetch(BASE + "/.well-known/aos-deployment");
     if (deploymentIdentity.status !== 200
@@ -693,7 +708,7 @@
         || publicList.text.includes('"objectKey"')
         || !publicList.text.includes('"cacheUrls":["http://127.0.0.1:8799/flat-cache"]')
         || !publicList.text.includes('"releaseVerification":"verified"')
-        || !publicList.text.includes('"bootVerification":"signed-unverified"')
+        || !publicList.text.includes('"bootVerification":"provider-contract:aos.image.metadata/v1"')
         || !publicList.text.includes(rawSha256)) {
       throw new Error(`public image list: ''${publicList.response.status} ''${publicList.text}`);
     }
@@ -726,8 +741,8 @@
     const imagesPage = await fetch(BASE + "/failure/images-public/-/images");
     const imagesHtml = await imagesPage.text();
     if (imagesPage.status !== 200
-        || !imagesHtml.includes("CDN / CLI")
-        || !imagesHtml.includes("Delivered from the registry cache with aos image download")
+        || !imagesHtml.includes("aos image download --hub=http://127.0.0.1:8799 --registry=failure/images-public --package=aos-system --release=2026.3.0 --architecture=x86_64 --format=raw")
+        || !imagesHtml.includes("aos image download --hub=http://127.0.0.1:8799 --registry=failure/images-public --package=aos-system --release=2026.3.0 --architecture=x86_64 --format=qcow2")
         || !imagesHtml.includes("qcow2")
         || !imagesHtml.includes("2026.3.0")
         || !imagesHtml.includes("stable")
@@ -736,8 +751,9 @@
         || !imagesHtml.includes(humanSize(rawBytes.length))
         || !imagesHtml.includes(rawSha256)
         || !imagesHtml.includes("verified")
-        || !imagesHtml.includes("signed, unverified")
-        || !imagesHtml.includes('href="/failure/images-public/-/images"')
+        || !imagesHtml.includes("provider contract")
+        || !imagesHtml.includes("aos.image.metadata/v1")
+        || !imagesHtml.includes('href="/failure/images-public/-/images?release=2026.3.0"')
         || !imagesHtml.includes('aria-current="page">Images')) {
       throw new Error(`Worker Images page: ''${imagesPage.status} ''${imagesHtml}`);
     }
@@ -855,7 +871,7 @@
     );
     const privateImagesHtml = await privateImagesPage.text();
     if (privateImagesPage.status !== 200
-        || !privateImagesHtml.includes("CDN / CLI")
+        || !privateImagesHtml.includes("aos image download --hub=http://127.0.0.1:8799 --registry=failure/images-private --package=aos-system --release=2026.3.0 --architecture=x86_64 --format=qcow2")
         || !privateImagesHtml.includes(qcow2Sha256)) {
       throw new Error(`private cookie Images page: ''${privateImagesPage.status} ''${privateImagesHtml}`);
     }
@@ -1097,6 +1113,13 @@ in
           ${workerd-source}/bin/workerd serve worker.capnp > "\$work/workerd.log" 2>&1 &
           WPID=\$!
           if ! ${nodejs}/bin/node driver.mjs; then
+            if kill -0 "\$WPID" 2>/dev/null; then
+              echo "=== workerd process status ==="
+              cat "/proc/\$WPID/status" || true
+              cat "/proc/\$WPID/io" || true
+            else
+              wait "\$WPID" || echo "workerd exited with status \$?"
+            fi
             echo "=== workerd.log ==="
             cat "\$work/workerd.log" || true
             exit 1
@@ -1130,9 +1153,10 @@ in
     }: {
       live-worker-topology = testing.mkVMTest {
         name = "aos-hub-worker-do-e2e-live";
-        rootfsDeps = [self];
+        rootfsDeps = [self iproute2];
         memory = 2048;
         testScript = ''
+          ${iproute2}/sbin/ip link set lo up
           ${nix}/bin/nix-store --load-db < /usr/lib/aos/nix-registration
           export NIX_REMOTE=""
           ${self}/bin/aos-hub-worker-do-e2e

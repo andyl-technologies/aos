@@ -1,7 +1,6 @@
 //! Descriptor-relative, no-follow capture of an immutable bundle snapshot.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::ffi::CStr;
 use std::fs::{self, File};
 use std::io::Read as _;
 use std::os::fd::OwnedFd;
@@ -527,7 +526,7 @@ impl std::io::Write for DigestWriter<'_> {
 fn directory_entries(directory: &OwnedFd) -> Result<Vec<String>> {
     let fresh = openat(
         directory,
-        CStr::from_bytes_with_nul(b".\0")?,
+        c".",
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
         Mode::empty(),
     )?;

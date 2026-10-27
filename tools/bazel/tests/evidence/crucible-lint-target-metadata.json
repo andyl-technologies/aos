@@ -1,0 +1,584 @@
+{
+  "architecture_sha256": "2f092d9e30e619e945697d4126547e252d2739ef2624f87fbd689b2cbc3f0adf",
+  "audit_reader_compatibility": {
+    "architecture": {
+      "executed_cases": {
+        "control_plane_boundary": [
+          "architecture_metadata_preserves_declared_dependency_names",
+          "architecture_metadata_rejects_incomplete_or_inconsistent_graphs",
+          "cli_uses_only_declared_host_composition_dependencies",
+          "control_plane_boundary_allows_api_and_session_dependencies",
+          "control_plane_boundary_rejects_direct_engine_dependency",
+          "control_plane_boundary_rejects_target_specific_engine_dependency",
+          "control_plane_boundary_rejects_workspace_engine_alias"
+        ],
+        "crate_artifact_types": [
+          "artifact_type_rules_reject_extra_or_missing_outputs",
+          "bazel_artifacts::bazel_artifact_roles_reject_extra_missing_and_wrong_kind_products",
+          "bazel_artifacts::bazel_oracle_requires_manual_test_only_feature_gating",
+          "binary_artifacts::gateway_test_oracle_requires_a_closed_opt_in_artifact_surface",
+          "crucible_packages_expose_declared_artifact_types"
+        ],
+        "crate_layer_graph": [
+          "crucible_runtime_dependencies_follow_layer_graph",
+          "layer_graph_rules_reject_upward_edges_in_vm_l0_edges_and_cycles"
+        ]
+      },
+      "oracle": "/nix/store/zlz0sxs15q0mf3dj846zqnwbjasm5v5r-aos-bazel-crucible-controller-architecture-cargo-oracle-1",
+      "oracle_derivation": "/nix/store/rpxqv3fp11yr97f2b4db1fqcxd32hf01-aos-bazel-crucible-controller-architecture-cargo-oracle-1.drv",
+      "rejected_controls": {
+        "cli-direct-engine": {
+          "diagnostic": "direct dependency",
+          "exit_code": 101
+        },
+        "cli-wrong-root": {
+          "diagnostic": "declared Bazel artifact surface",
+          "exit_code": 101
+        },
+        "cycle": {
+          "diagnostic": "dependency cycle",
+          "exit_code": 101
+        },
+        "guest-outside-layer-one": {
+          "diagnostic": "in-VM L2 crate",
+          "exit_code": 101
+        },
+        "host-static-library": {
+          "diagnostic": "declared Bazel artifact surface",
+          "exit_code": 101
+        },
+        "missing-artifact-metadata": {
+          "diagnostic": "architecture omitted compilation target metadata",
+          "exit_code": 101
+        },
+        "missing-declaration": {
+          "diagnostic": "Bazel audit omitted its declared architecture input",
+          "exit_code": 101
+        },
+        "missing-file": {
+          "diagnostic": "No such file or directory",
+          "exit_code": 101
+        },
+        "oracle-in-wildcards": {
+          "diagnostic": "manual test-only qemu-test-oracle",
+          "exit_code": 101
+        },
+        "plugin-not-cdylib": {
+          "diagnostic": "declared Bazel artifact surface",
+          "exit_code": 101
+        },
+        "runtime-test-support": {
+          "diagnostic": "test-only `crucible-test-support`",
+          "exit_code": 101
+        },
+        "upward-edge": {
+          "diagnostic": "upward dependency",
+          "exit_code": 101
+        }
+      },
+      "shared_reader_sha256": "dc6b5e51e2855a10f2e45be716d1e134a3805fe18665ca1474605e51206ef589",
+      "source": "/nix/store/j1nw688nlgv2bl4a2y35jy6x8ky9jqgw-crucible-cargo-src"
+    },
+    "campaign": {
+      "accepted_actual_library_layout": "owned test-only copies with matching production source roots",
+      "accepted_controls": [],
+      "executed_cases": [
+        "campaign_gate_catalog_is_complete_and_unambiguous",
+        "campaign_replay_binds_portable_and_production_qemu_evidence",
+        "every_rfc_requirement_has_an_executable_gate_contract",
+        "exact_targets_fail_closed_on_source_and_runner_drift",
+        "hot_fork_isolation_binds_native_aggregate_evidence",
+        "registered_integration_exact_targets_match_sources_and_nix",
+        "registered_library_exact_targets_match_sources_and_nix",
+        "schema_registry_assigns_versions_owners_and_compatibility_gates",
+        "schema_source_coverage::measurement_hash_domains_do_not_relabel_payload_versions",
+        "schema_source_coverage::production_codec_declarations_match_registry_versions",
+        "schema_source_coverage::qemu_vmstate_discovery_excludes_diagnostic_test_descriptors",
+        "schema_source_coverage::qemu_vmstate_discovery_excludes_qom_and_existing_upstream_formats",
+        "schema_source_coverage::qemu_vmstate_discovery_preserves_actual_target_name_separation",
+        "schema_source_coverage::qemu_vmstate_discovery_rejects_invalid_owned_versions",
+        "schema_source_coverage::qemu_vmstate_discovery_rejects_missing_owned_version",
+        "schema_source_coverage::qemu_vmstate_discovery_rejects_normalization_collision",
+        "schema_source_coverage::qemu_vmstate_discovery_resolves_pinned_owned_macro_name",
+        "schema_source_coverage::qemu_vmstate_registry_rejects_deleted_format",
+        "schema_source_coverage::qemu_vmstate_registry_rejects_missing_wide_format",
+        "schema_source_coverage::qemu_vmstate_registry_rejects_version_drift",
+        "schema_source_coverage::qemu_vmstate_section_versions_match_registry",
+        "schema_source_coverage::reviewed_durable_source_tags_have_matching_registry_versions",
+        "schema_source_coverage::source_version_changes_fail_registry_lint",
+        "typed_choice_product_checkpoint_uses_the_packaged_campaign_flight",
+        "world_fork_native_matrix_completes_the_canonical_gate"
+      ],
+      "oracle": "/nix/store/fka9gpy33gfggvj7bmhhph70la8sq99b-aos-bazel-crucible-controller-campaign-cargo-oracle-1",
+      "oracle_derivation": "/nix/store/8nq37rb65ds6ji3xy21w7jk03558gcv9-aos-bazel-crucible-controller-campaign-cargo-oracle-1.drv",
+      "rejected_controls": {
+        "feature-union-is-not-guarantee": {
+          "diagnostic": "must guarantee required feature",
+          "exit_code": 101
+        },
+        "filtered-integration-wrappers": {
+          "diagnostic": "missing unfiltered runnable test wrapper",
+          "exit_code": 101
+        },
+        "filtered-library-wrappers": {
+          "diagnostic": "missing unfiltered runnable library unit test",
+          "exit_code": 101
+        },
+        "missing-compilation-coverage": {
+          "diagnostic": "test compilation coverage disagrees",
+          "exit_code": 101
+        },
+        "missing-file": {
+          "diagnostic": "No such file or directory",
+          "exit_code": 101
+        },
+        "missing-graph": {
+          "diagnostic": "omitted its declared architecture input",
+          "exit_code": 101
+        },
+        "missing-integration-binding": {
+          "diagnostic": "missing declared integration compilation",
+          "exit_code": 101
+        },
+        "missing-integration-source": {
+          "diagnostic": "integration target source",
+          "exit_code": 101
+        },
+        "missing-integration-wrappers": {
+          "diagnostic": "missing unfiltered runnable test wrapper",
+          "exit_code": 101
+        },
+        "missing-library-source": {
+          "diagnostic": "declared library source is absent",
+          "exit_code": 101
+        },
+        "missing-library-unit-binding": {
+          "diagnostic": "missing unfiltered runnable library unit test",
+          "exit_code": 101
+        },
+        "missing-native-exact-selection": {
+          "diagnostic": "lacks --ignored --exact execution",
+          "exit_code": 101
+        },
+        "missing-packaged-integration-runner": {
+          "diagnostic": "does not run campaign-process-flight",
+          "exit_code": 101
+        },
+        "missing-production-library": {
+          "diagnostic": "missing declared library compilation",
+          "exit_code": 101
+        },
+        "missing-test_compilation_count": {
+          "diagnostic": "missing field",
+          "exit_code": 101
+        },
+        "missing-test_target_selection": {
+          "diagnostic": "missing field",
+          "exit_code": 101
+        }
+      },
+      "shared_reader_sha256": "dc6b5e51e2855a10f2e45be716d1e134a3805fe18665ca1474605e51206ef589",
+      "shared_test_reader_sha256": "6cbabaf473e5331465e01c0fce2a687c077770c267e32c48bf971b1ba039172e",
+      "source": "/nix/store/07xdfgd39h2cpc0gnjn888av6rasj1f2-crucible-cargo-src"
+    },
+    "dependencies": {
+      "executed_cases": {
+        "harness_components": [
+          "component_building_blocks_report_first_mismatch",
+          "crucible_harness_is_dev_dependency_only",
+          "dev_dependency_lint_rejects_workspace_inherited_harness_dependency",
+          "harness_component_catalog_hosts_required_gate_building_blocks"
+        ],
+        "single_scheduler_boundary": [
+          "boundary_rules_reject_lower_layer_quantum_loop_ownership",
+          "engine_owns_quantum_loop_and_only_l4_drivers_advance_it",
+          "scheduler_scan_excludes_test_sources_but_keeps_production_calls"
+        ],
+        "standalone_dependencies": [
+          "crucible_crates_do_not_depend_on_ratchet_or_aos_nix",
+          "standalone_dependency_rules_reject_direct_workspace_and_target_edges"
+        ]
+      },
+      "oracle": "/nix/store/rjaicsbkvidgjr4ny1s0n0bfnnvn49aw-aos-bazel-crucible-controller-dependency-cargo-oracle-1",
+      "oracle_derivation": "/nix/store/9ik127khjx3fjs4018fq5p6kafvyfdmd-aos-bazel-crucible-controller-dependency-cargo-oracle-1.drv",
+      "rejected_controls": {
+        "harness-library-dependencies": {
+          "diagnostic": "must keep third-party crates as dev-dependencies only",
+          "exit_code": 101
+        },
+        "harness-not-test-only": {
+          "diagnostic": "test support must remain test-only",
+          "exit_code": 101
+        },
+        "harness-production-edge": {
+          "diagnostic": "must not enter release/runtime dependency graphs",
+          "exit_code": 101
+        },
+        "metadata-duplicate-edge": {
+          "diagnostic": "invalid or duplicate complete dependency edge",
+          "exit_code": 101
+        },
+        "metadata-empty-coverage": {
+          "diagnostic": "dependency target coverage is empty",
+          "exit_code": 101
+        },
+        "metadata-invalid-attribute": {
+          "diagnostic": "invalid or duplicate complete dependency edge",
+          "exit_code": 101
+        },
+        "metadata-missing-compilation": {
+          "diagnostic": "omitted or changed a compilation",
+          "exit_code": 101
+        },
+        "metadata-missing-dependency_target_count": {
+          "diagnostic": "omitted complete dependency target count",
+          "exit_code": 101
+        },
+        "metadata-missing-dependency_target_selection": {
+          "diagnostic": "omitted complete dependency selection",
+          "exit_code": 101
+        },
+        "metadata-missing-dependency_targets": {
+          "diagnostic": "omitted complete dependency targets",
+          "exit_code": 101
+        },
+        "metadata-missing-test-record": {
+          "diagnostic": "target count does not match its records",
+          "exit_code": 101
+        },
+        "metadata-production-mismatch": {
+          "diagnostic": "disagree with production records",
+          "exit_code": 101
+        },
+        "metadata-unowned-target": {
+          "diagnostic": "has no source ownership",
+          "exit_code": 101
+        },
+        "missing-file": {
+          "diagnostic": "No such file or directory",
+          "exit_code": 101
+        },
+        "missing-graph": {
+          "diagnostic": "omitted its declared architecture input",
+          "exit_code": 101
+        },
+        "scheduler-missing-engine-edge": {
+          "diagnostic": "must depend on the L3 engine crate",
+          "exit_code": 101
+        },
+        "scheduler-missing-source": {
+          "diagnostic": "declared scheduler audit source is absent",
+          "exit_code": 101
+        },
+        "scheduler-owned-source-bypass": {
+          "diagnostic": "must not call `drive_quantum`",
+          "exit_code": 101
+        },
+        "standalone-build-script-edge": {
+          "diagnostic": "ratchet-cache",
+          "exit_code": 101
+        },
+        "standalone-clippy-edge": {
+          "diagnostic": "aos-nix-graph",
+          "exit_code": 101
+        },
+        "standalone-doctest-edge": {
+          "diagnostic": "aos-nix-graph",
+          "exit_code": 101
+        },
+        "standalone-forbidden-alias": {
+          "diagnostic": "ratchet-hidden",
+          "exit_code": 101
+        },
+        "standalone-production-edge": {
+          "diagnostic": "forbidden dependency",
+          "exit_code": 101
+        },
+        "standalone-test-edge": {
+          "diagnostic": "aos-nix-graph",
+          "exit_code": 101
+        }
+      },
+      "shared_reader_sha256": "dc6b5e51e2855a10f2e45be716d1e134a3805fe18665ca1474605e51206ef589",
+      "source": "/nix/store/j1nw688nlgv2bl4a2y35jy6x8ky9jqgw-crucible-cargo-src"
+    },
+    "gate_mapping": {
+      "accepted_actual_library_layout": null,
+      "accepted_controls": [
+        "guaranteed-concatenated-features"
+      ],
+      "executed_cases": [
+        "crate_structure_gate_targets_match_rfc_table",
+        "per_layer_gates_have_named_isolable_test_targets"
+      ],
+      "oracle": "/nix/store/j9yhhzbn9ijzkbd991zlh73z3rv3gzcc-aos-bazel-crucible-controller-gate-targets-cargo-oracle-1",
+      "oracle_derivation": "/nix/store/fpq9fg3flm4nc884knr230v94jazm6jj-aos-bazel-crucible-controller-gate-targets-cargo-oracle-1.drv",
+      "rejected_controls": {
+        "ambiguous-integration-root": {
+          "diagnostic": "must pin its exact test source",
+          "exit_code": 101
+        },
+        "conditionally-filtered-wrappers": {
+          "diagnostic": "missing unfiltered runnable test wrapper",
+          "exit_code": 101
+        },
+        "duplicate-feature-condition": {
+          "diagnostic": "invalid or duplicate test selector condition",
+          "exit_code": 101
+        },
+        "empty-compilation-coverage": {
+          "diagnostic": "incomplete declared test target coverage",
+          "exit_code": 101
+        },
+        "empty-feature-selector": {
+          "diagnostic": "test selector has no elements",
+          "exit_code": 101
+        },
+        "escaping-source-root": {
+          "diagnostic": "invalid test compilation ownership",
+          "exit_code": 101
+        },
+        "feature-union-is-not-guarantee": {
+          "diagnostic": "must guarantee required feature",
+          "exit_code": 101
+        },
+        "filtered-wrappers": {
+          "diagnostic": "missing unfiltered runnable test wrapper",
+          "exit_code": 101
+        },
+        "foreign-wrapper-binary": {
+          "diagnostic": "invalid test wrapper ownership",
+          "exit_code": 101
+        },
+        "inconsistent-feature-union": {
+          "diagnostic": "invalid test compilation ownership or features",
+          "exit_code": 101
+        },
+        "missing-compilation-coverage": {
+          "diagnostic": "test compilation coverage disagrees",
+          "exit_code": 101
+        },
+        "missing-declared-source": {
+          "diagnostic": "missing declared integration compilation",
+          "exit_code": 101
+        },
+        "missing-file": {
+          "diagnostic": "No such file or directory",
+          "exit_code": 101
+        },
+        "missing-graph": {
+          "diagnostic": "omitted its declared architecture input",
+          "exit_code": 101
+        },
+        "missing-physical-source": {
+          "diagnostic": "missing integration test target",
+          "exit_code": 101
+        },
+        "missing-record-count": {
+          "diagnostic": "incomplete declared test target coverage",
+          "exit_code": 101
+        },
+        "missing-required-feature": {
+          "diagnostic": "must guarantee required feature",
+          "exit_code": 101
+        },
+        "missing-test_compilation_count": {
+          "diagnostic": "missing field",
+          "exit_code": 101
+        },
+        "missing-test_target_selection": {
+          "diagnostic": "missing field",
+          "exit_code": 101
+        },
+        "missing-wrapper-binary": {
+          "diagnostic": "test wrapper omitted its compilation",
+          "exit_code": 101
+        },
+        "missing-wrappers": {
+          "diagnostic": "missing unfiltered runnable test wrapper",
+          "exit_code": 101
+        },
+        "production-test-compilation": {
+          "diagnostic": "invalid test compilation ownership",
+          "exit_code": 101
+        },
+        "production-wrapper": {
+          "diagnostic": "invalid test wrapper ownership",
+          "exit_code": 101
+        },
+        "unowned-inherited-crate": {
+          "diagnostic": "inherited test crate has no owned compilation",
+          "exit_code": 101
+        }
+      },
+      "shared_reader_sha256": "dc6b5e51e2855a10f2e45be716d1e134a3805fe18665ca1474605e51206ef589",
+      "shared_test_reader_sha256": "6cbabaf473e5331465e01c0fce2a687c077770c267e32c48bf971b1ba039172e",
+      "source": "/nix/store/bqadngd6mm97gj99z1h6iib7h2mgff1g-crucible-cargo-src"
+    },
+    "license": {
+      "executed_cases": [
+        "apache_host_crates_do_not_define_qemu_plugin_abi",
+        "bazel::tests::configured_closures_apply_the_existing_external_license_choices",
+        "bazel::tests::configured_closures_reject_stale_or_incomplete_source_identities",
+        "bazel::tests::configured_closures_reject_unapproved_local_boundary_packages",
+        "boundary_artifacts_and_code_docs_remain_explicit",
+        "cargo_metadata_preserves_component_licenses",
+        "contributor_authorization::contributor_authorization_policy_is_explicit_and_fail_closed",
+        "dependencies::boundary_crate_source_scanner_rejects_qemu_headers_and_callbacks",
+        "dependencies::debug_gateway_distributed_dependency_graph_has_gpl2_compatible_license_choices",
+        "dependencies::dependency_boundary_scans_normal_build_and_target_tables",
+        "dependencies::external_license_choice_parser_accepts_only_an_independently_approved_branch",
+        "dependencies::non_gpl_crates_cannot_depend_on_qemu_side_implementation_crates",
+        "dependencies::permissive_boundary_dependency_graphs_remain_implementation_neutral",
+        "dependencies::plugin_distributed_dependency_graph_has_gpl2_compatible_license_choices",
+        "dependencies::resolved_graph_rejects_local_apache_and_external_gpl_boundary_regressions",
+        "gpl_side_internal_dependencies_are_only_permissive_boundary_crates",
+        "guest_assertions::guest_assertion_evaluation_stays_in_the_host",
+        "independent_fixture_parser_matches_all_abi_views",
+        "public_shmem_interface_is_process_shaped",
+        "qemu_patch_created_files_match_license_inventory",
+        "repository_publishes_each_declared_license_scope"
+      ],
+      "oracle": "/nix/store/r0fx5scslg0jnmyym2m3c4v1z2xcvq6y-aos-bazel-crucible-controller-license-cargo-oracle-1",
+      "oracle_derivation": "/nix/store/m4adn31gsqmcqyqjbfslaz12l8cpw59d-aos-bazel-crucible-controller-license-cargo-oracle-1.drv",
+      "rejected_controls": {
+        "apache-plugin-edge": {
+          "diagnostic": "forbidden QEMU-side package",
+          "exit_code": 101
+        },
+        "boundary-external-gpl": {
+          "diagnostic": "has no approved compatible choice",
+          "exit_code": 101
+        },
+        "component-license": {
+          "diagnostic": "declared Bazel component license drift",
+          "exit_code": 101
+        },
+        "gpl-host-edge": {
+          "diagnostic": "crosses the GPL boundary",
+          "exit_code": 101
+        },
+        "guest-semantics-in-plugin": {
+          "diagnostic": "GPL-side observation code contains host assertion semantic",
+          "exit_code": 101
+        },
+        "missing-closure-file": {
+          "diagnostic": "No such file or directory",
+          "exit_code": 101
+        },
+        "missing-closures": {
+          "diagnostic": "Bazel license audit omitted its configured closure input",
+          "exit_code": 101
+        },
+        "missing-graph": {
+          "diagnostic": "Bazel audit omitted its declared architecture input",
+          "exit_code": 101
+        },
+        "missing-plugin-source": {
+          "diagnostic": "declared Bazel plugin source input is absent",
+          "exit_code": 101
+        },
+        "missing-sdk-source-hash": {
+          "diagnostic": "no pinned source identity",
+          "exit_code": 101
+        },
+        "plugin-artifact-kind": {
+          "diagnostic": "declared Bazel library artifact",
+          "exit_code": 101
+        },
+        "plugin-external-apache": {
+          "diagnostic": "has no approved compatible choice",
+          "exit_code": 101
+        },
+        "plugin-local-apache": {
+          "diagnostic": "not an approved boundary dependency",
+          "exit_code": 101
+        },
+        "stale-architecture-binding": {
+          "exit_code": 101
+        }
+      },
+      "shared_reader_sha256": "dc6b5e51e2855a10f2e45be716d1e134a3805fe18665ca1474605e51206ef589",
+      "source": "/nix/store/fls28rh5fhjafp3m7f3hcwa1b5ndi9yx-crucible-cargo-src"
+    }
+  },
+  "baseline_commit": "0e3d15471eeefc96a360d2c9f01af03894bb6495",
+  "baseline_exporter_sha256": "7b62ef2062f8fe28c46f827cd5313ef9b3b0e31cc9eaa6786e306db2ec4901e6",
+  "dependency_sdk_profile_count": 79,
+  "derivation": "/nix/store/hq2qby0rq9i8byaxrwwrrq2xabnaxmrw-aos-bazel-architecture.drv",
+  "inventory_receipt": "tools/bazel/tests/evidence/crucible-controller-campaign-inventories.json",
+  "inventory_receipt_sha256": "219ff34358228ded40dd53c2c6cadad555de0d82f65dacc3b4a10560c7f15ec4",
+  "limits": [
+    "Declaration export only. Harness lint still needs its consumer backend converted; no claim is made that every target enforces a required lint tier.",
+    "Compilation bindings are explicit; test crate bindings do not imply inherited lint configuration. Selector alternatives must govern effective policy checks.",
+    "These lint records cover rustc/Clippy/rustdoc level maps, not the separate rustc_check_cfg attribute.",
+    "No production runtime, supported-platform, ABI, or cutover qualification is claimed."
+  ],
+  "lint_configuration_files_sha256": {
+    "tools/bazel/rules/accache/clippy.toml": "c4f822bf39c86961d351228c0be200820e994b2039414a71fdfde02fd0b5fc44",
+    "tools/bazel/rules/clippy.toml": "a268b742ccb51a92a0f4f92b0cd28561d21ec59638d47b5292ea3871e8fade0f"
+  },
+  "lint_metadata_counts": {
+    "alias_target": 123,
+    "clippy_target": 86,
+    "lint_binding": 1646,
+    "lint_configuration": 3,
+    "lint_data_group": 1
+  },
+  "new_exported_fields": [
+    "alias_target_count",
+    "alias_targets",
+    "clippy_target_count",
+    "clippy_targets",
+    "lint_binding_count",
+    "lint_bindings",
+    "lint_configuration_count",
+    "lint_configurations",
+    "lint_data_group_count",
+    "lint_data_groups",
+    "lint_target_selection"
+  ],
+  "output": "/nix/store/n1p4a3hn25014fml02bn0s8iaaagz74h-aos-bazel-architecture",
+  "previous_exporter_fields_identical": [
+    "compilation_targets",
+    "dependency_target_count",
+    "dependency_target_selection",
+    "dependency_targets",
+    "native_dependencies",
+    "packages",
+    "schema_version",
+    "selection",
+    "target_dependencies",
+    "test_compilation_count",
+    "test_compilation_targets",
+    "test_execution_count",
+    "test_execution_targets",
+    "test_target_selection",
+    "unavailable_profile_targets"
+  ],
+  "previous_qualified_graph": "/nix/store/h7ci6r484rgnc8v1c643h5na2a2fjm3v-aos-bazel-architecture/architecture.json",
+  "previous_qualified_graph_sha256": "92a0eecd8de9b0dbd05d40425e3b055cb6b0e7de8d3aafef8919ac82c0895275",
+  "query_sha256": "10db6ae8a601195c9d4ab577758d454929edab34031aabb52443148893f03a2e",
+  "schema_version": 1,
+  "scope": "Declared Rust lint levels, explicit compilation bindings, Clippy roots, alias selections, and shared configuration-file groups; preparation for harness audit conversion.",
+  "source": "/nix/store/22a73ji7iqasiga83lg27p9ncrfbf4sw-aos-bazel-workspace",
+  "source_inventory_count": 80,
+  "source_sha256": {
+    "pkgs/build-support/_bazel/architecture.nix": "4fcba397b9ed4f469c5765eb91373d1148a6a490226708b83e03dd9100563727",
+    "tools/bazel/metadata/export_architecture.py": "b65b5b35baae3dbac2c9da3bde911e7f35488f73bf9815c4bd9b4874bf278aa3",
+    "tools/bazel/tests/test_architecture_export.py": "660815de9219fc9707bbd5b20aa0353f0490bc14a474340f1ea675f2ec5f555b",
+    "tools/bazel/tests/verify_controller_architecture.py": "2cbac337975b7c5d75ac89ef5653930a94d2c9f4fa627462ed00fe99c87703d1",
+    "tools/bazel/tests/verify_controller_campaign.py": "5d65b9f694267dadcc63e9a6851e60955fb8cdbb8b93dfd672346474ceb4cd17",
+    "tools/bazel/tests/verify_controller_dependencies.py": "8aa2143f2eb4701f4fe46f60e2965d15137498e5add93ae0aa230d5399007b63",
+    "tools/bazel/tests/verify_controller_gate_targets.py": "cccc27d66df5a58f6696a5da0b4e2caca5380c173e573d2539ec2b81d03add25",
+    "tools/bazel/tests/verify_controller_license.py": "baa0556777415d71cbb1ec50a9ebc75c4a6d972c9decff1d73f5d1655ac1bca3"
+  },
+  "status": "PASS",
+  "validation": {
+    "core_evaluation_output": "/nix/store/8wp43is6mcn2d8ln4lmd2gc38qwqg1j3-aos-native-evaluation-checks-0",
+    "helper_log_sha256": "0fc8a27df0c04d5820158a165fc28e191e51cb7c7a6f75007ddf27d87c5d7be9",
+    "helper_tests": 532,
+    "helper_tests_status": "PASS",
+    "nix_format_status": "PASS"
+  }
+}

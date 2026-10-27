@@ -13,12 +13,12 @@
 //! - [`crate::ratelimit::RateLimiter`] gains an
 //!   [`aos_hub_service::ratelimit::RateLimiter`] impl. The core trait method is
 //!   `async`; the hub's check is a synchronous counter read-modify-write, so the
-//!   impl simply runs it inline. The two enums ([`RateClass`] and
-//!   [`RateDecision`]) are mirror-for-mirror and are mapped by name.
+//!   impl simply runs it inline. The two enums ([`crate::ratelimit::RateClass`] and
+//!   [`crate::ratelimit::RateDecision`]) are mirror-for-mirror and are mapped by name.
 //! - [`crate::fetch::LocalFsFetch`] and [`crate::fetch::HttpFetch`] each gain an
 //!   [`aos_hub_service::fetch::SurfaceFetch`] impl with the identical
 //!   `fetch`/`describe` signatures, delegating to their inherent methods.
-//! - [`HubSurfaceProvider`] is the
+//! - [`crate::coreports::HubSurfaceProvider`] is the
 //!   [`SurfaceProvider`](aos_hub_service::fetch::SurfaceProvider): every topology
 //!   read opens the selected placement's binding and prefix directly.
 
@@ -341,8 +341,8 @@ fn native_placement_read_error(error: anyhow::Error) -> anyhow::Error {
     }
 }
 
-/// Map a core [`RateClass`](core_rl::RateClass) to the hub's own
-/// [`RateClass`](crate::ratelimit::RateClass).
+/// Map a core [`crate::ratelimit::RateClass`](core_rl::RateClass) to the hub's own
+/// [`crate::ratelimit::RateClass`](crate::ratelimit::RateClass).
 ///
 /// The two enums are variant-for-variant mirrors (the core enum was defined to
 /// match the native limiter), so this is a 1:1 rename — the shared service
@@ -365,7 +365,7 @@ fn map_class(class: core_rl::RateClass) -> crate::ratelimit::RateClass {
     }
 }
 
-/// Map the hub's [`RateDecision`](crate::ratelimit::RateDecision) to the core's.
+/// Map the hub's [`crate::ratelimit::RateDecision`](crate::ratelimit::RateDecision) to the core's.
 fn map_decision(decision: crate::ratelimit::RateDecision) -> core_rl::RateDecision {
     match decision {
         crate::ratelimit::RateDecision::Allowed => core_rl::RateDecision::Allowed,
@@ -375,7 +375,7 @@ fn map_decision(decision: crate::ratelimit::RateDecision) -> core_rl::RateDecisi
     }
 }
 
-/// The hub's in-process limiter, exposed as the core [`RateLimiter`] port.
+/// The hub's in-process limiter, exposed as the core [`core_rl::RateLimiter`] port.
 ///
 /// The hub's [`check`](crate::ratelimit::RateLimiter::check) is synchronous (a
 /// `Mutex`-guarded counter), so the `async` port method runs it inline and
@@ -392,7 +392,7 @@ impl core_rl::RateLimiter for crate::ratelimit::RateLimiter {
     }
 }
 
-/// The hub's filesystem fetcher, exposed as the core [`SurfaceFetch`] port.
+/// The hub's filesystem fetcher, exposed as the core [`core_fetch::SurfaceFetch`] port.
 #[async_trait]
 impl core_fetch::SurfaceFetch for crate::fetch::LocalFsFetch {
     async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
@@ -534,7 +534,7 @@ impl core_fetch::SurfaceFetch for crate::fetch::LocalFsFetch {
     }
 }
 
-/// The hub's HTTP(S) fetcher, exposed as the core [`SurfaceFetch`] port.
+/// The hub's HTTP(S) fetcher, exposed as the core [`core_fetch::SurfaceFetch`] port.
 #[async_trait]
 impl core_fetch::SurfaceFetch for crate::fetch::HttpFetch {
     async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
@@ -894,12 +894,12 @@ impl core_fetch::SurfaceProvider for HubSurfaceProvider {
 }
 
 /// The native [`SurfaceWriteProvider`](core_sw::SurfaceWriteProvider): resolves
-/// a per-registry filesystem writer over the hub's bindings.
+/// a placement-specific writer over the hub's bindings.
 ///
-/// Resolves the registry's storage-binding root — the *same* root
-/// [`HubSurfaceProvider`]/[`crate::fetch::LocalFsFetch`] read from — and returns
-/// a [`LocalFsWrite`] rooted there. A registration-only registry has no writable
-/// root, so [`writer`](core_sw::SurfaceWriteProvider::writer) errors clearly.
+/// [`placement_writer`](core_sw::SurfaceWriteProvider::placement_writer) resolves
+/// the explicit placement's binding and prefix. Local bindings use a filesystem
+/// writer; object-store bindings use their provider credentials. Unsupported or
+/// non-writable bindings return an error.
 pub struct HubSurfaceWriteProvider {
     /// The hub database, used to resolve a registry's storage-binding root.
     db: Arc<Database>,
@@ -1801,9 +1801,7 @@ impl core_fetch::OriginFetch for ReqwestOriginFetch {
         // `Content-Range: bytes start-end/total` on a 206 gives both the served
         // range and the full size; a plain 200 carries the size in
         // `Content-Length` and serves the whole object.
-        let served;
-        let total;
-        if status == reqwest::StatusCode::PARTIAL_CONTENT {
+        let (served, total) = if status == reqwest::StatusCode::PARTIAL_CONTENT {
             let cr = resp
                 .headers()
                 .get(header::CONTENT_RANGE)
@@ -1822,14 +1820,13 @@ impl core_fetch::OriginFetch for ReqwestOriginFetch {
                     cr.2
                 );
             }
-            served = Some((cr.0, cr.1));
-            total = cr.2;
+            (Some((cr.0, cr.1)), cr.2)
         } else {
-            served = None;
-            total = resp
+            let total = resp
                 .content_length()
                 .context("origin 200 without a Content-Length")?;
-        }
+            (None, total)
+        };
         // `reqwest::Error` satisfies `Body::from_stream`'s `Into<BoxError>` bound,
         // so the chunked body streams straight through with no re-wrapping.
         Ok(Some(core_fetch::StreamedRead {
@@ -2017,9 +2014,7 @@ impl core_fetch::SurfaceFetch for S3Fetch {
                 status.as_u16(),
             ));
         }
-        let served;
-        let total;
-        if status == reqwest::StatusCode::PARTIAL_CONTENT {
+        let (served, total) = if status == reqwest::StatusCode::PARTIAL_CONTENT {
             let cr = resp
                 .headers()
                 .get(header::CONTENT_RANGE)
@@ -2034,14 +2029,13 @@ impl core_fetch::SurfaceFetch for S3Fetch {
                     cr.2
                 );
             }
-            served = Some((cr.0, cr.1));
-            total = cr.2;
+            (Some((cr.0, cr.1)), cr.2)
         } else {
-            served = None;
-            total = resp
+            let total = resp
                 .content_length()
                 .context("s3 200 without a Content-Length")?;
-        }
+            (None, total)
+        };
         let strong_etag = resp
             .headers()
             .get(header::ETAG)

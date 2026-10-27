@@ -41,10 +41,12 @@ pub use expansion::cases;
 pub const QUALIFICATION_CASE: &str = "aos.release.qualification-case/v2";
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 #[path = "qualification_k3s_tests.rs"]
 mod k3s_tests;
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 #[path = "qualification_evidence/tests.rs"]
 mod tests;
 

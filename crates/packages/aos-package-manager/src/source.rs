@@ -549,7 +549,7 @@ async fn fetch_source_from_registry_cache(
     .await?;
     let missing = missing
         .into_iter()
-        .collect::<std::collections::HashSet<_>>();
+        .collect::<std::collections::BTreeSet<_>>();
     let resolved = resolved
         .into_iter()
         .filter(|item| missing.contains(&item.req.store_path))

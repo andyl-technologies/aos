@@ -1,0 +1,15 @@
+filegroup(
+    name = "engine_contracts",
+    srcs = [
+        "04-fault-taxonomy.md",
+        "08-executable-effect-contracts.md",
+    ],
+    visibility = ["//crates/crucible/crucible-engine:__pkg__"],
+)
+
+filegroup(
+    name = "harness_lint_inputs",
+    testonly = True,
+    srcs = glob(["*.md"], allow_empty = True),
+    visibility = ["//crates/crucible/crucible-test-support:__pkg__"],
+)

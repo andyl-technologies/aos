@@ -1,0 +1,88 @@
+{
+  "action_cache_hits": 0,
+  "action_mnemonics": {
+    "CargoBuildScriptRun": 10,
+    "ExtractCargoTomlEnvVars": 43,
+    "Rustc": 54
+  },
+  "action_runners": {
+    "linux-sandbox": 107
+  },
+  "build": "/nix/store/qigybz1mqbfd3mgr3vfyyfkd4bgjapr1-aos-bazel-qemu-gpl-corresponding-source-publication-959ebb0094-1",
+  "checkout_parent": "959ebb0094",
+  "command": [
+    "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix",
+    "--extra-experimental-features",
+    "nix-command",
+    "--offline",
+    "build",
+    "--impure",
+    "--file",
+    "/nix/store/9ixpj7g59gjls4p63w1hi5rz5ha8x7zp-qemu-crucible-source-11.1.1/share/aos/qemu-crucible-source/build/aos/tools/bazel/tests/corresponding-source.nix",
+    "--argstr",
+    "sourceArtifact",
+    "/nix/store/9ixpj7g59gjls4p63w1hi5rz5ha8x7zp-qemu-crucible-source-11.1.1",
+    "--argstr",
+    "trial",
+    "publication-959ebb0094",
+    "build",
+    "installed.plugin",
+    "installed.gateway",
+    "--no-link",
+    "--print-out-paths",
+    "--max-jobs",
+    "2",
+    "--cores",
+    "4",
+    "--option",
+    "substitute",
+    "false"
+  ],
+  "comparisons": {
+    "gateway": {
+      "byte_identical": true,
+      "checkout_package": "/nix/store/s54c4sw59swry2hs1ycmybnrsin25fgh-crucible-debug-gateway-0.1.0",
+      "file": "bin/crucible-debug-gateway",
+      "rebuilt_package": "/nix/store/vp1yzraznqm8pp8y2pfw8255lid2vafw-crucible-debug-gateway-0.1.0",
+      "sha256": "4045eb6b7668dd3557cd469ebc0d71930b2d032f4e03b8f8770237f21eb3835a"
+    },
+    "plugin": {
+      "byte_identical": true,
+      "checkout_package": "/nix/store/c29kpk09lwzz48872hcbgrxpv69jna6z-crucible-qemu-plugin-0.1.0",
+      "file": "lib/libcrucible_qemu_plugin.so",
+      "rebuilt_package": "/nix/store/d0fq73k11lcq7hv1wvddcr89kmkbdjz3-crucible-qemu-plugin-0.1.0",
+      "sha256": "6d14493536a8f8b9046b237650da044b6167c76f9575a8ce0cafe50201cfb7c3"
+    }
+  },
+  "disk_cache": null,
+  "evidence_sha256": {
+    "actions.json": "598d7fdd982097fc19a9672a9d0f9629d912c6bb33af7850250d21e009316acb",
+    "compiler-inputs.json": "d10bb5f4c6bec5d18f39ffd754414032233a813f881d5edc91b83859f4a0034a",
+    "compiler-invocations.json": "c05d8996193941462d3f3163c8cfcef7183c869660c17ab019a3d0ef0ed383f3",
+    "execution.json": "c7c224d007b9da68db59723b9940b1b49ba48d59ec8c6e554d7509f1393733fb",
+    "metrics.json": "e57cf55ccbb4efa9d886ed35d9f4c9cfa05ed5c637072708660d6fa00edf9b41"
+  },
+  "executed_actions": 107,
+  "exit_code": 0,
+  "exported_recipe_sha256": {
+    "pkgs/emulation/_crucible-qemu-bazel-installed.nix": "abd4089f3263e6d37047dcb484923861a52813db5fe4164911b444b705373101",
+    "pkgs/emulation/_crucible-qemu-bazel.nix": "178b3a32b30a2ca9e71e855e4b7969c8b715bf91b9c4ed8563e3b61b73290876",
+    "tools/bazel/tests/corresponding-source.nix": "6de3857be030f0a0ef37c5ff455520da58be6dfc7540445023104193f3aeb23f"
+  },
+  "fresh_derivations_built": [
+    "/nix/store/yfr07gp37hxldd05b61b6sg1kn73xxiw-aos-bazel-qemu-gpl-corresponding-source-publication-959ebb0094-1.drv",
+    "/nix/store/55f7fqqhi2249jcvvypm9fprbaa3jl48-crucible-qemu-plugin-0.1.0.drv",
+    "/nix/store/xcfk1w8lmr22zn0g29ykh76xlp00cas5-crucible-debug-gateway-0.1.0.drv"
+  ],
+  "limits": [
+    "The source artifact includes the in-progress evaluated-publication preview changes; its exact immutable path binds that snapshot.",
+    "The toolchain and fixed-output sources were already realized; this is not a cold bootstrap.",
+    "Binary equality compares Bazel outputs with the checkout, not an independent Cargo baseline.",
+    "This does not qualify publication, the canonical ABI prerequisite chain, foreign hosts, compiler-default equivalence, production cutover, or performance acceptance."
+  ],
+  "nix_log_sha256": "1c775987c8690edb51538a4d57b827452080c825cc5a7cdf0d1ac18017e8053f",
+  "schema_version": 1,
+  "source_artifact": "/nix/store/9ixpj7g59gjls4p63w1hi5rz5ha8x7zp-qemu-crucible-source-11.1.1",
+  "status": "PASS",
+  "trial": "publication-959ebb0094"
+}

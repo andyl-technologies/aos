@@ -1,0 +1,37 @@
+{
+  "action_cache_hits": 0,
+  "action_mnemonics": {
+    "CargoBuildScriptRun": 56,
+    "Clippy": 15,
+    "ExtractCargoTomlEnvVars": 472,
+    "Rustc": 532
+  },
+  "build": "/nix/store/jf98zjagis8d7aazqjpbr7fwl7kr7m77-aos-bazel-aos-cli-production-clippy-1",
+  "checkout_parent": "a939d373cc7ad0fef58d59d1d2d6b403609480e8",
+  "command": "nix-build tools/bazel/tests/native-source-paths.nix -A cli-repeatability -A cli.developer-build --no-out-link --max-jobs 2 --cores 4 --option substitute false",
+  "configuration": "/nix/store/sjiaqgb2j3f7r2935yhzg344338rh12i-aos-bazel-configuration.json",
+  "configuration_sha256": "927e6e6ea4835a4d204ea3a8b789f776169b08cdc115bdfb6649e9ce4e0ccf9a",
+  "evidence_sha256": {
+    "configured-discovery-metrics.json": "7f70cf5f4a8d30513eb992a0bab038516c3750beac0d9166d95c2cabd900b1c8",
+    "configured-labels.txt": "bfe9d5d96e1fad1f18e576f4a8569729cfa7349f12ae688fced5e2fbf88d5f94",
+    "declarations.txt": "1fcde6e977338ecbcc55e3ab14761545bb9222dc46f3a965d3f77812f8ce3df1",
+    "discovery-metrics.json": "cdd804243932ec6f417d05683a6729a005b970a44de5d8d8d5cbdc8ee79eb701",
+    "events.json": "59588441972c2161f38f9d18accabbf60eebf67d12b246c0833eba3370cf4739",
+    "execution.json": "5e09a14a544621136b5766d2dd211bbe7cc9573c92464fcf8ae6df36e798bf86",
+    "metrics.json": "9d8002b3e78e1efeb84395ca263093705e8f4d80887c12fdf1eed3839d54962f"
+  },
+  "executed_actions": 1075,
+  "inventory_sha256": "c44b302fe379376deea419b47cc48c68efe35367059ef9769d8bea272472a81d",
+  "limits": [
+    "This completes the opt-in mapped CLI Clippy check that was pending in the earlier repeatability report.",
+    "All fifteen CLI Clippy actions and their dependencies execute with the mapped toolchain. This does not trace every nested native compiler command.",
+    "The default toolchain and production package selectors remain unchanged. ABI, live services, cache restoration and performance acceptance remain separate gates."
+  ],
+  "repeatability_check": "/nix/store/cylrdkxr4bwgwn3pivb4m3n50nn1np8n-aos-bazel-cli-native-source-path-repeatability",
+  "schema_version": 1,
+  "selected_source_bytes_match_checkout": true,
+  "selected_source_files": 761,
+  "source": "/nix/store/192ifqp8d8v1xa9krdpkg4pbsic7f2q0-aos-bazel-workspace",
+  "status": "PASS",
+  "toolchains": "/nix/store/yb65p5byasym540y8pqffm7jk4kaxaym-aos-bazel-toolchains-1"
+}

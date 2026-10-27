@@ -501,20 +501,18 @@ impl RpcService {
         .await
         .map_err(RpcError::surface_read)?
         {
-            PlacementReadOutcome::Found(read) => {
-                return Ok(Some(SurfaceObjectResponse {
-                    bytes: read.value,
-                    content_type: keymap::content_type(path),
-                    cache_control: if cache.visibility == "public" {
-                        keymap::cache_control(path)
-                    } else {
-                        "private, no-store"
-                    },
-                    vary: (cache.visibility != "public").then_some("Authorization, Cookie"),
-                    redirect: None,
-                }));
-            }
-            PlacementReadOutcome::NotFound => return Ok(None),
+            PlacementReadOutcome::Found(read) => Ok(Some(SurfaceObjectResponse {
+                bytes: read.value,
+                content_type: keymap::content_type(path),
+                cache_control: if cache.visibility == "public" {
+                    keymap::cache_control(path)
+                } else {
+                    "private, no-store"
+                },
+                vary: (cache.visibility != "public").then_some("Authorization, Cookie"),
+                redirect: None,
+            })),
+            PlacementReadOutcome::NotFound => Ok(None),
         }
     }
 

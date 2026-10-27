@@ -1,0 +1,133 @@
+load("//tools/bazel/rules:clippy.bzl", "aos_package_clippy")
+load("@rules_rust//rust:defs.bzl", "rust_clippy", "rust_doc", "rustfmt_test")
+load("//tools/bazel/rules:compile.bzl", "rust_library", "rust_shared_library")
+load("//tools/bazel/rules:license.bzl", "aos_license_check")
+load("//tools/bazel/rules:package.bzl", "aos_package")
+load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")
+load("//tools/bazel/rules:source_package.bzl", "aos_source_package")
+load("//tools/bazel/rules:test.bzl", "aos_rust_test")
+
+package(default_visibility = ["//crates/crucible:__subpackages__"])
+
+RUST_PACKAGE = aos_rust_package(
+    name = "crucible-qemu-plugin",
+    version = "0.1.0",
+    edition = "2024",
+    license_expression = "GPL-2.0-only",
+    license_domain = "gpl-qemu",
+)
+
+SOURCES = glob(["src/**/*.rs"])
+DEPENDENCIES = [
+    "//crates/crucible/crucible-qemu-protocol:lib",
+    "//crates/crucible/crucible-qemu-shmem:lib",
+] + [
+    "//third_party/rust:core_" + name
+    for name in ["blake3", "hex", "libc", "sha2", "serde_json", "thiserror"]
+]
+
+rust_shared_library(
+    name = "plugin",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "crucible_qemu_plugin",
+    crate_root = "src/lib.rs",
+    srcs = SOURCES,
+    rustc_env_files = ["@aos_qemu_plugin_abi//:plugin.env"],
+    compile_data = ["@aos_qemu_plugin_abi//:identity.json"],
+    deps = DEPENDENCIES,
+)
+
+# rules_rust exposes CcInfo for a cdylib. Its Rust development rules need an
+# rlib provider; compile the same source and checked environment for those tools.
+rust_library(
+    name = "lib_for_development",
+    testonly = True,
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "crucible_qemu_plugin",
+    crate_root = "src/lib.rs",
+    srcs = SOURCES,
+    rustc_env_files = ["@aos_qemu_plugin_abi//:plugin.env"],
+    compile_data = ["@aos_qemu_plugin_abi//:identity.json"],
+    deps = DEPENDENCIES,
+)
+
+rust_clippy(name = "clippy", testonly = True, deps = [":lib_for_development"])
+rust_doc(name = "documentation", testonly = True, crate = ":lib_for_development")
+rustfmt_test(name = "format", testonly = True, targets = [":lib_for_development"])
+
+aos_license_check(
+    name = "production_license_closure",
+    roots = [":plugin"],
+    license_domain = "gpl-qemu",
+)
+
+aos_package(
+    name = "compiler_artifact",
+    package = RUST_PACKAGE,
+    artifacts = {":plugin": "lib/libcrucible_qemu_plugin.so"},
+)
+
+# The Apache engine is an immutable runtime tool in a separate process. Its
+# code never enters the GPL test's compiled dependency or licensing closure.
+aos_rust_test(
+    name = "unit",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate = ":lib_for_development",
+    runfile_env = {"CRUCIBLE_QEMU_TEST_ORACLE": "@aos_qemu_test_tools//:oracle"},
+)
+
+GATE_TESTS = ["gate_abi_conformance", "gate_patch_microtests", "gate_qemu_inert"]
+GATE_INPUTS = [
+    "//:qemu_plugin_gate_audit",
+    "//tests/crucible:qemu_plugin_gate_audit",
+    "//docs/rfcs/0010-crucible:qemu_plugin_gate_audit",
+    "//crates/crucible/crucible-qemu-protocol:qemu_plugin_gate_audit",
+    "//crates/crucible/crucible-guest:qemu_plugin_gate_audit",
+]
+
+filegroup(name = "gate_source_audit", srcs = SOURCES, testonly = True)
+
+[
+    aos_rust_test(
+        name = name,
+        package = RUST_PACKAGE,
+        lint_config = "//tools/bazel/rules:workspace_lints",
+        crate_root = "tests/" + name + ".rs",
+        srcs = ["tests/" + name + ".rs"],
+        deps = DEPENDENCIES,
+        data = GATE_INPUTS + [":gate_source_audit"],
+    )
+    for name in GATE_TESTS
+]
+
+TEST_ARTIFACTS = [":unit_binary"] + [":" + name + "_binary" for name in GATE_TESTS]
+rust_clippy(name = "test_clippy", testonly = True, deps = TEST_ARTIFACTS)
+rustfmt_test(name = "test_format", targets = TEST_ARTIFACTS)
+
+aos_license_check(
+    name = "test_license_closure",
+    testonly = True,
+    roots = TEST_ARTIFACTS,
+    license_domain = "gpl-qemu",
+)
+
+aos_source_package(
+    name = "source_package",
+    package = RUST_PACKAGE,
+    srcs = glob(["**/*.rs"]),
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "gate_manifest_reference",
+    testonly = True,
+    # Nix source gates still name this file; retain their existence assertions
+    # until those consumers have migrated to declared Bazel contracts.
+    srcs = ["Cargo.toml"],
+    visibility = ["//crates/crucible/crucible-test-support:__pkg__"],
+)
+
+aos_package_clippy(name = "clippy_all")

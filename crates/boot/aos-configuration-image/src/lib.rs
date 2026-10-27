@@ -1,6 +1,6 @@
 //! Owns native OS configuration lower images and their verified boot mounting.
 //!
-//! [`model`] describes the typed file inputs and immutable result. [`render`]
+//! [`model`] describes the typed file inputs and immutable result. `render`
 //! assembles files without following destination symlinks. [`lower`] publishes
 //! deterministic EROFS images with durable receipts and checks them on reuse.
 //! [`boot`] reads one explicitly bound, committed package-generation result and

@@ -335,7 +335,7 @@ impl RpcService {
         self.require_permission(
             &claims,
             Permission::RegistryConfigure,
-            &self.registry_scope(&registry).await?,
+            &self.registry_scope(registry).await?,
         )
         .await?;
         Ok(claims)
@@ -509,16 +509,16 @@ impl RpcService {
                     byte_size: object.expected_size,
                     kind: object.object_kind,
                     media_type: publication_media_type(&object.object_key).into(),
-                    upload_url: (object.expected_size <= max_complete_upload)
-                        .then(|| {
-                            format!(
-                                "{}/aos.hub.v1.PublishService/UploadObject/{}/{}",
-                                self.external_url.trim_end_matches('/'),
-                                publication_id,
-                                object.surface_object_id
-                            )
-                        })
-                        .unwrap_or_default(),
+                    upload_url: if object.expected_size <= max_complete_upload {
+                        format!(
+                            "{}/aos.hub.v1.PublishService/UploadObject/{}/{}",
+                            self.external_url.trim_end_matches('/'),
+                            publication_id,
+                            object.surface_object_id
+                        )
+                    } else {
+                        String::new()
+                    },
                     verified: object.verified,
                 })
                 .collect()

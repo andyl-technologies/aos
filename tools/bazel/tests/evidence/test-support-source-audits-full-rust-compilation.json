@@ -1,0 +1,2806 @@
+{
+  "compiled_test_targets": [
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/activation/aos-activation#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/activation/aos-activation/src/lib.rs",
+      "target": "aos_activation"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/activation/aos-activation-bpf-lsm#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/activation/aos-activation-bpf-lsm/src/main.rs",
+      "target": "aos-ebpf-lsm-provider"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/activation/aos-activation-bpf-lsm#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/activation/aos-activation-bpf-lsm/src/lib.rs",
+      "target": "aos_activation_bpf_lsm"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/activation/aos-activation-bpf-network#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/activation/aos-activation-bpf-network/src/main.rs",
+      "target": "aos-ebpf-net-policy-provider"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/activation/aos-activation-bpf-network#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/activation/aos-activation-bpf-network/src/lib.rs",
+      "target": "aos_activation_bpf_network"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/activation/aos-activation-config-files#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/activation/aos-activation-config-files/src/main.rs",
+      "target": "aos-configuration-provider"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/activation/aos-activation-config-files#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/activation/aos-activation-config-files/src/lib.rs",
+      "target": "aos_activation_config_files"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/activation/aos-activation-crucible#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/activation/aos-activation-crucible/src/main.rs",
+      "target": "aos-ability-crucible"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/activation/aos-activation-crucible#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/activation/aos-activation-crucible/src/lib.rs",
+      "target": "aos_activation_crucible"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/activation/aos-activation-filesystem#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/activation/aos-activation-filesystem/src/main.rs",
+      "target": "aos-filesystem-provider"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/activation/aos-activation-filesystem#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/activation/aos-activation-filesystem/src/lib.rs",
+      "target": "aos_activation_filesystem"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/activation/aos-activation-kubernetes#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/activation/aos-activation-kubernetes/src/main.rs",
+      "target": "aos-kubernetes-provider"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/activation/aos-activation-kubernetes#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/activation/aos-activation-kubernetes/src/lib.rs",
+      "target": "aos_activation_kubernetes"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/activation/aos-activation-nftables#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/activation/aos-activation-nftables/src/main.rs",
+      "target": "aos-network-ruleset-provider"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/activation/aos-activation-nftables#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/activation/aos-activation-nftables/src/lib.rs",
+      "target": "aos_activation_nftables"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/activation/aos-activation-nix-store#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/activation/aos-activation-nix-store/src/main.rs",
+      "target": "aos-nix-store-provider"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/activation/aos-activation-nix-store#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/activation/aos-activation-nix-store/src/lib.rs",
+      "target": "aos_activation_nix_store"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/activation/aos-activation-storage#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/activation/aos-activation-storage/src/bin/boot_transaction_storage.rs",
+      "target": "aos-boot-transaction-storage-provider"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/activation/aos-activation-storage#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/activation/aos-activation-storage/src/bin/cryptsetup.rs",
+      "target": "aos-cryptsetup-provider"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/activation/aos-activation-storage#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/activation/aos-activation-storage/src/bin/storage_format.rs",
+      "target": "aos-storage-format-provider"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/activation/aos-activation-storage#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/activation/aos-activation-storage/src/bin/storage_provisioning_marker.rs",
+      "target": "aos-storage-provisioning-marker-observer"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/activation/aos-activation-storage#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/activation/aos-activation-storage/src/bin/storage_provisioning.rs",
+      "target": "aos-storage-provisioning-provider"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/activation/aos-activation-storage#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/activation/aos-activation-storage/src/bin/zfs_dataset.rs",
+      "target": "aos-zfs-dataset-provider"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/activation/aos-activation-storage#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/activation/aos-activation-storage/src/bin/zfs_maintenance.rs",
+      "target": "aos-zfs-maintenance"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/activation/aos-activation-storage#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/activation/aos-activation-storage/src/bin/zfs_memory_policy.rs",
+      "target": "aos-zfs-memory-policy"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/activation/aos-activation-storage#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/activation/aos-activation-storage/src/bin/zfs_pool.rs",
+      "target": "aos-zfs-pool-provider"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/activation/aos-activation-storage#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/activation/aos-activation-storage/src/lib.rs",
+      "target": "aos_activation_storage"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/activation/aos-activation-sysctl#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/activation/aos-activation-sysctl/src/main.rs",
+      "target": "aos-kernel-tunable-provider"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/activation/aos-activation-sysctl#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/activation/aos-activation-sysctl/src/lib.rs",
+      "target": "aos_activation_sysctl"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/activation/aos-activation-systemd#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/activation/aos-activation-systemd/src/bin/aos-systemd-credential-encrypt.rs",
+      "target": "aos-systemd-credential-encrypt"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/activation/aos-activation-systemd#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/activation/aos-activation-systemd/src/bin/aos-systemd-native-resource-provider.rs",
+      "target": "aos-systemd-native-resource-provider"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/artifacts/aos-artifact-evidence#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/artifacts/aos-artifact-evidence/src/lib.rs",
+      "target": "aos_artifact_evidence"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/artifacts/aos-nar#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/artifacts/aos-nar/src/lib.rs",
+      "target": "aos_nar"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/artifacts/aos-oci#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/artifacts/aos-oci/src/lib.rs",
+      "target": "aos_oci"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/artifacts/aos-oci#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/artifacts/aos-oci/tests/external_signing.rs",
+      "target": "external_signing"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/artifacts/aos-oci#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/artifacts/aos-oci/tests/layout.rs",
+      "target": "layout"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/artifacts/aos-oci#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/artifacts/aos-oci/tests/registry.rs",
+      "target": "registry"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/artifacts/aos-oci-types#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/artifacts/aos-oci-types/src/lib.rs",
+      "target": "aos_oci_types"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/artifacts/aos-oci-types#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/artifacts/aos-oci-types/tests/golden.rs",
+      "target": "golden"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/artifacts/aos-oci-types#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/artifacts/aos-oci-types/tests/reference_vectors.rs",
+      "target": "reference_vectors"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/boot/aos-boot-identity#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/boot/aos-boot-identity/src/main.rs",
+      "target": "aos-boot-identity"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/boot/aos-boot-identity#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/boot/aos-boot-identity/src/lib.rs",
+      "target": "aos_boot_identity"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/boot/aos-boot-identity#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/boot/aos-boot-identity/tests/uki_cli.rs",
+      "target": "uki_cli"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/boot/aos-boot-runtime#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/boot/aos-boot-runtime/src/bin/aos-boot-preparation-provider.rs",
+      "target": "aos-boot-preparation-provider"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/boot/aos-boot-runtime#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/boot/aos-boot-runtime/src/bin/aos-systemd-boot-platform.rs",
+      "target": "aos-systemd-boot-platform"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/boot/aos-boot-runtime#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/boot/aos-boot-runtime/src/bin/aos-systemd-image-evidence.rs",
+      "target": "aos-systemd-image-evidence"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/boot/aos-boot-runtime#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/boot/aos-boot-runtime/src/bin/aos-systemd-image-stage.rs",
+      "target": "aos-systemd-image-stage"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/boot/aos-boot-runtime#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/boot/aos-boot-runtime/src/bin/aos-systemd-initrd-store.rs",
+      "target": "aos-systemd-initrd-store"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/boot/aos-boot-runtime#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/boot/aos-boot-runtime/src/lib.rs",
+      "target": "aos_boot_runtime"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/boot/aos-configuration-image#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/boot/aos-configuration-image/src/certificate_main.rs",
+      "target": "aos-certificate-bundle"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/boot/aos-configuration-image#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/boot/aos-configuration-image/src/boot_main.rs",
+      "target": "aos-configuration-boot"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/boot/aos-configuration-image#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/boot/aos-configuration-image/src/main.rs",
+      "target": "aos-configuration-lower"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/boot/aos-configuration-image#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/boot/aos-configuration-image/src/mount_main.rs",
+      "target": "aos-configuration-mount"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/boot/aos-configuration-image#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/boot/aos-configuration-image/src/lib.rs",
+      "target": "aos_configuration_image"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/boot/aos-platform-metadata#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/boot/aos-platform-metadata/src/bin/aos-metadata-acquisition-provider.rs",
+      "target": "aos-metadata-acquisition-provider"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/boot/aos-platform-metadata#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/boot/aos-platform-metadata/src/bin/aos-metadata-policy-provider.rs",
+      "target": "aos-metadata-policy-provider"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/boot/aos-platform-metadata#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/boot/aos-platform-metadata/src/lib.rs",
+      "target": "aos_platform_metadata"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/boot/aos-recovery#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/boot/aos-recovery/src/main.rs",
+      "target": "aos-recovery"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/boot/aos-recovery#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/boot/aos-recovery/src/lib.rs",
+      "target": "aos_recovery"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/boot/aos-storage-layout#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/boot/aos-storage-layout/src/lib.rs",
+      "target": "aos_storage_layout"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/cli/aos-cli#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/cli/aos-cli/src/main.rs",
+      "target": "aos"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/cli/aos-cli#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/cli/aos-cli/tests/support/ability_authority_audit.rs",
+      "target": "aos-ability-authority-audit"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/cli/aos-cli#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/cli/aos-cli/tests/support/ability_interruption_audit.rs",
+      "target": "aos-ability-interruption-audit"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/cli/aos-cli#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/cli/aos-cli/src/boot_configuration.rs",
+      "target": "aos-boot-configuration"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/cli/aos-cli#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/cli/aos-cli/src/package_runtime.rs",
+      "target": "aos-package-runtime"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/cli/aos-cli#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/cli/aos-cli/src/provisioning_configuration_evaluator.rs",
+      "target": "aos-provisioning-configuration-evaluator"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/cli/aos-cli#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/cli/aos-cli/tests/support/release_fleet_fixture.rs",
+      "target": "aos-release-fleet-fixture"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/cli/aos-cli#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/cli/aos-cli/src/apm.rs",
+      "target": "apm"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/cli/aos-cli#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/cli/aos-cli/src/apr.rs",
+      "target": "apr"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/cli/aos-cli#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/cli/aos-cli/src/lib.rs",
+      "target": "aos_cli"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/cli/aos-cli#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/cli/aos-cli/tests/ability_check_compat_cli.rs",
+      "target": "ability_check_compat_cli"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/cli/aos-cli#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/cli/aos-cli/tests/ability_inspect_cli.rs",
+      "target": "ability_inspect_cli"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/cli/aos-cli#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/cli/aos-cli/tests/apm_profile_lifecycle_cli.rs",
+      "target": "apm_profile_lifecycle_cli"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/cli/aos-cli#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/cli/aos-cli/tests/apm_system_config_dir.rs",
+      "target": "apm_system_config_dir"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/cli/aos-cli#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/cli/aos-cli/tests/apr_cache_cli.rs",
+      "target": "apr_cache_cli"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/cli/aos-cli#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/cli/aos-cli/tests/apr_create_host_identity_cli.rs",
+      "target": "apr_create_host_identity_cli"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/cli/aos-cli#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/cli/aos-cli/tests/apr_dry_run_cli.rs",
+      "target": "apr_dry_run_cli"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/cli/aos-cli#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/cli/aos-cli/tests/apr_keys_cli.rs",
+      "target": "apr_keys_cli"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/cli/aos-cli#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/cli/aos-cli/tests/apr_keys_generate_cli.rs",
+      "target": "apr_keys_generate_cli"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/cli/aos-cli#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/cli/aos-cli/tests/apr_keys_register_cli.rs",
+      "target": "apr_keys_register_cli"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/cli/aos-cli#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/cli/aos-cli/tests/apr_origin_config_cli.rs",
+      "target": "apr_origin_config_cli"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/cli/aos-cli#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/cli/aos-cli/tests/apr_trust_cli.rs",
+      "target": "apr_trust_cli"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/cli/aos-cli#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/cli/aos-cli/tests/cli_separation.rs",
+      "target": "cli_separation"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/cli/aos-cli#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/cli/aos-cli/tests/container_cli.rs",
+      "target": "container_cli"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/cli/aos-cli#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/cli/aos-cli/tests/container_cli_transfer.rs",
+      "target": "container_cli_transfer"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/cli/aos-cli#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/cli/aos-cli/tests/container_native_publication.rs",
+      "target": "container_native_publication"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/cli/aos-cli#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/cli/aos-cli/tests/documentation_cli.rs",
+      "target": "documentation_cli"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/cli/aos-cli#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/cli/aos-cli/tests/hub_retained_control_cli_contract.rs",
+      "target": "hub_retained_control_cli_contract"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/cli/aos-cli#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/cli/aos-cli/tests/hub_topology_cutover.rs",
+      "target": "hub_topology_cutover"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/cli/aos-cli#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/cli/aos-cli/tests/image_registry_cli.rs",
+      "target": "image_registry_cli"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/cli/aos-cli#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/cli/aos-cli/tests/registry_staging_cli.rs",
+      "target": "registry_staging_cli"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/cli/aos-cli#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/cli/aos-cli/tests/release_inventory_nix_boundary.rs",
+      "target": "release_inventory_nix_boundary"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/cli/aos-cli#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/cli/aos-cli/tests/workspace_architecture.rs",
+      "target": "workspace_architecture"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/cli/aos-cli-ui#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/cli/aos-cli-ui/src/lib.rs",
+      "target": "aos_cli_ui"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/cli/aos-closure-analysis#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/cli/aos-closure-analysis/src/lib.rs",
+      "target": "aos_closure_analysis"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/cli/aos-nix-docs#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/cli/aos-nix-docs/src/lib.rs",
+      "target": "aos_nix_docs"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/core/aos-core#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/core/aos-core/src/lib.rs",
+      "target": "aos_core"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/hub/aos-hub-api#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/hub/aos-hub-api/src/lib.rs",
+      "target": "aos_hub_api"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/hub/aos-hub-api#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/hub/aos-hub-api/tests/contract_inventory.rs",
+      "target": "contract_inventory"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/hub/aos-hub-client#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/hub/aos-hub-client/src/lib.rs",
+      "target": "aos_hub_client"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/hub/aos-hub-console#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/hub/aos-hub-console/src/main.rs",
+      "target": "aos-hub-console"
+    },
+    {
+      "kind": [
+        "cdylib",
+        "rlib"
+      ],
+      "package_id": "path+file://./source/crates/hub/aos-hub-console#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/hub/aos-hub-console/src/lib.rs",
+      "target": "aos_hub_console"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/hub/aos-hub-db#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/hub/aos-hub-db/src/lib.rs",
+      "target": "aos_hub_db"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/hub/aos-hub-model#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/hub/aos-hub-model/src/lib.rs",
+      "target": "aos_hub_model"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/hub/aos-hub-model#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/hub/aos-hub-model/tests/retained_control_foundation.rs",
+      "target": "retained_control_foundation"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/hub/aos-hub-native#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/hub/aos-hub-native/src/main.rs",
+      "target": "aos-hub"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/hub/aos-hub-native#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/hub/aos-hub-native/src/bin/aos-hub-egress.rs",
+      "target": "aos-hub-egress"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/hub/aos-hub-native#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/hub/aos-hub-native/src/lib.rs",
+      "target": "aos_hub_native"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/hub/aos-hub-native#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/hub/aos-hub-native/tests/auth.rs",
+      "target": "auth"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/hub/aos-hub-native#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/hub/aos-hub-native/tests/config.rs",
+      "target": "config"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/hub/aos-hub-native#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/hub/aos-hub-native/tests/console.rs",
+      "target": "console"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/hub/aos-hub-native#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/hub/aos-hub-native/tests/container_admin.rs",
+      "target": "container_admin"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/hub/aos-hub-native#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/hub/aos-hub-native/tests/dialect.rs",
+      "target": "dialect"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/hub/aos-hub-native#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/hub/aos-hub-native/tests/e2e.rs",
+      "target": "e2e"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/hub/aos-hub-native#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/hub/aos-hub-native/tests/git_interop.rs",
+      "target": "git_interop"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/hub/aos-hub-native#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/hub/aos-hub-native/tests/gitconfig.rs",
+      "target": "gitconfig"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/hub/aos-hub-native#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/hub/aos-hub-native/tests/hardening.rs",
+      "target": "hardening"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/hub/aos-hub-native#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/hub/aos-hub-native/tests/http_source.rs",
+      "target": "http_source"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/hub/aos-hub-native#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/hub/aos-hub-native/tests/mirror.rs",
+      "target": "mirror"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/hub/aos-hub-native#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/hub/aos-hub-native/tests/oci_alert_rules.rs",
+      "target": "oci_alert_rules"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/hub/aos-hub-native#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/hub/aos-hub-native/tests/oci_distribution.rs",
+      "target": "oci_distribution"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/hub/aos-hub-native#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/hub/aos-hub-native/tests/oidc.rs",
+      "target": "oidc"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/hub/aos-hub-native#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/hub/aos-hub-native/tests/operations.rs",
+      "target": "operations"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/hub/aos-hub-native#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/hub/aos-hub-native/tests/password.rs",
+      "target": "password"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/hub/aos-hub-native#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/hub/aos-hub-native/tests/seed.rs",
+      "target": "seed"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/hub/aos-hub-native#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/hub/aos-hub-native/tests/settings_workflows.rs",
+      "target": "settings_workflows"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/hub/aos-hub-native#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/hub/aos-hub-native/tests/tenancy.rs",
+      "target": "tenancy"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/hub/aos-hub-native#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/hub/aos-hub-native/tests/tenancy_read_authz.rs",
+      "target": "tenancy_read_authz"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/hub/aos-hub-native#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/hub/aos-hub-native/tests/web.rs",
+      "target": "web"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/hub/aos-hub-native#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/hub/aos-hub-native/tests/webauthn.rs",
+      "target": "webauthn"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/hub/aos-hub-native#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/hub/aos-hub-native/tests/webhook.rs",
+      "target": "webhook"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/hub/aos-hub-service#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/hub/aos-hub-service/src/lib.rs",
+      "target": "aos_hub_service"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/hub/aos-hub-service#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/hub/aos-hub-service/tests/signing_key_lifecycle.rs",
+      "target": "signing_key_lifecycle"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/hub/aos-hub-service#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/hub/aos-hub-service/tests/wasm_clock_guard.rs",
+      "target": "wasm_clock_guard"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/hub/aos-hub-ui#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/hub/aos-hub-ui/src/lib.rs",
+      "target": "aos_hub_ui"
+    },
+    {
+      "kind": [
+        "cdylib",
+        "rlib"
+      ],
+      "package_id": "path+file://./source/crates/hub/aos-hub-worker#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/hub/aos-hub-worker/src/lib.rs",
+      "target": "aos_hub_worker"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/linux/aos-linux-project-quota#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/linux/aos-linux-project-quota/src/lib.rs",
+      "target": "aos_linux_project_quota"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/linux/aos-systemd-client#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/linux/aos-systemd-client/src/lib.rs",
+      "target": "aos_systemd_client"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/linux/aos-systemd-client#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/linux/aos-systemd-client/tests/client.rs",
+      "target": "client"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/linux/aos-systemd-client#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/linux/aos-systemd-client/tests/pinned_bus.rs",
+      "target": "pinned_bus"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/modules/aos-module-docs#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/modules/aos-module-docs/src/lib.rs",
+      "target": "aos_module_docs"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/modules/aos-module-format#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/modules/aos-module-format/src/lib.rs",
+      "target": "aos_module_format"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/nix/aos-nix#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/nix/aos-nix/src/lib.rs",
+      "target": "aos_nix"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/packages/aos-build-api#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/packages/aos-build-api/src/lib.rs",
+      "target": "aos_build_api"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/packages/aos-build-api#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/packages/aos-build-api/tests/decode_limits.rs",
+      "target": "decode_limits"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/packages/aos-build-client#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/packages/aos-build-client/src/lib.rs",
+      "target": "aos_build_client"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/packages/aos-build-client#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/packages/aos-build-client/tests/tls_trust.rs",
+      "target": "tls_trust"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/packages/aos-build-server#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/packages/aos-build-server/src/lib.rs",
+      "target": "aos_build_server"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/packages/aos-build-server#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/packages/aos-build-server/tests/rest_read_access.rs",
+      "target": "rest_read_access"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/packages/aos-build-server#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/packages/aos-build-server/tests/resumable_uploads.rs",
+      "target": "resumable_uploads"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/packages/aos-build-server#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/packages/aos-build-server/tests/rpc_roundtrip.rs",
+      "target": "rpc_roundtrip"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/packages/aos-build-server#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/packages/aos-build-server/tests/store_hash_validation.rs",
+      "target": "store_hash_validation"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/packages/aos-deployment#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/packages/aos-deployment/src/lib.rs",
+      "target": "aos_deployment"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/packages/aos-deployment-format#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/packages/aos-deployment-format/src/lib.rs",
+      "target": "aos_deployment_format"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/packages/aos-nix-cache#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/packages/aos-nix-cache/src/lib.rs",
+      "target": "aos_nix_cache"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/packages/aos-nix-cache#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/packages/aos-nix-cache/tests/backend_matrix.rs",
+      "target": "backend_matrix"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/packages/aos-nix-cache#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/packages/aos-nix-cache/tests/conditional_writes.rs",
+      "target": "conditional_writes"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/packages/aos-package-manager#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/packages/aos-package-manager/src/bin/aos-deployment-check.rs",
+      "target": "aos-deployment-check"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/packages/aos-package-manager#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/packages/aos-package-manager/src/bin/aos-image-rollout-boot.rs",
+      "target": "aos-image-rollout-boot"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/packages/aos-package-manager#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/packages/aos-package-manager/src/bin/aos-image-rollout-observer.rs",
+      "target": "aos-image-rollout-observer"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/packages/aos-package-manager#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/packages/aos-package-manager/src/bin/aos-image-rollout-provider.rs",
+      "target": "aos-image-rollout-provider"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/packages/aos-package-manager#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/packages/aos-package-manager/src/bin/aos-package-attestation-provider.rs",
+      "target": "aos-package-attestation-provider"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/packages/aos-package-manager#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/packages/aos-package-manager/src/lib.rs",
+      "target": "aos_package_manager"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/packages/aos-package-manager#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/packages/aos-package-manager/tests/package_command_scopes.rs",
+      "target": "package_command_scopes"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/packages/aos-package-manager#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/packages/aos-package-manager/tests/registry_cache_e2e.rs",
+      "target": "registry_cache_e2e"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/registry/aos-registry-authoring#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/registry/aos-registry-authoring/src/lib.rs",
+      "target": "aos_registry_authoring"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/registry/aos-registry-authoring#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/registry/aos-registry-authoring/tests/change_requests.rs",
+      "target": "change_requests"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/registry/aos-registry-authoring#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/registry/aos-registry-authoring/tests/registry_default_channel.rs",
+      "target": "registry_default_channel"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/registry/aos-registry-authoring#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/registry/aos-registry-authoring/tests/registry_e2e.rs",
+      "target": "registry_e2e"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/registry/aos-registry-authoring#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/registry/aos-registry-authoring/tests/registry_perf.rs",
+      "target": "registry_perf"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/registry/aos-registry-authoring#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/registry/aos-registry-authoring/tests/registry_pki_e2e.rs",
+      "target": "registry_pki_e2e"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/registry/aos-registry-client#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/registry/aos-registry-client/src/lib.rs",
+      "target": "aos_registry_client"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/registry/aos-registry-client#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/registry/aos-registry-client/tests/libgit2_inputs.rs",
+      "target": "libgit2_inputs"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/registry/aos-registry-format#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/registry/aos-registry-format/src/lib.rs",
+      "target": "aos_registry_format"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/registry/aos-registry-web#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/registry/aos-registry-web/src/main.rs",
+      "target": "aos-registry-spa"
+    },
+    {
+      "kind": [
+        "cdylib",
+        "rlib"
+      ],
+      "package_id": "path+file://./source/crates/registry/aos-registry-web#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/registry/aos-registry-web/src/lib.rs",
+      "target": "aos_registry_web"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/release/aos-image-finalizer#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/release/aos-image-finalizer/src/bin/image_metadata.rs",
+      "target": "aos-image-metadata"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/release/aos-image-finalizer#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/release/aos-image-finalizer/src/lib.rs",
+      "target": "aos_image_finalizer"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/release/aos-package-maintenance#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/release/aos-package-maintenance/src/lib.rs",
+      "target": "aos_package_maintenance"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/release/aos-release-coordinator#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/release/aos-release-coordinator/src/lib.rs",
+      "target": "aos_release_coordinator"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/release/aos-release-format#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/release/aos-release-format/src/lib.rs",
+      "target": "aos_release_format"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/release/aos-release-format#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/release/aos-release-format/tests/nix_inventory.rs",
+      "target": "nix_inventory"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "package_id": "path+file://./source/crates/release/aos-release-format#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/release/aos-release-format/tests/qualification.rs",
+      "target": "qualification"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "package_id": "path+file://./source/crates/release/aos-release-signer#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/release/aos-release-signer/src/main.rs",
+      "target": "aos-release-signer"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "package_id": "path+file://./source/crates/transfer/aos-transfer#0.1.0",
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "source": "./source/crates/transfer/aos-transfer/src/lib.rs",
+      "target": "aos_transfer"
+    }
+  ],
+  "compiled_test_targets_count": 185,
+  "compiler_messages_sha256": "cdf28ef80b2bac755a38d0d109b316bc7870e22d494cce0eca50a0bc7b9b6ea3",
+  "derivation": "/nix/store/98xm8msi85z6rw2qniqqcxgwg5y6wh32-aos-test-targets-0.1.0.drv",
+  "edited_source": {
+    "path": "crates/crucible/crucible-test-support/tests/support/crate_unsafe_fence.rs",
+    "sha256": "1f7e8d8167605426849b955df654b049c9add50894e0510e916a7e78be9479d8"
+  },
+  "entry_point": "checks.rust.aos-test-targets",
+  "frozen_rust_source_inventory_sha256": "54a22ac133b2e2bea92151330d735e58dd46e1ec7d968791ca836c2727f975b8",
+  "limits": [
+    "This is the required application unit/integration-target compilation gate; it does not execute those tests.",
+    "All Rust files retained in the frozen gate source match the current checkout. Later Nix/Bazel declaration changes are outside this frozen Cargo compilation qualification.",
+    "Source-audit case execution and negative controls have their separate retained Cargo/Bazel receipts."
+  ],
+  "matching_current_rust_source_files": 3773,
+  "observation": {
+    "exact_derivation_observer_exit_status": 0,
+    "observer_output": "/nix/store/ss8xw1c4m7v3xsx80h352dn724zl4igy-aos-test-targets-0.1.0"
+  },
+  "original_build_log_sha256": "48578609ec803655699f4cf61f43f9ca0b14bc4bb59eb9d2e4740e6ebf227d5a",
+  "output": "/nix/store/ss8xw1c4m7v3xsx80h352dn724zl4igy-aos-test-targets-0.1.0",
+  "schema_version": 1,
+  "source": "/nix/store/bqxr7bkc4zjl7pq5n35g2322py76nbvk-aos-workspace-src",
+  "status": "PASS"
+}

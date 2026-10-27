@@ -1,0 +1,1321 @@
+{
+  "checkpoint_commit": "f667534fade94743f72eeeac9be8a3d32f7900fd",
+  "command": "nix-build /tmp/aos-bazel-722/store-s3-baseline.nix --keep-going --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "compiled_source_sha256": {
+    "crates/crucible/storage/crucible-store-s3/src/deadline.rs": "d576f71c3a472d5e353c02632d4de21489de81338487c7f4395d90afba629525",
+    "crates/crucible/storage/crucible-store-s3/src/download.rs": "9d8f939052ab3e8699fee0e98f103aea16e3a74a6b91d81cc90149a4dcf8fd28",
+    "crates/crucible/storage/crucible-store-s3/src/lib.rs": "61550ebcc8f3135b67e5d257d06f76ebb1cda734bbf97fef8bf87b6985d41cbf",
+    "crates/crucible/storage/crucible-store-s3/tests/live_conformance.rs": "6cc7813b28e0aba49030b462e463e54353a7f0d7349e809d511d7f8b7a2589ea",
+    "crates/crucible/storage/crucible-store/src/bin/crucible-fleet-store.rs": "26ffbd254d21fc3095e18c2ed9bdf2e02176d073ff03c396d92052c14d1c0737",
+    "crates/crucible/storage/crucible-store/src/cas/campaign_codec.rs": "fd0e426b6febe9e2a6b3314e060a97b91bbc8170332074f9ae27fe53f856fb50",
+    "crates/crucible/storage/crucible-store/src/cas/campaign_model.rs": "16c043788a0500fe0f3b0291e0409950cd7da9fe9f6f80440a5ce5fbabd76e6d",
+    "crates/crucible/storage/crucible-store/src/cas/campaign_store.rs": "25e229db68cadd197b10f2ffa1900e52364515ac6a2f9acfaee6499d49c87ddc",
+    "crates/crucible/storage/crucible-store/src/cas/invalidation.rs": "273057590778f15ffa0716ec3e25a32c9855e5909e3841f772db94474c1b4e11",
+    "crates/crucible/storage/crucible-store/src/cas/tests.rs": "b15af04204fa15bd7bddca36ac7a6bdc2160cd1c7f1323cd03015f51b14aa05e",
+    "crates/crucible/storage/crucible-store/src/content_envelope.rs": "ebf93a2f29015451b79cdeb9591c25d978b3ecda3ec5ec4031daa2966e6e8515",
+    "crates/crucible/storage/crucible-store/src/content_store.rs": "b13f21e35f9fb46f26c9a95dd326235e5b8af0f2102bfcbed6150fbfaf8dc6b6",
+    "crates/crucible/storage/crucible-store/src/content_store/admin.rs": "6d67b8e374082fa608fe9c0e35e75a2db8010364cd94617a5172342867f342e8",
+    "crates/crucible/storage/crucible-store/src/content_store/composition.rs": "f4e3dab3fd96c144b17eb3bc55321b9eb84bf4b9b8cf0a4ea3feb9b34a50192e",
+    "crates/crucible/storage/crucible-store/src/content_store/compressed_directory.rs": "19750a0071299ae14bb8a0057c99952fb3242d3efcfe667208ac22de34884d78",
+    "crates/crucible/storage/crucible-store/src/content_store/conformance.rs": "03f5684a02aa7c2d58a5e0c33dfb996b865e725f90743fe59928289d30d9bb7d",
+    "crates/crucible/storage/crucible-store/src/content_store/directory.rs": "4dc810ca26758f75f5a46699da524ffac4c17d893817b18d375409d4184a9ba4",
+    "crates/crucible/storage/crucible-store/src/content_store/directory/ref_admin.rs": "2e2824ecded1e5870aaa68849b87ad9e09656a820250d18fb4bf2631e83efa61",
+    "crates/crucible/storage/crucible-store/src/content_store/directory/refs.rs": "d1f1f68395799c666d408190131363bf6e3e044c2686f85f9e7d13a2a69079a3",
+    "crates/crucible/storage/crucible-store/src/content_store/encrypted_directory.rs": "66be6a2a42a05873873607b426fd2b38e174317396c33cbd9f737109918a2086",
+    "crates/crucible/storage/crucible-store/src/content_store/encrypted_directory/compressed.rs": "6c119627d0eacc80b31eb48b69f63a711214058b5be8d065def44c194a0d9773",
+    "crates/crucible/storage/crucible-store/src/content_store/graph.rs": "dd2cd5aff2a8999bb9dc60e848b151afe4ffaaa20bc8b2e1723bb82c3ac996de",
+    "crates/crucible/storage/crucible-store/src/content_store/graph/format.rs": "56abc225d67c46d546615ce4e6d78f758c916ffbbde8ca8db073ba82750a18e0",
+    "crates/crucible/storage/crucible-store/src/content_store/graph/verification.rs": "e31cf8ead4fceef0c8bbe6bfacc972b4b1598437b96f6a8a9e787f95d256d7f5",
+    "crates/crucible/storage/crucible-store/src/content_store/graph/verification_tests.rs": "407dbbd67c1f6241f46cde104751f3c9b2e14790743193740fa17a81888c6c93",
+    "crates/crucible/storage/crucible-store/src/content_store/memory.rs": "ccd16037e79e00f39c1238c4be28620ee5ce12c4ce908bf08f31f3e003ea8ae7",
+    "crates/crucible/storage/crucible-store/src/content_store/namespace.rs": "badb445e230a334c4d8baa2a980dcf417396ce98b85add65ef8334ac2e8de1af",
+    "crates/crucible/storage/crucible-store/src/content_store/packed.rs": "f7679fa6736151c27d43e5c44f60cc8fd389f7ebbf2ef394a954a97df1e5376e",
+    "crates/crucible/storage/crucible-store/src/content_store/packed/format.rs": "8d844cc5ee69d7c2b03e7fb227d668d645463abe48b409ca6dfdbb7847b55ad1",
+    "crates/crucible/storage/crucible-store/src/content_store/packed/planning.rs": "9126138d011309fd8e99d74f18fcbd5639da369f65ebacb1b5da8a72dc59be7c",
+    "crates/crucible/storage/crucible-store/src/content_store/physical_quota.rs": "18d87cdc3d036b633534b9e5bb6d4c8c6445cefb7299b2a7ad49723fda8e41df",
+    "crates/crucible/storage/crucible-store/src/content_store/profile.rs": "7289a18c09705747798fee9b5f7246f144e5ad97afb6e4b19b45e329a0fc469d",
+    "crates/crucible/storage/crucible-store/src/content_store/quota.rs": "1fe3e52c26cd9d02b6478957c2263fa77388735aa0abbb07f30b2beb286c0332",
+    "crates/crucible/storage/crucible-store/src/content_store/s3.rs": "32082d994a6e7401fc9e162877535121c17695c3f2db7fb4788b50fccd786019",
+    "crates/crucible/storage/crucible-store/src/content_store/s3/backend.rs": "63591cc4a2cd874a302c10345339d7bf479bbd27d8bcca9dd4740673a46463e4",
+    "crates/crucible/storage/crucible-store/src/content_store/s3/blob_admin.rs": "2943d9085810636f7f9d0ca22b2b440c94730553e86d2b9318d72b465c3148bd",
+    "crates/crucible/storage/crucible-store/src/content_store/s3/tests.rs": "761f25b46729996bd67e9214912094e4b8ab10460820a2136abf7e13b5acebc7",
+    "crates/crucible/storage/crucible-store/src/content_store/s3/tests/behavior.rs": "6b2f740b400fd2f5fe05443fc4a28ff0c2918f845b5de5b457e693469c455a0a",
+    "crates/crucible/storage/crucible-store/src/content_store/s3_ref.rs": "97499cda89d131e0a949512535f6b6e1e3cd9f7f9942e34a2e1b3a5bc38fd88e",
+    "crates/crucible/storage/crucible-store/src/content_store/sqlite.rs": "5a21a4aa603332ec42f0d16e4c113aec11bc6e2c09edc5819af4925bf5cd2153",
+    "crates/crucible/storage/crucible-store/src/content_store/tests.rs": "935b87048df449626b14fd32627258ce3294795fdf3b05ba45a7ee95284bf360",
+    "crates/crucible/storage/crucible-store/src/content_store/tests/directory.rs": "f10a24eee0d01a045af56e7ff3d78eb98ffc3220583e546ebe54a9a8f48a9c20",
+    "crates/crucible/storage/crucible-store/src/content_store/tests/graph_authorization.rs": "61d6f8c1eca35df8236d6c5be8224c43c782e9a00095678d23295e15b002d871",
+    "crates/crucible/storage/crucible-store/src/content_store/tests/graph_metrics.rs": "ab3cf7b915508892e0df5c625c1b3e9e168364c12782a9d2185f4e24abfd2070",
+    "crates/crucible/storage/crucible-store/src/content_store/tests/packed.rs": "878e31d0083f8e0fc07efa3100f571259774645208ad068418297f67847eb95f",
+    "crates/crucible/storage/crucible-store/src/content_store/tests/quotas.rs": "54d6bd028321a9797e8f2a48142b05717b9319b08829dfde9740780acaeefabb",
+    "crates/crucible/storage/crucible-store/src/content_store/tests/support.rs": "5bc902cee5ca4707ffb7fedae4fdb9d7570f10040b053dd76ec593afc5224158",
+    "crates/crucible/storage/crucible-store/src/content_store/tests/tier.rs": "9b437ac9e266836d1229888354b275feac1809bd6a91eb4fbe995aa187bdd2d5",
+    "crates/crucible/storage/crucible-store/src/content_store/tests/verification_and_physical_repair.rs": "b10fc46704afdfce93484793c3de748c1505e9f790af4c5b698ecb509afcd38f",
+    "crates/crucible/storage/crucible-store/src/content_store/tests/write_back.rs": "dbe212db06c073bd1c21687b6a99297a7973c8d2644a3c72a0e2be20f8916009",
+    "crates/crucible/storage/crucible-store/src/content_store/write_back.rs": "551abffe70d41f986d686f70c598467dd4ca42b05b5b5a0df93266a88df2d6ec",
+    "crates/crucible/storage/crucible-store/src/lib.rs": "9180cc42793e40f1df53d579682b4cd920340ec1cefbc928731145a514e72aec",
+    "crates/crucible/storage/crucible-store/tests/gate_campaign_continuity.rs": "240ba597e4c695fcb6051dbbcd2287885ecfd807c4d79769cce7842ccfc200c9",
+    "crates/crucible/storage/crucible-store/tests/gate_campaign_store_composition.rs": "2e9a202da85d33820f08970a1e14ce6bde6bbb7c6263e85f6f19624b4febdae9",
+    "crates/crucible/storage/crucible-store/tests/gate_campaign_store_equivalence.rs": "9980a575e853a041fe87ea8434528687f0107ff780c8618f1a2440798381f885"
+  },
+  "derivation": "/nix/store/3wpsw0a5g5khspzpvxbpf3rzfnmsmpk8-aos-bazel-store-s3-cargo-oracle-1.drv",
+  "doctests": {
+    "crucible_store_s3": {}
+  },
+  "executed_cases": 11,
+  "external_features": {
+    "aead@0.5.2": [
+      [
+        "alloc",
+        "getrandom",
+        "rand_core"
+      ]
+    ],
+    "aes-gcm@0.10.3": [
+      [
+        "aes",
+        "alloc",
+        "default",
+        "getrandom",
+        "rand_core",
+        "zeroize"
+      ]
+    ],
+    "aes@0.8.4": [
+      []
+    ],
+    "ahash@0.8.12": [
+      []
+    ],
+    "allocator-api2@0.2.21": [
+      [
+        "alloc"
+      ]
+    ],
+    "arc-swap@1.9.1": [
+      []
+    ],
+    "arrayref@0.3.9": [
+      []
+    ],
+    "arrayvec@0.7.7": [
+      []
+    ],
+    "atomic-waker@1.1.2": [
+      []
+    ],
+    "autocfg@1.5.1": [
+      []
+    ],
+    "aws-config@1.8.17": [
+      [
+        "credentials-process",
+        "default",
+        "default-https-client",
+        "rt-tokio",
+        "sso"
+      ]
+    ],
+    "aws-credential-types@1.2.14": [
+      [
+        "test-util"
+      ]
+    ],
+    "aws-lc-rs@1.17.0": [
+      [
+        "aws-lc-sys",
+        "prebuilt-nasm"
+      ]
+    ],
+    "aws-lc-sys@0.41.0": [
+      [
+        "prebuilt-nasm"
+      ]
+    ],
+    "aws-runtime@1.7.4": [
+      [
+        "event-stream",
+        "http-02x",
+        "http-1x",
+        "sigv4a"
+      ]
+    ],
+    "aws-sdk-s3@1.134.0": [
+      [
+        "default-https-client",
+        "http-1x",
+        "rt-tokio",
+        "sigv4a"
+      ]
+    ],
+    "aws-sdk-sso@1.100.0": [
+      []
+    ],
+    "aws-sdk-ssooidc@1.102.0": [
+      []
+    ],
+    "aws-sdk-sts@1.105.0": [
+      []
+    ],
+    "aws-sigv4@1.4.4": [
+      [
+        "default",
+        "http0-compat",
+        "http1",
+        "sign-eventstream",
+        "sign-http",
+        "sigv4a"
+      ]
+    ],
+    "aws-smithy-async@1.2.14": [
+      [
+        "rt-tokio"
+      ]
+    ],
+    "aws-smithy-checksums@0.64.8": [
+      []
+    ],
+    "aws-smithy-eventstream@0.60.20": [
+      []
+    ],
+    "aws-smithy-http-client@1.1.12": [
+      [
+        "default-client",
+        "rustls-aws-lc"
+      ]
+    ],
+    "aws-smithy-http@0.63.6": [
+      [
+        "aws-smithy-eventstream",
+        "event-stream"
+      ]
+    ],
+    "aws-smithy-json@0.62.6": [
+      []
+    ],
+    "aws-smithy-observability@0.2.6": [
+      []
+    ],
+    "aws-smithy-query@0.60.15": [
+      []
+    ],
+    "aws-smithy-runtime-api-macros@1.0.0": [
+      []
+    ],
+    "aws-smithy-runtime-api@1.12.1": [
+      [
+        "client",
+        "default",
+        "http-02x",
+        "http-1x",
+        "http-auth",
+        "test-util"
+      ]
+    ],
+    "aws-smithy-runtime@1.11.3": [
+      [
+        "client",
+        "default-https-client",
+        "rt-tokio"
+      ]
+    ],
+    "aws-smithy-schema@0.1.0": [
+      []
+    ],
+    "aws-smithy-types@1.4.8": [
+      [
+        "byte-stream-poll-next",
+        "http-body-0-4-x",
+        "http-body-1-x",
+        "rt-tokio",
+        "test-util"
+      ]
+    ],
+    "aws-smithy-xml@0.60.15": [
+      []
+    ],
+    "aws-types@1.3.16": [
+      []
+    ],
+    "base16ct@0.2.0": [
+      [
+        "alloc"
+      ]
+    ],
+    "base64-simd@0.8.0": [
+      [
+        "alloc",
+        "default",
+        "detect",
+        "std"
+      ]
+    ],
+    "base64@0.22.1": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "base64ct@1.8.3": [
+      [
+        "alloc"
+      ]
+    ],
+    "bitflags@2.13.0": [
+      [
+        "std"
+      ]
+    ],
+    "blake3@1.8.5": [
+      [
+        "pure",
+        "std"
+      ]
+    ],
+    "block-buffer@0.10.4": [
+      []
+    ],
+    "block-buffer@0.12.0": [
+      []
+    ],
+    "bytes-utils@0.1.4": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "bytes@1.11.1": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "cc@1.2.65": [
+      [
+        "parallel"
+      ]
+    ],
+    "cfg-if@1.0.4": [
+      []
+    ],
+    "cipher@0.4.4": [
+      []
+    ],
+    "cmake@0.1.58": [
+      []
+    ],
+    "cmov@0.5.4": [
+      []
+    ],
+    "const-oid@0.10.2": [
+      []
+    ],
+    "const-oid@0.9.6": [
+      []
+    ],
+    "constant_time_eq@0.4.2": [
+      [
+        "std"
+      ]
+    ],
+    "cpufeatures@0.2.17": [
+      []
+    ],
+    "cpufeatures@0.3.0": [
+      []
+    ],
+    "crc-fast@1.10.0": [
+      [
+        "alloc",
+        "default",
+        "digest",
+        "ffi",
+        "panic-handler",
+        "std"
+      ]
+    ],
+    "crc32fast@1.5.0": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "crypto-bigint@0.5.5": [
+      [
+        "default",
+        "generic-array",
+        "rand",
+        "rand_core",
+        "zeroize"
+      ]
+    ],
+    "crypto-common@0.1.7": [
+      [
+        "getrandom",
+        "rand_core",
+        "std"
+      ]
+    ],
+    "crypto-common@0.2.2": [
+      []
+    ],
+    "ctr@0.9.2": [
+      []
+    ],
+    "ctutils@0.4.2": [
+      []
+    ],
+    "der@0.7.10": [
+      [
+        "alloc",
+        "oid",
+        "pem",
+        "std",
+        "zeroize"
+      ]
+    ],
+    "deranged@0.5.8": [
+      [
+        "default",
+        "powerfmt"
+      ]
+    ],
+    "digest@0.10.7": [
+      [
+        "alloc",
+        "block-buffer",
+        "const-oid",
+        "core-api",
+        "default",
+        "mac",
+        "oid",
+        "std",
+        "subtle"
+      ]
+    ],
+    "digest@0.11.3": [
+      [
+        "alloc",
+        "block-api",
+        "default",
+        "mac",
+        "oid"
+      ]
+    ],
+    "displaydoc@0.2.6": [
+      []
+    ],
+    "dunce@1.0.5": [
+      []
+    ],
+    "ecdsa@0.16.9": [
+      [
+        "alloc",
+        "arithmetic",
+        "der",
+        "digest",
+        "hazmat",
+        "pem",
+        "pkcs8",
+        "rfc6979",
+        "signing",
+        "spki",
+        "std",
+        "verifying"
+      ]
+    ],
+    "either@1.16.0": [
+      []
+    ],
+    "elliptic-curve@0.13.8": [
+      [
+        "alloc",
+        "arithmetic",
+        "digest",
+        "ff",
+        "group",
+        "hazmat",
+        "pem",
+        "pkcs8",
+        "sec1",
+        "std"
+      ]
+    ],
+    "equivalent@1.0.2": [
+      []
+    ],
+    "errno@0.3.14": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "fallible-iterator@0.3.0": [
+      [
+        "alloc",
+        "default"
+      ]
+    ],
+    "fallible-streaming-iterator@0.1.9": [
+      []
+    ],
+    "fastrand@2.4.1": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "ff@0.13.1": [
+      [
+        "alloc"
+      ]
+    ],
+    "find-msvc-tools@0.1.9": [
+      []
+    ],
+    "fnv@1.0.7": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "foldhash@0.2.0": [
+      []
+    ],
+    "form_urlencoded@1.2.2": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "fs_extra@1.3.0": [
+      []
+    ],
+    "futures-channel@0.3.32": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "futures-core@0.3.32": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "futures-sink@0.3.32": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "futures-task@0.3.32": [
+      []
+    ],
+    "futures-util@0.3.32": [
+      []
+    ],
+    "generic-array@0.14.7": [
+      [
+        "more_lengths",
+        "zeroize"
+      ]
+    ],
+    "getrandom@0.2.17": [
+      [
+        "std"
+      ]
+    ],
+    "ghash@0.5.1": [
+      []
+    ],
+    "group@0.13.0": [
+      [
+        "alloc"
+      ]
+    ],
+    "h2@0.4.14": [
+      []
+    ],
+    "hashbrown@0.14.5": [
+      [
+        "ahash",
+        "inline-more"
+      ]
+    ],
+    "hashbrown@0.16.1": [
+      [
+        "allocator-api2",
+        "default",
+        "default-hasher",
+        "equivalent",
+        "inline-more",
+        "raw-entry"
+      ]
+    ],
+    "hashbrown@0.17.1": [
+      []
+    ],
+    "hashlink@0.9.1": [
+      []
+    ],
+    "hex@0.4.3": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "hmac@0.12.1": [
+      [
+        "reset"
+      ]
+    ],
+    "hmac@0.13.0": [
+      []
+    ],
+    "http-body-util@0.1.3": [
+      [
+        "default"
+      ]
+    ],
+    "http-body@0.4.6": [
+      []
+    ],
+    "http-body@1.0.1": [
+      []
+    ],
+    "http@0.2.12": [
+      []
+    ],
+    "http@1.4.1": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "httparse@1.10.1": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "hybrid-array@0.4.12": [
+      []
+    ],
+    "hyper-rustls@0.27.9": [
+      [
+        "http1",
+        "http2",
+        "native-tokio",
+        "rustls-native-certs",
+        "tls12"
+      ]
+    ],
+    "hyper-util@0.1.20": [
+      [
+        "client",
+        "client-legacy",
+        "client-proxy",
+        "default",
+        "http1",
+        "http2",
+        "tokio"
+      ]
+    ],
+    "hyper@1.10.0": [
+      [
+        "client",
+        "default",
+        "http1",
+        "http2"
+      ]
+    ],
+    "icu_collections@2.2.0": [
+      []
+    ],
+    "icu_locale_core@2.2.0": [
+      [
+        "zerovec"
+      ]
+    ],
+    "icu_normalizer@2.2.0": [
+      [
+        "compiled_data"
+      ]
+    ],
+    "icu_normalizer_data@2.2.0": [
+      []
+    ],
+    "icu_properties@2.2.0": [
+      [
+        "compiled_data"
+      ]
+    ],
+    "icu_properties_data@2.2.0": [
+      []
+    ],
+    "icu_provider@2.2.0": [
+      [
+        "baked"
+      ]
+    ],
+    "idna@1.1.0": [
+      [
+        "alloc",
+        "compiled_data",
+        "std"
+      ]
+    ],
+    "idna_adapter@1.2.2": [
+      [
+        "compiled_data"
+      ]
+    ],
+    "indexmap@2.14.0": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "inout@0.1.4": [
+      []
+    ],
+    "ipnet@2.12.0": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "itoa@1.0.18": [
+      []
+    ],
+    "jobserver@0.1.34": [
+      []
+    ],
+    "libc@0.2.186": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "libsqlite3-sys@0.30.1": [
+      [
+        "default",
+        "min_sqlite_version_3_14_0",
+        "pkg-config",
+        "vcpkg"
+      ]
+    ],
+    "linux-raw-sys@0.12.1": [
+      [
+        "auxvec",
+        "elf",
+        "errno",
+        "general",
+        "ioctl",
+        "no_std"
+      ]
+    ],
+    "litemap@0.8.2": [
+      []
+    ],
+    "lru@0.16.4": [
+      [
+        "default",
+        "hashbrown"
+      ]
+    ],
+    "md-5@0.11.0": [
+      [
+        "alloc",
+        "default",
+        "oid"
+      ]
+    ],
+    "mio@1.2.1": [
+      [
+        "net",
+        "os-ext",
+        "os-poll"
+      ]
+    ],
+    "num-conv@0.2.2": [
+      []
+    ],
+    "num-integer@0.1.46": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "num-traits@0.2.19": [
+      [
+        "i128",
+        "std"
+      ]
+    ],
+    "once_cell@1.21.4": [
+      [
+        "alloc",
+        "default",
+        "race",
+        "std"
+      ]
+    ],
+    "opaque-debug@0.3.1": [
+      []
+    ],
+    "openssl-probe@0.2.1": [
+      []
+    ],
+    "outref@0.5.2": [
+      []
+    ],
+    "p256@0.13.2": [
+      [
+        "alloc",
+        "arithmetic",
+        "default",
+        "digest",
+        "ecdsa",
+        "ecdsa-core",
+        "pem",
+        "pkcs8",
+        "sha2",
+        "sha256",
+        "std"
+      ]
+    ],
+    "pem-rfc7468@0.7.0": [
+      [
+        "alloc"
+      ]
+    ],
+    "percent-encoding@2.3.2": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "pin-project-lite@0.2.17": [
+      []
+    ],
+    "pin-utils@0.1.0": [
+      []
+    ],
+    "pkcs8@0.10.2": [
+      [
+        "alloc",
+        "pem",
+        "std"
+      ]
+    ],
+    "pkg-config@0.3.33": [
+      []
+    ],
+    "polyval@0.6.2": [
+      []
+    ],
+    "potential_utf@0.1.5": [
+      [
+        "zerovec"
+      ]
+    ],
+    "powerfmt@0.2.0": [
+      []
+    ],
+    "primeorder@0.13.6": [
+      []
+    ],
+    "proc-macro2@1.0.106": [
+      [
+        "default",
+        "proc-macro"
+      ]
+    ],
+    "quote@1.0.46": [
+      [
+        "default",
+        "proc-macro"
+      ]
+    ],
+    "rand_core@0.6.4": [
+      [
+        "alloc",
+        "getrandom",
+        "std"
+      ]
+    ],
+    "regex-lite@0.1.9": [
+      [
+        "default",
+        "std",
+        "string"
+      ]
+    ],
+    "rfc6979@0.4.0": [
+      []
+    ],
+    "rusqlite@0.32.1": [
+      [
+        "blob"
+      ]
+    ],
+    "rustc_version@0.4.1": [
+      []
+    ],
+    "rustix@1.1.4": [
+      [
+        "alloc",
+        "default",
+        "event",
+        "fs",
+        "std"
+      ]
+    ],
+    "rustls-native-certs@0.8.3": [
+      []
+    ],
+    "rustls-pki-types@1.14.1": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "rustls-webpki@0.103.13": [
+      [
+        "alloc",
+        "aws-lc-rs",
+        "std"
+      ]
+    ],
+    "rustls@0.23.40": [
+      [
+        "aws-lc-rs",
+        "aws_lc_rs",
+        "prefer-post-quantum",
+        "std",
+        "tls12"
+      ]
+    ],
+    "rustversion@1.0.22": [
+      []
+    ],
+    "ryu@1.0.23": [
+      []
+    ],
+    "sec1@0.7.3": [
+      [
+        "alloc",
+        "default",
+        "der",
+        "pem",
+        "pkcs8",
+        "point",
+        "std",
+        "subtle",
+        "zeroize"
+      ]
+    ],
+    "semver@1.0.28": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "sha1@0.10.6": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "sha1@0.11.0": [
+      [
+        "alloc",
+        "default",
+        "oid"
+      ]
+    ],
+    "sha2@0.10.9": [
+      []
+    ],
+    "sha2@0.11.0": [
+      [
+        "alloc",
+        "default",
+        "oid"
+      ]
+    ],
+    "shlex@2.0.1": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "signal-hook-registry@1.4.8": [
+      []
+    ],
+    "signature@2.2.0": [
+      [
+        "alloc",
+        "digest",
+        "rand_core",
+        "std"
+      ]
+    ],
+    "slab@0.4.12": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "smallvec@1.15.2": [
+      [
+        "const_generics",
+        "const_new"
+      ]
+    ],
+    "socket2@0.6.4": [
+      [
+        "all"
+      ]
+    ],
+    "spin@0.10.0": [
+      [
+        "mutex",
+        "once",
+        "rwlock",
+        "spin_mutex"
+      ]
+    ],
+    "spki@0.7.3": [
+      [
+        "alloc",
+        "pem",
+        "std"
+      ]
+    ],
+    "stable_deref_trait@1.2.1": [
+      []
+    ],
+    "subtle@2.6.1": [
+      [
+        "default",
+        "i128",
+        "std"
+      ]
+    ],
+    "syn@2.0.118": [
+      [
+        "clone-impls",
+        "default",
+        "derive",
+        "extra-traits",
+        "fold",
+        "full",
+        "parsing",
+        "printing",
+        "proc-macro",
+        "visit",
+        "visit-mut"
+      ]
+    ],
+    "synstructure@0.13.2": [
+      [
+        "default",
+        "proc-macro"
+      ]
+    ],
+    "thiserror-impl@2.0.18": [
+      []
+    ],
+    "thiserror@2.0.18": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "time-core@0.1.8": [
+      []
+    ],
+    "time@0.3.47": [
+      [
+        "alloc",
+        "default",
+        "parsing",
+        "std"
+      ]
+    ],
+    "tinystr@0.8.3": [
+      [
+        "zerovec"
+      ]
+    ],
+    "tokio-macros@2.7.0": [
+      []
+    ],
+    "tokio-rustls@0.26.4": [
+      [
+        "tls12"
+      ]
+    ],
+    "tokio-util@0.7.18": [
+      [
+        "codec",
+        "default",
+        "io"
+      ]
+    ],
+    "tokio@1.52.3": [
+      [
+        "bytes",
+        "default",
+        "fs",
+        "io-std",
+        "io-util",
+        "libc",
+        "macros",
+        "mio",
+        "net",
+        "process",
+        "rt",
+        "rt-multi-thread",
+        "signal",
+        "signal-hook-registry",
+        "socket2",
+        "sync",
+        "time",
+        "tokio-macros"
+      ]
+    ],
+    "tower-layer@0.3.3": [
+      []
+    ],
+    "tower-service@0.3.3": [
+      []
+    ],
+    "tower@0.5.3": [
+      []
+    ],
+    "tracing-attributes@0.1.31": [
+      []
+    ],
+    "tracing-core@0.1.36": [
+      [
+        "once_cell",
+        "std"
+      ]
+    ],
+    "tracing@0.1.44": [
+      [
+        "attributes",
+        "default",
+        "std",
+        "tracing-attributes"
+      ]
+    ],
+    "try-lock@0.2.5": [
+      []
+    ],
+    "typenum@1.20.1": [
+      [
+        "const-generics"
+      ]
+    ],
+    "unicode-ident@1.0.24": [
+      []
+    ],
+    "universal-hash@0.5.1": [
+      []
+    ],
+    "untrusted@0.9.0": [
+      []
+    ],
+    "url@2.5.8": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "urlencoding@2.1.3": [
+      []
+    ],
+    "utf8_iter@1.0.4": [
+      []
+    ],
+    "uuid@1.23.1": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "vcpkg@0.2.15": [
+      []
+    ],
+    "version_check@0.9.5": [
+      []
+    ],
+    "vsimd@0.8.0": [
+      [
+        "alloc",
+        "detect",
+        "std"
+      ]
+    ],
+    "want@0.3.1": [
+      []
+    ],
+    "writeable@0.6.3": [
+      []
+    ],
+    "xmlparser@0.13.6": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "yoke-derive@0.8.2": [
+      []
+    ],
+    "yoke@0.8.3": [
+      [
+        "derive",
+        "zerofrom"
+      ]
+    ],
+    "zerocopy@0.8.49": [
+      [
+        "simd"
+      ]
+    ],
+    "zerofrom-derive@0.1.7": [
+      []
+    ],
+    "zerofrom@0.1.8": [
+      [
+        "derive"
+      ]
+    ],
+    "zeroize@1.9.0": [
+      [
+        "alloc",
+        "default"
+      ]
+    ],
+    "zerotrie@0.2.4": [
+      [
+        "yoke",
+        "zerofrom"
+      ]
+    ],
+    "zerovec-derive@0.11.3": [
+      []
+    ],
+    "zerovec@0.11.6": [
+      [
+        "derive",
+        "yoke"
+      ]
+    ],
+    "zstd-safe@7.2.4": [
+      [
+        "arrays",
+        "legacy",
+        "std",
+        "zdict_builder",
+        "zstdmt"
+      ]
+    ],
+    "zstd-sys@2.0.16+zstd.1.5.7": [
+      [
+        "legacy",
+        "std",
+        "zdict_builder",
+        "zstdmt"
+      ]
+    ],
+    "zstd@0.13.3": [
+      [
+        "arrays",
+        "default",
+        "legacy",
+        "zdict_builder",
+        "zstdmt"
+      ]
+    ]
+  },
+  "first_party_features": {
+    "crucible-store": [
+      [
+        "test-support"
+      ]
+    ],
+    "crucible-store-s3": [
+      []
+    ]
+  },
+  "ignored_cases": 1,
+  "libtest_artifacts": 2,
+  "limits": [
+    "This is semantic migration evidence, not a performance measurement.",
+    "Artifact profiles retain four settings; full compiler arguments were not retained in this baseline."
+  ],
+  "output": "/nix/store/l0mi266fvq1b8bl38zy60wvp3xh8qcah-aos-bazel-store-s3-cargo-oracle-1",
+  "report_sha256": {
+    "cargo-messages.jsonl": "c01e2f17da5ad7a9d50c39fa787e8c63a3d42145604e6b2442ab091b54295fae",
+    "cargo-tests.log": "8136432a9acb8cb306dca05bb1f475cea1a538c3e549d451138c829a03a87170"
+  },
+  "schema_version": 1,
+  "scope": "Default-feature S3 adapter tests; development dependencies enable the store conformance API.",
+  "source": "/nix/store/l5fd4fzas4zyh24n0wr9g7q36sw290vr-crucible-cargo-src",
+  "status": "Cargo baseline passed; S3 adapter Bazel conversion not yet implemented",
+  "targets": {
+    "crucible-store-s3/live_conformance": {
+      "binary_sha256": "85c98ee9d7c1506c52092f38a8ef5a139337cae603330185a0b15491ef3a58a7",
+      "executed": [],
+      "ignored": [
+        "live_s3_service_passes_blob_and_ref_conformance"
+      ],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      }
+    },
+    "crucible-store-s3/unit": {
+      "binary_sha256": "83b229791896df3cdf68884424ddf8f54d32ec72b3775b825ed5ed94711af876",
+      "executed": [
+        "download::tests::full_download_queue_yields_and_is_cancelable",
+        "download::tests::synchronous_reader_is_safe_inside_tokio_runtime",
+        "tests::canonical_content_key_recovers_the_logical_id",
+        "tests::command_byte_budget_is_shared_and_released",
+        "tests::committed_inventory_metadata_shares_the_scan_deadline",
+        "tests::multipart_listing_requires_exact_bounded_pagination",
+        "tests::queue_bounds_and_channel_reader_are_exact",
+        "tests::ref_scan_pages_share_one_absolute_deadline",
+        "tests::small_versioned_reads_and_list_pages_are_strictly_bounded",
+        "tests::synchronous_call_has_one_absolute_deadline",
+        "tests::worker_configuration_bounds_are_exact"
+      ],
+      "ignored": [],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      }
+    }
+  }
+}

@@ -1,0 +1,735 @@
+{
+  "contract_validation": "All exported contracts revalidated; all 48 published families remerge idempotently. The previous 47 families preserve their source sets. Accache includes all 20 Rust sources and excludes catalog-only documentation and Python integration fixtures.",
+  "execution_tools": "Current default source-built AOS Bazel, JDK, Rust, and Node execution tools.",
+  "inventory_outputs": {
+    "accache": {
+      "configured_reports": 98,
+      "inventory_sha256": "abfec990a8326b7091d87b2c9a361c8ed95fca8d6d4eebf03c86ceeef81d278d",
+      "output": "/nix/store/qmhz9fawpzqgrqy5gjfc9qm016k7rkh5-aos-bazel-accache-inventory-1",
+      "source_files": 23
+    },
+    "activation-core": {
+      "configured_reports": 166,
+      "inventory_sha256": "1f3fe3031428cef48e25624a8845d0de8b0e50251d08723cb66212535ef5f773",
+      "output": "/nix/store/wgdc56a8jmvcy9cfhr7mr94q0jvvvzq6-aos-bazel-activation-core-inventory-1",
+      "source_files": 62
+    },
+    "activation-core-production": {
+      "configured_reports": 86,
+      "inventory_sha256": "985663d90aa1cf94359a64b21edcfe8691d9789ce3018d17a70527844b489e1e",
+      "output": "/nix/store/b6v98aap7npd31frk99xidslg2wzxrpy-aos-bazel-activation-core-production-inventory-1",
+      "source_files": 58
+    },
+    "activation-crucible": {
+      "configured_reports": 183,
+      "inventory_sha256": "d0f08f46be81c4750dea054f99d39b2609e42e8fceaa55122245f0bb8658a35f",
+      "output": "/nix/store/ka9ffcsmpl38zyrma2w9p7kzbvz1nhi3-aos-bazel-activation-crucible-inventory-1",
+      "source_files": 841
+    },
+    "activation-crucible-production": {
+      "configured_reports": 87,
+      "inventory_sha256": "ec01838af015e1929c262563466d1bbd2a3920fd827dcfccecfecff51ee4d7b1",
+      "output": "/nix/store/x3ixyywriij7gxqh1mdrx5miwghz3yxb-aos-bazel-activation-crucible-production-inventory-1",
+      "source_files": 73
+    },
+    "activation-storage": {
+      "configured_reports": 141,
+      "inventory_sha256": "171f8f1647bf3e527e2c8da0514c7a00c3b9ad03374e3485e145141bb7b995ee",
+      "output": "/nix/store/vpx01b4mgmzxjy7fg3hrypcnipaj7hgc-aos-bazel-activation-storage-inventory-1",
+      "source_files": 79
+    },
+    "activation-storage-production": {
+      "configured_reports": 92,
+      "inventory_sha256": "7e42c84b32913345d15548f8ee72321cbcb0f6d148f8649c0c303d6258b9aabb",
+      "output": "/nix/store/c3axacm47ip6smsik5wbfm951yrhwc1j-aos-bazel-activation-storage-production-inventory-1",
+      "source_files": 76
+    },
+    "activation-systemd": {
+      "configured_reports": 169,
+      "inventory_sha256": "ff60e95d93a2b5181d970de75f806cbdcf03dbc1378975d1887832825181e693",
+      "output": "/nix/store/zhz6psd6v0wl9pml4h85d8mf6p80fk5b-aos-bazel-activation-systemd-inventory-1",
+      "source_files": 80
+    },
+    "activation-systemd-parser": {
+      "configured_reports": 153,
+      "inventory_sha256": "781993abab263b1132ff72c49627be24f873d7dae39349938fb93795dc11e15f",
+      "output": "/nix/store/gp4vh1ch968kj8b6l2pj8hshjw81869b-aos-bazel-activation-systemd-parser-inventory-1",
+      "source_files": 74
+    },
+    "activation-systemd-production": {
+      "configured_reports": 149,
+      "inventory_sha256": "ada1bf5ecccd5bfb8d7f6e23698c57f766ccb693db4686d5961274dc50eec677",
+      "output": "/nix/store/wvsncpz859dxagnhnsbp8w541zx7knl5-aos-bazel-activation-systemd-production-inventory-1",
+      "source_files": 74
+    },
+    "aos-cli-fleet-tests": {
+      "configured_reports": 727,
+      "inventory_sha256": "78dcb10a7ab8b63f154486e6de17de30e3a921223e006e819aa12ac950132b60",
+      "output": "/nix/store/8kynys1js0rirc83dgiiwjf6dy3ik9zh-aos-bazel-aos-cli-fleet-tests-inventory-1",
+      "source_files": 1364
+    },
+    "aos-cli-production": {
+      "configured_reports": 546,
+      "inventory_sha256": "bc014f4dd1674e3b48eac2cb3094b979e001b8dc8f4ede90d4ce9e47d130e3fe",
+      "output": "/nix/store/zyszlvnpjxlwgdifz2k2apv5a0dwjy1l-aos-bazel-aos-cli-production-inventory-1",
+      "source_files": 761
+    },
+    "aos-cli-tests": {
+      "configured_reports": 718,
+      "inventory_sha256": "7db176774e3131f77a6cce3d2cd86cfc4e96b93baa0ca323ea6c9e4d3a691295",
+      "output": "/nix/store/b9prb3ph24w3kx2i4hdfjhqr52h0simk-aos-bazel-aos-cli-tests-inventory-1",
+      "source_files": 1364
+    },
+    "boot-pilot": {
+      "configured_reports": 41,
+      "inventory_sha256": "465c861405c2b239fd8fd1954449dd8d84a521ebddbbf7de292bc89f944c881d",
+      "output": "/nix/store/4m6d9n6q62z4kbb5y01dw84zd30n2z53-aos-bazel-boot-pilot-inventory-1",
+      "source_files": 15
+    },
+    "boot-preparation": {
+      "configured_reports": 398,
+      "inventory_sha256": "010fa6c26a70ee278fc3f0d8ccad75d5dc99b23a46fab8ab1f6d11ba64a4396c",
+      "output": "/nix/store/1yyg0lk5f3kkxx8vrcl089j6scbg5a2n-aos-bazel-boot-preparation-inventory-1",
+      "source_files": 234
+    },
+    "boot-preparation-minimal": {
+      "configured_reports": 365,
+      "inventory_sha256": "b00ff64e1d697ee9fbe02976e50558c4918d96da2d87b43c8b945168c5293f4c",
+      "output": "/nix/store/c3xsa2b73035yflplcp10k86rvpigdza-aos-bazel-boot-preparation-minimal-inventory-1",
+      "source_files": 134
+    },
+    "boot-preparation-minimal-production": {
+      "configured_reports": 321,
+      "inventory_sha256": "57ec9009f9fa9af58876765ac7b063a65012adeeb41f948d6d5ee2b6a5e87cc6",
+      "output": "/nix/store/c92gqnsrlv0jb69wipc8djlflg8n85hr-aos-bazel-boot-preparation-minimal-production-inventory-1",
+      "source_files": 128
+    },
+    "boot-preparation-production": {
+      "configured_reports": 345,
+      "inventory_sha256": "8510e5407359c30f0cf326c7e304d9f906b0fab3e52fb49b506e33c92e580f7b",
+      "output": "/nix/store/hz4g3x1ak8p1234jw97sxjyz5mycnidn-aos-bazel-boot-preparation-production-inventory-1",
+      "source_files": 226
+    },
+    "boot-preparation-standalone": {
+      "configured_reports": 22,
+      "inventory_sha256": "fc2de37784ccec340557fc9adf6aadf724e12d6cd2779340c058c6dd826eaf17",
+      "output": "/nix/store/csqsn22d6mgyzjm4glwl7zdx20y7gnmb-aos-bazel-boot-preparation-standalone-inventory-1",
+      "source_files": 4
+    },
+    "build-services": {
+      "configured_reports": 312,
+      "inventory_sha256": "6aceb7607157e266ee0fd660c364770215aaf70fccac6668cef44df4fe5ebd08",
+      "output": "/nix/store/0v77zhkgy6zsmj8spww3c5x67rsawv39-aos-bazel-build-services-inventory-1",
+      "source_files": 65
+    },
+    "cli-support": {
+      "configured_reports": 196,
+      "inventory_sha256": "a49b7ea93fa60cd07545d7f89f0e6dc99b720dc5a34dcbd2d03cba0ffb49abb5",
+      "output": "/nix/store/xgq5chhxhih62hj2vy8p12hjk2pmi8zy-aos-bazel-cli-support-inventory-1",
+      "source_files": 65
+    },
+    "contracts": {
+      "configured_reports": 152,
+      "inventory_sha256": "2c90c2a72a19fea9bfc011177f6c50d560f743cd9ffbd414c1cd152636154e27",
+      "output": "/nix/store/6dvmjdxd8wsqsyvj6av69f772nnlm63v-aos-bazel-contracts-inventory-1",
+      "source_files": 140
+    },
+    "control": {
+      "configured_reports": 319,
+      "inventory_sha256": "b73d2422fa875b5dd24d2296c404d55ce518759d1f34dec069a78fa7478ccda4",
+      "output": "/nix/store/4iqxvhdlgran6ll0hh6a83ygl4y5308p-aos-bazel-control-inventory-1",
+      "source_files": 888
+    },
+    "crucible-cli": {
+      "configured_reports": 584,
+      "inventory_sha256": "44e231300b860e1ad5031a85ecb86b1785527bd93e81a57e2d419550bbab09b3",
+      "output": "/nix/store/as113sd0dwbq9b8m2b9bbpabdhzb5mhp-aos-bazel-crucible-cli-inventory-1",
+      "source_files": 1740
+    },
+    "daemon": {
+      "configured_reports": 453,
+      "inventory_sha256": "8c95fc4e87b02c093e8d5059c25c8028f95adacc932248a88ee6624200e0aa7a",
+      "output": "/nix/store/n0sr4wv069c3wzmk7i5jx2milmf087ix-aos-bazel-daemon-inventory-1",
+      "source_files": 1549
+    },
+    "deployment": {
+      "configured_reports": 135,
+      "inventory_sha256": "b4c9746a0a73e085f7257261ea44a27eb02672ab164fb4335072b72b2c6f77a7",
+      "output": "/nix/store/99ac8gdwm4hcmw95wa1zkclgg25c2a75-aos-bazel-deployment-inventory-1",
+      "source_files": 184
+    },
+    "device": {
+      "configured_reports": 166,
+      "inventory_sha256": "7aab76f5fa920319567f41bf54e19a7feb0fe48ab36e5669d8e5899ff56bb971",
+      "output": "/nix/store/4ycw86zdz6ay845gbz9skig2iy9582nv-aos-bazel-device-inventory-1",
+      "source_files": 281
+    },
+    "engine": {
+      "configured_reports": 1266,
+      "inventory_sha256": "330414aa076a1e194c49eec945ce82967f5bb038973469e949cbcf6fda058493",
+      "output": "/nix/store/5cwwyzy1bz6zb76s5q24gpkbalkln63z-aos-bazel-engine-inventory-1",
+      "source_files": 3815
+    },
+    "fixture": {
+      "configured_reports": 21,
+      "inventory_sha256": "71e963b16600249f7c2aadb16fea4829cdf074584b9f4979b562fb8c855a5ee6",
+      "output": "/nix/store/il9x67niv6sldq5c92f1i0scjn9cg2ag-aos-bazel-fixture-inventory-1",
+      "source_files": 9
+    },
+    "formats": {
+      "configured_reports": 162,
+      "inventory_sha256": "b5cd044a6959a0fa7a6a9617528d28b20d9b3a9c248d34c1a6093c428288beff",
+      "output": "/nix/store/qfw494d8pjfk48wpfk6jhfrzq1mqhrnj-aos-bazel-formats-inventory-1",
+      "source_files": 73
+    },
+    "guest": {
+      "configured_reports": 138,
+      "inventory_sha256": "82953d912dc68820fd135796ed73311c37af4414c0e59a83f59303ea63b6e86a",
+      "output": "/nix/store/whgvskspkjbqf2njn6xm6fgl6c3mqmvj-aos-bazel-guest-inventory-1",
+      "source_files": 295
+    },
+    "hub-client": {
+      "configured_reports": 189,
+      "inventory_sha256": "46579a462a75d3d710a6c4f9d57847d192c910e151857a534dec777c1b65c5b6",
+      "output": "/nix/store/z2ky9lapf3wwp7ngd2ywy47fz1sazlwi-aos-bazel-hub-client-inventory-1",
+      "source_files": 10
+    },
+    "hub-console": {
+      "configured_reports": 171,
+      "inventory_sha256": "0dafba54eba94cdfe439b1a47200777d74c956a85ee16ad40aeced05380b7eda",
+      "output": "/nix/store/7264d2s4k58x726sgvpr005nhlgd5r7n-aos-bazel-hub-console-inventory-1",
+      "source_files": 140
+    },
+    "hub-console-browser": {
+      "configured_reports": 355,
+      "inventory_sha256": "fe619cba1b7907daa46c1b023b3ed01f776b789dec3ac25d71c4e34eff3e293f",
+      "output": "/nix/store/317ga8dxihpahf4isvbxxwd4v0k8v2m6-aos-bazel-hub-console-browser-inventory-1",
+      "source_files": 137
+    },
+    "hub-db": {
+      "configured_reports": 260,
+      "inventory_sha256": "9eb9167e8915fcfe0be6dc4c13109dc616422b686e28a625528a285e959374e0",
+      "output": "/nix/store/pf4y6rxxbha6vj9967qnkx5l4ghfkhk7-aos-bazel-hub-db-inventory-1",
+      "source_files": 354
+    },
+    "hub-db-all-features": {
+      "configured_reports": 284,
+      "inventory_sha256": "a0510c635e5a13690baea2fdadd0b75ab3c57491fd59881ceea49bd25247618a",
+      "output": "/nix/store/gc021gvz34r979whc5w2c62r01kla0dv-aos-bazel-hub-db-all-features-inventory-1",
+      "source_files": 354
+    },
+    "hub-db-all-features-production": {
+      "configured_reports": 248,
+      "inventory_sha256": "a3d25d1ded10b39806d57b42a16f663ee4fd8d3dbf6cf196be0429d022e6754d",
+      "output": "/nix/store/pq8z3bnkwrjn3jjjsqplnxwy3ax1rdmn-aos-bazel-hub-db-all-features-production-inventory-1",
+      "source_files": 346
+    },
+    "hub-db-production": {
+      "configured_reports": 223,
+      "inventory_sha256": "62cf0d743df308da83b4cc48ff77470d1f67a6d3fffcc70605bec5fa4f06fba1",
+      "output": "/nix/store/06wblh0xcb2z6niab4x0xz9lk84jhcv7-aos-bazel-hub-db-production-inventory-1",
+      "source_files": 346
+    },
+    "hub-model": {
+      "configured_reports": 214,
+      "inventory_sha256": "2f981db2f57dfd826b352e40a6c6fd1413130e5fb8eef65c92091bcdea5f5ce6",
+      "output": "/nix/store/hwfw7m9454h0svsnyhznx06ry29izc9f-aos-bazel-hub-model-inventory-1",
+      "source_files": 91
+    },
+    "hub-model-production": {
+      "configured_reports": 152,
+      "inventory_sha256": "754e7e5ea077f840fe10a2d170e80fafa3b4af9061f068b8607134f78f1506b0",
+      "output": "/nix/store/5z88hwsjhb8d510njnnqd0r72xjv6rhs-aos-bazel-hub-model-production-inventory-1",
+      "source_files": 79
+    },
+    "hub-native": {
+      "configured_reports": 606,
+      "inventory_sha256": "538e0b3f8f1190d52b3f8d84a8f423e3450f4708439322ccbcf26e81df89e0f6",
+      "output": "/nix/store/9a4dxfis0kf4lb70fjxfp62nj0mqvr3m-aos-bazel-hub-native-inventory-1",
+      "source_files": 921
+    },
+    "hub-native-production": {
+      "configured_reports": 480,
+      "inventory_sha256": "eb907526a2aff4548f80435963c8fab721cbabb9417f41c4c4b3e087f433682c",
+      "output": "/nix/store/58yc19pz1clah8p5mrg5p6fx6aqjsv1s-aos-bazel-hub-native-production-inventory-1",
+      "source_files": 703
+    },
+    "hub-portable": {
+      "configured_reports": 114,
+      "inventory_sha256": "0a7047bb61e912c1c3ba71ede0dc84b9c0c17b4b914f48385dc26a4e86bbaa1c",
+      "output": "/nix/store/sa9xpf02dq8b9vr7y0lyg8r2kkayhasq-aos-bazel-hub-portable-inventory-1",
+      "source_files": 67
+    },
+    "hub-service": {
+      "configured_reports": 529,
+      "inventory_sha256": "6dc903cbb4cec9ca3c47de9a2d181efefe4ecda116ba21222b77b7c585431cad",
+      "output": "/nix/store/9brbdlz9c546nfd4vg6jc0l8s4sxmyi4-aos-bazel-hub-service-inventory-1",
+      "source_files": 855
+    },
+    "hub-service-all-features": {
+      "configured_reports": 540,
+      "inventory_sha256": "d67d023e53d393b806b51215482960d80905b6cf561721782e0db143ad088413",
+      "output": "/nix/store/c46ywsgwi6z0i2cch7fxfninxazvh6lp-aos-bazel-hub-service-all-features-inventory-1",
+      "source_files": 855
+    },
+    "hub-service-all-features-production": {
+      "configured_reports": 340,
+      "inventory_sha256": "8095b448a79fb82e9221884d346a676347dddce338affe457063b1006710a9a5",
+      "output": "/nix/store/m2hg0g4dqrnknvdrj8xffv66byh212gz-aos-bazel-hub-service-all-features-production-inventory-1",
+      "source_files": 604
+    },
+    "hub-service-production": {
+      "configured_reports": 328,
+      "inventory_sha256": "54d3e07b45f04046e7736480c71609fe6ef587f67342d8f6248e272bbe6b0d04",
+      "output": "/nix/store/rcbmrrbjyyxkpynv8z4kbycpigal3c1y-aos-bazel-hub-service-production-inventory-1",
+      "source_files": 604
+    },
+    "hub-worker-all-features-tests": {
+      "configured_reports": 530,
+      "inventory_sha256": "9a2ec0c5a872e074d6239fcf8cdefea537fbddee6f36efcc48fa48e6bc8f4763",
+      "output": "/nix/store/5cq5bw6yl59vqr3880k99xmh1hygjap5-aos-bazel-hub-worker-all-features-tests-inventory-1",
+      "source_files": 771
+    },
+    "hub-worker-tests": {
+      "configured_reports": 530,
+      "inventory_sha256": "ed9ded2aa023e92287c6e79b77b1109708bf8e1b3502feb876e0393bf70483bc",
+      "output": "/nix/store/x5npiv5zmb9bfvcx8hj2ibpajffd14jx-aos-bazel-hub-worker-tests-inventory-1",
+      "source_files": 771
+    },
+    "hub-worker-wasm": {
+      "configured_reports": 369,
+      "inventory_sha256": "54ee0e25fee7a3a854fa75eab230d84f8f032400c24286284ff5d27dc46dbc04",
+      "output": "/nix/store/0rh7xanxi0yk0gi3vya6fh1w41xzjldn-aos-bazel-hub-worker-wasm-inventory-1",
+      "source_files": 643
+    },
+    "hub-worker-wasm-all-features": {
+      "configured_reports": 369,
+      "inventory_sha256": "39ab1f37d966b4fd3a5c34e9ed2c02898f66c2fd2a4e61e6c40dcab0ab0a5f57",
+      "output": "/nix/store/crbd0628wjmagi3w2pzzwws6d81r3y64-aos-bazel-hub-worker-wasm-all-features-inventory-1",
+      "source_files": 643
+    },
+    "hub-worker-wasm-do-e2e": {
+      "configured_reports": 369,
+      "inventory_sha256": "1d731cf2d78b16b3afcdb1f7a25f96f9f4aac516437bc0b56472a4594e390557",
+      "output": "/nix/store/dbv0sc0z52pizvb1jx8k1d3qdbyy1jdh-aos-bazel-hub-worker-wasm-do-e2e-inventory-1",
+      "source_files": 643
+    },
+    "native-foundation": {
+      "configured_reports": 392,
+      "inventory_sha256": "e5f040dbfc831ada1faff6eb9b163c5a6bcdeaf9518004d3df1a045f50a26c10",
+      "output": "/nix/store/28c7ff367k87f6pcbjp7cprm9nzyzkg1-aos-bazel-native-foundation-inventory-1",
+      "source_files": 105
+    },
+    "native-foundation-integration": {
+      "configured_reports": 252,
+      "inventory_sha256": "ebfd9bdac9af20bf8158c6eadd3c8b1801ef7770a4690c64da7d8e65bf95ccaa",
+      "output": "/nix/store/zsdlvwbbh5mpdkg5vz6nn6gfc05bzy02-aos-bazel-native-foundation-integration-inventory-1",
+      "source_files": 66
+    },
+    "native-foundation-minimal": {
+      "configured_reports": 259,
+      "inventory_sha256": "adf512dd67533fa60e0915aa9f896ba957961e43e2848bc9358012d4ca3a5037",
+      "output": "/nix/store/8aclnyv10xsjp0jb7kdggpwy5vjnaim1-aos-bazel-native-foundation-minimal-inventory-1",
+      "source_files": 102
+    },
+    "native-foundation-production": {
+      "configured_reports": 345,
+      "inventory_sha256": "eee67a499d57cc1566ddc1ee601f983c8d01306276bfec41bbec39e0f1934443",
+      "output": "/nix/store/v9bbj19hnfm433kzf0lcys20ra6mv8i9-aos-bazel-native-foundation-production-inventory-1",
+      "source_files": 95
+    },
+    "package-manager": {
+      "configured_reports": 490,
+      "inventory_sha256": "d7dcb650b2d80c1a64eed5c590b764745789405fc02fa4b33657ac5d64f2454f",
+      "output": "/nix/store/ypcr92gq27caivk87i6ipck97r9dr6sa-aos-bazel-package-manager-inventory-1",
+      "source_files": 503
+    },
+    "package-manager-production": {
+      "configured_reports": 412,
+      "inventory_sha256": "a4a1247941594fa7d8043fadb7af06d6dfecab5a113102ff70a7335fc5de0c07",
+      "output": "/nix/store/ra4rjl9klwl55z8bjjqdydlxrhsgm0ss-aos-bazel-package-manager-production-inventory-1",
+      "source_files": 473
+    },
+    "protocol": {
+      "configured_reports": 129,
+      "inventory_sha256": "ae66a1bd200ffafb46a34b36ecc4dd399821f63dbfefbc155e59aaad523c6000",
+      "output": "/nix/store/56c6lv4z8mg3ifxzs24lr6w4dcw8am9p-aos-bazel-protocol-inventory-1",
+      "source_files": 160
+    },
+    "qemu-gateway-process-test": {
+      "configured_reports": 78,
+      "inventory_sha256": "92fdb590cdbfc885b766cf5b97be2f048b8afcec3519000c3b05408ed1f7c0ed",
+      "output": "/nix/store/gsh329vgd391w8s5yzvs3disszp42wpb-aos-bazel-qemu-gateway-process-test-inventory-1",
+      "source_files": 34
+    },
+    "qemu-gpl-production": {
+      "configured_reports": 81,
+      "inventory_sha256": "4b3ae4f7b46bf609bbad6dab37a10add7cc6048228f84e57ff5db28738ab1f5a",
+      "output": "/nix/store/19gd1l53m9sds2v0csk49kykkg7asn0i-aos-bazel-qemu-gpl-production-inventory-1",
+      "source_files": 270
+    },
+    "qemu-host": {
+      "configured_reports": 249,
+      "inventory_sha256": "600c0b87602bddf5494e44147219b946ed860605b0e2ae51bd86715f738e8b69",
+      "output": "/nix/store/aq7h2nclj81qmdmzzmp44603l8lzkxak-aos-bazel-qemu-host-inventory-1",
+      "source_files": 1127
+    },
+    "qemu-plugin-process-test": {
+      "configured_reports": 87,
+      "inventory_sha256": "a2fcd6d450f039da8218c28eb7ea166960a63050a3c8d0e5ee11e28715859cdc",
+      "output": "/nix/store/6m95xbid6js3bwcy7kmwx43nxzmysgf2-aos-bazel-qemu-plugin-process-test-inventory-1",
+      "source_files": 285
+    },
+    "qemu-test-oracle-host": {
+      "configured_reports": 255,
+      "inventory_sha256": "3dcb5384e6987e911de56bf738c93c5e3ffa94c769811912f95bba2bf15c2476",
+      "output": "/nix/store/8lqgc9asmvh5hv278zj90g7xpip0aiql-aos-bazel-qemu-test-oracle-host-inventory-1",
+      "source_files": 867
+    },
+    "quota": {
+      "configured_reports": 49,
+      "inventory_sha256": "c208a13678aa657df10d53258453e28d8e1410a6948bce256c3dcc08eb8c15ad",
+      "output": "/nix/store/6zh6f0b7haxsvjdq6plnrh9rj51ja16d-aos-bazel-quota-inventory-1",
+      "source_files": 6
+    },
+    "registry-native": {
+      "configured_reports": 459,
+      "inventory_sha256": "4eccc3f892aebf3388448c5e486372877bb97bd55f18ba7ff66d8ede7d6d04cd",
+      "output": "/nix/store/nibx1pzf2b0r2kc8g9pmgzys2lqqpwrj-aos-bazel-registry-native-inventory-1",
+      "source_files": 375
+    },
+    "registry-native-production": {
+      "configured_reports": 406,
+      "inventory_sha256": "4bf0668932da2b439729e4c03c5d2c8634505f3660708a89ec96e4a73f57420a",
+      "output": "/nix/store/hk53d1s5ibjr6qfh95s0rxr85vpnj234-aos-bazel-registry-native-production-inventory-1",
+      "source_files": 357
+    },
+    "registry-web": {
+      "configured_reports": 281,
+      "inventory_sha256": "cf1fe29f8db7f01075649e237186fd99c2ef3728456fcde3ce6ce70dd5c74a1a",
+      "output": "/nix/store/qyy6ylpfffy49x4frh78kvgrhaqdnqyb-aos-bazel-registry-web-inventory-1",
+      "source_files": 57
+    },
+    "registry-web-browser": {
+      "configured_reports": 305,
+      "inventory_sha256": "65a6c82fcb121f31837e964e7d7a13ba2451eeb13d527ad900166f4365df290e",
+      "output": "/nix/store/lc9kbpkckp7ydbkl5qpky5raa3ml0i1a-aos-bazel-registry-web-browser-inventory-1",
+      "source_files": 55
+    },
+    "release-coordination": {
+      "configured_reports": 404,
+      "inventory_sha256": "98548321c0e4e88052ae8a5a102ad0391898717d9b3834a384c38c6c456249a6",
+      "output": "/nix/store/2v3amz3iy2sik2910i7id47i29gckqsa-aos-bazel-release-coordination-inventory-1",
+      "source_files": 272
+    },
+    "release-coordination-production": {
+      "configured_reports": 380,
+      "inventory_sha256": "00597c0ee5e744c91affbdb05042490b0e8a493a716279813cd93d7c9e680d47",
+      "output": "/nix/store/ar2399i549ipx69p01lx1j24rdl3b597-aos-bazel-release-coordination-production-inventory-1",
+      "source_files": 265
+    },
+    "release-preparation": {
+      "configured_reports": 211,
+      "inventory_sha256": "e4b98c4d5c73bef316ce77d91b477a93b2cd911f863374f3c008eb2a8fc689ef",
+      "output": "/nix/store/s602zv14x6hj3m3pbanvha4988jsfa2c-aos-bazel-release-preparation-inventory-1",
+      "source_files": 182
+    },
+    "session": {
+      "configured_reports": 262,
+      "inventory_sha256": "65d213d5df89fadda5bc5dd0c3bd865b065983128b28c446dc68264e758c4e56",
+      "output": "/nix/store/xpxghy5dpxdiqnv1viz08qfxw4dvlifj-aos-bazel-session-inventory-1",
+      "source_files": 841
+    },
+    "shared": {
+      "configured_reports": 85,
+      "inventory_sha256": "2975d916b1d84c48b2d89875f01aa95764080c26892d41ae825d92ba5f080e03",
+      "output": "/nix/store/5ngwnxv1z4dskf04jc7dhgdag6g4psrg-aos-bazel-shared-inventory-1",
+      "source_files": 32
+    },
+    "store": {
+      "configured_reports": 277,
+      "inventory_sha256": "993a7768e2103037d94958ad6e97a3bcc9dae1cd668aec43c70a3963d9ef8acb",
+      "output": "/nix/store/r9ri480693bjb8wrk02ky5l25nwzqmyd-aos-bazel-store-inventory-1",
+      "source_files": 272
+    },
+    "store-s3": {
+      "configured_reports": 283,
+      "inventory_sha256": "cec57b6ade9617cdee906705d9bfc2de9340e86a9c44bbf28803af04a1ea2578",
+      "output": "/nix/store/svz59zdb59v17j29camfiq7lxamwb09f-aos-bazel-store-s3-inventory-1",
+      "source_files": 54
+    }
+  },
+  "limitations": [
+    "CLI, Hub, and GPL inventory recipes retain the previously qualified console asset provider.",
+    "Accache inventory was refreshed after its final native-link declaration and replaces the earlier batch output.",
+    "This analysis does not qualify broad runtime, browser DOM behavior, compiler/linker/runtime closure equivalence, foreign hosts, performance acceptance, or production cutovers."
+  ],
+  "outputs": 77,
+  "published_families": {
+    "accache": {
+      "configured_reports": 98,
+      "sha256": "afb85fc08ee0756767a9f76ef57475827473fbb83d54abb922bd54415642e45b",
+      "source_files": 23
+    },
+    "activation-core": {
+      "configured_reports": 237,
+      "sha256": "68fbc580908f3afee7c61ff337a1a9a7e41d88186ce09ed576bb4cac5a21233b",
+      "source_files": 62
+    },
+    "activation-crucible": {
+      "configured_reports": 255,
+      "sha256": "444dc31687df62c6a96cf7da3e13805f08cd51844849e265d984966ae0920d6d",
+      "source_files": 841
+    },
+    "activation-storage": {
+      "configured_reports": 144,
+      "sha256": "c1741ba3a21dba96373af715d939bde6d4979109cc1614f19eba511a185a909c",
+      "source_files": 79
+    },
+    "activation-systemd": {
+      "configured_reports": 172,
+      "sha256": "9c74db1a135e8cbacda5ef9dffdb00989433bda6f22a7fc281d112891dace52b",
+      "source_files": 80
+    },
+    "aos-cli": {
+      "configured_reports": 1861,
+      "sha256": "e394681ac0492f2d4ab8d6fd87ba28a5d4cd4827a86a62c95c0f44a76c25901d",
+      "source_files": 1364
+    },
+    "boot-pilot": {
+      "configured_reports": 41,
+      "sha256": "87c204d65727d46334dfda84db5f0c73ff931dc7138382473ce965a15f5c4bb6",
+      "source_files": 15
+    },
+    "boot-preparation": {
+      "configured_reports": 721,
+      "sha256": "026c709bec27298950644781ea1bdab0f294cd94a5f636c04d04c8ae61b620e2",
+      "source_files": 235
+    },
+    "build-services": {
+      "configured_reports": 312,
+      "sha256": "c166efffb4141f6b25eb405a5f197f77650ed6f1cc8f37e97a2b32523ca622de",
+      "source_files": 65
+    },
+    "cli-support": {
+      "configured_reports": 196,
+      "sha256": "390f13f39b791460e82c21fca55db326f1fae2294807accd96c2cb6a79d69643",
+      "source_files": 65
+    },
+    "contracts": {
+      "configured_reports": 152,
+      "sha256": "bab5d87ad84baecac61ff3b089937a461adbea358fb053060b437d21976aff76",
+      "source_files": 140
+    },
+    "control": {
+      "configured_reports": 319,
+      "sha256": "a7bd1b3feb35c0fe2d688d3fd86748fd9b12e800ca6f89c483023d55264cbab4",
+      "source_files": 888
+    },
+    "crucible-cli": {
+      "configured_reports": 584,
+      "sha256": "3e66c7652c9dd96a3d8dac65c4ef538fadb18f382d74b06b64f4b0f99d953f25",
+      "source_files": 1740
+    },
+    "daemon": {
+      "configured_reports": 453,
+      "sha256": "70baeb4c54302872ce5ff8a4423d6907bcfc59eff77e4ab665e8698f47999c5d",
+      "source_files": 1549
+    },
+    "deployment": {
+      "configured_reports": 135,
+      "sha256": "2c258807c57c19d2f973cff79e9add818e8599608d97e265df5f4852e21766fd",
+      "source_files": 184
+    },
+    "device": {
+      "configured_reports": 166,
+      "sha256": "f440db8f30b629fc9057bbd67239eaf580a5beaa8dac0ad12d586d826b6580d6",
+      "source_files": 281
+    },
+    "engine": {
+      "configured_reports": 1266,
+      "sha256": "a56be223258717b53c2bc83fad771e0dd88ebe3542fe36ef3e54ce4d9ed2310e",
+      "source_files": 3815
+    },
+    "fixture": {
+      "configured_reports": 21,
+      "sha256": "d734f11872f90dbd7521ff0b37cf42e46fc2607b5eef6c866f60c36f45968cf7",
+      "source_files": 9
+    },
+    "formats": {
+      "configured_reports": 162,
+      "sha256": "68f68c16e34c4feebddd774c52e0a0c738b2de822495f05d217e533bd69c53cb",
+      "source_files": 73
+    },
+    "guest": {
+      "configured_reports": 138,
+      "sha256": "fee8f556f208793e20fb4216a59d26f064847cf91aca12bddafc06de8a1cc47e",
+      "source_files": 295
+    },
+    "hub-client": {
+      "configured_reports": 189,
+      "sha256": "2afc6faf72cfa9f312a33074cb780bb66f0f5f702bb80592628f4d48fc1c365f",
+      "source_files": 10
+    },
+    "hub-console": {
+      "configured_reports": 171,
+      "sha256": "55eb137d79bd6c67e3b492ac37daa1c62e898c12bfff2b44cc22c890d06515e4",
+      "source_files": 140
+    },
+    "hub-console-wasm": {
+      "configured_reports": 355,
+      "sha256": "fe619cba1b7907daa46c1b023b3ed01f776b789dec3ac25d71c4e34eff3e293f",
+      "source_files": 137
+    },
+    "hub-db": {
+      "configured_reports": 946,
+      "sha256": "1c7921ae9c0413242553db57b41ddbcbb3fe4ac373f502957fb169b2d845ad2c",
+      "source_files": 354
+    },
+    "hub-model": {
+      "configured_reports": 351,
+      "sha256": "a327f45d5bdaed3378426f4adf6d0c2fd1253cdd4e5509ebe82086c92321a13f",
+      "source_files": 91
+    },
+    "hub-native": {
+      "configured_reports": 1066,
+      "sha256": "0231a640f6af8c043c6fc360ea07fbb5a29dc2de6edb0314be82f8f4806d37b0",
+      "source_files": 922
+    },
+    "hub-portable": {
+      "configured_reports": 114,
+      "sha256": "677b9603b6bb1572f08407444807238cf7b55e265f601bfd203f395683bce4e3",
+      "source_files": 67
+    },
+    "hub-service": {
+      "configured_reports": 1630,
+      "sha256": "19e902f2c521d392a700297cb3fd1ccf8c4b33af810cf161a23c82cd6009d821",
+      "source_files": 856
+    },
+    "hub-worker": {
+      "configured_reports": 1006,
+      "sha256": "ca21c2b60049d8339f404bd869acb20e85304a847a674ddfd5d74ecc2ac888b4",
+      "source_files": 771
+    },
+    "hub-worker-wasm": {
+      "configured_reports": 1001,
+      "sha256": "fe08f83d114d35cb0630fc62a3fe9c8eea503a9ed4330998a2749c5799ae29b0",
+      "source_files": 643
+    },
+    "native-foundation": {
+      "configured_reports": 955,
+      "sha256": "639af13bfddfcd99c80100070d00493e3f42a2dca696c12ad7ac909493f0d1e1",
+      "source_files": 105
+    },
+    "package-manager": {
+      "configured_reports": 881,
+      "sha256": "90ac5e42b2c01896f6961c8552395cedd6f3779067930f6652fd276323272830",
+      "source_files": 503
+    },
+    "protocol": {
+      "configured_reports": 129,
+      "sha256": "11819cd6a361e9eb8407e3582b34f257352f9ac0abc5207f4dab73344d424fba",
+      "source_files": 160
+    },
+    "qemu-gateway-process-test": {
+      "configured_reports": 78,
+      "sha256": "b48303d1f3ae52932222bc97a984f1b735a0f34090531c2c1400b5a671ecd05b",
+      "source_files": 34
+    },
+    "qemu-gpl-production": {
+      "configured_reports": 81,
+      "sha256": "e1a649b0db8d9d2961bcc26e1a56ac93f21d6251687b412d3ce52f108844d5b2",
+      "source_files": 270
+    },
+    "qemu-host": {
+      "configured_reports": 249,
+      "sha256": "2a1a5094bf65cbe00f3a47a5c35ce230fb68ede39502e4d674af7bbec5cd78fb",
+      "source_files": 1127
+    },
+    "qemu-plugin-process-test": {
+      "configured_reports": 87,
+      "sha256": "ca1548f42ac306959947400953db1dca7f7cfee94cf09d403d691567166d8f9b",
+      "source_files": 285
+    },
+    "qemu-test-oracle-host": {
+      "configured_reports": 255,
+      "sha256": "5943b2ebbf18b4c04b8b0ababe17aefe5d1c261609a0fec77b11a2ba4bc05242",
+      "source_files": 867
+    },
+    "quota": {
+      "configured_reports": 49,
+      "sha256": "8640639c228c25a35c6bd87f660dacd229430910852106844287799dbccbeee8",
+      "source_files": 6
+    },
+    "registry-native": {
+      "configured_reports": 842,
+      "sha256": "4ead5cc0f8229b9b4dcc71d3fd548f6726d3d375e88e6e5cd73bf12916d10850",
+      "source_files": 375
+    },
+    "registry-web": {
+      "configured_reports": 281,
+      "sha256": "62dc2f2404eb1ae123510ab489544e224f49e1a9b242d8797ddab20b75e7cb49",
+      "source_files": 57
+    },
+    "registry-web-wasm": {
+      "configured_reports": 305,
+      "sha256": "65a6c82fcb121f31837e964e7d7a13ba2451eeb13d527ad900166f4365df290e",
+      "source_files": 55
+    },
+    "release-coordination": {
+      "configured_reports": 404,
+      "sha256": "6fcc5c392aff3d090cb535a097cea6112ce6300fcfa3aac8aa72d461a96063ab",
+      "source_files": 272
+    },
+    "release-preparation": {
+      "configured_reports": 211,
+      "sha256": "c9850afea5b9e566d42cc59f039f23d00b45a82595c0a0c0a1a31c37e5b127ae",
+      "source_files": 182
+    },
+    "session": {
+      "configured_reports": 262,
+      "sha256": "27a39a7e694f99e9e2c8b18c0ede6a3b338b13c2e0cef3eeb199c55a3bcf00e9",
+      "source_files": 841
+    },
+    "shared": {
+      "configured_reports": 85,
+      "sha256": "d297fc7c74fe12273367a7e2b0b0f9718a7a582982dc15efc5bea6765974e257",
+      "source_files": 32
+    },
+    "store": {
+      "configured_reports": 277,
+      "sha256": "c8528cf9d1346bde732f0defbb8206e5b6c80593d484082d644ffdd36c5d5a59",
+      "source_files": 272
+    },
+    "store-s3": {
+      "configured_reports": 283,
+      "sha256": "01d2a7fe89447a290a2d5e71ba79039299ead73bb77d05edac7e583a32cc0a08",
+      "source_files": 54
+    }
+  },
+  "schema_version": 1,
+  "scope": "Configured source-selection analysis after standalone accache conversion; no broad compilation or runtime equivalence claim.",
+  "source_catalog": {
+    "crates": {
+      "packages": 78,
+      "sources": 3753
+    },
+    "external_build_actions": 0,
+    "output": "/nix/store/d2vksjyjijcal0aklqx1i1m25acwqr3j-aos-bazel-source-catalog-checks",
+    "repository": {
+      "packages": 80,
+      "sources": 3773
+    },
+    "schema_version": 1
+  },
+  "source_preparation": {
+    "archives": 734,
+    "generated_repository_declarations_verified": 15772,
+    "limits": "All generated BUILD declarations and repository/platform markers are checked; archive source file byte equivalence is not exhaustively repeated here. The previous registry-web pilot remains historical evidence.",
+    "method": "Analysis-only scratch batch: pinned archives are unpacked and source-filtered once, then exposed through per-repository views with current generated declarations. Production preparation is unchanged.",
+    "output": "/nix/store/r4gfc7qkjqf7ddfqm81r14j6j8c8fpbs-aos-source-sdk-analysis-batch-1",
+    "repositories": 15772,
+    "source_filter_sha256": "b86b3348196c76d45e2481dc54e0ff0095f8f330d22063f045dda5bbb1ab9f58"
+  },
+  "status": "PASS"
+}

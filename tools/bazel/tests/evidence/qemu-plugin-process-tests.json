@@ -1,0 +1,1102 @@
+{
+  "checks": {
+    "affected_nix_gates": [
+      "/nix/store/4y8dm9mxlhigdfjnn98msg812ws6lazg-crucible-phase1-host-observable-schedule-0",
+      "/nix/store/nf955np9k5qxg95655cy1ccxz91wvkzl-crucible-phase2-plugin-network-rx-0",
+      "/nix/store/7xdfsvgnqad5m2g1r4lmjagrb0qhwh6k-crucible-phase2-plugin-whitebox-doorbell-0",
+      "/nix/store/cfflh768bn9pkfgh211jhp70k39h7zig-crucible-phase4-guest-host-doorbell-0",
+      "/nix/store/49dg5whkb50ad2j7d01jv39i7gw6i92f-crucible-phase4-guest-host-doorbell-abi-0",
+      "/nix/store/r95q6z04r7id7q79yni723hcxmd5aa8m-crucible-phase4-guest-host-marker-observability-0"
+    ],
+    "ordinary_packages_and_boundary_gates": [
+      "/nix/store/v7lr1nrcd77ys2azyhmjm7wmmld903w7-crucible-qemu-plugin-0.1.0",
+      "/nix/store/36sqhyrwcax2a3q7drfab2id4xx42nzv-crucible-debug-gateway-0.1.0",
+      "/nix/store/3madqbbbryqfsn0p7xc6lv6gpfwaxrqr-crucible-phase2-abi-conformance-0",
+      "/nix/store/2ylainkxqyll0wfzlbzrdqvzq4fawgvk-crucible-phase1-license-boundary-0"
+    ],
+    "policy_evaluation_source_catalog": [
+      "/nix/store/p9albjp3f440v8n7y5gzh6yla95w2sg6-aos-bazel-policy-checks",
+      "/nix/store/q8wxkyxikk6zvpn0gbqckycs20i8b0bm-aos-native-evaluation-checks-0",
+      "/nix/store/pp4y7591jbxz4ip27wwdq3k1msg2pc0r-aos-bazel-source-catalog-checks"
+    ],
+    "required_rust_targets": [
+      "/nix/store/3n5qpy53kkkcy8hn6vdylapynvwy7h0r-aos-test-targets-0.1.0"
+    ]
+  },
+  "compiler_parity": {
+    "gpl": {
+      "limits": [
+        "Bazel response and indirect wrapper input files are bound to execution digests. Working-directory, output-base, and execution-root identities remain explicit symbolic roots.",
+        "Compiler defaults and compiler/linker closure or ABI equivalence are not checked here.",
+        "Codegen, target, linker, incremental, and artifact-identity differences are retained for explicit review; this audit does not establish semantic compiler-option equivalence.",
+        "Scalar codegen options use their last explicit value. Repeated and unknown options remain in order; compiler defaults are not inferred.",
+        "The source/test key requires an unambiguous native family. Families compiling the same source in multiple execution/target configurations need an explicit role-aware comparison.",
+        "Captured Cargo invocations prove compiler execution was requested, not that every request succeeded. Runtime and compilation results require their independent gates."
+      ],
+      "paired_units": 6,
+      "report_sha256": "21a2e38a335da58116107f51ce283bb160dd6f50118ea4f19a38274985b29d4e",
+      "status": "PASS: paired first-party invocations and matching wrapper-expanded cfg/edition arguments"
+    },
+    "host": {
+      "limits": [
+        "Bazel response and indirect wrapper input files are bound to execution digests. Working-directory, output-base, and execution-root identities remain explicit symbolic roots.",
+        "Compiler defaults and compiler/linker closure or ABI equivalence are not checked here.",
+        "Codegen, target, linker, incremental, and artifact-identity differences are retained for explicit review; this audit does not establish semantic compiler-option equivalence.",
+        "Scalar codegen options use their last explicit value. Repeated and unknown options remain in order; compiler defaults are not inferred.",
+        "The source/test key requires an unambiguous native family. Families compiling the same source in multiple execution/target configurations need an explicit role-aware comparison.",
+        "Captured Cargo invocations prove compiler execution was requested, not that every request succeeded. Runtime and compilation results require their independent gates."
+      ],
+      "paired_units": 12,
+      "report_sha256": "7afaf274a6fc9aa271a568385f99ba5c7cb2101cb525749c989dbcf27ae9cb84",
+      "status": "PASS: paired first-party invocations and matching wrapper-expanded cfg/edition arguments"
+    }
+  },
+  "declared_inputs": {
+    "cargo": "/nix/store/5njf36a55xg306kd5n347lbjk234493p-aos-bazel-qemu-plugin-tests-cargo-1",
+    "host_build": "/nix/store/qwghkyyxn5fx1ay75bz9v8qy1y0hxrac-aos-bazel-qemu-test-oracle-host-1",
+    "host_inventory": "/nix/store/y8gkyjjkk2qj0wdvcg8ih324zxfaqzh2-aos-bazel-qemu-test-oracle-host-inventory-1",
+    "schema_version": 1,
+    "test_build": "/nix/store/i617mh973qynjzdczlr49x95fifviaxc-aos-bazel-qemu-plugin-process-tests-1",
+    "test_inventory": "/nix/store/y7x72avm0k3bbyg583zxpivwa7flafvs-aos-bazel-qemu-plugin-process-test-inventory-1",
+    "test_tools": "/nix/store/0gi9idgc4ahsfxs883m1ah2l25g1vrsv-aos-bazel-qemu-process-test-tools-1"
+  },
+  "dependency_metadata": {
+    "analysis_outputs": {
+      "activation-core": "/nix/store/hja6bmdf1chnsx0czgci2xicds15j6xv-aos-bazel-activation-core-inventory-1",
+      "activation-core-production": "/nix/store/gw8dsv9rqbnv8a8x14f0mmkc1c675b1h-aos-bazel-activation-core-production-inventory-1",
+      "activation-crucible": "/nix/store/x4ng5szhdpspiyf39qdghz6zg9fwsm2k-aos-bazel-activation-crucible-inventory-1",
+      "activation-crucible-production": "/nix/store/y5f4fa9z68gnw91nnbx2d57348698q60-aos-bazel-activation-crucible-production-inventory-1",
+      "activation-storage": "/nix/store/zrxpg1zbxjzlg2ppx4gyw1w0pmacvpwr-aos-bazel-activation-storage-inventory-1",
+      "activation-storage-production": "/nix/store/dzbbxnhbnqzyifrjcqkqy0vypyca9n72-aos-bazel-activation-storage-production-inventory-1",
+      "activation-systemd": "/nix/store/ifgklawmdyik1k7z6wciv5f4whfkpwh1-aos-bazel-activation-systemd-inventory-1",
+      "activation-systemd-parser": "/nix/store/67929s238psr9pjwzyxbqwykqi3akj05-aos-bazel-activation-systemd-parser-inventory-1",
+      "activation-systemd-production": "/nix/store/4rikanc2kr7jjbmazwfvc15gfjpr467r-aos-bazel-activation-systemd-production-inventory-1",
+      "aos-cli-fleet-tests": "/nix/store/56c50mf930hywyaxmhbhidhkla45cwm5-aos-bazel-aos-cli-fleet-tests-inventory-1",
+      "aos-cli-production": "/nix/store/1d0avanz63gf29jv4vhg1l0gs7cy3r6j-aos-bazel-aos-cli-production-inventory-1",
+      "aos-cli-tests": "/nix/store/iqadpnig6nxsrq4zlm7p6a6p5ang1lan-aos-bazel-aos-cli-tests-inventory-1",
+      "boot-pilot": "/nix/store/w4lqrg96id4a0ap550d54q8ja8k8wb4h-aos-bazel-boot-pilot-inventory-1",
+      "boot-preparation": "/nix/store/dfspr5s1w4nk3h7hpf0qv80i4zjs4nb5-aos-bazel-boot-preparation-inventory-1",
+      "boot-preparation-minimal": "/nix/store/v9wbyq5skrk66xj4kcl2z15p229nz38r-aos-bazel-boot-preparation-minimal-inventory-1",
+      "boot-preparation-minimal-production": "/nix/store/i1kdw449prkp1lk5b476qwv8k4g0gb9a-aos-bazel-boot-preparation-minimal-production-inventory-1",
+      "boot-preparation-production": "/nix/store/hsnjdcfhb7m7iskcnaivngirl41arr8n-aos-bazel-boot-preparation-production-inventory-1",
+      "boot-preparation-standalone": "/nix/store/jkdkcx2g1b839a4gs5h8b21a3gvsyfis-aos-bazel-boot-preparation-standalone-inventory-1",
+      "build-services": "/nix/store/7ldlw79znmrmj0pkv2x4kk5bvv8s208g-aos-bazel-build-services-inventory-1",
+      "cli-support": "/nix/store/gbvvn5s282xssjznz1g7mj5hsqlil5bs-aos-bazel-cli-support-inventory-1",
+      "contracts": "/nix/store/crgpz59qfdgvipgf06zcrsnnmypg5inp-aos-bazel-contracts-inventory-1",
+      "control": "/nix/store/srl804zlh5v2pvi9kh97qscqdrc9crbg-aos-bazel-control-inventory-1",
+      "crucible-cli": "/nix/store/55hgcc3rdqlaqd659y4j7qj2f3h4zp4x-aos-bazel-crucible-cli-inventory-1",
+      "daemon": "/nix/store/q5lyknc2i4q06akfxkrwqf533zgs8qi6-aos-bazel-daemon-inventory-1",
+      "deployment": "/nix/store/32s855a53aczypcljhmvqj9xdsvgv012-aos-bazel-deployment-inventory-1",
+      "device": "/nix/store/d8xgpfrkh53vizpq6rr73h6q35rgllq7-aos-bazel-device-inventory-1",
+      "engine": "/nix/store/y6j3bbgvxs7f3lg02swcbd5zg77l2hzz-aos-bazel-engine-inventory-1",
+      "fixture": "/nix/store/9milhb5m4gbybdhfp7gss8nb7zsrc2ja-aos-bazel-fixture-inventory-1",
+      "formats": "/nix/store/jsc5mihj5hyd3pcmvkfd15h7a5q4lrhy-aos-bazel-formats-inventory-1",
+      "guest": "/nix/store/9lwaxg9pzji0wgg6npn3mfgfcw3ygrzw-aos-bazel-guest-inventory-1",
+      "hub-client": "/nix/store/rra5qz927iql1c1j350iycxjcrg450lg-aos-bazel-hub-client-inventory-1",
+      "hub-console": "/nix/store/l6k9magfj9z8gwfvvrg7fz0sgmqa1lvd-aos-bazel-hub-console-inventory-1",
+      "hub-console-browser": "/nix/store/0326kwakd2ap78kk9vipjymrdd8p785k-aos-bazel-hub-console-browser-inventory-1",
+      "hub-db": "/nix/store/vg9446glp9ivb22ysw1iq0jbyala400b-aos-bazel-hub-db-inventory-1",
+      "hub-db-all-features": "/nix/store/ghmnhikcimvwnsblm4xsj04cj4kw7qmv-aos-bazel-hub-db-all-features-inventory-1",
+      "hub-db-all-features-production": "/nix/store/34lhnw3krgzc708d4msppn2q770bnjhp-aos-bazel-hub-db-all-features-production-inventory-1",
+      "hub-db-production": "/nix/store/q05zzlrvimqin0j378y6za3qz99h49r1-aos-bazel-hub-db-production-inventory-1",
+      "hub-model": "/nix/store/dpysfl557qk4xg94d1kas5v0r071vxip-aos-bazel-hub-model-inventory-1",
+      "hub-model-production": "/nix/store/p206d9xv2f42wqbfkwz0n1cfwj0ij6dp-aos-bazel-hub-model-production-inventory-1",
+      "hub-native": "/nix/store/g2d2h2pwxs375zm08i0xwavjpwbrgfgs-aos-bazel-hub-native-inventory-1",
+      "hub-native-production": "/nix/store/xidf2ls5izhlxkml6q6zd2n3knrc6p3q-aos-bazel-hub-native-production-inventory-1",
+      "hub-portable": "/nix/store/c3gm9pniz2hn9jzg2kzzwhwdsd589rx6-aos-bazel-hub-portable-inventory-1",
+      "hub-service": "/nix/store/7ak207ycihagwh7iq77cypwm1ij1arq9-aos-bazel-hub-service-inventory-1",
+      "hub-service-all-features": "/nix/store/v6pmsj9zghc44cripgn2w4xnxq5pkgwk-aos-bazel-hub-service-all-features-inventory-1",
+      "hub-service-all-features-production": "/nix/store/gzwjga1vipgy908jfkfms0m4fjrsq231-aos-bazel-hub-service-all-features-production-inventory-1",
+      "hub-service-production": "/nix/store/n9ysnqw9il5h014nm6bv1vnhz99i1p83-aos-bazel-hub-service-production-inventory-1",
+      "hub-worker-all-features-tests": "/nix/store/4azsmrfwp9cpx1qjcc15z2ry4i4iy241-aos-bazel-hub-worker-all-features-tests-inventory-1",
+      "hub-worker-tests": "/nix/store/f9k1hl6a57zygdsamxi7hsasgwrn4gh7-aos-bazel-hub-worker-tests-inventory-1",
+      "hub-worker-wasm": "/nix/store/w5mc8b7rj6q3gpn6z18iqcxmmwcj44zq-aos-bazel-hub-worker-wasm-inventory-1",
+      "hub-worker-wasm-all-features": "/nix/store/2bgi6xqdw3dfzarr9hn5ja3f65jajwpf-aos-bazel-hub-worker-wasm-all-features-inventory-1",
+      "hub-worker-wasm-do-e2e": "/nix/store/md2hvzf786izlz55x35hx1ckrw8cqrdx-aos-bazel-hub-worker-wasm-do-e2e-inventory-1",
+      "native-foundation": "/nix/store/am6v35amx77pifj0r4w6r1gx0p66d93s-aos-bazel-native-foundation-inventory-1",
+      "native-foundation-integration": "/nix/store/nxy00shiidcm0w0j1m6p2mqmm1gr1b7l-aos-bazel-native-foundation-integration-inventory-1",
+      "native-foundation-minimal": "/nix/store/vd375a27k4j2agndhy7fmf3py28j019y-aos-bazel-native-foundation-minimal-inventory-1",
+      "native-foundation-production": "/nix/store/64rcb9lcickgsvdaqgl5fxg2dlmz4rlg-aos-bazel-native-foundation-production-inventory-1",
+      "package-manager": "/nix/store/nbxjp9d8r5x4rm6z512ji6an4894zk04-aos-bazel-package-manager-inventory-1",
+      "package-manager-production": "/nix/store/hic77p6rvq80cd3km6nyw7jak5a6y81n-aos-bazel-package-manager-production-inventory-1",
+      "protocol": "/nix/store/ycmywa8rsxms9f8ahmzvz2hfyb72cn6j-aos-bazel-protocol-inventory-1",
+      "qemu-gateway-process-test": "/nix/store/fbqgf669kmjv1fhbil535aqhbf8jpqr3-aos-bazel-qemu-gateway-process-test-inventory-1",
+      "qemu-gpl-production": "/nix/store/jc7m0m99zz2fpx4x928cfarxfr74z2dn-aos-bazel-qemu-gpl-production-inventory-1",
+      "qemu-host": "/nix/store/05b82by4s270s73mmgqrgmw1gi7fkhm8-aos-bazel-qemu-host-inventory-1",
+      "qemu-plugin-process-test": "/nix/store/8k4552y1jhi1ixn67y3p9vlgpq84s6n0-aos-bazel-qemu-plugin-process-test-inventory-1",
+      "qemu-test-oracle-host": "/nix/store/rb93g6d91xhpx9j7ys0gdy9vg7kgwaj8-aos-bazel-qemu-test-oracle-host-inventory-1",
+      "quota": "/nix/store/kh2gpq4abf0g994y8l9g88lral9h6pby-aos-bazel-quota-inventory-1",
+      "registry-native": "/nix/store/yympc94z6sfdd91p790fg9fr3gxv26m5-aos-bazel-registry-native-inventory-1",
+      "registry-native-production": "/nix/store/4pigcjiisyn10y3g72p7fdnjhpcmrm34-aos-bazel-registry-native-production-inventory-1",
+      "release-coordination": "/nix/store/wrbpjn2rm0spy8f04x98qkxf3mii3dll-aos-bazel-release-coordination-inventory-1",
+      "release-coordination-production": "/nix/store/6j7wljpsngsb65xdnhv5q7nbbxhhjihk-aos-bazel-release-coordination-production-inventory-1",
+      "release-preparation": "/nix/store/iyrp3xbhzzlc3i6fbk0d7gx7ar1v202q-aos-bazel-release-preparation-inventory-1",
+      "session": "/nix/store/qifflms7l04ppa18f0yy9avgwi7s52w8-aos-bazel-session-inventory-1",
+      "shared": "/nix/store/0grh91qjzpic41r79ng4yp58iprs83f1-aos-bazel-shared-inventory-1",
+      "source-catalog": "/nix/store/bxzqlwy8mbykw82xm10nc1gyjbwc32kd-aos-bazel-source-catalog-checks",
+      "store": "/nix/store/qm80nh19mxxh81ba6s1q13kxqad11fy8-aos-bazel-store-inventory-1",
+      "store-s3": "/nix/store/swnk1aijgy8y5sjhcwwakj8gf46vrfdi-aos-bazel-store-s3-inventory-1"
+    },
+    "inventories": {
+      "activation-core": {
+        "sha256": "84c73795ac7d41651c09b3759c164de3df0b006f9d2d3c23489612fda4b734cd",
+        "source_files": 62
+      },
+      "activation-crucible": {
+        "sha256": "3433da1b6db2a669b1049db711c8f2f49d7cb8e60747c89aeefe4e07c6a8c67f",
+        "source_files": 841
+      },
+      "activation-storage": {
+        "sha256": "3e60c6b9d8bbe54d94d65ad82aaa21e0cca195f9770f792d1785854eb5b4dc0d",
+        "source_files": 79
+      },
+      "activation-systemd": {
+        "sha256": "672afccbcda9f099f65ddd53e0a878a673a60f2056444339f749312486c532f5",
+        "source_files": 79
+      },
+      "aos-cli": {
+        "sha256": "ec3279e6de699124ffc471ed95226510cc147a7122a143f323ed622b1e741698",
+        "source_files": 1343
+      },
+      "boot-pilot": {
+        "sha256": "045d6690a8c3be9f7dc5642bc2ee6c5d467583626f98983087eab078dedb07ad",
+        "source_files": 15
+      },
+      "boot-preparation": {
+        "sha256": "7a044e7a7225bc8d89544acb4c766b853f5e03b1dedcdd11fad06c7249e82b2a",
+        "source_files": 232
+      },
+      "build-services": {
+        "sha256": "4472543b191a1bf5abd8263e30cf5f5122b5cb45cef84e2277d9cbf2c6b4838e",
+        "source_files": 57
+      },
+      "cli-support": {
+        "sha256": "3517ae381e3a36342a100da36329b2a2112dc4cb5a01aba88c11360962699330",
+        "source_files": 64
+      },
+      "contracts": {
+        "sha256": "61420851d607867fe7858e6b501d977d5437c57e821c771affbf64d7dc879403",
+        "source_files": 140
+      },
+      "control": {
+        "sha256": "2fd3359e34ac63815a8065ccc6e2e1e9773060eb1b50f2791c62e6c1af251105",
+        "source_files": 886
+      },
+      "crucible-cli": {
+        "sha256": "7321f617f7611c3f49a590042eeeadd503d03cd79d31cc35d606bc422f1449c2",
+        "source_files": 1740
+      },
+      "daemon": {
+        "sha256": "fb85459fa2e4460091c21f1fc61139b13cbc87d0df1c4f3d9bbb874386c2d395",
+        "source_files": 1549
+      },
+      "deployment": {
+        "sha256": "362adb6fa052e7f8dc8b83f573191c0889a4f87dcc884729b5df8bac4cf86f43",
+        "source_files": 183
+      },
+      "device": {
+        "sha256": "21d9e24140acb083828b989a70ce62c6b4102c22b518a468dba21429c6908991",
+        "source_files": 281
+      },
+      "engine": {
+        "sha256": "1cbd0307360c2f11820dff353568bbe4fd49b47e9c6cba51d8f43a94bb8365dc",
+        "source_files": 3789
+      },
+      "fixture": {
+        "sha256": "311a8680f85d379432ef3a5343b0d2942a64542121beb8b3153291c841ae6073",
+        "source_files": 9
+      },
+      "formats": {
+        "sha256": "41727ef8ac2fba334c143d10e8b1dab3fa8845c8ed04db2ee47b5cfde472a06c",
+        "source_files": 73
+      },
+      "guest": {
+        "sha256": "65073564502bb9f0ae9d5da807410c8d309b1ae5c9b232a0490b0156483e25f5",
+        "source_files": 295
+      },
+      "hub-client": {
+        "sha256": "ad628482a3bc750452d7c39250cb552a6852450ee1f599f73189f09ef02510f9",
+        "source_files": 10
+      },
+      "hub-console": {
+        "sha256": "24a7719d2ea985eeabca92157283a0348ec033e7ad559aecbc9028848682395d",
+        "source_files": 140
+      },
+      "hub-console-wasm": {
+        "sha256": "ab9965d48a0a91e197c90492f873ed9b1ed31ca371eaac56b19a00f7d5980b5c",
+        "source_files": 137
+      },
+      "hub-db": {
+        "sha256": "6864f98b6b93fef50c309671edd267e62ab55bb8c84ae34983e79b36c7d01f5a",
+        "source_files": 343
+      },
+      "hub-model": {
+        "sha256": "67414b3ffde73f55f7b5624c90bea222adc68390f9b846e5084aff699de39e50",
+        "source_files": 91
+      },
+      "hub-native": {
+        "sha256": "fd94292892f5ca62e3f61c09ee42e39e4f7841b21d36e3436af9b7a697347018",
+        "source_files": 906
+      },
+      "hub-portable": {
+        "sha256": "d3415b30a9c7fbcc557f385e40631c4841920458dec4b7814a4a4f82d4e538db",
+        "source_files": 67
+      },
+      "hub-service": {
+        "sha256": "a6c9f58fa1b0afc6825461e68822ea0446dd1452d63dd670f63ce93f786c7ddd",
+        "source_files": 840
+      },
+      "hub-worker": {
+        "sha256": "0c727c54cb6ba8e3c3378a2065328738c08f764b44cab77fd1743f6c9beee8ca",
+        "source_files": 755
+      },
+      "hub-worker-wasm": {
+        "sha256": "9ecd510cf1ce389438944a7074adaf545fbc918b5658d155e145ed0769078271",
+        "source_files": 630
+      },
+      "native-foundation": {
+        "sha256": "eeb8c8e464bb095c0322e140ce214d6cc3b65a0e599e341ec08fc78c6e9d3677",
+        "source_files": 102
+      },
+      "package-manager": {
+        "sha256": "c3660df87cf045d92ce932b73494dcfcb692d4b876222c5796da98e839136e34",
+        "source_files": 499
+      },
+      "protocol": {
+        "sha256": "be9d2622ff90a49b6ea8ac01369c7e33232bc5114ffee4d46088da85c360bd65",
+        "source_files": 160
+      },
+      "qemu-gateway-process-test": {
+        "sha256": "ee4d8253ea4aaa6683df33f3a1037c07625862c6679f24d0a98e9887d8230c88",
+        "source_files": 34
+      },
+      "qemu-gpl-production": {
+        "sha256": "d377a3597933eeeddca7846b5f8550588dc7dcf21954217e332ff14d6a6a8493",
+        "source_files": 270
+      },
+      "qemu-host": {
+        "sha256": "bf4d8c85cd3c857a6bbb050cba1b52f92d062d1cbb6173e8d0374b1501b74ddb",
+        "source_files": 1127
+      },
+      "qemu-plugin-process-test": {
+        "sha256": "bde38e0e206f9ca4dd637b953044682fd9f809a4142893da8036a4d3d7334883",
+        "source_files": 285
+      },
+      "qemu-test-oracle-host": {
+        "sha256": "463ec41855063780ac8231df5eefb22ade606ffad7162c5483ba3d42ee7da139",
+        "source_files": 867
+      },
+      "quota": {
+        "sha256": "48ef126ecbf0561590d489fbacd5f44f8f42fd352f4bac9ca73c77bbcad3b31f",
+        "source_files": 6
+      },
+      "registry-native": {
+        "sha256": "c1d83904d9ce4b979c546b7cea17eff3aeb27aaeb79224705e5604eb3b175a21",
+        "source_files": 372
+      },
+      "release-coordination": {
+        "sha256": "61a9a3ed32c99c64b7195c591ccb6a1299311ab3ad84c5a89b7e3f04e2b9933e",
+        "source_files": 269
+      },
+      "release-preparation": {
+        "sha256": "6c16fab5cc950d0d3e9a1f6e952dd9408030d4e91776bb73e0fe7695659d59c8",
+        "source_files": 182
+      },
+      "session": {
+        "sha256": "6f145628e48e33f8072802b518b212e54eacdf2b6bebb7c2afcfddee98a1ef81",
+        "source_files": 841
+      },
+      "shared": {
+        "sha256": "bc6fe6daf2038f0935973edf197d9adfce5076c5092006dbda6642c827899fc2",
+        "source_files": 32
+      },
+      "store": {
+        "sha256": "dca12534e924fcc6eed59286ddfb21d7404ac9b42b6c1a99d8d1df462b910e45",
+        "source_files": 272
+      },
+      "store-s3": {
+        "sha256": "fb4724ec8d054c1e95953b3752d434ac2d35f0774473e51c2ec8c2e42c8d9b08",
+        "source_files": 54
+      }
+    },
+    "new_profiles": [
+      "qemu-gpl-plugin-tests"
+    ],
+    "sdk_profiles": 61,
+    "unchanged_existing_sdk_payloads": 60,
+    "unchanged_generated_files": 14910
+  },
+  "executed_cases": 583,
+  "feature_parity": {
+    "gpl": {
+      "first_party_features": {
+        "crucible-qemu-plugin": [
+          []
+        ],
+        "crucible-qemu-protocol": [
+          [
+            "test-oracle"
+          ]
+        ],
+        "crucible-qemu-shmem": [
+          []
+        ]
+      },
+      "report_sha256": "dfcd5230e0bdb5688b1dcbf732f87c32589b60b6e27c08a3bd503f2d232b15b8",
+      "upstream_crates": 35
+    },
+    "host": {
+      "first_party_features": {
+        "crucible-campaign": [
+          []
+        ],
+        "crucible-control-api": [
+          []
+        ],
+        "crucible-control-client": [
+          []
+        ],
+        "crucible-control-server": [
+          [
+            "default",
+            "qemu-test-oracle",
+            "test-support"
+          ]
+        ],
+        "crucible-determinism": [
+          []
+        ],
+        "crucible-device": [
+          [
+            "default"
+          ]
+        ],
+        "crucible-engine": [
+          [
+            "default",
+            "test-double",
+            "test-support"
+          ]
+        ],
+        "crucible-qemu-protocol": [
+          [
+            "test-oracle"
+          ]
+        ],
+        "crucible-qemu-shmem": [
+          []
+        ],
+        "crucible-session": [
+          [
+            "default"
+          ]
+        ],
+        "crucible-store": [
+          []
+        ]
+      },
+      "report_sha256": "3ebc66bbce6604e64102caefb23ccce110b48c71eb17a5c04836e968ff6f4f26",
+      "upstream_crates": 194
+    }
+  },
+  "gateway_cases": 36,
+  "gateway_requalification": "/nix/store/gk79qykfjx5iwjrarrwk41drpc181cf0-aos-bazel-qemu-gateway-process-checks",
+  "ignored_cases": 0,
+  "limits": [
+    "This qualification covers the named pre-merge checkpoint. The subsequent master merge, workspace layout change, dependency updates, and new security tests require separate qualification.",
+    "GPL assertions exercise actual Apache decision streams, event-log appends, and simulation doubles through a separately linked process; no Apache implementation enters the GPL compiled graph.",
+    "The inherited private Unix socket exchanges bounded, versioned owned values. It contains no native pointers or implementation structures and requires no host service.",
+    "The two new negative tests check malformed, missing, unknown, uninitialized, and unbounded requests and preservation of initialized RNG state.",
+    "Qualification requests no shared action-cache mount; retained Rustc actions run in the Linux sandbox without cache hits.",
+    "Compiler parity checks cfg and edition arguments with digest-bound wrapper inputs, not full compiler semantics, native ABI, linker, or installed-closure equivalence.",
+    "These are native x86_64 host results. AArch64 host, remaining live VM/service and release gates, controlled performance acceptance, production cutover, and Cargo removal remain separate requirements."
+  ],
+  "protocol": {
+    "framing_cases": [
+      "test_oracle::tests::clean_eof_is_distinct_from_a_truncated_header_or_payload",
+      "test_oracle::tests::frame_matches_the_frozen_network_byte_order_vector",
+      "test_oracle::tests::interrupted_and_fragmented_streams_preserve_the_frame",
+      "test_oracle::tests::oversized_frames_are_rejected_before_reading_or_writing_payloads",
+      "test_oracle::tests::owned_payload_preserves_every_byte_and_the_maximum_length",
+      "test_oracle::tests::ready_and_request_id_rules_are_enforced_in_both_directions",
+      "test_oracle::tests::unknown_header_fields_and_reserved_bytes_are_rejected"
+    ],
+    "maximum_payload_bytes": 65536,
+    "test_xml_sha256": "134e650269836545ceadb6259725cb1c110474e03383085083de535f61ed9e8c",
+    "unit_cases": 48,
+    "version": 2
+  },
+  "qualification": "/nix/store/f8fw8dv9qs23abhgqlyp97cxqvjfrwg6-aos-bazel-qemu-plugin-process-checks",
+  "qualified_commit": "2e95bdc05b69f608db0efafe862c9c52acecaff4",
+  "runtime_tool_identity": {
+    "closure_bound_in_wrapper": true,
+    "closure_sha256": "289b984b74e9696957953203cc075be0dfd14a9e8719568d231b6b621fc85bc4",
+    "wrapper_sha256": "527b447e589f81f0131607fd982db01d2932b754f2688d4c8b3cef8134aac64e"
+  },
+  "schema_version": 1,
+  "source_catalog": {
+    "crates": {
+      "packages": 77,
+      "sources": 3739
+    },
+    "external_build_actions": 0,
+    "repository": {
+      "packages": 79,
+      "sources": 3759
+    },
+    "schema_version": 1
+  },
+  "source_sha256": {
+    "crates/crucible/control/crucible-control-server/Cargo.toml": "66c3eac650e34a3348f5ef01908054f2dcc04237934fdb543753b424aa7f3211",
+    "crates/crucible/control/crucible-control-server/src/bin/qemu_test_oracle.rs": "a85a0e7426dc8ee1bfbce5f01c6d83fcef0ddf023af966629b1698be706b633e",
+    "crates/crucible/control/crucible-control-server/src/bin/qemu_test_oracle/engine.rs": "d74847ad885ee915c683af41264a6f87af9360fcccb57823bb97235de51ed6f0",
+    "crates/crucible/protocol/crucible-qemu-protocol/src/test_oracle.rs": "67b2589977f1640734b8e9e2100895e89e1c72f7c277f6ad69e29bfe697e7b7f",
+    "crates/crucible/qemu/crucible-qemu-plugin/BUILD.bazel": "0e76414b069f02de7385dac88ce2f8fe80f78c849e634c2c81bf37e08f87ed32",
+    "crates/crucible/qemu/crucible-qemu-plugin/Cargo.toml": "95f37fea30fd6d8536fc697127ac5c64dffbc7c8c17148f0a84fb88524933a8a",
+    "crates/crucible/qemu/crucible-qemu-plugin/src/engine_oracle.rs": "0e52e0463fc559da23b3657c87176f597c3e7f9fb71a6b350f336bf37a83547b",
+    "crates/crucible/qemu/crucible-qemu-plugin/src/engine_oracle/schedule.rs": "d51b92b81661c7215c8347c325a132aec7058d7f2154c53341f640d9ca3a0306",
+    "crates/crucible/qemu/crucible-qemu-plugin/src/network_rx.rs": "6c362b00ee5265e98a768ee43e35ed95c36a70de44146eb12dc72209892e1e67",
+    "crates/crucible/qemu/crucible-qemu-plugin/src/runtime/live_whitebox/app_random.rs": "35a582c69ee7961699ef2e37e01ab5478b6956b768cc0414d4f827141289eab4",
+    "crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs": "1a79e18bc882684331512d1bed876d5ca9bdd57e1c9bb994a8ebc21154e3a854",
+    "pkgs/emulation/crucible-qemu-plugin.nix": "1305691e038addfe3b1235f0c17e4b991ba93e345a369ab450fcdcd3fc27df0d",
+    "pkgs/tools/crucible/_qemu-test-oracle.nix": "4d433e101c34ef5f0410c217aa760025cd95a866ed75d6fdc6aa9bba8099769d",
+    "tests/build/_bazel-qemu-gateway-tests.nix": "72b10dc1f5758983d71d154fb62e48de7612080b6b27b580b5a75ab7e2eb25ec",
+    "tests/build/_bazel-qemu-plugin-tests-cargo.nix": "f4588f2c02eb8349d02e33a81a1bb390201ba4bda4d700517147ff54630024e6",
+    "tests/build/_bazel-qemu-plugin-tests.nix": "7a4a018f323c6d94488349086eed67e0d9efb380572a32ee663d914834f71e54"
+  },
+  "status": "PASS: native x86_64 Linux GPL plugin tests across the Apache engine process boundary",
+  "tests": {
+    "//crates/crucible/qemu/crucible-qemu-plugin:gate_abi_conformance": {
+      "executed": [
+        "gate_abi_conformance_covers_plugin_io_wire_fuzzing",
+        "gate_abi_conformance_covers_whitebox_doorbell_instruction_abi"
+      ],
+      "ignored": []
+    },
+    "//crates/crucible/qemu/crucible-qemu-plugin:gate_patch_microtests": {
+      "executed": [
+        "gate_patch_microtests_covers_atomic_qemu_artifact"
+      ],
+      "ignored": []
+    },
+    "//crates/crucible/qemu/crucible-qemu-plugin:gate_qemu_inert": {
+      "executed": [
+        "gate_qemu_inert_plugin_half_is_backed_by_phase_check"
+      ],
+      "ignored": []
+    },
+    "//crates/crucible/qemu/crucible-qemu-plugin:unit": {
+      "executed": [
+        "abi::tests::abi_execution_model_requires_single_threaded_tcg_not_single_vcpu_only",
+        "abi::tests::abi_execution_model_validation_accepts_supported_qemu_info",
+        "abi::tests::abi_install_diagnostics_preserve_distinct_typed_failure_causes",
+        "abi::tests::abi_install_entrypoint_validates_raw_boundary_and_builds_inert_model",
+        "abi::tests::abi_install_parses_qemu_plugin_argv_before_runtime_activation",
+        "abi::tests::abi_install_plugin_argv_fails_closed_for_missing_and_malformed_args",
+        "abi::tests::abi_install_trampoline_contains_panics_and_blocks_second_install_attempt",
+        "abi::tests::abi_install_trampoline_contains_panics_and_releases_reversible_reservation",
+        "abi::tests::abi_observed_execution_model_accepts_only_exact_single_threaded_rr_proof",
+        "abi::tests::abi_observed_execution_model_fails_closed_without_threading_proof",
+        "abi::tests::abi_observed_execution_model_rejects_user_mode_before_capability_lookup",
+        "abi::tests::capabilities::abi_install_entrypoint_fails_closed_without_required_runtime_symbols",
+        "abi::tests::capabilities::runtime_install_rejects_each_missing_capability_family",
+        "abi::tests::capabilities::runtime_install_retains_required_apis",
+        "args::app_random::tests::complete_group_parses",
+        "args::app_random::tests::continuation_positions_parse",
+        "args::app_random::tests::ordered_branch_sequence_parses_and_malformed_sequences_fail_closed",
+        "args::app_random::tests::partial_or_disabled_group_is_rejected",
+        "args::tests::campaign_marker_parking_requires_explicit_whitebox_launch_opt_in",
+        "args::tests::plugin_args_parse_optional_fds_and_switches",
+        "args::tests::plugin_args_parse_required_simfd_and_slot",
+        "args::tests::plugin_args_reject_bad_fd_slot_and_switch_values",
+        "args::tests::plugin_args_reject_malformed_unknown_and_duplicate_keys",
+        "args::tests::plugin_args_reject_missing_required_keys",
+        "args::tests::plugin_args_reject_partial_inherited_descriptor_pair",
+        "args::tests::plugin_args_require_and_validate_authored_storage_history_limits",
+        "args::tests::plugin_args_require_whitebox_setup_attestation_exactly_when_enabled",
+        "args::tests::plugin_args_validate_slot_against_node_count",
+        "block_io::tests::block_io_state_binds_reserved_block_rings",
+        "block_io::tests::block_poll_guest_completion_failure_retains_original_head_and_token",
+        "block_io::tests::block_poll_quarantines_changed_head_after_delivery_barrier",
+        "block_io::tests::block_poll_quarantines_disappeared_head_after_guest_delivery",
+        "block_io::tests::block_poll_rejects_wrong_request_id_and_releases_freeze_token",
+        "block_io::tests::block_poll_rejects_wrong_response_source_and_releases_freeze_token",
+        "block_io::tests::block_poll_retries_held_consumer_without_duplicate_guest_delivery",
+        "block_io::tests::block_poll_returns_not_ready_until_delivery_icount_is_reached",
+        "block_io::tests::block_request_decode_rejects_nonzero_reserved_and_trailing_payload",
+        "block_io::tests::block_response_decode_rejects_nonzero_reserved_and_trailing_payload",
+        "block_io::tests::block_response_frames_are_stamped_by_reserved_block_slot_and_delivery_icount",
+        "block_io::tests::block_response_typed_errors_are_closed_and_exact",
+        "block_io::tests::block_submit_encodes_request_stamps_icount_and_freezes_time",
+        "block_io::tests::block_submit_full_ring_releases_freeze_token_loudly",
+        "block_io::tests::block_submit_rejects_oversized_write_before_copying_payload",
+        "block_io::tests::block_submit_wrong_ring_does_not_freeze_or_enqueue",
+        "block_io::tests::inbound_head::block_head_current_refuses_a_replacement_token_with_the_same_transport_identity",
+        "block_io::tests::inbound_head::block_head_refuses_staged_guest_delivery_and_asynchronous_transport_events",
+        "block_io::tests::inbound_head::block_head_refuses_unregistered_remapped_and_changed_response_bytes",
+        "block_io::tests::inbound_head::block_head_validation_errors_preserve_the_request_and_physical_head",
+        "block_io::tests::inbound_head::foreign_block_owner_cannot_finalize_the_original_request",
+        "block_io::tests::inbound_head::original_block_head_binds_owner_epoch_request_and_consumer_frontier",
+        "block_io::tests::invalid_transport_reset_epoch_preserves_the_ring_and_plugin_state",
+        "block_io::tests::resource_limits::completed_history_refuses_epochs_and_gaps_at_exact_authored_coordinates",
+        "block_io::tests::resource_limits::completed_identity_history_compacts_contiguous_ids_and_retains_gaps",
+        "block_io::tests::resource_limits::transport_restore_admits_history_counts_before_owned_decode",
+        "block_io::tests::transport_continuation_round_trips_allocator_and_exact_history",
+        "block_io::tests::transport_reset_advances_epoch_only_after_a_completed_identity",
+        "boot_barrier::tests::boot_barrier_parks_until_scheduler_publishes_initial_ceiling",
+        "boot_barrier::tests::boot_barrier_prepares_futex_wait_with_initial_ceiling_zero",
+        "boot_barrier::tests::boot_barrier_skips_wait_if_scheduler_prepublished_initial_ceiling",
+        "coverage::tests::coverage_disabled_plan_cannot_build_hot_callback_and_does_not_touch_map",
+        "coverage::tests::coverage_exec_callback_folds_basic_block_pc_and_records_observation",
+        "coverage::tests::coverage_exec_callback_rejects_wrong_map_size_before_recording",
+        "coverage::tests::coverage_exec_callback_rejects_zero_length_basic_block",
+        "coverage::tests::coverage_exec_callback_uses_saturating_counters_without_new_signal_on_repeat",
+        "coverage::tests::coverage_registration_off_mode_installs_no_callback_and_ignores_map_config",
+        "coverage::tests::coverage_registration_on_mode_requires_basic_block_callback_capability",
+        "coverage::tests::coverage_registration_rejects_invalid_enabled_map_size",
+        "coverage::tests::live_callback_cases::combined_whitebox_and_coverage_share_one_ordered_translation_registration",
+        "coverage::tests::live_callback_cases::coverage_callback_abi_model_captures_block_pc_length_and_exact_entry_icount",
+        "coverage::tests::live_callback_cases::coverage_callback_owner_fails_loudly_when_novelty_scoreboard_allocation_fails",
+        "coverage::tests::live_callback_cases::coverage_callbacks_reject_work_after_quiescence_without_freeing_metadata",
+        "coverage::tests::live_callback_cases::coverage_flush_reclaims_metadata_before_retranslation",
+        "coverage::tests::live_callback_cases::coverage_owner_unpublishes_callbacks_before_state_is_freed_and_can_reinstall",
+        "coverage::tests::live_callback_cases::paused_restore_resets_scoreboard_map_and_setup_ring_before_reemission",
+        "coverage::tests::live_coverage_sink_retains_each_novelty_without_silent_eviction",
+        "deadline::tests::exact_deadline_reader_reads_virtual_deadline_without_fallback",
+        "deadline::tests::exact_deadline_reader_rejects_unrepresentable_and_unknown_sentinels",
+        "deadline::tests::exact_deadline_reader_requires_qemu_clock_deadline_symbol",
+        "deadline::tests::multi_vcpu_deadline_rejects_duplicate_vcpu_reports",
+        "deadline::tests::multi_vcpu_deadline_rejects_empty_report_sets",
+        "deadline::tests::multi_vcpu_deadline_rejects_incomplete_vcpu_report_sets",
+        "deadline::tests::multi_vcpu_deadline_rejects_out_of_range_vcpu_reports",
+        "deadline::tests::multi_vcpu_deadline_rejects_zero_expected_vcpus",
+        "deadline::tests::multi_vcpu_deadline_returns_no_armed_timer_when_every_vcpu_is_idle",
+        "deadline::tests::multi_vcpu_deadline_uses_minimum_armed_virtual_deadline",
+        "device_io::tests::device_io_burst_done_rejects_pending_requests_and_keeps_flag_active",
+        "device_io::tests::device_io_burst_holds_flag_until_burst_done",
+        "device_io::tests::device_io_completion_clears_single_request_hold",
+        "device_io::tests::device_io_completion_without_matching_pending_request_is_fail_loud",
+        "device_io::tests::device_io_counter_overflow_does_not_publish_active_flag",
+        "device_io::tests::device_io_failure_releases_the_same_pending_counter",
+        "device_io::tests::device_io_foreign_token_with_target_pending_is_fail_loud",
+        "device_io::tests::device_io_sequence_overflow_does_not_publish_active_flag",
+        "device_io::tests::device_io_submit_sets_active_before_return_and_increments_pending",
+        "device_io::tests::independent_request_keeps_hold_after_unrelated_burst_finishes",
+        "engine_oracle::tests::rejected_requests_preserve_the_initialized_engine_stream",
+        "engine_oracle::tests::uninitialized_and_unbounded_engine_requests_are_rejected",
+        "fault_command::event_envelope::tests::accelerator_envelope_binds_the_selected_opportunity",
+        "fault_command::event_envelope::tests::envelope_rejects_every_authenticated_identity_mismatch",
+        "fault_command::event_envelope::tests::mandatory_envelope_round_trips_and_rejects_unauthenticated_evidence",
+        "fault_command::tests::bridge_preserves_raw_result_counts_and_logical_event_ticks",
+        "fault_command::tests::clock_tests::clock_impulse_result_and_event_use_the_same_typed_evidence",
+        "fault_command::tests::clock_tests::clock_timer_evidence_is_manifest_bound_and_typed",
+        "fault_command::tests::event_backpressure::bridge_accepts_every_canonical_qemu_result_status",
+        "fault_command::tests::exception_bridge_requires_proven_architectural_delivery",
+        "fault_command::tests::hardware_ecc_bridge_requires_exact_ghes_record_transition",
+        "fault_command::tests::hardware_exception_bridge_requires_manifest_identity_and_real_state_transition",
+        "fault_command::tests::instruction_apply_terminal_results_retain_expectation_until_evidence_event",
+        "fault_command::tests::instruction_bridge_rejects_uncorrelated_private_evidence",
+        "fault_command::tests::instruction_bridge_requires_actual_device_io_for_device_replay",
+        "fault_command::tests::instruction_replay_events_require_exact_sequence_and_terminalize_once",
+        "fault_command::tests::instruction_resource_terminal_translates_and_releases_correlation",
+        "fault_command::tests::lifecycle_evidence_uses_the_scheduler_logical_coordinate",
+        "fault_command::tests::register_evidence_binds_vcpu_and_terminal_cursor_phase",
+        "fingerprint_sampler::tests::aggregate_capture_rejects_a_descriptor_without_close_on_exec",
+        "fingerprint_sampler::tests::aggregate_capture_rejects_an_aliased_descriptor_before_ownership_transfer",
+        "fingerprint_sampler::tests::aggregate_capture_rejects_distinct_descriptors_for_the_same_memfd",
+        "fingerprint_sampler::tests::aggregate_capture_rejects_zero_component_evidence",
+        "fingerprint_sampler::tests::detached_capture_digests_every_component_into_the_slot_sample",
+        "fingerprint_sampler::tests::resolve_fails_closed_without_the_patched_qemu",
+        "handshake::tests::plugin_handshake_preserves_protocol_failures",
+        "handshake::tests::plugin_handshake_rejects_launch_slot_disagreement",
+        "handshake::tests::plugin_handshake_rejects_launch_slot_outside_node_count",
+        "handshake::tests::plugin_handshake_sends_compiled_versions_and_accepts_matching_slot",
+        "idle_loop::tests::inbound_cases::idle_loop_direct_advance_range_failure_leaves_clock_and_slot_unchanged",
+        "idle_loop::tests::inbound_cases::idle_loop_rejects_late_inbound_ring_at_begin_without_publishing",
+        "idle_loop::tests::inbound_cases::idle_loop_rejects_late_inbound_ring_before_direct_advance",
+        "idle_loop::tests::inbound_cases::idle_loop_rejects_late_materialized_frame_before_direct_advance",
+        "idle_loop::tests::inbound_cases::idle_loop_rejects_raw_late_inbound_delivery_before_publishing",
+        "idle_loop::tests::inbound_cases::idle_loop_rejects_release_before_scheduler_authorizes_wake",
+        "idle_loop::tests::inbound_cases::idle_loop_rejects_unrepresentable_timer_before_publishing",
+        "idle_loop::tests::inbound_cases::idle_loop_rx_backpressure_marks_canonical_head_retained",
+        "idle_loop::tests::inbound_cases::idle_loop_rx_delivery_failure_does_not_commit_inbound_ring_reads",
+        "idle_loop::tests::inbound_cases::idle_loop_rx_injection_waits_for_qemu_completion",
+        "idle_loop::tests::inbound_cases::idle_loop_rx_later_delivery_failure_keeps_only_undelivered_head",
+        "idle_loop::tests::inbound_cases::idle_loop_with_inbound_rings_does_not_consume_before_qemu_completion",
+        "idle_loop::tests::inbound_cases::idle_resume_boundary_republishes_running_without_advancing_time",
+        "idle_loop::tests::inbound_cases::idle_timer_deadline_conversion_uses_exact_tick_boundary",
+        "idle_loop::tests::wake_cases::idle_loop_completion_ignored_when_device_io_not_holding",
+        "idle_loop::tests::wake_cases::idle_loop_computes_wake_from_timer_inbound_and_ceiling",
+        "idle_loop::tests::wake_cases::idle_loop_device_completion_deadline_drives_wake",
+        "idle_loop::tests::wake_cases::idle_loop_device_completion_merges_with_timer_by_min",
+        "idle_loop::tests::wake_cases::idle_loop_device_io_freeze_suppresses_timer_deadline_until_scheduler_wake",
+        "idle_loop::tests::wake_cases::idle_loop_device_io_freeze_uses_pending_counter_when_flag_is_stale",
+        "idle_loop::tests::wake_cases::idle_loop_pause_quiesces_without_advancing_and_returns_to_qemu",
+        "idle_loop::tests::wake_cases::idle_loop_publishes_current_then_idle_and_prepares_futex_wait",
+        "idle_loop::tests::wake_cases::idle_loop_release_waits_for_qemu_completion_before_mutating_state",
+        "idle_loop::tests::wake_cases::idle_loop_retracted_device_completion_freezes_to_ceiling",
+        "idle_loop::tests::wake_cases::idle_loop_shutdown_takes_priority_over_an_active_pause",
+        "idle_loop::tests::wake_cases::idle_loop_shutdown_wake_marks_done_and_returns_teardown_outcome",
+        "idle_loop::tests::wake_cases::idle_loop_stale_past_device_completion_clamps_to_current",
+        "idle_loop::tests::wake_cases::idle_loop_wait_uses_futex_release_without_wall_clock_timeout",
+        "inbound::tests::inbound_frame_drain_delivers_current_icount_in_total_order",
+        "inbound::tests::inbound_frame_drain_rejects_late_head_without_consuming",
+        "inbound::tests::inbound_frame_drain_since_includes_jumped_over_delivery_window",
+        "inbound::tests::inbound_frame_drain_since_rejects_before_floor_without_consuming",
+        "inbound::tests::inbound_frame_peek_uses_minimum_head_delivery_without_consuming",
+        "inbound::tests::inbound_frame_ring_errors_are_fail_loud",
+        "inbound::tests::inbound_frame_select_rejects_late_candidate_frame",
+        "inbound::tests::inbound_rejects_retained_marker_away_from_ring_head",
+        "inbound::tests::inbound_retained_head_authorizes_blocked_fifo_backlog",
+        "inertness::tests::plugin_sim_off_observation_has_no_load_or_effects",
+        "inertness::tests::plugin_sim_off_rejects_every_load_or_effect_vector",
+        "inertness::tests::plugin_sim_on_observation_records_loaded_plugin_effects",
+        "io_wire_fuzz::tests::block_request_wire_messages_round_trip",
+        "io_wire_fuzz::tests::block_response_wire_messages_round_trip",
+        "io_wire_fuzz::tests::generated_truncations_and_trailing_bytes_stay_typed",
+        "io_wire_fuzz::tests::io_wire_fuzz_target_never_panics_on_regression_corpus",
+        "io_wire_fuzz::tests::io_wire_regression_corpus_exercises_block_and_9p_wire_cases",
+        "io_wire_fuzz::tests::ninep_wire_messages_round_trip_and_msize_is_enforced",
+        "io_wire_fuzz::tests::structure_aware_malformed_wire_frames_never_panic",
+        "io_wire_fuzz::tests::wire_fuzz_target_reports_deterministic_decode_results",
+        "network_rx::tests::failed_canonical_commit_refuses_later_guest_delivery",
+        "network_rx::tests::host_observable_schedule_cross_checks_sim_double_against_plugin_projection",
+        "network_rx::tests::host_observable_schedule_projection_waits_for_qemu_advance_completion",
+        "network_rx::tests::network_rx_delivery_failure_is_loud",
+        "network_rx::tests::network_rx_idle_injection_accepts_jumped_over_delivery_window",
+        "network_rx::tests::network_rx_idle_injection_delivers_due_frames_in_order",
+        "network_rx::tests::network_rx_qemu_direct_injection_retains_backpressured_frame",
+        "network_rx::tests::network_rx_qemu_direct_injection_transfers_delivered_frame",
+        "network_rx::tests::network_rx_rejects_future_frame_before_delivery",
+        "network_rx::tests::network_rx_rejects_invalid_payload_before_delivery",
+        "network_rx::tests::network_rx_rejects_unproven_late_frame",
+        "network_rx::tests::network_rx_requires_qemu_direct_injection_symbol",
+        "network_rx::tests::network_rx_retains_canonical_frame_under_guest_backpressure",
+        "network_rx::tests::retained_retry::network_rx_fails_loudly_at_canonical_delivery_attempt_limit",
+        "network_rx::tests::retained_retry::network_rx_overshoot_cannot_retry_twice_at_one_coordinate",
+        "network_rx::tests::retained_retry::network_rx_retained_head_authorizes_blocked_fifo_backlog",
+        "network_rx::tests::retained_retry::network_rx_retries_canonically_retained_past_frame",
+        "network_tx::tests::network_tx_authenticated_continuation_starts_at_the_restored_sequence",
+        "network_tx::tests::network_tx_completion_batch_is_all_preflighted_before_visibility",
+        "network_tx::tests::network_tx_enqueue_stamps_emit_icount_source_sequence_and_payload",
+        "network_tx::tests::network_tx_idle_reentrant_path_uses_fixed_state_without_locks",
+        "network_tx::tests::network_tx_rejects_full_ring_loudly_without_dropping_or_sequence_advance",
+        "network_tx::tests::network_tx_rejects_oversized_payload_without_truncation_or_sequence_advance",
+        "network_tx::tests::network_tx_rejects_sequence_overflow_before_enqueuing",
+        "network_tx::tests::network_tx_rejects_wrong_ring_without_enqueuing_or_advancing_sequence",
+        "network_tx::tests::network_tx_safe_callback_body_delegates_to_fixed_enqueue_state",
+        "network_tx::tests::network_tx_state_binds_registration_time_router_ring",
+        "ninep_io::tests::inbound_head_custody_follows_the_original_request_and_read_frontier",
+        "ninep_io::tests::ninep_burst_done_rejects_pending_requests_and_keeps_hold_active",
+        "ninep_io::tests::ninep_io_state_binds_reserved_9p_rings",
+        "ninep_io::tests::ninep_poll_allows_out_of_order_due_response_for_another_pending_token",
+        "ninep_io::tests::ninep_poll_guest_completion_failure_retains_original_head_and_token",
+        "ninep_io::tests::ninep_poll_holds_burst_until_burst_done_after_all_requests_complete",
+        "ninep_io::tests::ninep_poll_quarantines_changed_head_after_delivered_settlement_retry",
+        "ninep_io::tests::ninep_poll_quarantines_head_removed_during_guest_delivery",
+        "ninep_io::tests::ninep_poll_quarantines_missing_head_after_delivered_settlement_retry",
+        "ninep_io::tests::ninep_poll_refuses_foreign_freeze_before_guest_delivery",
+        "ninep_io::tests::ninep_poll_rejects_unknown_request_id_and_releases_request_token",
+        "ninep_io::tests::ninep_poll_rejects_wrong_response_source_and_releases_request_token",
+        "ninep_io::tests::ninep_poll_retries_settlement_without_delivering_twice",
+        "ninep_io::tests::ninep_poll_returns_not_ready_until_delivery_icount_is_reached",
+        "ninep_io::tests::ninep_submit_encodes_raw_message_stamps_icount_and_holds_burst",
+        "ninep_io::tests::ninep_submit_full_ring_releases_request_token_and_pending_id",
+        "ninep_io::tests::ninep_submit_rejects_request_id_overflow_before_freezing",
+        "ninep_io::tests::ninep_submit_requires_active_burst",
+        "preemption::tests::deterministic_ipi_delivery_rejects_bad_vcpu_pairs_and_overflow",
+        "preemption::tests::deterministic_ipi_delivery_uses_fixed_latency_and_next_rr_switch",
+        "preemption::tests::preemption_injector_dispatches_interrupt_without_round_robin_switch",
+        "preemption::tests::preemption_injector_dispatches_vcpu_switch_at_commanded_icount",
+        "preemption::tests::preemption_injector_localizes_malformed_or_rejected_commands",
+        "preemption::tests::preemption_injector_rejects_out_of_window_without_clamping_or_calling_qemu",
+        "preemption::tests::preemption_injector_requires_qemu_capability_and_valid_window",
+        "registration::tests::coverage_cases::registration_coverage_off_installs_no_callback_without_capability",
+        "registration::tests::handshake_cases::registration_order_fails_loud_when_handshake_slot_disagrees_with_launch_args",
+        "registration::tests::handshake_cases::registration_order_performs_control_handshake_after_parse",
+        "registration::tests::handshake_cases::registration_order_rejects_control_handshake_before_parse_without_io",
+        "registration::tests::registration_coverage_on_builds_basic_block_callback_token",
+        "registration::tests::registration_coverage_on_requires_basic_block_callback_capability",
+        "registration::tests::registration_order_aborts_without_later_steps_after_failure",
+        "registration::tests::registration_order_accepts_fixed_happy_path",
+        "registration::tests::registration_order_fails_loud_when_exact_deadline_capability_missing",
+        "registration::tests::registration_order_fails_loud_when_queued_idle_advance_missing",
+        "registration::tests::registration_order_parse_step_uses_fail_closed_args",
+        "registration::tests::registration_order_records_callbacks_after_exact_deadline_capability_check",
+        "registration::tests::registration_order_rejects_callback_registration_without_exact_deadline_capability",
+        "registration::tests::registration_order_rejects_handshake_before_parse",
+        "registration::tests::registration_order_requires_boot_barrier_before_first_instruction",
+        "registration::tests::registration_order_requires_boot_barrier_wait_helper",
+        "registration::tests::registration_order_requires_ready_setup_ack_helper",
+        "registration::tests::registration_order_reuses_canonical_time_control_plan",
+        "registration::tests::registration_order_waits_boot_barrier_before_first_instruction",
+        "registration::tests::registration_ready_token_consumes_sequence",
+        "round_robin::tests::all_halted_idle_wake_uses_minimum_per_vcpu_deadline",
+        "round_robin::tests::all_halted_idle_wake_validates_complete_deadline_reports",
+        "round_robin::tests::halted_current_vcpu_yields_to_next_running_vcpu_without_node_idle",
+        "round_robin::tests::round_robin_rejects_wrong_vcpu_and_quantum_overrun",
+        "round_robin::tests::round_robin_run_uses_fixed_quantum_and_ascending_rotation",
+        "round_robin::tests::vcpu_halt_tracker_requires_every_vcpu_before_node_idle",
+        "runtime::callback_quiescence::tests::close_between_admission_load_and_cas_rejects_the_late_entry",
+        "runtime::callback_quiescence::tests::close_rejects_new_callbacks_and_drain_waits_for_prior_guard",
+        "runtime::callback_quiescence::tests::hot_fork_hold_between_admission_load_and_cas_rejects_the_late_entry",
+        "runtime::callback_quiescence::tests::hot_fork_hold_drains_and_release_reopens_admission",
+        "runtime::callback_quiescence::tests::hot_fork_release_cannot_reopen_teardown_closed_admission",
+        "runtime::live_callbacks::checkpoint_stop_witness::tests::captured_return_keeps_original_identity_coordinate_and_token",
+        "runtime::live_callbacks::checkpoint_stop_witness::tests::disabled_and_unknown_callers_do_not_read_the_diagnostic_slot",
+        "runtime::live_callbacks::checkpoint_stop_witness::tests::duplicate_epochs_deduplicate_and_late_epochs_fork_and_status_remain_visible",
+        "runtime::live_callbacks::checkpoint_stop_witness::tests::maximum_records_are_ascii_bounded_and_sink_errors_are_advisory",
+        "runtime::live_callbacks::checkpoint_stop_witness::tests::original_selectable_and_marker_publication_precedes_native_admission",
+        "runtime::live_callbacks::checkpoint_stop_witness::tests::original_stop_status_and_call_order_remain_exact",
+        "runtime::live_callbacks::checkpoint_stop_witness::tests::private_binding_rebind_emits_unchanged_epoch_and_preserves_captured_return",
+        "runtime::live_callbacks::control_callback_stage::tests::actual_native_error_is_unchanged_and_diagnostic_sink_failure_is_nonfatal",
+        "runtime::live_callbacks::control_callback_stage::tests::actual_pause_stage_records_enclose_original_sdk_and_bind_admitted_identity",
+        "runtime::live_callbacks::control_callback_stage::tests::genuine_pending_repoll_is_deduplicated_without_hiding_later_request_epochs",
+        "runtime::live_callbacks::control_callback_stage::tests::held_child_identity_rebind_resets_only_stage_metadata_and_phase_budget",
+        "runtime::live_callbacks::control_callback_stage::tests::original_pid_epoch_reset_restores_late_stage_evidence_without_new_control_reads",
+        "runtime::live_callbacks::control_callback_stage::tests::rejected_guard_does_not_observe_stages_or_mapping",
+        "runtime::live_callbacks::control_callback_stage::tests::rows_fit_the_bound_at_maximum_width_and_mapping_unavailability_is_explicit",
+        "runtime::live_callbacks::control_callback_stage::tests::setting_filter_disabled_and_no_request_paths_preserve_original_ack",
+        "runtime::live_callbacks::control_callback_witness::tests::admission_rejections_report_exact_gate_flags_without_reading_the_token",
+        "runtime::live_callbacks::control_callback_witness::tests::callback_error_emits_exit_before_fatal_handler_with_guard_held",
+        "runtime::live_callbacks::control_callback_witness::tests::callback_without_a_pending_request_reports_no_request_exit",
+        "runtime::live_callbacks::control_callback_witness::tests::disabled_witness_leaves_diagnostics_untouched_and_acknowledges_normally",
+        "runtime::live_callbacks::control_callback_witness::tests::each_token_epoch_permits_at_most_ten_compact_phase_records",
+        "runtime::live_callbacks::control_callback_witness::tests::failed_diagnostic_writes_leave_callback_outcome_unchanged",
+        "runtime::live_callbacks::control_callback_witness::tests::final_child_without_callbacks_reports_actual_pid_and_unavailable_observations",
+        "runtime::live_callbacks::control_callback_witness::tests::final_observation_binds_real_callback_token_and_public_region_vector",
+        "runtime::live_callbacks::control_callback_witness::tests::final_rejection_preserves_last_admission_without_reading_new_even_token",
+        "runtime::live_callbacks::control_callback_witness::tests::final_rows_fit_fixed_bound_at_integer_limits_and_fork_reset_clears_parent",
+        "runtime::live_callbacks::control_callback_witness::tests::final_snapshot_is_bounded_when_writer_is_in_progress_and_output_fails",
+        "runtime::live_callbacks::control_callback_witness::tests::fork_identity_change_clears_inherited_token_and_phase_budget",
+        "runtime::live_callbacks::control_callback_witness::tests::poisoned_observation_is_unavailable_without_affecting_the_callback",
+        "runtime::live_callbacks::control_callback_witness::tests::reentrant_callback_keeps_each_invocations_original_identity",
+        "runtime::live_callbacks::control_callback_witness::tests::shared_shutdown_rejection_keeps_ack_pending_and_releases_guard",
+        "runtime::live_callbacks::control_callback_witness::tests::stalled_callbacks_are_bounded_but_later_ack_and_requests_remain_visible",
+        "runtime::live_callbacks::control_callback_witness::tests::witness_is_disabled_unless_setting_is_exactly_one",
+        "runtime::live_callbacks::devices::tests::adapters::accelerator_adapter_round_trips_a_real_shared_memory_request",
+        "runtime::live_callbacks::devices::tests::adapters::accelerator_cancellation_is_published_and_acknowledged",
+        "runtime::live_callbacks::devices::tests::adapters::accelerator_restore_stages_then_commits_as_one_batch",
+        "runtime::live_callbacks::devices::tests::adapters::qemu_discard_callback_maps_to_payload_free_wire_request",
+        "runtime::live_callbacks::devices::tests::adapters::typed_block_errors_map_to_stable_linux_errno_values",
+        "runtime::live_callbacks::devices::tests::callbacks::live_block_event_poll_delivers_reset_without_losing_pre_reset_tokens",
+        "runtime::live_callbacks::devices::tests::callbacks::live_block_poll_retries_small_guest_buffer_with_original_token",
+        "runtime::live_callbacks::devices::tests::callbacks::live_device_adapters_retain_tokens_and_complete_block_and_ninep",
+        "runtime::live_callbacks::devices::tests::callbacks::live_device_callback_reentry_is_rejected_before_ring_or_freeze_mutation",
+        "runtime::live_callbacks::devices::tests::callbacks::live_device_preflight_rejects_qemu_request_id_drift_without_mutation",
+        "runtime::live_callbacks::devices::tests::callbacks::live_ninep_delivery_retry_keeps_the_original_head_and_request",
+        "runtime::live_callbacks::devices::tests::callbacks::live_ninep_settlement_retry_copies_into_the_final_poll_buffer",
+        "runtime::live_callbacks::devices::tests::callbacks::preserved_retry_authorization_survives_outbound_ring_backpressure",
+        "runtime::live_callbacks::devices::tests::callbacks::transport_continuation_rejects_every_live_callback_continuation",
+        "runtime::live_callbacks::devices::tests::idle_advance::live_block_event_poll_consumes_the_wake_during_idle_advance",
+        "runtime::live_callbacks::devices::tests::idle_advance::live_device_submits_during_idle_completion_use_the_advance_target",
+        "runtime::live_callbacks::devices::tests::idle_advance::live_ninep_burst_release_is_legal_while_idle_advance_retires",
+        "runtime::live_callbacks::devices::tests::remapped_block_inbox_gets_a_new_physical_owner_generation",
+        "runtime::live_callbacks::devices::tests::remapped_ninep_inbox_gets_a_new_physical_owner_generation",
+        "runtime::live_callbacks::network_output_stop::context::tests::before_native_return_keeps_admission_unavailable_and_original_arm_pid",
+        "runtime::live_callbacks::network_output_stop::context::tests::disabled_and_repeated_failures_do_not_consume_later_process_notice",
+        "runtime::live_callbacks::network_output_stop::context::tests::failed_write_is_terminal_only_for_the_diagnostic_notice",
+        "runtime::live_callbacks::tests::block_transport_restore_callback_returns_failure_for_invalid_input",
+        "runtime::live_callbacks::tests::block_wait::busy_boundary_retains_backpressured_inbound_until_guest_acceptance",
+        "runtime::live_callbacks::tests::block_wait::live_block_wait_arms_from_its_fresh_raw_coordinate",
+        "runtime::live_callbacks::tests::block_wait::live_block_wait_defers_until_the_host_publishes_a_deadline",
+        "runtime::live_callbacks::tests::block_wait::live_block_wait_does_not_authorize_a_deadline_during_next_idle",
+        "runtime::live_callbacks::tests::block_wait::live_block_wait_parks_when_an_advance_still_owns_the_qemu_barrier",
+        "runtime::live_callbacks::tests::block_wait::live_block_wait_preserves_an_earlier_timer_deadline",
+        "runtime::live_callbacks::tests::block_wait::live_block_wait_queues_and_commits_the_device_deadline",
+        "runtime::live_callbacks::tests::block_wait::live_block_wait_stops_at_scheduler_ceiling_before_device_deadline",
+        "runtime::live_callbacks::tests::block_wait::live_completion_joins_buffered_tx_inbound_ring_rx_and_clock_commit",
+        "runtime::live_callbacks::tests::busy_at_ceiling_publish_callback_signals_shared_shutdown_without_publication",
+        "runtime::live_callbacks::tests::busy_max_advance_acknowledges_pause_without_advancing_or_pumping_work",
+        "runtime::live_callbacks::tests::busy_pause_publishes_exact_boundary_before_vmstop_rejection_is_reported",
+        "runtime::live_callbacks::tests::campaign_marker_stop_is_admitted_after_one_retired_doorbell_instruction",
+        "runtime::live_callbacks::tests::device_io_advances_to_the_deadline_only_after_it_is_pinned",
+        "runtime::live_callbacks::tests::device_io_without_a_pinned_deadline_freezes_at_the_current_icount",
+        "runtime::live_callbacks::tests::drained_control_boundary_acknowledges_pause_without_resuming_halted_vcpu",
+        "runtime::live_callbacks::tests::drained_control_boundary_pumps_fault_commands_before_fingerprint_and_ack",
+        "runtime::live_callbacks::tests::duplicate_checkpoint_vmstop_admission_is_idempotent",
+        "runtime::live_callbacks::tests::every_live_callback_entry_rejects_work_after_quiescence",
+        "runtime::live_callbacks::tests::fault_advanced_tick_controls_publication_and_raw_ceiling",
+        "runtime::live_callbacks::tests::fault_event_control::bound_frontier_rejects_a_late_producer_without_capture_pause_or_ack",
+        "runtime::live_callbacks::tests::fault_event_control::control_boundary_retries_occurrence_event_after_host_drain_before_ack",
+        "runtime::live_callbacks::tests::fault_event_control::one_fault_pump_preserves_pre_and_post_downtime_event_ticks",
+        "runtime::live_callbacks::tests::fault_event_control::post_dispatch_result_backpressure_retries_publication_without_redispatch",
+        "runtime::live_callbacks::tests::fault_event_control::synchronous_node_dispatch_precedes_same_icount_capture_and_ack",
+        "runtime::live_callbacks::tests::final_device_completion_publishes_pause_before_vmstop_handoff",
+        "runtime::live_callbacks::tests::fingerprint_capture::fingerprint_projection_rejects_an_in_flight_device_before_capture",
+        "runtime::live_callbacks::tests::fingerprint_capture::requested_control_callback_captures_and_acknowledges_each_exact_request",
+        "runtime::live_callbacks::tests::live_idle_advance_defers_a_second_producer_during_enqueue",
+        "runtime::live_callbacks::tests::live_idle_advance_publishes_pending_state_before_enqueue_completion",
+        "runtime::live_callbacks::tests::live_idle_advance_rolls_back_exact_prepublication_after_busy_enqueue",
+        "runtime::live_callbacks::tests::live_idle_callback_parks_when_an_advance_still_owns_the_qemu_barrier",
+        "runtime::live_callbacks::tests::live_idle_callback_publishes_next_idle_without_authorizing_its_deadline",
+        "runtime::live_callbacks::tests::live_idle_callback_queues_the_exact_timer_deadline",
+        "runtime::live_callbacks::tests::live_idle_callback_queues_then_commits_only_from_normal_loop_completion",
+        "runtime::live_callbacks::tests::live_idle_callback_waits_for_every_vcpu_to_halt",
+        "runtime::live_callbacks::tests::live_idle_wait_always_returns_for_a_fresh_qemu_rescan",
+        "runtime::live_callbacks::tests::live_idle_wait_rejects_contract_failures_without_postwait_work",
+        "runtime::live_callbacks::tests::live_max_advance_rejects_an_unknown_stop_condition",
+        "runtime::live_callbacks::tests::live_pending_advance_rejects_idle_resume_and_allows_read_only_reentrant_publication",
+        "runtime::live_callbacks::tests::live_state_calibrates_raw_progress_against_restored_logical_time",
+        "runtime::live_callbacks::tests::live_state_dispatches_vcpu_init_publish_and_ceiling",
+        "runtime::live_callbacks::tests::live_state_rejects_bad_init_and_regressing_or_excess_progress",
+        "runtime::live_callbacks::tests::live_time_completion_clamps_dispatch_then_commits_logical_idle_offset",
+        "runtime::live_callbacks::tests::live_time_completion_rejects_missing_or_mismatched_pending_state",
+        "runtime::live_callbacks::tests::logical_restore::post_vmstate_pause_reconstructs_idle_jump_offset_before_acknowledging",
+        "runtime::live_callbacks::tests::max_advance_translates_logical_ceiling_to_raw_after_idle_jump",
+        "runtime::live_callbacks::tests::nested_fault_command_pump_uses_published_scheduler_state",
+        "runtime::live_callbacks::tests::nested_newer_icount_publication_supersedes_only_its_older_caller",
+        "runtime::live_callbacks::tests::network_custody::hot_fork_rejects_rx_poison_when_an_in_flight_callback_finishes_during_snapshot",
+        "runtime::live_callbacks::tests::network_custody::live_empty_rx_pass_leaves_a_later_publication_for_exactly_one_delivery",
+        "runtime::live_callbacks::tests::network_custody::live_empty_rx_still_rejects_an_invalid_delivery_window_and_releases_admission",
+        "runtime::live_callbacks::tests::network_custody::live_empty_rx_still_validates_ring_geometry_before_returning",
+        "runtime::live_callbacks::tests::network_custody::live_future_rx_preview_retains_the_original_head_without_guest_delivery",
+        "runtime::live_callbacks::tests::network_custody::live_later_frame_error_never_replays_the_accepted_prefix",
+        "runtime::live_callbacks::tests::network_custody::live_owned_rx_admission_precedes_preview_errors_and_preserves_the_pending_head",
+        "runtime::live_callbacks::tests::network_custody::registered_head_observation_rejects_foreign_owner_and_reused_frame_bytes",
+        "runtime::live_callbacks::tests::network_custody::uncertain_guest_acceptance_refuses_replay_checkpoint_and_restore",
+        "runtime::live_callbacks::tests::network_output::failure_context::completed_timer_tx_failure_identifies_pending_origin_and_preserve_phase",
+        "runtime::live_callbacks::tests::network_output::failure_context::delayed_original_admission_cannot_overwrite_a_genuine_new_output_arm",
+        "runtime::live_callbacks::tests::network_output::failure_context::direct_tx_failure_context_retains_arm_admission_without_changing_refusal",
+        "runtime::live_callbacks::tests::network_output::failure_context::disabled_context_keeps_identical_retained_guard_result_without_a_record",
+        "runtime::live_callbacks::tests::network_output::failure_context::nested_admission_observation_does_not_borrow_or_change_original_guard",
+        "runtime::live_callbacks::tests::network_output::live_tx_batch_publishes_its_original_coordinate_and_requests_native_stop",
+        "runtime::live_callbacks::tests::network_output::live_tx_refuses_when_native_exact_stop_is_not_admitted",
+        "runtime::live_callbacks::tests::network_output::network_output_resume_retries_a_busy_idle_reservation_after_the_control_ack",
+        "runtime::live_callbacks::tests::network_output::network_output_stop_survives_a_resume_before_original_frame_consumption",
+        "runtime::live_callbacks::tests::network_output::retained_stop::buffered_tx_does_not_hide_a_cache_already_old_at_idle_arm",
+        "runtime::live_callbacks::tests::network_output::retained_stop::buffered_tx_preserves_an_unchanged_native_instruction_sample",
+        "runtime::live_callbacks::tests::network_output::retained_stop::buffered_tx_refuses_a_native_sample_which_advanced_after_idle_arm",
+        "runtime::live_callbacks::tests::network_output::retained_stop::buffered_tx_sample_check_preserves_busy_enqueue_rollback_and_rearm",
+        "runtime::live_callbacks::tests::network_output::retained_stop::buffered_tx_sample_mismatch_preserves_original_native_refusal_priority",
+        "runtime::live_callbacks::tests::network_output::retained_stop::child_and_logical_restore_require_original_output_consumption",
+        "runtime::live_callbacks::tests::network_output::retained_stop::concurrent_callback_borrow_refuses_before_publication_or_native_admission",
+        "runtime::live_callbacks::tests::network_output::retained_stop::explicit_pause_shutdown_and_their_control_ack_keep_priority",
+        "runtime::live_callbacks::tests::network_output::retained_stop::foreign_frontier_cannot_retire_or_replace_the_original_output_stop",
+        "runtime::live_callbacks::tests::network_output::retained_stop::idle_progress_and_control_callbacks_preserve_the_original_output_tuple",
+        "runtime::live_callbacks::tests::network_output::retained_stop::native_admission_refusal_remains_original_after_consumer_progress",
+        "runtime::live_callbacks::tests::network_output::retained_stop::observed_sim_clock_progress_refuses_without_recalibrating_the_original_offset",
+        "runtime::live_callbacks::tests::network_output::retained_stop::only_complete_original_consumption_releases_resume_and_new_output",
+        "runtime::live_callbacks::tests::network_output::retained_stop::physical_progress_refuses_without_restamping_original_output",
+        "runtime::live_callbacks::tests::network_output::retained_stop::ring_backpressure_cannot_retire_or_extend_original_output_stop",
+        "runtime::live_callbacks::tests::preemption::max_advance_keeps_preemption_pending_until_its_run_ceiling_is_published",
+        "runtime::live_callbacks::tests::preemption::max_advance_preserves_unaligned_exact_tick_window",
+        "runtime::live_callbacks::tests::preemption::nested_preemption_query_leaves_outer_enqueue_command_pending",
+        "runtime::live_callbacks::tests::preemption::preemption_at_ten_ps_before_first_retirement_is_forwarded_exactly",
+        "runtime::live_callbacks::tests::preemption::preemption_consumed_between_preflight_and_enqueue_admission_is_not_reinjected",
+        "runtime::live_callbacks::tests::preemption::preemption_published_during_query_after_empty_observation_is_consumed_once",
+        "runtime::live_callbacks::tests::preemption::preemption_republished_after_advisory_hint_is_decoded_under_enqueue_ownership",
+        "runtime::live_callbacks::tests::preflight_cases::live_registrar_preflight_names_each_missing_capability",
+        "runtime::live_callbacks::tests::rejected_exact_selectable_stop_restores_the_handoff",
+        "runtime::live_callbacks::tests::selectable_stop_is_admitted_after_exact_sim_publication",
+        "runtime::live_callbacks::tests::shared_shutdown_idle_signal_is_one_shot_and_defers_done_to_worker",
+        "runtime::live_callbacks::tests::shared_shutdown_resume_signal_is_one_shot_and_defers_done_to_worker",
+        "runtime::live_callbacks::tests::shared_shutdown_signal_is_fail_loud_when_teardown_worker_disconnected",
+        "runtime::live_whitebox::app_random::branch_plan_tests::live_source_rejects_a_branch_plan_for_another_stream",
+        "runtime::live_whitebox::app_random::branch_plan_tests::live_source_serves_only_the_exact_planned_branch_draw",
+        "runtime::live_whitebox::app_random::tests::branch_reseed_restarts_every_plugin_stream_at_cursor_zero",
+        "runtime::live_whitebox::app_random::tests::logical_restore_discards_priming_draws_exactly_once",
+        "runtime::live_whitebox::app_random::tests::ordered_branch_reseeds_apply_each_generation_and_last_same_draw_seed_wins",
+        "runtime::live_whitebox::app_random::tests::plugin_stream_matches_the_authoritative_engine_stream",
+        "runtime::live_whitebox::app_random::tests::replacement_source_resumes_active_seed_cursor_before_the_next_reseed",
+        "runtime::live_whitebox::guest_introspection::tests::full_response_ring_requests_retry_without_consuming_request",
+        "runtime::live_whitebox::guest_introspection::tests::guest_cannot_send_plugin_reply_kinds",
+        "runtime::live_whitebox::guest_introspection::tests::poll_delivers_at_most_one_host_request",
+        "runtime::live_whitebox::guest_introspection::tests::response_is_published_before_the_next_request_is_delivered",
+        "runtime::live_whitebox::guest_introspection::tests::route_rejects_sequence_gaps_and_embedded_direction_reversal",
+        "runtime::live_whitebox::location::tests::instruction_location_rejects_missing_metadata_and_failed_observation",
+        "runtime::live_whitebox::location::tests::instruction_location_round_trips_without_callback_allocation",
+        "runtime::live_whitebox::location::tests::multi_instruction_tb_separates_marker_and_observed_coordinates",
+        "runtime::live_whitebox::marker::tests::live_marker_producer_fails_loud_when_queue_is_full",
+        "runtime::live_whitebox::marker::tests::live_marker_producer_publishes_exact_entry_to_shmem",
+        "runtime::live_whitebox::marker::tests::live_marker_sink_requires_matching_observed_tick",
+        "runtime::live_whitebox::register_descriptor_tests::aarch64_descriptor_pair_remains_exact",
+        "runtime::live_whitebox::register_descriptor_tests::x86_descriptor_aliases_and_debugger_prefixes_map_to_frozen_roles",
+        "runtime::live_whitebox::selectable::tests::available_reply_keeps_guest_write_failure_after_consumption",
+        "runtime::live_whitebox::selectable::tests::available_reply_keeps_kind_and_unsolicited_errors_before_consumption",
+        "runtime::live_whitebox::selectable::tests::available_reply_preserves_early_resume_and_post_dequeue_decode_errors",
+        "runtime::live_whitebox::selectable::tests::available_reply_rereads_the_ring_after_an_advisory_observation",
+        "runtime::live_whitebox::selectable::tests::deferred_transport_bound_rejects_before_catalog_mutation_or_forced_exit",
+        "runtime::live_whitebox::selectable::tests::empty_reply_resume_leaves_later_publication_for_exactly_one_delivery",
+        "runtime::live_whitebox::selectable::tests::live_catalog_retains_request_before_deferring_stop_to_exact_callback",
+        "runtime::live_whitebox::selectable::tests::live_reply_uses_stopped_boundary_while_writing_at_later_pre_execution_boundary",
+        "runtime::live_whitebox::selectable::tests::logical_restore_discards_priming_catalog_and_recovers_exact_continuation",
+        "runtime::live_whitebox::selectable::tests::native_handoff_rejects_any_instruction_drift_before_vmstop",
+        "runtime::live_whitebox::selectable::tests::occupied_vmstop_handoff_keeps_the_exact_request_pending",
+        "runtime::live_whitebox::selectable::tests::rejected_tb_exit_releases_the_vmstop_handoff",
+        "runtime::live_whitebox::selectable::tests::resume_delivery_binds_reply_to_pending_coordinate_and_zero_fills_reservation",
+        "runtime::live_whitebox::selectable::tests::selectable_prefix_is_disjoint_from_marker_frames",
+        "runtime::live_whitebox::selectable::tests::stale_reply_coordinate_fails_before_guest_write_or_catalog_completion",
+        "runtime::live_whitebox::tests::fault_advance_changes_only_logical_bias_after_marker_instruction",
+        "runtime::live_whitebox::tests::register_zero_handle_is_present_and_read_unchanged",
+        "runtime::live_whitebox::tests::selectable_pre_instruction_tick_preserves_fractional_phase",
+        "runtime::live_whitebox::tests::two_markers_without_fault_keep_raw_identity_and_zero_logical_bias",
+        "runtime::tests::callback_capability_failure_is_fatal_after_registration_begins",
+        "runtime::tests::callback_teardown_route_moves_to_the_replacement_child_worker",
+        "runtime::tests::closing_run_control_unblocks_reader_and_delivers_fail_loud_trigger",
+        "runtime::tests::coverage_cases::install_coverage_on_owns_callback_model_registration",
+        "runtime::tests::enabled_whitebox_without_process_symbols_fails_before_control_or_qemu_side_effects",
+        "runtime::tests::eventfd_identity_token_accepts_kernel_zero_and_rejects_overflow",
+        "runtime::tests::finalize_panic_is_fatal_without_dropping_userdata_or_sending_a_second_ack",
+        "runtime::tests::handshake_failure_marks_the_singleton_failed_before_second_install_attempt",
+        "runtime::tests::held_run_control_reader_parks_before_delivering_its_trigger",
+        "runtime::tests::hot_fork_barrier_registration_failure_is_fatal_after_callbacks_exist",
+        "runtime::tests::hot_fork_child_runtime_registration_failure_is_fatal_after_callbacks_exist",
+        "runtime::tests::late_callback_failure_sends_nonzero_setup_ack_then_invokes_fatal_policy",
+        "runtime::tests::live_install_retains_active_state_only_after_complete_ordered_sequence",
+        "runtime::tests::live_install_seals_the_optional_fingerprint_worker",
+        "runtime::tests::live_vcpu_time_slice_registers_idle_resume_and_normal_loop_completion",
+        "runtime::tests::missing_live_network_capability_fails_preflight_before_control_io",
+        "runtime::tests::missing_live_ninep_capability_prevents_every_qemu_registration",
+        "runtime::tests::missing_live_vcpu_time_capability_fails_preflight_before_control_io",
+        "runtime::tests::partial_callback_failure_retains_the_pinned_userdata_owner",
+        "runtime::tests::partial_callback_panic_retains_userdata_and_sends_one_failure_ack",
+        "runtime::tests::production_registrar_installs_default_block_ninep_and_network_families",
+        "runtime::tests::quit_selected_first_keeps_receiver_live_for_admitted_callback_shutdown_signal",
+        "runtime::tests::reservation_cases::duplicate_reservation_fails_before_protocol_io_can_begin",
+        "runtime::tests::reservation_cases::irreversible_reservation_failure_blocks_second_install_attempt",
+        "runtime::tests::run_control_worker_consumes_quit_marks_done_then_requests_clean_shutdown",
+        "runtime::tests::run_control_worker_rejects_unsolicited_run_frame_with_fail_loud_shutdown",
+        "runtime::tests::shared_selected_first_keeps_receiver_live_for_subsequent_quit_delivery",
+        "runtime::tests::shared_shutdown_worker_defers_done_and_clean_qemu_shutdown_until_callback_drain",
+        "runtime::worker_quiescence::tests::admitted_operation_drains_then_parks_until_release",
+        "runtime::worker_quiescence::tests::fork_child_reset_forgets_only_a_complete_parked_template_set",
+        "runtime::worker_quiescence::tests::hold_reports_dequeued_worker_local_state_until_release",
+        "runtime::worker_quiescence::tests::hold_reports_idle_workers_parked",
+        "runtime::worker_quiescence::tests::optional_fingerprint_worker_is_part_of_the_exact_mask",
+        "setup::tests::prepare_setup_maps_validates_and_arms_wake_fd_before_ready_ack",
+        "setup::tests::prepare_setup_rejects_a_mutable_or_non_memfd_branch_plan_before_ready",
+        "setup::tests::prepare_setup_rejects_a_raw_app_random_body",
+        "setup::tests::prepare_setup_sends_nonzero_ack_when_handshake_node_count_disagrees",
+        "setup::tests::prepare_setup_sends_nonzero_ack_when_handshake_slot_exceeds_region",
+        "setup::tests::prepare_setup_sends_nonzero_ack_when_region_validation_fails",
+        "setup::tests::prepare_setup_sends_nonzero_ack_when_wake_fd_registration_fails",
+        "setup::tests::receive_and_prepare_setup_receives_descriptors_and_cross_checks_handshake",
+        "setup::tests::receive_setup_sends_nonzero_ack_when_descriptor_count_is_wrong",
+        "setup::tests::wake_fd_arm_rejects_pipe_socket_and_regular_file",
+        "setup::tests::wake_fd_arm_sets_nonblocking_on_descriptor",
+        "setup::tests::wake_fd_registers_armed_descriptor_with_qemu",
+        "setup::tests::wake_fd_registration_rejects_qemu_failure_status",
+        "shmem_ordering::tests::shmem_ordering_facade_enqueues_peeks_and_dequeues_spsc_frames",
+        "shmem_ordering::tests::shmem_ordering_facade_observes_shutdown_requested",
+        "shmem_ordering::tests::shmem_ordering_facade_publishes_idle_state_and_observes_ceiling",
+        "teardown::tests::teardown_host_quit_marks_done_shutdowns_qemu_and_blocks_shmem_access",
+        "teardown::tests::teardown_host_quit_proof_reads_real_run_control_quit",
+        "teardown::tests::teardown_is_single_shot_and_does_not_touch_shmem_again",
+        "teardown::tests::teardown_rejects_missing_shutdown_trigger_proofs",
+        "teardown::tests::teardown_shutdown_hook_failure_still_blocks_shmem_access",
+        "teardown::tests::teardown_shutdown_requested_marks_done_shutdowns_qemu_and_blocks_shmem_access",
+        "time_control::request::tests::time_control_request_requires_export_and_nonnull_ownership_token",
+        "time_control::tests::idle_jump_keeps_phase_for_following_guest_instruction",
+        "time_control::tests::queued_idle_advance_preserves_qemu_rejection_status",
+        "time_control::tests::queued_idle_advance_rejects_failed_or_mismatched_completion",
+        "time_control::tests::queued_idle_advance_rejects_targets_outside_qemu_signed_range",
+        "time_control::tests::queued_idle_advance_reports_pending_completion",
+        "time_control::tests::queued_idle_advance_requires_qemu_enqueue_symbol",
+        "time_control::tests::time_control_clock_advances_by_guest_instructions_up_to_ceiling",
+        "time_control::tests::time_control_clock_advances_by_scheduler_authorized_idle_jump",
+        "time_control::tests::time_control_clock_rejects_backward_jump_and_signed_tick_overflow",
+        "time_control::tests::time_control_clock_rejects_guest_instruction_advance_past_ceiling",
+        "time_control::tests::time_control_clock_rejects_stale_idle_jump_authorization",
+        "time_control::tests::time_control_registration_order_keeps_boot_barrier_before_guest_code",
+        "time_control::tests::time_control_registration_order_rejects_duplicate_steps",
+        "time_control::tests::time_control_registration_order_rejects_late_or_missing_control",
+        "time_control::tests::time_control_registration_order_rejects_setup_ack_before_wake_fd_arm",
+        "time_control::tests::time_control_registration_order_requests_control_before_first_instruction",
+        "time_control::tests::virtual_nanoseconds_preserve_fractional_instruction_phase",
+        "vcpu_introspection::tests::vcpu_introspection_converts_reader_output_to_protocol_snapshot",
+        "vcpu_introspection::tests::vcpu_introspection_cursor_can_be_derived_from_local_round_robin_state",
+        "vcpu_introspection::tests::vcpu_introspection_reads_all_vcpu_registers_and_rr_cursor",
+        "vcpu_introspection::tests::vcpu_introspection_register_digest_is_stable_and_vcpu_qualified",
+        "vcpu_introspection::tests::vcpu_introspection_rejects_bad_cursor_before_register_reads",
+        "vcpu_introspection::tests::vcpu_introspection_requires_register_and_cursor_capabilities",
+        "virtual_timer_witness::tests::completed_witness_binds_actual_callback_to_raw_and_logical_coordinates",
+        "virtual_timer_witness::tests::completed_witness_rejects_a_raw_icount_mismatch",
+        "whitebox_doorbell::selectable::catalog::tests::canonical_plan_round_trip_restores_exact_state_with_fresh_token",
+        "whitebox_doorbell::selectable::catalog::tests::catalog_limits_are_nonzero_ordered_and_hard_bounded",
+        "whitebox_doorbell::selectable::catalog::tests::combined_service_retains_failed_decision_and_retries_without_readmission",
+        "whitebox_doorbell::selectable::catalog::tests::completed_request_sequences_and_all_request_limits_fail_closed",
+        "whitebox_doorbell::selectable::catalog::tests::expectation_rejects_duplicate_and_over_limit_entries",
+        "whitebox_doorbell::selectable::catalog::tests::freeze_requires_required_entries_and_accepts_absent_optional",
+        "whitebox_doorbell::selectable::catalog::tests::launch_pair_shares_declaration_bytes_but_not_request_incarnations",
+        "whitebox_doorbell::selectable::catalog::tests::pending_request_requires_the_exact_guest_virtual_reservation",
+        "whitebox_doorbell::selectable::catalog::tests::pending_stop_seal_rejects_a_trap_coordinate_that_cannot_advance",
+        "whitebox_doorbell::selectable::catalog::tests::pending_stop_seal_retains_the_trap_and_rejects_a_changed_boundary",
+        "whitebox_doorbell::selectable::catalog::tests::pending_token_is_bound_to_one_catalog_incarnation",
+        "whitebox_doorbell::selectable::catalog::tests::request_is_frozen_catalog_bound_and_retained_until_exact_reply",
+        "whitebox_doorbell::selectable::catalog::tests::setup_registration_requires_expected_exact_contract_and_sequence",
+        "whitebox_doorbell::selectable::tests::callback_rejects_guest_reply_stale_service_reply_and_oversized_value",
+        "whitebox_doorbell::selectable::tests::pending_request_keeps_the_zero_filled_guest_reservation_untouched",
+        "whitebox_doorbell::selectable::tests::registration_is_observational_and_keeps_exact_coordinate",
+        "whitebox_doorbell::selectable::tests::request_writes_one_sequence_bound_zero_padded_reply_at_trap",
+        "whitebox_doorbell::tests::whitebox_app_random_decoder_rejects_bad_magic_version_kind_and_utf8",
+        "whitebox_doorbell::tests::whitebox_app_random_drops_bad_magic_version_len_and_kind_without_side_effects",
+        "whitebox_doorbell::tests::whitebox_app_random_drops_malformed_request_without_decision_or_reply",
+        "whitebox_doorbell::tests::whitebox_app_random_rejects_request_id_mismatch_without_reply",
+        "whitebox_doorbell::tests::whitebox_app_random_rejects_unmasked_decision_value_without_reply",
+        "whitebox_doorbell::tests::whitebox_app_random_serves_random_request_records_decision_and_replies_at_trap_icount",
+        "whitebox_doorbell::tests::whitebox_app_random_zero_requests_leave_no_decisions_or_replies",
+        "whitebox_doorbell::tests::whitebox_channel_safety_ignores_producer_timing_before_delivery_icount",
+        "whitebox_doorbell::tests::whitebox_channel_safety_injects_host_to_guest_only_at_delivery_icount",
+        "whitebox_doorbell::tests::whitebox_channel_safety_reads_payload_snapshot_at_exact_trap_icount",
+        "whitebox_doorbell::tests::whitebox_doorbell_aarch64_golden_vector_freezes_inert_hint",
+        "whitebox_doorbell::tests::whitebox_doorbell_abi_vectors_cover_x86_64_and_aarch64",
+        "whitebox_doorbell::tests::whitebox_doorbell_payload_source_is_shared_page_or_register_pointer_length",
+        "whitebox_doorbell::tests::whitebox_doorbell_read_failure_records_no_marker",
+        "whitebox_doorbell::tests::whitebox_doorbell_reads_guest_memory_via_api_and_stamps_current_icount",
+        "whitebox_doorbell::tests::whitebox_doorbell_records_decoded_marker_into_engine_event_log_sink",
+        "whitebox_doorbell::tests::whitebox_doorbell_records_unknown_kind_decode_diagnostic_without_marker",
+        "whitebox_doorbell::tests::whitebox_doorbell_registration_uses_single_source_abi_trap",
+        "whitebox_doorbell::tests::whitebox_doorbell_rejects_malformed_frame_without_marker",
+        "whitebox_doorbell::tests::whitebox_doorbell_rejects_oversized_payload_before_guest_memory_read",
+        "whitebox_doorbell::tests::whitebox_doorbell_rejects_random_request_on_observational_marker_path",
+        "whitebox_doorbell::tests::whitebox_doorbell_trap_while_disabled_is_loud",
+        "whitebox_doorbell::tests::whitebox_doorbell_x86_64_golden_vector_freezes_out_imm8_al",
+        "whitebox_doorbell::tests::whitebox_guest_input_is_not_visible_before_delivery_icount",
+        "whitebox_doorbell::tests::whitebox_guest_input_rejects_late_delivery",
+        "whitebox_doorbell::tests::whitebox_guest_input_rejects_oversized_payload_before_guest_memory_write",
+        "whitebox_doorbell::tests::whitebox_guest_input_requires_qemu_guest_memory_write_capability",
+        "whitebox_doorbell::tests::whitebox_guest_input_while_disabled_is_loud",
+        "whitebox_doorbell::tests::whitebox_guest_input_writes_at_exact_delivery_icount_only",
+        "whitebox_doorbell::tests::whitebox_guest_memory_addressing_app_random_reply_range_tracks_payload_resolution",
+        "whitebox_doorbell::tests::whitebox_guest_memory_addressing_rejects_non_s5_evidence",
+        "whitebox_doorbell::tests::whitebox_guest_memory_addressing_unresolved_default_is_physical_shared_page",
+        "whitebox_doorbell::tests::whitebox_guest_memory_addressing_uses_supplied_s5_virtual_pointer_length_evidence",
+        "whitebox_doorbell::tests::whitebox_registration_off_mode_bypasses_whitebox_payload_validation",
+        "whitebox_doorbell::tests::whitebox_registration_off_mode_installs_no_trap_and_preserves_black_box",
+        "whitebox_doorbell::tests::whitebox_registration_on_mode_requires_setup_collision_validation",
+        "whitebox_doorbell::tests::whitebox_registration_on_mode_requires_trap_and_memory_read_capabilities"
+      ],
+      "ignored": []
+    }
+  },
+  "uncached_execution": {
+    "gateway": {
+      "build": "/nix/store/gbvq21v77wf2pf9z8lv5z63n3myrl8pv-aos-bazel-qemu-gateway-process-tests-1",
+      "cache_hits": 0,
+      "execution_report_sha256": "f8c9bc5ef0f3a6aeac17a9776fea4c48a6352a2e49754edadde7ae627b3740da",
+      "runners": {
+        "linux-sandbox": 52
+      },
+      "rustc_actions": 52
+    },
+    "host": {
+      "build": "/nix/store/qwghkyyxn5fx1ay75bz9v8qy1y0hxrac-aos-bazel-qemu-test-oracle-host-1",
+      "cache_hits": 0,
+      "execution_report_sha256": "ca2226d6c45fc5a2c9e35264ccca179e321de789167c98cac5e5d1dd538ef1bf",
+      "runners": {
+        "linux-sandbox": 237
+      },
+      "rustc_actions": 237
+    },
+    "plugin": {
+      "build": "/nix/store/i617mh973qynjzdczlr49x95fifviaxc-aos-bazel-qemu-plugin-process-tests-1",
+      "cache_hits": 0,
+      "execution_report_sha256": "2bc1cd8186f41f4fa0707da60ce634a638e09107f342fd936809940381b7cb01",
+      "runners": {
+        "linux-sandbox": 55
+      },
+      "rustc_actions": 55
+    }
+  }
+}

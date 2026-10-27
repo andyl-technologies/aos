@@ -846,6 +846,10 @@ fn path_text(path: &Path) -> Result<&str> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "Fixture decoding and construction failures must fail these tests"
+)]
 mod tests {
     use super::*;
 

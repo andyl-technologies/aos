@@ -149,7 +149,7 @@ impl RpcService {
                 .partitions
                 .into_iter()
                 .flatten()
-                .collect::<HashSet<_>>();
+                .collect::<BTreeSet<_>>();
             if releases.is_empty() {
                 return Err(RpcError::FailedPrecondition(
                     "channel has no assigned release partitions".to_string(),

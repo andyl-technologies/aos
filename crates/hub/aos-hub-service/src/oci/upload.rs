@@ -874,6 +874,10 @@ impl RpcService {
         completed_upload_response(repository, digest)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Keeps the existing transport and storage context explicit."
+    )]
     async fn materialize_blob(
         &self,
         registry_id: i64,
@@ -1042,6 +1046,10 @@ async fn abort_materialization(
     }
 }
 
+#[allow(
+    clippy::result_large_err,
+    reason = "HTTP handlers return the complete response without changing its public layout."
+)]
 fn upload_owner(service: &RpcService, headers: &HeaderMap) -> Result<String, Response> {
     let token = headers
         .get(header::AUTHORIZATION)

@@ -56,13 +56,13 @@ async fn run_with_options(
     suggest_system_scope: bool,
 ) -> Result<()> {
     // If a specific registry was requested, validate it exists.
-    if let Some(name) = registry_filter {
-        if config.find_registry(name).is_none() {
-            return Err(RegistrySyncError {
-                message: format!("registry '{name}' not found"),
-            }
-            .into());
+    if let Some(name) = registry_filter
+        && config.find_registry(name).is_none()
+    {
+        return Err(RegistrySyncError {
+            message: format!("registry '{name}' not found"),
         }
+        .into());
     }
 
     let cache_dir = config.cache_path();
@@ -86,10 +86,10 @@ async fn run_with_options(
         }
 
         // If a filter is set, skip non-matching registries.
-        if let Some(name) = registry_filter {
-            if reg_config.name != name {
-                continue;
-            }
+        if let Some(name) = registry_filter
+            && reg_config.name != name
+        {
+            continue;
         }
 
         any_synced = true;

@@ -1,5 +1,9 @@
 //! End-to-end release staging, publication, and command ownership contracts.
 
+#[macro_use]
+#[path = "support/binaries.rs"]
+mod binaries;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -38,7 +42,7 @@ impl Consumer {
         let home = fixture.temporary.path().join("consumer");
         fs::create_dir_all(&home)?;
         let url = format!("file://{}", fixture.origin.display());
-        let added = isolated_command(env!("CARGO_BIN_EXE_apm"), &home)
+        let added = isolated_command(cli_binary!("CARGO_BIN_EXE_apm"), &home)
             .args([
                 "registry",
                 "add",
@@ -63,7 +67,7 @@ impl Consumer {
     }
 
     fn update(&self) -> Result<()> {
-        let updated = isolated_command(env!("CARGO_BIN_EXE_apm"), &self.home)
+        let updated = isolated_command(cli_binary!("CARGO_BIN_EXE_apm"), &self.home)
             .args(["update", "--registry", REGISTRY])
             .output()?;
         require_success(&updated, &["apm", "update"])
@@ -129,7 +133,7 @@ impl Fixture {
     }
 
     fn apr_output(&self, arguments: &[&str]) -> Result<Output> {
-        isolated_command(env!("CARGO_BIN_EXE_apr"), &self.home)
+        isolated_command(cli_binary!("CARGO_BIN_EXE_apr"), &self.home)
             .args(arguments)
             .output()
             .with_context(|| format!("running apr {}", arguments.join(" ")))
@@ -728,7 +732,7 @@ fn release_journal_status_runs_offline_under_maintenance() -> Result<()> {
     bytes.push(b'\n');
     fs::write(&journal, bytes)?;
 
-    let output = isolated_command(env!("CARGO_BIN_EXE_aos"), temporary.path())
+    let output = isolated_command(cli_binary!("CARGO_BIN_EXE_aos"), temporary.path())
         .env("PATH", temporary.path().join("no-executables"))
         .args([
             "--json",
@@ -745,7 +749,7 @@ fn release_journal_status_runs_offline_under_maintenance() -> Result<()> {
     assert_eq!(status["state"], "planned");
     assert_eq!(status["sequence"], 1);
 
-    let removed = isolated_command(env!("CARGO_BIN_EXE_aos"), temporary.path())
+    let removed = isolated_command(cli_binary!("CARGO_BIN_EXE_aos"), temporary.path())
         .args(["release", "--help"])
         .output()?;
     assert!(

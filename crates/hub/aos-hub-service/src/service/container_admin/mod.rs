@@ -91,21 +91,6 @@ impl RpcService {
         }))
     }
 
-    /// Resolves the origin of the registry's OCI surface without inventing one.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for database failure or a malformed ready route origin.
-    pub(crate) async fn container_distribution_origin(
-        &self,
-        registry_id: i64,
-    ) -> Result<Option<String>, RpcError> {
-        Ok(self
-            .container_distribution_exposure(registry_id)
-            .await?
-            .map(|exposure| exposure.origin))
-    }
-
     /// Resolves where the registry's OCI surface is reachable.
     ///
     /// A ready registry-bound route on the registry's preferred authority wins,
@@ -388,6 +373,10 @@ fn repository_message(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::items_after_test_module,
+    reason = "Preserves the existing grouping of control-plane helpers and their tests."
+)]
 mod tests {
     use aos_oci_types::Sha256Digest;
 
@@ -918,9 +907,11 @@ pub(super) fn publication_message(
         created_at: record.created_at,
         committed_at: record.committed_at.unwrap_or_default(),
         confirmation_hash: record.confirmation_hash.to_string(),
-        verified_release_root: (record.state == "ready")
-            .then(|| record.root_digest.to_string())
-            .unwrap_or_default(),
+        verified_release_root: if record.state == "ready" {
+            record.root_digest.to_string()
+        } else {
+            String::new()
+        },
         topology_digest: record.topology_digest.to_string(),
         required_placement_count: i64::from(record.required_placement_count),
         source_kind: record.source_kind.clone(),

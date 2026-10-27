@@ -11,6 +11,10 @@ use aos_hub_model::clock::Instant;
 use axum::http::HeaderMap;
 
 /// Renders native indexed reference entries for the authorized release.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Uses the portable Hub clock for request timing and runtime budgets."
+)]
 pub(crate) async fn browse(
     svc: &RpcService,
     headers: &HeaderMap,
@@ -118,6 +122,10 @@ pub(crate) async fn package_reference(
 
 /// Reads native package documentation from the same completed signed release catalog.
 #[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Uses the portable Hub clock for request timing and runtime budgets."
+)]
 async fn native_package_reference(
     svc: &RpcService,
     registry_id: i64,

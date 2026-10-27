@@ -524,7 +524,7 @@ async fn image_metadata_service(
         .create_surface_placement(&NewSurfacePlacementSpec {
             surface: SurfaceTarget::Registry(registry_id),
             name: "primary".into(),
-            binding_id: binding_id,
+            binding_id,
             prefix: "system".into(),
             kind: "complete".into(),
             desired_state: "active".into(),

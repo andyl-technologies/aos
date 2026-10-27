@@ -1,0 +1,199 @@
+load("@rules_rust//rust:defs.bzl", "rust_clippy", "rust_doc", "rustfmt_test")
+load("//tools/bazel/rules:compile.bzl", "rust_binary")
+load("//tools/bazel/rules:license.bzl", "aos_license_check")
+load("//tools/bazel/rules:package.bzl", "aos_package")
+load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")
+load("//tools/bazel/rules:source_package.bzl", "aos_source_package")
+load("//tools/bazel/rules:test.bzl", "aos_rust_test")
+
+package(default_visibility = ["//crates:__subpackages__"])
+
+RUST_PACKAGE = aos_rust_package(
+    name = "aos-activation-systemd",
+    version = "0.1.0",
+    edition = "2024",
+    description = "Systemd service, identity, listener, watchdog, and credential activation handlers",
+    license_expression = "Apache-2.0",
+    license_domain = "apache-host",
+)
+
+DEPENDENCIES = [
+    "//crates/activation/aos-activation:lib",
+    "//crates/modules/aos-module-format:lib",
+    "//crates/core/aos-core:lib",
+    "//crates/nix/aos-nix:lib",
+    "//crates/linux/aos-systemd-client:lib",
+    "//third_party/rust:core_anyhow",
+    "//third_party/rust:core_hex",
+    "//third_party/rust:core_rustix",
+    "//third_party/rust:core_serde",
+    "//third_party/rust:core_serde_json",
+    "//third_party/rust:core_sha2",
+    "//third_party/rust:core_tempfile",
+    "//third_party/rust:core_tokio",
+]
+
+SHARED_SOURCES = glob(["src/**/*.rs"], exclude = ["src/bin/*.rs"])
+
+rust_binary(
+    name = "aos-systemd-native-resource-provider",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "aos_systemd_native_resource_provider",
+    crate_root = "src/bin/aos-systemd-native-resource-provider.rs",
+    srcs = ["src/bin/aos-systemd-native-resource-provider.rs"] + SHARED_SOURCES,
+    crate_features = [],
+    deps = DEPENDENCIES,
+)
+
+aos_rust_test(
+    name = "bin_aos-systemd-native-resource-provider",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate = ":aos-systemd-native-resource-provider",
+    crate_features = [],
+)
+
+rust_binary(
+    name = "aos-systemd-credential-encrypt",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "aos_systemd_credential_encrypt",
+    crate_root = "src/bin/aos-systemd-credential-encrypt.rs",
+    srcs = ["src/bin/aos-systemd-credential-encrypt.rs"] + SHARED_SOURCES,
+    crate_features = [],
+    deps = DEPENDENCIES,
+)
+
+aos_rust_test(
+    name = "bin_aos-systemd-credential-encrypt",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate = ":aos-systemd-credential-encrypt",
+    crate_features = [],
+)
+
+rust_binary(
+    name = "aos-systemd-native-resource-provider_parser",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "aos_systemd_native_resource_provider",
+    crate_root = "src/bin/aos-systemd-native-resource-provider.rs",
+    srcs = ["src/bin/aos-systemd-native-resource-provider.rs"] + SHARED_SOURCES,
+    crate_features = ["systemd-parser-tests"],
+    deps = DEPENDENCIES,
+    testonly = True,
+)
+
+aos_rust_test(
+    name = "bin_aos-systemd-native-resource-provider_parser",
+    package = RUST_PACKAGE,
+    tags = ["manual"],
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate = ":aos-systemd-native-resource-provider_parser",
+    crate_features = ["systemd-parser-tests"],
+)
+
+rust_binary(
+    name = "aos-systemd-credential-encrypt_parser",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "aos_systemd_credential_encrypt",
+    crate_root = "src/bin/aos-systemd-credential-encrypt.rs",
+    srcs = ["src/bin/aos-systemd-credential-encrypt.rs"] + SHARED_SOURCES,
+    crate_features = ["systemd-parser-tests"],
+    deps = DEPENDENCIES,
+    testonly = True,
+)
+
+aos_rust_test(
+    name = "bin_aos-systemd-credential-encrypt_parser",
+    package = RUST_PACKAGE,
+    tags = ["manual"],
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate = ":aos-systemd-credential-encrypt_parser",
+    crate_features = ["systemd-parser-tests"],
+)
+
+DEVELOPER_ARTIFACTS = [
+    ":aos-systemd-native-resource-provider",
+    ":bin_aos-systemd-native-resource-provider_binary",
+    ":aos-systemd-credential-encrypt",
+    ":bin_aos-systemd-credential-encrypt_binary",
+    ":aos-systemd-native-resource-provider_parser",
+    ":bin_aos-systemd-native-resource-provider_parser_binary",
+    ":aos-systemd-credential-encrypt_parser",
+    ":bin_aos-systemd-credential-encrypt_parser_binary",
+]
+
+rust_clippy(name = "clippy", testonly = True, deps = DEVELOPER_ARTIFACTS)
+rustfmt_test(name = "format", targets = DEVELOPER_ARTIFACTS)
+
+rust_doc(name = "native_documentation", crate = ":aos-systemd-native-resource-provider")
+rust_doc(name = "credential_documentation", crate = ":aos-systemd-credential-encrypt")
+filegroup(name = "documentation", srcs = [":native_documentation", ":credential_documentation"])
+
+aos_license_check(
+    name = "license_closure",
+    testonly = True,
+    roots = [
+        ":aos-systemd-native-resource-provider",
+        ":bin_aos-systemd-native-resource-provider_binary",
+        ":aos-systemd-credential-encrypt",
+        ":bin_aos-systemd-credential-encrypt_binary",
+    ],
+    license_domain = RUST_PACKAGE.license_domain,
+)
+
+aos_license_check(
+    name = "parser_license_closure",
+    testonly = True,
+    roots = [
+        ":aos-systemd-native-resource-provider_parser",
+        ":bin_aos-systemd-native-resource-provider_parser_binary",
+        ":aos-systemd-credential-encrypt_parser",
+        ":bin_aos-systemd-credential-encrypt_parser_binary",
+    ],
+    license_domain = RUST_PACKAGE.license_domain,
+)
+
+aos_license_check(
+    name = "production_license_closure",
+    roots = [":aos-systemd-native-resource-provider", ":aos-systemd-credential-encrypt"],
+    license_domain = RUST_PACKAGE.license_domain,
+)
+
+aos_package(
+    name = "production_package",
+    package_name = "aos-systemd-provider",
+    version = "0.1.0",
+    license_expression = RUST_PACKAGE.license_expression,
+    license_domain = RUST_PACKAGE.license_domain,
+    artifacts = {
+        ":aos-systemd-native-resource-provider": "bin/aos-systemd-native-resource-provider",
+        ":aos-systemd-credential-encrypt": "bin/aos-systemd-credential-encrypt",
+    },
+    executables = ["bin/aos-systemd-native-resource-provider", "bin/aos-systemd-credential-encrypt"],
+    visibility = ["//visibility:public"],
+)
+
+# The Nix parser gate supplies AOS-built systemd-analyze, vendor units and Bash
+# while executing these exact Bazel-built libtest artifacts with the shared runner.
+aos_package(
+    name = "parser_test_package",
+    testonly = True,
+    package = RUST_PACKAGE,
+    artifacts = {
+        ":bin_aos-systemd-native-resource-provider_parser_binary": "libexec/native-parser-tests",
+        ":bin_aos-systemd-credential-encrypt_parser_binary": "libexec/credential-parser-tests",
+    },
+    executables = ["libexec/native-parser-tests", "libexec/credential-parser-tests"],
+    visibility = ["//visibility:public"],
+)
+
+aos_source_package(
+    name = "source_package",
+    package = RUST_PACKAGE,
+    srcs = glob(["**/*.rs"]),
+    visibility = ["//visibility:public"],
+)

@@ -1,0 +1,160 @@
+{
+  "cargo_oracle": "/nix/store/p0dyjx8g74pw9hj3na7i2rwhk356viyl-aos-bazel-crucible-controller-production-cargo-1",
+  "contexts": {
+    "cli": {
+      "artifact_sha256": "b7d4e497d4449e5dd89562d02ea92b10764431c950688ff3fdeaefd3c9b9acaa",
+      "broad_build": "/nix/store/34m0jm781zfz9kjkzqskqryrwn8qj959-aos-bazel-crucible-controller-cli-1",
+      "build": "/nix/store/7hmbj6c49nx9daapq6hapskf2izn9l2z-aos-bazel-crucible-controller-cli-1",
+      "comparisons_passed": [
+        "strict_and_broad_exported_bytes",
+        "configured_source_inventories",
+        "manifest_and_license_identity",
+        "cargo_and_bazel_elf_identity_needed_and_interpreter",
+        "resolved_runtime_libraries",
+        "first_party_and_external_feature_sets",
+        "production_profiles",
+        "compiler_arguments"
+      ],
+      "fresh_linux_sandbox_actions": {
+        "broad": 681,
+        "strict": 681
+      },
+      "source_inventory": "/nix/store/vays9y7yasy752950fachfrh7d7w50zg-crucible-controller-cli-inventory.json",
+      "source_inventory_sha256": "65dfa73c9c742448954655c596368088cccd0997fc741248b0a9474eb363ba60",
+      "workspace": "/nix/store/73zr8nx3jsdvs0fx4f6bs1x51kh7rbpq-aos-bazel-workspace"
+    },
+    "debugger": {
+      "artifact_sha256": "07bcfefc7d68d7030886146cfb9f54c84785b105fc838141d953d3cd0a1ca881",
+      "broad_build": "/nix/store/w5kiykaq2f40zqlxpk8233hkkymzsn0k-aos-bazel-crucible-controller-debugger-1",
+      "build": "/nix/store/z4i9czi5pvz6g908qn49q69icbgl32j2-aos-bazel-crucible-controller-debugger-1",
+      "comparisons_passed": [
+        "strict_and_broad_exported_bytes",
+        "configured_source_inventories",
+        "manifest_and_license_identity",
+        "cargo_and_bazel_elf_identity_needed_and_interpreter",
+        "resolved_runtime_libraries",
+        "first_party_and_external_feature_sets",
+        "production_profiles",
+        "compiler_arguments"
+      ],
+      "fresh_linux_sandbox_actions": {
+        "broad": 275,
+        "strict": 275
+      },
+      "source_inventory": "/nix/store/32i83yay1hcm921ngnspd9k154m8x49q-crucible-controller-debugger-inventory.json",
+      "source_inventory_sha256": "7991f829487f22b3b1d8342267a851294ab10f7736b8aed796d4f2125de9f744",
+      "workspace": "/nix/store/b7n6cv1kjbwh69xfwigbmbv4hhyfwkph-aos-bazel-workspace"
+    },
+    "scenario": {
+      "artifact_sha256": "06b43f4dc8597aa069eba2e894ad061f0a9df501dee6cb97037e6c5890b554a9",
+      "broad_build": "/nix/store/3jc7b5760jx11m035idgkjsfipyscxdg-aos-bazel-crucible-controller-scenario-1",
+      "build": "/nix/store/vfnmk90d6060p65rp2igxmmasr0pd286-aos-bazel-crucible-controller-scenario-1",
+      "comparisons_passed": [
+        "strict_and_broad_exported_bytes",
+        "configured_source_inventories",
+        "manifest_and_license_identity",
+        "cargo_and_bazel_elf_identity_needed_and_interpreter",
+        "resolved_runtime_libraries",
+        "first_party_and_external_feature_sets",
+        "production_profiles",
+        "compiler_arguments"
+      ],
+      "fresh_linux_sandbox_actions": {
+        "broad": 648,
+        "strict": 648
+      },
+      "source_inventory": "/nix/store/iwi7zxdfnf7wr8vxxq2z4in1awcn6rrj-crucible-controller-scenario-inventory.json",
+      "source_inventory_sha256": "3aff266cf942ea9549bcb50bd06b2f68b819b1d38109ce2aa217170dd2690e93",
+      "workspace": "/nix/store/ypbk99hbqygiwgsgbyi62g70nsmpcyqh-aos-bazel-workspace"
+    }
+  },
+  "fixture_behavior": {
+    "cli": [
+      {
+        "arguments": [
+          "--help"
+        ],
+        "exit_code": 0,
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "f2aedf052021f5ad4602d00b5aa0acbe5a6639c12654387a6ec71a941fd01fc9"
+      },
+      {
+        "arguments": [
+          "selftest",
+          "--help"
+        ],
+        "exit_code": 0,
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "2cac5b51031a873fd2f760ec81140cea0bb7993880ecbd3d9c04cc4e27e07b95"
+      },
+      {
+        "arguments": [
+          "--invalid-controller-option"
+        ],
+        "exit_code": 64,
+        "stderr_sha256": "da77def49596ef89f9f708cdb1a6b6af050f642737a1baadd6d04c19402b5a91",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    ],
+    "debugger": [
+      {
+        "architecture": "x86_64",
+        "scenario_sha256": "81713a8230f97db8517bb23790b00289259e27578d1ff2673ed1ffa60a3a40ed"
+      },
+      {
+        "architecture": "aarch64",
+        "scenario_sha256": "a3f99622f91d44f52d417b0ab88a0dbf5280ee97d61b5d96ea2a395e549a49f4"
+      },
+      {
+        "arguments": [],
+        "exit_code": 1,
+        "stderr_sha256": "75379dbd0a150ce29f0ec08cd2590905fe2b57ad17598929eb7188ec7f7eeb71",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    ],
+    "scenario": [
+      {
+        "arguments": [
+          "--emit-scenario"
+        ],
+        "exit_code": 0,
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stdout_sha256": "855117d5a59ec73ac5f78ce515cf6f94a2dcfb0b3d118bb5ca7b06f9dbf6657d"
+      },
+      {
+        "arguments": [],
+        "exit_code": 1,
+        "stderr_sha256": "9760ee715fa73127c9cc6ede5f5bb8b04464370ef452a9e853481ea6a8ddc2d7",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "arguments": [
+          "--unknown"
+        ],
+        "exit_code": 1,
+        "stderr_sha256": "9760ee715fa73127c9cc6ede5f5bb8b04464370ef452a9e853481ea6a8ddc2d7",
+        "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    ],
+    "store_objects": {
+      "56/5681a2f1204454505d5af315e12001c0f1620e27bc594a51e100727397c7e335": "b6d083d319dfede78c80dfa147724a8bbe454ba434b8bc6aca7853688ecff91e",
+      "76/7618354beb657652448e6644705e89290ea606e4715f13bb4524a8ed9625bdac": "e88c8ae322299450a1d214ea954bc272f2ef57b3d136890feb3234dc6698e30d"
+    },
+    "store_population_stdout_sha256": "c824fac30f064afcd8ad394b378924f73411d4a598dd1c24f9cd136abefca5f1"
+  },
+  "limits": [
+    "Executable compilation and generator behavior do not qualify the installed public controller package.",
+    "Mandatory suite tests, Clippy, rustdoc, doctests, license/ABI gates and live QEMU remain separate qualifications.",
+    "AArch64 scenario serialization here is native generator behavior, not foreign executable qualification.",
+    "Compilation inputs are the retained store paths below, frozen before the combined test profile registration.",
+    "This receipt does not qualify later source snapshots, mandatory suite checks, or controller test execution."
+  ],
+  "public_controller_cutover_qualified": false,
+  "qualification_derivation": "/nix/store/vi4p0dkk6mck690d16z0sbq2c0azfl2d-aos-bazel-crucible-controller-frozen-artifact-parity.drv",
+  "qualification_output": "/nix/store/76ifa96m11plnj6f4bj567sxkz7has8c-aos-bazel-crucible-controller-frozen-artifact-parity",
+  "report_sha256": "e9259f508a99743d9d8ecd89206da525d4c0294508d07a8b5a2d31aa0b68e441",
+  "schema_version": 1,
+  "scope": "Frozen independent production executable contexts; not the installed suite or combined tests.",
+  "status": "PASS",
+  "verifier_sha256": "ea196a57243fd0a0866a8ee23219e59e60e12f1b72cee4b2b43696d829623cad"
+}

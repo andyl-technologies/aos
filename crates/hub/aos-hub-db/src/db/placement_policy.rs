@@ -509,6 +509,10 @@ impl Database {
     ///
     /// Returns an error for an invalid group shape, stale/published revision,
     /// duplicate order/range, or database failure.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Keep persisted identities and transaction inputs explicit in this existing API."
+    )]
     pub async fn add_placement_policy_group(
         &self,
         revision_id: &str,

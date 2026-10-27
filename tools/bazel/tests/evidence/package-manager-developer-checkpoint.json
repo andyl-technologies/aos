@@ -1,0 +1,2614 @@
+{
+  "changed_rust_inputs_sha256": {
+    "crates/aos/packages/aos-package-manager/src/attestation/native.rs": "c5801dabf7eabbb6292b37857228df0f2089b0f42be4970c170de97f2c1ec1c4",
+    "crates/aos/packages/aos-package-manager/src/cancellation.rs": "39ae84329884e3ae3c0fd42e0cfb2cb3abb8eca3361fec1489192fd813b04927",
+    "crates/aos/packages/aos-package-manager/src/config_eval/provisioning_evaluator.rs": "07d66460e85ccc6d6e16d4940948401c607dfaf831c43026306e8f149e0fb546",
+    "crates/aos/packages/aos-package-manager/src/deps.rs": "a205125a7f5ef214a6cd50d656b3d472f44a737dbe58f799fb311a2de97d93c8",
+    "crates/aos/packages/aos-package-manager/src/documentation/native.rs": "d203edd0a114e548c189b67349a0cf3fdae85f391c6ddacd79b09e889030d621",
+    "crates/aos/packages/aos-package-manager/src/download.rs": "875b76f8904679d8d62068cf4abbefceb1bc2ebd655f259a3d0088a510c89e3d",
+    "crates/aos/packages/aos-package-manager/src/install.rs": "abfb64c22e514cc9f84b31e99dd79e54f61a036dd8b73dd19d7f07bba8360713",
+    "crates/aos/packages/aos-package-manager/src/install/acquire.rs": "71929b8e3510ef1845da7193a6011c1ac2075e2c5bed1ee56436cfa872db2f16",
+    "crates/aos/packages/aos-package-manager/src/install/native.rs": "67d18c3c647c707ca6f7dc00fd9077ec35b20b2134998ee467ad837cebf0167a",
+    "crates/aos/packages/aos-package-manager/src/install/native/configuration.rs": "5ca3abe73ccc5634a6d135c40bb039983be7222e63c0cb2e9ac0b26532affd05",
+    "crates/aos/packages/aos-package-manager/src/install/native/module_upgrade.rs": "bbe4e9152733f24cc0f03dda25b6dd25e80fcd5b6291776b5ee7a7b3bcc110c3",
+    "crates/aos/packages/aos-package-manager/src/lib.rs": "3999e9acc03aa94ca67d70e052c5abd9df0ceccdc0885c8dd9227b08b45bde29",
+    "crates/aos/packages/aos-package-manager/src/native_deployment.rs": "de76ff9bea75156334811f55c083f63f0bebee0e1eb89d7e76906994a990d00b",
+    "crates/aos/packages/aos-package-manager/src/native_deployment/evaluate.rs": "442474c8883acab3e887adb51ed9e4389a0d8f49d673001f95cff53837917f6b",
+    "crates/aos/packages/aos-package-manager/src/native_deployment/evaluate/validation.rs": "60e0ba656cc9e90bb4fecee1b0fcf2436ae5f89251868a018d574d9c3e524e6f",
+    "crates/aos/packages/aos-package-manager/src/native_registry.rs": "decf8510d7e51005a261a44a84e7a131becb4576e93ad716d5bc73d7a5f93f05",
+    "crates/aos/packages/aos-package-manager/src/native_registry/available.rs": "81eaaa6703375f895cbf7bb30355678f46a5096c2a7aec706be420654ca5bd49",
+    "crates/aos/packages/aos-package-manager/src/native_registry/roots.rs": "1892fda4355e7577c8304af95d59d1a5d71a357c942534d1857388a0891ecd1e",
+    "crates/aos/packages/aos-package-manager/src/native_registry/solver.rs": "21e83b0da9885de9789bb97f25dc3efd8fed6e26d11ef4d06a745459ea951821",
+    "crates/aos/packages/aos-package-manager/src/native_registry/solver/tests.rs": "9f15fec5aa368cbb1eb8c0a6a6d0bfb02c4093ef4f5077507bfac19da11a3464",
+    "crates/aos/packages/aos-package-manager/src/package_attestation.rs": "c21f29a5785ad2bb7a137eacc948ec7c4ffa034d6525115ad787b99148a87240",
+    "crates/aos/packages/aos-package-manager/src/profile/merge.rs": "36f93127db60f76246beb9093db316e60d25a70ed45d4df8fd50eeb4075f69e2",
+    "crates/aos/packages/aos-package-manager/src/profile/meta.rs": "18d15f740c10c8a4b27ec7ae1928b040f56cfc8c70bdfc13c396931a52d98b45",
+    "crates/aos/packages/aos-package-manager/src/query.rs": "d82508b4f24b7f0142c35d376e6bcaf3a7645c96b82b1b173c33430b85d486e2",
+    "crates/aos/packages/aos-package-manager/src/remove.rs": "4921c1b1254f911d510208c62a78cfaed62a8fb6e759d4266d11f8cdb480d284",
+    "crates/aos/packages/aos-package-manager/src/resolve.rs": "0ec45491929b9c51a7adcc6077a1f4f214d4a1f244d9ccebf057dd7b9e3b510e",
+    "crates/aos/packages/aos-package-manager/src/rollback.rs": "0eb437121d6fb07a3f314e9e71da29797aa5d3d2100f4bacffa1b85a853b0041",
+    "crates/aos/packages/aos-package-manager/src/runtime_boundary.rs": "12a7a83fcb46c86f121e190a52bf0f4bff27572fcce94d541bff88e58472b638",
+    "crates/aos/packages/aos-package-manager/src/source.rs": "032a9f329d295aa0c704798c8f2642cbd5de760a20380dc2dba6f82026f926c0",
+    "crates/aos/packages/aos-package-manager/src/store.rs": "68273d631ab7d5241641cf5f29d09304d3427b842a849608386f593927aa2910",
+    "crates/aos/packages/aos-package-manager/src/sysroot.rs": "78f55e7a3eb00b488d9c884e2d80ec1f45a64d4983beac6d0440bf81833a45a3",
+    "crates/aos/packages/aos-package-manager/src/sysroot/image_prepare.rs": "301fcb010199ec61a3db895190ca7f4fad357149fd9ef028a6ec2ad96a008617",
+    "crates/aos/packages/aos-package-manager/src/sysroot/image_rollout/provider.rs": "dfc57eeec2425e1e7828acc04712141649d5186f9397b8378faaf454a5676891",
+    "crates/aos/packages/aos-package-manager/src/sysroot/image_rollout/retirement_submission.rs": "6c934f2ef79d3c4c243286ef34aca41f645832ed2b4ee8962f87381824ed0994",
+    "crates/aos/packages/aos-package-manager/src/sysroot/image_rollout/submission.rs": "96dcebcc8091cac3f2e16f83314849143fbdf4725913fa9ddeb81be2093830f3",
+    "crates/aos/packages/aos-package-manager/src/sysroot/image_stage.rs": "8f7fe439cb2d3ef8bb7611d6e83a3bbd6aba9c47641b9cdf47ff9a81d96e6569",
+    "crates/aos/packages/aos-package-manager/src/sysroot_lock.rs": "23eae3a5e9d1297cc9155e69ac184d0c1bdf8ec096b232fbc34f5ce4501bed16",
+    "crates/aos/packages/aos-package-manager/src/update.rs": "938d42609b6f5f788c83dc9eab8bd848ca41d1ad1cb2ce3960f4d9a6a549ad26",
+    "crates/aos/packages/aos-package-manager/src/upgrade.rs": "cac0d7a84a49f3dba0d013b152436db9572040244e90f145a1b23bee6d9c4f20",
+    "crates/aos/packages/aos-package-manager/tests/common/mod.rs": "5d3beb5143976fe7d7a761c0a20553ced2acc04ed441bd5117a8a16142ec5965",
+    "crates/aos/packages/aos-package-manager/tests/registry_cache_e2e.rs": "8fc366f48dbb85e6378cf08522efbff2a5321017d5efa30334014d5a6c9b4e53"
+  },
+  "changes": [
+    "String and tuple keyed collections use BTreeMap and BTreeSet, including matching Entry variants; traversal is now ordered.",
+    "Native host timestamps, monotonic deadlines, subprocess test deadlines and existing transaction argument sets have function-scoped lint exceptions with reasons.",
+    "Native activation IDs use a fallible 256-bit OS entropy request; entropy failures propagate with context.",
+    "Runtime configuration lock files explicitly preserve contents when opened before flock.",
+    "Equivalent conditional, borrowed-path, borrowed-slice, map and membership expressions satisfy the strict developer checks. Documentation transport helpers move intact before their test module."
+  ],
+  "checks": {
+    "developer-tools-1": {
+      "action_counts": {
+        "CargoBuildScriptRun": 47,
+        "Clippy": 15,
+        "ExtractCargoTomlEnvVars": 394,
+        "Rustc": 435,
+        "Rustdoc": 1
+      },
+      "actions": [
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "Clippy",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/packages/aos-package-manager:lib"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "Clippy",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/packages/aos-package-manager:aos-deployment-check"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "Clippy",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/packages/aos-package-manager:aos-image-rollout-boot"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "Clippy",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/packages/aos-package-manager:aos-image-rollout-observer"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "Clippy",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/packages/aos-package-manager:aos-image-rollout-provider"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "Clippy",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/packages/aos-package-manager:aos-package-attestation-provider"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "Rustdoc",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/packages/aos-package-manager:documentation"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "Clippy",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/packages/aos-package-manager:package_deployment_check"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "Clippy",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/packages/aos-package-manager:bin_aos-deployment-check_binary"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "Clippy",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/packages/aos-package-manager:bin_aos-image-rollout-boot_binary"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "Clippy",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/packages/aos-package-manager:bin_aos-image-rollout-observer_binary"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "Clippy",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/packages/aos-package-manager:bin_aos-image-rollout-provider_binary"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "Clippy",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/packages/aos-package-manager:bin_aos-package-attestation-provider_binary"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "Clippy",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/packages/aos-package-manager:package_command_scopes_binary"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "Clippy",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/packages/aos-package-manager:registry_cache_e2e_binary"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "Clippy",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/packages/aos-package-manager:unit_binary"
+        }
+      ],
+      "derivation": "/nix/store/c6lrlvi913zc0wzp8s1hkhx5jfd5fhwj-aos-bazel-package-manager-developer-tools-1.drv",
+      "evidence_sha256": {
+        "execution.json": "7518f87565f6256a537a5c5cffc9419c31241df97eb0d7fe2507468369eb80bd",
+        "tests/index.json": "e8f8b76a046d3e6c876363165db3c4f02d96d28365a142c1dd059eea4bd3269d"
+      },
+      "output": "/nix/store/q222gq1bynwzcb1phvhmcpsf8n7ia6rx-aos-bazel-package-manager-developer-tools-1",
+      "source": "/nix/store/ap1w7kw218lwfx4n7swp766iwq3c043f-aos-bazel-workspace"
+    },
+    "format-1": {
+      "action_counts": {
+        "Rustc": 5,
+        "TestRunner": 2
+      },
+      "actions": [
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "TestRunner",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/packages/aos-package-manager:format"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "TestRunner",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/packages/aos-package-manager:format"
+        }
+      ],
+      "derivation": "/nix/store/1046q5yhwdrh4334v0n5asmfyvh4gid2-aos-bazel-package-manager-format-1.drv",
+      "evidence_sha256": {
+        "execution.json": "d82092ecdaacfa3a954b5b4e5f54cc6bfdbed35977048c2266beaeb61be41ca6",
+        "tests/index.json": "6c3bd823ace0d35f5432bf23ba18ac76d165062a1cfac8e90b6cc5d9c2b17067"
+      },
+      "output": "/nix/store/n2bwvxfjwkj8xsvis8gr4mwyycv3fbcx-aos-bazel-package-manager-format-1",
+      "source": "/nix/store/ap1w7kw218lwfx4n7swp766iwq3c043f-aos-bazel-workspace"
+    },
+    "tests-1": {
+      "action_counts": {
+        "CargoBuildScriptRun": 47,
+        "CppCompile": 1,
+        "CppLink": 1,
+        "ExtractCargoTomlEnvVars": 394,
+        "Rustc": 446,
+        "RustdocTestWriter": 1,
+        "TestRunner": 10
+      },
+      "actions": [
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "TestRunner",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/packages/aos-package-manager:bin_aos-deployment-check"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "TestRunner",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/packages/aos-package-manager:bin_aos-image-rollout-boot"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "TestRunner",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/packages/aos-package-manager:bin_aos-image-rollout-observer"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "TestRunner",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/packages/aos-package-manager:bin_aos-image-rollout-provider"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "TestRunner",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/packages/aos-package-manager:bin_aos-package-attestation-provider"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "TestRunner",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/packages/aos-package-manager:doc"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "TestRunner",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/packages/aos-package-manager:doc"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "TestRunner",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/packages/aos-package-manager:package_command_scopes"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "TestRunner",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/packages/aos-package-manager:registry_cache_e2e"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "TestRunner",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/packages/aos-package-manager:unit"
+        }
+      ],
+      "derivation": "/nix/store/d6m9njdrrhrxkys3ypbxa0wwmcslsqbz-aos-bazel-package-manager-tests-1.drv",
+      "evidence_sha256": {
+        "execution.json": "795a0f8a0561739e012506e4e2f4936d9c8fef8229178dc94210c2fd8cbcd7c8",
+        "tests/index.json": "635f49022a426428b232c033ad53bbb66cc83e7850955da277eb057b3fca461f"
+      },
+      "output": "/nix/store/81xzqsfhfk5456hbjirrw8g42wcrs3j0-aos-bazel-package-manager-tests-1",
+      "passing_doctests": 1,
+      "source": "/nix/store/ap1w7kw218lwfx4n7swp766iwq3c043f-aos-bazel-workspace",
+      "targets": {
+        "//crates/aos/packages/aos-package-manager:bin_aos-deployment-check": {
+          "executed": [
+            "tests::checks_native_context_and_reference_identity",
+            "tests::rejects_transaction_context_drift_and_unknown_input_fields"
+          ],
+          "ignored_in_unchanged_cargo_baseline": [],
+          "test_artifacts_sha256": {
+            "test.log": "14bb459463afae4910c3614896a5226ba12d47fa08fcf862a343a712617104b8",
+            "test.xml": "4e8acf91ff5f53f2833f8dd65adccfaf5470605a22d7fa7d2916724c3cb425a7"
+          }
+        },
+        "//crates/aos/packages/aos-package-manager:bin_aos-image-rollout-boot": {
+          "executed": [],
+          "ignored_in_unchanged_cargo_baseline": [],
+          "test_artifacts_sha256": {
+            "test.log": "8950ee182cfebd5ae56a4c0153bc61cb475120775bf4950510178c1bbbefc338",
+            "test.xml": "b35754d5f5d762e90f56f5a491d088cb66d95133a83af358a4ce1a7bcc1c8229"
+          }
+        },
+        "//crates/aos/packages/aos-package-manager:bin_aos-image-rollout-observer": {
+          "executed": [],
+          "ignored_in_unchanged_cargo_baseline": [],
+          "test_artifacts_sha256": {
+            "test.log": "853be0073205bac9022b8f253132b45774da503ee2d47d3b9fc8495d9f6e69f7",
+            "test.xml": "b35754d5f5d762e90f56f5a491d088cb66d95133a83af358a4ce1a7bcc1c8229"
+          }
+        },
+        "//crates/aos/packages/aos-package-manager:bin_aos-image-rollout-provider": {
+          "executed": [],
+          "ignored_in_unchanged_cargo_baseline": [],
+          "test_artifacts_sha256": {
+            "test.log": "acebb6340b539b8bbb57369a9c1af77f3c77dd9c18aa91f8afdc2d2e8b617142",
+            "test.xml": "b35754d5f5d762e90f56f5a491d088cb66d95133a83af358a4ce1a7bcc1c8229"
+          }
+        },
+        "//crates/aos/packages/aos-package-manager:bin_aos-package-attestation-provider": {
+          "executed": [],
+          "ignored_in_unchanged_cargo_baseline": [],
+          "test_artifacts_sha256": {
+            "test.log": "614d106cb3e46396f05463c0890858b64d69985823f76251e6e08425cfe15e4c",
+            "test.xml": "b35754d5f5d762e90f56f5a491d088cb66d95133a83af358a4ce1a7bcc1c8229"
+          }
+        },
+        "//crates/aos/packages/aos-package-manager:package_command_scopes": {
+          "executed": [
+            "desired_set_application_requires_explicit_system_scope",
+            "image_and_configuration_operations_have_separate_commands",
+            "package_commands_select_the_same_scope_consistently",
+            "system_dispatch_child",
+            "system_package_dispatch_does_not_require_image_generation_authority",
+            "system_registry_scope_precedes_the_registry_operation"
+          ],
+          "ignored_in_unchanged_cargo_baseline": [],
+          "test_artifacts_sha256": {
+            "test.log": "56d7076101796b4fe77b89f4a0ba11706dc9bf8e44df247057c9be7aae0f3833",
+            "test.xml": "b0ace71e88edf8de082854419629738d5f321589add53b1b2a544400088fa1e9"
+          }
+        },
+        "//crates/aos/packages/aos-package-manager:registry_cache_e2e": {
+          "executed": [
+            "static_nix_cache_e2e_generates_serves_and_downloads_real_store_path"
+          ],
+          "ignored_in_unchanged_cargo_baseline": [],
+          "test_artifacts_sha256": {
+            "test.log": "5339112f0312e72a4d5775d81edf4b7ce49b5576c0e811111ee4960bc86e65ac",
+            "test.xml": "1cb8c0c193df5e1a28270dcaa1443916de14e2d83df2522a383e78cef50bf12d"
+          }
+        },
+        "//crates/aos/packages/aos-package-manager:unit": {
+          "executed": [
+            "attestation::native::tests::domain_proof_pin_cannot_authorize_foreign_roots_or_changed_nars",
+            "attestation::native::tests::live_image_pcr11_accepts_the_readers_algorithm_qualified_digest",
+            "attestation::native::tests::live_image_pcr11_rejects_noncanonical_reader_output",
+            "attestation::native::tests::native_quote_rejects_changed_physical_pins_and_pcr_binding",
+            "attestation::native::tests::native_quote_rejects_revoked_release_signer_even_with_matching_catalog",
+            "attestation::native::tests::native_quote_requires_original_image_authority_and_source_replay",
+            "attestation::native::tests::receipt_root_exception_requires_original_pin_and_exact_root_file",
+            "boot_configuration::capture::tests::retained_binding_has_one_exact_immutable_proof_locator",
+            "boot_configuration::capture::tests::source_proof_does_not_authorize_an_unrelated_store_root",
+            "boot_configuration::handoff::tests::receipt_retention_rejects_redirected_directories_and_links",
+            "boot_configuration::image::tests::copied_producer_aliases_require_exact_member_identity",
+            "boot_configuration::proof::tests::authorization_binds_original_bytes_and_the_native_library",
+            "boot_configuration::proof::tests::host_text_cannot_be_changed_inside_an_authorization_receipt",
+            "boot_configuration::proof::tests::image_policy_explicitly_distinguishes_no_metadata_from_a_missing_binding",
+            "boot_configuration::reader::tests::source_documents_reject_symlinks_and_oversized_files",
+            "cancellation::tests::a_second_signal_forces_process_interruption",
+            "cancellation::tests::sigint_requests_native_cancellation",
+            "cancellation::tests::signal_probe",
+            "cancellation::tests::sigterm_requests_native_cancellation",
+            "clean::tests::clear_nar_cache_empty_dir_returns_zero",
+            "clean::tests::clear_nar_cache_nonexistent_dir_returns_zero",
+            "clean::tests::clear_nar_cache_removes_files_and_returns_size",
+            "clean::tests::format_size_bytes",
+            "clean::tests::format_size_gib",
+            "clean::tests::format_size_kib",
+            "clean::tests::format_size_mib",
+            "clean::tests::prune_runtime_uppers_removes_present_and_tolerates_absent",
+            "clean::tests::prune_runtime_uppers_skips_non_system_scope",
+            "config_eval::provisioning_evaluator::tests::pending_markers_and_source_changes_require_explicit_recovery",
+            "config_eval::provisioning_evaluator::tests::projection_retains_source_and_proof_roots_without_payloads",
+            "config_eval::provisioning_evaluator::tests::retained_sources_require_normalized_store_paths",
+            "config_eval::provisioning_sources::tests::authorized_bundle_retains_complete_source_and_exact_payload",
+            "config_eval::provisioning_sources::tests::authorized_literal_remains_exact",
+            "config_eval::provisioning_sources::tests::invalid_bundle_never_materializes_a_host_wrapper",
+            "container_admission::tests::persisted_marker_makes_exec_processes_read_only",
+            "container_admission::tests::stale_ready_marker_times_out",
+            "container_admission::tests::synchronized_writable_state_is_mutable",
+            "container_admission::tests::unwritable_state_is_read_only_without_a_marker",
+            "container_environment::tests::image_readiness_is_bound_to_the_current_pid1_lifetime",
+            "container_runtime::tests::activation_invalidates_previous_readiness_before_retry",
+            "container_runtime::tests::candidate_init_changes_defer_services_but_unchanged_selection_does_not",
+            "container_runtime::tests::init_handoff_preserves_empty_and_spaced_arguments",
+            "container_runtime::tests::invalid_configuration_cannot_split_arguments",
+            "container_runtime::tests::missing_configuration_has_no_handoff",
+            "container_runtime::tests::missing_service_marker_does_not_read_selection",
+            "container_runtime::tests::selecting_a_new_init_does_not_change_the_running_init",
+            "container_runtime::tests::service_readiness_binds_pid1_and_selected_init_command",
+            "container_runtime::tests::startup_command_is_private_and_serializes_its_options",
+            "credential::tests::explicit_override_does_not_require_a_locator",
+            "credential::tests::installed_locator_selects_exact_provider",
+            "credential::tests::locator_rejects_symlinks_and_oversized_contents",
+            "credential::tests::provider_paths_reject_host_paths_and_noncanonical_suffixes",
+            "deployment::retained::inventory_tests::package_recovery_distinguishes_live_activation_from_completed_publication_gap",
+            "deployment::retained::inventory_tests::positively_absent_inventory_does_not_initialize_profile_or_journals",
+            "deployment::retained::inventory_tests::retained_inventory_omits_released_generation_but_preserves_orphan_handler_and_pending_source",
+            "deployment::retained::inventory_tests::retained_inventory_rejects_substituted_generation_or_orphan_handler_roots_without_repair",
+            "deployment::retained::inventory_tests::standalone_inventory_locks_real_paired_journals_without_profile_publication",
+            "deployment::retained::inventory_tests::standalone_inventory_requires_the_exact_existing_journal_pair_without_repair",
+            "deployment::retained::tests::absent_journals_export_bootstrap_empty_without_creating_profile_state",
+            "deployment::retained::tests::malformed_paired_journals_are_rejected_without_repair_or_new_state",
+            "deployment::retained::tests::partial_journal_initialization_is_rejected_without_creating_the_missing_pair",
+            "deployment::tests::consecutive_installations_publish_partial_receipts_and_start_only_latest_generation",
+            "deployment::tests::convergence_preserves_generation_and_recovers_only_the_original_attempt",
+            "deployment::tests::convergence_resumes_pending_publication_without_starting_another_transaction",
+            "deployment::tests::inspection_never_creates_journals_and_distinguishes_pending_generation",
+            "deployment::tests::inspection_retains_shared_lock_and_leaves_both_torn_tails_untouched",
+            "deployment::tests::named_payload_selection_does_not_install_available_module_dependencies",
+            "deployment::tests::native_journal_policy_keeps_capacity_limits_enforced",
+            "deployment::tests::native_journals_reopen_service_sized_generation_and_activation_records",
+            "deployment::tests::native_replay_rejects_fabricated_and_incomplete_partial_results",
+            "deployment::tests::paired_journals_bind_active_graph_and_policy_to_native_preparation",
+            "deployment::tests::paired_journals_reject_schema_valid_fabricated_installation_results",
+            "deployment::tests::prepared_reconciliation_reopens_and_resumes_the_same_attempt",
+            "deployment::tests::reconciliation_completion_gap_reuses_the_completed_activation",
+            "deployment::tests::reconciliation_without_a_committed_generation_does_not_prepare_work",
+            "deployment::tests::recovers_prepared_generation_and_interrupted_pruning",
+            "deployment::tests::rejects_scope_change_and_invalid_retirement_without_preparing",
+            "deployment::tests::repeated_reconciliation_preserves_generation_and_roots_but_uses_fresh_attempts",
+            "deployment::tests::restores_only_unpruned_and_pending_generation_roots_without_changing_journals",
+            "deployment::tests::runtime_bindings_preserve_distinct_roles_for_the_same_package_name",
+            "deps::tests::dep_tree_deduplication_counts",
+            "deps::tests::dep_tree_single_package_no_refs",
+            "deps::tests::dep_tree_with_children",
+            "deps::tests::depends_prefers_installed_package_name",
+            "deps::tests::files_lists_directory_contents",
+            "deps::tests::files_lists_symlinks_without_following_directory_targets",
+            "deps::tests::format_tree_line_last_child",
+            "deps::tests::format_tree_line_middle_child",
+            "deps::tests::installed_dep_tree_uses_profile_names_for_known_refs",
+            "deps::tests::policy_lists_installed_versions_missing_from_registry",
+            "deps::tests::policy_marker_uses_installed_registry_and_hash_for_same_version_duplicates",
+            "deps::tests::policy_marks_installed",
+            "deps::tests::policy_orders_by_priority",
+            "deps::tests::rdepends_empty_when_not_referenced",
+            "deps::tests::rdepends_finds_reverse_deps",
+            "deps::tests::rdepends_target_prefers_installed_lower_priority_duplicate",
+            "desired::tests::desired_file_rejects_legacy_credentials",
+            "desired::tests::desired_file_rejects_mixed_top_level_and_nested_forms",
+            "desired::tests::desired_packages_parse_nested_section",
+            "desired::tests::desired_packages_parse_top_level_list",
+            "desired::tests::desired_packages_reject_path_like_names",
+            "documentation::native::tests::installed_browser_uses_shared_native_rendering_and_escapes_coordinates",
+            "documentation::native::tests::native_document_byte_binding_preserves_identity_and_rejects_modification",
+            "documentation_lsp::native::tests::diagnostics_validate_literals_without_evaluating_nix",
+            "documentation_lsp::native::tests::native_options_drive_completion_and_hover_without_provider_projection",
+            "download::tests::complete_metadata_preserves_references_skipped_by_missing_downloads",
+            "download::tests::download_nars_empty",
+            "download::tests::download_nars_rejects_payload_larger_than_declared_file_size",
+            "download::tests::download_nars_replaces_stale_cached_file",
+            "download::tests::download_nars_reuses_valid_cached_file_without_network",
+            "download::tests::download_nars_streams_large_file_mirror_to_atomic_cache_file",
+            "download::tests::download_nars_uses_narinfo_supplied_colon_free_url",
+            "download::tests::download_rejects_narinfo_for_another_store_path",
+            "download::tests::fetch_narinfos_empty",
+            "download::tests::is_not_found_recognizes_404_and_file_miss",
+            "download::tests::join_basic",
+            "download::tests::join_trims_slashes",
+            "download::tests::join_view_prefix",
+            "download::tests::nar_cache_filename_canonicalizes_hex",
+            "download::tests::nar_cache_filename_canonicalizes_sri",
+            "download::tests::narinfo_fetch_fails_when_all_caches_miss",
+            "download::tests::narinfo_fetch_falls_through_to_second_cache_on_miss",
+            "download::tests::narinfo_url_builds_from_store_path",
+            "download::tests::order_narinfo_closure_places_references_before_referrers",
+            "download::tests::reference_store_path_uses_parent_store_dir",
+            "download::tests::resolve_mirror_strips_trailing_slash",
+            "download::tests::short_label_short_path",
+            "download::tests::short_label_strips_store_hash",
+            "download::tests::split_mirror_chain_separates_primary_and_fallbacks",
+            "environment::tests::accepts_an_absolute_toplevel_link_inside_an_offline_root",
+            "environment::tests::accepts_an_identified_offline_aos_root",
+            "environment::tests::accepts_store_symlinks_rooted_below_an_initrd_mount",
+            "environment::tests::current_release_prefers_immutable_target_identity",
+            "environment::tests::installed_release_fallback_requires_an_explicit_offline_target",
+            "environment::tests::live_runtime_requires_the_immutable_identity",
+            "environment::tests::rejects_a_non_aos_or_incomplete_root",
+            "environment::tests::rejects_an_absolute_toplevel_link_that_escapes_the_offline_root",
+            "environment::tests::rejects_retired_or_invalid_module_library_identities",
+            "hold::tests::held_lists_only_held_packages",
+            "hold::tests::hold_nonexistent_package_errors",
+            "hold::tests::hold_selection_keeps_implicit_only_behavior",
+            "hold::tests::hold_selection_prefers_explicit_duplicate_name",
+            "hold::tests::hold_sets_held_true",
+            "hold::tests::unhold_sets_held_false",
+            "images::tests::configured_channel_floor_retains_its_original_freshness_observation",
+            "images::tests::full_commit_identity_and_tracking_kind_partition_selection_state",
+            "install::acquire::tests::cached_native_bytes_without_signed_release_never_open_store_or_profile",
+            "install::acquire::tests::missing_native_envelope_fails_before_store_or_profile_publication",
+            "install::acquire::tests::unresolved_package_cannot_create_acquisition_state",
+            "install::native::discovery::tests::a_native_marker_does_not_replace_a_checked_committed_generation",
+            "install::native::discovery::tests::absent_profile_is_normal_but_partial_native_state_is_not",
+            "install::native::module_upgrade::tests::exact_only_or_unreachable_ranges_skip_upgrade_evaluation",
+            "install::native::tests::equivalent_lock_order_does_not_publish_an_interface_generation",
+            "install::native::tests::exact_retained_runtime_satisfies_discovery_without_a_registry",
+            "install::native::tests::interface_upgrade_changes_modules_without_selecting_provider_payloads",
+            "install::native::tests::retained_runtime_catalog_matches_without_current_registry_discovery",
+            "install::native::tests::runtime_discovery_rejects_different_outputs_and_missing_authority",
+            "install::native::tests::runtime_payload_with_optional_module_requires_explicit_module_selection",
+            "install::native::tests::selected_named_output_preserves_module_context_without_selecting_other_outputs",
+            "install::tests::base_provided_root_does_not_skip_other_requested_roots_or_split_json",
+            "install::tests::chrono_iso8601_epoch",
+            "install::tests::chrono_iso8601_known_date",
+            "install::tests::copy_roots_copies_symlinks",
+            "install::tests::copy_roots_does_not_overwrite_existing",
+            "install::tests::copy_roots_except_hashes_skips_replaced_roots",
+            "install::tests::copy_roots_from_empty_generation",
+            "install::tests::days_to_ymd_epoch",
+            "install::tests::days_to_ymd_known_date",
+            "install::tests::format_size_boundary_1024",
+            "install::tests::format_size_bytes",
+            "install::tests::format_size_gib",
+            "install::tests::format_size_kib",
+            "install::tests::format_size_mib",
+            "install::tests::format_size_zero",
+            "install::tests::install_summary_does_not_claim_downloaded_packages_are_reused",
+            "install::tests::install_summary_explains_documentation_only_downloads_and_local_reuse",
+            "install::tests::install_summary_reports_unknown_download_sizes_instead_of_zero",
+            "install::tests::installed_flags_by_hash_preserves_explicit_and_held_state",
+            "install::tests::installed_flags_by_name_prefers_explicit_duplicate_name",
+            "install::tests::installed_flags_by_name_preserves_explicit_and_held_state",
+            "install::tests::obsolete_installed_hashes_drops_entries_outside_needed_set",
+            "install::tests::platform_returns_valid",
+            "install::tests::prune_dependency_members_keeps_only_requested_roots",
+            "install::tests::reinstall_resolution_prefers_explicit_duplicate_source_registry",
+            "install::tests::reinstall_resolution_preserves_installed_source_registry",
+            "install::tests::requested_closures_already_installed_detects_changed_store_hash",
+            "install::tests::requested_closures_already_installed_matches_exact_closure",
+            "install::tests::requested_closures_already_installed_requires_dependencies",
+            "install::tests::requested_closures_already_installed_requires_explicit_root",
+            "install::tests::verify_install_provenance_from_cache_reads_registry_artifact",
+            "install::tests::verify_install_provenance_from_cache_rejects_cache_owned_ref",
+            "install::tests::verify_install_provenance_from_cache_rejects_missing_artifact",
+            "install::tests::verify_install_provenance_from_cache_rejects_symlink_file",
+            "install::tests::verify_install_provenance_from_cache_rejects_symlink_parent",
+            "install::tests::verify_install_provenance_from_cache_rejects_unsafe_ref",
+            "install::tests::verify_install_provenance_rejects_foreign_builder_identity_under_alias",
+            "install::tests::verify_install_provenance_rejects_foreign_key_namespace_under_alias",
+            "install::tests::verify_install_provenance_rejects_missing_manifest_under_alias",
+            "install::tests::verify_install_provenance_rejects_symlink_manifest_under_alias",
+            "install::tests::verify_install_provenance_uses_committed_identity_for_local_alias",
+            "install::tests::verify_secondary_artifact_downloads_rejects_image_references",
+            "native_deployment::bootstrap::tests::descriptor_preserves_source_roles_and_requires_supplemental_roots",
+            "native_deployment::bootstrap::tests::invalid_profile_bindings_are_rejected_before_creating_a_lock",
+            "native_deployment::bootstrap::tests::live_recovery_requires_exact_publication_sequence_and_content",
+            "native_deployment::bootstrap::tests::partial_journal_is_rejected_before_image_admission",
+            "native_deployment::bootstrap::tests::uninitialized_profile_does_not_admit_unused_image_inputs",
+            "native_deployment::container::tests::image_authority_retains_the_original_receipt_identity",
+            "native_deployment::container::tests::prelaunch_defers_only_pending_complete_attempts",
+            "native_deployment::container::tests::preparation_preserves_installed_and_complete_receipts",
+            "native_deployment::evaluate::validation::tests::accepts_a_compatible_current_target_without_replacing_retained_identity",
+            "native_deployment::evaluate::validation::tests::checks_current_target_without_changing_historical_replay",
+            "native_deployment::evaluate::validation::tests::checks_payload_configuration_dependencies_when_its_module_is_selected",
+            "native_deployment::evaluate::validation::tests::opens_moduleless_requesters_and_checks_their_original_edges",
+            "native_deployment::evaluate::validation::tests::projects_original_recipe_policy_for_moduleless_payload_releases",
+            "native_deployment::evaluate::validation::tests::rejects_changed_module_os_requirements_even_with_a_compatible_host",
+            "native_deployment::evaluate::validation::tests::rejects_edited_original_requirement_and_selected_source",
+            "native_deployment::evaluate::validation::tests::rejects_exact_dependency_source_drift_and_missing_modules",
+            "native_deployment::evaluate::validation::tests::rejects_extra_module_or_missing_requester_catalog_entries_before_reading",
+            "native_deployment::evaluate::validation::tests::rejects_missing_or_unselected_requester_companions",
+            "native_deployment::evaluate::validation::tests::rejects_moduleless_os_requirements_without_a_matching_retained_release",
+            "native_deployment::evaluate::validation::tests::rejects_payloads_without_retained_envelope_catalogs",
+            "native_deployment::evaluate::validation::tests::replays_exact_and_locked_modules_without_registry_discovery",
+            "native_deployment::evaluate::validation::tests::retains_canonical_envelopes_for_named_payload_outputs",
+            "native_deployment::evaluate::validation::tests::validates_payload_identity_without_importing_its_configuration_dependencies",
+            "native_registry::authority_tests::catalog_admission_normalizes_nix_hashes_without_changing_identity",
+            "native_registry::authority_tests::companion_catalog_preserves_the_exact_selected_module_source",
+            "native_registry::authority_tests::module_resolution_rejects_ambiguous_artifact_contexts",
+            "native_registry::authority_tests::repeated_observation_preserves_original_source_authority",
+            "native_registry::authority_tests::runtime_artifact_cache_preserves_same_coordinate_distinct_payloads",
+            "native_registry::available::tests::original_available_graph_accepts_exact_closure_and_rejects_changed_bytes_or_edges",
+            "native_registry::available::tests::original_available_graph_rejects_a_different_blessed_dependency_realization",
+            "native_registry::available::tests::retained_available_graph_requires_closed_dependency_evidence",
+            "native_registry::roots::tests::closure_rejects_missing_dependencies_and_conflicting_same_name_packages",
+            "native_registry::roots::tests::independent_handler_remains_a_root_while_interfaces_are_dependencies",
+            "native_registry::roots::tests::moduleless_requester_prevents_its_dependency_becoming_an_independent_root",
+            "native_registry::roots::tests::source_cycles_have_one_root_and_downstream_cycles_have_none",
+            "native_registry::solver::tests::cancellation_is_not_reported_as_dependency_conflict",
+            "native_registry::solver::tests::compatible_package_versions_are_selected",
+            "native_registry::solver::tests::depth_exhaustion_remains_a_terminal_error",
+            "native_registry::solver::tests::elapsed_search_budget_is_terminal",
+            "native_registry::solver::tests::exact_edges_do_not_become_semver_ranges_or_other_providers",
+            "native_registry::solver::tests::locked_replay_rejects_changed_requirements_and_source_choices",
+            "native_registry::solver::tests::moduleless_requesters_have_authenticatable_companion_bindings",
+            "native_registry::solver::tests::os_compatibility_filters_candidates_without_changing_the_host_release",
+            "native_registry::solver::tests::os_constraints_on_moduleless_roots_require_a_compatible_host_release",
+            "native_registry::solver::tests::retained_exact_only_source_is_preferred_when_a_range_is_introduced",
+            "native_registry::solver::tests::scoped_upgrade_protects_shared_dependencies_and_their_transitive_choices",
+            "native_registry::solver::tests::transitive_conflict_backtracks_to_an_older_compatible_release",
+            "native_registry::solver::tests::unrelated_packages_cannot_satisfy_a_requirement",
+            "native_registry::solver::tests::upgrade_refreshes_dependencies_added_by_a_new_candidate_release",
+            "native_registry::solver::tests::valid_lock_is_preferred_until_explicit_upgrade",
+            "package_attestation::tests::append_event_log_continues_sequence_numbers",
+            "package_attestation::tests::canonical_package_measurement_catalog_dedupes_matching_entries",
+            "package_attestation::tests::canonical_package_measurement_catalog_rejects_conflicts",
+            "package_attestation::tests::empty_package_set_still_has_replayable_set_event",
+            "package_attestation::tests::generation_attestation_event_is_replayable_and_identity_bound",
+            "package_attestation::tests::native_companion_commitments_change_package_measurements",
+            "package_attestation::tests::package_event_log_decoder_accepts_jsonl_bytes",
+            "package_attestation::tests::package_event_log_decoder_accepts_tcg_pcr_event2_binary_profile",
+            "package_attestation::tests::package_event_log_decoder_rejects_unsupported_tcg_digest_count",
+            "package_attestation::tests::package_event_log_verifier_accepts_catalog_match",
+            "package_attestation::tests::package_event_log_verifier_accepts_empty_package_set_event",
+            "package_attestation::tests::package_event_log_verifier_accepts_legacy_record_shape",
+            "package_attestation::tests::package_event_log_verifier_rejects_catalog_mismatch",
+            "package_attestation::tests::package_event_log_verifier_rejects_digest_list_mismatch",
+            "package_attestation::tests::package_event_log_verifier_rejects_empty_log",
+            "package_attestation::tests::package_event_log_verifier_rejects_null_pcr_event_field",
+            "package_attestation::tests::package_event_log_verifier_rejects_package_set_count_mismatch",
+            "package_attestation::tests::package_event_log_verifier_rejects_package_set_digest_mismatch",
+            "package_attestation::tests::package_event_log_verifier_rejects_partial_pcr_event_shape",
+            "package_attestation::tests::package_event_log_verifier_rejects_pcr_mismatch",
+            "package_attestation::tests::package_event_log_verifier_rejects_sequence_number_mismatch",
+            "package_attestation::tests::package_event_log_verifier_replays_from_pcr_baseline",
+            "package_attestation::tests::package_event_log_verifier_reports_latest_package_set",
+            "package_attestation::tests::package_measurement_accepts_matching_registry_measurement",
+            "package_attestation::tests::package_measurement_catalog_entries_round_trip_through_json",
+            "package_attestation::tests::package_measurement_changes_when_manifest_changes",
+            "package_attestation::tests::package_measurement_includes_root_and_manifest_digests",
+            "package_attestation::tests::package_measurement_rejects_mismatched_registry_measurement",
+            "package_attestation::tests::package_measurement_uses_authenticated_payload_root_digest",
+            "package_attestation::tests::pcr_extension_failure_preserves_durable_cel_and_recovery_prefix",
+            "package_attestation::tests::pcr_extension_rejects_digest_mismatch_before_starting_the_process",
+            "package_attestation::tests::pcr_extension_transports_large_records_as_exact_bounded_digest_arguments",
+            "package_attestation::tests::quote_bundle_snapshot_copies_members_to_private_dir",
+            "package_attestation::tests::quote_bundle_verifier_rejects_invalid_nonce_before_tools",
+            "package_attestation::tests::quote_identity_catalog_accepts_matching_identity",
+            "package_attestation::tests::quote_identity_catalog_rejects_mismatched_identity",
+            "package_attestation::tests::quote_identity_catalog_validates_all_requested_files_before_matching",
+            "package_attestation::tests::quote_identity_enrollment_rejects_unknown_method",
+            "package_attestation::tests::quote_identity_enrollment_wins_over_duplicate_legacy_pin",
+            "package_attestation::tests::quote_identity_enrollment_writes_catalog_and_marks_trusted",
+            "package_attestation::tests::quote_nonce_parser_normalizes_hex",
+            "package_attestation::tests::quote_nonce_parser_rejects_invalid_hex",
+            "package_attestation::tests::quote_output_dir_must_be_new_absolute_and_private",
+            "package_attestation::tests::quote_output_dir_rejects_symlink_parent",
+            "package_attestation::tests::quote_pcr_values_extracts_pcr15",
+            "package_attestation::tests::quote_pcr_values_rejects_unexpected_size",
+            "package_attestation::tests::tpm2_pcrread_parser_extracts_pcr15",
+            "package_attestation::tests::trusted_tpm2_tool_path_requires_absolute_expected_binary",
+            "profile::deployment::tests::consecutive_installations_publish_files_while_startup_results_remain_pending",
+            "profile::deployment::tests::inspection_never_creates_journals_for_an_uninitialized_profile",
+            "profile::deployment::tests::inspection_rejects_tampered_generation_marker",
+            "profile::deployment::tests::mismatched_publication_fails_before_moving_profile_link",
+            "profile::deployment::tests::pruning_releases_old_journal_generation_before_profile_tree",
+            "profile::deployment::tests::reconciliation_preserves_publication_and_replays_after_reopening",
+            "profile::deployment::tests::recovery_inspection_preserves_torn_journal_tail_and_never_exposes_pending_state",
+            "profile::deployment::tests::recovery_publishes_staged_tree_after_pending_admission_failure",
+            "profile::deployment::tests::recovery_repairs_link_from_committed_transaction",
+            "profile::deployment::tests::recovery_selects_exact_sequence_when_desired_content_repeats",
+            "profile::deployment::tests::refreshed_admission_preserves_locked_pending_generation_until_recovery",
+            "profile::deployment::tests::rejected_artifacts_preserve_current_profile",
+            "profile::deployment::tests::retained_export_preserves_exact_committed_scope_without_effect_dispatch",
+            "profile::deployment::tests::retained_export_rejects_missing_or_corrupt_publications_without_repair",
+            "profile::deployment::tests::retained_export_uses_committed_publication_without_repairing_current_link",
+            "profile::lock::tests::profile_mutation_lock_rejects_symbolic_links",
+            "profile::lock::tests::profile_mutation_ownership_blocks_other_writers_and_releases_inherited_descriptors",
+            "profile::merge::tests::build_then_clear_round_trip",
+            "profile::merge::tests::clear_clean_generation",
+            "profile::merge::tests::clear_preserves_profile_bookkeeping",
+            "profile::merge::tests::conflict_last_wins",
+            "profile::merge::tests::conflicts_use_package_metadata_instead_of_root_hashes",
+            "profile::merge::tests::directory_symlink_and_real_directory_conflicts_follow_package_order",
+            "profile::merge::tests::empty_dirs_not_created",
+            "profile::merge::tests::empty_store_paths",
+            "profile::merge::tests::etc_and_include_merge",
+            "profile::merge::tests::generation_merge_prefers_explicit_roots_over_auto_dependencies",
+            "profile::merge::tests::legacy_root_labels_strip_only_the_matching_store_hash",
+            "profile::merge::tests::man_pages_correct_sections",
+            "profile::merge::tests::rebuilding_a_shallow_profile_does_not_modify_the_store",
+            "profile::merge::tests::scan_finds_fhs_files",
+            "profile::merge::tests::scan_ignores_non_fhs_files",
+            "profile::merge::tests::share_recurses_through_man_and_completions",
+            "profile::merge::tests::shared_package_data_directories_coexist",
+            "profile::merge::tests::single_package_merge",
+            "profile::merge::tests::two_packages_merge",
+            "profile::meta::tests::auto_installed_filters",
+            "profile::meta::tests::delete_meta_idempotent",
+            "profile::meta::tests::delete_meta_removes_file",
+            "profile::meta::tests::held_packages_filters",
+            "profile::meta::tests::list_meta_returns_all",
+            "profile::meta::tests::meta_by_registry_filters",
+            "profile::meta::tests::orphaned_by_registry_filters",
+            "profile::meta::tests::orphaned_by_registry_missing_profile_is_empty",
+            "profile::meta::tests::read_meta_missing_returns_none",
+            "profile::meta::tests::rebuild_meta_restores_generation_snapshot_without_registry",
+            "profile::meta::tests::set_held_missing_hash_errors",
+            "profile::meta::tests::set_held_modifies_flag",
+            "profile::meta::tests::set_held_updates_current_generation_snapshot",
+            "profile::meta::tests::write_read_round_trip",
+            "profile::tests::current_generation_after_switch",
+            "profile::tests::current_generation_none_initially",
+            "profile::tests::exhausted_counter_does_not_create_a_generation",
+            "profile::tests::has_roots_empty_generation",
+            "profile::tests::list_generations_sorted",
+            "profile::tests::new_generation_creates_directory",
+            "profile::tests::new_generation_increments",
+            "profile::tests::open_creates_directory_structure",
+            "profile::tests::open_is_idempotent",
+            "profile::tests::prune_keeps_latest_and_current",
+            "profile::tests::roots_lists_usr_entries",
+            "profile::tests::source_roots_lists_src_entries",
+            "profile::tests::stale_counter_cannot_reuse_an_existing_generation",
+            "profile::tests::state_round_trip",
+            "profile::tests::switch_to_creates_current_symlink",
+            "query::tests::format_size_units",
+            "query::tests::installed_by_source_keeps_same_name_registries_distinct",
+            "query::tests::list_installed_filters_correctly",
+            "query::tests::list_upgradable_detects_changes",
+            "query::tests::resolve_dependency_names_resolves_known",
+            "query::tests::resolve_dependency_names_unknown_stays_hash",
+            "query::tests::running_sysroot_is_an_installed_upgrade_source",
+            "query::tests::search_finds_by_description",
+            "query::tests::search_finds_by_name",
+            "query::tests::search_names_only_skips_description",
+            "query::tests::search_with_registry_filter",
+            "query::tests::show_formats_package_info",
+            "query::tests::unsynced_names_empty_when_all_synced",
+            "query::tests::unsynced_names_flags_registry_without_packages_dir",
+            "remove::tests::copy_roots_except_empty_exclusion_copies_all",
+            "remove::tests::copy_roots_except_excludes_correctly",
+            "remove::tests::copy_roots_except_handles_src",
+            "remove::tests::copy_roots_except_retains_only_selected_documentation_roots",
+            "remove::tests::find_installed_empty_profile_errors",
+            "remove::tests::find_installed_error_for_unknown",
+            "remove::tests::find_installed_finds_matching",
+            "remove::tests::find_orphans_excludes_explicit",
+            "remove::tests::find_orphans_excludes_pending_removal",
+            "remove::tests::find_orphans_returns_auto_installed",
+            "remove::tests::removal_summary_format",
+            "remove::tests::root_hashes_for_installed_includes_source_roots",
+            "remove::tests::select_installed_for_removal_keeps_implicit_only_behavior",
+            "remove::tests::select_installed_for_removal_prefers_explicit_duplicate_name",
+            "resolve::tests::collect_unique_deduplicates",
+            "resolve::tests::collect_unique_empty",
+            "resolve::tests::resolve_falls_back_to_bfs_for_legacy_registry",
+            "resolve::tests::resolve_leaf_package",
+            "resolve::tests::resolve_leaf_with_store_graph",
+            "resolve::tests::resolve_multiple_empty",
+            "resolve::tests::resolve_multiple_packages",
+            "resolve::tests::resolve_package_not_found",
+            "resolve::tests::resolve_single_package",
+            "resolve::tests::resolve_uses_store_graph",
+            "resolve::tests::resolve_with_registry_filter",
+            "resolve::tests::total_nar_size_computed",
+            "resolve::tests::unresolvable_refs_skipped",
+            "rollback::tests::rollback_no_current_generation_errors",
+            "rollback::tests::rollback_no_previous_generation_errors",
+            "rollback::tests::rollback_switches_to_previous_generation",
+            "rollback::tests::rollback_to_specific_generation",
+            "runtime_authoring::tests::aliases_and_non_nix_sources_are_not_copied",
+            "runtime_authoring::tests::existing_empty_and_modified_worktrees_never_load_committed_sources",
+            "runtime_authoring::tests::failed_custody_loading_does_not_publish_a_partial_worktree",
+            "runtime_authoring::tests::first_add_preserves_boot_source_and_relative_imports",
+            "runtime_authoring::tests::private_preview_preserves_absent_worktree_and_rejects_unselected_siblings",
+            "runtime_authoring::tests::seeded_host_can_be_replaced_and_removed_normally",
+            "runtime_authoring::tests::selected_tree_rejects_missing_custody_and_multiple_roots",
+            "runtime_boundary::tests::detects_only_the_exact_runtime_markers",
+            "runtime_boundary::tests::image_prepare_parser_preserves_registry_and_admission_purpose",
+            "runtime_boundary::tests::image_prepare_requires_a_writable_host_and_system_scope",
+            "runtime_boundary::tests::operator_configuration_uses_the_profile_seeded_by_its_runtime",
+            "runtime_boundary::tests::read_only_container_classifies_registry_authoring_commands",
+            "runtime_boundary::tests::read_only_container_rejects_mutations_and_allows_queries",
+            "runtime_boundary::tests::read_only_system_mutations_are_rejected",
+            "runtime_boundary::tests::remove_preserves_user_default_and_selects_system_scope_explicitly",
+            "runtime_boundary::tests::requested_scopes_share_the_container_runtime_profile",
+            "runtime_boundary::tests::unset_runtime_preserves_system_and_hidden_command_admission",
+            "runtime_boundary::tests::writable_container_allows_user_scope_and_rejects_host_operations",
+            "runtime_modules::tests::descriptor_copy_enforces_per_file_limit",
+            "runtime_modules::tests::descriptor_copy_rejects_hard_links",
+            "runtime_modules::tests::descriptor_copy_rejects_writable_objects_for_root_authority",
+            "runtime_modules::tests::discovery_is_sorted_and_excludes_private_helpers",
+            "runtime_modules::tests::discovery_rejects_symlinks_and_non_nix_files",
+            "source::tests::source_lookup_prefers_installed_package_name",
+            "source::tests::source_no_source_drv_errors",
+            "source::tests::source_package_not_found",
+            "source::tests::source_shows_drv_path",
+            "source::tests::source_verify_uses_installed_source_metadata_without_registry_entry",
+            "source::tests::verify_finds_installed_package_meta",
+            "source::tests::verify_hash_comparison_match",
+            "source::tests::verify_hash_comparison_mismatch",
+            "source::tests::verify_missing_package_not_found",
+            "source::tests::verify_resolves_installed_store_hash_not_latest_candidate",
+            "store::tests::atomic_symlink_creates_new",
+            "store::tests::atomic_symlink_noop_when_same_target",
+            "store::tests::atomic_symlink_replaces_existing",
+            "store::tests::create_gc_roots_creates_correct_src_symlink",
+            "store::tests::create_gc_roots_creates_correct_usr_symlink",
+            "store::tests::create_gc_roots_creates_usr_and_src_dirs",
+            "store::tests::create_gc_roots_idempotent",
+            "store::tests::create_gc_roots_multiple_packages",
+            "store::tests::create_gc_roots_skips_empty_source_drv",
+            "store::tests::image_reconciliation_preserves_pending_and_removes_only_owned_roots",
+            "store::tests::image_retention_does_not_keep_all_releases_of_one_library",
+            "store::tests::image_retention_preserves_exact_inputs_and_latest_distinct_library",
+            "store::tests::image_retention_rejects_string_prefix_matches",
+            "store::tests::parse_import_output_empty",
+            "store::tests::parse_import_output_multiple_paths",
+            "store::tests::parse_import_output_single_path",
+            "store::tests::parse_import_output_trailing_whitespace",
+            "store::tests::parse_import_output_unexpected",
+            "store::tests::parse_path_lines_basic",
+            "store::tests::parse_path_lines_empty",
+            "store::tests::parse_path_lines_trims_whitespace",
+            "store::tests::parse_path_lines_with_blank_lines",
+            "store::tests::remove_gc_roots_idempotent",
+            "store::tests::remove_gc_roots_multiple_hashes",
+            "store::tests::remove_gc_roots_removes_src_by_drv_hash",
+            "store::tests::remove_gc_roots_removes_symlinks",
+            "store::tests::src_symlink_uses_drv_path_hash",
+            "store::tests::staged_import_cache_preserves_signed_metadata_and_isolates_payload",
+            "store::tests::usr_symlink_uses_store_path_hash",
+            "sysroot::activatability::tests::blocked_reports_preserve_stable_reason_order",
+            "sysroot::activatability::tests::reason_details_are_bounded_at_utf8_boundaries",
+            "sysroot::activatability::tests::successful_reports_are_activatable",
+            "sysroot::image_rollout::ability::tests::exhausted_boot_cannot_replace_a_running_candidate_health_branch",
+            "sysroot::image_rollout::ability::tests::exhausted_boot_fallback_never_records_candidate_health",
+            "sysroot::image_rollout::ability::tests::fallback_retirement_preserves_the_predecessor_outcome_after_restart",
+            "sysroot::image_rollout::ability::tests::historical_retirement_remains_observable_after_a_later_image_boots",
+            "sysroot::image_rollout::ability::tests::ordinary_retirement_requires_actual_boot_and_expired_retention",
+            "sysroot::image_rollout::ability::tests::preflight_rejects_stale_or_unbounded_fresh_rollouts",
+            "sysroot::image_rollout::ability::tests::read_only_postcondition_observation_never_updates_provider_state",
+            "sysroot::image_rollout::ability::tests::recovery_observes_partial_health_and_terminal_branches",
+            "sysroot::image_rollout::ability::tests::retention_directories_are_private_and_roots_reject_regular_occupants",
+            "sysroot::image_rollout::ability::tests::retention_precedes_prepare_drain_and_selection",
+            "sysroot::image_rollout::ability::tests::retention_retry_completes_after_every_durable_publication_prefix",
+            "sysroot::image_rollout::ability::tests::retirement_removes_rollout_roots_without_hiding_the_active_generation",
+            "sysroot::image_rollout::ability::tests::retirement_resumes_after_partial_rollout_root_cleanup",
+            "sysroot::image_rollout::ability::tests::stale_identity_and_early_retirement_fail_without_effects",
+            "sysroot::image_rollout::ability::tests::terminal_hold_recovery_rejects_tampered_retention_roots",
+            "sysroot::image_rollout::ability::tests::terminal_status_cannot_complete_before_the_matching_image_is_active",
+            "sysroot::image_rollout::ability::tests::unhealthy_assessment_withdraws_before_fallback_can_commit",
+            "sysroot::image_rollout::boot_commit::tests::boot_counter_failure_preserves_its_distinct_terminal_reason",
+            "sysroot::image_rollout::boot_commit::tests::boot_state_accepts_the_native_admission_digest_unchanged",
+            "sysroot::image_rollout::boot_commit::tests::boot_state_rejects_noncanonical_or_empty_library_identity",
+            "sysroot::image_rollout::boot_commit::tests::finalization_publishes_distinct_rollout_outcomes",
+            "sysroot::image_rollout::boot_commit::tests::rollout_validation_rejects_ambiguous_identity",
+            "sysroot::image_rollout::provider::tests::absent_drain_is_rejected_before_any_platform_invocation",
+            "sysroot::image_rollout::provider::tests::lost_results_require_retained_payloads_before_selection_or_success_proofs",
+            "sysroot::image_rollout::provider::tests::retirement_contract_cannot_dispatch_selection",
+            "sysroot::image_rollout::provider::tests::uncertain_and_accepted_restarts_are_never_reissued",
+            "sysroot::image_rollout::retirement_submission::tests::expired_selected_lease_is_eligible_for_third_image",
+            "sysroot::image_rollout::retirement_submission::tests::forged_receipt_or_changed_running_image_is_rejected",
+            "sysroot::image_rollout::retirement_submission::tests::uncertain_selection_is_not_retirement_authority",
+            "sysroot::image_rollout::retirement_submission::tests::unexpired_lease_cannot_authorize_overwrite",
+            "sysroot::image_rollout::tests::active_rollout_cannot_be_superseded_or_made_vacuous",
+            "sysroot::image_rollout::tests::image_selection_rebinds_running_state_to_immutable_metadata",
+            "sysroot::image_rollout::tests::image_selection_rejects_state_or_executor_gate_bypasses",
+            "sysroot::image_rollout::tests::native_executor_identity_is_a_canonical_store_root",
+            "sysroot::image_rollout::tests::preflight_rejects_state_that_differs_from_authenticated_boot_identity",
+            "sysroot::image_stage::tests::authenticated_receipt_indexes_candidate_without_selecting_it",
+            "sysroot::image_stage::tests::cancellation_prevents_starting_a_physical_preparation_child",
+            "sysroot::image_stage::tests::candidate_metadata_preserves_literal_kernel_identity",
+            "sysroot::image_stage::tests::committed_staging_recovers_after_index_write_before_intent_cleanup",
+            "sysroot::image_stage::tests::completed_stage_can_resume_selection_without_claiming_its_slot_again",
+            "sysroot::image_stage::tests::delivery_bytes_must_match_both_signed_length_and_digest",
+            "sysroot::image_stage::tests::foreign_receipt_cannot_publish_roots_or_mutate_index",
+            "sysroot::image_stage::tests::kernel_identity_handles_regular_missing_and_nonregular_entries",
+            "sysroot::image_stage::tests::preparation_busy_guard_rejects_pending_and_active_transitions",
+            "sysroot::image_stage::tests::retirement_revalidation_fences_concurrent_selection_and_staging",
+            "sysroot::tests::format_size_values",
+            "sysroot::tests::running_image_reads_native_identity_under_mounted_root",
+            "sysroot::tests::running_image_rejects_metadata_parent_symlink_escape",
+            "sysroot::tests::running_image_rejects_metadata_symlink_escape",
+            "sysroot::tests::running_image_rejects_tampered_var_index_metadata",
+            "sysroot::tests::system_transition_mode_default",
+            "sysroot_lock::native_target::tests::existing_boot_state_preserves_the_host_lock_even_with_container_metadata",
+            "sysroot_lock::native_target::tests::native_authority_requires_the_image_scope_release_and_admitted_inputs",
+            "sysroot_lock::native_target::tests::native_profile_allows_read_only_first_start_but_checks_existing_publication",
+            "sysroot_lock::tests::check_sysroot_lock_detects_divergence",
+            "sysroot_lock::tests::check_sysroot_lock_no_overlap",
+            "sysroot_lock::tests::check_sysroot_lock_no_violations",
+            "sysroot_lock::tests::check_sysroot_lock_partial_overlap",
+            "sysroot_lock::tests::format_violation_error_message",
+            "sysroot_lock::tests::ignore_filter_all_removes_all",
+            "sysroot_lock::tests::ignore_filter_enforce_keeps_all",
+            "sysroot_lock::tests::ignore_filter_names_removes_specific",
+            "sysroot_lock::tests::ignore_parse_all",
+            "sysroot_lock::tests::ignore_parse_empty_string_is_all",
+            "sysroot_lock::tests::ignore_parse_names",
+            "sysroot_lock::tests::ignore_parse_none_is_enforce",
+            "sysroot_lock::tests::parse_store_ref_full_path",
+            "sysroot_lock::tests::parse_store_ref_glibc",
+            "sysroot_lock::tests::parse_store_ref_hash_only",
+            "sysroot_lock::tests::parse_store_ref_libstdcpp",
+            "sysroot_lock::tests::parse_store_ref_linux",
+            "sysroot_lock::tests::parse_store_ref_multi_hyphen_name",
+            "sysroot_lock::tests::parse_store_ref_no_version",
+            "sysroot_lock::tests::parse_store_ref_openssl",
+            "sysroot_lock::tests::parse_store_ref_var_lib_store",
+            "tests::attest_enroll_dispatches_before_registry_configuration",
+            "tests::attest_nonce_reader_accepts_inline_or_file",
+            "tests::attest_quote_dispatches_before_registry_configuration",
+            "tests::attest_verify_measurement_args_require_one_source",
+            "tests::attestation_baseline_file_requires_bytes_and_trims_line_endings",
+            "tests::attestation_result_atomically_replaces_complete_json",
+            "tests::attestation_result_invalidation_removes_stale_success",
+            "tests::generation_quote_adapter_rejects_tampered_embedded_quote",
+            "tests::generation_quote_adapter_rejects_unrelated_bundle_and_nonce",
+            "tests::package_attestation_catalog_file_parses_entries",
+            "tests::package_attestation_catalog_sources_merge_registry_embedded_and_files",
+            "tests::package_attestation_catalog_sources_reject_conflicting_explicit_file",
+            "tests::query_commands_honor_system_flag",
+            "tests::runtime_module_publication_is_private_under_any_umask",
+            "types::tests::image_generation_state_round_trip",
+            "update::tests::sync_summary_reports_every_package_delta",
+            "upgrade::module_upgrade::tests::held_named_output_protects_the_package_owner",
+            "upgrade::module_upgrade::tests::interface_refresh_obeys_requested_excluded_and_held_owners",
+            "upgrade::module_upgrade::tests::unchanged_payload_is_eligible_for_interface_refresh",
+            "upgrade::tests::empty_candidates_returns_empty",
+            "upgrade::tests::filter_passes_through_normal",
+            "upgrade::tests::filter_separates_excluded",
+            "upgrade::tests::filter_separates_held",
+            "upgrade::tests::find_upgradable_detects_newer_version",
+            "upgrade::tests::find_upgradable_skips_auto_installed_dependencies",
+            "upgrade::tests::find_upgradable_skips_non_apm",
+            "upgrade::tests::find_upgradable_skips_up_to_date",
+            "upgrade::tests::find_upgradable_with_filter",
+            "upgrade::tests::installed_flags_by_name_prefers_explicit_duplicate_name",
+            "upgrade::tests::installed_flags_by_name_preserves_explicit_and_held_state",
+            "upgrade::tests::obsolete_installed_hashes_skips_only_unneeded_apm_roots",
+            "upgrade::tests::verify_secondary_artifact_downloads_rejects_image_references",
+            "verify::tests::extract_regular_file_nar_rejects_executable_roots",
+            "verify::tests::extract_regular_file_nar_rejects_signed_size_disagreement",
+            "verify::tests::extract_regular_file_nar_rejects_trailing_archive_data",
+            "verify::tests::extract_regular_file_nar_streams_exact_contents",
+            "verify::tests::hash_format_is_canonical",
+            "verify::tests::sha256_file_empty",
+            "verify::tests::sha256_file_known_content",
+            "verify::tests::sha256_file_nonexistent",
+            "verify::tests::sha256_stream_consistency",
+            "verify::tests::sha256_stream_empty",
+            "verify::tests::sha256_stream_hello",
+            "verify::tests::sha256_stream_large_data",
+            "verify::tests::signed_nar_identity_rejects_expansion_beyond_declared_size",
+            "verify::tests::uncompressed_nar_transport_preserves_blessed_identity",
+            "verify::tests::verify_download_hash_match",
+            "verify::tests::verify_download_hash_mismatch",
+            "verify::tests::verify_downloads_enforcing_rejects_unmapped_path",
+            "verify::tests::verify_downloads_legacy_falls_back_to_narinfo_hash",
+            "verify::tests::verify_downloads_uses_blessed_bytes_over_narinfo",
+            "verify::tests::verify_nar_blessed_aborts_past_size_cap",
+            "verify::tests::verify_nar_blessed_accepts_any_of_multiple_entries",
+            "verify::tests::verify_nar_blessed_accepts_matching_entry",
+            "verify::tests::verify_nar_blessed_rejects_size_mismatch_with_right_hash",
+            "verify::tests::verify_nar_blessed_rejects_wrong_content",
+            "verify::tests::verify_nar_blessed_requires_a_blessed_nar",
+            "verify::tests::verify_nar_hash_mismatch",
+            "verify::tests::verify_nar_hash_zstd",
+            "verify::tests::verify_nar_hash_zstd_accepts_sri_hash",
+            "verify::tests::verify_store_path_match",
+            "verify::tests::verify_store_path_match_with_whitespace",
+            "verify::tests::verify_store_path_mismatch"
+          ],
+          "ignored_in_unchanged_cargo_baseline": [
+            "boot_configuration::handoff::tests::actual_two_store_receipts_keep_identity_and_reject_changed_digest",
+            "boot_configuration::image::tests::actual_producer_copy_resolves_through_retained_toplevel",
+            "boot_configuration::integration::checked_metadata_adoption_recovers_and_preserves_operator_sources",
+            "boot_configuration::integration::committed_dynamic_receipts_cross_stores_with_exact_authority",
+            "boot_configuration::integration::host_selected_absent_package_acquires_module_and_commits_one_generation",
+            "boot_configuration::reader::tests::actual_initrd_alias_uses_selected_store_documents",
+            "config_eval::provisioning_evaluator::tests::source_built_provisioning_results_match_declared_wire_contracts"
+          ],
+          "test_artifacts_sha256": {
+            "test.log": "f05461557c93266ccdefd200472f14aec2c79392f1be673f020f74f0ebdd23c8",
+            "test.xml": "ecdc9d39d84a81fa552e030f2a1f209233c3abaf4df63dab4cf85bdfe8f0f070"
+          }
+        }
+      }
+    }
+  },
+  "command": "nix-build /tmp/aos-bazel-722/package-manager-iterative.nix -A builds --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "comparison_base_commit": "df2acf6f28",
+  "limits": [
+    "This checkpoint uses conservative source staging. Strict configured staging, fresh Cargo feature/generated-source/runtime comparisons and selected editor parity run independently.",
+    "The seven ignored baseline cases retain their source attributes; the isolated Bazel runner executes the 621 nonignored cases. Native installed/provisioning/boot/VM and conditional live-cache gates remain separate.",
+    "Required whole-workspace Rust target compilation is not claimed by this checkpoint.",
+    "Ordered-container performance, full compiler invocation equivalence, foreign/Wasm qualification, production cutover and Cargo removal remain pending."
+  ],
+  "preserved_tests": {
+    "assertion_macros": {
+      "assert": 877,
+      "assert_eq": 832,
+      "assert_ne": 14,
+      "bail": 276,
+      "ensure": 576,
+      "panic": 21
+    },
+    "changed_files": [
+      "crates/aos/packages/aos-package-manager/src/attestation/native.rs",
+      "crates/aos/packages/aos-package-manager/src/cancellation.rs",
+      "crates/aos/packages/aos-package-manager/src/config_eval/provisioning_evaluator.rs",
+      "crates/aos/packages/aos-package-manager/src/deps.rs",
+      "crates/aos/packages/aos-package-manager/src/documentation/native.rs",
+      "crates/aos/packages/aos-package-manager/src/download.rs",
+      "crates/aos/packages/aos-package-manager/src/install/acquire.rs",
+      "crates/aos/packages/aos-package-manager/src/install/native/configuration.rs",
+      "crates/aos/packages/aos-package-manager/src/install/native/module_upgrade.rs",
+      "crates/aos/packages/aos-package-manager/src/install/native.rs",
+      "crates/aos/packages/aos-package-manager/src/install.rs",
+      "crates/aos/packages/aos-package-manager/src/lib.rs",
+      "crates/aos/packages/aos-package-manager/src/native_deployment/evaluate/validation.rs",
+      "crates/aos/packages/aos-package-manager/src/native_deployment/evaluate.rs",
+      "crates/aos/packages/aos-package-manager/src/native_deployment.rs",
+      "crates/aos/packages/aos-package-manager/src/native_registry/available.rs",
+      "crates/aos/packages/aos-package-manager/src/native_registry/roots.rs",
+      "crates/aos/packages/aos-package-manager/src/native_registry/solver/tests.rs",
+      "crates/aos/packages/aos-package-manager/src/native_registry/solver.rs",
+      "crates/aos/packages/aos-package-manager/src/native_registry.rs",
+      "crates/aos/packages/aos-package-manager/src/package_attestation.rs",
+      "crates/aos/packages/aos-package-manager/src/profile/merge.rs",
+      "crates/aos/packages/aos-package-manager/src/profile/meta.rs",
+      "crates/aos/packages/aos-package-manager/src/query.rs",
+      "crates/aos/packages/aos-package-manager/src/remove.rs",
+      "crates/aos/packages/aos-package-manager/src/resolve.rs",
+      "crates/aos/packages/aos-package-manager/src/rollback.rs",
+      "crates/aos/packages/aos-package-manager/src/runtime_boundary.rs",
+      "crates/aos/packages/aos-package-manager/src/source.rs",
+      "crates/aos/packages/aos-package-manager/src/store.rs",
+      "crates/aos/packages/aos-package-manager/src/sysroot/image_prepare.rs",
+      "crates/aos/packages/aos-package-manager/src/sysroot/image_rollout/provider.rs",
+      "crates/aos/packages/aos-package-manager/src/sysroot/image_rollout/retirement_submission.rs",
+      "crates/aos/packages/aos-package-manager/src/sysroot/image_rollout/submission.rs",
+      "crates/aos/packages/aos-package-manager/src/sysroot/image_stage.rs",
+      "crates/aos/packages/aos-package-manager/src/sysroot.rs",
+      "crates/aos/packages/aos-package-manager/src/sysroot_lock.rs",
+      "crates/aos/packages/aos-package-manager/src/update.rs",
+      "crates/aos/packages/aos-package-manager/src/upgrade.rs",
+      "crates/aos/packages/aos-package-manager/tests/common/mod.rs",
+      "crates/aos/packages/aos-package-manager/tests/registry_cache_e2e.rs"
+    ],
+    "comparison_base_commit": "df2acf6f28",
+    "files": 99,
+    "ignored_attributes": 7,
+    "limits": [
+      "This textual audit checks test names, ignore reasons and assertion macro counts; runtime case equivalence is checked separately against unchanged Cargo baselines."
+    ],
+    "per_file": {
+      "crates/aos/packages/aos-package-manager/examples/package_deployment_check.rs": {
+        "assertion_macros": {
+          "ensure": 25
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/aos/packages/aos-package-manager/src/attestation.rs": {
+        "assertion_macros": {
+          "bail": 3
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/aos/packages/aos-package-manager/src/attestation/native.rs": {
+        "assertion_macros": {
+          "assert": 10,
+          "ensure": 28
+        },
+        "ignores": [],
+        "tests": [
+          "domain_proof_pin_cannot_authorize_foreign_roots_or_changed_nars",
+          "live_image_pcr11_accepts_the_readers_algorithm_qualified_digest",
+          "live_image_pcr11_rejects_noncanonical_reader_output",
+          "native_quote_rejects_changed_physical_pins_and_pcr_binding",
+          "native_quote_rejects_revoked_release_signer_even_with_matching_catalog",
+          "native_quote_requires_original_image_authority_and_source_replay",
+          "receipt_root_exception_requires_original_pin_and_exact_root_file"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/attestation/native_cli.rs": {
+        "assertion_macros": {
+          "ensure": 5
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/aos/packages/aos-package-manager/src/bin/aos-deployment-check.rs": {
+        "assertion_macros": {
+          "assert": 3,
+          "ensure": 3
+        },
+        "ignores": [],
+        "tests": [
+          "checks_native_context_and_reference_identity",
+          "rejects_transaction_context_drift_and_unknown_input_fields"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/bin/aos-image-rollout-boot.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/aos/packages/aos-package-manager/src/bin/aos-image-rollout-observer.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/aos/packages/aos-package-manager/src/bin/aos-image-rollout-provider.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/aos/packages/aos-package-manager/src/bin/aos-package-attestation-provider.rs": {
+        "assertion_macros": {
+          "bail": 1
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/aos/packages/aos-package-manager/src/boot_configuration/capture.rs": {
+        "assertion_macros": {
+          "assert": 1,
+          "assert_eq": 1,
+          "ensure": 1
+        },
+        "ignores": [],
+        "tests": [
+          "retained_binding_has_one_exact_immutable_proof_locator",
+          "source_proof_does_not_authorize_an_unrelated_store_root"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/boot_configuration/handoff.rs": {
+        "assertion_macros": {
+          "assert": 5,
+          "assert_eq": 2,
+          "ensure": 14
+        },
+        "ignores": [
+          "requires source-built Nix and a private selected source store"
+        ],
+        "tests": [
+          "actual_two_store_receipts_keep_identity_and_reject_changed_digest",
+          "receipt_retention_rejects_redirected_directories_and_links"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/boot_configuration/image.rs": {
+        "assertion_macros": {
+          "assert": 5,
+          "assert_eq": 1,
+          "ensure": 4
+        },
+        "ignores": [
+          "requires an actual source-built producer bundle"
+        ],
+        "tests": [
+          "actual_producer_copy_resolves_through_retained_toplevel",
+          "copied_producer_aliases_require_exact_member_identity"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/boot_configuration/integration.rs": {
+        "assertion_macros": {
+          "ensure": 52
+        },
+        "ignores": [
+          "requires the retained source-built boot-metadata fixture and isolated Nix store",
+          "requires actual source-built fixtures and an authenticated acquisition release",
+          "requires the source-built dynamic preparation fixture and a private source store"
+        ],
+        "tests": [
+          "checked_metadata_adoption_recovers_and_preserves_operator_sources",
+          "committed_dynamic_receipts_cross_stores_with_exact_authority",
+          "host_selected_absent_package_acquires_module_and_commits_one_generation"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/boot_configuration/mod.rs": {
+        "assertion_macros": {
+          "ensure": 4
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/aos/packages/aos-package-manager/src/boot_configuration/proof.rs": {
+        "assertion_macros": {
+          "assert": 7,
+          "ensure": 17
+        },
+        "ignores": [],
+        "tests": [
+          "authorization_binds_original_bytes_and_the_native_library",
+          "host_text_cannot_be_changed_inside_an_authorization_receipt",
+          "image_policy_explicitly_distinguishes_no_metadata_from_a_missing_binding"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/boot_configuration/reader.rs": {
+        "assertion_macros": {
+          "assert": 5,
+          "assert_eq": 3,
+          "ensure": 8
+        },
+        "ignores": [
+          "requires an actual source-built initrd bundle and selected Nix"
+        ],
+        "tests": [
+          "actual_initrd_alias_uses_selected_store_documents",
+          "source_documents_reject_symlinks_and_oversized_files"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/boot_configuration/retained.rs": {
+        "assertion_macros": {
+          "ensure": 9
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/aos/packages/aos-package-manager/src/cancellation.rs": {
+        "assertion_macros": {
+          "assert": 2,
+          "assert_eq": 1,
+          "panic": 3
+        },
+        "ignores": [],
+        "tests": [
+          "a_second_signal_forces_process_interruption",
+          "sigint_requests_native_cancellation",
+          "signal_probe",
+          "sigterm_requests_native_cancellation"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/clean.rs": {
+        "assertion_macros": {
+          "assert": 7,
+          "assert_eq": 14,
+          "bail": 1
+        },
+        "ignores": [],
+        "tests": [
+          "clear_nar_cache_empty_dir_returns_zero",
+          "clear_nar_cache_nonexistent_dir_returns_zero",
+          "clear_nar_cache_removes_files_and_returns_size",
+          "format_size_bytes",
+          "format_size_gib",
+          "format_size_kib",
+          "format_size_mib",
+          "prune_runtime_uppers_removes_present_and_tolerates_absent",
+          "prune_runtime_uppers_skips_non_system_scope"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/config_eval/mod.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/aos/packages/aos-package-manager/src/config_eval/provisioning_evaluator.rs": {
+        "assertion_macros": {
+          "assert": 14,
+          "assert_eq": 1,
+          "bail": 2,
+          "ensure": 6
+        },
+        "ignores": [
+          "requires the source-built boot fixture containing actual Nix result declarations"
+        ],
+        "tests": [
+          "pending_markers_and_source_changes_require_explicit_recovery",
+          "projection_retains_source_and_proof_roots_without_payloads",
+          "retained_sources_require_normalized_store_paths",
+          "source_built_provisioning_results_match_declared_wire_contracts"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/config_eval/provisioning_evaluator_provider.rs": {
+        "assertion_macros": {
+          "ensure": 4
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/aos/packages/aos-package-manager/src/config_eval/provisioning_sources.rs": {
+        "assertion_macros": {
+          "assert": 3,
+          "assert_eq": 4,
+          "ensure": 6
+        },
+        "ignores": [],
+        "tests": [
+          "authorized_bundle_retains_complete_source_and_exact_payload",
+          "authorized_literal_remains_exact",
+          "invalid_bundle_never_materializes_a_host_wrapper"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/config_trust.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/aos/packages/aos-package-manager/src/container_admission.rs": {
+        "assertion_macros": {
+          "assert": 4,
+          "bail": 3
+        },
+        "ignores": [],
+        "tests": [
+          "persisted_marker_makes_exec_processes_read_only",
+          "stale_ready_marker_times_out",
+          "synchronized_writable_state_is_mutable",
+          "unwritable_state_is_read_only_without_a_marker"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/container_environment.rs": {
+        "assertion_macros": {
+          "assert": 5,
+          "ensure": 3
+        },
+        "ignores": [],
+        "tests": [
+          "image_readiness_is_bound_to_the_current_pid1_lifetime"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/container_runtime.rs": {
+        "assertion_macros": {
+          "assert": 14,
+          "assert_eq": 3,
+          "assert_ne": 2,
+          "ensure": 11,
+          "panic": 1
+        },
+        "ignores": [],
+        "tests": [
+          "activation_invalidates_previous_readiness_before_retry",
+          "candidate_init_changes_defer_services_but_unchanged_selection_does_not",
+          "init_handoff_preserves_empty_and_spaced_arguments",
+          "invalid_configuration_cannot_split_arguments",
+          "missing_configuration_has_no_handoff",
+          "missing_service_marker_does_not_read_selection",
+          "selecting_a_new_init_does_not_change_the_running_init",
+          "service_readiness_binds_pid1_and_selected_init_command",
+          "startup_command_is_private_and_serializes_its_options"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/credential.rs": {
+        "assertion_macros": {
+          "assert": 3,
+          "assert_eq": 2,
+          "bail": 3,
+          "ensure": 5
+        },
+        "ignores": [],
+        "tests": [
+          "explicit_override_does_not_require_a_locator",
+          "installed_locator_selects_exact_provider",
+          "locator_rejects_symlinks_and_oversized_contents",
+          "provider_paths_reject_host_paths_and_noncanonical_suffixes"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/deployment/mod.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/aos/packages/aos-package-manager/src/deployment/retained.rs": {
+        "assertion_macros": {
+          "assert": 5,
+          "assert_eq": 6,
+          "ensure": 7
+        },
+        "ignores": [],
+        "tests": [
+          "absent_journals_export_bootstrap_empty_without_creating_profile_state",
+          "malformed_paired_journals_are_rejected_without_repair_or_new_state",
+          "partial_journal_initialization_is_rejected_without_creating_the_missing_pair"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/deployment/retained_tests.rs": {
+        "assertion_macros": {
+          "assert": 17,
+          "assert_eq": 18,
+          "ensure": 3
+        },
+        "ignores": [],
+        "tests": [
+          "package_recovery_distinguishes_live_activation_from_completed_publication_gap",
+          "positively_absent_inventory_does_not_initialize_profile_or_journals",
+          "retained_inventory_omits_released_generation_but_preserves_orphan_handler_and_pending_source",
+          "retained_inventory_rejects_substituted_generation_or_orphan_handler_roots_without_repair",
+          "standalone_inventory_locks_real_paired_journals_without_profile_publication",
+          "standalone_inventory_requires_the_exact_existing_journal_pair_without_repair"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/deployment/tests.rs": {
+        "assertion_macros": {
+          "assert": 73,
+          "assert_eq": 89,
+          "bail": 6,
+          "panic": 1
+        },
+        "ignores": [],
+        "tests": [
+          "consecutive_installations_publish_partial_receipts_and_start_only_latest_generation",
+          "convergence_preserves_generation_and_recovers_only_the_original_attempt",
+          "convergence_resumes_pending_publication_without_starting_another_transaction",
+          "inspection_never_creates_journals_and_distinguishes_pending_generation",
+          "inspection_retains_shared_lock_and_leaves_both_torn_tails_untouched",
+          "named_payload_selection_does_not_install_available_module_dependencies",
+          "native_journal_policy_keeps_capacity_limits_enforced",
+          "native_journals_reopen_service_sized_generation_and_activation_records",
+          "native_replay_rejects_fabricated_and_incomplete_partial_results",
+          "paired_journals_bind_active_graph_and_policy_to_native_preparation",
+          "paired_journals_reject_schema_valid_fabricated_installation_results",
+          "prepared_reconciliation_reopens_and_resumes_the_same_attempt",
+          "reconciliation_completion_gap_reuses_the_completed_activation",
+          "reconciliation_without_a_committed_generation_does_not_prepare_work",
+          "recovers_prepared_generation_and_interrupted_pruning",
+          "rejects_scope_change_and_invalid_retirement_without_preparing",
+          "repeated_reconciliation_preserves_generation_and_roots_but_uses_fresh_attempts",
+          "restores_only_unpruned_and_pending_generation_roots_without_changing_journals",
+          "runtime_bindings_preserve_distinct_roles_for_the_same_package_name"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/deps.rs": {
+        "assertion_macros": {
+          "assert": 22,
+          "assert_eq": 30,
+          "bail": 2
+        },
+        "ignores": [],
+        "tests": [
+          "dep_tree_deduplication_counts",
+          "dep_tree_single_package_no_refs",
+          "dep_tree_with_children",
+          "depends_prefers_installed_package_name",
+          "files_lists_directory_contents",
+          "files_lists_symlinks_without_following_directory_targets",
+          "format_tree_line_last_child",
+          "format_tree_line_middle_child",
+          "installed_dep_tree_uses_profile_names_for_known_refs",
+          "policy_lists_installed_versions_missing_from_registry",
+          "policy_marker_uses_installed_registry_and_hash_for_same_version_duplicates",
+          "policy_marks_installed",
+          "policy_orders_by_priority",
+          "rdepends_empty_when_not_referenced",
+          "rdepends_finds_reverse_deps",
+          "rdepends_target_prefers_installed_lower_priority_duplicate"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/desired.rs": {
+        "assertion_macros": {
+          "assert": 3,
+          "assert_eq": 2,
+          "bail": 1
+        },
+        "ignores": [],
+        "tests": [
+          "desired_file_rejects_legacy_credentials",
+          "desired_file_rejects_mixed_top_level_and_nested_forms",
+          "desired_packages_parse_nested_section",
+          "desired_packages_parse_top_level_list",
+          "desired_packages_reject_path_like_names"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/documentation.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/aos/packages/aos-package-manager/src/documentation/native.rs": {
+        "assertion_macros": {
+          "assert": 7,
+          "assert_eq": 1,
+          "ensure": 13
+        },
+        "ignores": [],
+        "tests": [
+          "installed_browser_uses_shared_native_rendering_and_escapes_coordinates",
+          "native_document_byte_binding_preserves_identity_and_rejects_modification"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/documentation_lsp.rs": {
+        "assertion_macros": {
+          "bail": 4
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/aos/packages/aos-package-manager/src/documentation_lsp/native.rs": {
+        "assertion_macros": {
+          "assert": 6,
+          "assert_eq": 1
+        },
+        "ignores": [],
+        "tests": [
+          "diagnostics_validate_literals_without_evaluating_nix",
+          "native_options_drive_completion_and_hover_without_provider_projection"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/download.rs": {
+        "assertion_macros": {
+          "assert": 10,
+          "assert_eq": 43,
+          "bail": 4
+        },
+        "ignores": [],
+        "tests": [
+          "complete_metadata_preserves_references_skipped_by_missing_downloads",
+          "download_nars_empty",
+          "download_nars_rejects_payload_larger_than_declared_file_size",
+          "download_nars_replaces_stale_cached_file",
+          "download_nars_reuses_valid_cached_file_without_network",
+          "download_nars_streams_large_file_mirror_to_atomic_cache_file",
+          "download_nars_uses_narinfo_supplied_colon_free_url",
+          "download_rejects_narinfo_for_another_store_path",
+          "fetch_narinfos_empty",
+          "is_not_found_recognizes_404_and_file_miss",
+          "join_basic",
+          "join_trims_slashes",
+          "join_view_prefix",
+          "nar_cache_filename_canonicalizes_hex",
+          "nar_cache_filename_canonicalizes_sri",
+          "narinfo_fetch_fails_when_all_caches_miss",
+          "narinfo_fetch_falls_through_to_second_cache_on_miss",
+          "narinfo_url_builds_from_store_path",
+          "order_narinfo_closure_places_references_before_referrers",
+          "reference_store_path_uses_parent_store_dir",
+          "resolve_mirror_strips_trailing_slash",
+          "short_label_short_path",
+          "short_label_strips_store_hash",
+          "split_mirror_chain_separates_primary_and_fallbacks"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/environment.rs": {
+        "assertion_macros": {
+          "assert": 6,
+          "assert_eq": 5,
+          "bail": 9
+        },
+        "ignores": [],
+        "tests": [
+          "accepts_an_absolute_toplevel_link_inside_an_offline_root",
+          "accepts_an_identified_offline_aos_root",
+          "accepts_store_symlinks_rooted_below_an_initrd_mount",
+          "current_release_prefers_immutable_target_identity",
+          "installed_release_fallback_requires_an_explicit_offline_target",
+          "live_runtime_requires_the_immutable_identity",
+          "rejects_a_non_aos_or_incomplete_root",
+          "rejects_an_absolute_toplevel_link_that_escapes_the_offline_root",
+          "rejects_retired_or_invalid_module_library_identities"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/error.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/aos/packages/aos-package-manager/src/hold.rs": {
+        "assertion_macros": {
+          "assert": 11,
+          "assert_eq": 5
+        },
+        "ignores": [],
+        "tests": [
+          "held_lists_only_held_packages",
+          "hold_nonexistent_package_errors",
+          "hold_selection_keeps_implicit_only_behavior",
+          "hold_selection_prefers_explicit_duplicate_name",
+          "hold_sets_held_true",
+          "unhold_sets_held_false"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/images.rs": {
+        "assertion_macros": {
+          "assert_eq": 6,
+          "assert_ne": 2,
+          "ensure": 4
+        },
+        "ignores": [],
+        "tests": [
+          "configured_channel_floor_retains_its_original_freshness_observation",
+          "full_commit_identity_and_tracking_kind_partition_selection_state"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/install.rs": {
+        "assertion_macros": {
+          "assert": 37,
+          "assert_eq": 29,
+          "bail": 21,
+          "ensure": 2
+        },
+        "ignores": [],
+        "tests": [
+          "base_provided_root_does_not_skip_other_requested_roots_or_split_json",
+          "chrono_iso8601_epoch",
+          "chrono_iso8601_known_date",
+          "copy_roots_copies_symlinks",
+          "copy_roots_does_not_overwrite_existing",
+          "copy_roots_except_hashes_skips_replaced_roots",
+          "copy_roots_from_empty_generation",
+          "days_to_ymd_epoch",
+          "days_to_ymd_known_date",
+          "format_size_boundary_1024",
+          "format_size_bytes",
+          "format_size_gib",
+          "format_size_kib",
+          "format_size_mib",
+          "format_size_zero",
+          "install_summary_does_not_claim_downloaded_packages_are_reused",
+          "install_summary_explains_documentation_only_downloads_and_local_reuse",
+          "install_summary_reports_unknown_download_sizes_instead_of_zero",
+          "installed_flags_by_hash_preserves_explicit_and_held_state",
+          "installed_flags_by_name_prefers_explicit_duplicate_name",
+          "installed_flags_by_name_preserves_explicit_and_held_state",
+          "obsolete_installed_hashes_drops_entries_outside_needed_set",
+          "platform_returns_valid",
+          "prune_dependency_members_keeps_only_requested_roots",
+          "reinstall_resolution_prefers_explicit_duplicate_source_registry",
+          "reinstall_resolution_preserves_installed_source_registry",
+          "requested_closures_already_installed_detects_changed_store_hash",
+          "requested_closures_already_installed_matches_exact_closure",
+          "requested_closures_already_installed_requires_dependencies",
+          "requested_closures_already_installed_requires_explicit_root",
+          "verify_install_provenance_from_cache_reads_registry_artifact",
+          "verify_install_provenance_from_cache_rejects_cache_owned_ref",
+          "verify_install_provenance_from_cache_rejects_missing_artifact",
+          "verify_install_provenance_from_cache_rejects_symlink_file",
+          "verify_install_provenance_from_cache_rejects_symlink_parent",
+          "verify_install_provenance_from_cache_rejects_unsafe_ref",
+          "verify_install_provenance_rejects_foreign_builder_identity_under_alias",
+          "verify_install_provenance_rejects_foreign_key_namespace_under_alias",
+          "verify_install_provenance_rejects_missing_manifest_under_alias",
+          "verify_install_provenance_rejects_symlink_manifest_under_alias",
+          "verify_install_provenance_uses_committed_identity_for_local_alias",
+          "verify_secondary_artifact_downloads_rejects_image_references"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/install/acquire.rs": {
+        "assertion_macros": {
+          "assert": 10,
+          "ensure": 2
+        },
+        "ignores": [],
+        "tests": [
+          "cached_native_bytes_without_signed_release_never_open_store_or_profile",
+          "missing_native_envelope_fails_before_store_or_profile_publication",
+          "unresolved_package_cannot_create_acquisition_state"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/install/native.rs": {
+        "assertion_macros": {
+          "assert": 15,
+          "assert_eq": 8,
+          "bail": 2,
+          "ensure": 20
+        },
+        "ignores": [],
+        "tests": [
+          "equivalent_lock_order_does_not_publish_an_interface_generation",
+          "exact_retained_runtime_satisfies_discovery_without_a_registry",
+          "interface_upgrade_changes_modules_without_selecting_provider_payloads",
+          "retained_runtime_catalog_matches_without_current_registry_discovery",
+          "runtime_discovery_rejects_different_outputs_and_missing_authority",
+          "runtime_payload_with_optional_module_requires_explicit_module_selection",
+          "selected_named_output_preserves_module_context_without_selecting_other_outputs"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/install/native/configuration.rs": {
+        "assertion_macros": {
+          "ensure": 1
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/aos/packages/aos-package-manager/src/install/native/discovery.rs": {
+        "assertion_macros": {
+          "assert": 3,
+          "bail": 1
+        },
+        "ignores": [],
+        "tests": [
+          "a_native_marker_does_not_replace_a_checked_committed_generation",
+          "absent_profile_is_normal_but_partial_native_state_is_not"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/install/native/module_upgrade.rs": {
+        "assertion_macros": {
+          "assert": 4,
+          "ensure": 1
+        },
+        "ignores": [],
+        "tests": [
+          "exact_only_or_unreachable_ranges_skip_upgrade_evaluation"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/lib.rs": {
+        "assertion_macros": {
+          "assert": 31,
+          "assert_eq": 14,
+          "bail": 19,
+          "ensure": 3
+        },
+        "ignores": [],
+        "tests": [
+          "attest_enroll_dispatches_before_registry_configuration",
+          "attest_nonce_reader_accepts_inline_or_file",
+          "attest_quote_dispatches_before_registry_configuration",
+          "attest_verify_measurement_args_require_one_source",
+          "attestation_baseline_file_requires_bytes_and_trims_line_endings",
+          "attestation_result_atomically_replaces_complete_json",
+          "attestation_result_invalidation_removes_stale_success",
+          "generation_quote_adapter_rejects_tampered_embedded_quote",
+          "generation_quote_adapter_rejects_unrelated_bundle_and_nonce",
+          "package_attestation_catalog_file_parses_entries",
+          "package_attestation_catalog_sources_merge_registry_embedded_and_files",
+          "package_attestation_catalog_sources_reject_conflicting_explicit_file",
+          "query_commands_honor_system_flag",
+          "runtime_module_publication_is_private_under_any_umask"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/native_deployment.rs": {
+        "assertion_macros": {
+          "bail": 1,
+          "ensure": 33
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/aos/packages/aos-package-manager/src/native_deployment/bootstrap.rs": {
+        "assertion_macros": {
+          "assert": 18,
+          "assert_eq": 7,
+          "ensure": 3
+        },
+        "ignores": [],
+        "tests": [
+          "descriptor_preserves_source_roles_and_requires_supplemental_roots",
+          "invalid_profile_bindings_are_rejected_before_creating_a_lock",
+          "live_recovery_requires_exact_publication_sequence_and_content",
+          "partial_journal_is_rejected_before_image_admission",
+          "uninitialized_profile_does_not_admit_unused_image_inputs"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/native_deployment/container.rs": {
+        "assertion_macros": {
+          "assert": 4,
+          "assert_eq": 8,
+          "ensure": 3
+        },
+        "ignores": [],
+        "tests": [
+          "image_authority_retains_the_original_receipt_identity",
+          "prelaunch_defers_only_pending_complete_attempts",
+          "preparation_preserves_installed_and_complete_receipts"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/native_deployment/evaluate.rs": {
+        "assertion_macros": {
+          "ensure": 3
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/aos/packages/aos-package-manager/src/native_deployment/evaluate/validation.rs": {
+        "assertion_macros": {
+          "ensure": 9
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/aos/packages/aos-package-manager/src/native_deployment/evaluate/validation/tests.rs": {
+        "assertion_macros": {
+          "assert": 18,
+          "assert_eq": 8,
+          "ensure": 1,
+          "panic": 3
+        },
+        "ignores": [],
+        "tests": [
+          "accepts_a_compatible_current_target_without_replacing_retained_identity",
+          "checks_current_target_without_changing_historical_replay",
+          "checks_payload_configuration_dependencies_when_its_module_is_selected",
+          "opens_moduleless_requesters_and_checks_their_original_edges",
+          "projects_original_recipe_policy_for_moduleless_payload_releases",
+          "rejects_changed_module_os_requirements_even_with_a_compatible_host",
+          "rejects_edited_original_requirement_and_selected_source",
+          "rejects_exact_dependency_source_drift_and_missing_modules",
+          "rejects_extra_module_or_missing_requester_catalog_entries_before_reading",
+          "rejects_missing_or_unselected_requester_companions",
+          "rejects_moduleless_os_requirements_without_a_matching_retained_release",
+          "rejects_payloads_without_retained_envelope_catalogs",
+          "replays_exact_and_locked_modules_without_registry_discovery",
+          "retains_canonical_envelopes_for_named_payload_outputs",
+          "validates_payload_identity_without_importing_its_configuration_dependencies"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/native_registry.rs": {
+        "assertion_macros": {
+          "assert": 5,
+          "assert_eq": 6,
+          "assert_ne": 1,
+          "bail": 1,
+          "ensure": 26
+        },
+        "ignores": [],
+        "tests": [
+          "catalog_admission_normalizes_nix_hashes_without_changing_identity",
+          "companion_catalog_preserves_the_exact_selected_module_source",
+          "module_resolution_rejects_ambiguous_artifact_contexts",
+          "repeated_observation_preserves_original_source_authority",
+          "runtime_artifact_cache_preserves_same_coordinate_distinct_payloads"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/native_registry/available.rs": {
+        "assertion_macros": {
+          "assert": 4,
+          "ensure": 15
+        },
+        "ignores": [],
+        "tests": [
+          "original_available_graph_accepts_exact_closure_and_rejects_changed_bytes_or_edges",
+          "original_available_graph_rejects_a_different_blessed_dependency_realization",
+          "retained_available_graph_requires_closed_dependency_evidence"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/native_registry/roots.rs": {
+        "assertion_macros": {
+          "assert": 3,
+          "assert_eq": 3,
+          "ensure": 2
+        },
+        "ignores": [],
+        "tests": [
+          "closure_rejects_missing_dependencies_and_conflicting_same_name_packages",
+          "independent_handler_remains_a_root_while_interfaces_are_dependencies",
+          "moduleless_requester_prevents_its_dependency_becoming_an_independent_root",
+          "source_cycles_have_one_root_and_downstream_cycles_have_none"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/native_registry/solver.rs": {
+        "assertion_macros": {
+          "bail": 1,
+          "ensure": 9
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/aos/packages/aos-package-manager/src/native_registry/solver/tests.rs": {
+        "assertion_macros": {
+          "assert": 18,
+          "assert_eq": 5
+        },
+        "ignores": [],
+        "tests": [
+          "cancellation_is_not_reported_as_dependency_conflict",
+          "compatible_package_versions_are_selected",
+          "depth_exhaustion_remains_a_terminal_error",
+          "elapsed_search_budget_is_terminal",
+          "exact_edges_do_not_become_semver_ranges_or_other_providers",
+          "locked_replay_rejects_changed_requirements_and_source_choices",
+          "moduleless_requesters_have_authenticatable_companion_bindings",
+          "os_compatibility_filters_candidates_without_changing_the_host_release",
+          "os_constraints_on_moduleless_roots_require_a_compatible_host_release",
+          "retained_exact_only_source_is_preferred_when_a_range_is_introduced",
+          "scoped_upgrade_protects_shared_dependencies_and_their_transitive_choices",
+          "transitive_conflict_backtracks_to_an_older_compatible_release",
+          "unrelated_packages_cannot_satisfy_a_requirement",
+          "upgrade_refreshes_dependencies_added_by_a_new_candidate_release",
+          "valid_lock_is_preferred_until_explicit_upgrade"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/package_attestation.rs": {
+        "assertion_macros": {
+          "assert": 47,
+          "assert_eq": 65,
+          "assert_ne": 6,
+          "bail": 89,
+          "panic": 1
+        },
+        "ignores": [],
+        "tests": [
+          "append_event_log_continues_sequence_numbers",
+          "canonical_package_measurement_catalog_dedupes_matching_entries",
+          "canonical_package_measurement_catalog_rejects_conflicts",
+          "empty_package_set_still_has_replayable_set_event",
+          "generation_attestation_event_is_replayable_and_identity_bound",
+          "native_companion_commitments_change_package_measurements",
+          "package_event_log_decoder_accepts_jsonl_bytes",
+          "package_event_log_decoder_accepts_tcg_pcr_event2_binary_profile",
+          "package_event_log_decoder_rejects_unsupported_tcg_digest_count",
+          "package_event_log_verifier_accepts_catalog_match",
+          "package_event_log_verifier_accepts_empty_package_set_event",
+          "package_event_log_verifier_accepts_legacy_record_shape",
+          "package_event_log_verifier_rejects_catalog_mismatch",
+          "package_event_log_verifier_rejects_digest_list_mismatch",
+          "package_event_log_verifier_rejects_empty_log",
+          "package_event_log_verifier_rejects_null_pcr_event_field",
+          "package_event_log_verifier_rejects_package_set_count_mismatch",
+          "package_event_log_verifier_rejects_package_set_digest_mismatch",
+          "package_event_log_verifier_rejects_partial_pcr_event_shape",
+          "package_event_log_verifier_rejects_pcr_mismatch",
+          "package_event_log_verifier_rejects_sequence_number_mismatch",
+          "package_event_log_verifier_replays_from_pcr_baseline",
+          "package_event_log_verifier_reports_latest_package_set",
+          "package_measurement_accepts_matching_registry_measurement",
+          "package_measurement_catalog_entries_round_trip_through_json",
+          "package_measurement_changes_when_manifest_changes",
+          "package_measurement_includes_root_and_manifest_digests",
+          "package_measurement_rejects_mismatched_registry_measurement",
+          "package_measurement_uses_authenticated_payload_root_digest",
+          "pcr_extension_failure_preserves_durable_cel_and_recovery_prefix",
+          "pcr_extension_rejects_digest_mismatch_before_starting_the_process",
+          "pcr_extension_transports_large_records_as_exact_bounded_digest_arguments",
+          "quote_bundle_snapshot_copies_members_to_private_dir",
+          "quote_bundle_verifier_rejects_invalid_nonce_before_tools",
+          "quote_identity_catalog_accepts_matching_identity",
+          "quote_identity_catalog_rejects_mismatched_identity",
+          "quote_identity_catalog_validates_all_requested_files_before_matching",
+          "quote_identity_enrollment_rejects_unknown_method",
+          "quote_identity_enrollment_wins_over_duplicate_legacy_pin",
+          "quote_identity_enrollment_writes_catalog_and_marks_trusted",
+          "quote_nonce_parser_normalizes_hex",
+          "quote_nonce_parser_rejects_invalid_hex",
+          "quote_output_dir_must_be_new_absolute_and_private",
+          "quote_output_dir_rejects_symlink_parent",
+          "quote_pcr_values_extracts_pcr15",
+          "quote_pcr_values_rejects_unexpected_size",
+          "tpm2_pcrread_parser_extracts_pcr15",
+          "trusted_tpm2_tool_path_requires_absolute_expected_binary"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/profile/deployment.rs": {
+        "assertion_macros": {
+          "assert": 33,
+          "assert_eq": 46,
+          "assert_ne": 1,
+          "bail": 4,
+          "ensure": 21
+        },
+        "ignores": [],
+        "tests": [
+          "consecutive_installations_publish_files_while_startup_results_remain_pending",
+          "inspection_never_creates_journals_for_an_uninitialized_profile",
+          "inspection_rejects_tampered_generation_marker",
+          "mismatched_publication_fails_before_moving_profile_link",
+          "pruning_releases_old_journal_generation_before_profile_tree",
+          "reconciliation_preserves_publication_and_replays_after_reopening",
+          "recovery_inspection_preserves_torn_journal_tail_and_never_exposes_pending_state",
+          "recovery_publishes_staged_tree_after_pending_admission_failure",
+          "recovery_repairs_link_from_committed_transaction",
+          "recovery_selects_exact_sequence_when_desired_content_repeats",
+          "refreshed_admission_preserves_locked_pending_generation_until_recovery",
+          "rejected_artifacts_preserve_current_profile",
+          "retained_export_preserves_exact_committed_scope_without_effect_dispatch",
+          "retained_export_rejects_missing_or_corrupt_publications_without_repair",
+          "retained_export_uses_committed_publication_without_repairing_current_link"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/profile/lock.rs": {
+        "assertion_macros": {
+          "assert": 2,
+          "assert_eq": 1,
+          "ensure": 1
+        },
+        "ignores": [],
+        "tests": [
+          "profile_mutation_lock_rejects_symbolic_links",
+          "profile_mutation_ownership_blocks_other_writers_and_releases_inherited_descriptors"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/profile/merge.rs": {
+        "assertion_macros": {
+          "assert": 53,
+          "assert_eq": 34
+        },
+        "ignores": [],
+        "tests": [
+          "build_then_clear_round_trip",
+          "clear_clean_generation",
+          "clear_preserves_profile_bookkeeping",
+          "conflict_last_wins",
+          "conflicts_use_package_metadata_instead_of_root_hashes",
+          "directory_symlink_and_real_directory_conflicts_follow_package_order",
+          "empty_dirs_not_created",
+          "empty_store_paths",
+          "etc_and_include_merge",
+          "generation_merge_prefers_explicit_roots_over_auto_dependencies",
+          "legacy_root_labels_strip_only_the_matching_store_hash",
+          "man_pages_correct_sections",
+          "rebuilding_a_shallow_profile_does_not_modify_the_store",
+          "scan_finds_fhs_files",
+          "scan_ignores_non_fhs_files",
+          "share_recurses_through_man_and_completions",
+          "shared_package_data_directories_coexist",
+          "single_package_merge",
+          "two_packages_merge"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/profile/meta.rs": {
+        "assertion_macros": {
+          "assert": 17,
+          "assert_eq": 19,
+          "bail": 1
+        },
+        "ignores": [],
+        "tests": [
+          "auto_installed_filters",
+          "delete_meta_idempotent",
+          "delete_meta_removes_file",
+          "held_packages_filters",
+          "list_meta_returns_all",
+          "meta_by_registry_filters",
+          "orphaned_by_registry_filters",
+          "orphaned_by_registry_missing_profile_is_empty",
+          "read_meta_missing_returns_none",
+          "rebuild_meta_restores_generation_snapshot_without_registry",
+          "set_held_missing_hash_errors",
+          "set_held_modifies_flag",
+          "set_held_updates_current_generation_snapshot",
+          "write_read_round_trip"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/profile/mod.rs": {
+        "assertion_macros": {
+          "assert": 17,
+          "assert_eq": 25
+        },
+        "ignores": [],
+        "tests": [
+          "current_generation_after_switch",
+          "current_generation_none_initially",
+          "exhausted_counter_does_not_create_a_generation",
+          "has_roots_empty_generation",
+          "list_generations_sorted",
+          "new_generation_creates_directory",
+          "new_generation_increments",
+          "open_creates_directory_structure",
+          "open_is_idempotent",
+          "prune_keeps_latest_and_current",
+          "roots_lists_usr_entries",
+          "source_roots_lists_src_entries",
+          "stale_counter_cannot_reuse_an_existing_generation",
+          "state_round_trip",
+          "switch_to_creates_current_symlink"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/query.rs": {
+        "assertion_macros": {
+          "assert": 9,
+          "assert_eq": 31,
+          "assert_ne": 1,
+          "bail": 3
+        },
+        "ignores": [],
+        "tests": [
+          "format_size_units",
+          "installed_by_source_keeps_same_name_registries_distinct",
+          "list_installed_filters_correctly",
+          "list_upgradable_detects_changes",
+          "resolve_dependency_names_resolves_known",
+          "resolve_dependency_names_unknown_stays_hash",
+          "running_sysroot_is_an_installed_upgrade_source",
+          "search_finds_by_description",
+          "search_finds_by_name",
+          "search_names_only_skips_description",
+          "search_with_registry_filter",
+          "show_formats_package_info",
+          "unsynced_names_empty_when_all_synced",
+          "unsynced_names_flags_registry_without_packages_dir"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/remove.rs": {
+        "assertion_macros": {
+          "assert": 24,
+          "assert_eq": 9,
+          "ensure": 1
+        },
+        "ignores": [],
+        "tests": [
+          "copy_roots_except_empty_exclusion_copies_all",
+          "copy_roots_except_excludes_correctly",
+          "copy_roots_except_handles_src",
+          "copy_roots_except_retains_only_selected_documentation_roots",
+          "find_installed_empty_profile_errors",
+          "find_installed_error_for_unknown",
+          "find_installed_finds_matching",
+          "find_orphans_excludes_explicit",
+          "find_orphans_excludes_pending_removal",
+          "find_orphans_returns_auto_installed",
+          "removal_summary_format",
+          "root_hashes_for_installed_includes_source_roots",
+          "select_installed_for_removal_keeps_implicit_only_behavior",
+          "select_installed_for_removal_prefers_explicit_duplicate_name"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/resolve.rs": {
+        "assertion_macros": {
+          "assert": 18,
+          "assert_eq": 15
+        },
+        "ignores": [],
+        "tests": [
+          "collect_unique_deduplicates",
+          "collect_unique_empty",
+          "resolve_falls_back_to_bfs_for_legacy_registry",
+          "resolve_leaf_package",
+          "resolve_leaf_with_store_graph",
+          "resolve_multiple_empty",
+          "resolve_multiple_packages",
+          "resolve_package_not_found",
+          "resolve_single_package",
+          "resolve_uses_store_graph",
+          "resolve_with_registry_filter",
+          "total_nar_size_computed",
+          "unresolvable_refs_skipped"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/rollback.rs": {
+        "assertion_macros": {
+          "assert": 2,
+          "assert_eq": 4,
+          "bail": 4
+        },
+        "ignores": [],
+        "tests": [
+          "rollback_no_current_generation_errors",
+          "rollback_no_previous_generation_errors",
+          "rollback_switches_to_previous_generation",
+          "rollback_to_specific_generation"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/runtime_authoring.rs": {
+        "assertion_macros": {
+          "ensure": 9
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/aos/packages/aos-package-manager/src/runtime_authoring/tests.rs": {
+        "assertion_macros": {
+          "assert": 13,
+          "assert_eq": 8,
+          "bail": 1,
+          "panic": 4
+        },
+        "ignores": [],
+        "tests": [
+          "aliases_and_non_nix_sources_are_not_copied",
+          "existing_empty_and_modified_worktrees_never_load_committed_sources",
+          "failed_custody_loading_does_not_publish_a_partial_worktree",
+          "first_add_preserves_boot_source_and_relative_imports",
+          "private_preview_preserves_absent_worktree_and_rejects_unselected_siblings",
+          "seeded_host_can_be_replaced_and_removed_normally",
+          "selected_tree_rejects_missing_custody_and_multiple_roots"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/runtime_boundary.rs": {
+        "assertion_macros": {
+          "assert": 11,
+          "assert_eq": 19,
+          "bail": 4
+        },
+        "ignores": [],
+        "tests": [
+          "detects_only_the_exact_runtime_markers",
+          "image_prepare_parser_preserves_registry_and_admission_purpose",
+          "image_prepare_requires_a_writable_host_and_system_scope",
+          "operator_configuration_uses_the_profile_seeded_by_its_runtime",
+          "read_only_container_classifies_registry_authoring_commands",
+          "read_only_container_rejects_mutations_and_allows_queries",
+          "read_only_system_mutations_are_rejected",
+          "remove_preserves_user_default_and_selects_system_scope_explicitly",
+          "requested_scopes_share_the_container_runtime_profile",
+          "unset_runtime_preserves_system_and_hidden_command_admission",
+          "writable_container_allows_user_scope_and_rejects_host_operations"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/runtime_modules.rs": {
+        "assertion_macros": {
+          "assert": 5,
+          "assert_eq": 1,
+          "bail": 18
+        },
+        "ignores": [],
+        "tests": [
+          "descriptor_copy_enforces_per_file_limit",
+          "descriptor_copy_rejects_hard_links",
+          "descriptor_copy_rejects_writable_objects_for_root_authority",
+          "discovery_is_sorted_and_excludes_private_helpers",
+          "discovery_rejects_symlinks_and_non_nix_files"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/source.rs": {
+        "assertion_macros": {
+          "assert": 6,
+          "assert_eq": 12,
+          "assert_ne": 1,
+          "bail": 6
+        },
+        "ignores": [],
+        "tests": [
+          "source_lookup_prefers_installed_package_name",
+          "source_no_source_drv_errors",
+          "source_package_not_found",
+          "source_shows_drv_path",
+          "source_verify_uses_installed_source_metadata_without_registry_entry",
+          "verify_finds_installed_package_meta",
+          "verify_hash_comparison_match",
+          "verify_hash_comparison_mismatch",
+          "verify_missing_package_not_found",
+          "verify_resolves_installed_store_hash_not_latest_candidate"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/store.rs": {
+        "assertion_macros": {
+          "assert": 30,
+          "assert_eq": 34,
+          "bail": 8,
+          "ensure": 1
+        },
+        "ignores": [],
+        "tests": [
+          "atomic_symlink_creates_new",
+          "atomic_symlink_noop_when_same_target",
+          "atomic_symlink_replaces_existing",
+          "create_gc_roots_creates_correct_src_symlink",
+          "create_gc_roots_creates_correct_usr_symlink",
+          "create_gc_roots_creates_usr_and_src_dirs",
+          "create_gc_roots_idempotent",
+          "create_gc_roots_multiple_packages",
+          "create_gc_roots_skips_empty_source_drv",
+          "image_reconciliation_preserves_pending_and_removes_only_owned_roots",
+          "image_retention_does_not_keep_all_releases_of_one_library",
+          "image_retention_preserves_exact_inputs_and_latest_distinct_library",
+          "image_retention_rejects_string_prefix_matches",
+          "parse_import_output_empty",
+          "parse_import_output_multiple_paths",
+          "parse_import_output_single_path",
+          "parse_import_output_trailing_whitespace",
+          "parse_import_output_unexpected",
+          "parse_path_lines_basic",
+          "parse_path_lines_empty",
+          "parse_path_lines_trims_whitespace",
+          "parse_path_lines_with_blank_lines",
+          "remove_gc_roots_idempotent",
+          "remove_gc_roots_multiple_hashes",
+          "remove_gc_roots_removes_src_by_drv_hash",
+          "remove_gc_roots_removes_symlinks",
+          "src_symlink_uses_drv_path_hash",
+          "staged_import_cache_preserves_signed_metadata_and_isolates_payload",
+          "usr_symlink_uses_store_path_hash"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/sysroot.rs": {
+        "assertion_macros": {
+          "assert": 4,
+          "assert_eq": 8,
+          "bail": 5,
+          "ensure": 10
+        },
+        "ignores": [],
+        "tests": [
+          "format_size_values",
+          "running_image_reads_native_identity_under_mounted_root",
+          "running_image_rejects_metadata_parent_symlink_escape",
+          "running_image_rejects_metadata_symlink_escape",
+          "running_image_rejects_tampered_var_index_metadata",
+          "system_transition_mode_default"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/sysroot/activatability.rs": {
+        "assertion_macros": {
+          "assert": 6,
+          "assert_eq": 1,
+          "bail": 1
+        },
+        "ignores": [],
+        "tests": [
+          "blocked_reports_preserve_stable_reason_order",
+          "reason_details_are_bounded_at_utf8_boundaries",
+          "successful_reports_are_activatable"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/sysroot/image_prepare.rs": {
+        "assertion_macros": {
+          "ensure": 4
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/aos/packages/aos-package-manager/src/sysroot/image_rollout.rs": {
+        "assertion_macros": {
+          "assert": 13,
+          "assert_eq": 2,
+          "ensure": 16
+        },
+        "ignores": [],
+        "tests": [
+          "active_rollout_cannot_be_superseded_or_made_vacuous",
+          "image_selection_rebinds_running_state_to_immutable_metadata",
+          "image_selection_rejects_state_or_executor_gate_bypasses",
+          "native_executor_identity_is_a_canonical_store_root",
+          "preflight_rejects_state_that_differs_from_authenticated_boot_identity"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/sysroot/image_rollout/ability.rs": {
+        "assertion_macros": {
+          "assert": 29,
+          "assert_eq": 44,
+          "bail": 9,
+          "ensure": 57
+        },
+        "ignores": [],
+        "tests": [
+          "exhausted_boot_cannot_replace_a_running_candidate_health_branch",
+          "exhausted_boot_fallback_never_records_candidate_health",
+          "fallback_retirement_preserves_the_predecessor_outcome_after_restart",
+          "historical_retirement_remains_observable_after_a_later_image_boots",
+          "ordinary_retirement_requires_actual_boot_and_expired_retention",
+          "preflight_rejects_stale_or_unbounded_fresh_rollouts",
+          "read_only_postcondition_observation_never_updates_provider_state",
+          "recovery_observes_partial_health_and_terminal_branches",
+          "retention_directories_are_private_and_roots_reject_regular_occupants",
+          "retention_precedes_prepare_drain_and_selection",
+          "retention_retry_completes_after_every_durable_publication_prefix",
+          "retirement_removes_rollout_roots_without_hiding_the_active_generation",
+          "retirement_resumes_after_partial_rollout_root_cleanup",
+          "stale_identity_and_early_retirement_fail_without_effects",
+          "terminal_hold_recovery_rejects_tampered_retention_roots",
+          "terminal_status_cannot_complete_before_the_matching_image_is_active",
+          "unhealthy_assessment_withdraws_before_fallback_can_commit"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/sysroot/image_rollout/boot_commit.rs": {
+        "assertion_macros": {
+          "assert": 5,
+          "assert_eq": 5,
+          "bail": 3,
+          "ensure": 12
+        },
+        "ignores": [],
+        "tests": [
+          "boot_counter_failure_preserves_its_distinct_terminal_reason",
+          "boot_state_accepts_the_native_admission_digest_unchanged",
+          "boot_state_rejects_noncanonical_or_empty_library_identity",
+          "finalization_publishes_distinct_rollout_outcomes",
+          "rollout_validation_rejects_ambiguous_identity"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/sysroot/image_rollout/model.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/aos/packages/aos-package-manager/src/sysroot/image_rollout/observer.rs": {
+        "assertion_macros": {
+          "ensure": 5
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/aos/packages/aos-package-manager/src/sysroot/image_rollout/provider.rs": {
+        "assertion_macros": {
+          "assert": 4,
+          "assert_eq": 3,
+          "bail": 5,
+          "ensure": 17
+        },
+        "ignores": [],
+        "tests": [
+          "absent_drain_is_rejected_before_any_platform_invocation",
+          "lost_results_require_retained_payloads_before_selection_or_success_proofs",
+          "retirement_contract_cannot_dispatch_selection",
+          "uncertain_and_accepted_restarts_are_never_reissued"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/sysroot/image_rollout/retirement_submission.rs": {
+        "assertion_macros": {
+          "assert": 5,
+          "bail": 1,
+          "ensure": 8
+        },
+        "ignores": [],
+        "tests": [
+          "expired_selected_lease_is_eligible_for_third_image",
+          "forged_receipt_or_changed_running_image_is_rejected",
+          "uncertain_selection_is_not_retirement_authority",
+          "unexpired_lease_cannot_authorize_overwrite"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/sysroot/image_rollout/submission.rs": {
+        "assertion_macros": {
+          "ensure": 4
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/aos/packages/aos-package-manager/src/sysroot/image_stage.rs": {
+        "assertion_macros": {
+          "assert": 17,
+          "assert_eq": 18,
+          "ensure": 34
+        },
+        "ignores": [],
+        "tests": [
+          "authenticated_receipt_indexes_candidate_without_selecting_it",
+          "cancellation_prevents_starting_a_physical_preparation_child",
+          "candidate_metadata_preserves_literal_kernel_identity",
+          "committed_staging_recovers_after_index_write_before_intent_cleanup",
+          "completed_stage_can_resume_selection_without_claiming_its_slot_again",
+          "delivery_bytes_must_match_both_signed_length_and_digest",
+          "foreign_receipt_cannot_publish_roots_or_mutate_index",
+          "kernel_identity_handles_regular_missing_and_nonregular_entries",
+          "preparation_busy_guard_rejects_pending_and_active_transitions",
+          "retirement_revalidation_fences_concurrent_selection_and_staging"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/sysroot_lock.rs": {
+        "assertion_macros": {
+          "assert": 11,
+          "assert_eq": 41,
+          "panic": 4
+        },
+        "ignores": [],
+        "tests": [
+          "check_sysroot_lock_detects_divergence",
+          "check_sysroot_lock_no_overlap",
+          "check_sysroot_lock_no_violations",
+          "check_sysroot_lock_partial_overlap",
+          "format_violation_error_message",
+          "ignore_filter_all_removes_all",
+          "ignore_filter_enforce_keeps_all",
+          "ignore_filter_names_removes_specific",
+          "ignore_parse_all",
+          "ignore_parse_empty_string_is_all",
+          "ignore_parse_names",
+          "ignore_parse_none_is_enforce",
+          "parse_store_ref_full_path",
+          "parse_store_ref_glibc",
+          "parse_store_ref_hash_only",
+          "parse_store_ref_libstdcpp",
+          "parse_store_ref_linux",
+          "parse_store_ref_multi_hyphen_name",
+          "parse_store_ref_no_version",
+          "parse_store_ref_openssl",
+          "parse_store_ref_var_lib_store"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/sysroot_lock/native_target.rs": {
+        "assertion_macros": {
+          "assert": 8,
+          "assert_eq": 1,
+          "bail": 2,
+          "ensure": 10
+        },
+        "ignores": [],
+        "tests": [
+          "existing_boot_state_preserves_the_host_lock_even_with_container_metadata",
+          "native_authority_requires_the_image_scope_release_and_admitted_inputs",
+          "native_profile_allows_read_only_first_start_but_checks_existing_publication"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/types.rs": {
+        "assertion_macros": {
+          "assert": 2,
+          "assert_eq": 5,
+          "bail": 11
+        },
+        "ignores": [],
+        "tests": [
+          "image_generation_state_round_trip"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/update.rs": {
+        "assertion_macros": {
+          "assert_eq": 1
+        },
+        "ignores": [],
+        "tests": [
+          "sync_summary_reports_every_package_delta"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/upgrade.rs": {
+        "assertion_macros": {
+          "assert": 19,
+          "assert_eq": 17,
+          "bail": 5
+        },
+        "ignores": [],
+        "tests": [
+          "empty_candidates_returns_empty",
+          "filter_passes_through_normal",
+          "filter_separates_excluded",
+          "filter_separates_held",
+          "find_upgradable_detects_newer_version",
+          "find_upgradable_skips_auto_installed_dependencies",
+          "find_upgradable_skips_non_apm",
+          "find_upgradable_skips_up_to_date",
+          "find_upgradable_with_filter",
+          "installed_flags_by_name_prefers_explicit_duplicate_name",
+          "installed_flags_by_name_preserves_explicit_and_held_state",
+          "obsolete_installed_hashes_skips_only_unneeded_apm_roots",
+          "verify_secondary_artifact_downloads_rejects_image_references"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/upgrade/module_upgrade.rs": {
+        "assertion_macros": {
+          "assert": 1,
+          "assert_eq": 2,
+          "ensure": 1
+        },
+        "ignores": [],
+        "tests": [
+          "held_named_output_protects_the_package_owner",
+          "interface_refresh_obeys_requested_excluded_and_held_owners",
+          "unchanged_payload_is_eligible_for_interface_refresh"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/src/verify.rs": {
+        "assertion_macros": {
+          "assert": 25,
+          "assert_eq": 16,
+          "bail": 4,
+          "panic": 3
+        },
+        "ignores": [],
+        "tests": [
+          "extract_regular_file_nar_rejects_executable_roots",
+          "extract_regular_file_nar_rejects_signed_size_disagreement",
+          "extract_regular_file_nar_rejects_trailing_archive_data",
+          "extract_regular_file_nar_streams_exact_contents",
+          "hash_format_is_canonical",
+          "sha256_file_empty",
+          "sha256_file_known_content",
+          "sha256_file_nonexistent",
+          "sha256_stream_consistency",
+          "sha256_stream_empty",
+          "sha256_stream_hello",
+          "sha256_stream_large_data",
+          "signed_nar_identity_rejects_expansion_beyond_declared_size",
+          "uncompressed_nar_transport_preserves_blessed_identity",
+          "verify_download_hash_match",
+          "verify_download_hash_mismatch",
+          "verify_downloads_enforcing_rejects_unmapped_path",
+          "verify_downloads_legacy_falls_back_to_narinfo_hash",
+          "verify_downloads_uses_blessed_bytes_over_narinfo",
+          "verify_nar_blessed_aborts_past_size_cap",
+          "verify_nar_blessed_accepts_any_of_multiple_entries",
+          "verify_nar_blessed_accepts_matching_entry",
+          "verify_nar_blessed_rejects_size_mismatch_with_right_hash",
+          "verify_nar_blessed_rejects_wrong_content",
+          "verify_nar_blessed_requires_a_blessed_nar",
+          "verify_nar_hash_mismatch",
+          "verify_nar_hash_zstd",
+          "verify_nar_hash_zstd_accepts_sri_hash",
+          "verify_store_path_match",
+          "verify_store_path_match_with_whitespace",
+          "verify_store_path_mismatch"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/tests/common/mod.rs": {
+        "assertion_macros": {
+          "bail": 4
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/aos/packages/aos-package-manager/tests/package_command_scopes.rs": {
+        "assertion_macros": {
+          "assert": 16,
+          "assert_eq": 6,
+          "panic": 1
+        },
+        "ignores": [],
+        "tests": [
+          "desired_set_application_requires_explicit_system_scope",
+          "image_and_configuration_operations_have_separate_commands",
+          "package_commands_select_the_same_scope_consistently",
+          "system_dispatch_child",
+          "system_package_dispatch_does_not_require_image_generation_authority",
+          "system_registry_scope_precedes_the_registry_operation"
+        ]
+      },
+      "crates/aos/packages/aos-package-manager/tests/registry_cache_e2e.rs": {
+        "assertion_macros": {
+          "assert": 7,
+          "assert_eq": 13,
+          "bail": 3
+        },
+        "ignores": [],
+        "tests": [
+          "static_nix_cache_e2e_generates_serves_and_downloads_real_store_path"
+        ]
+      }
+    },
+    "test_attributes": 628
+  },
+  "schema_version": 1,
+  "status": "Conservative native package-manager tests, strict Clippy, Rustdoc and formatting passed"
+}

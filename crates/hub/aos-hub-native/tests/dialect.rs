@@ -431,7 +431,7 @@ async fn configure_dialect_writers(
         common::create_valid_write_credential(db, binding_id, "secret://dialect/write/v1").await;
     let revision = db
         .create_binding_write_revision(&NewBindingWriteRevision {
-            binding_id: binding_id,
+            binding_id,
             write_credential_generation: credential_generation,
             writes_supported: true,
             conditional_writes_supported: true,
@@ -714,7 +714,7 @@ async fn exercise(db: &Database) {
     );
 
     // -- binding + managed registry -----------------------------------
-    let binding = common::create_local_binding(&db, org, "primary", "/srv/aos-hub").await;
+    let binding = common::create_local_binding(db, org, "primary", "/srv/aos-hub").await;
     db.create_project(org, "infra/prod", "Production")
         .await
         .unwrap();

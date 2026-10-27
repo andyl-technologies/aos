@@ -1,0 +1,33 @@
+{
+  "auditor_sha256": "e017d74844c4b220ad12cdbcedd85b07f9dce16ea2b51b39eca9d6ceb45c4148",
+  "cargo": "/nix/store/bl0arfg10zr77ldqzml996069ahdqcnf-aos-bazel-guest-cargo-oracle-1",
+  "cases": {
+    "ambiguous-library-and-binary": {
+      "returncode": 1,
+      "stderr_sha256": "de24513fc6b295ad020670cb41dba1781ae0ea9bc7b8b74c6b16e861e7f0e020"
+    },
+    "missing-library-source": {
+      "returncode": 1,
+      "stderr_sha256": "6e1de116fea3c75783e5ddce2207280b1f79632daa1fcbddc6a8b277f6462b4d"
+    },
+    "native-release-acceptance": {
+      "returncode": 0,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "wrong-assertion-profile": {
+      "returncode": 1,
+      "stderr_sha256": "0716d444efb309d61f2c789f9fa1e73704d9c13d3694270f3e24cbd5ba212932"
+    },
+    "wrong-target-optimization": {
+      "returncode": 1,
+      "stderr_sha256": "e92d5322d992e990788f521ca5094f4ada9eabd96b40d247210a7667288088fe"
+    }
+  },
+  "declaration_sha256": "80bb140556f108a56376909540c23510418ea559494b67f030d535362f9c7ff1",
+  "limits": [
+    "Rechecks actual retained compiler requests with deliberately incorrect audit declarations; no compiler execution is simulated or newly qualified."
+  ],
+  "schema_version": 1,
+  "status": "PASS",
+  "tests": "/nix/store/xh8sm1wbik0nd0sd2ikc2k44yx41961c-aos-bazel-guest-tests-1"
+}

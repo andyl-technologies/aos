@@ -1,0 +1,662 @@
+{
+  "comparison_base_commit": "96f43b6b9c",
+  "configured_inventory_outputs": {
+    "activation-core": "/nix/store/kif41x58745h6zq7zcl7wir9wpzbsnzd-aos-bazel-activation-core-inventory-1",
+    "activation-core-production": "/nix/store/g8wm4srb1qk0jpqw0vvyl3112q865yqz-aos-bazel-activation-core-production-inventory-1",
+    "activation-crucible": "/nix/store/ij9x3gijpc81rpb1b6jnzhv60gqav443-aos-bazel-activation-crucible-inventory-1",
+    "activation-crucible-production": "/nix/store/jhlpljnym60pb2jp38hlc1l8nqmsvq3i-aos-bazel-activation-crucible-production-inventory-1",
+    "activation-storage": "/nix/store/awqyhdj7fazlr6yxy0zqyyydlqqgxygb-aos-bazel-activation-storage-inventory-1",
+    "activation-storage-production": "/nix/store/gl56l43mzkiyfl7796rrk4g1v9l6xp6f-aos-bazel-activation-storage-production-inventory-1",
+    "activation-systemd": "/nix/store/7v9myxwmz4xh5hrblqda4a3da2pd9app-aos-bazel-activation-systemd-inventory-1",
+    "activation-systemd-parser": "/nix/store/fx1iylps8mdgzmcm4x3wickca9d5inxh-aos-bazel-activation-systemd-parser-inventory-1",
+    "activation-systemd-production": "/nix/store/naljl4yfc1fzi1nr6z5y3ypxcb54rl25-aos-bazel-activation-systemd-production-inventory-1",
+    "boot-pilot": "/nix/store/86qkz6m18z113r7jcnzrafk0dm061751-aos-bazel-boot-pilot-inventory-1",
+    "boot-preparation": "/nix/store/hq5hcm6fmxbdhp6vpcgi1bjpfs48la0z-aos-bazel-boot-preparation-inventory-1",
+    "boot-preparation-minimal": "/nix/store/hp7yg2lxsi7q6hda2viz02g1ig2lx252-aos-bazel-boot-preparation-minimal-inventory-1",
+    "boot-preparation-minimal-production": "/nix/store/9crqifa6ap9y6ab6ara2h8pv72d1m6y2-aos-bazel-boot-preparation-minimal-production-inventory-1",
+    "boot-preparation-production": "/nix/store/syzrjqx6k4jlfiy213431n4namp2ykmj-aos-bazel-boot-preparation-production-inventory-1",
+    "boot-preparation-standalone": "/nix/store/2bm411fffk0n5dsfnhd7njp3bky46nv4-aos-bazel-boot-preparation-standalone-inventory-1",
+    "build-services": "/nix/store/yn4xcpjs36ji2dljrbpv68l8mhd9fhqx-aos-bazel-build-services-inventory-1",
+    "cli-support": "/nix/store/nzn0d58c7k9lpj3485200h875xvccrmc-aos-bazel-cli-support-inventory-1",
+    "contracts": "/nix/store/7gdli044v93nhvl0a84c3n5rymsdgaf3-aos-bazel-contracts-inventory-1",
+    "control": "/nix/store/r97x05p3jx8lh14x7lxqn43q2vn7b81l-aos-bazel-control-inventory-1",
+    "crucible-cli": "/nix/store/rilvc4bvn4m22z5bcsbw2ir4ksgsxw77-aos-bazel-crucible-cli-inventory-1",
+    "daemon": "/nix/store/2pk5ivnvfwwhdr237xfd1j6nsfznpsbq-aos-bazel-daemon-inventory-1",
+    "deployment": "/nix/store/j9fvar2r2cs0nv264j5m31kqbgvajxds-aos-bazel-deployment-inventory-1",
+    "device": "/nix/store/m5pcz4q4qzqylysbr6248c2g2887knjb-aos-bazel-device-inventory-1",
+    "engine": "/nix/store/04ii24yrzxl9ggp4n9sxj4k52mkc75ch-aos-bazel-engine-inventory-1",
+    "fixture": "/nix/store/w643614dfnihq2jx6890md3i4mmw7yw6-aos-bazel-fixture-inventory-1",
+    "formats": "/nix/store/f98hhw6dn7casic8al3likgjyjagq9p3-aos-bazel-formats-inventory-1",
+    "guest": "/nix/store/vzzfs4kyl19dxmxlcxad97jqakavs2hv-aos-bazel-guest-inventory-1",
+    "hub-client": "/nix/store/0ccgdh3r9v0338sd3ij249i93wxyicm6-aos-bazel-hub-client-inventory-1",
+    "hub-console": "/nix/store/jwcg1si5d93lc7knm6bfh8bz0g8nyqvv-aos-bazel-hub-console-inventory-1",
+    "hub-console-browser": "/nix/store/qg3d4cmaiz8kx1sycxxjkcldg0fldnz6-aos-bazel-hub-console-browser-inventory-1",
+    "hub-db": "/nix/store/kl2gjs51b1n7vv5xg77ik4550b1wrfxl-aos-bazel-hub-db-inventory-1",
+    "hub-db-all-features": "/nix/store/inzk8rh4jcvg2wqvpkmnzs1fidpsdv32-aos-bazel-hub-db-all-features-inventory-1",
+    "hub-db-all-features-production": "/nix/store/0pfzgcx0xz4zkw9hfq3drpyx29w3kmr6-aos-bazel-hub-db-all-features-production-inventory-1",
+    "hub-db-production": "/nix/store/g9wvcqjfs7bhxr5yndv8qzcfg4d5qgka-aos-bazel-hub-db-production-inventory-1",
+    "hub-model": "/nix/store/f4lrr5mkv6czaz7yacva6ry13qrc9wpr-aos-bazel-hub-model-inventory-1",
+    "hub-model-production": "/nix/store/mrik67nn891kk6zgk9npsghp9lwx4m89-aos-bazel-hub-model-production-inventory-1",
+    "hub-native": "/nix/store/c68s548z7qjvig53zi3p6szv543ns4gc-aos-bazel-hub-native-inventory-1",
+    "hub-native-production": "/nix/store/splbck1icj66dcnjp0s9ksxcxn9qnhh2-aos-bazel-hub-native-production-inventory-1",
+    "hub-portable": "/nix/store/h6vl2cflhaaxsi5jblrh88j80cysmvw0-aos-bazel-hub-portable-inventory-1",
+    "hub-service": "/nix/store/4qa31ljsk4ik9fzc1wlvsxh1rm4ml5kf-aos-bazel-hub-service-inventory-1",
+    "hub-service-all-features": "/nix/store/8r23mw767627hg25ssn9mxsx37mhvg32-aos-bazel-hub-service-all-features-inventory-1",
+    "hub-service-all-features-production": "/nix/store/xfjaj3vixcymrj9b9fhahj8q0irlp51n-aos-bazel-hub-service-all-features-production-inventory-1",
+    "hub-service-production": "/nix/store/bgrgy99n6cvw41rsnci653c0kacwx5qx-aos-bazel-hub-service-production-inventory-1",
+    "native-foundation": "/nix/store/r38cjd0a26fbn8ijp1sx93al0qkdz3sm-aos-bazel-native-foundation-inventory-1",
+    "native-foundation-integration": "/nix/store/qhr3js7y2zpkkg83wlxm9hxqpk0kazk1-aos-bazel-native-foundation-integration-inventory-1",
+    "native-foundation-minimal": "/nix/store/0bh41xm8h1nvh5kaxx1vdkzxm6wri07c-aos-bazel-native-foundation-minimal-inventory-1",
+    "native-foundation-production": "/nix/store/fa5qb72dlr0gsxngdlzdbn5r4337cnvl-aos-bazel-native-foundation-production-inventory-1",
+    "package-manager": "/nix/store/lac2sfn4izgpzx6dc66iyyij2z4ghp6d-aos-bazel-package-manager-inventory-1",
+    "package-manager-production": "/nix/store/2qp6crn68g6ivj3cmd7c9x9am2v25wsl-aos-bazel-package-manager-production-inventory-1",
+    "protocol": "/nix/store/aibxxcgg3s56yrsc6ap6z52klgf7ljlv-aos-bazel-protocol-inventory-1",
+    "qemu-host": "/nix/store/989a67r9y8nswk739m0zn8234b6askvx-aos-bazel-qemu-host-inventory-1",
+    "quota": "/nix/store/0mz8xh5xny5apxgrgl26cv98mfc8zjb3-aos-bazel-quota-inventory-1",
+    "registry-native": "/nix/store/inxxjhv23xx72b6xgpyv5yc8yw5kfarz-aos-bazel-registry-native-inventory-1",
+    "registry-native-production": "/nix/store/2yz9lblz3l0z0xjpylwjb832kgc5dfgq-aos-bazel-registry-native-production-inventory-1",
+    "release-coordination": "/nix/store/wwwi9na2k38naadwasnhlrq8p5rhxnlv-aos-bazel-release-coordination-inventory-1",
+    "release-coordination-production": "/nix/store/bwy5dlzjzmpkn0pif09af67ga6spk490-aos-bazel-release-coordination-production-inventory-1",
+    "release-preparation": "/nix/store/1dcv640r2p3misgigsiagp6yw6hv4mxh-aos-bazel-release-preparation-inventory-1",
+    "session": "/nix/store/y6iq5s2q3yc4g0gxd1am43k6g5lhg3fh-aos-bazel-session-inventory-1",
+    "shared": "/nix/store/cvllxsvgkfmvjg1jvf4r3rjyhjfhzp0g-aos-bazel-shared-inventory-1",
+    "source-catalog": "/nix/store/lfk3g7z947grbr5pp87awlxnnlvbfkvh-aos-bazel-source-catalog-checks",
+    "store": "/nix/store/1g4qh48wzzrslsc9fy1dzarshk0vdblz-aos-bazel-store-inventory-1",
+    "store-s3": "/nix/store/vzv4mbl4x70pwswd0ch2f7ag860r38v0-aos-bazel-store-s3-inventory-1"
+  },
+  "generated_sdk_files_validated": 11309,
+  "inventories": {
+    "activation-core-inventory.json": {
+      "configured_targets": 237,
+      "selected_targets": 68,
+      "sha256": "b28d704a0dfee7fede0eb62ae45a1251824611bea43afbeb3308ce6a377cea83",
+      "source_files": 62
+    },
+    "activation-crucible-inventory.json": {
+      "configured_targets": 255,
+      "selected_targets": 9,
+      "sha256": "65335592de74ab07a46ccedba31770bcd6ebdc3d214b44622ea7603349a6438d",
+      "source_files": 840
+    },
+    "activation-storage-inventory.json": {
+      "configured_targets": 144,
+      "selected_targets": 46,
+      "sha256": "be9713f2429d9ef6ac72a9b40db4ce38f9852b8832150251fa2f4ea2c7cc5661",
+      "source_files": 79
+    },
+    "activation-systemd-inventory.json": {
+      "configured_targets": 175,
+      "selected_targets": 12,
+      "sha256": "ab32de0df13591906e4a52fcccde173fdb1e220227f5db6b573c34d73e450ef9",
+      "source_files": 79
+    },
+    "boot-pilot-inventory.json": {
+      "configured_targets": 41,
+      "selected_targets": 14,
+      "sha256": "8b152e9b69d11072927dfff3d9c3db97e906aade704cd3212b811f68f938b12e",
+      "source_files": 15
+    },
+    "boot-preparation-inventory.json": {
+      "configured_targets": 712,
+      "selected_targets": 52,
+      "sha256": "e91dffdb245348414af2c9d5aa041d1b623b27a55edc3d932aecf77233d622ef",
+      "source_files": 232
+    },
+    "build-services-inventory.json": {
+      "configured_targets": 308,
+      "selected_targets": 28,
+      "sha256": "014a57f88fb14d554f5d01563a518b8030a351deab970c55d9fc90018713efc4",
+      "source_files": 57
+    },
+    "cli-support-inventory.json": {
+      "configured_targets": 184,
+      "selected_targets": 18,
+      "sha256": "8aa184b478be588255671dcc3673188990fc2ca8a03dda0286cea593cbb24985",
+      "source_files": 64
+    },
+    "contracts-inventory.json": {
+      "configured_targets": 152,
+      "selected_targets": 26,
+      "sha256": "4dff123bdd8c6e024417b4452d75089989c47184f9201f46dd4f34240508e92c",
+      "source_files": 140
+    },
+    "control-inventory.json": {
+      "configured_targets": 306,
+      "selected_targets": 32,
+      "sha256": "c5b464bcb532078d18de90492f9063db548addd224833fc2b1d7d1a57b9da223",
+      "source_files": 883
+    },
+    "crucible-cli-inventory.json": {
+      "configured_targets": 578,
+      "selected_targets": 83,
+      "sha256": "7aeac1a892723c1b2d84543ecd60cff0c8d49ca044ae23614d68d2051ab5e553",
+      "source_files": 1737
+    },
+    "daemon-inventory.json": {
+      "configured_targets": 447,
+      "selected_targets": 35,
+      "sha256": "0de08a1c6391fb4cab81788ada68928d3aeb86ac2f38c3df05f69939cde18059",
+      "source_files": 1546
+    },
+    "deployment-inventory.json": {
+      "configured_targets": 135,
+      "selected_targets": 10,
+      "sha256": "2fe5b79f7318508a238d41247cc7be432aed5685e1b3dfdc59369f9b0ce3ca8e",
+      "source_files": 183
+    },
+    "device-inventory.json": {
+      "configured_targets": 166,
+      "selected_targets": 54,
+      "sha256": "837a5b367fa1c266bc379408898fc779b12e47e126e02ea85501fb76bfef1143",
+      "source_files": 280
+    },
+    "engine-inventory.json": {
+      "configured_targets": 1265,
+      "selected_targets": 523,
+      "sha256": "48f29427da4e14b2e5eccd02b281abfa8b67027b5b10f2c2df511f82b3190687",
+      "source_files": 3778
+    },
+    "fixture-inventory.json": {
+      "configured_targets": 21,
+      "selected_targets": 1,
+      "sha256": "373ba915eb6802b2b23402b93651ce67d5862f6e8a2d6893363f7ba362fce0ee",
+      "source_files": 9
+    },
+    "formats-inventory.json": {
+      "configured_targets": 162,
+      "selected_targets": 27,
+      "sha256": "190afcfe8b76442336720a97645ece35a317d5ced894e923a10948d7af6239c3",
+      "source_files": 73
+    },
+    "guest-inventory.json": {
+      "configured_targets": 138,
+      "selected_targets": 16,
+      "sha256": "e52a51038579f6bdb716bc486e73df06a24fd61a60b215653928546ddc68cc04",
+      "source_files": 294
+    },
+    "hub-client-inventory.json": {
+      "configured_targets": 189,
+      "selected_targets": 10,
+      "sha256": "39d69d9833526b2171df3e66a105732f6d350433224534d426089d59296ca4e6",
+      "source_files": 10
+    },
+    "hub-console-inventory.json": {
+      "configured_targets": 171,
+      "selected_targets": 21,
+      "sha256": "fec485c81b5baf6eb245fa6548c67db0ec11c6b5bea57725469da6cb33acaa13",
+      "source_files": 140
+    },
+    "hub-console-wasm-inventory.json": {
+      "configured_targets": 356,
+      "selected_targets": 15,
+      "sha256": "76f49401636c1d1c8cedd22afee12c6d7efad4f9b3d4ea9038bdd0626ed8784f",
+      "source_files": 137
+    },
+    "hub-db-inventory.json": {
+      "configured_targets": 950,
+      "selected_targets": 16,
+      "sha256": "b17ef1f610c6c418fe372df563831788e1638f5f3ca1a0251012fa9b457b16fe",
+      "source_files": 343
+    },
+    "hub-model-inventory.json": {
+      "configured_targets": 351,
+      "selected_targets": 11,
+      "sha256": "87bde2e91f92f17ec42c7cbc84b0c4ed74963d2573e70a409f82d0c4f4e0b122",
+      "source_files": 91
+    },
+    "hub-native-inventory.json": {
+      "configured_targets": 1033,
+      "selected_targets": 62,
+      "sha256": "26ac249bade1846ba98685a221faa8a5ffeb9364f4f686d8b38923e085956758",
+      "source_files": 906
+    },
+    "hub-portable-inventory.json": {
+      "configured_targets": 114,
+      "selected_targets": 19,
+      "sha256": "70fbdc8ecaf37bf99e4f27c1fd6f0bfbb937ef86d1860ec9dcc4756703d025f9",
+      "source_files": 67
+    },
+    "hub-service-inventory.json": {
+      "configured_targets": 1600,
+      "selected_targets": 35,
+      "sha256": "29d10128ca9e93df4aea32930a6d299c53ab0aa8f0654423e3e902b975a43b6c",
+      "source_files": 840
+    },
+    "native-foundation-inventory.json": {
+      "configured_targets": 957,
+      "selected_targets": 40,
+      "sha256": "b1cd4f8c5549df43e505f0657be73737c30f579dce8373c67615e72b85d1dc39",
+      "source_files": 102
+    },
+    "package-manager-inventory.json": {
+      "configured_targets": 871,
+      "selected_targets": 30,
+      "sha256": "ed1210358dae0441dfcc190dedc36c95292248f99eb4ecbf11b2a4439bd0fc10",
+      "source_files": 499
+    },
+    "protocol-inventory.json": {
+      "configured_targets": 129,
+      "selected_targets": 35,
+      "sha256": "c1e37b2cb7cf5bd0da954fa488cfc09cc18e997ed80d47f30ebec93afc76b83d",
+      "source_files": 159
+    },
+    "qemu-host-inventory.json": {
+      "configured_targets": 249,
+      "selected_targets": 37,
+      "sha256": "62fda12cfa7197f5719bbc3f72111ac811d37f6361f7b71d500f07354d4a0185",
+      "source_files": 1126
+    },
+    "quota-inventory.json": {
+      "configured_targets": 49,
+      "selected_targets": 10,
+      "sha256": "2ca42ac1889f0e14df99a40ad0404d0f9e7238605399a32f225ec9b395689166",
+      "source_files": 6
+    },
+    "registry-native-inventory.json": {
+      "configured_targets": 831,
+      "selected_targets": 35,
+      "sha256": "1766185934e7bffe880d96ee69648e1b51c79f62ff2e32bea9b150bc74287a76",
+      "source_files": 372
+    },
+    "release-coordination-inventory.json": {
+      "configured_targets": 399,
+      "selected_targets": 12,
+      "sha256": "ad356e7d9bc990b17967b5e42cd4cada2b63adc293362876f848e67c86d9c051",
+      "source_files": 269
+    },
+    "release-preparation-inventory.json": {
+      "configured_targets": 229,
+      "selected_targets": 26,
+      "sha256": "1e3dccc1e0902a668efd9fec37764738c35bae74e2293cd5e6f608230d80db7e",
+      "source_files": 182
+    },
+    "session-inventory.json": {
+      "configured_targets": 262,
+      "selected_targets": 58,
+      "sha256": "26c31197bd73b3da6fcdfec05cdf543d50692d6ae18cd5e80eb36c03c73f6f75",
+      "source_files": 840
+    },
+    "shared-inventory.json": {
+      "configured_targets": 85,
+      "selected_targets": 20,
+      "sha256": "9e80717a004749968797ea1999683bd6d6d288b5687bdc81c9e589a406272c59",
+      "source_files": 32
+    },
+    "store-inventory.json": {
+      "configured_targets": 277,
+      "selected_targets": 79,
+      "sha256": "22cc01875f1a0450ec2105115faca0e206d1991417cb24a490f225c5dd0e9b99",
+      "source_files": 272
+    },
+    "store-s3-inventory.json": {
+      "configured_targets": 282,
+      "selected_targets": 8,
+      "sha256": "770ac0ac6f5b831d1007db4f48f99735d13ffb396a4965e1de098821a04a485f",
+      "source_files": 54
+    }
+  },
+  "limits": [
+    "Configured inventories qualify declared ownership and loading contracts. Native compilation, runtime behavior and editor parity remain separate gates.",
+    "The source catalog compares source ownership without compiling external dependencies. These records do not qualify later Rust body changes or production migration."
+  ],
+  "previous_sdk_locks_and_generated_files_unchanged": 47,
+  "schema_version": 1,
+  "source_catalog_report": {
+    "crates": {
+      "packages": 77,
+      "sources": 3731
+    },
+    "external_build_actions": 0,
+    "repository": {
+      "packages": 79,
+      "sources": 3751
+    },
+    "schema_version": 1
+  },
+  "specifications": {
+    "activation-core": {
+      "generated_files": 46,
+      "source_catalog_sha256": "add12ec1fda670ab4ee1a20494fefe56d54b216fc3655fafce462bb6c1dd31b7",
+      "sources": 41,
+      "specifications_output": "/nix/store/qb2b0rkfj1iywwv826v23aq5cq8bdpv2-aos-rust-activation-core-specifications-1",
+      "specifications_sha256": "8503680b3ed11333586f9afa5fb5c5ae85f28380f293332e16afe5c86c25cc46"
+    },
+    "activation-core-tests": {
+      "generated_files": 81,
+      "source_catalog_sha256": "850f386f188eb6e1917e902a40a0bfa242fd3a13b98265c7a2404396566b832c",
+      "sources": 76,
+      "specifications_output": "/nix/store/9lvhf9f7id9xnqvlpzx3an409kdni9mb-aos-rust-activation-core-tests-specifications-1",
+      "specifications_sha256": "433bb68764367528b2a4e79e63f90841b1bb0bb8c61cd7b6b0b9b248006da3db"
+    },
+    "activation-crucible": {
+      "generated_files": 57,
+      "source_catalog_sha256": "07c54144da2ca1f494bec7898673d9d575c640be241684f25b53d77f2ad69d26",
+      "sources": 52,
+      "specifications_output": "/nix/store/wpj0nrqmhlmaidbf3yh7bv90xslif2kr-aos-rust-activation-crucible-specifications-1",
+      "specifications_sha256": "6fd0bf0e74bdc894dc0d18d474dadc395758889d5a4b56973a45366f7e3fa0b7"
+    },
+    "activation-crucible-tests": {
+      "generated_files": 150,
+      "source_catalog_sha256": "02ff4f0054c9ee58f8f2c6f930077a13aa247a35cbc0ae11846d604ec1487b93",
+      "sources": 145,
+      "specifications_output": "/nix/store/s5jhagdq0ygq35rbqslyfp1g2rs8rdnc-aos-rust-activation-crucible-tests-specifications-1",
+      "specifications_sha256": "2404fab6adccd4896dfee2559e58797d7235734ba9264dbbd9874a1aba2a64a8"
+    },
+    "activation-storage": {
+      "generated_files": 75,
+      "source_catalog_sha256": "d5ba0fbd647f31b159aac7c33e4c818283493fd6202a19e033c1071e37be00af",
+      "sources": 70,
+      "specifications_output": "/nix/store/vyihvcasjz972y9bvgzbpcs1qlwx3a2w-aos-rust-activation-storage-specifications-1",
+      "specifications_sha256": "1d1ef81eff659f194d6b894e28378c245007df3f52e79c118b6b95d7336bc1bd"
+    },
+    "activation-systemd": {
+      "generated_files": 146,
+      "source_catalog_sha256": "df981b65a8e15e01a8218f8770589eba035ddeb5debf66042a592c3bf424472f",
+      "sources": 141,
+      "specifications_output": "/nix/store/8zpac8cnchah3w11k91sq8kv0aaf9dd0-aos-rust-activation-systemd-specifications-1",
+      "specifications_sha256": "c3c5d998e7997c4fe32b9c0d765a1b382b1274528dcf427fd20554763635850a"
+    },
+    "boot-preparation": {
+      "generated_files": 342,
+      "source_catalog_sha256": "9d5b7bfb2b7c671e0e79b9d51aca97a72ab1dec60816f9d83592090d76119552",
+      "sources": 337,
+      "specifications_output": "/nix/store/9z580mxfhz4zzd08cw0hv6mb8crpd9il-aos-rust-boot-preparation-specifications-1",
+      "specifications_sha256": "a77ca6ac2aca19b63541f24ab22222a720f35fea6dbd82d9a5ccf3867c924a9d"
+    },
+    "boot-preparation-minimal": {
+      "generated_files": 328,
+      "source_catalog_sha256": "b05d6797a46bd19e20787d095b6d2c0ce3ec8e2babee19a8dbad5fc46a27aaad",
+      "sources": 323,
+      "specifications_output": "/nix/store/a0k9y55j0p900f498c9gv4fx4r10d5ny-aos-rust-boot-preparation-minimal-specifications-1",
+      "specifications_sha256": "7fe8e7435fe09c79c38494356e5be38be27f252e35eefe3fd6c7a0a669b31142"
+    },
+    "build-services": {
+      "generated_files": 268,
+      "source_catalog_sha256": "5e6b806b0aff193b33c8f54c86837d6c73deb277c60e037b08b20b9749c2d488",
+      "sources": 263,
+      "specifications_output": "/nix/store/74axdcrsaw2c27a4q37q9h6450p0pzca-aos-rust-build-services-specifications-1",
+      "specifications_sha256": "24e986df1ccf1d5ad25643913ad7e986369615c441cdaa29ed2a6e815b7d1025"
+    },
+    "cli-support": {
+      "generated_files": 170,
+      "source_catalog_sha256": "14a38e909f0117465c7183ccbaee93ebd2f14201db34f2ed2e36380f47b844ea",
+      "sources": 165,
+      "specifications_output": "/nix/store/wsagw6qz6nv9b703bpk1964mf1dkg1gm-aos-rust-cli-support-specifications-1",
+      "specifications_sha256": "dd15a4078bcc17c4e759513678212100095523bd37fae64556b34e074ff36f93"
+    },
+    "control": {
+      "generated_files": 266,
+      "source_catalog_sha256": "d186afcd4675939df1bbb85358134dce3154e8d3890bc6b4bde9104a2f6197ec",
+      "sources": 261,
+      "specifications_output": "/nix/store/0vrgv6h2f4cns9078fq1qz8p3cq17q84-aos-rust-control-specifications-1",
+      "specifications_sha256": "c12e610a3993bedf3a7822b38950e00bcc3c3b9f4e62849f4159a4d6f9787a68"
+    },
+    "core": {
+      "generated_files": 41,
+      "source_catalog_sha256": "ca6a39cb313f640ac44c86424df5ea478795b5d00869b31ad0615db239658f52",
+      "sources": 36,
+      "specifications_output": "/nix/store/drqh7vlj6d67vbjgx68rfq1khhx0a400-aos-rust-core-specifications-1",
+      "specifications_sha256": "61d45a53574f6b66a6a02ae973244235432ef5d3cbbe2b74bab16bae441d2e2a"
+    },
+    "crucible-cli": {
+      "generated_files": 361,
+      "source_catalog_sha256": "2ec231e096f86762f9e9b7b1512610bef969675800def104dff2e7e844cc2bcb",
+      "sources": 356,
+      "specifications_output": "/nix/store/j97a2smdm4jfqlb15amc2zrjls14kln8-aos-rust-crucible-cli-specifications-1",
+      "specifications_sha256": "1edf54ef1ac70a172e8b303af0391837afc054a8a1be1b9caa1ffc13553f7331"
+    },
+    "daemon": {
+      "generated_files": 331,
+      "source_catalog_sha256": "63d58ba2b236174f3f8a22f779873a556fd48d671784b2d4b69cb0674bec97d9",
+      "sources": 326,
+      "specifications_output": "/nix/store/80dszx2gbl26bwkxkjz5l8qiim8gy1ka-aos-rust-daemon-specifications-1",
+      "specifications_sha256": "45dd14147d2eceedf530b791cc2b7fcee7c9332d83bc4444f0c1650bd648479e"
+    },
+    "deployment": {
+      "generated_files": 106,
+      "source_catalog_sha256": "b6750b8dd5a7ea045f02f831e7916a8e83457e851d51a0d77fa7ef772188ff2e",
+      "sources": 101,
+      "specifications_output": "/nix/store/y1m619hf8cjbndykfhg5mdb9b5ngw3k5-aos-rust-deployment-specifications-1",
+      "specifications_sha256": "ec0e7b32c2374d4936858d312ef49f28d1cc07bda60e41fc0d022c20a1038a78"
+    },
+    "device": {
+      "generated_files": 48,
+      "source_catalog_sha256": "c88a7c569181960d6fe84ce413818721b97b4b58b19cf2f974ad1c69621a8f22",
+      "sources": 43,
+      "specifications_output": "/nix/store/p4hd9kfwjrd8xrh1x9626zkfp2z7k3j5-aos-rust-device-specifications-1",
+      "specifications_sha256": "d8cc0a3311c4406ac6222c750f88421075af2a8afc62264de2437e7e98e013f3"
+    },
+    "engine": {
+      "generated_files": 143,
+      "source_catalog_sha256": "22deda35d53396c4d5b7a6766e6029bc9e3dc334562fc30f514abcd195c39bb3",
+      "sources": 138,
+      "specifications_output": "/nix/store/19py1r4nciyn1dxb3z54r3ybavxgh8w7-aos-rust-engine-specifications-1",
+      "specifications_sha256": "ff422d769b8bdf063c31055b60f0256671d18f22f55174543e558864d12e1865"
+    },
+    "formats": {
+      "generated_files": 116,
+      "source_catalog_sha256": "ee3f30ba26540a24502e2b4d358e2a3cd363b4854b7545ad09217fc135c5a7b6",
+      "sources": 111,
+      "specifications_output": "/nix/store/1rq8sjls03k2pzxsvzld1qfpbnqbd88l-aos-rust-formats-specifications-1",
+      "specifications_sha256": "0ab2840dabba3eeb089c36ffec075c61fa6228d77431016700e597f979dfa08b"
+    },
+    "guest": {
+      "generated_files": 124,
+      "source_catalog_sha256": "8a3052aa1b2d7e88a3a2003717043f000b2afaffbcf75d9d9c0e329b3127a9f7",
+      "sources": 119,
+      "specifications_output": "/nix/store/m6xxlrzra5149lbwjikv0m9fav7j15hb-aos-rust-guest-specifications-1",
+      "specifications_sha256": "3b29bb9f7d7e2dea1f6b80578681d4777c8aa705f4a4a217f48cd40cba405274"
+    },
+    "hub-client": {
+      "generated_files": 197,
+      "source_catalog_sha256": "5a1af3adfb0fd972fe0cb22d478f8caf38517d31a637edd5b3280f7ba8ea863a",
+      "sources": 192,
+      "specifications_output": "/nix/store/vdgwxwvawghx5qnj5dkvjnnbqvj7gvah-aos-rust-hub-client-specifications-1",
+      "specifications_sha256": "4ec53dfd69e7f50517ea6fae5b7f40e2c0544356b30043a95adc82a498efc46e"
+    },
+    "hub-console": {
+      "generated_files": 119,
+      "source_catalog_sha256": "09e08ae0e04677ee62ced96a32872f50cb829f480d9c8bafd4b1bdd7acd51f41",
+      "sources": 114,
+      "specifications_output": "/nix/store/5k5d2m068ahykj8yjcc3dvfjg9ya9qhi-aos-rust-hub-console-specifications-1",
+      "specifications_sha256": "adad53e0b9b772b218aa62d0acd30f1de6ce9e49be3f55b3771d91d36b743c94"
+    },
+    "hub-console-wasm": {
+      "generated_files": 258,
+      "source_catalog_sha256": "51486d538e8c004eb1fc9a0c11b633ca7151a8e09e9ebe359b0253172721b76b",
+      "sources": 253,
+      "specifications_output": "/nix/store/r7vm4nihrndxm6ynhb92796j0bm64360-aos-rust-hub-console-wasm-specifications-1",
+      "specifications_sha256": "c39ace4e63b7f3ca981c2c96dc97a1060b7dbc075477b51f9e3878cb3485fac7"
+    },
+    "hub-db": {
+      "generated_files": 218,
+      "source_catalog_sha256": "d6519503b329380eacbf222eeb0a35d006e9c623a3203428c9525a8e0c65f089",
+      "sources": 213,
+      "specifications_output": "/nix/store/yrg67mldkmi746vywld761y7cd54yjzm-aos-rust-hub-db-specifications-1",
+      "specifications_sha256": "1417c40808898bfddc85cb8b12002fea7daacbc82480e391c24809567140d4f2"
+    },
+    "hub-db-all-features": {
+      "generated_files": 253,
+      "source_catalog_sha256": "807f5b6284653887a7d3878986fc025b9aa02f22dee95ad11438274b946752d8",
+      "sources": 248,
+      "specifications_output": "/nix/store/n2cids9ifvv1cm21z56q9yz4lg5ki4z2-aos-rust-hub-db-all-features-specifications-1",
+      "specifications_sha256": "56edb790518268fffc00a945ae5381ebd17cb0a70cbfbff7942656282e1370cb"
+    },
+    "hub-db-all-features-tests": {
+      "generated_files": 264,
+      "source_catalog_sha256": "d4aeab61800759cba763d74997b84f8bc5804baca10e19787dc5d7ee99c3d56f",
+      "sources": 259,
+      "specifications_output": "/nix/store/r6pgy15n08yfdf11igdwvxg0v41fqxki-aos-rust-hub-db-all-features-tests-specifications-1",
+      "specifications_sha256": "3cab367b5b7d5a1c5762b02ca42457eae3a86d69d99cd5d1d19675874fbf4a63"
+    },
+    "hub-db-tests": {
+      "generated_files": 229,
+      "source_catalog_sha256": "724581e1ac7ad9168679ed5a89c7ced7e6c4a3a839ca2aed11529d005e9f3db4",
+      "sources": 224,
+      "specifications_output": "/nix/store/nk254njp0kx71giscywcrgi11vh5clz5-aos-rust-hub-db-tests-specifications-1",
+      "specifications_sha256": "606c66a0a625052786d540bc03ae449d993dd8dc42768401722f56f7ca071d7c"
+    },
+    "hub-model": {
+      "generated_files": 129,
+      "source_catalog_sha256": "098cc632e641bb382143d07466e47d952734e917e12860fd6c9a0e4c77bf92d0",
+      "sources": 124,
+      "specifications_output": "/nix/store/rwv2xvlcrk4nmfdyfz4ivnqi1q67s584-aos-rust-hub-model-specifications-1",
+      "specifications_sha256": "5feef0d2a6dce2d0104e9ac30df49075051376c3dde26d1677a8c896dad57adc"
+    },
+    "hub-model-tests": {
+      "generated_files": 172,
+      "source_catalog_sha256": "0740953a58a09de2e9ac35436ec6bab0d5a615c058d889ca9f272338fe00e9a2",
+      "sources": 167,
+      "specifications_output": "/nix/store/20dfhi5f1m00xw24cvcfb4mmwb4k455s-aos-rust-hub-model-tests-specifications-1",
+      "specifications_sha256": "1c5b380e28363b2f2fc099cf46e57680bc0b4fee704b201ec91ef270b83df2da"
+    },
+    "hub-native-postgres": {
+      "generated_files": 448,
+      "source_catalog_sha256": "1eae51fb77438d566ee58adb93fbcf701675924afd08abde10ba44c0e2ace782",
+      "sources": 443,
+      "specifications_output": "/nix/store/fibwrvwczkp44z1m6bqrpy6xj6cpzf5y-aos-rust-hub-native-postgres-specifications-1",
+      "specifications_sha256": "88c9983777fad0f33adce8f28f104d15b308667051cd4776bb3bed1fcecbd7de"
+    },
+    "hub-native-tests": {
+      "generated_files": 470,
+      "source_catalog_sha256": "765d7fdb15730158d9ae2053ca7ad1d53d23e9f6a2e58117e774a1bfd258e523",
+      "sources": 465,
+      "specifications_output": "/nix/store/gm6432kk6h6531vf48wpfff38r0ycag8-aos-rust-hub-native-tests-specifications-1",
+      "specifications_sha256": "8a68be5bebdc7bb991308d572214bb4bba6e448c75fba9d3e7556d7b336f288b"
+    },
+    "hub-portable": {
+      "generated_files": 72,
+      "source_catalog_sha256": "86030797fa81a60c2634416e4b5efd7d91be79881dce9f3588d3ee1cb54d6557",
+      "sources": 67,
+      "specifications_output": "/nix/store/05zkqfbgrfql3hs2swsadzb8r3fz8xd6-aos-rust-hub-portable-specifications-1",
+      "specifications_sha256": "23fc05466aa4fe9eddb1d1c3bbb95446210e31698123dbc2a6aaf655736f0139"
+    },
+    "hub-service": {
+      "generated_files": 294,
+      "source_catalog_sha256": "6710614b8d3180b0161d5f7bbe6430df7b3396a09452ffea78616c153fbdaf21",
+      "sources": 289,
+      "specifications_output": "/nix/store/26rn9dw0yzv63c1v1r557zv97l51zx99-aos-rust-hub-service-specifications-1",
+      "specifications_sha256": "525b6461c622a595415eb55b4b4c81d1ed16795755cf9b5b8631ee373f945a49"
+    },
+    "hub-service-all-features": {
+      "generated_files": 318,
+      "source_catalog_sha256": "010c0cd48ee01d51f7aafd7113363a6a429a71c10eabb1c497e281a681e547bd",
+      "sources": 313,
+      "specifications_output": "/nix/store/kpd8qixvn6x59wwl3xy9r9xkipkzpch7-aos-rust-hub-service-all-features-specifications-1",
+      "specifications_sha256": "df1ad7ee4272661a69c8827cf44d5e1d265a56d657f2f5f81539cfe5f163edd5"
+    },
+    "hub-service-all-features-tests": {
+      "generated_files": 459,
+      "source_catalog_sha256": "fa9c5bd1eb3d1bac43cab1651143b473359c61b5c58fde9ee58d9ba1935e879a",
+      "sources": 454,
+      "specifications_output": "/nix/store/a0828mwqn6q8nvp6yng480126fg117pj-aos-rust-hub-service-all-features-tests-specifications-1",
+      "specifications_sha256": "ef7a36ab86808b83c650cb7c3657577383440a8a8e38e0ed5117f101e580f687"
+    },
+    "hub-service-tests": {
+      "generated_files": 436,
+      "source_catalog_sha256": "d57b75f57531cf4797e56099c364fed716f7a999ac06376ffa24afb3b0b529f0",
+      "sources": 431,
+      "specifications_output": "/nix/store/105x3p5kyhmclbsc0gbvgsqmkzkk01bf-aos-rust-hub-service-tests-specifications-1",
+      "specifications_sha256": "a091ea40b6643869b2e39fb5629af41492f6a4b45d30887991e352ead60719dc"
+    },
+    "native-foundation": {
+      "generated_files": 343,
+      "source_catalog_sha256": "647b5b9652aab30476e88b45865bdc59ba6ff6068ca310b25f42bcb654aa3db5",
+      "sources": 338,
+      "specifications_output": "/nix/store/vxmk863ibl9sqb18a4fhl5p8n2w5l0pv-aos-rust-native-foundation-specifications-1",
+      "specifications_sha256": "468a651cc9826fd855ff2b57cd94aedc461dd51d26c9052c2dd2285fade8ab21"
+    },
+    "native-foundation-minimal": {
+      "generated_files": 258,
+      "source_catalog_sha256": "24ad2c2fa08659c98c509a54ad8586700d23b5845ccb530e8d57830a81ebbd42",
+      "sources": 253,
+      "specifications_output": "/nix/store/aqcqpyz9j65bj3nlqivj66lfpjprscrp-aos-rust-native-foundation-minimal-specifications-1",
+      "specifications_sha256": "678889979ab5a80dc218ddba33b13d461762465462f05ead65bf59bdb59c1b3f"
+    },
+    "native-foundation-tests": {
+      "generated_files": 350,
+      "source_catalog_sha256": "37c39b2a3fd832d80be65d63b0ac915eaa6a932dd984ec914d9e52f05dfea04b",
+      "sources": 345,
+      "specifications_output": "/nix/store/jzg1a66cm1f6x6xxxkpyh82qngk90cp2-aos-rust-native-foundation-tests-specifications-1",
+      "specifications_sha256": "4d86e88b8e8dc9ed115528e06026d02384476d0779d6194827d87160c53603e2"
+    },
+    "package-manager": {
+      "generated_files": 387,
+      "source_catalog_sha256": "9f0ff8fae275b8fbbd07ac14229d130a85cddff15d8db6215d0c7a122f8d440c",
+      "sources": 382,
+      "specifications_output": "/nix/store/yvzhdgp6sg2g21mg30kbygnqnyprw46y-aos-rust-package-manager-specifications-1",
+      "specifications_sha256": "d20430695b57ac30405838a2186197278b09fbdb991a1ae969d98231f91bf7d8"
+    },
+    "package-manager-tests": {
+      "generated_files": 412,
+      "source_catalog_sha256": "5ba0e94f699b3928f8a145192daf0402ae4376553e64e1c0665695de646c12d5",
+      "sources": 407,
+      "specifications_output": "/nix/store/yi3y96z1n51ix6d7pgdpcyiakns9d036-aos-rust-package-manager-tests-specifications-1",
+      "specifications_sha256": "fcde36640249c0f165533932e4e6ef449b3fd81aeadb47e0ead8999ad7da7e1e"
+    },
+    "qemu-host": {
+      "generated_files": 143,
+      "source_catalog_sha256": "a45976ae1432ea36e2bcaa04e9bec753e5088eb9d9f1034eeda41201fda7f3e5",
+      "sources": 138,
+      "specifications_output": "/nix/store/zy0a1l9gia7p4hxi30k4vic3fjsvwvfb-aos-rust-qemu-host-specifications-1",
+      "specifications_sha256": "74a9d27390a2f26da321bef8c2c4c0d2244c12f1342107aa77985b3d4c8a6afd"
+    },
+    "quota": {
+      "generated_files": 18,
+      "source_catalog_sha256": "f0983f3ff0064ba075bc00c320338f319331a34771ca0e8bc57ab1f8d831d1e4",
+      "sources": 13,
+      "specifications_output": "/nix/store/c4fkn584ll8x7m190v8kmdg66ig3x1ra-aos-rust-quota-specifications-1",
+      "specifications_sha256": "8ebdf26fa85f764f69c582ae084a828bc203b3d8073566a3e1360267ba022b5e"
+    },
+    "registry-native": {
+      "generated_files": 387,
+      "source_catalog_sha256": "51ca66bf2336964eaca9125a55b32a71862a4636b69eb290c8a09f1c64b3c354",
+      "sources": 382,
+      "specifications_output": "/nix/store/i6gmlx4pyy9f6sfli9p1sj3m6qz3h7i3-aos-rust-registry-native-specifications-1",
+      "specifications_sha256": "8bb039dc6d896a0881af769bc49aec337e000b4643dd32cdd95cfaa8fb3f1851"
+    },
+    "registry-native-tests": {
+      "generated_files": 387,
+      "source_catalog_sha256": "5ce92a85bd3a2232640a561f187ea2ba36453a4e2db72dc1e4517b9f8b370186",
+      "sources": 382,
+      "specifications_output": "/nix/store/8gy9pg72mhacphkhng1ih995ynll9nna-aos-rust-registry-native-tests-specifications-1",
+      "specifications_sha256": "5a86eb1ddd09e802ad8602ba70b1013add9416821ff4d6f4e3caddcba68c7f8c"
+    },
+    "release-coordination": {
+      "generated_files": 365,
+      "source_catalog_sha256": "6253eeecff0eae45d3267595373dd2522a277126c503ec8bcf90da823319b5a7",
+      "sources": 360,
+      "specifications_output": "/nix/store/vl53jkv7gpm03bvnzvgv8ggly71ff771-aos-rust-release-coordination-specifications-1",
+      "specifications_sha256": "8adc4ca103b4fbf9270dcb59e26dcc84278721eb5f1c872d876bfa66b971beee"
+    },
+    "release-preparation": {
+      "generated_files": 190,
+      "source_catalog_sha256": "e7aa03c6f2f10131e1b4f51e39fcd113cca269cd0065f47a8ee2751bce0e3309",
+      "sources": 185,
+      "specifications_output": "/nix/store/5zks3yimpv766c9xi9h0rkqqylc9y2w3-aos-rust-release-preparation-specifications-1",
+      "specifications_sha256": "5341599a863eb7fb48d9a67a956ede956adad0df11121da49a23abfe415cf3e6"
+    },
+    "session": {
+      "generated_files": 149,
+      "source_catalog_sha256": "b20d0c55cf8cf78bebef43809f14a0b4877b29323358dca2a49a98c2da879f59",
+      "sources": 144,
+      "specifications_output": "/nix/store/qbz3l1fhzb0nqnzsfvwcsdzsss1gc0h6-aos-rust-session-specifications-1",
+      "specifications_sha256": "e2450ef0cafe2e36d5a442f04419ec91cba05011cc3fdb638d62c1f4dad50a68"
+    },
+    "store": {
+      "generated_files": 124,
+      "source_catalog_sha256": "3af1b5b2a7b4b8bea077bd0e4fa7dc550438249e164d145fcb0074fe56d95158",
+      "sources": 119,
+      "specifications_output": "/nix/store/582vsngjrrzjrlqzvg5q04vk5fw22n3k-aos-rust-store-specifications-1",
+      "specifications_sha256": "225fcc68cc642317af38789d2e316d9b61ba33f3d41c594041a23c4c31d0ffcd"
+    },
+    "store-s3": {
+      "generated_files": 261,
+      "source_catalog_sha256": "8e540427613520b91100b06896b11a78db9e5b437ca34836b79b982085868721",
+      "sources": 256,
+      "specifications_output": "/nix/store/yznik9x0dmds6vqj5jpraavxj8k86jjg-aos-rust-store-s3-specifications-1",
+      "specifications_sha256": "f74b6e70df988d7b29ab46217d9c416aea12a185a7fbe401442cf17ac9c9b09f"
+    }
+  },
+  "status": "All 49 SDK exports and 38 configured family inventories validated"
+}

@@ -286,7 +286,7 @@ pub(crate) async fn publish_to_registry_directory(
         return Ok(());
     }
 
-    let _publish_lock = RegistryPublishLock::acquire_or_join_current_process(&dir)?;
+    let _publish_lock = RegistryPublishLock::acquire_or_join_current_process(dir)?;
 
     printer.step(2, 4, "Writing package TOML...");
     std::fs::create_dir_all(&pkg_dir)?;
@@ -319,17 +319,16 @@ pub(crate) async fn publish_to_registry_directory(
     std::fs::write(&toml_path, &new_content)?;
 
     printer.step(3, 4, "Computing realisation graph...");
-    let content_addressed = registry_content_addressed(&dir) && !no_ca;
-    let store_report =
-        write_store_files(store, &dir, &info.path, content_addressed, bless, printer)
-            .with_context(|| format!("writing store/ realisation graph for {}", info.path))?;
+    let content_addressed = registry_content_addressed(dir) && !no_ca;
+    let store_report = write_store_files(store, dir, &info.path, content_addressed, bless, printer)
+        .with_context(|| format!("writing store/ realisation graph for {}", info.path))?;
     let mut image_store_reports = Vec::with_capacity(image_infos.len() * 3);
     for image in &image_infos {
         for artifact in [&image.payload, &image.store, &image.info_store] {
             image_store_reports.push(
                 write_store_files(
                     store,
-                    &dir,
+                    dir,
                     &artifact.path,
                     content_addressed,
                     bless,
@@ -383,12 +382,12 @@ pub(crate) async fn publish_to_registry_directory(
         let msg = message.unwrap_or(&default_msg);
         let staged_paths = vec![toml_path.clone(), dir.join(store::STORE_DIR)];
         commit_registry_paths(
-            &dir,
+            dir,
             msg,
             &staged_paths,
             signing_key.as_ref().map(|k| k.path()),
         )?;
-        refresh_registry_object_store(&dir)
+        refresh_registry_object_store(dir)
             .context("refreshing dumb-HTTP object store after publish")?;
         committed = true;
         commit_message = Some(msg.to_string());
@@ -440,15 +439,15 @@ pub(crate) async fn publish_to_registry_directory(
             "previous": previous,
             "images": images,
             "package_file": toml_path
-                .strip_prefix(&dir)
+                .strip_prefix(dir)
                 .unwrap_or(&toml_path)
                 .display()
                 .to_string(),
             "committed": committed,
             "commit_message": commit_message,
-            "current": current_git_branch(&dir)?,
-            "head": current_git_head(&dir)?,
-            "branches": git_branch_entries(&dir)?,
+            "current": current_git_branch(dir)?,
+            "head": current_git_head(dir)?,
+            "branches": git_branch_entries(dir)?,
         }));
     }
 
@@ -745,7 +744,7 @@ impl RegistryPublishLock {
                         .lines()
                         .any(|line| line.trim() == format!("pid={}", std::process::id()))
                     {
-                        return Ok(OpenOptions::new().read(true).open(&path)?);
+                        return OpenOptions::new().read(true).open(&path);
                     }
                 }
                 Err(err)

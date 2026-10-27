@@ -1,0 +1,230 @@
+load("//tools/bazel/rules:clippy.bzl", "aos_package_clippy")
+load("@rules_rust//rust:defs.bzl", "rust_clippy", "rust_doc", "rustfmt_test")
+load("//tools/bazel/rules:compile.bzl", "rust_binary")
+load("//tools/bazel/rules:controller_graph.bzl", "controller_dependencies", "controller_features")
+load("//tools/bazel/rules:crucible_cli_graph.bzl", "CRUCIBLE_CLI_VARIANTS", "cli_dependencies", "cli_integration_sources")
+load("//tools/bazel/rules:license.bzl", "aos_license_check")
+load("//tools/bazel/rules:package.bzl", "aos_package")
+load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")
+load("//tools/bazel/rules:source_package.bzl", "aos_source_package")
+load("//tools/bazel/rules:test.bzl", "aos_rust_test")
+
+package(default_visibility = ["//crates/crucible:__subpackages__"])
+
+RUST_PACKAGE = aos_rust_package(
+    name = "crucible-cli",
+    version = "0.1.0",
+    edition = "2024",
+    license_expression = "Apache-2.0",
+    license_domain = "apache-host",
+)
+
+LIBRARIES = ["client", "server", "api", "campaign", "daemon", "session"]
+COMMON_DEPENDENCIES = [
+    "//third_party/rust:core_" + name
+    for name in ["aws_credential_types", "aws_sdk_s3", "clap", "clap_complete", "hex", "rcgen", "rustix", "serde", "serde_json", "tokio", "tokio_rustls", "toml", "tempfile", "url", "zeroize"]
+]
+DEVELOPMENT_DEPENDENCIES = [
+    "//crates/crucible/crucible-device:lib",
+    "//crates/crucible/crucible-test-support:lib",
+    "//crates/crucible/crucible-guest:lib_host",
+    "//crates/crucible/crucible-qemu-protocol:lib",
+    "//crates/crucible/crucible-qemu-shmem:lib",
+    "//third_party/rust:core_libc",
+    "//third_party/rust:core_sha2",
+]
+SOURCE_AUDIT_INPUTS = [
+    "//crates/crucible/crucible-engine:src/model.rs",
+    "//crates/crucible/crucible-session:src/lib.rs",
+]
+TEST_COMPILE_INPUTS = SOURCE_AUDIT_INPUTS + ["//tests/crucible:cli_fixture_inputs"]
+SOURCES = glob(["src/**/*.rs"])
+INTEGRATIONS = glob(["tests/*.rs"], allow_empty = True)
+TEST_DOUBLE_INTEGRATIONS = ["machine_readable", "gate_campaign_store_composition"]
+
+[
+    rust_binary(
+        name = "crucible" + suffix,
+        package = RUST_PACKAGE,
+        lint_config = "//tools/bazel/rules:workspace_lints",
+        crate_name = "crucible",
+        crate_root = "src/main.rs",
+        srcs = SOURCES,
+        compile_data = SOURCE_AUDIT_INPUTS,
+        crate_features = ["default"] + features,
+        deps = COMMON_DEPENDENCIES + cli_dependencies(LIBRARIES, features),
+    )
+    for suffix, features in CRUCIBLE_CLI_VARIANTS.items()
+]
+
+[
+    rust_binary(
+        name = "crucible_for_tests" + suffix,
+        testonly = True,
+        package = RUST_PACKAGE,
+        lint_config = "//tools/bazel/rules:workspace_lints",
+        crate_name = "crucible",
+        crate_root = "src/main.rs",
+        srcs = SOURCES,
+        compile_data = SOURCE_AUDIT_INPUTS,
+        crate_features = ["default"] + features,
+        deps = COMMON_DEPENDENCIES + cli_dependencies(LIBRARIES, features, development = True),
+    )
+    for suffix, features in CRUCIBLE_CLI_VARIANTS.items()
+]
+
+[
+    aos_rust_test(
+        name = "bin_crucible" + suffix,
+        package = RUST_PACKAGE,
+        lint_config = "//tools/bazel/rules:workspace_lints",
+        crate_name = "crucible",
+        crate_root = "src/main.rs",
+        srcs = SOURCES,
+        compile_data = TEST_COMPILE_INPUTS,
+        crate_features = ["default"] + features,
+        runfile_env = {"SSL_CERT_FILE": "@aos_cli_runtime//:ca-certificates.crt"},
+        deps = COMMON_DEPENDENCIES + DEVELOPMENT_DEPENDENCIES + cli_dependencies(LIBRARIES + ["engine", "qemu", "store"], features, development = True),
+    )
+    for suffix, features in CRUCIBLE_CLI_VARIANTS.items()
+]
+
+[
+    aos_rust_test(
+        name = source.removeprefix("tests/").removesuffix(".rs") + suffix,
+        package = RUST_PACKAGE,
+        lint_config = "//tools/bazel/rules:workspace_lints",
+        crate_root = source,
+        srcs = cli_integration_sources(source),
+        crate_features = ["default"] + features,
+        data = [":crucible_for_tests" + suffix],
+        rustc_env = {"CARGO_BIN_EXE_crucible": "$(rootpath :crucible_for_tests" + suffix + ")"},
+        runfile_env = {"SSL_CERT_FILE": "@aos_cli_runtime//:ca-certificates.crt"},
+        deps = COMMON_DEPENDENCIES + DEVELOPMENT_DEPENDENCIES + cli_dependencies(LIBRARIES + ["engine", "qemu", "store"], features, development = True),
+    )
+    for suffix, features in CRUCIBLE_CLI_VARIANTS.items()
+    for source in INTEGRATIONS
+    if "test-double" in features or source.removeprefix("tests/").removesuffix(".rs") not in TEST_DOUBLE_INTEGRATIONS
+]
+
+TEST_ARTIFACTS = [":bin_crucible" + suffix + "_binary" for suffix in CRUCIBLE_CLI_VARIANTS] + [
+    ":" + source.removeprefix("tests/").removesuffix(".rs") + suffix + "_binary"
+    for suffix, features in CRUCIBLE_CLI_VARIANTS.items()
+    for source in INTEGRATIONS
+    if "test-double" in features or source.removeprefix("tests/").removesuffix(".rs") not in TEST_DOUBLE_INTEGRATIONS
+]
+BINARIES = [":crucible" + suffix for suffix in CRUCIBLE_CLI_VARIANTS] + [":crucible_for_tests" + suffix for suffix in CRUCIBLE_CLI_VARIANTS]
+
+rust_clippy(name = "clippy", testonly = True, deps = BINARIES + TEST_ARTIFACTS)
+rustfmt_test(name = "format", targets = BINARIES + TEST_ARTIFACTS)
+rust_doc(name = "documentation", crate = ":crucible")
+
+[
+    aos_license_check(
+        name = "license_closure" + suffix,
+        testonly = True,
+        roots = [":crucible_for_tests" + suffix, ":bin_crucible" + suffix + "_binary"] + [
+            ":" + source.removeprefix("tests/").removesuffix(".rs") + suffix + "_binary"
+            for source in INTEGRATIONS
+            if "test-double" in features or source.removeprefix("tests/").removesuffix(".rs") not in TEST_DOUBLE_INTEGRATIONS
+        ],
+        license_domain = RUST_PACKAGE.license_domain,
+    )
+    for suffix, features in CRUCIBLE_CLI_VARIANTS.items()
+]
+
+[
+    aos_license_check(
+        name = "production_license_closure" + suffix,
+        roots = [":crucible" + suffix],
+        license_domain = RUST_PACKAGE.license_domain,
+    )
+    for suffix in CRUCIBLE_CLI_VARIANTS
+]
+
+aos_source_package(
+    name = "source_package",
+    package = RUST_PACKAGE,
+    srcs = glob(["**/*.rs"]),
+    visibility = ["//visibility:public"],
+)
+
+# The combined controller tests use one coherent feature graph.
+CONTROLLER_FEATURES = controller_features(RUST_PACKAGE)
+CONTROLLER_DEPENDENCIES = COMMON_DEPENDENCIES + DEVELOPMENT_DEPENDENCIES + controller_dependencies(LIBRARIES + ["engine", "qemu", "store"])
+
+rust_binary(
+    name = "controller_test_cli",
+    testonly = True,
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "crucible",
+    crate_root = "src/main.rs",
+    srcs = SOURCES,
+    compile_data = SOURCE_AUDIT_INPUTS,
+    crate_features = CONTROLLER_FEATURES,
+    deps = CONTROLLER_DEPENDENCIES,
+)
+
+aos_rust_test(
+    name = "bin_crucible_controller",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "crucible",
+    crate_root = "src/main.rs",
+    srcs = SOURCES,
+    compile_data = TEST_COMPILE_INPUTS,
+    crate_features = CONTROLLER_FEATURES,
+    runfile_env = {"SSL_CERT_FILE": "@aos_cli_runtime//:ca-certificates.crt"},
+    deps = CONTROLLER_DEPENDENCIES,
+)
+
+[
+    aos_rust_test(
+        name = source.removeprefix("tests/").removesuffix(".rs") + "_controller",
+        package = RUST_PACKAGE,
+        lint_config = "//tools/bazel/rules:workspace_lints",
+        crate_root = source,
+        srcs = cli_integration_sources(source),
+        compile_data = TEST_COMPILE_INPUTS,
+        crate_features = CONTROLLER_FEATURES,
+        data = [":controller_test_cli"],
+        rustc_env = {"CARGO_BIN_EXE_crucible": "$(rootpath :controller_test_cli)"},
+        runfile_env = {"SSL_CERT_FILE": "@aos_cli_runtime//:ca-certificates.crt"},
+        deps = CONTROLLER_DEPENDENCIES,
+    )
+    for source in INTEGRATIONS
+]
+
+CONTROLLER_TESTS = [":bin_crucible_controller"] + [
+    ":" + source.removeprefix("tests/").removesuffix(".rs") + "_controller"
+    for source in INTEGRATIONS
+]
+
+test_suite(name = "controller_tests", tests = CONTROLLER_TESTS)
+
+aos_license_check(
+    name = "controller_test_license_closure",
+    testonly = True,
+    roots = [":controller_test_cli"] + [target + "_binary" for target in CONTROLLER_TESTS],
+    license_domain = RUST_PACKAGE.license_domain,
+)
+
+# The installed controller CLI excludes every test-only backend feature.
+aos_package(
+    name = "controller_artifact",
+    package = RUST_PACKAGE,
+    artifacts = {":crucible": "bin/crucible"},
+    executables = ["bin/crucible"],
+)
+
+filegroup(
+    name = "gate_manifest_reference",
+    testonly = True,
+    # Nix source gates still name this file; retain their existence assertions
+    # until those consumers have migrated to declared Bazel contracts.
+    srcs = ["Cargo.toml"],
+    visibility = ["//crates/crucible/crucible-test-support:__pkg__"],
+)
+
+aos_package_clippy(name = "clippy_all")

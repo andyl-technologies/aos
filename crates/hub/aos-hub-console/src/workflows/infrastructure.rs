@@ -309,7 +309,7 @@ fn BindingCard(
     consumer_scope_key: String,
 ) -> impl IntoView {
     let health = binding.health.clone().unwrap_or_default();
-    let capabilities = binding.capabilities.clone().unwrap_or_default();
+    let capabilities = binding.capabilities.unwrap_or_default();
     let provider = binding
         .spec
         .as_ref()

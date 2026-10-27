@@ -1098,6 +1098,9 @@ fn image_content_disposition(relative_path: &str) -> Result<Option<String>> {
     Ok(Some(format!("attachment; filename=\"{filename}\"")))
 }
 
+/// Re-exports the immutable-only persistent draft uploader.
+pub use super::static_stage::stage_static_origin_to_all;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1940,6 +1943,3 @@ mod tests {
         assert_eq!(file.cache_control, cache_control, "{relative_path}");
     }
 }
-
-/// Re-exports the immutable-only persistent draft uploader.
-pub use super::static_stage::stage_static_origin_to_all;

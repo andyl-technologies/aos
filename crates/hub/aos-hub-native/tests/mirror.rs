@@ -64,7 +64,7 @@ async fn make_mirror_registry(
         .await
         .unwrap();
     let binding =
-        common::create_local_binding(&db, org, "primary", &binding_root.to_string_lossy()).await;
+        common::create_local_binding(db, org, "primary", &binding_root.to_string_lossy()).await;
     let reg = db
         .create_managed_registry(
             org,
