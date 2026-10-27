@@ -884,7 +884,7 @@ class EffectivePolicyTest(unittest.TestCase):
             + 1
             + len(effective_policy.FORBIDDEN_PROVISIONER_TRANSITION_SOURCES)
             + len(effective_policy.GUARDED_OBJECT_TYPES)
-            + len(effective_policy.owner_policy.method46_policy.MAIN_TYPES) * (
+            + len(effective_policy.owner_policy.method46_policy.PROTECTED_TYPES) * (
                 2 + len(effective_policy.owner_policy.method46_policy.READ)
                 + len(effective_policy.owner_policy.method46_policy.WRITE)
                 + 1 + len(effective_policy.owner_policy.method46_policy.FORBIDDEN)

@@ -27,7 +27,9 @@ fn fixture() -> (tempfile::TempDir, Journal, InitialIntentOriginal) {
     let (journal, _) = opening.take_captured_opened().unwrap();
     let mut original = InitialIntentOriginal::new();
     original.intent_uid = uid;
-    let demand = original.quote_once(&journal, replayed).unwrap();
+    let demand = original
+        .quote_once(&journal, replayed, IntentContext::NativeDurabilityFixture)
+        .unwrap();
     assert_eq!(demand.get(D::StorageBytes), INTENT_BYTES as u64);
     assert_eq!(demand.get(D::PublicationStagingBytes), INTENT_BYTES as u64);
     (directory, journal, original)
@@ -48,6 +50,60 @@ fn method46_initial_intent_requires_payment_before_native_capture() {
     assert!(original.before.iter().all(|name| name.open.is_none()));
     assert!(!directory.path().join(STAGE).exists());
     assert!(!directory.path().join(FINAL).exists());
+}
+
+#[test]
+fn method46_initial_intent_rejects_generic_files_renamed_to_reserved_names() {
+    for context in [IntentContext::Controller, IntentContext::Storage] {
+        for name in [FINAL, STAGE] {
+            let (directory, journal, mut original) = fixture();
+            original.context = Some(context);
+            let bytes = if name == FINAL {
+                vec![7; INTENT_BYTES]
+            } else {
+                vec![7; 31]
+            };
+            let foreign = directory.path().join("foreign-input");
+            write(&foreign, &bytes);
+            std::fs::rename(foreign, directory.path().join(name)).unwrap();
+
+            assert!(original.capture_once(&journal).is_err());
+            assert!(original.finish_after_owed(&journal).is_err());
+
+            let index = usize::from(name == STAGE);
+            assert!(original.before[index].label.result_observed());
+            assert!(original.after[index].label.result_observed());
+            assert!(original.before[index].bytes.is_none());
+            assert!(original.after.iter().all(|sample| sample.open.is_some()));
+            assert!(original.operation.is_none());
+            assert_eq!(std::fs::read(directory.path().join(name)).unwrap(), bytes);
+        }
+    }
+}
+
+#[test]
+fn method46_initial_intent_checks_new_stage_label_before_writing_approved_bytes() {
+    for context in [IntentContext::Controller, IntentContext::Storage] {
+        let (directory, journal, mut original) = fixture();
+        original.context = Some(context);
+        original.capture_once(&journal).unwrap();
+
+        assert!(original.publish_once(&journal, [7; INTENT_BYTES]).is_err());
+
+        assert!(original.stage_labels[0].result_observed());
+        assert!(!original.stage_labels[1].result_observed());
+        assert!(original.write.is_none());
+        assert!(original.rename.is_none());
+        assert!(original.directory_sync.is_some());
+        assert!(original.after.iter().all(|sample| sample.open.is_some()));
+        assert!(original.post.is_some());
+        assert!(
+            std::fs::read(directory.path().join(STAGE))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(!directory.path().join(FINAL).exists());
+    }
 }
 
 #[test]

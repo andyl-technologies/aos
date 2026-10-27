@@ -1,4 +1,4 @@
-"""Regression tests for distinct method-46 main-journal policy custody."""
+"""Regression tests for distinct method-46 journal and initial-intent custody."""
 
 import json
 import os
@@ -13,7 +13,7 @@ import coverage as policy_coverage
 from context_plan import FileContextResolver, InodeKind
 
 
-class MainJournalPolicyTest(unittest.TestCase):
+class JournalCustodyPolicyTest(unittest.TestCase):
     """Uses the existing checker and its expanded native-shaped rule fixture."""
 
     def check(self, policy):
@@ -22,8 +22,8 @@ class MainJournalPolicyTest(unittest.TestCase):
     def test_normal_composition_and_closed_matrix_are_consistent(self):
         evidence = self.check(fixture.FakePolicy())
         self.assertFalse(set(checker.POSITIVE_ACCESS) & set(checker.NEGATIVE_ACCESS))
-        for main in method46_policy.MAIN_TYPES:
-            self.assertIn(f"exclusive-method46-main-transitions\t{main}", evidence)
+        for _, family, object_type, _ in method46_policy.CUSTODY_OBJECTS:
+            self.assertIn(f"exclusive-method46-{family}-transitions\t{object_type}", evidence)
 
     def test_custody_queries_cover_the_selected_kernel_file_class(self):
         classmap = Path(os.environ["AOS_SELINUX_KERNEL_CLASSMAP"])
@@ -47,7 +47,7 @@ class MainJournalPolicyTest(unittest.TestCase):
                     self.check(policy)
 
     def test_foreign_attribute_members_and_disabled_grants_are_rejected(self):
-        for role, main in zip(method46_policy.ROLES, method46_policy.MAIN_TYPES):
+        for role, family, main, names in method46_policy.CUSTODY_OBJECTS:
             for permission in (*method46_policy.READ, *method46_policy.WRITE, "lock", *method46_policy.FORBIDDEN):
                 with self.subTest(role=role, permission=permission):
                     policy = fixture.FakePolicy()
@@ -60,30 +60,44 @@ class MainJournalPolicyTest(unittest.TestCase):
                             (f"aos_sandbox_{role}_t", "foreign_main_reader_t"),
                         ),
                     )]
-                    with self.assertRaisesRegex(ValueError, "foreign method46 main custody"):
+                    with self.assertRaisesRegex(ValueError, f"foreign method46 {family} custody"):
                         self.check(policy)
 
-    def test_main_types_cannot_inherit_broad_file_membership(self):
-        for main in method46_policy.MAIN_TYPES:
+    def test_normal_owners_and_helpers_cannot_access_initial_intents(self):
+        for role, intent in zip(method46_policy.ROLES, method46_policy.INTENT_TYPES):
+            for actor in (f"aos_sandbox_{role}_t", f"aos_method46_{role}_helper_t"):
+                for permission in (*method46_policy.READ, *method46_policy.WRITE, "lock"):
+                    with self.subTest(role=role, actor=actor, permission=permission):
+                        policy = fixture.FakePolicy()
+                        access = checker.Access(actor, intent, "file", permission)
+                        policy.allows[access] = [fixture.FakeRule(
+                            "normal owner or helper inherited intent access",
+                            source=fixture.FakeAttribute("intent_actor", (actor,)),
+                        )]
+                        with self.assertRaisesRegex(ValueError, "foreign method46 initial-intent custody"):
+                            self.check(policy)
+
+    def test_protected_types_cannot_inherit_broad_file_membership(self):
+        for main in method46_policy.PROTECTED_TYPES:
             with self.subTest(main=main):
                 policy = fixture.FakePolicy()
                 policy.file_types.add(main)
                 with self.assertRaisesRegex(ValueError, "protected object inherited broad file_type"):
                     self.check(policy)
 
-    def test_main_object_types_cannot_become_domains(self):
-        for main in method46_policy.MAIN_TYPES:
+    def test_protected_object_types_cannot_become_domains(self):
+        for main in method46_policy.PROTECTED_TYPES:
             with self.subTest(main=main):
                 policy = fixture.FakePolicy()
                 policy.attributes["domain"].add(main)
-                with self.assertRaisesRegex(ValueError, "method46 main object inherited domain"):
+                with self.assertRaisesRegex(ValueError, "method46 object inherited domain"):
                     self.check(policy)
 
-    def test_only_own_parent_and_exact_main_names_promote_the_label(self):
-        for role, main in zip(method46_policy.ROLES, method46_policy.MAIN_TYPES):
+    def test_only_own_parent_and_exact_names_promote_the_label(self):
+        for role, family, main, names in method46_policy.CUSTODY_OBJECTS:
             owner = f"aos_sandbox_{role}_t"
             floor = f"aos_method46_{role}_floor_t"
-            original = checker.Transition(owner, floor, "file", main, filename="session.journal")
+            original = checker.Transition(owner, floor, "file", main, filename=names[0])
             for field, value in (
                 ("source", fixture.FakeAttribute("mixed_sources", (owner, "foreign_main_writer_t"))),
                 ("target", fixture.FakeTypeAttribute({floor, "var_lib_t"})),
@@ -97,12 +111,12 @@ class MainJournalPolicyTest(unittest.TestCase):
                     policy.transitions[original].append(replace(
                         policy.transitions[original][0], active=False, **{field: value},
                     ))
-                    with self.assertRaisesRegex(ValueError, "foreign method46 main label transition"):
+                    with self.assertRaisesRegex(ValueError, f"foreign method46 {family} label transition"):
                         self.check(policy)
 
-    def test_each_literal_main_transition_is_required(self):
-        for role, main in zip(method46_policy.ROLES, method46_policy.MAIN_TYPES):
-            for name in method46_policy.MAIN_NAMES:
+    def test_each_literal_transition_is_required(self):
+        for role, family, main, names in method46_policy.CUSTODY_OBJECTS:
+            for name in names:
                 with self.subTest(role=role, name=name):
                     policy = fixture.FakePolicy()
                     transition = checker.Transition(
@@ -123,9 +137,9 @@ class MainJournalPolicyTest(unittest.TestCase):
                     self.assertEqual(
                         resolver.lookup(entry["path"], InodeKind.regular), entry["context"],
                     )
-                    if not any(main in entry["context"] for main in method46_policy.MAIN_TYPES):
+                    if not any(main in entry["context"] for main in method46_policy.PROTECTED_TYPES):
                         continue
-                    for suffix in (".lock", ".foreign", ".compact.tmp.foreign", "/child"):
+                    for suffix in (".lock", ".foreign", ".compact.tmp.foreign", ".pending.foreign", "/child"):
                         self.assertNotEqual(
                             resolver.lookup(entry["path"] + suffix, InodeKind.regular),
                             entry["context"],

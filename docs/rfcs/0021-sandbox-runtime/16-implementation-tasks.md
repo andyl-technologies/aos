@@ -31,6 +31,29 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- Initial-intent final and pending files now have separate per-endpoint object
+  labels. Normal writers' exact-name creation transitions select those labels,
+  whose file permissions remain denied to all actors until initial roles are
+  implemented. The existing expanded-policy checker covers both intents and
+  main journals, including disabled/foreign grants and broad type membership.
+  A rename can preserve a foreign inode label, so the existing intent owner now
+  also binds its genuine startup role before quoting and checks raw labels on
+  actual opened intent/stage descriptions before reading or writing their bytes,
+  after stage completion and during independently owed name posts. Wrong or
+  missing labels refuse without relabeling, repair or deletion. The Source quote
+  includes all eight bounded label observations and retained results. Thirteen
+  native intent tests pass, including renamed generic files and refusal before
+  writing a wrongly labeled new stage. Existing positive durability fixtures
+  remain explicitly unconfined mechanics tests; their test-only selector cannot
+  be chosen by production or the genuine Source role conversion. The expanded
+  AOS Nix custody check passes ten tests on its audited 543-derivation closure
+  without production policy; the working-tree checker suite passes all 179.
+  The final full-target compile check is running on an audited 833-derivation
+  closure without production policy, with all 8,863 Rust/Cargo files matching its
+  frozen source. Pure evaluation verifies actual TE/context composition; linked
+  policy and installed MAC qualification remain pending the existing networkd
+  approval. Initial service/helper roles are still missing; admission stays closed.
+
 - Controller's Storage-session main and Storage's own main now have separate
   SELinux labels, selected only for their exact journal and compaction names.
   Normal writers retain their existing operations; Root retains only its

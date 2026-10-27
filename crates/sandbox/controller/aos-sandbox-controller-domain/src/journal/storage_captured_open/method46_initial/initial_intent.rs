@@ -15,6 +15,9 @@ use aos_sandbox_protocol::domain_ledger::floor_sidecar_geometry::SIDECAR_NAME_V1
 
 use super::*;
 
+mod label;
+use label::{IntentContext, IntentLabelOriginal, LABEL_BYTES};
+
 pub(crate) const INTENT_BYTES: usize = 398;
 const FINAL: &str = "session-floor.initial-intent";
 const STAGE: &str = "session-floor.initial-intent.pending";
@@ -26,6 +29,7 @@ struct NameOriginal {
     read: FixedRoleCredentialReadV1,
     bytes: Option<Vec<u8>>,
     result: Option<Result<(), JournalError>>,
+    label: IntentLabelOriginal,
 }
 
 impl NameOriginal {
@@ -36,10 +40,17 @@ impl NameOriginal {
             read: FixedRoleCredentialReadV1::prearmed(),
             bytes: None,
             result: None,
+            label: IntentLabelOriginal::new(),
         }
     }
 
-    fn capture(&mut self, journal: &Journal, index: usize, intent_uid: u32) {
+    fn capture(
+        &mut self,
+        journal: &Journal,
+        index: usize,
+        intent_uid: u32,
+        context: IntentContext,
+    ) {
         self.open = Some(
             journal
                 .native
@@ -51,7 +62,15 @@ impl NameOriginal {
             if matches!(self.open, Some(Err(rustix::io::Errno::NOENT))) {
                 return Ok(());
             }
-            let file = self.file().ok_or(JournalError::ProtectedBoundary)?;
+            let file = self
+                .open
+                .as_ref()
+                .and_then(|value| value.as_ref().ok())
+                .ok_or(JournalError::ProtectedBoundary)?;
+            if index != 2 {
+                // Retain this original label even if metadata comparison fails.
+                self.label.observe(file);
+            }
             self.metadata[0] = Some(file.metadata());
             let metadata = self.metadata[0]
                 .as_ref()
@@ -67,6 +86,9 @@ impl NameOriginal {
             };
             let maximum = if index == 2 { 0 } else { INTENT_BYTES as u64 };
             require_file(metadata, uid, maximum)?;
+            if index != 2 && !self.label.require(context) {
+                return Err(JournalError::ProtectedBoundary);
+            }
             let length =
                 usize::try_from(metadata.len()).map_err(|_| JournalError::ProtectedBoundary)?;
             if index == 0 && length != INTENT_BYTES {
@@ -134,6 +156,12 @@ impl NameOriginal {
                     .and_then(|value| value.as_ref().err())
                     .map(|error| error as _)
             })
+            .or_else(|| {
+                self.label
+                    .failure()
+                    .filter(|_| self.result.as_ref().is_some_and(Result::is_err))
+                    .map(|error| error as _)
+            })
             .or_else(|| self.read.failure())
             .or_else(|| {
                 self.metadata[1]
@@ -168,9 +196,11 @@ pub(super) struct InitialIntentOriginal {
     before: [NameOriginal; 3],
     capture: Option<Result<(), JournalError>>,
     intent_uid: u32,
+    context: Option<IntentContext>,
     approved: Option<[u8; INTENT_BYTES]>,
     stage_open: Option<Result<File, rustix::io::Errno>>,
     stage_metadata: [Option<io::Result<Metadata>>; 3],
+    stage_labels: [IntentLabelOriginal; 2],
     stage_read: FixedRoleCredentialReadV1,
     stage_bytes: Option<Vec<u8>>,
     write: Option<io::Result<usize>>,
@@ -194,9 +224,11 @@ impl InitialIntentOriginal {
             before: std::array::from_fn(|_| NameOriginal::new()),
             capture: None,
             intent_uid: 0,
+            context: None,
             approved: None,
             stage_open: None,
             stage_metadata: [None, None, None],
+            stage_labels: std::array::from_fn(|_| IntentLabelOriginal::new()),
             stage_read: FixedRoleCredentialReadV1::prearmed(),
             stage_bytes: None,
             write: None,
@@ -212,15 +244,17 @@ impl InitialIntentOriginal {
         }
     }
 
-    pub(super) fn quote_once(
+    fn quote_once(
         &mut self,
         journal: &Journal,
         replayed: FileIdentity,
+        context: IntentContext,
     ) -> Option<ResourceVector> {
         if self.quote.is_some() || self.capture.is_some() || self.closed.is_some() {
             self.closed.get_or_insert(JournalError::ProtectedBoundary);
             return None;
         }
+        self.context = Some(context);
         // Eight exact readers retain a buffer and a failed duplicate each.
         // Six named files plus the writable stage remain resident on failure.
         // Persistent and staging space are charged independently before IO.
@@ -228,10 +262,13 @@ impl InitialIntentOriginal {
         let native = ResourceVector::ZERO
             .with(D::MemoryBytes, u64::try_from(memory).ok()?)
             .with(D::OpenFiles, 16)
-            .with(D::MetadataEntries, 24)
+            .with(D::MetadataEntries, 32)
             .with(D::StorageBytes, INTENT_BYTES as u64)
             .with(D::PublicationStagingBytes, INTENT_BYTES as u64)
-            .with(D::OutputBytes, (8 * (INTENT_BYTES + 1)) as u64);
+            .with(
+                D::OutputBytes,
+                (8 * (INTENT_BYTES + 1 + LABEL_BYTES)) as u64,
+            );
         self.quote = Some(
             native
                 .checked_add(self.main.quote_once(journal, replayed)?)
@@ -246,8 +283,9 @@ impl InitialIntentOriginal {
             return Err(JournalError::ProtectedBoundary);
         }
         let main_before = self.main.before_once(journal);
+        let context = self.context.ok_or(JournalError::ProtectedBoundary)?;
         for (index, original) in self.before.iter_mut().enumerate() {
-            original.capture(journal, index, self.intent_uid);
+            original.capture(journal, index, self.intent_uid, context);
         }
         self.capture = Some((|| {
             main_before?;
@@ -347,12 +385,17 @@ impl InitialIntentOriginal {
             .as_ref()
             .and_then(|value| value.as_ref().ok())
             .ok_or(JournalError::ProtectedBoundary)?;
+        self.stage_labels[0].observe(stage);
         self.stage_metadata[0] = Some(stage.metadata());
         let metadata = self.stage_metadata[0]
             .as_ref()
             .and_then(|value| value.as_ref().ok())
             .ok_or(JournalError::ProtectedBoundary)?;
         require_file(metadata, self.intent_uid, INTENT_BYTES as u64)?;
+        let context = self.context.ok_or(JournalError::ProtectedBoundary)?;
+        if !self.stage_labels[0].require(context) {
+            return Err(JournalError::ProtectedBoundary);
+        }
         if metadata.len() != prefix.len() as u64
             || (!self.before[1].absent()
                 && Some(FileIdentity::from_metadata_data_v1(metadata))
@@ -381,6 +424,10 @@ impl InitialIntentOriginal {
             .read_exact_at_once(stage.as_fd(), INTENT_BYTES);
         self.ready_bytes = self.ready_read.take_success_bytes_once();
         self.stage_metadata[1] = Some(stage.metadata());
+        self.stage_labels[1].observe(stage);
+        if !self.stage_labels[1].require(context) {
+            return Err(JournalError::ProtectedBoundary);
+        }
         if self.ready_bytes.as_deref() != Some(approved.as_slice()) {
             return Err(JournalError::ProtectedBoundary);
         }
@@ -411,7 +458,12 @@ impl InitialIntentOriginal {
         }
         if self.post.is_none() {
             for (index, original) in self.after.iter_mut().enumerate() {
-                original.capture(journal, index, self.intent_uid);
+                original.capture(
+                    journal,
+                    index,
+                    self.intent_uid,
+                    self.context.ok_or(JournalError::ProtectedBoundary)?,
+                );
             }
             if let Some(Ok(stage)) = self.stage_open.as_ref() {
                 self.stage_metadata[2] = Some(stage.metadata());
@@ -487,6 +539,12 @@ impl InitialIntentOriginal {
                     .and_then(|value| value.as_ref().err())
                     .map(|error| error as _)
             })
+            .or_else(|| {
+                self.context
+                    .filter(|context| !self.stage_labels[0].require(*context))
+                    .and_then(|_| self.stage_labels[0].failure())
+                    .map(|error| error as _)
+            })
             .or_else(|| self.stage_read.failure())
             .or_else(|| {
                 self.write
@@ -505,6 +563,12 @@ impl InitialIntentOriginal {
                 self.stage_metadata[1]
                     .as_ref()
                     .and_then(|value| value.as_ref().err())
+                    .map(|error| error as _)
+            })
+            .or_else(|| {
+                self.context
+                    .filter(|context| !self.stage_labels[1].require(*context))
+                    .and_then(|_| self.stage_labels[1].failure())
                     .map(|error| error as _)
             })
             .or_else(|| {
@@ -550,7 +614,8 @@ impl Method46InitialMainWriterOriginalV1 {
             .inner
             .original
             .captured_replay_file_identity_data_v1()?;
-        self.initial_intent.quote_once(journal, replayed)
+        self.initial_intent
+            .quote_once(journal, replayed, self.fixed_role?.into())
     }
 
     pub(crate) fn capture_initial_intent_once(&mut self) -> Result<(), JournalError> {

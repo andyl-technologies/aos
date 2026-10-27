@@ -530,6 +530,13 @@ allow aos_method46_controller_main_t fs_t:filesystem associate;
 allow aos_sandbox_controller_t aos_method46_controller_main_t:file { append create getattr lock open read rename setattr unlink write };
 type_transition aos_sandbox_controller_t aos_method46_controller_floor_t:file aos_method46_controller_main_t "session.journal";
 type_transition aos_sandbox_controller_t aos_method46_controller_floor_t:file aos_method46_controller_main_t "session.journal.compact.tmp";
+# Reserve these names from the normal writer's generic floor-file transition.
+# No service can open/create/mutate this object until initial-role selection is
+# implemented. Publication keeps one label across pending -> final rename.
+type aos_method46_controller_initial_intent_t;
+allow aos_method46_controller_initial_intent_t fs_t:filesystem associate;
+type_transition aos_sandbox_controller_t aos_method46_controller_floor_t:file aos_method46_controller_initial_intent_t "session-floor.initial-intent";
+type_transition aos_sandbox_controller_t aos_method46_controller_floor_t:file aos_method46_controller_initial_intent_t "session-floor.initial-intent.pending";
 allow aos_sandbox_controller_t aos_method46_helper_exec_t:file { execute getattr map open read };
 allow aos_sandbox_controller_t aos_method46_controller_helper_t:process { getattr sigkill signal transition };
 allow aos_sandbox_controller_t aos_method46_controller_helper_t:process2 nnp_transition;
@@ -575,6 +582,10 @@ allow aos_method46_storage_main_t fs_t:filesystem associate;
 allow aos_sandbox_storage_t aos_method46_storage_main_t:file { append create getattr open read rename setattr unlink write };
 type_transition aos_sandbox_storage_t aos_method46_storage_floor_t:file aos_method46_storage_main_t "session.journal";
 type_transition aos_sandbox_storage_t aos_method46_storage_floor_t:file aos_method46_storage_main_t "session.journal.compact.tmp";
+type aos_method46_storage_initial_intent_t;
+allow aos_method46_storage_initial_intent_t fs_t:filesystem associate;
+type_transition aos_sandbox_storage_t aos_method46_storage_floor_t:file aos_method46_storage_initial_intent_t "session-floor.initial-intent";
+type_transition aos_sandbox_storage_t aos_method46_storage_floor_t:file aos_method46_storage_initial_intent_t "session-floor.initial-intent.pending";
 allow aos_sandbox_storage_t aos_method46_helper_exec_t:file { execute getattr map open read };
 allow aos_sandbox_storage_t aos_method46_storage_helper_t:process { getattr sigkill signal transition };
 allow aos_sandbox_storage_t aos_method46_storage_helper_t:process2 nnp_transition;

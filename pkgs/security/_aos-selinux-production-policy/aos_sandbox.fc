@@ -115,6 +115,8 @@
 /var/lib/aos/sandboxd/cache-residency-authority/bootstrap-v1\.journal(\.lock|\.compact\.tmp)? -- system_u:object_r:aos_sandbox_root_read_journal_t
 /var/lib/aos/sandboxd/broker-session/storage/session\.journal(\.compact\.tmp)? -- system_u:object_r:aos_method46_controller_main_t
 /var/lib/aos/sandbox-storage/broker-session/session\.journal(\.compact\.tmp)? -- system_u:object_r:aos_method46_storage_main_t
+/var/lib/aos/sandboxd/broker-session/storage/session-floor\.initial-intent(\.pending)? -- system_u:object_r:aos_method46_controller_initial_intent_t
+/var/lib/aos/sandbox-storage/broker-session/session-floor\.initial-intent(\.pending)? -- system_u:object_r:aos_method46_storage_initial_intent_t
 /var/lib/aos/sandboxd/broker-session/(host|mount|network)/session\.journal(\.lock|\.compact\.tmp)? -- system_u:object_r:aos_sandbox_root_read_journal_t
 
 # Persistent empty targets; PID1 overlays privately delivered credential inodes.
