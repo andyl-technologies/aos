@@ -8,24 +8,27 @@
   sampleId,
 }: let
   sourceRoot = ../..;
-  crateNames = [
-    "crucible"
-    "crucible-api"
-    "crucible-campaign"
-    "crucible-cas"
-    "crucible-cli"
-    "crucible-daemon"
-    "crucible-device"
-    "crucible-guest"
-    "crucible-harness"
-    "crucible-linux-resource"
-    "crucible-protocol"
-    "crucible-qemu"
-    "crucible-qemu-plugin"
-    "crucible-s3-store"
-    "crucible-session"
-    "crucible-shmem"
-    "crucible-sim"
+  # Crate directories relative to crates/.
+  crateDirs = [
+    "crucible/crucible-campaign"
+    "crucible/crucible-cli"
+    "crucible/crucible-control-api"
+    "crucible/crucible-control-client"
+    "crucible/crucible-control-server"
+    "crucible/crucible-daemon"
+    "crucible/crucible-determinism"
+    "crucible/crucible-device"
+    "crucible/crucible-engine"
+    "crucible/crucible-guest"
+    "crucible/crucible-qemu-host"
+    "crucible/crucible-qemu-plugin"
+    "crucible/crucible-qemu-protocol"
+    "crucible/crucible-qemu-shmem"
+    "crucible/crucible-session"
+    "crucible/crucible-store"
+    "crucible/crucible-store-s3"
+    "crucible/crucible-test-support"
+    "linux/aos-linux-project-quota"
   ];
   filesUnder = relative: let
     entries = builtins.readDir (sourceRoot + "/${relative}");
@@ -51,15 +54,15 @@
       "tests/crucible/fixtures/e2e-determinism.scenario.toml"
       "tests/crucible/fixtures/live-qemu-fuzz.family.toml"
     ]
-    ++ builtins.concatMap (name:
-      filesUnder "crates/${name}/src"
-      ++ ["crates/${name}/Cargo.toml"]
+    ++ builtins.concatMap (dir:
+      filesUnder "crates/${dir}/src"
+      ++ ["crates/${dir}/Cargo.toml"]
       ++ (
-        if builtins.pathExists (sourceRoot + "/crates/${name}/build.rs")
-        then ["crates/${name}/build.rs"]
+        if builtins.pathExists (sourceRoot + "/crates/${dir}/build.rs")
+        then ["crates/${dir}/build.rs"]
         else []
       ))
-    crateNames;
+    crateDirs;
   production =
     builtins.listToAttrs (map (path: {
         name = path;
