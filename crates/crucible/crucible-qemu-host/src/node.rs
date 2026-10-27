@@ -23,7 +23,7 @@ use crate::{
     QemuAdvanceCompletionFence, QemuAsyncCrashEscalationTarget, QemuAsyncDriverPolicy,
     QemuAsyncDriverTargetError, QemuAsyncNodeStepOutcome, QemuAsyncNodeStepTarget,
     QemuAsyncQuantumCompletion, QemuCrashDetector, QemuGdbstubChannelConfig, QemuHostIoRuntime,
-    run_bounded_qemu_node_step,
+    QemuQuantumStopCondition, run_bounded_qemu_node_step,
 };
 #[cfg(target_os = "linux")]
 use crucible_engine::model::{FaultCoordinate, ResolvedBindingAction};
@@ -1611,7 +1611,7 @@ impl QemuNode {
         }
         let report = self.advance_to_ceiling_report_with_stop_condition(
             liveness_ceiling,
-            crate::QemuQuantumStopCondition::NextAuthenticatedIdle,
+            QemuQuantumStopCondition::NextAuthenticatedIdle,
         )?;
         self.finish_advance_report(liveness_ceiling, report)
     }
@@ -1801,14 +1801,14 @@ impl QemuNode {
     ) -> Result<crate::QemuAsyncNodeStepReport, QemuNodeError> {
         self.advance_to_ceiling_report_with_stop_condition(
             ceiling,
-            crate::QemuQuantumStopCondition::Ceiling,
+            QemuQuantumStopCondition::Ceiling,
         )
     }
 
     fn advance_to_ceiling_report_with_stop_condition(
         &mut self,
         ceiling: Icount,
-        stop_condition: crate::QemuQuantumStopCondition,
+        stop_condition: QemuQuantumStopCondition,
     ) -> Result<crate::QemuAsyncNodeStepReport, QemuNodeError> {
         let Some(evidence) = self.bounded_scheduler_preemption.take() else {
             return self.advance_to_ceiling_report_without_host_preemption(ceiling, stop_condition);
@@ -1906,7 +1906,7 @@ impl QemuNode {
     fn advance_to_ceiling_report_without_host_preemption(
         &mut self,
         ceiling: Icount,
-        stop_condition: crate::QemuQuantumStopCondition,
+        stop_condition: QemuQuantumStopCondition,
     ) -> Result<crate::QemuAsyncNodeStepReport, QemuNodeError> {
         let mut target = QemuNodeAsyncStepTarget {
             child: &mut self.child,
@@ -2801,10 +2801,8 @@ impl QemuNode {
             self.pending_preemption = None;
         }
         let stop_condition = match stop {
-            crucible_engine::RunCeilingStop::Bound => crate::QemuQuantumStopCondition::Ceiling,
-            crucible_engine::RunCeilingStop::ExactEvent => {
-                crate::QemuQuantumStopCondition::ExactEvent
-            }
+            crucible_engine::RunCeilingStop::Bound => QemuQuantumStopCondition::Ceiling,
+            crucible_engine::RunCeilingStop::ExactEvent => QemuQuantumStopCondition::ExactEvent,
         };
         let report = self
             .advance_to_ceiling_report_with_stop_condition(icount_ceiling, stop_condition)
