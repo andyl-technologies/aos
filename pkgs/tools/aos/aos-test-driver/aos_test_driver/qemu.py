@@ -9,12 +9,14 @@ import glob
 import logging
 import os
 import shutil
+import signal
 import socket
 import subprocess
 import threading
 import time
 from pathlib import Path
 from typing import IO, ClassVar, override
+from uuid import UUID
 
 from .agent import Driver
 from .fs import clone_or_copy
@@ -22,6 +24,23 @@ from .machine import Machine
 
 
 log: logging.Logger = logging.getLogger(__name__)
+
+QEMU_PLATFORM_PROFILES: dict[str, dict[str, str]] = {
+    "x86_64": {
+        "qemu_binary": "qemu-system-x86_64",
+        "machine_type": "q35",
+        "acceleration": "kvm",
+        "cpu_model": "host",
+        "console": "ttyS0",
+    },
+    "aarch64": {
+        "qemu_binary": "qemu-system-aarch64",
+        "machine_type": "virt",
+        "acceleration": "tcg",
+        "cpu_model": "cortex-a57",
+        "console": "ttyAMA0",
+    },
+}
 
 
 def _mcast_endpoint() -> tuple[str, int]:
@@ -76,12 +95,19 @@ class QemuMachine(Machine):
     transport: ClassVar[Driver] = "qemu"
 
     boot: str
+    architecture: str
+    qemu_binary: str
+    machine_type: str
+    acceleration: str
+    cpu_model: str
+    console: str
     kernel_pkg: str | None
     initrd_path: str | None
     disk_src: str
     metadata_src: str | None
     firmware_code: str | None
     firmware_vars_src: str | None
+    export_firmware_vars: bool
     fw_cfg_path: str | None
     disk_size_mib: int | None
     var_size_mib: int | None
@@ -120,11 +146,18 @@ class QemuMachine(Machine):
         ip: str,
         tmpdir: str,
         boot: str = "kernel",
+        architecture: str = "x86_64",
+        qemu_binary: str | None = None,
+        machine_type: str | None = None,
+        acceleration: str | None = None,
+        cpu_model: str | None = None,
+        console: str | None = None,
         kernel: str | None = None,
         initrd: str | None = None,
         metadata: str | None = None,
         firmware_code: str | None = None,
         firmware_vars: str | None = None,
+        export_firmware_vars: bool = False,
         fw_cfg: str | None = None,
         disk_size_mib: int | None = None,
         var_size_mib: int | None = None,
@@ -134,13 +167,53 @@ class QemuMachine(Machine):
         swtpm_bin: str | None = None,
         kernel_params: list[str] | None = None,
     ) -> None:
+        profile = QEMU_PLATFORM_PROFILES.get(architecture)
+        if profile is None:
+            raise RuntimeError(
+                f"[{name}] unsupported qemu architecture {architecture!r}"
+            )
+        if architecture == "aarch64" and boot == "image":
+            raise RuntimeError(
+                f"[{name}] image boot is not implemented for"
+                f" architecture {architecture}"
+            )
+        if architecture == "aarch64" and tpm:
+            raise RuntimeError(
+                f"[{name}] TPM attachment is not implemented for"
+                f" architecture {architecture}"
+            )
+
+        platform_fields = {
+            "qemu_binary": qemu_binary,
+            "machine_type": machine_type,
+            "acceleration": acceleration,
+            "cpu_model": cpu_model,
+            "console": console,
+        }
+        normalized_platform: dict[str, str] = {}
+        for field, supplied in platform_fields.items():
+            expected = profile[field]
+            if supplied is not None and supplied != expected:
+                raise RuntimeError(
+                    f"[{name}] qemu {architecture} profile requires"
+                    f" {field}={expected!r} (got {supplied!r})"
+                )
+            normalized_platform[field] = expected
+
         self.boot = boot
+        self.architecture = architecture
+        self.qemu_binary = normalized_platform["qemu_binary"]
+        self.machine_type = normalized_platform["machine_type"]
+        self.acceleration = normalized_platform["acceleration"]
+        self.cpu_model = normalized_platform["cpu_model"]
+        self.console = normalized_platform["console"]
         self.kernel_pkg = kernel
         self.initrd_path = initrd
         self.disk_src = disk
         self.metadata_src = metadata
         self.firmware_code = firmware_code
         self.firmware_vars_src = firmware_vars
+        self.export_firmware_vars = export_firmware_vars
         self.fw_cfg_path = fw_cfg
         self.disk_size_mib = disk_size_mib
         self.var_size_mib = var_size_mib
@@ -347,10 +420,9 @@ class QemuMachine(Machine):
 
         Idempotent: reuses a live swtpm (preserving its in-memory TPM), and
         otherwise (re)launches it against the persistent ``--tpmstate`` dir.
-        QEMU tears its control connection down on the reboot leg and swtpm
-        exits with it, so this is called from every ``_launch()`` — the
-        relaunch reloads the persisted NV state and enrolled keys while PCRs
-        reset at power-on, exactly matching real-hardware reboot semantics.
+        In-place guest resets retain the live backend. Explicit power cycling
+        first kills and reaps both processes, then reloads the same persistent
+        state directory. No TPM state is cleared, copied or restored here.
 
         # Raises
 
@@ -405,6 +477,24 @@ class QemuMachine(Machine):
                 )
             time.sleep(0.05)
 
+    def _base_qemu_argv(self) -> list[str]:
+        """Builds the reviewed architecture-specific QEMU command prefix."""
+        # The current image boot path is the x86_64 SB+SMM OVMF contract.
+        # Direct-kernel boots use the architecture's plain machine type.
+        machine_options = [self.machine_type]
+        if self.boot == "image":
+            machine_options.append("smm=on")
+        machine_options.append(f"accel={self.acceleration}")
+        machine = ",".join(machine_options)
+        return [
+            self.qemu_binary,
+            "-machine", machine,
+            "-cpu", self.cpu_model,
+            "-m", str(self.memory_mib),
+            "-smp", str(self.vcpu_count),
+            "-nographic",
+        ]
+
     # ------------------------------------------------------------------
     def _launch(self) -> None:
         """Start the QEMU process against the prepared per-run artifacts.
@@ -412,6 +502,10 @@ class QemuMachine(Machine):
         Split out of start() so reboot() can relaunch against the same
         disk/NVRAM state without re-running the prep (copy/grow/sgdisk).
         """
+        # Construct and validate the platform prefix before starting helper
+        # processes or opening the serial bridge.
+        argv = self._base_qemu_argv()
+
         # vTPM must be up before QEMU connects to its socket — on the reboot
         # leg swtpm died with the previous QEMU, so (re)launch it here.
         self._ensure_swtpm()
@@ -419,20 +513,6 @@ class QemuMachine(Machine):
         # bridge on every launch so relaunch-based recovery and rejected-input
         # tests retain both their transcript and interactive console.
         self._start_serial_bridge()
-
-        # Image boot uses the SB+SMM OVMF, which requires the q35 SMM
-        # machine. Kernel boot keeps the plain machine.
-        machine = (
-            "q35,smm=on,accel=kvm" if self.boot == "image" else "q35,accel=kvm"
-        )
-        argv: list[str] = [
-            "qemu-system-x86_64",
-            "-machine", machine,
-            "-cpu", "host",
-            "-m", str(self.memory_mib),
-            "-smp", str(self.vcpu_count),
-            "-nographic",
-        ]
 
         if self.boot == "image":
             # UEFI image boot: OVMF code (read-only) + per-run vars on
@@ -576,18 +656,17 @@ class QemuMachine(Machine):
             "-chardev",
             f"socket,id=agent,path={self.agent.socket_path},server=on,wait=off",
             "-chardev",
-            f"socket,id=ttyS0,path={self.serial_socket},server=off",
-            "-serial", "chardev:ttyS0",
+            f"socket,id={self.console},path={self.serial_socket},server=off",
+            "-serial", f"chardev:{self.console}",
             "-netdev",
             f"socket,id=net0,mcast={MCAST_GROUP}:{MCAST_PORT},localaddr=127.0.0.1",
             "-device", f"virtio-net-pci,netdev=net0,mac={self.mac}",
         ]
         # `-no-reboot` makes a guest reboot exit QEMU (the relaunch reboot
         # path, and the SB negative test's rejection signal). A vTPM
-        # machine must instead reset in place so QEMU keeps its swtpm
-        # connection alive — swtpm exits when QEMU disconnects, and a
-        # relaunched swtpm loading the prior boot's state wedges the
-        # measured-boot reboot. So omit -no-reboot when a TPM is attached.
+        # machine instead resets in place and retains its swtpm connection.
+        # Explicit power_cycle() separately kills and reaps both processes
+        # before relaunching against their existing persistent state.
         if not self.tpm:
             argv += ["-no-reboot"]
 
@@ -700,14 +779,17 @@ class QemuMachine(Machine):
 
     # ------------------------------------------------------------------
     def reboot(self, timeout: float = 600.0) -> None:
-        """Reboot the guest and wait for the agent to come back.
+        """Requests an orderly reboot and verifies a new kernel boot.
 
-        ``-no-reboot`` makes a guest-initiated reboot exit the QEMU
-        process, so a reboot is: ask the guest to reboot (detached, so
-        the agent's framed reply gets out first), wait for QEMU to
-        exit, relaunch against the same on-disk state — second boot,
-        not first boot — and re-handshake with the agent.
+        vTPM guests reset in place, preserving the live TPM connection.
+        Other guests exit QEMU and relaunch against the same disk. Both
+        paths require the kernel boot ID to change after agent readiness;
+        an old agent answering again cannot establish a completed reboot.
         """
+        if self.qemu_proc is None:
+            raise RuntimeError(f"[{self.name}] reboot before start()")
+        original_boot = self._read_boot_id()
+
         # The trailing `&` detaches the reboot so the agent can frame
         # its reply before PID 1 starts an orderly shutdown. Do not use
         # `reboot -f` here: it bypasses systemd, so journald and /var do
@@ -715,8 +797,6 @@ class QemuMachine(Machine):
         self.execute("(sleep 1; systemctl reboot) >/dev/null 2>&1 &", timeout=30)
         self.agent.close()
 
-        if self.qemu_proc is None:
-            raise RuntimeError(f"[{self.name}] reboot before start()")
         deadline = time.monotonic() + timeout
 
         # vTPM machines reset in place (no -no-reboot): QEMU keeps running
@@ -735,6 +815,7 @@ class QemuMachine(Machine):
             # reboot completing.
             self.agent.wait_down(time.monotonic() + 90)
             self.agent.wait_ready(deadline)
+            self._require_new_boot(original_boot)
             return
 
         try:
@@ -759,26 +840,92 @@ class QemuMachine(Machine):
             self.qemu_proc.pid if self.qemu_proc else "?",
         )
         self.agent.wait_ready(deadline)
+        self._require_new_boot(original_boot)
+
+    def _read_boot_id(self) -> UUID:
+        """Reads the guest kernel's boot identity through the live agent."""
+        value = self.succeed("cat /proc/sys/kernel/random/boot_id", timeout=30).strip()
+        try:
+            boot_id = UUID(value)
+        except ValueError as error:
+            raise RuntimeError(f"[{self.name}] invalid guest boot ID: {value!r}") from error
+        if str(boot_id) != value or boot_id.int == 0:
+            raise RuntimeError(f"[{self.name}] invalid guest boot ID: {value!r}")
+        return boot_id
+
+    def _require_new_boot(self, original_boot: UUID) -> None:
+        """Rejects an old agent that becomes ready without a kernel reboot."""
+        if self._read_boot_id() == original_boot:
+            raise RuntimeError(f"[{self.name}] reboot did not change guest boot ID {original_boot}")
+
+    def shutdown_for_firmware_export(self, timeout: float = 120.0) -> None:
+        """Shuts down and proves QEMU closed its writable firmware pflash.
+
+        The guest agent acknowledges ``SHUTDOWN`` before issuing its forced
+        poweroff. Waiting for QEMU to exit naturally establishes that pflash
+        is closed without relying on the cleanup path's terminate/kill
+        fallback.
+
+        Args:
+            timeout: Maximum seconds to wait for QEMU to exit.
+
+        Raises:
+            RuntimeError: If no QEMU process exists, the guest rejects the
+                shutdown request, or QEMU times out or exits unsuccessfully.
+        """
+        process = self.qemu_proc
+        if process is None:
+            raise RuntimeError(
+                f"[{self.name}] firmware export requested without a QEMU process"
+            )
+
+        try:
+            exit_code, _, _ = self.agent.shutdown()
+        except Exception as error:
+            raise RuntimeError(
+                f"[{self.name}] firmware export shutdown request failed: {error}"
+            ) from error
+        finally:
+            self.agent.close()
+
+        if exit_code != 0:
+            raise RuntimeError(
+                f"[{self.name}] firmware export shutdown returned {exit_code}"
+            )
+
+        try:
+            return_code = process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired as error:
+            raise RuntimeError(
+                f"[{self.name}] QEMU did not exit naturally before firmware export"
+            ) from error
+
+        if return_code != 0:
+            raise RuntimeError(
+                f"[{self.name}] QEMU exited with {return_code} before firmware export"
+            )
 
     def power_cycle(self, timeout: float = 600.0) -> None:
         """Cut power to QEMU and boot again from the same writable disks.
 
         The method kills the owned QEMU process with ``SIGKILL`` without
         asking the guest to stop, closes stale transport state, and relaunches
-        against the already prepared per-run artifacts. It is intended for
-        crash-consistency tests that must cross a real unclean power boundary.
+        against the already prepared per-run artifacts. An attached swtpm is
+        stopped before QEMU disconnects, then also killed and reaped, preventing
+        its automatic clean TPM shutdown. Relaunch retains its persistent NV
+        state directory. This models process power loss, not failure of the
+        host storage media containing those artifacts.
 
         Raises:
-            RuntimeError: If the machine is not running, uses a vTPM, QEMU
-                cannot be killed, or the guest agent does not return before
-                the deadline.
+            RuntimeError: If QEMU or its required swtpm is not running, either
+                process cannot be killed and reaped, or the guest agent does
+                not return before the deadline.
         """
-        if self.tpm:
-            raise RuntimeError(
-                f"[{self.name}] hard power cycling a vTPM machine is unsupported"
-            )
         if self.qemu_proc is None or self.qemu_proc.poll() is not None:
             raise RuntimeError(f"[{self.name}] power cycle requires running QEMU")
+        previous_tpm = self.swtpm_proc if self.tpm else None
+        if self.tpm and (previous_tpm is None or previous_tpm.poll() is not None):
+            raise RuntimeError(f"[{self.name}] power cycle requires running swtpm")
 
         deadline = time.monotonic() + timeout
         previous_qemu = self.qemu_proc
@@ -786,14 +933,36 @@ class QemuMachine(Machine):
         log.info("==> Cutting power to machine: %s (QEMU pid %s)", self.name, previous_pid)
 
         self.agent.close()
-        previous_qemu.kill()
-        try:
-            remaining = max(0.0, deadline - time.monotonic())
-            previous_qemu.wait(timeout=min(remaining, 30.0))
-        except subprocess.TimeoutExpired:
+        if previous_tpm is not None:
+            previous_tpm.send_signal(signal.SIGSTOP)
+
+        processes = [(previous_qemu, "QEMU")]
+        if previous_tpm is not None:
+            processes.append((previous_tpm, "swtpm"))
+
+        failures: list[tuple[str, int, OSError | subprocess.TimeoutExpired]] = []
+        for process, description in processes:
+            try:
+                process.kill()
+                remaining = max(0.0, deadline - time.monotonic())
+                process.wait(timeout=min(remaining, 30.0))
+            except (OSError, subprocess.TimeoutExpired) as error:
+                # Still kill the other owned process; in particular, never
+                # strand a stopped swtpm when QEMU cannot be reaped.
+                failures.append((description, process.pid, error))
+
+        if failures:
+            description, pid, error = failures[0]
             raise RuntimeError(
-                f"[{self.name}] QEMU pid {previous_pid} survived SIGKILL"
-            ) from None
+                f"[{self.name}] could not kill and reap {description} pid {pid}"
+            ) from error
+
+        if previous_tpm is not None:
+            log.info(
+                "[%s] unclean vTPM exit recorded (pid %s, code %s)",
+                self.name, previous_tpm.pid, previous_tpm.returncode,
+            )
+            self.swtpm_proc = None
 
         self._stop_serial_bridge()
         if self._qemu_log_fd is not None:

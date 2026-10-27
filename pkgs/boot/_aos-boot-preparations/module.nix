@@ -8,6 +8,20 @@
   ...
 }: let
   cfg = config.aos.boot.substrateServices;
+  protectedSandboxNetworkRoots =
+    config.aos.security.selinux.protectedSandboxNetworkRoots.enable or false;
+  retainedRootPreparation = cfg.protectedRootPreparation;
+  protectedSandboxOwnerRoots =
+    if retainedRootPreparation != null
+    then retainedRootPreparation.prepareOwners
+    else
+      (config.aos.sandbox.controllerService.method46TpmFloor.required or false)
+      || (config.aos.sandbox.storageBroker.method46TpmFloor.required or false);
+  protectedSandboxRoots = retainedRootPreparation != null || protectedSandboxNetworkRoots || protectedSandboxOwnerRoots;
+  varRootContext =
+    if retainedRootPreparation != null
+    then retainedRootPreparation.varRootContext
+    else config.aos.security.selinux.protectedSandboxNetworkRoots._varRootContext;
   managerIdentity = name: {
     inherit name;
     aliases = [];
@@ -258,6 +272,12 @@
     (substrateService {
       key = "aos-host-store-seed";
       description = "Hydrate the immutable image store before host verification";
+      # This script uses absolute tool paths and the immutable registration.
+      # Initrd filesystem and owner-root policy is not an input to host seeding.
+      environment = {
+        variables = {};
+        search_path = [];
+      };
       dependencies =
         emptyDependencies
         // {
@@ -327,6 +347,33 @@
   };
   substrateEnvironment = {
     variables = {
+      AOS_PROTECTED_VAR =
+        if protectedSandboxRoots
+        then "true"
+        else "false";
+      AOS_PROTECTED_SANDBOX_OWNER_ROOTS =
+        if protectedSandboxOwnerRoots
+        then "true"
+        else "false";
+      AOS_VAR_ROOT_CONTEXT =
+        if protectedSandboxRoots
+        then varRootContext
+        else "";
+      AOS_RUNTIME_ROOTS_EXECUTABLE =
+        if protectedSandboxRoots
+        then
+          if retainedRootPreparation != null
+          then retainedRootPreparation.executable
+          else "${config.aos.security.selinux._runtimeRootsProvisioner}/bin/aos-selinux-runtime-roots"
+        else "";
+      AOS_DEBUGFS =
+        if protectedSandboxRoots
+        then "${dependencies.e2fsprogs.path}/sbin/debugfs"
+        else "";
+      AOS_E2FSCK =
+        if protectedSandboxRoots
+        then "${dependencies.e2fsprogs.path}/sbin/e2fsck"
+        else "";
       AOS_ESP_DEVICE = cfg.espDevice;
       AOS_RECOVERY_ABI = builtins.toString cfg.recoveryAbi;
       AOS_RECOVERY_ENABLED =
@@ -358,6 +405,7 @@
     dependencies,
     conditions ? null,
     logging ? null,
+    environment ? substrateEnvironment,
   }:
     {
       activationOwner = "manager";
@@ -387,7 +435,7 @@
         signal_scope = "none";
         timeout_millis = 90000;
       };
-      environment = substrateEnvironment;
+      inherit environment;
     }
     // lib.optionalAttrs (conditions != null) {inherit conditions;}
     // lib.optionalAttrs (logging != null) {inherit logging;};
@@ -424,6 +472,18 @@
   nixOverlaySetup = substrateService {
     key = "nix-overlay-setup";
     description = "Set Up /nix Overlay Filesystem";
+    environment =
+      substrateEnvironment
+      // {
+        variables =
+          substrateEnvironment.variables
+          // {
+            AOS_CONFIGURATION_SELINUX_LABELS =
+              if config.aos.security.selinux.enable && config.aos.security.selinux.bootMode == "immutable-stage0"
+              then "true"
+              else "false";
+          };
+      };
     dependencies =
       emptyDependencies
       // {
@@ -503,6 +563,21 @@
   etcOverlaySetup = substrateService {
     key = "etc-overlay-setup";
     description = "Set Up /etc Overlay Filesystem";
+    # These image-only inputs belong to initrd overlay setup. Host bootstrap
+    # services must also render identically from retained native host policy.
+    environment =
+      substrateEnvironment
+      // {
+        variables =
+          substrateEnvironment.variables
+          // {
+            AOS_CONFIGURATION_SELINUX_LABELS =
+              if config.aos.security.selinux.enable && config.aos.security.selinux.bootMode == "immutable-stage0"
+              then "true"
+              else "false";
+            AOS_SETFILES = "${dependencies.policycoreutils.path}/sbin/setfiles";
+          };
+      };
     dependencies =
       emptyDependencies
       // {
@@ -707,6 +782,27 @@ in {
   };
 
   options.aos.boot.substrateServices = {
+    protectedRootPreparation = lib.mkOption {
+      type = lib.types.nullOr (lib.types.submodule {
+        options = {
+          executable = lib.mkOption {
+            type = lib.types.strMatching "/nix/store/[0-9a-z]{32}-[^/]+/bin/aos-selinux-runtime-roots";
+            description = "Exact immutable image provisioner admitted with the initrd policy.";
+          };
+          prepareOwners = lib.mkOption {
+            type = lib.types.bool;
+            description = "Whether the pinned image provisioner creates its selected owner roots.";
+          };
+          varRootContext = lib.mkOption {
+            type = lib.types.nonEmptyStr;
+            description = "Exact durable SELinux label of the selected writable state root.";
+          };
+        };
+      });
+      default = null;
+      internal = true;
+      description = "Image-authenticated protected state preparation replayed without host-only module imports.";
+    };
     initrdStateDirectory = lib.mkOption {
       type = lib.types.str;
       default = "/run/aos-boot-transaction-storage/aos/initrd-stage-journal";

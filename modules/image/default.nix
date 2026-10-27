@@ -217,6 +217,17 @@ in {
       description = "Whether to build disk images for this system variant.";
     };
 
+    rawCompressionLevel = lib.mkOption {
+      type = lib.types.addCheck lib.types.int (level: level >= 1 && level <= 22);
+      default = 22;
+      description = ''
+        Zstandard compression level used for raw disk delivery. Production
+        keeps level 22 for distribution size; VM-test variants may select a
+        faster level. Decompression preserves the disk contents, signatures
+        and verity data, and the existing download budget remains enforced.
+      '';
+    };
+
     erofsCompressionLevel = lib.mkOption {
       type = lib.types.int;
       default = 19;
@@ -224,6 +235,18 @@ in {
         Zstandard compression level used for EROFS root images. Production
         keeps level 19 for distribution size; VM-test variants may select a
         faster level without changing the filesystem or boot semantics.
+      '';
+    };
+
+    erofsDeduplication = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Share identical compressed data extents across distinct EROFS inodes.
+        File names, inode metadata, and SELinux contexts remain independent.
+        The pinned EROFS builder requires serial compression for this mode;
+        fragment packing remains disabled. Enable only for a qualified image
+        cohort; neither runtime nor download budgets change automatically.
       '';
     };
 
@@ -382,6 +405,10 @@ in {
         {
           assertion = cfg.allowTestArtifacts || cfg.testArtifactRoots == [];
           message = "aos.image.testArtifactRoots requires aos.image.allowTestArtifacts = true";
+        }
+        {
+          assertion = !cfg.erofsDeduplication || config.aos.filesystems.rootFsType == "erofs";
+          message = "aos.image.erofsDeduplication requires an EROFS root filesystem";
         }
         {
           assertion = cfg.rootPartitionMiB >= cfg.budgets.maxRootMiB;

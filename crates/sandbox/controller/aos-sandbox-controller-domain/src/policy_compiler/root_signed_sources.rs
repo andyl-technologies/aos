@@ -1,0 +1,86 @@
+//! Shares independent Root signed-policy verification over its held journal.
+//!
+//! This pure helper neither opens a policy owner nor grants currentness. Each
+//! caller retains and posts its own actual owner before and after verification.
+
+use aos_sandbox_policy::signed_inputs::{
+    PolicyDeploymentHeadV1, PolicyDeploymentInputsV1, PolicyDeploymentSourcesV1,
+    VerifiedSignedProjectPolicySourceV2,
+};
+
+use aos_sandbox_protocol::domain_ledger::readonly::HistoricalLedgerReadViewV1;
+
+use super::PolicyDeploymentHeadErrorV1;
+
+pub(crate) type RootSignedProjectSourcesV1 = (
+    VerifiedSignedProjectPolicySourceV2,
+    PolicyDeploymentHeadV1,
+    PolicyDeploymentSourcesV1,
+);
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum RootSignedSourcesErrorV1 {
+    #[error("actual Root signed policy input cut changed")]
+    ChangedCut,
+    #[error(transparent)]
+    Deployment(#[from] PolicyDeploymentHeadErrorV1),
+}
+
+impl From<aos_sandbox_policy::root_signed_sources_data::RootSignedSourcesDataErrorV1>
+    for RootSignedSourcesErrorV1
+{
+    fn from(error: aos_sandbox_policy::root_signed_sources_data::RootSignedSourcesDataErrorV1) -> Self {
+        use aos_sandbox_policy::root_signed_sources_data::RootSignedSourcesDataErrorV1;
+        match error {
+            RootSignedSourcesDataErrorV1::ChangedCut => Self::ChangedCut,
+            RootSignedSourcesDataErrorV1::Deployment(error) => Self::Deployment(error.into()),
+        }
+    }
+}
+
+// Packet and verifying-key selection always comes from the actual held Root
+// records. Raw supplied input bytes authenticate only by exact existing heads.
+pub(super) fn verify_root_signed_project_sources_v1(
+    journal: HistoricalLedgerReadViewV1<'_>,
+    project_input: &[u8],
+    deployment_inputs: &PolicyDeploymentInputsV1<'_>,
+    now_unix_seconds: i64,
+) -> Result<RootSignedProjectSourcesV1, RootSignedSourcesErrorV1> {
+    aos_sandbox_policy::root_signed_sources_data::verify_root_signed_project_sources_data_v1(
+        journal, project_input, deployment_inputs, now_unix_seconds,
+    ).map_err(RootSignedSourcesErrorV1::from)
+}
+
+// Shared verification of the actual retained signed input bytes. The caller
+// independently establishes which public pins and current C/Source heads apply;
+// successful signature/expiry checks do not supply a Root currentness grant.
+pub(crate) fn verify_signed_project_input_data_v2(
+    deployment_packet: &[u8],
+    deployment_inputs: &PolicyDeploymentInputsV1<'_>,
+    project_packet: &[u8],
+    project_input: &[u8],
+    deployment_key: &ed25519_dalek::VerifyingKey,
+    project_key: &ed25519_dalek::VerifyingKey,
+    now_unix_seconds: i64,
+) -> Result<RootSignedProjectSourcesV1, super::PolicyDeploymentHeadErrorV1> {
+    let deployment = aos_sandbox_policy::signed_inputs::verify_policy_deployment_head_v1(
+        deployment_packet,
+        deployment_inputs,
+        deployment_key,
+        now_unix_seconds,
+    )
+    .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)?;
+    let sources = aos_sandbox_policy::signed_inputs::decode_policy_deployment_sources_v1(
+        deployment_inputs,
+        deployment,
+    )
+    .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)?;
+    let project = aos_sandbox_policy::signed_inputs::verify_signed_project_policy_source_v2(
+        project_packet,
+        project_input,
+        project_key,
+        now_unix_seconds,
+    )
+    .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)?;
+    Ok((project, deployment, sources))
+}

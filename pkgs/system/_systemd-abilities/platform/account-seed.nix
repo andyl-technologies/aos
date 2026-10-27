@@ -8,6 +8,9 @@
   identity = config.aos.abilities.identity.operations;
   accountPolicy = import ../network-account-policy.nix {inherit lib identity;};
   bootstrapServices = lib.filterAttrs (_: service: service.enable && service.bootstrap) config.aos.services;
+  bootstrapAccounts = lib.filterAttrs (name: user:
+    user.bootstrap && !(builtins.elem name ["root" "nobody"]))
+  config.aos.users.users;
   accountSeed = import ./_identity-bootstrap.nix {
     inherit lib;
     identities = identity;
@@ -17,6 +20,9 @@
         identity.principal.effects.${lib.last reference.identity}.enable)
       accountPolicy.references
       ++ builtins.concatMap (service: service.bootstrapPrincipals) (builtins.attrValues bootstrapServices)
+      # Compatibility sockets need their existing declared principals before
+      # native activation. Resolve their original typed identity policy.
+      ++ lib.mapAttrsToList (name: _: identity.principal.effects."host-user-${name}".outputs.name) bootstrapAccounts
     );
     groupReferences = builtins.filter (reference:
       identity.group.effects.${lib.last reference.identity}.enable)

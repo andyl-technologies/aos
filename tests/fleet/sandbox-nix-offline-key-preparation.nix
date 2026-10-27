@@ -1,0 +1,330 @@
+# Exercises the manual production candidate owner without granting hardware effects.
+{
+  lib,
+  pkgs,
+  systems,
+  ...
+}: let
+  nodeHex = "41414141414141414141414141414141";
+  configurationTests = import ./_sandbox-native-unit-tests.nix {
+    inherit lib pkgs;
+    crate = "aos-configuration-image";
+  };
+  runtimeSystem = (import ./_sandbox-funded-system.nix {inherit lib pkgs systems;}).extendModules {
+    modules = [{systemd.services.aos-sandboxd.wantedBy = lib.mkForce [];}];
+  };
+  installationPolicy = runtimeSystem.config.aos.sandbox.resourceBank.policy;
+  controllerReference = runtimeSystem.config.systemd.services.aos-sandboxd;
+  enrolledFirmwareVars = import ./_secure-boot-enrolled-vars.nix {
+    inherit lib pkgs systems;
+  };
+  publicInputs =
+    pkgs.runCommand "sandbox-nix-offline-preparation-public-inputs" {
+      buildDeps = [pkgs.python3];
+    } ''
+      mkdir -p "$out"
+      ${pkgs.python3}/bin/python3 - "$out" <<'PY'
+      import pathlib
+      import sys
+
+      output = pathlib.Path(sys.argv[1])
+      output.joinpath("node-id").write_bytes(bytes.fromhex("${nodeHex}"))
+      # RFC 8032's first public vector is test data. This image carries no
+      # approval signing key and cannot approve the generated candidates.
+      public = bytes.fromhex(
+          "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+      )
+      output.joinpath("approval-public-key").write_bytes(bytes([0x51]) * 16 + public)
+      PY
+    '';
+  # Provisioning has its own immutable image. Online Resolve50 deliberately
+  # rejects coexistence with the offline unit; keep that production assertion.
+  system = systems.server-secureboot-lockdown.extendModules {
+    modules = [
+      ../../systems/_server-test-packages.nix
+      ({config, ...}: {
+        aos.security.selinux = {
+          enable = true;
+          bootMode = "immutable-stage0";
+          mode = "enforcing";
+          _qualificationAdmissionRelease = true;
+        };
+        aos.boot.initrd.stage0 = lib.mkForce (pkgs.aosSelinuxStage0With {
+          systemd = config.aos.manager.selected.package;
+          aos-selinux-production-policy = config.aos.security.selinux._productionPolicy;
+          aos-selinux-runtime-roots = config.aos.security.selinux._runtimeRootsProvisioner;
+          admissionUnit = "";
+          expectedPolicy = "${config.aos.security.selinux._canonicalReadback}/policy.33";
+          expectedPolicyKernel = config.system.build.kernel;
+        });
+        aos.image = {
+          erofsCompressionLevel = 1;
+          rawCompressionLevel = 3;
+          rootPartitionMiB = 2048;
+          budgets = {
+            maxRuntimeClosureMiB = lib.mkForce 8192;
+            maxRootMiB = 1536;
+            maxDownloadMiB = 2048;
+            maxConvertedDownloadMiB = 2048;
+            maxInitrdMiB = 256;
+            maxBootExecutableMiB = 288;
+            maxFirmwarePartitionMiB = 832;
+          };
+        };
+        aos.sandbox.nixOfflinePrepare.enable = true;
+        # The installation image pays manager jobs through the normal finite
+        # bank producer. It has no online Nix owner or recovery recipient; the
+        # unused Controller envelope stays reserved, never repurposed as a loan.
+        aos.sandbox.resourceBank.policy = {
+          node = nodeHex;
+          inherit (installationPolicy) epoch capacity baseline controller components;
+        };
+        # The copied bank already prices these audit bounds. Retain its early
+        # kernel queue too, before auditd can install the userspace rules.
+        aos.security.audit.bounds = lib.mkForce runtimeSystem.config.aos.security.audit.bounds;
+        # Keep the unchanged genuine target-image Controller in PID1's
+        # immutable inventory without activation or runtime private inputs.
+        # This offline fixture establishes no online or V11 startup readiness.
+        systemd.services.aos-sandboxd = {
+          inherit (controllerReference) environment serviceConfig unitConfig jobScripts;
+          enableDefaultPath = false;
+        };
+        systemd.targets.aos-offline-controller-reference = {
+          description = "Retain the installed inactive Controller unit for provisioning";
+          wantedBy = ["multi-user.target"];
+          after = ["aos-sandboxd.service"];
+        };
+        environment.systemPackages = [pkgs.coreutils pkgs.python3 pkgs.systemd configurationTests];
+        environment.etc = {
+          "credstore/node-id" = {
+            source = "${publicInputs}/node-id";
+            mode = "0400";
+          };
+          "credstore/nix-floor-provision-approval-public-key-v3" = {
+            source = "${publicInputs}/approval-public-key";
+            mode = "0400";
+          };
+        };
+      })
+    ];
+  };
+in {
+  name = "sandbox-nix-offline-key-preparation";
+  timeout = 1200;
+  bootTimeout = 300;
+  machines.vm = {
+    system = assert system.config.systemd.units."aos-sandboxd.service".text
+    == runtimeSystem.config.systemd.units."aos-sandboxd.service".text; system;
+    bootMode = "image";
+    firmwareVars = "${enrolledFirmwareVars}/enroller-OVMF_VARS.fd";
+    # Back the unchanged finite bank with the same physical capacity as the
+    # funded fixture, including headroom outside its advertised 32 GiB memory.
+    vcpuCount = 16;
+    memoryMiB = 36864;
+    varSizeMiB = 65536;
+    imageDiskMiB = 98304;
+  };
+
+  testScript = ''
+    ${builtins.readFile ./_sandbox-startup-diagnostics.py}
+    ${builtins.readFile ./_sandbox-cold-boot.py}
+    import shlex
+
+    unit = "aos-sandbox-nix-floor-provision.service"
+    root = "/var/lib/aos/sandbox-nix-floor-provision"
+    python = "${pkgs.python3}/bin/python3"
+
+    assert int(vm.succeed("nproc --all").strip()) == 16
+    memory = dict(line.split(":", 1) for line in vm.succeed("cat /proc/meminfo").splitlines())
+    assert int(memory["MemTotal"].split()[0]) >= 32 * 1024 * 1024
+    available = int(vm.succeed("df -B1 --output=avail /var").splitlines()[-1])
+    assert available >= ${toString installationPolicy.capacity.storage-bytes}
+
+    def public_candidate_exports():
+        journal = vm.succeed(
+            f"journalctl --boot=0 --unit={unit} --output=cat --no-pager"
+        )
+        prefix = "AOS_NIX_OFFLINE_PUBLIC_V3="
+        exports = []
+        for line in journal.splitlines():
+            if not line.startswith(prefix):
+                continue
+            encoded = line[len(prefix):]
+            assert len(encoded) == 536 and encoded == encoded.lower(), encoded
+            public = bytes.fromhex(encoded)
+            assert len(public) == 268 and public.hex() == encoded
+            assert public[:12] == b'AOSNPC03\x03\0\0\0'
+            assert public[28:44] == bytes.fromhex("${nodeHex}")
+            exports.append(public)
+        return exports
+
+    def assert_candidate_reads_denied():
+        # The successful owner verifies originals before exporting public bytes.
+        # Generic root has no authority to inspect either protected state file.
+        check = r"""
+    import pathlib
+
+    root = pathlib.Path('/var/lib/aos/sandbox-nix-floor-provision')
+    for name in ('candidate-private-v3', 'candidate-public-v3'):
+        try:
+            (root / name).read_bytes()
+        except PermissionError:
+            continue
+        raise AssertionError(f'generic root read protected candidate {name}')
+    """
+        vm.succeed(f"{python} -c {shlex.quote(check)}")
+
+    def reject_repeated_preparation(expected):
+        vm.succeed(f"systemctl reset-failed {unit}")
+        vm.execute(f"systemctl start {unit}")
+        vm.wait_until_succeeds(
+            f"test $(systemctl show {unit} --property=ExecMainStatus --value) = 1 && "
+            f"test $(systemctl show {unit} --property=ActiveState --value) = failed",
+            timeout=120,
+        )
+        assert public_candidate_exports() == expected
+        assert_candidate_reads_denied()
+
+    with startup_diagnostics(vm, "dbus.service", "aos-activate.service"):
+        vm.wait_for_unit("multi-user.target", timeout=300)
+    vm.succeed("test $(cat /sys/fs/selinux/enforce) = 1")
+    audit = dict(line.split(maxsplit=1) for line in vm.succeed("auditctl -s").splitlines())
+    assert audit["lost"] == "0", audit
+    assert int(audit["backlog_limit"]) == ${toString system.config.aos.security.audit.backlogLimit}, audit
+    # Nix rejects kernel xattr writes in build sandboxes. Require every native
+    # copy case here on the installed kernel; an empty filter cannot pass.
+    for case in (
+        "upper_label_copy_preserves_exact_bytes_for_files_and_directories",
+        "missing_or_oversized_original_label_leaves_destination_unchanged",
+        "upper_label_copy_does_not_follow_source_or_destination_symlinks",
+    ):
+        output = vm.succeed(
+            "${configurationTests}/bin/sandbox-unit-tests --ignored --exact "
+            f"selinux::tests::{case} --test-threads=1"
+        )
+        assert "test result: ok. 1 passed;" in output, (case, output)
+
+    configuration_labels = r"""
+    import os
+
+    expected = b'system_u:object_r:etc_t'
+    for path in ('/var/etc', '/var/etc/ssh', '/etc/ssh'):
+        observed = os.getxattr(path, 'security.selinux').rstrip(b'\0')
+        assert observed == expected, (path, observed)
+
+    # Activation retains these image-owned directories in its writable upper.
+    # Their labels must survive that copy before the confined preparer reads
+    # its fixed unit fragment through the published /etc view.
+    for relative in ('systemd', 'systemd/system'):
+        original = '/run/etc/system/metadata/' + relative
+        retained = '/etc/' + relative
+        expected = os.getxattr(original, 'security.selinux', follow_symlinks=False)
+        observed = os.getxattr(retained, 'security.selinux', follow_symlinks=False)
+        assert expected.rstrip(b'\0') != b'system_u:object_r:tmpfs_t', (original, expected)
+        assert observed == expected, (retained, observed, original, expected)
+    """
+    vm.succeed(f"{python} -c {shlex.quote(configuration_labels)}")
+    assert "[confidentiality]" in vm.succeed("cat /sys/kernel/security/lockdown")
+    vm.wait_for_unit("aos-offline-controller-reference.target")
+    assert vm.succeed("systemctl show aos-sandboxd.service --property=LoadState --value").strip() == "loaded"
+    assert vm.succeed("systemctl show aos-sandboxd.service --property=ActiveState --value").strip() == "inactive"
+
+    # The selected preparation image has no automatic candidate activation.
+    vm.fail(f"systemctl is-active --quiet {unit}")
+    vm.succeed(f"test ! -e {root}")
+
+    # PID1 must refuse a transient replacement of the protected owner name.
+    # This is a manager-boundary negative, not an active genuine Nix owner;
+    # the latter requires independently provisioned runtime credentials.
+    status, _, diagnostic = vm.execute(
+        "systemd-run --unit=aos-sandbox-nixd.service --collect "
+        "--slice=aos-control.slice ${pkgs.coreutils}/bin/sleep infinity"
+    )
+    assert status != 0 and b"Access denied" in diagnostic, (status, diagnostic)
+    vm.succeed(f"test ! -e {root}")
+    vm.wait_until_succeeds(
+        "! ${pkgs.systemd}/bin/busctl call org.freedesktop.systemd1 "
+        "/org/freedesktop/systemd1 org.freedesktop.systemd1.Manager "
+        "GetUnit s aos-sandbox-nixd.service",
+        timeout=30,
+    )
+
+    # Missing public output must refuse before the preparer creates private
+    # candidates. Preserve the live journal socket and restore it even on error.
+    journal_socket = "/run/systemd/journal/stdout"
+    saved_socket = "/run/systemd/journal/aos-offline-output-test-saved"
+    vm.succeed(
+        f"test -S {journal_socket} && test ! -e {saved_socket} && "
+        f"${pkgs.coreutils}/bin/mv {journal_socket} {saved_socket}"
+    )
+    try:
+        placeholder = (
+            "import os; "
+            f"fd = os.open({journal_socket!r}, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600); "
+            "os.close(fd)"
+        )
+        vm.succeed(f"{python} -c {shlex.quote(placeholder)}")
+        vm.fail(f"systemctl start {unit}")
+        # EXIT_STDOUT belongs to the real executor, before the selected ELF.
+        vm.wait_until_succeeds(
+            f"test $(systemctl show {unit} --property=ExecMainStatus --value) = 209"
+        )
+        vm.succeed(f"test ! -e {root}")
+        assert public_candidate_exports() == []
+    finally:
+        vm.succeed(
+            f"${pkgs.coreutils}/bin/rm -f {journal_socket} && "
+            f"${pkgs.coreutils}/bin/mv {saved_socket} {journal_socket}"
+        )
+        vm.execute(f"systemctl reset-failed {unit}")
+
+    with startup_diagnostics(vm, unit, "dbus.service"):
+        try:
+            vm.succeed(f"systemctl start {unit}")
+            vm.wait_until_succeeds(
+                f"test $(systemctl show {unit} --property=ActiveState --value) = inactive || "
+                f"test $(systemctl show {unit} --property=ActiveState --value) = failed",
+                timeout=120,
+            )
+            vm.succeed(
+                f"test $(systemctl show {unit} --property=ExecMainStatus --value) = 0 && "
+                f"test $(systemctl show {unit} --property=ActiveState --value) = inactive"
+            )
+        except Exception:
+            # Observe public unit configuration without exposing the preparer's
+            # retained private cause or any credential contents.
+            properties = (
+                "ActiveState,SubState,MainPID,ExecMainPID,ExecMainStatus,"
+                "ControlGroup,FragmentPath,DropInPaths,Transient,InvocationID,"
+                "OpenFile,ExtraFileDescriptorNames,FileDescriptorStoreMax,"
+                "NFileDescriptorStore,SELinuxContext,CapabilityBoundingSet,"
+                "AmbientCapabilities,NoNewPrivileges,SecureBits,ExecStart,"
+                "ExecStartPre,ExecStartPost,ExitType,KillMode,TimeoutStopUSec"
+            )
+            try:
+                status, stdout, stderr = vm.execute(
+                    f"systemctl show {unit} aos-sandboxd.service --property={properties}",
+                    timeout=15,
+                )
+                print(f"Offline startup properties (exit {status}):", flush=True)
+                print((stdout + stderr).decode("utf-8", errors="replace"), flush=True)
+            except Exception as diagnostic_error:
+                print(f"Offline startup properties unavailable: {diagnostic_error}", flush=True)
+            raise
+    original = public_candidate_exports()
+    assert len(original) == 1, original
+    assert_candidate_reads_denied()
+    reject_repeated_preparation(original)
+
+    # Cold restart cannot authorize replacement of the protected installation.
+    # A rejected attempt must not export another public candidate.
+    power_cycle_and_require_new_boot(vm)
+    with startup_diagnostics(vm, "dbus.service", "aos-activate.service"):
+        vm.wait_for_unit("multi-user.target", timeout=300)
+    vm.wait_for_unit("aos-offline-controller-reference.target")
+    assert public_candidate_exports() == []
+    assert_candidate_reads_denied()
+    vm.fail(f"systemctl is-active --quiet {unit}")
+    reject_repeated_preparation([])
+  '';
+}

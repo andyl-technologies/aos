@@ -5,6 +5,7 @@
   aos-filesystem-provider,
   aos-configuration-lower,
   kernel-interface,
+  aos-host-policy,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -18,6 +19,7 @@
   bash,
   coreutils,
   grep,
+  production ? false,
 }: let
   version = "2.20240916";
 in
@@ -39,7 +41,10 @@ in
       target = [];
       role = "public-package";
     };
-    pname = "refpolicy";
+    pname =
+      if production
+      then "refpolicy-production"
+      else "refpolicy";
     qualification.packageProbe = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
@@ -112,7 +117,7 @@ in
     propagatedDeps = [];
 
     module = ./_refpolicy;
-    moduleDeps = [service-management aos-filesystem-provider aos-configuration-lower kernel-interface];
+    moduleDeps = [service-management aos-filesystem-provider aos-configuration-lower kernel-interface aos-host-policy];
 
     phases = [
       {
@@ -131,32 +136,63 @@ in
       }
       {
         name = "configure";
-        script = ''
-          # Set policy build options
-          sed -i \
-            -e 's/^#\?DISTRO.*/DISTRO = redhat/' \
-            -e 's/^#\?UBAC.*/UBAC = y/' \
-            -e 's/^#\?DIRECT_INITRC.*/DIRECT_INITRC = n/' \
-            -e 's/^#\?MONOLITHIC.*/MONOLITHIC = n/' \
-            -e 's|^#\?PREFIX.*|PREFIX = '"$out"'|' \
-            build.conf
+        script =
+          ''
+            # Append the userspace-only SwitchRoot permission, preserving old bits.
+            patch --fuzz=0 -p1 < ${./_aos-selinux-production-policy/refpolicy-switch-root-permission.patch}
+          ''
+          + (
+            if production
+            then ''
+              # Match the production kernel's ordered security-class map. The
+              # final-policy gate independently derives and verifies this map
+              # from the pinned kernel source.
+              patch -p1 < ${./_aos-selinux-production-policy/refpolicy-linux-6.18.33.patch}
+              # Copied guest closures and the fixed FUSE worker must not gain
+              # ambient host-loader or textrel access through domain membership.
+              patch --fuzz=0 -p1 < ${./_aos-selinux-production-policy/refpolicy-explicit-loaders.patch}
+              # The worker reads raw kernel labels and has no translation RPC.
+              patch --fuzz=0 -p1 < ${./_aos-selinux-production-policy/refpolicy-explicit-contexts.patch}
+              # Normal Root custody is excluded from blanket domain grants only.
+              patch --fuzz=0 -p1 < ${./_aos-selinux-production-policy/refpolicy-private-root-custody.patch}
+              # Fixed initial helpers retain only their explicit proc-file reads.
+              patch --fuzz=0 -p1 < ${./_aos-selinux-production-policy/refpolicy-explicit-proc-files.patch}
+              sed -i 's/^UNK_PERMS.*/UNK_PERMS = reject/' build.conf
+              # Both fixed AOS transitions retain NNP/nosuid. They use explicit
+              # process2 permissions rather than weakening the inherited guard.
+              if ! grep -q '^policycap nnp_nosuid_transition;' policy/policy_capabilities; then
+                printf '\npolicycap nnp_nosuid_transition;\n' >> policy/policy_capabilities
+              fi
 
-          # Override individual tool paths in the Makefile.
-          # checkmodule/checkpolicy come from the checkpolicy package,
-          # semodule_package/semodule_link/semodule_expand from semodule-utils,
-          # and semodule/load_policy/setfiles/sefcontext_compile from policycoreutils.
-          sed -i \
-            -e 's|^CHECKPOLICY ?=.*|CHECKPOLICY := ${checkpolicy}/bin/checkpolicy|' \
-            -e 's|^CHECKMODULE ?=.*|CHECKMODULE := ${checkpolicy}/bin/checkmodule|' \
-            -e 's|^SEMOD_PKG ?=.*|SEMOD_PKG := ${semodule-utils}/bin/semodule_package|' \
-            -e 's|^SEMOD_LNK ?=.*|SEMOD_LNK := ${semodule-utils}/bin/semodule_link|' \
-            -e 's|^SEMOD_EXP ?=.*|SEMOD_EXP := ${semodule-utils}/bin/semodule_expand|' \
-            -e 's|^SEMODULE ?=.*|SEMODULE := ${policycoreutils}/sbin/semodule|' \
-            -e 's|^LOADPOLICY ?=.*|LOADPOLICY := ${policycoreutils}/sbin/load_policy|' \
-            -e 's|^SETFILES ?=.*|SETFILES := ${policycoreutils}/sbin/setfiles|' \
-            -e 's|^SEFCONTEXT_COMPILE ?=.*|SEFCONTEXT_COMPILE := ${policycoreutils}/sbin/sefcontext_compile|' \
-            Makefile
-        '';
+            ''
+            else ""
+          )
+          + ''
+            # Set policy build options
+            sed -i \
+              -e 's/^#\?DISTRO.*/DISTRO = redhat/' \
+              -e 's/^#\?UBAC.*/UBAC = y/' \
+              -e 's/^#\?DIRECT_INITRC.*/DIRECT_INITRC = n/' \
+              -e 's/^#\?MONOLITHIC.*/MONOLITHIC = n/' \
+              -e 's|^#\?PREFIX.*|PREFIX = '"$out"'|' \
+              build.conf
+
+            # Override individual tool paths in the Makefile.
+            # checkmodule/checkpolicy come from the checkpolicy package,
+            # semodule_package/semodule_link/semodule_expand from semodule-utils,
+            # and semodule/load_policy/setfiles/sefcontext_compile from policycoreutils.
+            sed -i \
+              -e 's|^CHECKPOLICY ?=.*|CHECKPOLICY := ${checkpolicy}/bin/checkpolicy|' \
+              -e 's|^CHECKMODULE ?=.*|CHECKMODULE := ${checkpolicy}/bin/checkmodule|' \
+              -e 's|^SEMOD_PKG ?=.*|SEMOD_PKG := ${semodule-utils}/bin/semodule_package|' \
+              -e 's|^SEMOD_LNK ?=.*|SEMOD_LNK := ${semodule-utils}/bin/semodule_link|' \
+              -e 's|^SEMOD_EXP ?=.*|SEMOD_EXP := ${semodule-utils}/bin/semodule_expand|' \
+              -e 's|^SEMODULE ?=.*|SEMODULE := ${policycoreutils}/sbin/semodule|' \
+              -e 's|^LOADPOLICY ?=.*|LOADPOLICY := ${policycoreutils}/sbin/load_policy|' \
+              -e 's|^SETFILES ?=.*|SETFILES := ${policycoreutils}/sbin/setfiles|' \
+              -e 's|^SEFCONTEXT_COMPILE ?=.*|SEFCONTEXT_COMPILE := ${policycoreutils}/sbin/sefcontext_compile|' \
+              Makefile
+          '';
       }
       {
         name = "build";
@@ -178,12 +214,16 @@ in
           test -f "$contexts"
           printf '%s\n' '/var/home /home' '/var/roothome /root' >> "$contexts"
 
-          checkmodule -M -m \
-            -o "$out/usr/share/selinux/refpolicy/aos_base.mod" \
-            ${./refpolicy-aos-base.te}
-          semodule_package \
-            -o "$out/usr/share/selinux/refpolicy/aos_base.pp" \
-            -m "$out/usr/share/selinux/refpolicy/aos_base.mod"
+          ${lib.optionalString (!production) ''
+            # Unlabeled-root compatibility belongs only to the mutable policy.
+            # The production base is non-MLS and retains its explicit owners.
+            checkmodule -M -m \
+              -o "$out/usr/share/selinux/refpolicy/aos_base.mod" \
+              ${./refpolicy-aos-base.te}
+            semodule_package \
+              -o "$out/usr/share/selinux/refpolicy/aos_base.pp" \
+              -m "$out/usr/share/selinux/refpolicy/aos_base.mod"
+          ''}
 
           mkdir -p "$out/libexec"
           sed \
@@ -196,7 +236,11 @@ in
             ${./refpolicy-load-policy.sh} \
             > "$out/libexec/aos-selinux-load-policy"
           chmod 0755 "$out/libexec/aos-selinux-load-policy"
-          test -s "$out/usr/share/selinux/refpolicy/aos_base.pp"
+          ${
+            if production
+            then ''test ! -e "$out/usr/share/selinux/refpolicy/aos_base.pp"''
+            else ''test -s "$out/usr/share/selinux/refpolicy/aos_base.pp"''
+          }
 
           # Patch the installed devel Makefile to use store paths instead
           # of hardcoded /usr and /etc paths
@@ -216,7 +260,10 @@ in
     ];
 
     meta = {
-      description = "SELinux Reference Policy — base SELinux policy";
+      description =
+        if production
+        then "SELinux Reference Policy with the production Linux security-class map"
+        else "SELinux Reference Policy — base SELinux policy";
       homepage = "https://github.com/SELinuxProject/refpolicy";
       license = "GPL-2.0-or-later";
     };

@@ -1,0 +1,160 @@
+# Fixed no-exec post-auth confinement and internal original-ticket relay.
+# Applied after 0001 to the same pinned OpenSSH10.5p1 source.
+diff --git a/Makefile.in b/Makefile.in
+index dba57f2..a6fb984 100644
+--- a/Makefile.in
++++ b/Makefile.in
+@@ -130,7 +130,7 @@ SSHD_SESSION_OBJS=sshd-session.o auth-rhosts.o auth-passwd.o \
+ 	auth2-chall.o groupaccess.o \
+ 	auth-bsdauth.o auth2-hostbased.o auth2-kbdint.o \
+ 	auth2-none.o auth2-passwd.o auth2-pubkey.o auth2-pubkeyfile.o \
+-	monitor.o monitor_wrap.o aos-attach-monitor.o auth-krb5.o \
++	monitor.o monitor_wrap.o aos-attach-monitor.o aos-attach-confinement.o aos-attach-relay.o auth-krb5.o \
+ 	auth2-gss.o gss-serv.o gss-serv-krb5.o \
+ 	loginrec.o auth-pam.o auth-shadow.o auth-sia.o \
+ 	sftp-server.o sftp-common.o \
+diff --git a/sshd-session.c b/sshd-session.c
+index d74b5ff..3af030a 100644
+--- a/sshd-session.c
++++ b/sshd-session.c
+@@ -29,6 +29,7 @@
+ 
+ #include "includes.h"
+ #include "aos-attach-monitor.h"
++#include "aos-attach-confinement.h"
+ 
+ #include <sys/types.h>
+ #include <sys/ioctl.h>
+@@ -421,6 +422,10 @@ privsep_postauth(struct ssh *ssh, Authctxt *authctxt)
+ 	reseed_prngs();
+ 
+ 	/* Drop privileges */
++	if (options.aos_attach_monitor_v2) {
++		aos_attach_account_check_v3(authctxt->pw);
++		aos_attach_confinement_before_drop();
++	}
+ 	if (!skip_privdrop)
+ 		do_setusercontext(authctxt->pw);
+ 
+diff --git a/monitor.c b/monitor.c
+index 02e55c3..31ba951 100644
+--- a/monitor.c
++++ b/monitor.c
+@@ -218,6 +218,7 @@ struct mon_table mon_dispatch_proto20[] = {
+ };
+ 
+ struct mon_table mon_dispatch_postauth20[] = {
++	{AOS_ATTACH_RELAY_REQUEST, MON_ONCE, aos_attach_monitor_relay},
+     {MONITOR_REQ_STATE, MON_ONCE, mm_answer_state},
+ #ifdef WITH_OPENSSL
+     {MONITOR_REQ_MODULI, 0, mm_answer_moduli},
+@@ -431,6 +432,8 @@ monitor_child_postauth(struct ssh *ssh, struct monitor *pmonitor)
+ #endif
+ 
+ 	mon_dispatch = mon_dispatch_postauth20;
++	monitor_permit(mon_dispatch, AOS_ATTACH_RELAY_REQUEST,
++	    options.aos_attach_monitor_v2);
+ 
+ 	/* Permit requests for moduli and signatures */
+ 	monitor_permit(mon_dispatch, MONITOR_REQ_STATE, 1);
+diff --git a/session.c b/session.c
+index fc9c9d6..8a920fa 100644
+--- a/session.c
++++ b/session.c
+@@ -34,6 +34,7 @@
+  */
+ 
+ #include "includes.h"
++#include "aos-attach-relay.h"
+ 
+ #include <sys/types.h>
+ #include <sys/wait.h>
+@@ -414,6 +415,7 @@ do_exec_no_pty(struct ssh *ssh, Session *s, const char *command)
+ 	session_proctitle(s);
+ 
+ 	/* Fork the child. */
++	aos_attach_relay_before_fork();
+ 	switch ((pid = fork())) {
+ 	case -1:
+ 		error_f("fork: %.100s", strerror(errno));
+@@ -492,6 +494,7 @@ do_exec_no_pty(struct ssh *ssh, Session *s, const char *command)
+ #endif
+ 
+ 	s->pid = pid;
++	aos_attach_relay_parent(pid);
+ 
+ 	/*
+ 	 * Clear loginmsg, since it's the child's responsibility to display
+@@ -563,6 +566,7 @@ do_exec_pty(struct ssh *ssh, Session *s, const char *command)
+ 	}
+ 
+ 	/* Fork the child. */
++	aos_attach_relay_before_fork();
+ 	switch ((pid = fork())) {
+ 	case -1:
+ 		error_f("fork: %.100s", strerror(errno));
+@@ -613,6 +617,7 @@ do_exec_pty(struct ssh *ssh, Session *s, const char *command)
+ #endif
+ 
+ 	s->pid = pid;
++	aos_attach_relay_parent(pid);
+ 
+ 	/* Parent.  Close the slave side of the pseudo tty. */
+ 	close(ttyfd);
+@@ -1257,6 +1262,20 @@ do_nologin(struct passwd *pw)
+ 	exit(254);
+ }
+ 
++void
++aos_attach_account_check_v3(struct passwd *pw)
++{
++	if (!options.aos_attach_monitor_v2)
++		return;
++	/* Preserve the existing non-PAM account check before monitor readiness. */
++	if (!options.use_pam)
++		do_nologin(pw);
++#ifdef USE_PAM
++	if (options.use_pam && !is_pam_session_open())
++		fatal("AOS attach PAM session unavailable");
++#endif
++}
++
+ /*
+  * Chroot into a directory after checking it for safety: all path components
+  * must be root-owned directories with strict permissions.
+@@ -1481,6 +1500,18 @@ do_child(struct ssh *ssh, Session *s, const char *command)
+ 
+ 	/* remove keys from memory */
+ 	ssh_packet_clear_keys(ssh);
++	if (options.aos_attach_monitor_v2) {
++		/* No passwd shell, user environment, home directory or RC hook. */
++		if (s->authctxt->force_pwchange || command == NULL || options.adm_forced_command == NULL ||
++		    auth_opts->force_command == NULL || s->is_subsystem ||
++		    strcmp(command, options.adm_forced_command) != 0 ||
++		    strcmp(command, auth_opts->force_command) != 0)
++			fatal("AOS attach internal command rejected");
++		aos_attach_relay_child();
++		child_close_fds(ssh);
++		closefrom(STDERR_FILENO + 1);
++		aos_attach_internal_relay();
++	}
+ 
+ 	/* Force a password change */
+ 	if (s->authctxt->force_pwchange) {
+@@ -2684,4 +2715,3 @@ session_get_remote_name_or_ip(struct ssh *ssh, u_int utmp_size, int use_dns)
+ 		remote = ssh_remote_ipaddr(ssh);
+ 	return remote;
+ }
+-
+diff --git a/session.h b/session.h
+index 344a1dd..cae6996 100644
+--- a/session.h
++++ b/session.h
+@@ -78,6 +78,7 @@ Session	*session_new(void);
+ Session	*session_by_tty(char *);
+ void	 session_close(struct ssh *, Session *);
+ void	 do_setusercontext(struct passwd *);
++void	 aos_attach_account_check_v3(struct passwd *);
+ 
+ const char	*session_get_remote_name_or_ip(struct ssh *, u_int, int);
+ 

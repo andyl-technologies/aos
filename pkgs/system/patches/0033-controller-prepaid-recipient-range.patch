@@ -1,0 +1,897 @@
+Subject: [PATCH] core: retain a prepaid finite Controller recipient range
+
+The explicit provider range remains inside the original recovery reserve.
+PID1 consumes each ordinal before clone and keeps native attempt custody;
+physical terminal observation does not reset the parent's cumulative charge.
+Other service launch grammars retain their existing closed native engines.
+
+--- a/src/core/aos-component-parent.c
++++ b/src/core/aos-component-parent.c
+@@ -32,6 +32,7 @@
+ #define AOS_RESOURCE_OPERATION_INTAKE_POLICY_BYTES 2536U
+ #define AOS_RESOURCE_HOST_EXECUTION_POLICY_BYTES 2888U
+ #define AOS_RESOURCE_CONTROLLER_RECOVERY_POLICY_BYTES 3064U
++#define AOS_RESOURCE_CONTROLLER_RANGE_POLICY_BYTES 3248U
+ #define AOS_RESOURCE_ROOT_OFFSET 1624U
+ #define AOS_RESOURCE_STORAGE_OFFSET 1976U
+ 
+@@ -313,7 +314,8 @@
+                     parent->policy_bytes == AOS_RESOURCE_CREATE_STORAGE_POLICY_BYTES ||
+                     parent->policy_bytes == AOS_RESOURCE_OPERATION_INTAKE_POLICY_BYTES ||
+                     parent->policy_bytes == AOS_RESOURCE_HOST_EXECUTION_POLICY_BYTES ||
+-                    parent->policy_bytes == AOS_RESOURCE_CONTROLLER_RECOVERY_POLICY_BYTES) {
++                    parent->policy_bytes == AOS_RESOURCE_CONTROLLER_RECOVERY_POLICY_BYTES ||
++                    parent->policy_bytes == AOS_RESOURCE_CONTROLLER_RANGE_POLICY_BYTES) {
+                         uint64_t root = policy_u64(parent->policy + AOS_RESOURCE_ROOT_OFFSET + dimension * 8);
+ 
+                         if (root > baseline)
+@@ -323,7 +325,8 @@
+                 if (parent->policy_bytes == AOS_RESOURCE_CREATE_STORAGE_POLICY_BYTES ||
+                     parent->policy_bytes == AOS_RESOURCE_OPERATION_INTAKE_POLICY_BYTES ||
+                     parent->policy_bytes == AOS_RESOURCE_HOST_EXECUTION_POLICY_BYTES ||
+-                    parent->policy_bytes == AOS_RESOURCE_CONTROLLER_RECOVERY_POLICY_BYTES) {
++                    parent->policy_bytes == AOS_RESOURCE_CONTROLLER_RECOVERY_POLICY_BYTES ||
++                    parent->policy_bytes == AOS_RESOURCE_CONTROLLER_RANGE_POLICY_BYTES) {
+                         uint64_t storage = policy_u64(parent->policy + AOS_RESOURCE_STORAGE_OFFSET + dimension * 8);
+ 
+                         if (storage > baseline)
+@@ -1422,6 +1425,8 @@
+                       !streq_ptr(UNIT(service)->id, sender_unit_name(purpose)) ||
+                       sd_id128_is_null(admission->invocation)))
+                 r = -EOWNERDEAD;
++        if (r >= 0 && admission->memory == SIZE_MAX)
++                r = -EOVERFLOW;
+         if (r >= 0 && (policy_u64(vector) == 0 || policy_u64(vector + 8) < admission->memory ||
+                       policy_u64(vector + 24) < admission->files || policy_u64(vector + 21U * 8U) != 1))
+                 r = -ENOSPC;
+@@ -1429,10 +1434,20 @@
+         if (r < 0)
+                 return parent_refuse(r);
+ 
++        /* The full history array was included in the pre-admission comparison.
++         * Its actual calloc charges those bytes once in the first real scope;
++         * the fixed admission must not charge the same array a second time. */
++        size_t initial_memory = admission->memory;
++        if (purpose == PARENT_SENDER_CONTROLLER_SUCCESSOR) {
++                size_t history = aos_resource_controller_history_memory();
++                if (history > initial_memory)
++                        return parent_refuse(-EOVERFLOW);
++                initial_memory -= history;
++        }
+         admission->account = (AllocationAccount) {
+                 .memory_limit = policy_u64(vector + 8),
+                 .files_limit = policy_u64(vector + 24),
+-                .memory_charged = admission->memory,
++                .memory_charged = initial_memory,
+                 .files_charged = admission->files,
+         };
+         return 0;
+@@ -1549,22 +1564,19 @@
+             !parent->installed || admission->account.active)
+                 return parent_refuse(-EOWNERDEAD);
+ 
+-        /* This consumes the actual once-only positive Controller closure. It
+-         * checks bank ACK+Confirm, old death/empty-cgroup, scope completion and
+-         * disposal. Neither a supplied generation nor a decoded receipt can
+-         * enter this port; the verifier must refuse repeated consumption. */
++        /* This consumes the actual Controller terminal cut once. V11 also
++         * permits a contained unconfirmed attempt after the real initial
++         * range seal, without inventing its ACK/Confirm. No supplied ordinal
++         * or decoded receipt can enter this native closure port. */
+         r = aos_resource_controller_sender_completed_peak(service, admission);
+         if (r < 0)
+                 return parent_refuse(r);
+ 
+         admission->memory_highwater = MAX(admission->memory_highwater, admission->account.memory_charged);
+         admission->files_highwater = MAX(admission->files_highwater, admission->account.files_charged);
+-        admission->account = (AllocationAccount) {
+-                .memory_limit = admission->account.memory_limit,
+-                .files_limit = admission->account.files_limit,
+-                .memory_charged = admission->memory,
+-                .files_charged = admission->files,
+-        };
++        /* V11 retains every consumed attempt and all failed diagnostic backing.
++         * Its native terminal cut permits another paid ordinal, never a reset
++         * of this same parent's cumulative memory/files charge. */
+         return 0;
+ }
+ 
+--- a/src/core/aos-resource-enrollment.c
++++ b/src/core/aos-resource-enrollment.c
+@@ -66,6 +66,12 @@
+ #define AOS_RESOURCE_HOST_EXECUTION_POLICY_BYTES 2888U
+ #define AOS_RESOURCE_CONTROLLER_RECOVERY_POLICY_BYTES 3064U
+ #define AOS_RESOURCE_CONTROLLER_RECOVERY_POLICY_BODY 3032U
++#define AOS_RESOURCE_CONTROLLER_RANGE_POLICY_BYTES 3248U
++#define AOS_RESOURCE_CONTROLLER_RANGE_POLICY_BODY 3216U
++#define AOS_RESOURCE_CONTROLLER_RANGE_COUNT_OFFSET 3032U
++#define AOS_RESOURCE_CONTROLLER_RANGE_ALLOWANCE_OFFSET 3040U
++#define AOS_RESOURCE_CONTROLLER_RECOVERY_OFFSET 2856U
++#define AOS_RESOURCE_CONTROLLER_RANGE_RECORD_BYTES 184U
+ #define AOS_RESOURCE_CREATE_STORAGE_POLICY_BODY 2152U
+ #define AOS_RESOURCE_OPERATION_INTAKE_POLICY_BODY 2504U
+ #define AOS_RESOURCE_HOST_EXECUTION_POLICY_BODY 2856U
+@@ -475,9 +481,12 @@
+         int empty_parse_result;
+ } AosControllerChildOriginal;
+ 
+-/* One current owner and one pending handoff are the complete fixed peak.
+- * A pending failure never replaces either native original. Only the actual
+- * bank ACK and successful Confirm close a positive transport carrier. */
++/* Current and pending retain the actual live native handoff. V11 additionally
++ * prepays a bounded history of terminal attempts; a negative attempt moves
++ * there only after its independently proved physical terminal and closures.
++ * Only actual bank ACK and successful Confirm establish a confirmed floor. */
++typedef struct AosControllerRetiredAttempt AosControllerRetiredAttempt;
++
+ typedef struct AosControllerRestart {
+         int first_error;
+         bool sender_admitted;
+@@ -485,6 +494,19 @@
+         bool ack_accepted;
+         bool confirmed;
+         uint64_t generation;
++        uint64_t issued_ordinal;
++        uint64_t last_confirmed_ordinal;
++        sd_id128_t last_confirmed_invocation;
++        uint8_t range_commitment[SHA256_DIGEST_SIZE];
++        bool range_enabled;
++        int terminal_error;
++        bool terminal_event_disabled;
++        int terminal_event_disable_result;
++        AosControllerRetiredAttempt *history;
++        size_t history_capacity;
++        size_t history_count;
++        int history_allocation_result;
++        int history_account_post_result;
+         uint64_t cold_cutoff;
+         AosServiceLaunchTransport current_transport;
+         AosControllerChildOriginal current_child;
+@@ -501,14 +523,14 @@
+         bool old_unit_retired;
+         sd_id128_t nonces[2];
+         int nonce_results[2];
+-        uint8_t offer[128];
++        uint8_t offer[AOS_RESOURCE_CONTROLLER_RANGE_RECORD_BYTES];
+         uint8_t offer_digest[SHA256_DIGEST_SIZE];
+         ssize_t offer_length;
+         int offer_send_result;
+         AosLaunchRecord ack_record;
+         int ack_context_result;
+         int ack_peer_result;
+-        uint8_t confirm[128];
++        uint8_t confirm[AOS_RESOURCE_CONTROLLER_RANGE_RECORD_BYTES];
+         ssize_t confirm_length;
+         int confirm_send_result;
+         int account_post_result;
+@@ -517,9 +539,19 @@
+         int event_result;
+         bool event_disabled;
+         int event_disable_result;
+-        int retirement_close_results[12];
++        int retirement_close_results[32];
+         unsigned retirement_close_count;
+ } AosControllerRestart;
++
++/* Every prior attempt retains its actual native Results and first negative
++ * terminal. FD fields marked transferred below move only into the next live
++ * original; this archive is never a source of authority or reopened custody. */
++struct AosControllerRetiredAttempt {
++        AosControllerRestart original;
++        AosResourceServiceCPU cpu;
++        AosResourceDelivery delivery;
++        bool native_owner_transferred;
++};
+ 
+ typedef struct AosResourceEnrollment {
+         Manager *manager;
+@@ -530,7 +562,7 @@
+         bool admitted;
+         sd_id128_t boot;
+         sd_id128_t invocation;
+-        uint8_t policy[AOS_RESOURCE_CONTROLLER_RECOVERY_POLICY_BYTES];
++        uint8_t policy[AOS_RESOURCE_CONTROLLER_RANGE_POLICY_BYTES];
+         size_t policy_bytes;
+         uint64_t job_limit;
+         uint64_t jobs;
+@@ -734,7 +766,8 @@
+              st.st_size != AOS_RESOURCE_CREATE_STORAGE_POLICY_BYTES &&
+              st.st_size != AOS_RESOURCE_OPERATION_INTAKE_POLICY_BYTES &&
+              st.st_size != AOS_RESOURCE_HOST_EXECUTION_POLICY_BYTES &&
+-             st.st_size != AOS_RESOURCE_CONTROLLER_RECOVERY_POLICY_BYTES) ||
++             st.st_size != AOS_RESOURCE_CONTROLLER_RECOVERY_POLICY_BYTES &&
++             st.st_size != AOS_RESOURCE_CONTROLLER_RANGE_POLICY_BYTES) ||
+             st.st_uid != 0 || st.st_gid != 0 || (st.st_mode & 0222) != 0 ||
+             fs.f_type != AOS_RESOURCE_EROFS_MAGIC)
+                 return -EPERM;
+@@ -752,6 +785,7 @@
+                         return -EBADMSG;
+                 used += returned;
+         }
++        bool controller_range = enrollment.policy_bytes == AOS_RESOURCE_CONTROLLER_RANGE_POLICY_BYTES;
+         bool controller_recovery = enrollment.policy_bytes == AOS_RESOURCE_CONTROLLER_RECOVERY_POLICY_BYTES;
+         bool host_execution = enrollment.policy_bytes == AOS_RESOURCE_HOST_EXECUTION_POLICY_BYTES;
+         bool operation_intake = enrollment.policy_bytes == AOS_RESOURCE_OPERATION_INTAKE_POLICY_BYTES;
+@@ -761,7 +795,7 @@
+         bool nix_intake = enrollment.policy_bytes == AOS_RESOURCE_NIX_INTAKE_POLICY_BYTES;
+         bool first_global = enrollment.policy_bytes == AOS_RESOURCE_FIRST_GLOBAL_POLICY_BYTES;
+         bool host_policy = enrollment.policy_bytes == AOS_RESOURCE_HOST_POLICY_BYTES;
+-        size_t body_bytes = controller_recovery ? AOS_RESOURCE_CONTROLLER_RECOVERY_POLICY_BODY :
++        size_t body_bytes = controller_range ? AOS_RESOURCE_CONTROLLER_RANGE_POLICY_BODY : controller_recovery ? AOS_RESOURCE_CONTROLLER_RECOVERY_POLICY_BODY :
+                             host_execution ? AOS_RESOURCE_HOST_EXECUTION_POLICY_BODY :
+                             operation_intake ? AOS_RESOURCE_OPERATION_INTAKE_POLICY_BODY :
+                             create_storage ? AOS_RESOURCE_CREATE_STORAGE_POLICY_BODY :
+@@ -770,13 +804,20 @@
+                             nix_intake ? AOS_RESOURCE_NIX_INTAKE_POLICY_BODY :
+                             first_global ? AOS_RESOURCE_FIRST_GLOBAL_POLICY_BODY :
+                             (host_policy ? AOS_RESOURCE_HOST_POLICY_BODY : AOS_RESOURCE_POLICY_BODY);
+-        const char *magic = controller_recovery ? "AOSRSB10" : host_execution ? "AOSRSB09" : operation_intake ? "AOSRSB08" : create_storage ? "AOSRSB07" : root_receiving ? "AOSRSB06" : (q04_intake ? "AOSRSB05" : (nix_intake ? "AOSRSB04" :
++        const char *magic = controller_range ? "AOSRSB11" : controller_recovery ? "AOSRSB10" : host_execution ? "AOSRSB09" : operation_intake ? "AOSRSB08" : create_storage ? "AOSRSB07" : root_receiving ? "AOSRSB06" : (q04_intake ? "AOSRSB05" : (nix_intake ? "AOSRSB04" :
+                             first_global ? "AOSRSB03" : (host_policy ? "AOSRSB02" : "AOSRSB01")));
+         if (memcmp(enrollment.policy, magic, 8) != 0)
+                 return -EBADMSG;
+         sha256_direct(enrollment.policy, body_bytes, digest);
+         if (memcmp(digest, enrollment.policy + body_bytes, sizeof(digest)) != 0)
+                 return -EBADMSG;
++
++        if (controller_range) {
++                uint64_t recipients = policy_u64(enrollment.policy + AOS_RESOURCE_CONTROLLER_RANGE_COUNT_OFFSET);
++                if (recipients == 0 || recipients == UINT64_MAX ||
++                    recipients + 1U > SIZE_MAX / sizeof(AosControllerRetiredAttempt))
++                        return -EOVERFLOW;
++        }
+ 
+         /* Image generation checks all 22 rows with explicit finite policy.
+          * PID1 does not implement a second resource arithmetic ledger. This
+@@ -844,7 +885,7 @@
+                enrollment.policy_bytes == AOS_RESOURCE_CREATE_STORAGE_POLICY_BYTES ||
+                enrollment.policy_bytes == AOS_RESOURCE_OPERATION_INTAKE_POLICY_BYTES ||
+                enrollment.policy_bytes == AOS_RESOURCE_HOST_EXECUTION_POLICY_BYTES ||
+-               enrollment.policy_bytes == AOS_RESOURCE_CONTROLLER_RECOVERY_POLICY_BYTES;
++               IN_SET(enrollment.policy_bytes, AOS_RESOURCE_CONTROLLER_RECOVERY_POLICY_BYTES, AOS_RESOURCE_CONTROLLER_RANGE_POLICY_BYTES);
+ }
+ 
+ static bool controller_prefix_family(void) {
+@@ -855,7 +896,7 @@
+                enrollment.policy_bytes == AOS_RESOURCE_CREATE_STORAGE_POLICY_BYTES ||
+                enrollment.policy_bytes == AOS_RESOURCE_OPERATION_INTAKE_POLICY_BYTES ||
+                enrollment.policy_bytes == AOS_RESOURCE_HOST_EXECUTION_POLICY_BYTES ||
+-               enrollment.policy_bytes == AOS_RESOURCE_CONTROLLER_RECOVERY_POLICY_BYTES;
++               IN_SET(enrollment.policy_bytes, AOS_RESOURCE_CONTROLLER_RECOVERY_POLICY_BYTES, AOS_RESOURCE_CONTROLLER_RANGE_POLICY_BYTES);
+ }
+ 
+ typedef enum AosResourceCPURole {
+@@ -895,7 +936,7 @@
+                         (enrollment.policy_bytes == AOS_RESOURCE_CREATE_STORAGE_POLICY_BYTES ||
+                          enrollment.policy_bytes == AOS_RESOURCE_OPERATION_INTAKE_POLICY_BYTES ||
+                          enrollment.policy_bytes == AOS_RESOURCE_HOST_EXECUTION_POLICY_BYTES ||
+-                         enrollment.policy_bytes == AOS_RESOURCE_CONTROLLER_RECOVERY_POLICY_BYTES) : controller_prefix_family();
++                         IN_SET(enrollment.policy_bytes, AOS_RESOURCE_CONTROLLER_RECOVERY_POLICY_BYTES, AOS_RESOURCE_CONTROLLER_RANGE_POLICY_BYTES)) : controller_prefix_family();
+ 
+                 SET_FOREACH(alias, unit->aliases)
+                         selected |= streq_ptr(alias, resource_cpu_unit(role));
+@@ -972,7 +1013,7 @@
+              enrollment.policy_bytes != AOS_RESOURCE_CREATE_STORAGE_POLICY_BYTES &&
+              enrollment.policy_bytes != AOS_RESOURCE_OPERATION_INTAKE_POLICY_BYTES &&
+              enrollment.policy_bytes != AOS_RESOURCE_HOST_EXECUTION_POLICY_BYTES &&
+-             enrollment.policy_bytes != AOS_RESOURCE_CONTROLLER_RECOVERY_POLICY_BYTES) || enrollment.policy_fd < 0 ||
++             !IN_SET(enrollment.policy_bytes, AOS_RESOURCE_CONTROLLER_RECOVERY_POLICY_BYTES, AOS_RESOURCE_CONTROLLER_RANGE_POLICY_BYTES)) || enrollment.policy_fd < 0 ||
+             sd_id128_is_null(enrollment.boot) || sd_id128_is_null(enrollment.invocation) ||
+             sd_id128_is_null(unit->invocation_id) || !streq_ptr(unit->id, resource_cpu_unit(role)))
+                 return resource_cpu_refuse(original, enrollment.first_error < 0 ? enrollment.first_error : -EOWNERDEAD);
+@@ -1140,7 +1181,7 @@
+                 enrollment.policy_bytes == AOS_RESOURCE_CREATE_STORAGE_POLICY_BYTES ||
+                 enrollment.policy_bytes == AOS_RESOURCE_OPERATION_INTAKE_POLICY_BYTES ||
+                 enrollment.policy_bytes == AOS_RESOURCE_HOST_EXECUTION_POLICY_BYTES ||
+-                         enrollment.policy_bytes == AOS_RESOURCE_CONTROLLER_RECOVERY_POLICY_BYTES) &&
++                         IN_SET(enrollment.policy_bytes, AOS_RESOURCE_CONTROLLER_RECOVERY_POLICY_BYTES, AOS_RESOURCE_CONTROLLER_RANGE_POLICY_BYTES)) &&
+                streq_ptr(name, "aos-sandbox-policy-authorityd.service") &&
+                aos_network_image_guard_active();
+ }
+@@ -1646,7 +1687,7 @@
+ }
+ 
+ int aos_resource_deliver_component(Service *service) {
+-        uint8_t capsule[160] = {};
++        uint8_t capsule[192] = {};
+         size_t capsule_bytes = 152;
+         uint8_t digest[SHA256_DIGEST_SIZE];
+         Unit *unit = UNIT(service);
+@@ -1701,21 +1742,24 @@
+         service->extra_fds[0].fd = fcntl(enrollment.policy_fd, F_DUPFD_CLOEXEC, 3);
+         if (service->extra_fds[0].fd < 0)
+                 return refuse(-errno);
+-        bool controller_recovery = enrollment.policy_bytes == AOS_RESOURCE_CONTROLLER_RECOVERY_POLICY_BYTES &&
+-                                   streq_ptr(unit->id, "aos-sandboxd.service");
+-        if (controller_recovery) {
+-                /* The pending generation was consumed before clone. A failed
+-                 * child cannot retry this reserve without the old ACK cut. */
+-                uint64_t generation = enrollment.controller_restart.generation +
+-                                      (enrollment.controller_restart.pending ? 1U : 0U);
+-                if (generation > 1)
++        bool controller_range = enrollment.policy_bytes == AOS_RESOURCE_CONTROLLER_RANGE_POLICY_BYTES &&
++                                streq_ptr(unit->id, "aos-sandboxd.service");
++        if (controller_range) {
++                AosControllerRestart *restart = &enrollment.controller_restart;
++                if (!restart->history || restart->issued_ordinal >
++                    policy_u64(enrollment.policy + AOS_RESOURCE_CONTROLLER_RANGE_COUNT_OFFSET))
+                         return refuse(-EOWNERDEAD);
+-                capsule_bytes = 160;
+-                memcpy(capsule, "AOSRSE02", 8);
++                capsule_bytes = 192;
++                memcpy(capsule, "AOSRSE03", 8);
+                 for (unsigned i = 0; i < 8; i++)
+-                        capsule[127 - i] = (uint8_t) (generation >> (8 * i));
+-        } else
++                        capsule[127 - i] = (uint8_t) (restart->issued_ordinal >> (8 * i));
++                memcpy(capsule + 128, restart->range_commitment, SHA256_DIGEST_SIZE);
++        } else {
++                if (enrollment.policy_bytes == AOS_RESOURCE_CONTROLLER_RECOVERY_POLICY_BYTES &&
++                    streq_ptr(unit->id, "aos-sandboxd.service"))
++                        return refuse(-EPROTONOSUPPORT);
+                 memcpy(capsule, "AOSRSE01", 8);
++        }
+         memcpy(capsule + 8, enrollment.policy + 8, 32);
+         memcpy(capsule + 40, enrollment.boot.bytes, 16);
+         memcpy(capsule + 56, enrollment.invocation.bytes, 16);
+@@ -2686,14 +2730,28 @@
+         return source_deliver_origin(service, original->transport.main_command, original->transport.main_flags);
+ }
+ 
+-/* The explicit parent02 ControllerSender subdivision must cover this fixed
+- * current+pending peak before any pair, array, clone or ACK receive enters.
+- * Whole-exec variable growth is additionally paid by the same private account. */
++/* The array is checked against the same parent sender envelope before
++ * admission. Its calloc debit is separate from the fixed admission debit:
++ * the parent subtracts exactly this dynamic term from its initial charge. */
++size_t aos_resource_controller_history_memory(void) {
++        if (enrollment.policy_bytes != AOS_RESOURCE_CONTROLLER_RANGE_POLICY_BYTES)
++                return 0;
++        uint64_t recipients = policy_u64(enrollment.policy + AOS_RESOURCE_CONTROLLER_RANGE_COUNT_OFFSET);
++        if (recipients == UINT64_MAX || recipients + 1U > SIZE_MAX / sizeof(AosControllerRetiredAttempt))
++                return SIZE_MAX;
++        return (size_t) (recipients + 1U) * sizeof(AosControllerRetiredAttempt);
++}
++
+ size_t aos_resource_controller_successor_memory(void) {
+-        return sizeof(AosControllerRestart) + sizeof(AosParentSenderAdmission) +
+-               sizeof(AosResourceServiceCPU) + sizeof(AosResourceDelivery) +
+-               4U * sizeof(PidRef) + 2U * AOS_RESOURCE_VECTOR_BYTES + 5U * 65536U +
+-               2U * sizeof(struct msghdr) + 2U * sizeof(struct iovec) + 512U;
++        size_t fixed = sizeof(AosControllerRestart) + sizeof(AosParentSenderAdmission) +
++                       sizeof(AosResourceServiceCPU) + sizeof(AosResourceDelivery) +
++                       4U * sizeof(PidRef) + 2U * AOS_RESOURCE_VECTOR_BYTES + 5U * 65536U +
++                       2U * sizeof(struct msghdr) + 2U * sizeof(struct iovec) + 512U +
++                       2U * (sizeof("AOS-controller-recipient-prepaid-range-v1\0") - 1U +
++                             96U + 2U * AOS_RESOURCE_VECTOR_BYTES + 8U +
++                             SHA256_DIGEST_SIZE + sizeof(AllocationAccountScope));
++        size_t history = aos_resource_controller_history_memory();
++        return history > SIZE_MAX - fixed ? SIZE_MAX : fixed + history;
+ }
+ 
+ unsigned aos_resource_controller_successor_files(void) {
+@@ -2711,7 +2769,7 @@
+         return enrollment.parent.selected &&
+                IN_SET(enrollment.policy_bytes, AOS_RESOURCE_CREATE_STORAGE_POLICY_BYTES,
+                       AOS_RESOURCE_OPERATION_INTAKE_POLICY_BYTES, AOS_RESOURCE_HOST_EXECUTION_POLICY_BYTES,
+-                      AOS_RESOURCE_CONTROLLER_RECOVERY_POLICY_BYTES) &&
++                      AOS_RESOURCE_CONTROLLER_RECOVERY_POLICY_BYTES, AOS_RESOURCE_CONTROLLER_RANGE_POLICY_BYTES) &&
+                streq_ptr(unit->id, "aos-sandboxd.service");
+ }
+ 
+@@ -2802,10 +2860,28 @@
+                 (*child)->death_join_result = r < 0 ? r :
+                         observed.si_code == si->si_code && observed.si_status == si->si_status &&
+                         IN_SET(observed.si_code, CLD_EXITED, CLD_KILLED, CLD_DUMPED) ? 0 : -EOWNERDEAD;
+-                if ((*child)->death_join_result < 0 ||
+-                    (!original->confirmed && *child == controller_launch_child()))
+-                        (void) controller_launch_refuse((*child)->death_join_result < 0 ?
+-                                                       (*child)->death_join_result : -EOWNERDEAD);
++                if ((*child)->death_join_result < 0)
++                        (void) controller_launch_refuse((*child)->death_join_result);
++                else if (!original->confirmed && *child == controller_launch_child()) {
++                        if (enrollment.policy_bytes != AOS_RESOURCE_CONTROLLER_RANGE_POLICY_BYTES ||
++                            !original->range_enabled)
++                                (void) controller_launch_refuse(-EOWNERDEAD);
++                        else {
++                                /* A genuine unconfirmed death consumes its allowance.
++                                 * It is neither an ACK nor a native uncertainty. Reap,
++                                 * Empty, delivery closure and account posts are still owed. */
++                                if (original->terminal_error == 0)
++                                        original->terminal_error = -ECHILD;
++                                if (original->ack_event && !original->event_disabled) {
++                                        original->terminal_event_disabled = true;
++                                        original->terminal_event_disable_result =
++                                                sd_event_source_set_enabled(original->ack_event, SD_EVENT_OFF);
++                                        original->event_disabled = original->terminal_event_disable_result >= 0;
++                                        if (original->terminal_event_disable_result < 0)
++                                                (void) controller_launch_refuse(original->terminal_event_disable_result);
++                                }
++                        }
++                }
+         }
+ }
+ 
+@@ -2846,29 +2922,32 @@
+ 
+ static int controller_old_cut(Service *service) {
+         AosControllerRestart *original = &enrollment.controller_restart;
+-        AosControllerChildOriginal *child = &original->current_child;
+-        int r;
++        bool range = enrollment.policy_bytes == AOS_RESOURCE_CONTROLLER_RANGE_POLICY_BYTES;
++        AosControllerChildOriginal *child = range ? controller_launch_child() : &original->current_child;
++        AosServiceLaunchTransport *transport = range ? controller_launch_transport() : &original->current_transport;
++        AosResourceServiceCPU *cpu = range && original->pending ? &original->pending_cpu : &enrollment.controller_cpu;
+ 
+         if (original->first_error < 0)
+                 return original->first_error;
+-        if (!original->confirmed || !original->ack_accepted || original->pending ||
+-            (original->current_transport.unit != UNIT(service) && !original->old_unit_retired) ||
++        if ((range ? !original->range_enabled : (!original->confirmed || !original->ack_accepted || original->pending)) ||
++            (transport->unit != UNIT(service) && !original->old_unit_retired) ||
+             !child->death_attempted || child->death_join_result < 0 ||
+             !child->reap_attempted || child->reap_join_result < 0)
+                 return -EOWNERDEAD;
+-        r = controller_observe_empty(child, &enrollment.controller_cpu);
+-        return r < 0 ? r : 0;
++        return controller_observe_empty(child, cpu);
+ }
+ 
+ /* unit_free calls this before service_done releases delivery copies. It
+  * records an actual quiescent old owner, never a replacement Unit argument. */
+ void aos_resource_controller_unit_retiring(Unit *unit) {
+         AosControllerRestart *original = &enrollment.controller_restart;
+-        AosControllerChildOriginal *child = &original->current_child;
+-
+-        if (!controller_launch_selected(unit) || original->current_transport.unit != unit)
++        bool range = enrollment.policy_bytes == AOS_RESOURCE_CONTROLLER_RANGE_POLICY_BYTES;
++        AosControllerChildOriginal *child = range ? controller_launch_child() : &original->current_child;
++        AosServiceLaunchTransport *transport = range ? controller_launch_transport() : &original->current_transport;
++
++        if (!controller_launch_selected(unit) || transport->unit != unit)
+                 return;
+-        if (original->pending || !original->confirmed || !original->ack_accepted ||
++        if ((range ? !original->range_enabled : (original->pending || !original->confirmed || !original->ack_accepted)) ||
+             !child->death_attempted || child->death_join_result < 0 ||
+             !child->reap_attempted || child->reap_join_result < 0 || !child->empty_observed) {
+                 (void) controller_launch_refuse(-EOWNERDEAD);
+@@ -2877,13 +2956,15 @@
+         original->old_unit_retired = true;
+ }
+ 
+-/* Parent invokes this only with its actual permanent admission. Consuming this
+- * original closure once authorizes only reuse of its already paid sender peak. */
++/* Parent invokes this only with its actual permanent admission. V11's actual
++ * terminal cut authorizes another paid ordinal with cumulative native debt.
++ * No-R profiles cannot use this successor port. */
+ int aos_resource_controller_sender_completed_peak(Service *service, const AosParentSenderAdmission *admission) {
+         AosControllerRestart *original = &enrollment.controller_restart;
+         int r;
+ 
+-        if (admission != &enrollment.parent.controller_sender || !admission->entered ||
++        if (enrollment.policy_bytes != AOS_RESOURCE_CONTROLLER_RANGE_POLICY_BYTES || !original->range_enabled ||
++            admission != &enrollment.parent.controller_sender || !admission->entered ||
+             admission->result < 0 || admission->account.active || admission->account.closed ||
+             admission->account.first_error < 0 || original->peak_consumed ||
+             original->retired_copy_count != 3)
+@@ -2960,15 +3041,156 @@
+         return 0;
+ }
+ 
++/* The commitment uses the same canonical identity as capsule[8..104].
++ * It binds provider declarations only; range authority is enabled separately
++ * by the real initial durable-bank ACK/Confirm under this native original. */
++static int controller_initialize_range(Service *service) {
++        AosControllerRestart *original = &enrollment.controller_restart;
++        _cleanup_(allocation_account_leave) AllocationAccountScope scope = {};
++        static const char domain[] = "AOS-controller-recipient-prepaid-range-v1\0";
++        uint8_t material[sizeof(domain) - 1U + 96U + 2U * AOS_RESOURCE_VECTOR_BYTES + 8U];
++        uint8_t *cursor = material;
++        uint8_t policy_digest[SHA256_DIGEST_SIZE];
++        size_t history_bytes = aos_resource_controller_history_memory();
++        int r;
++
++        if (enrollment.policy_bytes != AOS_RESOURCE_CONTROLLER_RANGE_POLICY_BYTES)
++                return 0;
++        if (original->history || history_bytes == SIZE_MAX)
++                return -EOWNERDEAD;
++        memcpy(cursor, domain, sizeof(domain) - 1U);
++        cursor += sizeof(domain) - 1U;
++        memcpy(cursor, enrollment.policy + 8, 32);
++        cursor += 32;
++        memcpy(cursor, enrollment.boot.bytes, 16);
++        cursor += 16;
++        memcpy(cursor, enrollment.invocation.bytes, 16);
++        cursor += 16;
++        sha256_direct(enrollment.policy, enrollment.policy_bytes, policy_digest);
++        memcpy(cursor, policy_digest, sizeof(policy_digest));
++        cursor += sizeof(policy_digest);
++        memcpy(cursor, enrollment.policy + AOS_RESOURCE_CONTROLLER_RECOVERY_OFFSET, AOS_RESOURCE_VECTOR_BYTES);
++        cursor += AOS_RESOURCE_VECTOR_BYTES;
++        memcpy(cursor, enrollment.policy + AOS_RESOURCE_CONTROLLER_RANGE_ALLOWANCE_OFFSET, AOS_RESOURCE_VECTOR_BYTES);
++        cursor += AOS_RESOURCE_VECTOR_BYTES;
++        memcpy(cursor, enrollment.policy + AOS_RESOURCE_CONTROLLER_RANGE_COUNT_OFFSET, 8);
++        sha256_direct(material, sizeof(material), original->range_commitment);
++
++        r = aos_resource_parent_controller_exec_scope(service, &scope);
++        if (r < 0)
++                return r;
++        original->history_capacity = history_bytes / sizeof(AosControllerRetiredAttempt);
++        original->history = allocation_account_calloc(original->history_capacity, sizeof(AosControllerRetiredAttempt));
++        original->history_allocation_result = original->history ? 0 :
++                enrollment.parent.controller_sender.account.first_error < 0 ?
++                enrollment.parent.controller_sender.account.first_error : -ENOMEM;
++        original->history_account_post_result = aos_resource_parent_require_controller_sender(service);
++        if (original->history_allocation_result < 0)
++                return original->history_allocation_result;
++        return original->history_account_post_result;
++}
++
++static void controller_close_retained(int *fd);
++
++/* This is reached only after the actual latest recipient's death/reap/Empty,
++ * Service copies, same-account closure and native posts. It moves the latest
++ * donor's exact still-held native owner; it does not turn a negative attempt
++ * into a confirmed recipient. All earlier Results remain in the paid array. */
++static int controller_archive_terminal(void) {
++        AosControllerRestart *original = &enrollment.controller_restart;
++        AosServiceLaunchTransport *latest = controller_launch_transport();
++        AosControllerRetiredAttempt *retired;
++
++        if (!original->history || original->history_count >= original->history_capacity)
++                return -EOVERFLOW;
++        if (original->ack_event) {
++                if (!original->event_disabled) {
++                        original->event_disable_result = sd_event_source_set_enabled(original->ack_event, SD_EVENT_OFF);
++                        original->event_disabled = original->event_disable_result >= 0;
++                        if (original->event_disable_result < 0)
++                                return original->event_disable_result;
++                }
++                original->ack_event = sd_event_source_unref(original->ack_event);
++        }
++        for (unsigned i = 0; i < original->ack_record.descriptor_count; i++)
++                controller_close_retained(&original->ack_record.descriptors[i]);
++        controller_close_retained(&latest->sockets[0]);
++        controller_close_retained(&latest->sockets[1]);
++        if (original->pending) {
++                /* The previous donor was contained before this pending clone.
++                 * Retire its native originals before moving the latest donor. */
++                controller_close_retained(&original->current_child.spawn.pidfd);
++                controller_close_retained(&original->current_child.event_fd);
++                controller_close_retained(&original->current_transport.recipient.fd);
++                controller_close_retained(&enrollment.controller_cpu.cgroup_fd);
++                controller_close_retained(&enrollment.controller_cpu.control_fd);
++                controller_close_retained(&enrollment.controller_delivery.sealed_fd);
++                controller_close_retained(&enrollment.controller_delivery.reopened_fd);
++        }
++        if (original->first_error < 0)
++                return original->first_error;
++
++        retired = &original->history[original->history_count++];
++        retired->original = *original;
++        retired->cpu = enrollment.controller_cpu;
++        retired->delivery = enrollment.controller_delivery;
++        retired->native_owner_transferred = true;
++        if (original->pending) {
++                original->current_transport = original->pending_transport;
++                original->current_child = original->pending_child;
++                enrollment.controller_cpu = original->pending_cpu;
++                enrollment.controller_delivery = original->pending_delivery;
++                enrollment.controller_invocation = original->pending_delivery_invocation;
++                retired->original.pending_child.spawn.pidfd = -EBADF;
++                retired->original.pending_child.event_fd = -EBADF;
++                retired->original.pending_transport.recipient.fd = -EBADF;
++                retired->original.pending_cpu.cgroup_fd = -EBADF;
++                retired->original.pending_cpu.control_fd = -EBADF;
++                retired->original.pending_delivery.sealed_fd = -EBADF;
++                retired->original.pending_delivery.reopened_fd = -EBADF;
++        } else {
++                retired->original.current_child.spawn.pidfd = -EBADF;
++                retired->original.current_child.event_fd = -EBADF;
++                retired->original.current_transport.recipient.fd = -EBADF;
++                retired->cpu.cgroup_fd = -EBADF;
++                retired->cpu.control_fd = -EBADF;
++                retired->delivery.sealed_fd = -EBADF;
++                retired->delivery.reopened_fd = -EBADF;
++        }
++        original->pending_cpu = (AosResourceServiceCPU) AOS_RESOURCE_CPU_EMPTY;
++        original->pending_delivery = (AosResourceDelivery) AOS_RESOURCE_DELIVERY_EMPTY;
++        original->pending_delivery_invocation = SD_ID128_NULL;
++        original->pending_transport = (AosServiceLaunchTransport) {
++                .sockets = { -EBADF, -EBADF }, .recipient = PIDREF_NULL,
++        };
++        original->pending_child = (AosControllerChildOriginal) {
++                .spawn = { .pidfd = -EBADF, .duplicate_pidfd = -EBADF }, .event_fd = -EBADF,
++        };
++        original->generation = original->issued_ordinal;
++        original->pending = false;
++        original->ack_record = (AosLaunchRecord) {};
++        original->terminal_error = 0;
++        original->terminal_event_disabled = false;
++        original->terminal_event_disable_result = 0;
++        original->retired_copy_count = 0;
++        original->retirement_close_count = 0;
++        original->peak_consumed = false;
++        original->old_unit_retired = false;
++        return 0;
++}
++
+ /* Called for prestart too, before its CPU owner checks. The channel is still
+  * attached only to the fixed main ExecStart; auxiliary commands cannot mint it. */
+ static int controller_prepare_launch(Service *service, ExecCommand *command, ExecFlags flags) {
+         AosControllerRestart *original = &enrollment.controller_restart;
+         AosServiceLaunchTransport *transport;
++        bool range = enrollment.policy_bytes == AOS_RESOURCE_CONTROLLER_RANGE_POLICY_BYTES;
+         int r;
+ 
+         if (!controller_launch_selected(UNIT(service)))
+                 return 0;
++        if (enrollment.policy_bytes == AOS_RESOURCE_CONTROLLER_RECOVERY_POLICY_BYTES)
++                return controller_launch_refuse(-EPROTONOSUPPORT);
+         if (original->first_error < 0)
+                 return original->first_error;
+         if (!original->sender_admitted) {
+@@ -2978,11 +3200,17 @@
+                 original->sender_admitted = true;
+                 original->current_transport.unit = UNIT(service);
+                 original->current_transport.invocation = UNIT(service)->invocation_id;
++                r = controller_initialize_range(service);
++                if (r < 0)
++                        return controller_launch_refuse(r);
+         } else if (!sd_id128_equal(controller_launch_transport()->invocation, UNIT(service)->invocation_id)) {
+-                /* R is one immutable residual inside B. Consume at most one
+-                 * successor before clone, delivery or child allocation. */
+-                if (enrollment.policy_bytes == AOS_RESOURCE_CONTROLLER_RECOVERY_POLICY_BYTES && original->generation != 0)
++                /* A genuine no-R profile is initial-only. Refuse before
++                 * successor growth rather than cloning an unusable recipient. */
++                if (!range)
+                         return controller_launch_refuse(-EOWNERDEAD);
++                if (!original->range_enabled || original->issued_ordinal >=
++                    policy_u64(enrollment.policy + AOS_RESOURCE_CONTROLLER_RANGE_COUNT_OFFSET))
++                        return controller_launch_refuse(-ENOSPC);
+                 r = controller_old_cut(service);
+                 if (r < 0)
+                         return controller_launch_refuse(r);
+@@ -2991,6 +3219,16 @@
+                         r = aos_resource_parent_reuse_controller_sender(service);
+                 if (r < 0)
+                         return controller_launch_refuse(r);
++                if (range) {
++                        r = controller_archive_terminal();
++                        if (r < 0)
++                                return controller_launch_refuse(r);
++                }
++                if (original->issued_ordinal == UINT64_MAX)
++                        return controller_launch_refuse(-EOVERFLOW);
++                /* Irreversible consumption precedes pending ownership, all
++                 * native growth and the actual CLONE_INTO_CGROUP syscall. */
++                original->issued_ordinal++;
+                 original->pending = true;
+                 original->pending_transport.unit = UNIT(service);
+                 original->pending_transport.invocation = UNIT(service)->invocation_id;
+@@ -3193,12 +3431,17 @@
+                 original->pending_child = (AosControllerChildOriginal) {
+                         .spawn = { .pidfd = -EBADF, .duplicate_pidfd = -EBADF }, .event_fd = -EBADF,
+                 };
+-                original->generation++;
++                original->generation = original->issued_ordinal;
+                 original->pending = false;
+         }
+         if (original->first_error < 0)
+                 return original->first_error;
+         original->confirmed = true;
++        if (enrollment.policy_bytes == AOS_RESOURCE_CONTROLLER_RANGE_POLICY_BYTES) {
++                original->last_confirmed_ordinal = original->issued_ordinal;
++                original->last_confirmed_invocation = original->current_transport.invocation;
++                original->range_enabled = true;
++        }
+         original->old_unit_retired = false;
+         original->peak_consumed = false;
+         original->retired_copy_count = 0;
+@@ -3215,10 +3458,33 @@
+ 
+         if (source != original->ack_event || fd != transport->sockets[0] || original->ack_accepted)
+                 return controller_launch_refuse(-EOWNERDEAD);
+-        r = aos_launch_record_receive_once(&original->ack_record, fd, AOS_LAUNCH_RECORD_128);
++        r = aos_launch_record_receive_once(&original->ack_record, fd, AOS_LAUNCH_RECORD_CONTROLLER_RANGE_184);
+         if (r < 0)
+                 return controller_launch_refuse(r);
+-        if (original->ack_record.malformed || original->ack_record.length != 128 ||
++        /* Genuine EOF on the held original channel is a negative terminal
++         * prefix, not an ACK. It enables no launch until the independently
++         * joined PIDFD death, manager reap, Empty and closure cuts complete. */
++        if (enrollment.policy_bytes == AOS_RESOURCE_CONTROLLER_RANGE_POLICY_BYTES &&
++            original->range_enabled && original->ack_record.length == 0 &&
++            !original->ack_record.malformed &&
++            !FLAGS_SET(original->ack_record.flags, MSG_TRUNC) &&
++            !FLAGS_SET(original->ack_record.flags, MSG_CTRUNC) &&
++            original->ack_record.descriptor_count == 0 &&
++            original->ack_record.credential_count == 0 &&
++            original->ack_record.pidfd_count == 0 && original->ack_record.rights_count == 0) {
++                if (original->terminal_error == 0)
++                        original->terminal_error = -ENODATA;
++                original->terminal_event_disabled = true;
++                original->terminal_event_disable_result = sd_event_source_set_enabled(original->ack_event, SD_EVENT_OFF);
++                original->event_disabled = original->terminal_event_disable_result >= 0;
++                original->account_post_attempted = true;
++                original->account_post_result = aos_resource_parent_require_controller_sender(service);
++                if (original->terminal_event_disable_result < 0)
++                        return controller_launch_refuse(original->terminal_event_disable_result);
++                return original->account_post_result < 0 ?
++                        controller_launch_refuse(original->account_post_result) : 0;
++        }
++        if (original->ack_record.malformed || original->ack_record.length != AOS_RESOURCE_CONTROLLER_RANGE_RECORD_BYTES ||
+             FLAGS_SET(original->ack_record.flags, MSG_TRUNC) || FLAGS_SET(original->ack_record.flags, MSG_CTRUNC) ||
+             original->ack_record.credential_count != 1 || original->ack_record.pidfd_count != 1 ||
+             original->ack_record.rights_count != 0 || original->ack_record.descriptor_count != 1 ||
+@@ -3231,27 +3497,28 @@
+         if (original->ack_context_result < 0)
+                 return controller_launch_refuse(original->ack_context_result);
+         if (original->ack_peer_result < 0 || original->ack_record.credentials.pid != transport->recipient.pid ||
+-            memcmp(original->ack_record.payload, "AOSRCO01", 8) != 0 || original->ack_record.payload[8] != 2 ||
++            memcmp(original->ack_record.payload, "AOSRCO02", 8) != 0 || original->ack_record.payload[8] != 2 ||
+             original->ack_record.payload[9] != (original->pending ? 2 : 1) ||
+             memcmp(original->ack_record.payload + 10, (uint8_t[6]) {}, 6) != 0 ||
+-            policy_u64(original->ack_record.payload + 16) != original->generation + (original->pending ? 1U : 0U) ||
++            policy_u64(original->ack_record.payload + 16) != original->issued_ordinal ||
+             memcmp(original->ack_record.payload + 24, original->offer_digest, 32) != 0 ||
+             memcmp(original->ack_record.payload + 56, (uint8_t[32]) {}, 32) == 0 ||
+             memcmp(original->ack_record.payload + 88, (uint8_t[16]) {}, 16) == 0 ||
+             memcmp(original->ack_record.payload + 104, transport->invocation.bytes, 16) != 0 ||
+-            memcmp(original->ack_record.payload + 120, (uint8_t[8]) {}, 8) != 0)
++            memcmp(original->ack_record.payload + 120, (uint8_t[8]) {}, 8) != 0 ||
++            memcmp(original->ack_record.payload + 128, original->offer + 128, 56) != 0)
+                 return controller_launch_refuse(-EOWNERDEAD);
+         original->ack_accepted = true;
+-        memcpy(original->confirm, original->ack_record.payload, 128);
++        memcpy(original->confirm, original->ack_record.payload, sizeof(original->confirm));
+         original->confirm[8] = 3;
+         int observed = original->pending ? original->current_child.spawn.pidfd : child->spawn.pidfd;
+-        struct iovec confirm_iov = { .iov_base = original->confirm, .iov_len = 128 };
++        struct iovec confirm_iov = { .iov_base = original->confirm, .iov_len = sizeof(original->confirm) };
+         r = aos_resource_require_launch_sender(service, transport->main_command, transport->main_flags);
+         if (r < 0)
+                 return controller_launch_refuse(r);
+         original->confirm_length = send_one_fd_iov(fd, observed, &confirm_iov, 1, MSG_DONTWAIT | MSG_NOSIGNAL);
+         original->confirm_send_result = original->confirm_length < 0 ? (int) original->confirm_length :
+-                original->confirm_length == 128 ? 0 : -EIO;
++                original->confirm_length == sizeof(original->confirm) ? 0 : -EIO;
+         r = controller_recipient_current(service);
+         /* Both native/account posts precede any positive original disposal.
+          * Keep the actual account Result even if send or native post failed. */
+@@ -3315,18 +3582,27 @@
+                         return controller_launch_refuse(-EIO);
+         }
+         memzero(original->offer, sizeof(original->offer));
+-        memcpy(original->offer, "AOSRCO01", 8);
++        memcpy(original->offer, "AOSRCO02", 8);
+         original->offer[8] = 1;
+         original->offer[9] = original->pending ? 2 : 1;
+-        source_origin_u64(original->offer + 16, original->generation + (original->pending ? 1U : 0U));
++        source_origin_u64(original->offer + 16, original->issued_ordinal);
+         memcpy(original->offer + 24, enrollment.invocation.bytes, 16);
+-        if (original->pending)
+-                memcpy(original->offer + 40, original->current_transport.invocation.bytes, 16);
++        if (original->pending) {
++                sd_id128_t predecessor = enrollment.policy_bytes == AOS_RESOURCE_CONTROLLER_RANGE_POLICY_BYTES ?
++                        original->last_confirmed_invocation : original->current_transport.invocation;
++                memcpy(original->offer + 40, predecessor.bytes, 16);
++        }
+         memcpy(original->offer + 56, transport->invocation.bytes, 16);
+         source_origin_u64(original->offer + 72, observed->cgroup_stat.st_dev);
+         source_origin_u64(original->offer + 80, observed->cgroup_stat.st_ino);
+         memcpy(original->offer + 88, original->nonces, 32);
+         source_origin_u64(original->offer + 120, original->cold_cutoff);
++        if (enrollment.policy_bytes == AOS_RESOURCE_CONTROLLER_RANGE_POLICY_BYTES) {
++                memcpy(original->offer + 128, original->range_commitment, SHA256_DIGEST_SIZE);
++                if (original->pending)
++                        memcpy(original->offer + 160, original->current_transport.invocation.bytes, 16);
++                source_origin_u64(original->offer + 176, original->last_confirmed_ordinal);
++        }
+         sha256_direct(original->offer, sizeof(original->offer), original->offer_digest);
+         struct iovec iov = { .iov_base = original->offer, .iov_len = sizeof(original->offer) };
+         original->event_disabled = false;
+@@ -3340,7 +3616,7 @@
+         original->offer_length = send_one_fd_iov(transport->sockets[0], observed->spawn.pidfd, &iov, 1,
+                                                 MSG_DONTWAIT | MSG_NOSIGNAL);
+         original->offer_send_result = original->offer_length < 0 ? (int) original->offer_length :
+-                original->offer_length == 128 ? 0 : -EIO;
++                original->offer_length == sizeof(original->offer) ? 0 : -EIO;
+         if (original->offer_send_result < 0)
+                 return controller_launch_refuse(original->offer_send_result);
+         transport->delivered = true;
+--- a/src/core/aos-resource-enrollment.h
++++ b/src/core/aos-resource-enrollment.h
+@@ -52,6 +52,7 @@
+ unsigned aos_resource_cache_origin_files(void);
+ 
+ size_t aos_resource_controller_successor_memory(void);
++size_t aos_resource_controller_history_memory(void);
+ unsigned aos_resource_controller_successor_files(void);
+ int aos_resource_controller_sender_context(Service *service);
+ int aos_resource_controller_sender_completed_peak(Service *service, const AosParentSenderAdmission *admission);
+--- a/src/shared/aos-launch-record.c
++++ b/src/shared/aos-launch-record.c
+@@ -130,6 +130,9 @@
+         case AOS_LAUNCH_RECORD_128:
+                 bytes = 129; /* Detect an overlong record without accepting its prefix. */
+                 break;
++        case AOS_LAUNCH_RECORD_CONTROLLER_RANGE_184:
++                bytes = 185; /* Reject an overlong Controller range record. */
++                break;
+         case AOS_LAUNCH_RECORD_SOURCE_BUDGET_368:
+                 bytes = 369;
+                 break;
+--- a/src/shared/aos-launch-record.h
++++ b/src/shared/aos-launch-record.h
+@@ -10,6 +10,7 @@
+  * nor a successful receive establishes an image payer, role or currentness. */
+ typedef enum AosLaunchRecordShape {
+         AOS_LAUNCH_RECORD_128,
++        AOS_LAUNCH_RECORD_CONTROLLER_RANGE_184,
+         AOS_LAUNCH_RECORD_SOURCE_BUDGET_368,
+         AOS_LAUNCH_RECORD_SOURCE_COMPLETION_304,
+ } AosLaunchRecordShape;
+--- a/src/test/test-aos-launch-record.c
++++ b/src/test/test-aos-launch-record.c
+@@ -48,6 +48,60 @@
+         assert_se(aos_launch_record_receive_once(&sample, sockets[1], AOS_LAUNCH_RECORD_128) == 0);
+         assert_se(sample.length == 129);
+         assert_se(sample.descriptor_count == 0);
++}
++
++/* These are actual native custody fixtures, not synthetic Controller grants. */
++TEST(controller_range_record_keeps_the_whole_new_suffix_and_received_right) {
++        _cleanup_close_pair_ int sockets[2] = EBADF_PAIR;
++        _cleanup_close_ int original = -EBADF;
++        AosLaunchRecord sample = {};
++        uint8_t bytes[184] = {};
++
++        assert_se(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sockets) == 0);
++        original = open("/dev/null", O_RDONLY | O_CLOEXEC);
++        assert_se(original >= 0);
++        memcpy(bytes, "AOSRCO02", 8);
++        bytes[183] = 53;
++        struct iovec iov = { .iov_base = bytes, .iov_len = sizeof(bytes) };
++        assert_se(send_one_fd_iov(sockets[0], original, &iov, 1, MSG_NOSIGNAL) == sizeof(bytes));
++
++        assert_se(aos_launch_record_receive_once(&sample, sockets[1],
++                  AOS_LAUNCH_RECORD_CONTROLLER_RANGE_184) == 0);
++        assert_se(sample.length == sizeof(bytes) && sample.payload[183] == 53);
++        assert_se(sample.rights_count == 1 && sample.descriptor_count == 1);
++        int retained = sample.descriptors[0];
++        assert_se(fcntl(retained, F_GETFD) >= 0);
++        assert_se(aos_launch_record_receive_once(&sample, sockets[1],
++                  AOS_LAUNCH_RECORD_CONTROLLER_RANGE_184) == -EALREADY);
++        assert_se(sample.descriptors[0] == retained && fcntl(retained, F_GETFD) >= 0);
++        safe_close(retained);
++}
++
++TEST(controller_range_overlong_record_cannot_be_a_valid_184_byte_prefix) {
++        _cleanup_close_pair_ int sockets[2] = EBADF_PAIR;
++        AosLaunchRecord sample = {};
++        uint8_t bytes[185] = {};
++
++        assert_se(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sockets) == 0);
++        assert_se(send(sockets[0], bytes, sizeof(bytes), MSG_NOSIGNAL) == sizeof(bytes));
++        assert_se(aos_launch_record_receive_once(&sample, sockets[1],
++                  AOS_LAUNCH_RECORD_CONTROLLER_RANGE_184) == 0);
++        assert_se(sample.length == sizeof(bytes) && sample.descriptor_count == 0);
++}
++
++TEST(controller_range_clean_eof_is_retained_without_fabricated_credentials) {
++        _cleanup_close_pair_ int sockets[2] = EBADF_PAIR;
++        AosLaunchRecord sample = {};
++
++        assert_se(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sockets) == 0);
++        sockets[0] = safe_close(sockets[0]);
++        assert_se(aos_launch_record_receive_once(&sample, sockets[1],
++                  AOS_LAUNCH_RECORD_CONTROLLER_RANGE_184) == 0);
++        assert_se(sample.length == 0 && sample.receive_result == 0);
++        assert_se(!sample.malformed && sample.descriptor_count == 0);
++        assert_se(sample.credential_count == 0 && sample.pidfd_count == 0);
++        assert_se(aos_launch_record_receive_once(&sample, sockets[1],
++                  AOS_LAUNCH_RECORD_CONTROLLER_RANGE_184) == -EALREADY);
+ }
+ 
+ TEST(source_usage_records_keep_full_payload_and_native_rights) {

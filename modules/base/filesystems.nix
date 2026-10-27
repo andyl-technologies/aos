@@ -13,6 +13,17 @@
   ...
 }: let
   cfg = config.aos.filesystems;
+  protectedSandboxNetworkRoots =
+    config.aos.security.selinux.protectedSandboxNetworkRoots.enable;
+  protectedSandboxRoots =
+    protectedSandboxNetworkRoots
+    || config.aos.sandbox.controllerService.method46TpmFloor.required
+    || config.aos.sandbox.storageBroker.method46TpmFloor.required;
+  varRootContext =
+    config.aos.security.selinux.protectedSandboxNetworkRoots._varRootContext;
+  varRootContextOption =
+    lib.optionalString protectedSandboxRoots ",rootcontext=${varRootContext}";
+
   varManaged = builtins.elem "/var" config.aos.storage.managedMountPoints;
 
   # Build fstab entries from the filesystem configuration.
@@ -39,7 +50,7 @@
       if cfg.rootReadOnly
       then "ro"
       else "rw"
-    },relatime  0  ${
+    },relatime,nodev  0  ${
       if cfg.rootFsType == "erofs"
       then "0"
       else "1"
@@ -55,7 +66,7 @@
       ''
       else ''
         # /var — persistent mutable state (partition created by systemd-repart)
-        /dev/disk/by-partlabel/var  /var  ext4  rw,relatime,nosuid,nodev  0  2
+        /dev/disk/by-partlabel/var  /var  ext4  rw,relatime,nosuid,nodev${varRootContextOption}  0  2
       ''
     )
     ""
@@ -107,6 +118,10 @@ in {
   };
 
   config = {
+    # PID 1 authenticates immutable enrollment inputs before fstab remounts
+    # run. Apply the root's existing nodev policy at the initial mount too.
+    aos.boot.kernelParams = ["rootflags=nodev"];
+
     system.checks.filesystem = {
       description = "Filesystem layout checks";
       checks = [

@@ -21,6 +21,7 @@
   host = config.system.build.hostDeploymentBundle;
   initrd = config.system.build.initrdDeploymentBundle;
   replayedHost = (evaluate host).config;
+  replayedInitrd = (evaluate initrd).config;
   localePackages = builtins.filter (package: (package.pname or null) == "glibc-locales") host.nativeEvaluationDescriptor.nativeEvaluationInputs.packages;
   localeOnly = lib.evalPackageModules {
     packages = localePackages;
@@ -38,6 +39,72 @@
 in {
   host = replay host;
   initrd = replay initrd;
+  initrdConfigurationLabeling = assert replayedInitrd.aos.services."boot-preparations.etc-overlay-setup".environment.variables.AOS_CONFIGURATION_SELINUX_LABELS
+  == (
+    if config.system.build.immutableSelinuxPolicy != null
+    then "true"
+    else "false"
+  ); true;
+  initrdStoreLabeling = assert replayedInitrd.aos.services."boot-preparations.nix-overlay-setup".environment.variables.AOS_CONFIGURATION_SELINUX_LABELS
+  == (
+    if config.system.build.immutableSelinuxPolicy != null
+    then "true"
+    else "false"
+  ); true;
+  initrdSelinuxConfiguration =
+    if config.system.build.immutableSelinuxPolicy == null
+    then assert !(replayedInitrd.aos.abilities.configuration.operations.file.effects ? selinux-initrd-config); true
+    else let
+      effect = replayedInitrd.aos.abilities.configuration.operations.file.effects.selinux-initrd-config;
+    in
+      assert effect.enable;
+      assert effect.input.path == "/etc/selinux/config";
+      assert effect.input.mode == "0444";
+      assert effect.input.content == "SELINUX=enforcing\nSELINUXTYPE=aos\n"; true;
+  initrdSelinuxContexts = let
+    effects = replayedInitrd.aos.abilities.configuration.operations.file.effects;
+    files = [
+      {
+        name = "file-contexts";
+        path = "files/file_contexts";
+      }
+      {
+        name = "file-context-substitutions";
+        path = "files/file_contexts.subs_dist";
+      }
+    ];
+  in
+    assert (config.system.build.immutableSelinuxPolicy
+      == null
+      || builtins.elem (toString config.system.build.immutableSelinuxPolicy)
+      (map toString initrd.nativeEvaluationDescriptor.nativeEvaluationInputs.supplementalInputs))
+    || throw "Initrd labeling policy ${toString config.system.build.immutableSelinuxPolicy} is absent from retained inputs ${builtins.toJSON (map toString initrd.nativeEvaluationDescriptor.nativeEvaluationInputs.supplementalInputs)}";
+    assert builtins.all (file:
+      if config.system.build.immutableSelinuxPolicy == null
+      then !(effects ? ${"selinux-initrd-${file.name}"})
+      else let
+        effect = effects.${"selinux-initrd-${file.name}"};
+      in
+        effect.enable
+        && effect.input.path == "/etc/selinux/aos/contexts/${file.path}"
+        && effect.input.mode == "0444"
+        && effect.input.content == null
+        && effect.input.fragments
+        == [
+          {
+            storePath = "${config.system.build.immutableSelinuxPolicy}/etc/selinux/aos/contexts/${file.path}";
+            credentialPath = null;
+            maximumBytes = 1048576;
+          }
+        ])
+    files; true;
+  hostStoreSeedImageProjection = assert config.aos.abilities.serviceManagement.operations.realize.effects."boot-preparations.aos-host-store-seed".input
+  == replayedHost.aos.abilities.serviceManagement.operations.realize.effects."boot-preparations.aos-host-store-seed".input; true;
+  hostStoreSeedEnvironment = assert config.aos.abilities.serviceManagement.operations.realize.effects."boot-preparations.aos-host-store-seed".input.environment
+  == {
+    variables = {};
+    search_path = [];
+  }; true;
   hostLocaleDefaults = assert replayedHost.environment.sessionVariables.LANG == config.environment.sessionVariables.LANG;
   assert replayedHost.environment.sessionVariables.LOCPATH == config.environment.sessionVariables.LOCPATH;
   assert map toString replayedHost.aos.system.localePackages == map toString config.aos.system.localePackages; true;

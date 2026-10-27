@@ -8,6 +8,19 @@
 /// Errors surfaced by [`crate::SystemdClient`].
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// A selected original retains the actual native/SDK failure at this frontier.
+    #[error("retained Host Systemd {0} did not complete")]
+    HostLaunchRetained(&'static str),
+    /// A retained kernel pin for the fixed worker private transport failed.
+    #[cfg(target_os = "linux")]
+    #[error("worker private transport kernel pin failed: {0}")]
+    WorkerPrivateKernel(#[source] aos_linux_descriptors::Error),
+
+    /// A caller attempted to construct an invalid typed sandbox unit, or
+    /// systemd returned an observation that violates the typed contract.
+    #[error("invalid sandbox unit contract: {0}")]
+    InvalidSandboxUnit(String),
+
     /// The system bus could not be reached (e.g. `/run/dbus/system_bus_socket`
     /// is absent). This is the replacement for the old `which systemctl`
     /// smoke check — a clearer, more actionable signal than "command not
@@ -83,6 +96,10 @@ pub enum Error {
         /// Carries the revision read from the manager's loaded unit object.
         actual: String,
     },
+
+    /// A disposable exact-unit connection or operation exceeded its deadline.
+    #[error("systemd exact-unit {0} exceeded its fixed deadline")]
+    ExactUnitTimeout(&'static str),
 }
 
 impl Error {
@@ -106,10 +123,15 @@ impl Error {
     /// units as idempotent without swallowing unrelated D-Bus failures.
     pub fn is_no_such_unit(&self) -> bool {
         match self {
+            #[cfg(target_os = "linux")]
+            Self::WorkerPrivateKernel(_) => false,
             Self::Zbus(err) => is_no_such_unit(err),
+            Self::HostLaunchRetained(_) => false,
             Self::SystemdUnavailable(_)
             | Self::Fdo(_)
             | Self::JobSenderDropped(_)
+            | Self::ExactUnitTimeout(_)
+            | Self::InvalidSandboxUnit(_)
             | Self::JobCompletionOverflow
             | Self::ManagerIncarnationChanged
             | Self::UnitAlias { .. }
@@ -122,8 +144,35 @@ impl Error {
 }
 
 pub(crate) fn is_no_such_unit(err: &zbus::Error) -> bool {
-    matches!(err, zbus::Error::MethodError(name, _, _) if name.as_str().contains("NoSuchUnit"))
+    matches!(err, zbus::Error::MethodError(name, _, _) if name.as_str() == "org.freedesktop.systemd1.NoSuchUnit")
 }
 
 /// Convenience alias for results from this crate.
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_unit_error_requires_the_exact_systemd_name() {
+        for (name, expected) in [
+            ("org.freedesktop.systemd1.NoSuchUnit", true),
+            ("org.freedesktop.systemd1.NoSuchUnitExtra", false),
+            ("org.freedesktop.systemd1.NotNoSuchUnit", false),
+            ("org.example.NoSuchUnit", false),
+            ("org.freedesktop.systemd1.AccessDenied", false),
+        ] {
+            let message = zbus::Message::signal("/", "org.aos.Test", "Error")
+                .unwrap()
+                .build(&())
+                .unwrap();
+            let error = Error::Zbus(zbus::Error::MethodError(
+                name.try_into().unwrap(),
+                None,
+                message,
+            ));
+            assert_eq!(error.is_no_such_unit(), expected, "{name}");
+        }
+    }
+}

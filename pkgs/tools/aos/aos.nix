@@ -15,6 +15,17 @@
   perl,
   openssl,
   aos-landlock,
+  aos-method46-tpm-helper,
+  aos-runtime-deployment-tpm-helper,
+  aos-fuse-transport,
+  aos-service-root,
+  aos-selinux-run,
+  aos-verity-root-guard,
+  aos-ebpf-net-policy,
+  aos-ebpf-lsm-policy,
+  checkpolicy,
+  policycoreutils,
+  semodule-utils,
   service-management,
   aos-filesystem-provider,
   aos-nix-store-provider,
@@ -99,7 +110,21 @@
   apmPortableRuntimeTools = [bash nix openssl sbsigntools mtools tpm2-tools zstd which];
   apmRuntimeTools =
     apmPortableRuntimeTools
-    ++ lib.optionals (!isDarwinCross) [util-linux];
+    ++ lib.optionals (!isDarwinCross) [systemd util-linux];
+  linkedLibraries = [openssl sqlite libssh2 zlib];
+  linkedLibraryFlags = lib.concatMapStringsSep " " (dependency: let
+    libraryDirectory = "${dependency}/lib";
+  in
+    lib.concatStringsSep " " (
+      [
+        "-L${libraryDirectory}"
+        "-Wl,-rpath,${libraryDirectory}"
+      ]
+      ++ lib.optionals stdenv.hostPlatform.isLinux [
+        "-Wl,-rpath-link,${libraryDirectory}"
+      ]
+    ))
+  linkedLibraries;
   referenceRemovalArguments = dependencies:
     builtins.concatStringsSep " \\\n            " (map (dependency: "-t ${dependency}") dependencies);
   runtimeBinPath = tools:
@@ -109,6 +134,15 @@
     );
   linuxRuntimeDeps = [
     aos-landlock
+    aos-method46-tpm-helper
+    aos-service-root
+    aos-selinux-run
+    aos-verity-root-guard
+    aos-ebpf-net-policy
+    aos-ebpf-lsm-policy
+    checkpolicy
+    policycoreutils
+    semodule-utils
   ];
   aosForbiddenRuntimeDeps =
     [sbsigntools mtools tpm2-tools which]
@@ -131,13 +165,19 @@
     )
     workspaceManifest.workspace.members;
   applicationTestPackages = builtins.sort builtins.lessThan (lib.unique (
-    builtins.filter (name: name == "aos" || lib.hasPrefix "aos-" name) workspacePackageNames
+    builtins.filter (
+      name: lib.hasPrefix "aos-" name && name != "aos-sandbox-coordinator"
+    )
+    workspacePackageNames
   ));
   applicationTestFlags =
     "--features aos-cli/release-fleet-fixture "
     + builtins.concatStringsSep " " (
       map (package: "-p ${package}") applicationTestPackages
     );
+  # Initializers remain absent from normal/default role graphs. Their selected
+  # bins and subprocess integration target need a distinct compile invocation.
+  initialFloorTestFlags = "--no-default-features --features aos-sandbox-services/method46-initial -p aos-sandbox-services";
   # Build both command surfaces in one feature-unified Cargo invocation so
   # their shared dependencies are compiled only once.
   releaseBuildCommands = [
@@ -150,18 +190,35 @@
       then "aos-native-release-and-test"
       else "aos-native-release";
     checkType = "debug";
-    nativeInputs = map toString [openssl sqlite buildProtobuf buildCmake libssh2];
+    nativeInputs = map toString (
+      [openssl sqlite buildProtobuf buildCmake libssh2]
+      ++ lib.optionals (!isDarwinCross) [aos-fuse-transport]
+      ++ lib.optionals stdenv.hostPlatform.isLinux [
+        aos-method46-tpm-helper
+        aos-runtime-deployment-tpm-helper
+      ]
+    );
   };
-  cargoEnv = {
-    OPENSSL_DIR = "${openssl}";
-    OPENSSL_LIB_DIR = "${openssl}/lib";
-    OPENSSL_INCLUDE_DIR = "${openssl}/include";
-    OPENSSL_NO_VENDOR = "1";
-    OPENSSL_STATIC = "0";
-    AOS_LIBSSH2_PREFIX = "${libssh2}";
-    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-    PROTOC = "${buildProtobuf}/bin/protoc";
+  noSetidTestLauncher = import ./_network-test-launcher.nix {
+    inherit mkDerivation version;
   };
+  cargoEnv =
+    {
+      OPENSSL_DIR = "${openssl}";
+      OPENSSL_LIB_DIR = "${openssl}/lib";
+      OPENSSL_INCLUDE_DIR = "${openssl}/include";
+      OPENSSL_NO_VENDOR = "1";
+      OPENSSL_STATIC = "0";
+      AOS_LIBSSH2_PREFIX = "${libssh2}";
+      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+      PROTOC = "${buildProtobuf}/bin/protoc";
+    }
+    // lib.optionalAttrs stdenv.hostPlatform.isLinux {
+      AOS_NO_SETID_TEST_LAUNCHER = "${noSetidTestLauncher}/bin/no-setid-exec";
+      AOS_METHOD46_TPM_HELPER = "${aos-method46-tpm-helper}/libexec/aos-method46-tpm-helper";
+      AOS_METHOD46_TPM_PID1 = "${systemd}/lib/systemd/systemd";
+      AOS_RUNTIME_DEPLOYMENT_TPM_HELPER = "${aos-runtime-deployment-tpm-helper}/libexec/aos-runtime-deployment-tpm-helper";
+    };
   # Native handler tests bind the same programs as their package recipe.
   # Only test derivations retain the shipped runtime: adding that dependency
   # to the ordinary CLI build would make its own output a build prerequisite.
@@ -189,36 +246,64 @@
       releaseBuildCommands
       ++ lib.optionals withTests [
         "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${applicationTestFlags}"
+      ]
+      ++ lib.optionals (withTests && stdenv.hostPlatform.isLinux) [
+        "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${initialFloorTestFlags}"
       ];
     cargoEnv =
       if withTests
       then testCargoEnv
       else cargoEnv;
-    buildDeps = [buildPerl buildPkgConfig buildProtobuf buildCmake];
-    runtimeDeps = [openssl sqlite libssh2 zlib];
+    buildDeps =
+      [buildPerl buildPkgConfig buildProtobuf buildCmake]
+      ++ lib.optionals (!isDarwinCross) [aos-fuse-transport];
+    runtimeDeps =
+      [openssl sqlite libssh2 zlib]
+      ++ lib.optionals (!isDarwinCross) [aos-fuse-transport];
   };
 
   # Compiles every application test target, including the `tests/`
   # integration crates that `cargo test --lib` skips, without running them.
   # This gives a fast compile gate that does not wait on the full suite.
-  testTargets = mkAosCargoPackage {
+  mkTestTargets = {
+    pname,
+    cargoFlags,
+    extraCargoFlags ? [],
+  }:
+    mkAosCargoPackage {
+      inherit pname version cargoDeps;
+      cargoArtifacts =
+        if withTests
+        then cargoArtifacts
+        else (callPackage ./aos.nix {withTests = true;}).passthru.cargoArtifacts;
+      cargoArtifactContract = cargoArtifactContract // {family = "aos-native-release-and-test";};
+      cargoEnv = testCargoEnv;
+      aosWorkspaceIntegrationInputs = true;
+      cargoRoot = "crates";
+      cargoBuildCommands =
+        [
+          "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${cargoFlags}"
+        ]
+        ++ map (flags: "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${flags}") extraCargoFlags;
+      buildDeps =
+        [buildPerl buildPkgConfig buildProtobuf buildCmake]
+        ++ lib.optionals (!isDarwinCross) [aos-fuse-transport];
+      runtimeDeps =
+        [openssl sqlite libssh2 zlib]
+        ++ lib.optionals (!isDarwinCross) [aos-fuse-transport];
+      installBins = false;
+      doCheck = false;
+    };
+  testTargets = mkTestTargets {
     pname = "aos-test-targets";
-    inherit version cargoDeps;
-    cargoArtifacts =
-      if withTests
-      then cargoArtifacts
-      else (callPackage ./aos.nix {withTests = true;}).passthru.cargoArtifacts;
-    cargoArtifactContract = cargoArtifactContract // {family = "aos-native-release-and-test";};
-    cargoEnv = testCargoEnv;
-    aosWorkspaceIntegrationInputs = true;
-    cargoRoot = "crates";
-    cargoBuildCommands = [
-      "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${applicationTestFlags}"
-    ];
-    buildDeps = [buildPerl buildPkgConfig buildProtobuf buildCmake];
-    runtimeDeps = [openssl sqlite libssh2 zlib];
-    installBins = false;
-    doCheck = false;
+    cargoFlags = applicationTestFlags;
+    extraCargoFlags = lib.optional stdenv.hostPlatform.isLinux initialFloorTestFlags;
+  };
+  # The Coordinator's explicit Domain multi-node feature belongs to its own
+  # compile gate; it must not unify into the normal application invocation.
+  coordinatorTestTargets = mkTestTargets {
+    pname = "aos-sandbox-coordinator-test-targets";
+    cargoFlags = "-p aos-sandbox-coordinator";
   };
   outputSelections = (import ./_outputs.nix).aos;
   cliProbe = command:
@@ -387,16 +472,18 @@
       else cargoEnv;
     cargoRoot = "crates";
     cargoNextest = true;
-    # The CI profile retains failed output in a machine-readable report. The
-    # shared Cargo phase prints its failed cases when a sandboxed check exits.
-    cargoNextestProfile = "ci";
+    # Keep the bounded Sandbox profile and its retained failure report. The
+    # shared Cargo phase prints failed cases when a sandboxed check exits.
+    cargoNextestProfile = "nix-sandbox";
     # Compilation still uses every allocated build core. Bound concurrent test
     # processes separately so loopback servers and SQLite workers retain enough
     # scheduler time to satisfy their production-sized deadlines on large hosts.
     cargoNextestMaxTestThreads = 16;
+    # Match the native test runner without changing production stack limits.
+    RUST_MIN_STACK = "33554432";
     passthru =
       {
-        inherit cargoArtifacts cargoDeps cargoEnv testTargets;
+        inherit cargoArtifacts cargoDeps cargoEnv testTargets coordinatorTestTargets;
         integrationSource = aosWorkspaceIntegrationSource;
       }
       // lib.optionalAttrs (!withTests) {
@@ -408,20 +495,23 @@
     # builds expose target headers and libraries without splicing in native
     # Linux shared objects.
     #
-    # openssh and zstd are build-only inputs for the check phase: the workspace
-    # tests use `ssh-keygen` for repository fixtures and exercise compressed
-    # registry packs. Nix supplies the multicall commands exercised by the
+    # The native OpenSSH and zstd inputs serve the check phase: workspace tests
+    # use `ssh-keygen` for repository fixtures and exercise compressed registry
+    # packs. The target OpenSSH client is also retained in the `aos` runtime
+    # closure for authorized execution attachment. Nix supplies commands in the
     # executable-resolution tests. `git-minimal` is also used by tests, but remains in
     # the `aos` runtime closure because maintainer commands create, inspect,
     # commit, and publish isolated Git worktrees without host tools.
     buildDeps =
       [buildPerl buildPkgConfig buildProtobuf buildCmake buildGitMinimal buildNix buildOpenSsh buildZstd buildDbus remove-references-to ca-certificates]
+      ++ lib.optionals (!isDarwinCross) [aos-fuse-transport]
       ++ lib.optionals isDarwinCross [buildPackages.aos];
     runtimeDeps =
       [coreutils openssl sqlite libssh2 zlib]
       ++ aosRuntimeTools
       ++ aprRuntimeTools
       ++ apmRuntimeTools
+      ++ lib.optionals (!isDarwinCross) [aos-fuse-transport]
       ++ lib.optionals (!isDarwinCross) linuxRuntimeDeps;
 
     # APM needs this runtime source before a host has a retained descriptor.
@@ -430,9 +520,10 @@
     # mkDerivation normally constructs one RPATH from every runtimeDep. That
     # is correct for a single-output package, but would make each executable
     # retain the union of all four command closures here. The Rust programs
-    # dynamically link only these shared libraries; command-specific tools are
-    # referenced exclusively by the corresponding installed wrapper.
-    NIX_LDFLAGS = "-Wl,-rpath,${openssl}/lib -Wl,-rpath,${sqlite}/lib -Wl,-rpath,${libssh2}/lib -Wl,-rpath,${zlib}/lib";
+    # dynamically link only these shared libraries. Keep their link-time and
+    # runtime search paths explicit; command-specific tools are referenced
+    # exclusively by the corresponding installed wrapper.
+    NIX_LDFLAGS = linkedLibraryFlags;
 
     # The pinned-bus cases belong to the explicit Rust test derivation. Running
     # them in the runtime build would compile a second debug dependency graph.
@@ -599,7 +690,7 @@
     # `http://127.0.0.1` mirror/frontend/webhook URLs, which only resolve past
     # the SSRF guard when the `AOS_HUB_ALLOW_LOCAL_REMOTES` escape hatch is
     # honored — and that hatch is compiled out of release entirely by design
-    # (`aos-hub-core::url_guard::allow_local_remotes` is gated on
+    # (`aos-hub-model::url_guard::allow_local_remotes` is gated on
     # `debug_assertions`, so a production binary never relaxes the guard). The
     # tests are therefore inherently debug-only; running the check phase in debug
     # exercises them exactly as the dev `cargo test` / `aos test` path does,

@@ -1,7 +1,8 @@
 # Crate rename and extraction reference
 
 This reference maps every package in the former flat 67-package workspace to its
-implemented owner in the 77-package workspace. Cargo package names carry scope;
+implemented owner in the 77-package base. The current RFC-0021 workspace also
+contains 46 Sandbox packages listed below. Cargo package names carry scope;
 subdirectories group related code for readers. The [workspace design](crate-workspace.md)
 explains naming and dependency direction, and the [active inventory](crate-inventory.md)
 lists every current package and directory.
@@ -145,7 +146,9 @@ Installed executable names, serialized schema tags, protocol constants, signatur
 and digest domains, and Nix package attributes have their own compatibility
 contracts. A Cargo rename alone does not rename these identities. In particular,
 `crucible-assert.v1` remains a gate vocabulary identity after its crate is merged.
-Canonical protobuf inputs live under `api/proto/aos/{cache,build,gc,auth,hub}/v1`.
+Canonical base protobuf inputs live under
+`api/proto/aos/{cache,build,gc,auth,hub}/v1`; Sandbox inputs live under
+`api/proto/aos/sandbox/`.
 
 The [mechanical migration map](../../tools/dev/crate-migration.json) is the initial
 move plan, including temporary packages subsequently merged or split. Use this
@@ -154,6 +157,76 @@ the initial map does not perform the later architectural refactors. See the
 [tooling guide](../../tools/dev/crate-migration.md) for supported checks.
 
 Crates on other branches are tracked separately in the
-[unmerged-PR inventory](unmerged-crates.md); those proposals are outside the 77
-implemented packages. Validation outcomes and their tested checkpoints are in the
+[unmerged-PR inventory](unmerged-crates.md). That inventory records the applied
+Sandbox migration separately from proposals outside the implemented base. Validation outcomes and their tested checkpoints are in the
 [validation record](crate-migration-validation.md).
+
+## Sandbox package migration on RFC-0021
+
+The branch has applied the following 45 package/path moves. Six fixture packages
+move with their parent directories; they retain independent Cargo identities.
+The [current Sandbox map](../../tools/dev/sandbox-crate-migration.json) records
+the complete one-to-one path and package mapping. It is separate from the
+historical base map and does not add compatibility API shims.
+
+| Former package | Current package | Current directory |
+|---|---|---|
+| `aos-filesystem-fuse` | `aos-sandbox-filesystem-fuse` | [`crates/sandbox/filesystem/aos-sandbox-filesystem-fuse`](../../crates/sandbox/filesystem/aos-sandbox-filesystem-fuse/Cargo.toml) |
+| `aos-filesystem-fuse-kernel-worker` | `aos-sandbox-filesystem-fuse-kernel-worker` | [`crates/sandbox/filesystem/aos-sandbox-filesystem-fuse/tests/fixtures/kernel-worker`](../../crates/sandbox/filesystem/aos-sandbox-filesystem-fuse/tests/fixtures/kernel-worker/Cargo.toml) |
+| `aos-filesystem-fuse-link-consumer` | `aos-sandbox-filesystem-fuse-link-consumer` | [`crates/sandbox/filesystem/aos-sandbox-filesystem-fuse/tests/fixtures/link-consumer`](../../crates/sandbox/filesystem/aos-sandbox-filesystem-fuse/tests/fixtures/link-consumer/Cargo.toml) |
+| `aos-filesystem-view` | `aos-sandbox-filesystem-view` | [`crates/sandbox/filesystem/aos-sandbox-filesystem-view`](../../crates/sandbox/filesystem/aos-sandbox-filesystem-view/Cargo.toml) |
+| `aos-filesystem-view-core` | `aos-sandbox-filesystem-format` | [`crates/sandbox/filesystem/aos-sandbox-filesystem-format`](../../crates/sandbox/filesystem/aos-sandbox-filesystem-format/Cargo.toml) |
+| `aos-sandbox` | `aos-sandbox-controller-domain` | [`crates/sandbox/controller/aos-sandbox-controller-domain`](../../crates/sandbox/controller/aos-sandbox-controller-domain/Cargo.toml) |
+| `aos-sandbox-agent` | `aos-sandbox-guest-protocol` | [`crates/sandbox/protocol/aos-sandbox-guest-protocol`](../../crates/sandbox/protocol/aos-sandbox-guest-protocol/Cargo.toml) |
+| `aos-sandbox-broker` | `aos-sandbox-broker` | [`crates/sandbox/host/aos-sandbox-broker`](../../crates/sandbox/host/aos-sandbox-broker/Cargo.toml) |
+| `aos-sandbox-broker-session-protocol` | `aos-sandbox-broker-session-protocol` | [`crates/sandbox/protocol/aos-sandbox-broker-session-protocol`](../../crates/sandbox/protocol/aos-sandbox-broker-session-protocol/Cargo.toml) |
+| `aos-sandbox-broker-session-security` | `aos-sandbox-broker-session-security` | [`crates/sandbox/security/aos-sandbox-broker-session-security`](../../crates/sandbox/security/aos-sandbox-broker-session-security/Cargo.toml) |
+| `aos-sandbox-cache-signer` | `aos-sandbox-cache-signer` | [`crates/sandbox/security/aos-sandbox-cache-signer`](../../crates/sandbox/security/aos-sandbox-cache-signer/Cargo.toml) |
+| `aos-sandbox-client` | `aos-sandbox-client` | [`crates/sandbox/controller/aos-sandbox-client`](../../crates/sandbox/controller/aos-sandbox-client/Cargo.toml) |
+| `aos-sandbox-controller-runtime` | `aos-sandbox-controller-runtime` | [`crates/sandbox/controller/aos-sandbox-controller-runtime`](../../crates/sandbox/controller/aos-sandbox-controller-runtime/Cargo.toml) |
+| `aos-sandbox-coordinator` | `aos-sandbox-coordinator` | [`crates/sandbox/controller/aos-sandbox-coordinator`](../../crates/sandbox/controller/aos-sandbox-coordinator/Cargo.toml) |
+| `aos-sandbox-coordinator-protocol` | `aos-sandbox-coordinator-protocol` | [`crates/sandbox/protocol/aos-sandbox-coordinator-protocol`](../../crates/sandbox/protocol/aos-sandbox-coordinator-protocol/Cargo.toml) |
+| `aos-sandbox-core` | `aos-sandbox-model` | [`crates/sandbox/model/aos-sandbox-model`](../../crates/sandbox/model/aos-sandbox-model/Cargo.toml) |
+| `aos-sandbox-guardian` | `aos-sandbox-guardian` | [`crates/sandbox/security/aos-sandbox-guardian`](../../crates/sandbox/security/aos-sandbox-guardian/Cargo.toml) |
+| `aos-sandbox-guest` | `aos-sandbox-guest` | [`crates/sandbox/guest/aos-sandbox-guest`](../../crates/sandbox/guest/aos-sandbox-guest/Cargo.toml) |
+| `aos-sandbox-guest-root-realization` | `aos-sandbox-guest-root-realization` | [`crates/sandbox/guest/aos-sandbox-guest-root-realization`](../../crates/sandbox/guest/aos-sandbox-guest-root-realization/Cargo.toml) |
+| `aos-sandbox-guest-root-tree` | `aos-sandbox-guest-root-measurement` | [`crates/sandbox/guest/aos-sandbox-guest-root-measurement`](../../crates/sandbox/guest/aos-sandbox-guest-root-measurement/Cargo.toml) |
+| `aos-sandbox-host` | `aos-sandbox-host` | [`crates/sandbox/host/aos-sandbox-host`](../../crates/sandbox/host/aos-sandbox-host/Cargo.toml) |
+| `aos-sandbox-journal` | `aos-sandbox-journal` | [`crates/sandbox/controller/aos-sandbox-journal`](../../crates/sandbox/controller/aos-sandbox-journal/Cargo.toml) |
+| `aos-sandbox-kernel-export-owner-peer` | `aos-sandbox-kernel-export-owner-peer` | [`crates/sandbox/security/aos-sandbox-kernel-export-owner-peer`](../../crates/sandbox/security/aos-sandbox-kernel-export-owner-peer/Cargo.toml) |
+| `aos-sandbox-ledger-replay` | `aos-sandbox-ledger-replay` | [`crates/sandbox/controller/aos-sandbox-ledger-replay`](../../crates/sandbox/controller/aos-sandbox-ledger-replay/Cargo.toml) |
+| `aos-sandbox-linux` | `aos-sandbox-linux` | [`crates/sandbox/host/aos-sandbox-linux`](../../crates/sandbox/host/aos-sandbox-linux/Cargo.toml) |
+| `aos-sandbox-mount` | `aos-sandbox-mount` | [`crates/sandbox/host/aos-sandbox-mount`](../../crates/sandbox/host/aos-sandbox-mount/Cargo.toml) |
+| `aos-sandbox-mount-native` | `aos-sandbox-mount-native` | [`crates/sandbox/host/aos-sandbox-mount-native`](../../crates/sandbox/host/aos-sandbox-mount-native/Cargo.toml) |
+| `aos-sandbox-network` | `aos-sandbox-network` | [`crates/sandbox/host/aos-sandbox-network`](../../crates/sandbox/host/aos-sandbox-network/Cargo.toml) |
+| `aos-sandbox-network-protected-store-fixture` | `aos-sandbox-network-protected-store-fixture` | [`crates/sandbox/host/aos-sandbox-network/tests/fixtures/protected-store`](../../crates/sandbox/host/aos-sandbox-network/tests/fixtures/protected-store/Cargo.toml) |
+| `aos-sandbox-network-systemd-custody-fixture` | `aos-sandbox-network-systemd-custody-fixture` | [`crates/sandbox/host/aos-sandbox-network/tests/fixtures/systemd-custody`](../../crates/sandbox/host/aos-sandbox-network/tests/fixtures/systemd-custody/Cargo.toml) |
+| `aos-sandbox-ownership` | `aos-sandbox-ownership` | [`crates/sandbox/model/aos-sandbox-ownership`](../../crates/sandbox/model/aos-sandbox-ownership/Cargo.toml) |
+| `aos-sandbox-ownership-protocol` | `aos-sandbox-ownership-protocol` | [`crates/sandbox/protocol/aos-sandbox-ownership-protocol`](../../crates/sandbox/protocol/aos-sandbox-ownership-protocol/Cargo.toml) |
+| `aos-sandbox-policy` | `aos-sandbox-policy` | [`crates/sandbox/model/aos-sandbox-policy`](../../crates/sandbox/model/aos-sandbox-policy/Cargo.toml) |
+| `aos-sandbox-protocol` | `aos-sandbox-protocol` | [`crates/sandbox/protocol/aos-sandbox-protocol`](../../crates/sandbox/protocol/aos-sandbox-protocol/Cargo.toml) |
+| `aos-sandbox-publisher` | `aos-sandbox-publisher` | [`crates/sandbox/host/aos-sandbox-publisher`](../../crates/sandbox/host/aos-sandbox-publisher/Cargo.toml) |
+| `aos-sandbox-service-journal-probe` | `aos-sandbox-service-journal-probe` | [`crates/sandbox/controller/aos-sandbox-controller-domain/tests/fixtures/service-journal`](../../crates/sandbox/controller/aos-sandbox-controller-domain/tests/fixtures/service-journal/Cargo.toml) |
+| `aos-sandbox-services` | `aos-sandbox-services` | [`crates/sandbox/controller/aos-sandbox-services`](../../crates/sandbox/controller/aos-sandbox-services/Cargo.toml) |
+| `aos-sandbox-source` | `aos-sandbox-source` | [`crates/sandbox/storage/aos-sandbox-source`](../../crates/sandbox/storage/aos-sandbox-source/Cargo.toml) |
+| `aos-sandbox-source-provider` | `aos-sandbox-source-provider` | [`crates/sandbox/storage/aos-sandbox-source-provider`](../../crates/sandbox/storage/aos-sandbox-source-provider/Cargo.toml) |
+| `aos-sandbox-source-provider-ledger` | `aos-sandbox-source-provider-ledger` | [`crates/sandbox/storage/aos-sandbox-source-provider-ledger`](../../crates/sandbox/storage/aos-sandbox-source-provider-ledger/Cargo.toml) |
+| `aos-sandbox-source-provider-protocol` | `aos-sandbox-source-provider-protocol` | [`crates/sandbox/protocol/aos-sandbox-source-provider-protocol`](../../crates/sandbox/protocol/aos-sandbox-source-provider-protocol/Cargo.toml) |
+| `aos-sandbox-source-provider-security` | `aos-sandbox-source-provider-security` | [`crates/sandbox/security/aos-sandbox-source-provider-security`](../../crates/sandbox/security/aos-sandbox-source-provider-security/Cargo.toml) |
+| `aos-sandbox-source-signer` | `aos-sandbox-source-signer` | [`crates/sandbox/security/aos-sandbox-source-signer`](../../crates/sandbox/security/aos-sandbox-source-signer/Cargo.toml) |
+| `aos-sandbox-storage` | `aos-sandbox-storage` | [`crates/sandbox/storage/aos-sandbox-storage`](../../crates/sandbox/storage/aos-sandbox-storage/Cargo.toml) |
+| `aos-sandbox-verity-backing-probe` | `aos-sandbox-verity-backing-probe` | [`crates/sandbox/host/aos-sandbox-linux/tests/fixtures/verity-backing`](../../crates/sandbox/host/aos-sandbox-linux/tests/fixtures/verity-backing/Cargo.toml) |
+
+`aos-sandbox-api` is a new generated-contract owner, not a renamed base package.
+Sandbox message imports now use `aos_sandbox_api::aos::sandbox::*` and the
+corresponding message trait comes from that API crate. Build/cache/authentication/
+GC contracts remain in `aos-build-api`; Hub contracts remain in `aos-hub-api`.
+The protobuf package names, compatibility bytes and generated namespace shape
+remain unchanged. Coordinator transport generation uses the canonical Sandbox
+schema inputs and shared API types without moving transport ownership into the
+API crate.
+
+Installed executables, systemd units, wire/schema identities and digest/signature
+domains keep their established names. `aos-sandbox-cache` remains a separate
+source proposal with no package in this checkout. Dependency extraction and RFC
+qualification are not established by these package/path changes.

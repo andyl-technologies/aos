@@ -22,6 +22,11 @@ in {
         default = false;
         description = "Render this service into the image for startup before native activation; its normal handler retains lifecycle ownership.";
       };
+      retain_image_definition = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Reconcile lifecycle using only the selected image's unchanged unit definitions, without replacing them or reloading the manager.";
+      };
       dependencyValues = lib.mkOption {
         type = lib.types.json;
         default = [];

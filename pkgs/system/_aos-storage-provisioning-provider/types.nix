@@ -67,5 +67,8 @@ in {
     mdadm = field text "Exact retained MD array management executable.";
     mkfs_ext4 = field text "Exact retained ext4 formatting executable.";
     mkfs_xfs = field text "Exact retained XFS formatting executable.";
+    debugfs = field text "Exact retained ext4 root-label inspection executable.";
+    sync = field text "Exact retained durable filesystem synchronization executable.";
+    protected_var_context = defaulted nullableText null "Exact immutable /var root label, or null for an unconfined state volume.";
   };
 }

@@ -1,8 +1,8 @@
 #!@bash@/bin/bash
 set -euo pipefail
 
-if [ "$#" -ne 4 ]; then
-  echo "usage: aos-var-crypt PCR_PUBLIC_KEY SIGNED_PCRS PINNED_PCRS RECOVERY_KEY_PATH" >&2
+if [ "$#" -ne 4 ] && [ "$#" -ne 5 ]; then
+  echo "usage: aos-var-crypt PCR_PUBLIC_KEY SIGNED_PCRS PINNED_PCRS RECOVERY_KEY_PATH [PROTECTED_VAR_CONTEXT]" >&2
   exit 2
 fi
 
@@ -12,6 +12,11 @@ pub=$1
 signed_pcrs=$2
 pinned_pcrs=$3
 var_recovery_key=$4
+protected_var_context=${5:-}
+if [ "$#" -eq 5 ] && [ "$protected_var_context" != system_u:object_r:var_t ]; then
+  echo "aos-var-crypt: protected /var requires the immutable exact root context" >&2
+  exit 2
+fi
 enroll=@systemd@/bin/systemd-cryptenroll
 csetup=@systemd@/lib/systemd/systemd-cryptsetup
 cs=@cryptsetup@/sbin/cryptsetup
@@ -53,11 +58,32 @@ wait_for() {
   [ -e "$1" ]
 }
 
-# The inner filesystem of a sealed volume. Tool defaults are the
-# intended defaults; both detect md stripe geometry on an array.
+require_var_label() {
+  [ -n "$protected_var_context" ] || return 0
+  if [ "$("$blkid" -p -s TYPE -o value "$1")" != ext4 ]; then
+    klog "protected /var must carry ext4"
+    return 1
+  fi
+  var_label=$(@e2fsprogs@/sbin/debugfs -R 'ea_get / security.selinux' "$1" 2>/dev/null) || return 1
+  if [ "$var_label" != "security.selinux (23) = \"$protected_var_context\"" ]; then
+    klog "protected /var root lacks its durable exact SELinux label"
+    return 1
+  fi
+}
+
+# Only newly formatted protected /var receives a durable root label. Existing
+# filesystems are checked, never repaired or relabeled by the unlock owner.
 make_filesystem() {
   case "$1" in
-    ext4) "$mkfs" -q -L "$2" "$3" ;;
+    ext4)
+      if [ -n "$protected_var_context" ] && [ "$4" = var ]; then
+        "$mkfs" -q -L "$2" -E "root_selinux=$protected_var_context" "$3"
+        sync "$3"
+        require_var_label "$3"
+        return 0
+      fi
+      "$mkfs" -q -L "$2" "$3"
+      ;;
     xfs) "$mkfs_xfs" -q -L "$2" "$3" ;;
     *) klog "unsupported filesystem $1 for $3"; return 1 ;;
   esac
@@ -114,7 +140,7 @@ seal_volume() {
   "$cs" luksFormat --type luks2 --batch-mode \
     --label "$label" --subsystem aos-volume "$dev" "$keyf"
   "$cs" open "$dev" "$name" --key-file "$keyf"
-  make_filesystem "$filesystem" "$label" "/dev/mapper/$name"
+  make_filesystem "$filesystem" "$label" "/dev/mapper/$name" "$name"
   "$enroll" --unlock-key-file="$keyf" \
     --tpm2-device=auto \
     --tpm2-public-key="$pub" \
@@ -153,6 +179,10 @@ handle_volume() {
   dev=$2
   label=$3
   filesystem=$4
+  if [ -n "$protected_var_context" ] && [ "$name" = var ] && { [ "$filesystem" != ext4 ] || [ "$label" != var ]; }; then
+    klog "protected /var requires its exact ext4 volume identity"
+    exit 1
+  fi
   if ! wait_for "$dev"; then
     klog "$dev for $name absent after wait; skipping"
     return 0
@@ -160,10 +190,21 @@ handle_volume() {
   klog "$name device ready: $dev isLuks=$("$cs" isLuks "$dev" && echo Y || echo N)"
   if "$cs" isLuks "$dev"; then
     unlock_volume "$name" "$dev"
+    if [ "$name" = var ]; then
+      require_var_label /dev/mapper/var
+    fi
     return 0
   fi
 
-  fs_type=$("$blkid" -p -s TYPE -o value "$dev" 2>/dev/null || true)
+  fs_status=0
+  fs_type=$("$blkid" -p -s TYPE -o value "$dev" 2>/dev/null) || fs_status=$?
+  if [ -n "$protected_var_context" ] && [ "$name" = var ]; then
+    case "$fs_status" in
+      0) [ -n "$fs_type" ] || { klog "protected /var signature probe returned no type"; exit 1; } ;;
+      2) [ -z "$fs_type" ] || { klog "protected /var signature probe is inconsistent"; exit 1; } ;;
+      *) klog "cannot establish the protected /var filesystem signature"; exit 1 ;;
+    esac
+  fi
   if [ "$sb" != "1" ]; then
     if [ "$name" != var ]; then
       klog "SB not enforcing yet — $name stays raw until the first enforcing boot"
@@ -179,7 +220,7 @@ handle_volume() {
     case "$fs_type" in
       "")
         klog "SB not enforcing yet — formatting plain ext4 /var (sealed once enforcing)"
-        "$mkfs" -q -L "$label" "$dev"
+        make_filesystem ext4 "$label" "$dev" "$name"
         ;;
       ext4)
         klog "SB not enforcing yet — preserving existing plain ext4 /var"
@@ -189,6 +230,7 @@ handle_volume() {
         exit 1
         ;;
     esac
+    require_var_label "$dev"
     return 0
   fi
 
@@ -201,6 +243,13 @@ handle_volume() {
     exit 1
   fi
   if [ "$name" = var ]; then
+    if [ -n "$protected_var_context" ]; then
+      case "$fs_type" in
+        "") ;;
+        ext4) require_var_label "$dev" ;;
+        *) klog "refusing to seal protected /var carrying $fs_type"; exit 1 ;;
+      esac
+    fi
     seal_volume "$name" "$dev" "$label" "$filesystem" "$var_recovery_key"
   else
     seal_volume "$name" "$dev" "$label" "$filesystem" "$volume_recovery_dir/$name.key"

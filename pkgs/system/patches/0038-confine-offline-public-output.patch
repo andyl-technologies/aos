@@ -1,0 +1,40 @@
+Subject: [PATCH] core: confine fixed offline public journal output
+
+Keep the manual preparer's journal socket distinct from generic PID 1 IPC.
+Socket-label custody failures stop the executor; journal connection failure
+refuses this fixed unit instead of silently replacing public output with null.
+
+--- a/src/core/exec-invoke.c
++++ b/src/core/exec-invoke.c
+@@ -75,6 +75,7 @@
+ #include "rlimit-util.h"
+ #include "seccomp-util.h"
+ #include "selinux-util.h"
++#include "aos-offline-public-output.h"
+ #include "set.h"
+ #include "signal-util.h"
+ #include "siphash24.h"
+@@ -223,9 +224,10 @@
+         assert(ident);
+         assert(nfd >= 0);
+ 
+-        fd = socket(AF_UNIX, SOCK_STREAM, 0);
++        fd = aos_offline_public_output_socket(params->unit_id, context->selinux_context,
++                                              context->selinux_context_ignore);
+         if (fd < 0)
+-                return -errno;
++                return fd;
+ 
+         r = connect_journal_socket(fd, context->log_namespace, uid, gid);
+         if (r < 0)
+@@ -594,6 +596,10 @@
+         case EXEC_OUTPUT_JOURNAL_AND_CONSOLE:
+                 r = connect_logger_as(context, params, o, ident, fileno, uid, gid);
+                 if (r < 0) {
++                        /* Public candidate delivery is part of this fixed manual
++                         * unit's contract; replacing it with /dev/null is refusal. */
++                        if (aos_offline_public_output_selected(params->unit_id))
++                                return r;
+                         log_warning_errno(r, "Failed to connect %s to the journal socket, ignoring: %m",
+                                           fileno == STDOUT_FILENO ? "stdout" : "stderr");
+                         r = open_null_as(O_WRONLY, fileno);

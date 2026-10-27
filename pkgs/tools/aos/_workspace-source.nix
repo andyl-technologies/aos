@@ -39,6 +39,13 @@ in
       pathString = toString path;
       base = baseNameOf path;
       daemonRunState = "${cratesRoot}/crucible/crucible-daemon/run-state";
+      # A Rust module may itself be named target. Cargo output directories
+      # belong beside a manifest, rather than anywhere below a source tree.
+      cargoOutputDirectory =
+        (base == "target" || lib.hasPrefix "target-" base)
+        && (builtins.dirOf pathString
+          == repoRootString
+          || builtins.pathExists "${builtins.dirOf pathString}/Cargo.toml");
       generatedDir =
         type
         == "directory"
@@ -47,10 +54,12 @@ in
           == ".git"
           || base == ".direnv"
           || base == ".worktrees"
-          || base == "result"
-          || lib.hasPrefix "result-" base
-          || base == "target"
-          || lib.hasPrefix "target-" base
+          # A nested result directory can own Rust source. Nix output links
+          # and directories are generated only at the checkout root.
+          || (builtins.dirOf pathString
+            == repoRootString
+            && (base == "result" || lib.hasPrefix "result-" base))
+          || cargoOutputDirectory
         );
       # Cargo builds need the workspace, JSON fixtures included by Rust tests,
       # and API manifests consumed by build scripts. Nix-only test edits must
@@ -69,6 +78,9 @@ in
         || pathString == "${repoRootString}/tests/abilities"
         || pathString == "${repoRootString}/tests/abilities/fixtures"
         || lib.hasPrefix "${repoRootString}/tests/abilities/fixtures/" pathString
+        || pathString == "${repoRootString}/tests/sandbox"
+        || pathString == "${repoRootString}/tests/sandbox/network-kernel-plan-v1.cases"
+        || pathString == "${repoRootString}/tests/sandbox/network-kernel-plan-v1.hex"
         || (
           selectedCrates
           == null
@@ -95,6 +107,11 @@ in
         || lib.hasPrefix "${repoRootString}/tests/vm" pathString
         || pathString == "${repoRootString}/tests/native"
         || pathString == "${repoRootString}/tests/native/hub-settings.py"
+        || pathString == "${repoRootString}/tests/sandbox/method46-tpm-transport-probe.c"
+        || pathString == "${repoRootString}/tests/sandbox/method46-external-tpm-prepare.c"
+        || pathString == "${repoRootString}/tests/sandbox/method46-independent-approval.rs"
+        || pathString == "${repoRootString}/tests/sandbox/method46-external-history.rs"
+        || pathString == "${repoRootString}/tests/sandbox/method46-external-credentials.rs"
         || pathString == "${repoRootString}/default.nix"
         || pathString == "${repoRootString}/flake.nix"
         || pathString == "${repoRootString}/justfile";

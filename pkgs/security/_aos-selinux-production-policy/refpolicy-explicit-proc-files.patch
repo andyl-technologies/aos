@@ -1,0 +1,22 @@
+--- a/policy/modules/kernel/domain.te
++++ b/policy/modules/kernel/domain.te
+@@ -28,6 +28,10 @@
+ # This marker grants nothing and does not remove domain/self membership.
+ attribute aos_private_root_custody_domain;
+ 
++# Fixed helpers use explicit proc-file access instead of managing own files.
++# Ordinary domains retain the upstream self-file permissions.
++attribute aos_explicit_proc_file_domain;
++
+ # Transitions only allowed from domains to other domains
+ neverallow domain ~domain:process { dyntransition transition };
+ 
+@@ -105,7 +109,7 @@
+ # and manage own fds.
+ allow domain self:dir rw_dir_perms;
+ allow domain self:lnk_file { ioctl lock read_lnk_file_perms };
+-allow domain self:file manage_file_perms;
++allow { domain -aos_explicit_proc_file_domain } self:file manage_file_perms;
+ 
+ kernel_read_crypto_sysctls(domain)
+ kernel_read_proc_symlinks(domain)

@@ -8,6 +8,10 @@
   buildPackages ? null,
   firmwarePackages ? null,
   targetPackages ? null,
+  # Per-system selection stays inside the dependency fixed point.
+  systemdKernel ? null,
+  # Kernel builders must not depend on their own Systemd layout consumer.
+  kernelPackages ? null,
   releasePlatforms ? [stdenv.hostPlatform],
   sharedImageCacheDir ? null,
   sharedGoCacheDir ? null,
@@ -642,14 +646,51 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       }
     );
 
-  fetchCargoVendor = args:
-    lib.fetchCargoVendor (
+  # The existing path-returning producer is the sole workspace identity. It
+  # depends on source filtering/string helpers, never on this vendor derivation.
+  canonicalWorkspaceSource = import ./tools/aos/_workspace-source.nix {inherit lib;};
+  workspaceRegistryPatches = let
+    recipe = builtins.fromJSON (builtins.readFile ./tools/aos/cargo-patches/registry-source-patches.json);
+    resolvePatch = record: let
+      components = lib.splitString "/" record.patch;
+      safePath =
+        builtins.isString record.patch
+        && lib.hasPrefix "pkgs/tools/aos/cargo-patches/" record.patch
+        && builtins.match "[A-Za-z0-9._/-]+" record.patch != null
+        && builtins.all (part: part != "" && part != "." && part != "..") components;
+    in
+      lib.throwIfNot safePath "workspace registry patch path is outside its fixed source directory"
+      (record // {patch = ../. + "/${record.patch}";});
+  in
+    lib.throwIfNot (builtins.isList recipe && recipe != [])
+    "canonical workspace requires its nonempty frozen registry patch recipe"
+    (builtins.map resolvePatch recipe);
+
+  fetchCargoVendor = args: let
+    canonicalSource =
+      args.src
+      == canonicalWorkspaceSource
+      || args.src == aosWorkspaceVendorSource;
+    registryPatches =
+      if canonicalSource
+      then workspaceRegistryPatches
+      else args.registryPatches or [];
+    conflictingOverride =
+      canonicalSource
+      && args ? registryPatches
+      && args.registryPatches != workspaceRegistryPatches;
+  in
+    lib.throwIfNot (!conflictingOverride)
+    "canonical workspace registry source patches cannot be overridden or disabled"
+    (lib.fetchCargoVendor (
       args
       // {
         cargo = resolvedBuildPackages.rust;
         python3 = resolvedBuildPackages.python3;
         git = resolvedBuildPackages.git;
         caCertificates = resolvedBuildPackages.ca-certificates;
+        inherit registryPatches;
+        patchTool = stdenv.patch;
         inherit bootstrapTools;
         extraPaths = [
           stdenv.coreutils
@@ -663,7 +704,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         # explicit caller override without imposing one on every subprocess.
         extraLibPaths = args.extraLibPaths or [];
       }
-    );
+    ));
 
   fetchGoModules = args:
     lib.fetchGoModules (
@@ -738,6 +779,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     "buildType"
     "checkType"
     "cargoTestFlags"
+    "cargoTestFlagSets"
     "buildFeatures"
     "buildNoDefaultFeatures"
     "installBins"
@@ -1315,7 +1357,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
   packageArgumentScope =
     self
     // {inherit firmwarePackages aosWorkspaceIntegrationSource aosWorkspaceSliceFor aosWorkspaceVendor;}
-    // lib.optionalAttrs stdenv.isCross (
+    // lib.optionalAttrs (stdenv.hostPlatform.isDarwin || stdenv.isCross) (
       builtins.listToAttrs (
         builtins.map (name: {
           inherit name;
@@ -1424,7 +1466,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
           # package so those dependencies keep their own contract identities.
           package = callPackage path {};
         in
-          if !acceptsMkDerivation
+          if builtins.elem (lib.removeSuffix ".nix" name) packageFactories || !acceptsMkDerivation
           then package
           else if package ? overrideAttrs
           then package.overrideAttrs {catalogName = lib.removeSuffix ".nix" name;}
@@ -1606,8 +1648,17 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     libbsd = resolvedBuildPackages.libbsd;
     util-linux = resolvedBuildPackages.util-linux;
   };
+  # Discovered factory modules are callable package constructors, not
+  # derivations. Keep them in `pkgs` for their consumers, but never advertise
+  # them as buildable `pkg-*` flake outputs or aggregate build dependencies.
+  # This explicit structural inventory preserves lazy package enumeration:
+  # probing every value with tryEval would execute unrelated IFDs.
+  packageFactories = [
+    "aos-environment-provision"
+    "aos-nix-online-store-reader"
+  ];
   uncheckedPackageNames = builtins.attrNames (
-    discoveredPackages
+    builtins.removeAttrs discoveredPackages packageFactories
     // outputPackages
     // {
       nuke-references = null;
@@ -1652,7 +1703,19 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     "aos-boot-identity"
     "aos-ebpf-lsm-policy"
     "aos-ebpf-net-policy"
+    "aos-namespace-inspector-manager-query"
+    "aos-sandbox-network-lease-gate"
+    "aos-sandbox-network-lease-gate-loader"
+    "aos-sandbox-kernel-export-deny"
+    "aos-sandbox-kernel-export-owner"
+    "aos-sandbox-kernel-export-ownerd"
+    "aos-sandbox-network-observer"
+    "aos-selinux-runtime-roots"
+    "aos-sandbox-zfs-worker"
+    "aos-sandboxd"
+    "aos-sandbox-ownershipd"
     "aos-hub"
+    "aos-storaged"
     "aos-hub-cloudflare"
     "aos-hub-console-dist"
     "aos-hub-dialect-tests"
@@ -1666,6 +1729,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     "aos-release-signer"
     "aos-secret-reference-test"
     "aos-selinux-run"
+    "aos-selinux-stage0"
     "aos-service-root"
     "aos-system-image-e2e-fixture"
     "aos-test-agent"
@@ -1945,6 +2009,12 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         });
     }
     // discoveredPackages
+    # The underscore-prefixed recipe deliberately stays outside package
+    # discovery: this is a native build-machine runner, not target inventory.
+    # Cross package sets consume it only through buildPackages.
+    // lib.optionalAttrs (!stdenv.isCross && stdenv.hostPlatform.isLinux) {
+      qemu-aarch64-linux-user = callPackage ./emulation/_qemu-aarch64-linux-user.nix {};
+    }
     // outputPackages
     // {
       # --- Explicit overrides for packages needing non-standard arguments ---
@@ -1956,20 +2026,100 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         gobject-introspection = self.gobject-introspection;
       };
       kernel-interface = callPackage ./kernel/kernel-interface.nix {};
-      linux = callPackage ./kernel/linux.nix {inherit linuxSource;};
+      linux =
+        if kernelPackages == null
+        then callPackage ./kernel/linux.nix {inherit linuxSource;}
+        else kernelPackages.linux;
+
+      bpftool = callPackage ./tools/bpftool.nix {inherit linuxSource;};
+
       # Build a kernel variant with extra kconfig appended. Use this — not
       # `linux.override { extraConfig = …; }` — for deployment kernels:
       # `extraConfig` is a linux.nix function arg consumed before
       # mkDerivation, so the inherited `.override` hook can't reach it
       # (silent no-op). callPackage threads it directly. (RFC-0006 lockdown.)
       linuxWith = extraConfig:
-        callPackage ./kernel/linux.nix {inherit linuxSource extraConfig;};
+        if kernelPackages == null
+        then callPackage ./kernel/linux.nix {inherit linuxSource extraConfig;}
+        else kernelPackages.linuxWith extraConfig;
+
+      # Every library and program resolves this same Systemd. Selecting only
+      # the module's PID 1 package would leave a second libsystemd in its closure.
+      # The conditional is lazy: enumerating packages never forces system config.
+      systemd = callPackage ./system/systemd.nix (
+        lib.optionalAttrs (systemdKernel != null) {
+          kernelCloneLayout = systemdKernel.dev;
+        }
+      );
+
+      aos-sandbox-agent = callPackage ./tools/aos-sandbox-agent.nix (
+        lib.optionalAttrs (systemdKernel != null) {
+          kernelCloneLayout = systemdKernel.dev;
+        }
+      );
+
+      aos-sandbox-hostd = callPackage ./tools/aos-sandbox-hostd.nix (
+        lib.optionalAttrs (systemdKernel != null) {
+          kernelCloneLayout = systemdKernel.dev;
+        }
+      );
+
       # Fixture kernels may deliberately omit facilities required by deployed
       # systems. Keep that exception explicit and unavailable through linuxWith.
       linuxFixtureWith = extraConfig:
-        callPackage ./kernel/linux.nix {
-          inherit linuxSource extraConfig;
-          enforceRequiredConfig = false;
+        if kernelPackages == null
+        then
+          callPackage ./kernel/linux.nix {
+            inherit linuxSource extraConfig;
+            enforceRequiredConfig = false;
+          }
+        else kernelPackages.linuxFixtureWith extraConfig;
+      # The immutable SELinux gate needs negative subjects whose loaded and
+      # expected policy bytes differ. Keep that construction explicit so the
+      # deployed package remains the no-argument discovered derivation.
+      aosSelinuxStage0With = arguments:
+        callPackage ./security/aos-selinux-stage0.nix arguments;
+      aosSelinuxRuntimeRootsWith = arguments:
+        callPackage ./security/aos-selinux-runtime-roots.nix arguments;
+      aosSelinuxProductionPolicyWith = arguments:
+        callPackage ./security/aos-selinux-production-policy.nix arguments;
+      aosEnvironmentProvisionWith = arguments:
+        (callPackage ./security/aos-environment-provision.nix {}) arguments;
+      aosNormalRootStartupProfileWith = arguments:
+        callPackage ./security/_aos-normal-root-profile.nix arguments;
+      aosMethod46InitialStartupProfileWith = arguments:
+        callPackage ./security/_aos-method46-initial-startup-profile.nix arguments;
+      aosNixOfflineStartupProfileWith = arguments:
+        callPackage ./security/_aos-nix-offline-startup-profile.nix arguments;
+      # Public domain DATA flows downward to the fixed reader, then the same
+      # selected sandboxd artifacts. Profiles are built afterward; credentials
+      # and independently provisioned floors are never package inputs.
+      aosNixOnlineControllerWith = {domainIdHex}: let
+        nixOnlineStoreReader = (callPackage ./security/aos-nix-online-store-reader.nix {}) {
+          inherit domainIdHex;
+        };
+      in
+        callPackage ./tools/aos-sandboxd.nix {inherit nixOnlineStoreReader;};
+      aosNixStartupProfileWith = arguments:
+        callPackage ./security/_aos-nix-startup-profile.nix arguments;
+      aosSelinuxKernelPolicyReadbackWith = arguments:
+        callPackage ./security/aos-selinux-kernel-policy-readback.nix arguments;
+      aosSelinuxKernelPolicyReadbackForKernel = kernel:
+        callPackage ./security/aos-selinux-kernel-policy-readback.nix {
+          linux = kernel;
+        };
+      aosSelinuxRuntimeRootsForKernel = kernel:
+        callPackage ./security/aos-selinux-runtime-roots.nix {
+          aos-selinux-kernel-policy-readback = self.aosSelinuxKernelPolicyReadbackForKernel kernel;
+        };
+      aosMountExecutableCarrierForKernel = kernel:
+        callPackage ./security/_aos-mount-executable-carrier.nix {
+          linux = kernel;
+        };
+      aosMountSourceExecutableCarrierForKernel = kernel:
+        callPackage ./security/_aos-mount-executable-carrier.nix {
+          linux = kernel;
+          sourceProviderCarrier = true;
         };
       linux-headers = callPackage ./kernel/linux-headers.nix {inherit linuxSource;};
       zfsForKernel = kernel:
@@ -2927,52 +3077,52 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       # recipe with ncurses terminal support on both native and cross targets.
       bash = withDefaultMaintainers discoveredPackages.bash;
       coreutils = withPlatformSupport discoveredPackages.coreutils (withDefaultMaintainers (
-        if stdenv.isCross
+        if stdenv.hostPlatform.isDarwin || stdenv.isCross
         then discoveredPackages.coreutils
         else withBootstrapPublication "coreutils"
       ));
       gnumake = withPlatformSupport discoveredPackages.gnumake (withDefaultMaintainers (
-        if stdenv.isCross
+        if stdenv.hostPlatform.isDarwin || stdenv.isCross
         then discoveredPackages.gnumake
         else withBootstrapPublication "gnumake"
       ));
       sed = withPlatformSupport discoveredPackages.sed (withDefaultMaintainers (
-        if stdenv.isCross
+        if stdenv.hostPlatform.isDarwin || stdenv.isCross
         then discoveredPackages.sed
         else withBootstrapPublication "sed"
       ));
       grep = withPlatformSupport discoveredPackages.grep (withDefaultMaintainers (
-        if stdenv.isCross
+        if stdenv.hostPlatform.isDarwin || stdenv.isCross
         then discoveredPackages.grep
         else withBootstrapPublication "grep"
       ));
       findutils = withPlatformSupport discoveredPackages.findutils (withDefaultMaintainers (
-        if stdenv.isCross
+        if stdenv.hostPlatform.isDarwin || stdenv.isCross
         then discoveredPackages.findutils
         else withBootstrapPublication "findutils"
       ));
       gawk = withPlatformSupport discoveredPackages.gawk (withDefaultMaintainers (
-        if stdenv.isCross
+        if stdenv.hostPlatform.isDarwin || stdenv.isCross
         then discoveredPackages.gawk
         else withBootstrapPublication "gawk"
       ));
       diffutils = withPlatformSupport discoveredPackages.diffutils (withDefaultMaintainers (
-        if stdenv.isCross
+        if stdenv.hostPlatform.isDarwin || stdenv.isCross
         then discoveredPackages.diffutils
         else withBootstrapPublication "diffutils"
       ));
       tar = withPlatformSupport discoveredPackages.tar (withDefaultMaintainers (
-        if stdenv.isCross
+        if stdenv.hostPlatform.isDarwin || stdenv.isCross
         then discoveredPackages.tar
         else withBootstrapPublication "tar"
       ));
       gzip = withPlatformSupport discoveredPackages.gzip (withDefaultMaintainers (
-        if stdenv.isCross
+        if stdenv.hostPlatform.isDarwin || stdenv.isCross
         then discoveredPackages.gzip
         else withBootstrapPublication "gzip"
       ));
       patch = withPlatformSupport discoveredPackages.patch (withDefaultMaintainers (
-        if stdenv.isCross
+        if stdenv.hostPlatform.isDarwin || stdenv.isCross
         then discoveredPackages.patch
         else withBootstrapPublication "patch"
       ));

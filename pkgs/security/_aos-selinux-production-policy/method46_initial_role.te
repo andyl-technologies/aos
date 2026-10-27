@@ -1,0 +1,146 @@
+# One closed manual purpose, rendered only by the selected production recipe.
+# The normal owner, helper, public admission and boot activation stay separate.
+require {
+    type unconfined_t;
+    class process setcap;
+}
+
+type aos_method46_@ROLE@_initial_t;
+typeattribute aos_method46_@ROLE@_initial_t domain;
+typeattribute aos_method46_@ROLE@_initial_t aos_no_context_translation_domain;
+typeattribute aos_method46_@ROLE@_initial_t aos_private_root_custody_domain;
+role system_r types aos_method46_@ROLE@_initial_t;
+type aos_method46_@ROLE@_initial_exec_t;
+type aos_method46_@ROLE@_initial_credential_t;
+type aos_method46_@ROLE@_initial_approval_t;
+type aos_method46_@ROLE@_initial_output_t;
+
+# Explicit unit context only, with the immutable store still mounted nosuid.
+allow init_t aos_method46_@ROLE@_initial_exec_t:file { execute execute_no_trans getattr map open read };
+allow init_t aos_method46_@ROLE@_initial_t:process { rlimitinh transition };
+allow init_t aos_method46_@ROLE@_initial_t:process2 { nnp_transition nosuid_transition };
+allow aos_method46_@ROLE@_initial_t aos_method46_@ROLE@_initial_exec_t:file { entrypoint execute getattr map open read };
+allow aos_method46_@ROLE@_initial_t self:capability { chown dac_override };
+allow aos_method46_@ROLE@_initial_t self:process { fork getattr getsched sigchld signal };
+allow aos_method46_@ROLE@_initial_t init_t:fd use;
+allow aos_method46_@ROLE@_initial_t null_device_t:chr_file { getattr open read write };
+allow aos_method46_@ROLE@_initial_t { root_t var_t var_lib_t var_run_t usr_t etc_t init_tmpfs_t tmpfs_t }:dir { getattr open read search };
+allow aos_method46_@ROLE@_initial_t { usr_t etc_t init_exec_t aos_sandbox_@ROLE@_exec_t aos_method46_initial_profile_t }:file { getattr open read };
+allow aos_method46_@ROLE@_initial_t etc_t:lnk_file { getattr read };
+allow aos_method46_@ROLE@_initial_t { lib_t ld_so_t }:file { execute getattr map open read };
+allow aos_method46_@ROLE@_initial_t proc_t:filesystem getattr;
+allow aos_method46_@ROLE@_initial_t proc_t:dir { getattr open read search };
+allow aos_method46_@ROLE@_initial_t self:dir { getattr open read search };
+allow aos_method46_@ROLE@_initial_t self:file { getattr ioctl open read };
+allowxperm aos_method46_@ROLE@_initial_t self:file ioctl { 0xff0b };
+allow aos_method46_@ROLE@_initial_t self:lnk_file { getattr read };
+allow aos_method46_@ROLE@_initial_t security_t:dir { getattr open read search };
+allow aos_method46_@ROLE@_initial_t security_t:file { getattr open read };
+allow aos_method46_@ROLE@_initial_t security_t:security read_policy;
+allow aos_method46_@ROLE@_initial_t security_t:filesystem getattr;
+allow aos_method46_@ROLE@_initial_t { cgroup_t fs_t tmpfs_t }:filesystem getattr;
+allow aos_method46_@ROLE@_initial_t cgroup_t:dir { getattr open read search };
+allow aos_method46_@ROLE@_initial_t cgroup_t:file { getattr open read };
+allow aos_method46_@ROLE@_initial_t { sysctl_t sysctl_kernel_t }:dir search;
+allow aos_method46_@ROLE@_initial_t sysctl_kernel_t:file { getattr open read };
+allow aos_method46_@ROLE@_initial_t systemd_unit_t:dir search;
+allow aos_method46_@ROLE@_initial_t systemd_unit_t:file { getattr open read };
+allow aos_method46_@ROLE@_initial_t systemd_unit_t:lnk_file read;
+
+# Existing unique-PID1 status observation, never a manager mutation interface.
+allow aos_method46_@ROLE@_initial_t self:unix_stream_socket { accept connect create getattr getopt read setopt shutdown write };
+allow aos_method46_@ROLE@_initial_t system_dbusd_var_run_t:dir search;
+allow aos_method46_@ROLE@_initial_t system_dbusd_var_run_t:sock_file { getattr open read write };
+allow aos_method46_@ROLE@_initial_t system_dbusd_t:unix_stream_socket connectto;
+allow aos_method46_@ROLE@_initial_t { init_t system_dbusd_t }:dbus send_msg;
+allow { init_t system_dbusd_t } aos_method46_@ROLE@_initial_t:dbus send_msg;
+allow aos_method46_@ROLE@_initial_t systemd_unit_t:service status;
+allow aos_method46_@ROLE@_initial_t init_t:system status;
+allow aos_method46_@ROLE@_initial_t init_t:dir { getattr open read search };
+allow aos_method46_@ROLE@_initial_t init_t:file { getattr ioctl open read };
+allowxperm aos_method46_@ROLE@_initial_t init_t:file ioctl { 0xff0b };
+allow aos_method46_@ROLE@_initial_t init_t:lnk_file { getattr read };
+
+# PID1 creates the inherited approval listener with the explicit service SID.
+# Root's ordinary administrative transport carries public request/signature
+# DATA only. It gains no initial-role FD, proc, stream read/write or TPM rights.
+allow init_t aos_method46_@ROLE@_initial_t:unix_stream_socket { bind create getattr getopt listen read setopt shutdown write };
+allow init_t aos_method46_@ROLE@_initial_approval_t:sock_file { create getattr open read setattr unlink write };
+allow aos_method46_@ROLE@_initial_approval_t tmpfs_t:filesystem associate;
+allow aos_method46_@ROLE@_initial_t aos_method46_@ROLE@_initial_approval_t:sock_file getattr;
+allow unconfined_t aos_method46_@ROLE@_initial_approval_t:sock_file { getattr open read write };
+allow unconfined_t aos_method46_@ROLE@_initial_t:unix_stream_socket connectto;
+# The received generated pidfd needs GET_INFO, not the operator's proc files.
+allow aos_method46_@ROLE@_initial_t unconfined_t:file ioctl;
+allowxperm aos_method46_@ROLE@_initial_t unconfined_t:file ioctl { 0xff0b };
+
+# The fixed executor's output stream has an object-only label. Neither helper
+# nor operator can inherit the service's public journal stream through a role.
+allow init_t aos_method46_@ROLE@_initial_output_t:unix_stream_socket { connect create getattr getopt read setopt shutdown write };
+allow aos_method46_@ROLE@_initial_output_t init_t:unix_stream_socket connectto;
+allow aos_method46_@ROLE@_initial_t aos_method46_@ROLE@_initial_output_t:unix_stream_socket { getattr read write };
+
+# Credential creation defaults to init_tmpfs_t; only the fixed delivery roster
+# is promoted to this role's readable label by the generated named transitions.
+allow aos_method46_@ROLE@_initial_credential_t tmpfs_t:filesystem associate;
+allow init_t aos_method46_@ROLE@_initial_credential_t:dir { add_name create getattr mounton open read relabelto remove_name search setattr write };
+allow init_t aos_method46_@ROLE@_initial_credential_t:file { create getattr open read setattr unlink write };
+type_transition init_t aos_method46_@ROLE@_initial_credential_t:file init_tmpfs_t;
+@CREDENTIAL_TRANSITIONS@
+allow aos_method46_@ROLE@_initial_t aos_method46_@ROLE@_initial_credential_t:dir { getattr open read search };
+allow aos_method46_@ROLE@_initial_t aos_method46_@ROLE@_initial_credential_t:file { getattr open read };
+
+# Main acquisition uses the existing RDWR writer, with no main publication or
+# repair permission. The floor exchange requires unlink checks on both inodes;
+# the fixed programme preserves the old empty inode and never calls unlink.
+allow aos_method46_@ROLE@_initial_t aos_sandbox_@ROLE@_state_t:dir { getattr open read search };
+allow aos_method46_@ROLE@_initial_t aos_method46_@ROLE@_floor_t:dir { add_name getattr open read remove_name search write };
+allow aos_method46_@ROLE@_initial_t aos_method46_@ROLE@_floor_t:file { append create getattr open read rename setattr unlink write };
+allow aos_method46_@ROLE@_initial_t aos_method46_@ROLE@_lock_t:file { create getattr lock open read setattr write };
+allow aos_method46_@ROLE@_initial_t aos_method46_@ROLE@_main_t:file { getattr open read write };
+allow aos_method46_@ROLE@_initial_t aos_method46_@ROLE@_initial_intent_t:file { create getattr open read rename write };
+type_transition aos_method46_@ROLE@_initial_t aos_method46_@ROLE@_floor_t:file aos_method46_@ROLE@_floor_t;
+type_transition aos_method46_@ROLE@_initial_t aos_method46_@ROLE@_floor_t:file aos_method46_@ROLE@_lock_t "session.journal.lock";
+type_transition aos_method46_@ROLE@_initial_t aos_method46_@ROLE@_floor_t:file aos_method46_@ROLE@_lock_t "session-floor.journal.lock";
+type_transition aos_method46_@ROLE@_initial_t aos_method46_@ROLE@_floor_t:file aos_method46_@ROLE@_initial_intent_t "session-floor.initial-intent";
+type_transition aos_method46_@ROLE@_initial_t aos_method46_@ROLE@_floor_t:file aos_method46_@ROLE@_initial_intent_t "session-floor.initial-intent.pending";
+
+type aos_method46_initial_@ROLE@_helper_t;
+typeattribute aos_method46_initial_@ROLE@_helper_t domain;
+typeattribute aos_method46_initial_@ROLE@_helper_t aos_no_context_translation_domain;
+typeattribute aos_method46_initial_@ROLE@_helper_t aos_private_root_custody_domain;
+typeattribute aos_method46_initial_@ROLE@_helper_t aos_explicit_proc_file_domain;
+role system_r types aos_method46_initial_@ROLE@_helper_t;
+type aos_method46_initial_@ROLE@_helper_exec_t;
+type_transition aos_method46_@ROLE@_initial_t aos_method46_initial_@ROLE@_helper_exec_t:process aos_method46_initial_@ROLE@_helper_t;
+allow aos_method46_@ROLE@_initial_t aos_method46_initial_@ROLE@_helper_exec_t:file { execute getattr map open read };
+allow aos_method46_@ROLE@_initial_t aos_method46_initial_@ROLE@_helper_t:process { getattr rlimitinh sigkill signal transition };
+allow aos_method46_@ROLE@_initial_t aos_method46_initial_@ROLE@_helper_t:process2 { nnp_transition nosuid_transition };
+allow aos_method46_initial_@ROLE@_helper_t aos_method46_initial_@ROLE@_helper_exec_t:file { entrypoint execute getattr map open read };
+allow aos_method46_initial_@ROLE@_helper_t self:process { getattr setcap };
+allow aos_method46_initial_@ROLE@_helper_t aos_method46_@ROLE@_initial_t:process sigchld;
+allow aos_method46_initial_@ROLE@_helper_t aos_method46_@ROLE@_initial_t:fd use;
+allow aos_method46_@ROLE@_initial_t aos_method46_initial_@ROLE@_helper_t:fd use;
+allow aos_method46_initial_@ROLE@_helper_t aos_method46_@ROLE@_initial_t:unix_stream_socket { getattr getopt read setopt shutdown write };
+allow aos_method46_@ROLE@_initial_t self:fifo_file { create getattr read write };
+allow aos_method46_initial_@ROLE@_helper_t aos_method46_@ROLE@_initial_t:fifo_file { getattr write };
+allow aos_method46_initial_@ROLE@_helper_t aos_method46_@ROLE@_lock_t:file { getattr read write };
+allow aos_method46_initial_@ROLE@_helper_t { root_t usr_t device_t proc_t }:dir { getattr open search };
+allow aos_method46_initial_@ROLE@_helper_t proc_t:filesystem getattr;
+allow aos_method46_initial_@ROLE@_helper_t self:dir { getattr open read search };
+allow aos_method46_initial_@ROLE@_helper_t self:file { getattr open read };
+allow aos_method46_initial_@ROLE@_helper_t { lib_t ld_so_t }:file { execute getattr map open read };
+allow aos_method46_initial_@ROLE@_helper_t security_t:dir { getattr open search };
+allow aos_method46_initial_@ROLE@_helper_t security_t:file { getattr open read };
+allow aos_method46_initial_@ROLE@_helper_t security_t:filesystem getattr;
+allow aos_method46_initial_@ROLE@_helper_t aos_method46_tpm_device_t:chr_file { getattr open read write };
+allow aos_method46_@ROLE@_initial_t aos_method46_initial_@ROLE@_helper_t:dir { getattr open read search };
+allow aos_method46_@ROLE@_initial_t aos_method46_initial_@ROLE@_helper_t:file { getattr ioctl open read };
+allowxperm aos_method46_@ROLE@_initial_t aos_method46_initial_@ROLE@_helper_t:file ioctl { 0xff0b };
+allow aos_method46_@ROLE@_initial_t aos_method46_initial_@ROLE@_helper_t:lnk_file { getattr read };
+
+# Preserve only PID1's existing service inspection and profile delivery.
+allow init_t aos_method46_initial_profile_t:file { getattr open read };
+allow init_t { aos_method46_@ROLE@_initial_t aos_method46_initial_@ROLE@_helper_t }:dir { getattr ioctl lock open read search };
+allow init_t { aos_method46_@ROLE@_initial_t aos_method46_initial_@ROLE@_helper_t }:file { getattr ioctl lock open read };
+allow init_t { aos_method46_@ROLE@_initial_t aos_method46_initial_@ROLE@_helper_t }:lnk_file { getattr read };

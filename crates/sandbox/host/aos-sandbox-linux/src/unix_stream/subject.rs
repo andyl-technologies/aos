@@ -1,0 +1,333 @@
+//! Strict kernel-subject evidence for bounded chunks of one original stream.
+//!
+//! A stream has no record boundaries. Every nonempty returned chunk therefore
+//! retains independent credentials, pidfd, and sending **socket** SID; framed
+//! protocols must validate every chunk before assembling their exact message.
+//! SCM_SECURITY does not identify a delegated descriptor's actual writer.
+//! This carrier creates no application-role or live Root authority.
+
+use super::RetainedUnixStream;
+use aos_linux_descriptors::unix_stream::StreamReportingStateV1 as StreamSubjectState;
+use crate::seqpacket::{
+    KernelAuthorizedRecordSubject, SeqpacketError, map_kernel_error,
+};
+use crate::seqpacket::receive_custody::{self, ReceiveAttemptV1, SubjectProfileV1};
+use crate::seqpacket::RetainedSeqpacketReceiveErrorV1;
+use crate::uapi::{self, RawAncillary};
+
+const MAXIMUM_CHUNK_BYTES: usize = 4096;
+
+/// Restricts one strict stream's ancillary capacity using context-width DATA.
+///
+/// A service privately derives this width from its compiled socket-context
+/// contract before admitting the full native peak. The value authenticates no
+/// SID, process, payer or application role. Exact role/subject checks remain
+/// with that service's actual retained owner.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SubjectStreamReceiveGeometryV1 {
+    context_bytes: usize,
+}
+
+impl SubjectStreamReceiveGeometryV1 {
+    /// Computes bounded control geometry from a context width excluding NUL.
+    ///
+    /// # Errors
+    /// Rejects zero or widths exceeding the existing 256-byte NUL-ended context
+    /// limit. This constructor performs no allocation, IO or admission.
+    pub fn for_context_bytes(context_bytes: usize) -> Result<Self, SeqpacketError> {
+        if context_bytes == 0 || context_bytes >= 256 {
+            return Err(SeqpacketError::InvalidMaximum);
+        }
+        Ok(Self { context_bytes })
+    }
+
+    /// Reports conservative dominant requested bytes and native FD peak.
+    ///
+    /// FD slots include all physically installable rights before rejection, the
+    /// actual endpoint duplicate and two transient process-info probes. Existing
+    /// endpoints and other retained samples remain additional. Allocator/kernel
+    /// metadata remain under the caller's independently admitted hard backstop.
+    #[must_use]
+    pub fn receive_obligations_v1(self) -> (usize, usize) {
+        let control = self.control();
+        let bytes = crate::seqpacket::SeqpacketSocket::requested_receive_bytes(
+            MAXIMUM_CHUNK_BYTES, control, 2,
+        ) + std::mem::size_of::<Result<UnixStreamSubjectChunk, RetainedSeqpacketReceiveErrorV1>>();
+        (bytes, control.maximum_descriptor_slots() + 1)
+    }
+
+    /// Bounds the actual retained receive's result and descriptor namespaces.
+    ///
+    /// This passive census includes both possible captured message/raw owners,
+    /// every physically available ancillary and descriptor slot, and completed
+    /// as well as partial subject identities. It grants no receive permission.
+    #[must_use]
+    pub fn receiving_metadata_cells_v1(self) -> Option<usize> {
+        crate::seqpacket::SeqpacketSocket::requested_receive_metadata_cells_v1(self.control())
+    }
+
+    pub(super) fn control(self) -> uapi::ReceiveControlProfileV1 {
+        uapi::ReceiveControlProfileV1::StreamContextWidth(self.context_bytes)
+    }
+}
+
+
+
+/// Tries to receive one bounded chunk and its independent kernel evidence.
+///
+/// Credentials and SCM_PIDFD are kernel-authorized nominations. Security
+/// context is the sending socket inode's SID, not the sending task's SID.
+/// No comparison here promotes those facts to execution provenance.
+///
+/// # Errors
+/// Returns WouldBlock/Interrupted without poisoning. Any missing, duplicate,
+/// truncated, malformed, foreign, descriptor-bearing or changed-option
+/// receive poisons this subject profile; EOF does too. Invalid bounds do
+/// not. Ordinary descriptor operations remain outside this profile, so the
+/// higher-level flight must never bypass it with a competing raw read.
+pub fn try_receive_subject_chunk(
+    stream: &mut RetainedUnixStream,
+    maximum: usize,
+) -> Result<UnixStreamSubjectChunk, SeqpacketError> {
+    if stream.subject_reporting_state_v1() != StreamSubjectState::Ready {
+        return Err(SeqpacketError::Closed);
+    }
+    if maximum == 0 || maximum > MAXIMUM_CHUNK_BYTES {
+        return Err(SeqpacketError::InvalidMaximum);
+    }
+    let result = receive_chunk(stream, maximum);
+    if result.as_ref().is_err_and(|error| {
+        !matches!(
+            error,
+            SeqpacketError::WouldBlock | SeqpacketError::Interrupted
+        )
+    }) {
+        stream.poison_subject_reporting_v1();
+    }
+    result
+}
+
+/// Receives one strict chunk while retaining partial lower-layer custody.
+///
+/// Every fatal attempt shuts down this same original socket before staged
+/// ordinary descriptors and subjects can drop. The legacy method above
+/// retains its original poisoning behavior without this shutdown policy.
+///
+/// # Errors
+/// Returns an opaque owning error for incomplete evidence, changed options,
+/// invalid bounds, subject failure or kernel failure. Only an initial
+/// nonconsuming recvmsg EAGAIN/EINTR permits retry; later errno does not.
+pub fn try_receive_subject_chunk_retaining(
+    stream: &mut RetainedUnixStream, maximum: usize,
+) -> Result<UnixStreamSubjectChunk, RetainedSeqpacketReceiveErrorV1> {
+    receive_chunk_retaining_profile(stream, maximum, uapi::ReceiveControlProfileV1::Standard)
+}
+
+/// Receives through the same retained engine with prepaid width geometry.
+///
+/// The explicit geometry restricts physical control capacity and canonical
+/// context length only; it grants no role or receiving authority. The caller
+/// independently compares the exact socket SID and original process.
+///
+/// # Errors
+/// Retains ordinary strict receive failures, truncation and forbidden-rights
+/// custody. Fatal attempts end this same original before returning failure.
+pub fn try_receive_subject_chunk_with_geometry_retaining(
+    stream: &mut RetainedUnixStream,
+    maximum: usize,
+    geometry: &SubjectStreamReceiveGeometryV1,
+) -> Result<UnixStreamSubjectChunk, RetainedSeqpacketReceiveErrorV1> {
+    receive_chunk_retaining_profile(stream, maximum, geometry.control())
+}
+
+fn receive_chunk_retaining_profile(
+    stream: &mut RetainedUnixStream,
+    maximum: usize,
+    control: uapi::ReceiveControlProfileV1,
+) -> Result<UnixStreamSubjectChunk, RetainedSeqpacketReceiveErrorV1> {
+    let mut result = receive_chunk_retaining(stream, maximum, control);
+    if let Err(error) = &mut result {
+        if !error.is_nonconsuming_would_block() && !error.is_nonconsuming_interrupted() {
+            stream.poison_subject_reporting_v1();
+            let failure = rustix::net::shutdown(stream.as_fd(), rustix::net::Shutdown::Both)
+                .err().map(std::io::Error::from);
+            error.record_shutdown_failure(failure);
+        }
+    }
+    result
+}
+
+fn receive_chunk_retaining(
+    stream: &RetainedUnixStream,
+    maximum: usize,
+    control: uapi::ReceiveControlProfileV1,
+) -> Result<UnixStreamSubjectChunk, RetainedSeqpacketReceiveErrorV1> {
+    if stream.subject_reporting_state_v1() != StreamSubjectState::Ready {
+        return Err(RetainedSeqpacketReceiveErrorV1::before_receive(SeqpacketError::Closed));
+    }
+    if maximum == 0 || maximum > MAXIMUM_CHUNK_BYTES {
+        return Err(RetainedSeqpacketReceiveErrorV1::before_receive(SeqpacketError::InvalidMaximum));
+    }
+    let mut attempt = ReceiveAttemptV1::capture_with_control(
+        stream.as_fd(), stream.socket_cookie_data_v1(), control,
+    )?;
+    if let Err(source) = aos_linux_descriptors::native::require_stream_subject(stream.as_fd()) {
+        return Err(attempt.reject(source.into()));
+    }
+    let actual = match attempt.receive(maximum, 0) {
+        Ok(bytes) => bytes,
+        Err(failure) => return Err(attempt.syscall_failure(failure)),
+    };
+    let message = &mut attempt.messages[0];
+    let validated = (|| {
+        if message.raw.flags & libc::MSG_CTRUNC != 0 {
+            return Err(SeqpacketError::Ancillary("stream control data truncated"));
+        }
+        if message.raw.flags & libc::MSG_TRUNC != 0 || actual > maximum {
+            return Err(SeqpacketError::PayloadTruncated);
+        }
+        if actual == 0 { return Err(SeqpacketError::Closed); }
+        message.validate(SubjectProfileV1::Stream, uapi::ReceiveCustodyPolicyV1::Retaining)?;
+        if let uapi::ReceiveControlProfileV1::StreamContextWidth(width) = control {
+            if message.socket_context.as_ref().map(Vec::len) != Some(width) {
+                return Err(SeqpacketError::Ancillary("inexact bounded stream context width"));
+            }
+        }
+        // The complete subject is staged before this final option read.
+        aos_linux_descriptors::native::require_stream_subject(stream.as_fd())?;
+        Ok(())
+    })();
+    if let Err(source) = validated { return Err(attempt.reject(source)); }
+    let message = &mut attempt.messages[0];
+    if message.subject.is_none() || message.socket_context.is_none() {
+        return Err(attempt.reject(SeqpacketError::Ancillary("incomplete stream subject")));
+    }
+    let Some(subject) = message.subject.take() else {
+        return Err(attempt.reject(SeqpacketError::Ancillary("missing SCM_PIDFD")));
+    };
+    // The shape check above establishes this field without a fallible
+    // observation after removing the subject from its guarded staging.
+    let socket_context = message.socket_context.take().unwrap_or_default();
+    message.payload.truncate(actual);
+    let chunk = UnixStreamSubjectChunk {
+        payload: std::mem::take(&mut message.payload), subject, socket_context,
+    };
+    attempt.disarm();
+    Ok(chunk)
+}
+
+fn receive_chunk(stream: &RetainedUnixStream, maximum: usize) -> Result<UnixStreamSubjectChunk, SeqpacketError> {
+    let fd = stream.as_fd();
+    aos_linux_descriptors::native::require_stream_subject(fd)?;
+    let mut payload = vec![0; maximum];
+    // recvmsg/control ownership is shared with the existing strict carrier;
+    // only its Unix transport-independent syscall/parser is reused here.
+    let received = uapi::recv_seqpacket(fd, &mut payload, 0).map_err(map_kernel_error)?;
+    if received.flags & libc::MSG_CTRUNC != 0 {
+        return Err(SeqpacketError::Ancillary("stream control data truncated"));
+    }
+    if received.flags & libc::MSG_TRUNC != 0 || received.bytes > maximum {
+        return Err(SeqpacketError::PayloadTruncated);
+    }
+    if received.bytes == 0 {
+        return Err(SeqpacketError::Closed);
+    }
+    let (subject, socket_context) = validate_stream_subject(received.ancillary)?;
+    payload.truncate(received.bytes);
+    aos_linux_descriptors::native::require_stream_subject(fd)?;
+    Ok(UnixStreamSubjectChunk {
+        payload,
+        subject,
+        socket_context,
+    })
+}
+
+
+/// Retains one chunk's data, nominated process, and sending-socket context.
+#[derive(Debug)]
+pub struct UnixStreamSubjectChunk {
+    payload: Vec<u8>,
+    subject: KernelAuthorizedRecordSubject,
+    socket_context: Vec<u8>,
+}
+
+impl UnixStreamSubjectChunk {
+    /// Borrows only the bytes covered by this chunk's ancillary evidence.
+    #[must_use]
+    pub fn payload(&self) -> &[u8] {
+        &self.payload
+    }
+
+    /// Borrows this chunk's independently kernel-authorized nominated process.
+    #[must_use]
+    pub const fn subject(&self) -> &KernelAuthorizedRecordSubject {
+        &self.subject
+    }
+
+    /// Borrows the canonical sending-socket SELinux context without its NUL.
+    ///
+    /// This identifies the socket's SID, not a post-delegation sending task.
+    #[must_use]
+    pub fn socket_context(&self) -> &[u8] {
+        &self.socket_context
+    }
+}
+
+fn validate_stream_subject(
+    ancillary: Vec<RawAncillary>,
+) -> Result<(KernelAuthorizedRecordSubject, Vec<u8>), SeqpacketError> {
+    let (subject, _, context) = receive_custody::validate_legacy(ancillary, SubjectProfileV1::Stream)?;
+    Ok((subject, context.ok_or(SeqpacketError::Ancillary("missing SCM_SECURITY"))?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bounded_control_geometry_preserves_ordinary_limits_and_negative_fd_peak() {
+        let narrow = SubjectStreamReceiveGeometryV1::for_context_bytes(42).unwrap();
+        let wider = SubjectStreamReceiveGeometryV1::for_context_bytes(48).unwrap();
+
+        assert!(SubjectStreamReceiveGeometryV1::for_context_bytes(0).is_err());
+        assert!(SubjectStreamReceiveGeometryV1::for_context_bytes(256).is_err());
+        assert_eq!(uapi::ReceiveControlProfileV1::Standard.bytes(), 512);
+        if std::mem::size_of::<usize>() == 8 {
+            assert_eq!(narrow.control().bytes(), 120);
+            assert_eq!(wider.control().bytes(), 128);
+            assert_eq!(narrow.receive_obligations_v1().1, 33);
+            assert_eq!(wider.receive_obligations_v1().1, 35);
+        }
+    }
+
+    #[test]
+    fn security_context_is_required_and_has_exact_canonical_boundaries() {
+        assert!(matches!(
+            validate_stream_subject(Vec::new()),
+            Err(SeqpacketError::Ancillary("missing SCM_SECURITY"))
+        ));
+        for context in [
+            b"role".to_vec(),
+            b"role\0extra\0".to_vec(),
+            b"\0".to_vec(),
+            vec![b'a'; 257],
+        ] {
+            assert!(matches!(
+                validate_stream_subject(vec![RawAncillary::SecurityContext(context)]),
+                Err(SeqpacketError::Ancillary("inexact SCM_SECURITY context"))
+            ));
+        }
+        assert!(matches!(
+            validate_stream_subject(vec![
+                RawAncillary::SecurityContext(b"role\0".to_vec()),
+                RawAncillary::SecurityContext(b"role\0".to_vec())
+            ]),
+            Err(SeqpacketError::Ancillary("inexact SCM_SECURITY context"))
+        ));
+        // A correct socket context never substitutes for process evidence.
+        assert!(matches!(
+            validate_stream_subject(vec![RawAncillary::SecurityContext(b"role\0".to_vec())]),
+            Err(SeqpacketError::Ancillary("missing SCM_CREDENTIALS"))
+        ));
+    }
+}

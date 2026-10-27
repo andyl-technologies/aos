@@ -33,7 +33,7 @@ let
       dependencies = builtins.listToAttrs (builtins.map (name: {
           inherit name;
           value = artifact name;
-        }) (["aos" "bash" "systemd" "nix" "coreutils" "jq" "util-linux" "sbsigntools" "tpm2-tools"]
+        }) (["aos" "bash" "systemd" "nix" "coreutils" "jq" "util-linux" "sbsigntools" "tpm2-tools" "policycoreutils"]
           ++ lib.optional (name == "aos-boot-preparations") "aos-boot-storage"));
     };
   };
@@ -53,6 +53,11 @@ let
       operatorModules =
         [
           {
+            options.aos.security.selinux = lib.mkOption {
+              type = lib.types.attrs;
+            };
+          }
+          {
             aos.boot = {
               inherit stage;
               substrateServices = {
@@ -67,6 +72,12 @@ let
               };
             };
             aos.security = {
+              # This graph fixture does not load a production SELinux policy.
+              # Supply its explicit image-only overlay input and tool artifact.
+              selinux = {
+                enable = false;
+                bootMode = "immutable-stage0";
+              };
               bootIdentityServices.enable = verified;
               verityRootVerification.enable = verified;
             };

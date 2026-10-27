@@ -2,11 +2,17 @@ module aos_base 1.0;
 
 require {
   type kernel_t;
+  type init_t;
   type unlabeled_t;
   type tmpfs_t;
   class user_namespace { create };
   class filesystem { associate };
+  class system aos_switch_root;
 }
+
+# Keep mutable, unlabeled-root boot compatible with the same manager check.
+# The immutable production policy supplies its own init_t-only grant.
+allow { kernel_t init_t } self:system aos_switch_root;
 
 # Permit systemd on an unlabeled AOS root to create the user namespaces used
 # to establish package service confinement.

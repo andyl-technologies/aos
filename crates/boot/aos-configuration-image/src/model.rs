@@ -36,6 +36,13 @@ pub struct Input {
     /// Locates the admitted build-produced baseline leaf inventory.
     #[serde(rename = "baselineInventory", default)]
     pub baseline_inventory: Option<String>,
+    /// Binds the immutable image's exact SELinux file-context snapshot, if present.
+    #[serde(
+        rename = "selinuxFileContextsSha256",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub selinux_file_contexts_sha256: Option<[u8; 32]>,
     /// Retains the declaring owner of every rendered file and script.
     pub ownership: Ownership,
     /// Pins source objects referenced by the file configuration.
@@ -505,6 +512,7 @@ mod tests {
             removed_paths: Vec::new(),
             baseline_paths: Vec::new(),
             baseline_inventory: None,
+            selinux_file_contexts_sha256: None,
             ownership: Ownership {
                 etc_trees: BTreeMap::new(),
                 files: BTreeMap::from([("app/config".into(), "app".into())]),

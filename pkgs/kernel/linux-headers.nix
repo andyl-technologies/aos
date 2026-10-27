@@ -5,6 +5,7 @@
   linuxSource,
   stdenv,
   gnumake,
+  patch,
 }: let
   archMap = {
     "x86_64-linux" = {karch = "x86_64";};
@@ -16,8 +17,19 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -103,7 +115,7 @@ in
     version = "=${linuxSource.version}";
     update = linuxSource.updateFor "linux-headers";
 
-    buildDeps = [gnumake];
+    buildDeps = [gnumake patch];
     runtimeDeps = [];
     propagatedDeps = [];
 
@@ -113,6 +125,13 @@ in
         script = ''
           tar xf $src
           cd linux-${linuxSource.version}
+        '';
+      }
+      {
+        name = "patch";
+        script = ''
+          patch -p1 < ${./patches/0001-aos-no-setid-prctl-uapi.patch}
+          "$CONFIG_SHELL" ${./check-no-setid-prctl.sh} include/uapi/linux/prctl.h
         '';
       }
       {

@@ -661,6 +661,7 @@
   #   dependencySearchDeps;      — dependencies searched by the host compiler
   #   buildDependencySearchDeps; — dependencies searched by build compilers
   #   phases;          — ordered list of { name; script; } records
+  #   postFinalize;    — optional script after fixup, scrub, and output metadata
   #   meta;            — package metadata
   #   update;          — primitive maintenance metadata (evaluation only)
   #   storeDir;        — store directory (default: /nix/store)
@@ -703,6 +704,7 @@
     postBuild ? "",
     preInstall ? "",
     postInstall ? "",
+    postFinalize ? "",
     passthru ? {},
     update ? null,
     checks ? null,
@@ -859,9 +861,9 @@
     # into every package's closure. Skip if the caller already supplied
     # a fixup — the cargo/go/bazel phase templates bundle their own.
     #
-    # scrubPhase always runs last, regardless of whether the caller
-    # supplied a custom fixup. Inlining it into fixup would skip it
-    # whenever cargo/go/bazel templates override the fixup phase.
+    # Scrubbing follows fixup even when the caller supplied a custom fixup;
+    # dependency/platform metadata and postFinalize follow it. Keeping scrub
+    # separate avoids skipping it when cargo/go/bazel override the fixup phase.
     defaultFixupPhase =
       if
         buildPlatform.system
@@ -899,7 +901,17 @@
         then []
         else [propagatedDependencyMetadataPhase]
       )
-      ++ [(targetPlatformMetadataPhase outputPlatform.system)];
+      ++ [(targetPlatformMetadataPhase outputPlatform.system)]
+      ++ (
+        if postFinalize != ""
+        then [
+          {
+            name = "post-finalize";
+            script = postFinalize;
+          }
+        ]
+        else []
+      );
 
     builder = phasesToScript allPhases shell useStructuredAttrs;
 
@@ -942,6 +954,7 @@
       "postBuild"
       "preInstall"
       "postInstall"
+      "postFinalize"
       "passthru"
       "update"
       "checks"
@@ -1679,7 +1692,7 @@
     }) {
       kind = "cargo-deps";
       hashMode = "recursive";
-      sourceInputs = [builtins.toString src];
+      sourceInputs = [(builtins.toString src)];
       builderParameters = {
         sourceRoot =
           if sourceRoot == null
@@ -1704,7 +1717,8 @@
   # fetchCargoVendor
   # ---------------------------------------------------------------------------
   # fetchCargoVendor { cargo; python3; git; caCertificates; bootstrapTools;
-  #                    src; hash; sourceRoot?; cargoPatches?; }
+  #                    src; hash; sourceRoot?; cargoPatches?;
+  #                    registryPatches?; patchTool?; }
   #
   # Lockfile-driven Cargo vendoring (ported from nixpkgs's fetchCargoVendor /
   # fetch-cargo-vendor-util-v2 design). Two stages:
@@ -1735,12 +1749,45 @@
     hash,
     sourceRoot ? null,
     cargoPatches ? [],
+    registryPatches ? [],
+    patchTool ? null,
     extraLibPaths ? [],
     extraPaths ? [],
     name ? "cargo-vendor",
     system ? defaultSystem,
   }: let
     utilDir = ./cargo-vendor;
+    # Interpolation imports source paths; toString alone can leave host paths.
+    # Empty defaults construct no recipe and leave assembled output bytes alone.
+    registryIdentity = record: "${record.source}\n${record.name}\n${record.version}";
+    normalizedRegistryPatches = builtins.map (record:
+      record
+      // {
+        patch = let
+          importedPatch = "${record.patch}";
+          contextRoots = builtins.attrNames (builtins.getContext importedPatch);
+          relatedContext =
+            builtins.any
+            (root:
+              importedPatch
+              == root
+              || builtins.substring 0 (builtins.stringLength root + 1) importedPatch == "${root}/")
+            contextRoots;
+        in
+          throwIfNot
+          (builtins.isPath record.patch
+            || (builtins.isString record.patch
+              && builtins.hasContext record.patch
+              && relatedContext))
+          "fetchCargoVendor: registry patch must be a retained Nix source input"
+          importedPatch;
+        files = builtins.sort (left: right: left.path < right.path) record.files;
+      }) (builtins.sort (left: right: registryIdentity left < registryIdentity right)
+      registryPatches);
+    registryPatchManifest =
+      if registryPatches == []
+      then null
+      else builtins.toFile "${name}-registry-source-patches.json" (builtins.toJSON normalizedRegistryPatches);
     ldLibPath = builtins.concatStringsSep ":" (
       builtins.map (d: "${builtins.toString d}/lib") extraLibPaths
     );
@@ -1789,9 +1836,10 @@
 
       preferLocalBuild = true;
     };
-  in
-    # Stage 2: pure transformation of staging into cargo vendor layout.
-    annotateFixedOutput (builtins.derivation {
+
+    # Stage 2 alone transforms selected registry source. Stage 1's payload,
+    # archive checksum and fixed-output hash contract remain unchanged.
+    vendorFinal = builtins.derivation {
       inherit name system;
       builder = builderPath;
       args = [
@@ -1801,26 +1849,61 @@
           export PATH="${cargo}/bin:${python3}/bin:${bootstrapTools}/bin${builtins.concatStringsSep "" (builtins.map (p: ":${builtins.toString p}/bin") extraPaths)}"
           python3 ${utilDir}/fetch-cargo-vendor-util.py \
             create-vendor "${vendorStaging}" "$out"
+          ${
+            if registryPatches == []
+            then ""
+            else ''
+              ${python3}/bin/python3 ${utilDir}/registry-source-patches.py \
+                --staging ${escapeShellArg (builtins.toString vendorStaging)} \
+                --vendor "$out" \
+                --recipe ${escapeShellArg registryPatchManifest} \
+                --patch-tool ${escapeShellArg "${patchTool}/bin/patch"}
+            ''
+          }
         ''
       ];
 
       preferLocalBuild = true;
-    }) {
-      kind = "cargo-vendor";
-      inherit hash;
-      hashMode = "recursive";
-      sourceInputs = [builtins.toString src];
-      outputDerivation = vendorStaging.drvPath;
-      builderParameters = {
-        sourceRoot =
-          if sourceRoot == null
-          then "<auto>"
-          else sourceRoot;
-        patches = builtins.map builtins.toString cargoPatches;
-        cargo = builtins.toString cargo;
-        inherit system;
-      };
     };
+  in
+    throwIfNot (registryPatches == [] || patchTool != null)
+    "fetchCargoVendor: nonempty registry patches require the fixed source-built patch tool"
+    (annotateFixedOutput vendorFinal ({
+        kind = "cargo-vendor";
+        inherit hash;
+        hashMode = "recursive";
+        sourceInputs =
+          [(builtins.toString src)]
+          ++ (
+            if registryPatches == []
+            then []
+            else [registryPatchManifest] ++ builtins.map (record: record.patch) normalizedRegistryPatches
+          );
+        outputDerivation = vendorStaging.drvPath;
+        builderParameters = {
+          sourceRoot =
+            if sourceRoot == null
+            then "<auto>"
+            else sourceRoot;
+          patches = builtins.map builtins.toString cargoPatches;
+          cargo = builtins.toString cargo;
+          inherit system;
+        };
+      }
+      // (
+        if registryPatches == []
+        then {}
+        else {
+          registrySourcePatches = {
+            schema = "aos.registry-source-patches/v1";
+            upstreamStagingDerivation = vendorStaging.drvPath;
+            patchedVendorDerivation = vendorFinal.drvPath;
+            normalizedRecipe = registryPatchManifest;
+            patches = normalizedRegistryPatches;
+            patchExecutable = "${patchTool}/bin/patch";
+          };
+        }
+      )));
 
   # ---------------------------------------------------------------------------
   # fetchGoModules
@@ -1884,7 +1967,7 @@
     }) {
       kind = "go-modules";
       hashMode = "recursive";
-      sourceInputs = [builtins.toString src];
+      sourceInputs = [(builtins.toString src)];
       builderParameters = {
         sourceRoot =
           if sourceRoot == null
@@ -2039,7 +2122,7 @@
       kind = "npm-deps";
       hashMode = "recursive";
       sourceInputs =
-        [builtins.toString src]
+        [(builtins.toString src)]
         ++ builtins.map (tarball: builtins.toString tarball.path) localTarballs;
       builderParameters = {
         sourceRoot =
@@ -2339,7 +2422,7 @@
     }) {
       kind = "bazel-deps";
       hashMode = "recursive";
-      sourceInputs = [builtins.toString src];
+      sourceInputs = [(builtins.toString src)];
       builderParameters = {
         inherit bazelTarget bazelFlags bazelFetchFlags postPatch fetchPostPatch postFetch removeRepos populateBCR captureModuleLock system;
         environment = builtins.mapAttrs (_: value: builtins.toString value) env;

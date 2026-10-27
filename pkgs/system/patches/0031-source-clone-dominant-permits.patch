@@ -1,0 +1,2956 @@
+--- a/src/core/aos-component-parent.c
++++ b/src/core/aos-component-parent.c
+@@ -1630,6 +1630,110 @@
+         return claim->result = r;
+ }
+ 
++/* Owed read-only posts do not consult the already-poisoned admission state. */
++static int parent_limits_owed_post(AosParentLimits *limits, const uint8_t *vector,
++                                    const char *native_path, AosParentCheck *post) {
++        char expected[128];
++        int first = parent_name_check(limits, native_path, post, 0);
++
++        for (unsigned i = 0; i < 3; i++) {
++                parent_expected(vector, i, expected);
++                int r = aos_resource_control_readback(limits->control_fds[i], expected,
++                        post->readback[i], sizeof(post->readback[i]), &post->read_lengths[i],
++                        &post->read_results[i]);
++                if (first == 0 && r < 0)
++                        first = r;
++        }
++        int after = parent_name_check(limits, native_path, post, 1);
++        return first < 0 ? first : after;
++}
++
++static bool parent_network_aggregate_original(Service *service, AosSourceExecClaim *claim) {
++        AosResourceParent *parent = aos_resource_parent_original();
++        Unit *slice = UNIT_GET_SLICE(UNIT(service));
++        CGroupRuntime *runtime = slice ? unit_get_cgroup_runtime(slice) : NULL;
++
++        return fixed_service_role(UNIT(service)) == AOS_FIXED_PROFILE_NETWORK &&
++                parent->network_exec_original == claim && claim && claim->attempted && claim->result == 0 &&
++                slice && streq_ptr(slice->id, "aoscomponents-network.slice") && runtime &&
++                streq_ptr(runtime->cgroup_path, "/aoscomponents.slice/aoscomponents-network.slice");
++}
++
++/* Captures the existing common ancestor without rewriting administrative
++ * controls. The actual Source vector must match its enforced shared envelope. */
++int aos_resource_parent_network_aggregate_capture(Service *service, AosSourceExecClaim *claim,
++                                                   AosParentLimits *limits, uint64_t *identity) {
++        static const char path[] = "/aoscomponents.slice/aoscomponents-network.slice";
++        static const char native_path[] = "/sys/fs/cgroup/aoscomponents.slice/aoscomponents-network.slice";
++        int r;
++
++        if (!limits || !identity || !parent_network_aggregate_original(service, claim) ||
++            limits->directory_fd >= 0)
++                return -EOWNERDEAD;
++        r = aos_resource_parent_require_source_sender(service);
++        if (r < 0)
++                return r;
++        limits->directory_fd = cg_path_open(path);
++        if (limits->directory_fd < 0)
++                return limits->directory_fd;
++        limits->directory_stat_result = fstat(limits->directory_fd, &limits->directory_stat) < 0 ? -errno : 0;
++        limits->filesystem_result = fstatfs(limits->directory_fd, &limits->filesystem) < 0 ? -errno : 0;
++        if (limits->directory_stat_result < 0 || limits->filesystem_result < 0)
++                return limits->directory_stat_result < 0 ? limits->directory_stat_result : limits->filesystem_result;
++        if (!S_ISDIR(limits->directory_stat.st_mode) || limits->filesystem.f_type != 0x63677270 ||
++            limits->directory_stat.st_uid != 0 || limits->directory_stat.st_gid != 0 ||
++            limits->directory_stat.st_dev != claim->limits.directory_stat.st_dev)
++                return -EOWNERDEAD;
++        for (unsigned i = 0; i < 3; i++) {
++                limits->control_fds[i] = openat(limits->directory_fd, parent_control_names[i],
++                        O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
++                if (limits->control_fds[i] < 0)
++                        return -errno;
++                limits->control_stat_results[i] = fstat(limits->control_fds[i], &limits->control_stats[i]) < 0 ? -errno : 0;
++                if (limits->control_stat_results[i] < 0)
++                        return limits->control_stat_results[i];
++                if (!S_ISREG(limits->control_stats[i].st_mode) ||
++                    limits->control_stats[i].st_uid != 0 || limits->control_stats[i].st_gid != 0 ||
++                    limits->control_stats[i].st_dev != limits->directory_stat.st_dev)
++                        return -EOWNERDEAD;
++        }
++        r = fd_to_handle_u64(limits->directory_fd, identity);
++        if (r < 0)
++                return r;
++        CGroupRuntime *runtime = unit_get_cgroup_runtime(UNIT_GET_SLICE(UNIT(service)));
++        if (!runtime || *identity != runtime->cgroup_id)
++                return -EOWNERDEAD;
++        return parent_limits_owed_post(limits, claim->vector, native_path, &limits->first);
++}
++
++int aos_resource_parent_network_aggregate_post(Service *service, AosSourceExecClaim *claim,
++                                                AosParentLimits *limits, AosParentCheck *post) {
++        AosResourceParent *parent = aos_resource_parent_original();
++
++        /* Mutable slice currentness may already have failed. The original
++         * retained native controls still owe their independent observations. */
++        if (!limits || !post || !claim || parent->network_exec_original != claim ||
++            !claim->attempted || claim->result < 0 || limits->directory_fd < 0)
++                return -EOWNERDEAD;
++        return parent_limits_owed_post(limits, claim->vector,
++                "/sys/fs/cgroup/aoscomponents.slice/aoscomponents-network.slice", post);
++}
++
++/* Clone posts are owed native observations even when the clone or another
++ * primary already poisoned Parent. This read-only path never installs controls
++ * or repairs an account; every held control and both names get their own post. */
++int aos_resource_parent_source_clone_post(Service *service, AosSourceExecClaim *claim,
++                                          AosParentCheck *post) {
++        AosResourceParent *parent = aos_resource_parent_original();
++        AosFixedServiceProfileRole role = fixed_service_role(UNIT(service));
++        AosSourceExecClaim *original = role == AOS_FIXED_PROFILE_NETWORK ? parent->network_exec_original :
++                role == AOS_FIXED_PROFILE_BOOT_PREPARATION ? parent->boot_preparation_exec_original : NULL;
++        if (!post || !claim || original != claim || !claim->attempted || claim->result < 0 ||
++            claim->limits.directory_fd < 0)
++                return -EOWNERDEAD;
++        return parent_limits_owed_post(&claim->limits, claim->vector, fixed_service_native_cgroup(service), post);
++}
++
+ int aos_resource_parent_source_exec_current(Service *service, AosSourceExecClaim *claim, unsigned phase) {
+         AosResourceParent *parent = aos_resource_parent_original();
+         int r = aos_resource_parent_require_source_sender(service);
+--- /dev/null
++++ b/src/core/aos-kernel-clone-cost.inc
+@@ -0,0 +1,184 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++
++/* Conservative byte permits for the dominant private clone buffers. These
++ * target-kernel DATA describe the selected ABI, not exact SLUB occupancy or
++ * global kernel overhead. RFC06 decoder and real M/service cgroups remain
++ * backstops. This helper selects no account and performs no Native IO. */
++static int kernel_clone_add(size_t a, size_t b, size_t *ret) {
++        if (a > SIZE_MAX - b)
++                return -EOVERFLOW;
++        *ret = a + b;
++        return 0;
++}
++
++static int kernel_clone_mul(size_t a, size_t b, size_t *ret) {
++        if (b > 0 && a > SIZE_MAX / b)
++                return -EOVERFLOW;
++        *ret = a * b;
++        return 0;
++}
++
++static int kernel_clone_power_of_two(size_t value, size_t *ret) {
++        size_t result = 1;
++        while (result < value) {
++                if (result > SIZE_MAX / 2U)
++                        return -EOVERFLOW;
++                result *= 2U;
++        }
++        *ret = result;
++        return 0;
++}
++
++static int kernel_clone_page_permit(size_t bytes, size_t *ret) {
++        size_t page = AOS_KERNEL_CLONE_V1_PAGE_BYTES, rounded;
++        int r;
++
++        if (page == 0 || (page & (page - 1U)) != 0)
++                return -EBADMSG;
++        r = kernel_clone_add(bytes, page - 1U, &rounded);
++        if (r < 0)
++                return r;
++        *ret = rounded & ~(page - 1U);
++        return 0;
++}
++
++/* A power-of-two backing ceiling covers both the selected kmalloc class and
++ * the page-rounded fallback for these bounded dominant objects. */
++static int kernel_clone_object_permit(size_t bytes, size_t *ret) {
++        size_t backing;
++        int r = kernel_clone_power_of_two(bytes, &backing);
++
++        return r < 0 ? r : kernel_clone_page_permit(backing, ret);
++}
++
++static int kernel_clone_fdtable_permit(uint64_t highest, size_t *ret) {
++        size_t wanted, slots, array, bitmap, bitbit_longs, part, total;
++        int r;
++
++        if (highest >= SIZE_MAX)
++                return -EOVERFLOW;
++        r = kernel_clone_object_permit(AOS_KERNEL_CLONE_V1_FILES_STRUCT_BYTES, &total);
++        if (r < 0)
++                return r;
++        wanted = (size_t) highest + 1U;
++        if (wanted <= AOS_KERNEL_CLONE_V1_NR_OPEN_DEFAULT) {
++                *ret = total;
++                return 0;
++        }
++        r = kernel_clone_power_of_two(wanted, &slots);
++        if (r < 0)
++                return r;
++        r = kernel_clone_mul(slots, AOS_KERNEL_CLONE_V1_FILE_POINTER_BYTES, &array);
++        if (r < 0)
++                return r;
++        /* fs/file.c BITBIT_SIZE plus both open/close-on-exec bitmaps. */
++        bitbit_longs = slots / AOS_KERNEL_CLONE_V1_BITS_PER_LONG;
++        bitbit_longs = bitbit_longs / AOS_KERNEL_CLONE_V1_BITS_PER_LONG +
++                       (bitbit_longs % AOS_KERNEL_CLONE_V1_BITS_PER_LONG != 0);
++        r = kernel_clone_mul(bitbit_longs, AOS_KERNEL_CLONE_V1_ULONG_BYTES, &bitmap);
++        if (r < 0)
++                return r;
++        r = kernel_clone_add(bitmap, slots / 4U, &bitmap);
++        if (r < 0)
++                return r;
++        bitmap = MAX(bitmap, (size_t) AOS_KERNEL_CLONE_V1_L1_CACHE_BYTES);
++        const size_t objects[] = { AOS_KERNEL_CLONE_V1_FDTABLE_BYTES, array, bitmap };
++        FOREACH_ELEMENT(bytes, objects) {
++                r = kernel_clone_object_permit(*bytes, &part);
++                if (r < 0)
++                        return r;
++                r = kernel_clone_add(total, part, &total);
++                if (r < 0)
++                        return r;
++        }
++        *ret = total;
++        return 0;
++}
++
++/* Opening the collector and later fixed carriers can grow PID1's own private
++ * table before its contents are observable. Its already-installed hard NOFILE
++ * bounds every new position even if older high descriptors remain open.
++ * Prepay every possible geometric generation, without assuming an RCU grace
++ * period or crediting the old table. Existing high slots are priced separately
++ * by the actual final child-copy observation. */
++static int kernel_clone_parent_growth_permit(uint64_t nofile, size_t *ret) {
++        size_t embedded, ceiling, slots, generation, total = 0;
++        int r;
++
++        if (nofile == 0 || nofile >= SIZE_MAX)
++                return -EOVERFLOW;
++        r = kernel_clone_object_permit(AOS_KERNEL_CLONE_V1_FILES_STRUCT_BYTES, &embedded);
++        if (r < 0)
++                return r;
++        r = kernel_clone_power_of_two((size_t) nofile, &ceiling);
++        if (r < 0)
++                return r;
++        slots = AOS_KERNEL_CLONE_V1_NR_OPEN_DEFAULT;
++        while (slots < ceiling) {
++                if (slots > SIZE_MAX / 2U)
++                        return -EOVERFLOW;
++                slots *= 2U;
++                r = kernel_clone_fdtable_permit(slots - 1U, &generation);
++                if (r < 0)
++                        return r;
++                if (generation < embedded)
++                        return -EBADMSG;
++                r = kernel_clone_add(total, generation - embedded, &total);
++                if (r < 0)
++                        return r;
++        }
++        *ret = total;
++        return 0;
++}
++
++static int kernel_clone_dominant_permit(const FDSetCloneOriginal *geometry, char * const *argv,
++                                         size_t *ret_memory, uint64_t *ret_files) {
++        size_t table, parent_table, scratch, argc_bytes, total;
++        int r;
++
++        if (!geometry || !geometry->attempted || !argv)
++                return -EOWNERDEAD;
++        if (geometry->result < 0)
++                return geometry->result;
++        if (geometry->descriptors > UINT_MAX - 1U)
++                return -EOVERFLOW;
++        r = kernel_clone_fdtable_permit(geometry->highest_fd, &table);
++        if (r < 0)
++                return r;
++        /* The fixed wrapper/transport/main/watch roster already prepays four
++         * new parent PIDFD positions. Reserve possible parent table growth
++         * for those positions as well as the child's copied table. Temporary
++         * successful currentness probes close before this final crossing. */
++        if (geometry->highest_fd > UINT64_MAX - 4U)
++                return -EOVERFLOW;
++        r = kernel_clone_fdtable_permit(geometry->highest_fd + 4U, &parent_table);
++        if (r < 0)
++                return r;
++        /* The selected glibc2.39 spawni.c uses this exact argv pointer and
++         * ALIGN_UP(argc*sizeof(void*) +512 +32KiB, page). It does not use
++         * CLONE_FILES, so the all-open copied table is independent work. */
++        /* glibc's postincremented argc also counts the terminal NULL. */
++        r = kernel_clone_add(strv_length(argv), 1U, &argc_bytes);
++        if (r < 0)
++                return r;
++        r = kernel_clone_mul(argc_bytes, sizeof(void*), &argc_bytes);
++        if (r < 0)
++                return r;
++        r = kernel_clone_add(argc_bytes, 512U + 32U * 1024U, &scratch);
++        if (r < 0)
++                return r;
++        r = kernel_clone_page_permit(scratch, &scratch);
++        if (r < 0)
++                return r;
++        r = kernel_clone_add(table, parent_table, &total);
++        if (r < 0)
++                return r;
++        r = kernel_clone_add(total, scratch, &total);
++        if (r < 0)
++                return r;
++        *ret_memory = total;
++        /* Each copied position, including CLOEXEC, plus the existing finite
++         * post-exec loader position. No cutoff/FD-table reset is implied. */
++        *ret_files = geometry->descriptors + 1U;
++        return 0;
++}
+--- /dev/null
++++ b/src/core/aos-network-child-source-types.inc
+@@ -0,0 +1,168 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++
++/* Wire records compare the same protected original. They are not Source
++ * constructors, independent banks or replacement service resource profiles. */
++#define AOS_NETWORK_CHILD_REQUEST_BYTES 496U
++#define AOS_NETWORK_CHILD_PREPARED_BYTES 144U
++#define AOS_NETWORK_CHILD_BOOTSTRAP_BYTES 840U
++#define AOS_NETWORK_CHILD_BIRTH_BYTES 160U
++#define AOS_NETWORK_CHILD_ARM_BYTES 160U
++#define AOS_NETWORK_CHILD_TERMINAL_BYTES 160U
++
++typedef struct AosNetworkChildProgrammeOriginal AosNetworkChildProgrammeOriginal;
++#define AOS_NETWORK_CHILD_PROBE_BYTES 64U
++#define AOS_NETWORK_CHILD_PROBE_REPLY_BYTES 128U
++
++typedef struct AosNetworkChildNativePost {
++        bool entered;
++        int source_verify_before;
++        int worker_verify_before;
++        int source_verify_after;
++        int worker_verify_after;
++        Unit *source_observed_unit;
++        Unit *worker_observed_unit;
++        pid_t source_main_pid;
++        ServiceState source_state;
++        bool source_main_known;
++        bool source_main_alien;
++        ExecCommand *source_main_command;
++        ExecCommand *source_configured_command;
++        struct stat source_executable;
++        struct stat worker_executable;
++        int source_executable_result;
++        int worker_executable_result;
++        AosParentCheck source_controls;
++        AosParentCheck aggregate_controls;
++        AosParentCheck worker_controls;
++        int source_controls_result;
++        int aggregate_controls_result;
++        int worker_controls_result;
++        int source_fields_result;
++        int source_financial_result;
++        int worker_fields_result;
++        int result;
++} AosNetworkChildNativePost;
++
++typedef struct AosNetworkChildProbeOriginal {
++        bool entered;
++        uint8_t peek_byte;
++        ssize_t peek_length;
++        int peek_result;
++        bool endpoint_eof;
++        AosNetworkChildNativePost source_before;
++        uint8_t request[AOS_NETWORK_CHILD_PROBE_BYTES + 1U];
++        ssize_t receive_length;
++        int receive_result;
++        int flags;
++        int packet_result;
++        AosNetworkChildNativePost before;
++        AosNetworkChildNativePost after;
++        AosNetworkChildNativePost send_after;
++        uint8_t response[AOS_NETWORK_CHILD_PROBE_REPLY_BYTES];
++        ssize_t send_length;
++        int send_result;
++        int first_error;
++} AosNetworkChildProbeOriginal;
++
++typedef struct AosNetworkChildOriginal {
++        bool requested;
++        bool prepared;
++        bool transport_entered;
++        bool bootstrap_entered;
++        bool bootstrap_delivered;
++        bool birth_delivered;
++        bool armed;
++        bool endpoint_closed;
++        unsigned request_index;
++        int first_error;
++        int validation_result;
++        uint8_t request_digest[32];
++        sd_id128_t challenge;
++        int challenge_result;
++        uint8_t prepared_bytes[AOS_NETWORK_CHILD_PREPARED_BYTES];
++        ssize_t prepared_length;
++        int prepared_send_result;
++        AosNetworkChildNativePost prepared_after;
++        size_t probe_limit;
++        size_t probe_count;
++        size_t probes_memory;
++        int probes_cost_result;
++        int probes_allocation_result;
++        AosNetworkChildProbeOriginal *probes;
++        AosServiceLaunchTransport transport;
++        AosNetworkChildNativePost transport_before;
++        AosNetworkChildNativePost transport_after;
++        int socket_flag_set_results[3];
++        int socket_flag_get_results[3];
++        int socket_flag_values[3];
++        int executable_fd;
++        struct stat executable_stat;
++        int executable_open_result;
++        int executable_stat_result;
++        usec_t process_start;
++        int process_start_result;
++        int event_fd;
++        int event_open_result;
++        struct stat event_stat;
++        int event_stat_result;
++        struct stat event_named_stat;
++        int event_named_result;
++        AosNetworkChildNativePost event_before;
++        AosNetworkChildNativePost event_after;
++        uint8_t birth_bytes[AOS_NETWORK_CHILD_BIRTH_BYTES];
++        ssize_t birth_length;
++        int birth_send_result;
++        AosNetworkChildNativePost birth_before;
++        AosNetworkChildNativePost birth_after;
++        uint64_t memory_max;
++        uint64_t nofile;
++        uint64_t tasks_max;
++        uint8_t bootstrap_bytes[AOS_NETWORK_CHILD_BOOTSTRAP_BYTES];
++        ssize_t bootstrap_length;
++        int bootstrap_send_result;
++        AosNetworkChildNativePost bootstrap_before;
++        AosNetworkChildNativePost bootstrap_after;
++        sd_event_source *event;
++        int event_result;
++        bool event_disabled;
++        int event_disable_result;
++        AosNetworkChildNativePost event_stop_after;
++} AosNetworkChildOriginal;
++
++typedef struct AosNetworkChildRequestOriginal {
++        AosNetworkBorrowRecord record;
++        struct stat source_pidfd;
++        int source_pidfd_result;
++        int validation_result;
++        AosNetworkChildNativePost before;
++        AosNetworkChildNativePost after;
++} AosNetworkChildRequestOriginal;
++
++/* Terminal messages trigger independent observations of the retained native
++ * originals. Their DATA never grants death, Empty or Retired. */
++typedef struct AosNetworkChildTerminalOriginal {
++        bool entered;
++        AosNetworkChildRequestOriginal request;
++        struct stat pidfd_stats[2];
++        struct stat recipient_stats[2];
++        struct stat cgroup_stats[2];
++        struct stat event_stats[2];
++        int pidfd_results[2];
++        int recipient_results[2];
++        int cgroup_results[2];
++        int event_results[2];
++        int identity_results[2];
++        struct pollfd death[2];
++        int death_returned[2];
++        int death_native_results[2];
++        int death_results[2];
++        uint8_t population_bytes[4097];
++        ssize_t population_length;
++        int population_read_result;
++        int population_result;
++        bool empty;
++        bool retired;
++        int financial_result;
++        int event_stop_result;
++        int first_error;
++} AosNetworkChildTerminalOriginal;
+--- /dev/null
++++ b/src/core/aos-network-child-source.inc
+@@ -0,0 +1,1019 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++
++/* Native ownership of a prepaid child borrow on the existing Network F.
++ * Source M owns every parent-side descriptor, event source and partial result.
++ * No packet, vector or authenticated UID can construct this owner. */
++
++static bool network_child_header(const uint8_t *bytes, size_t length, const char magic[8],
++                                  unsigned purpose, size_t expected) {
++        return length == expected && memcmp(bytes, magic, 8) == 0 &&
++                unaligned_read_be16(bytes + 8) == 2 && bytes[10] == purpose &&
++                bytes[11] == 0 && unaligned_read_be32(bytes + 12) == expected;
++}
++
++static void network_child_write_header(uint8_t *bytes, const char magic[8],
++                                        unsigned purpose, size_t length) {
++        memcpy(bytes, magic, 8);
++        unaligned_write_be16(bytes + 8, 2);
++        bytes[10] = purpose;
++        bytes[11] = 0;
++        unaligned_write_be32(bytes + 12, length);
++}
++
++static int network_child_refuse(AosNetworkWorkerOriginal *worker, int error) {
++        if (worker->child.first_error == 0)
++                worker->child.first_error = error;
++        return network_worker_refuse(worker, worker->child.first_error);
++}
++
++/* The native operation follows the original PIDFD identity. stat installs no
++ * descriptor and cannot launder another executable into the source profile. */
++static int network_child_executable_current(const PidRef *process, const struct stat *expected,
++                                             struct stat *observed) {
++        char path[STRLEN("/proc/") + DECIMAL_STR_MAX(pid_t) + STRLEN("/exe")];
++
++        xsprintf(path, "/proc/" PID_FMT "/exe", process->pid);
++        if (stat(path, observed) < 0)
++                return -errno;
++        return S_ISREG(observed->st_mode) && observed->st_dev == expected->st_dev &&
++                observed->st_ino == expected->st_ino ? 0 : -EOWNERDEAD;
++}
++
++static int network_child_worker_controls(AosNetworkWorkerOriginal *worker, AosParentCheck *post) {
++        static const char *const names[] = { "memory.max", "pids.max" };
++        uint64_t expected_values[] = { worker->child.memory_max, worker->child.tasks_max };
++        int first = 0;
++
++        for (unsigned side = 0; side < 2; side++) {
++                post->directory_results[side] = fstatat(AT_FDCWD, worker->cgroup_native_path,
++                        &post->directory[side], AT_SYMLINK_NOFOLLOW) < 0 ? -errno : 0;
++                if (first == 0 && post->directory_results[side] < 0)
++                        first = post->directory_results[side];
++                if (first == 0 && (post->directory[side].st_dev != worker->cgroup_stat.st_dev ||
++                                  post->directory[side].st_ino != worker->cgroup_stat.st_ino))
++                        first = -EOWNERDEAD;
++                for (unsigned control = 0; control < ELEMENTSOF(names); control++) {
++                        post->control_results[side][control] = fstatat(worker->cgroup_fd, names[control],
++                                &post->controls[side][control], AT_SYMLINK_NOFOLLOW) < 0 ? -errno : 0;
++                        if (first == 0 && post->control_results[side][control] < 0)
++                                first = post->control_results[side][control];
++                        if (first == 0 && (post->controls[side][control].st_dev != worker->control_stats[control].st_dev ||
++                                          post->controls[side][control].st_ino != worker->control_stats[control].st_ino))
++                                first = -EOWNERDEAD;
++                        if (side == 0) {
++                                char expected[DECIMAL_STR_MAX(uint64_t) + 1U];
++                                xsprintf(expected, "%" PRIu64 "\n", expected_values[control]);
++                                int r = aos_resource_control_readback(worker->control_fds[control], expected,
++                                        post->readback[control], sizeof(post->readback[control]),
++                                        &post->read_lengths[control], &post->read_results[control]);
++                                if (first == 0 && r < 0)
++                                        first = r;
++                        }
++                }
++        }
++        return first;
++}
++
++/* All reached posts are independent, including after an earlier parent or
++ * primary error. This observes custody; it does not re-admit a failed sender. */
++static int network_child_native_post(AosNetworkWorkerOriginal *worker, bool child, bool executable,
++                                      AosNetworkChildNativePost *post) {
++        AosSourceOrigin *origin = &enrollment.network_origin;
++        Service *source = origin->transport.unit ? SERVICE(origin->transport.unit) : NULL;
++        Service *recipient = UNIT_ISSET(worker->worker) ? SERVICE(UNIT_DEREF(worker->worker)) : NULL;
++        CGroupRuntime *source_runtime = source ? unit_get_cgroup_runtime(UNIT(source)) : NULL;
++        CGroupRuntime *worker_runtime = recipient ? unit_get_cgroup_runtime(UNIT(recipient)) : NULL;
++        int first = 0;
++
++        if (post->entered)
++                return -EALREADY;
++        post->entered = true;
++        if (source) {
++                post->source_main_pid = source->main_pid.pid;
++                post->source_state = source->state;
++                post->source_main_known = source->main_pid_known;
++                post->source_main_alien = source->main_pid_alien;
++                post->source_main_command = source->main_command;
++                post->source_configured_command = source->exec_command[SERVICE_EXEC_START];
++                post->source_observed_unit = manager_get_unit_by_pidref_cgroup(
++                        enrollment.manager, &origin->transport.recipient);
++        }
++        post->source_fields_result = source && network_worker_source(enrollment.manager) == source &&
++                UNIT_ISSET(worker->source) && UNIT_DEREF(worker->source) == UNIT(source) &&
++                sd_id128_equal(worker->source_invocation, UNIT(source)->invocation_id) &&
++                source_runtime && source_runtime->cgroup_id == origin->exec_claim.cgroup_id &&
++                post->source_main_known && !post->source_main_alien &&
++                post->source_main_pid == origin->transport.recipient.pid &&
++                IN_SET(post->source_state, SERVICE_START, SERVICE_RUNNING) &&
++                post->source_main_command == origin->transport.main_command &&
++                post->source_main_command == post->source_configured_command &&
++                post->source_main_command && !post->source_main_command->command_next &&
++                post->source_observed_unit == UNIT(source) ? 0 : -EOWNERDEAD;
++        post->source_verify_before = pidref_verify(&origin->transport.recipient);
++        post->source_executable_result = network_child_executable_current(&origin->transport.recipient,
++                &origin->proc_executable_stat, &post->source_executable);
++        post->source_controls_result = source ?
++                aos_resource_parent_source_clone_post(source, &origin->exec_claim, &post->source_controls) : -EOWNERDEAD;
++        post->aggregate_controls_result = source ?
++                aos_resource_parent_network_aggregate_post(source, &origin->exec_claim,
++                        &enrollment.network_child_source.aggregate, &post->aggregate_controls) : -EOWNERDEAD;
++
++        if (child) {
++                post->worker_observed_unit = manager_get_unit_by_pidref_cgroup(
++                        enrollment.manager, &worker->child.transport.recipient);
++                post->worker_fields_result = recipient && worker->child.transport.unit == UNIT(recipient) &&
++                        sd_id128_equal(worker->worker_invocation, UNIT(recipient)->invocation_id) &&
++                        worker_runtime && worker_runtime->cgroup_id == worker->cgroup_id &&
++                        post->worker_observed_unit == UNIT(recipient) ? 0 : -EOWNERDEAD;
++                post->worker_verify_before = pidref_verify(&worker->child.transport.recipient);
++                post->worker_controls_result = network_child_worker_controls(worker, &post->worker_controls);
++                if (executable)
++                        post->worker_executable_result = network_child_executable_current(
++                                &worker->child.transport.recipient, &worker->child.executable_stat,
++                                &post->worker_executable);
++                post->worker_verify_after = pidref_verify(&worker->child.transport.recipient);
++        }
++        post->source_verify_after = pidref_verify(&origin->transport.recipient);
++        /* Financial and native observations are independently owed. A prior
++         * physical failure cannot skip the same sender-account post. */
++        post->source_financial_result = source ? aos_resource_parent_require_source_sender(source) : -EOWNERDEAD;
++
++        const int results[] = {
++                post->source_fields_result, post->source_financial_result, post->source_verify_before, post->source_executable_result,
++                post->source_controls_result, post->aggregate_controls_result,
++                post->worker_fields_result, post->worker_verify_before, post->worker_controls_result,
++                post->worker_executable_result, post->worker_verify_after, post->source_verify_after,
++        };
++        FOREACH_ELEMENT(result, results)
++                if (first == 0 && *result < 0)
++                        first = *result;
++        post->result = first;
++        return first;
++}
++
++static int network_child_disable_event(sd_event_source *event, bool *entered, int *result) {
++        if (*entered)
++                return *result;
++        *entered = true;
++        return *result = event ? sd_event_source_set_enabled(event, SD_EVENT_OFF) : 0;
++}
++
++static int network_child_stop_event(AosNetworkWorkerOriginal *worker, sd_event_source *event) {
++        AosNetworkChildOriginal *child = &worker->child;
++        int first = network_child_disable_event(event, &child->event_disabled, &child->event_disable_result);
++
++        if (!child->event_stop_after.entered) {
++                int after = network_child_native_post(worker, false, false, &child->event_stop_after);
++                if (first == 0 && after < 0)
++                        first = after;
++        }
++        return first < 0 ? network_child_refuse(worker, first) : 0;
++}
++
++static int network_child_stop_source_event(sd_event_source *event) {
++        AosNetworkChildSourceOriginal *owner = &enrollment.network_child_source;
++        int first = network_child_disable_event(event, &owner->event_disabled, &owner->event_disable_result);
++
++        if (!owner->event_stop_after.entered) {
++                AosNetworkChildProgrammeOriginal *programme = owner->active;
++                int after = programme ? network_child_native_post(
++                        &programme->workers[MIN(programme->phase / 3U, 1U)],
++                        false, false, &owner->event_stop_after) : -EOWNERDEAD;
++                if (first == 0 && after < 0)
++                        first = after;
++        }
++        if (first < 0) {
++                if (owner->first_error == 0)
++                        owner->first_error = first;
++                return aos_resource_parent_fail(owner->first_error);
++        }
++        return 0;
++}
++
++static int network_child_probe_io(sd_event_source *event, int fd, uint32_t revents, void *userdata) {
++        AosNetworkWorkerOriginal *worker = userdata;
++        AosNetworkChildOriginal *child = &worker->child;
++        _cleanup_(allocation_account_leave) AllocationAccountScope scope = {};
++        int first = 0;
++
++        if (child->first_error < 0 || !child->bootstrap_delivered || child->probe_count == child->probe_limit) {
++                (void) network_child_stop_event(worker, event);
++                return 0;
++        }
++        AosNetworkChildProbeOriginal *probe = &child->probes[child->probe_count++];
++        probe->entered = true;
++        first = aos_resource_parent_source_exec_scope(SERVICE(UNIT_DEREF(worker->source)), &scope);
++        int before = network_child_native_post(worker, false, false, &probe->source_before);
++        if (first == 0 && before < 0)
++                first = before;
++        if (first == 0) {
++                /* A closed endpoint grants no currentness and no retirement.
++                 * Peek before child-liveness checks so ordinary post-exit EOF
++                 * cannot poison an independently live Netd Source. */
++                probe->peek_length = recv(fd, &probe->peek_byte, 1, MSG_PEEK | MSG_DONTWAIT);
++                probe->peek_result = probe->peek_length < 0 ? -errno : 0;
++                if (probe->peek_result < 0)
++                        first = probe->peek_result;
++                else
++                        probe->endpoint_eof = probe->peek_length == 0;
++        }
++        if (first == 0 && !probe->endpoint_eof)
++                first = network_child_native_post(worker, true, true, &probe->before);
++
++        struct iovec iov = { .iov_base = probe->request, .iov_len = sizeof(probe->request) };
++        /* Ancillary reception is disabled on this original endpoint before
++         * handoff. No descriptor can be installed by a malformed probe. */
++        struct msghdr message = { .msg_iov = &iov, .msg_iovlen = 1 };
++        if (first == 0 && !probe->endpoint_eof) {
++                probe->receive_length = recvmsg(fd, &message, MSG_DONTWAIT | MSG_CMSG_CLOEXEC);
++                probe->receive_result = probe->receive_length < 0 ? -errno : 0;
++                probe->flags = message.msg_flags;
++        } else if (!probe->endpoint_eof)
++                probe->receive_result = first;
++        if (first == 0 && probe->receive_result < 0)
++                first = probe->receive_result;
++        probe->packet_result = probe->endpoint_eof ? 0 : probe->receive_result == 0 &&
++                (probe->flags & (MSG_TRUNC | MSG_CTRUNC)) == 0 &&
++                network_child_header(probe->request, probe->receive_length, "AOSNFP02",
++                        worker->purpose + 1U, AOS_NETWORK_CHILD_PROBE_BYTES) &&
++                memcmp(probe->request + 16, child->challenge.bytes, 16) == 0 &&
++                memcmp(probe->request + 32, worker->worker_invocation.bytes, 16) == 0 &&
++                policy_u64(probe->request + 48) == child->probe_count &&
++                policy_u64(probe->request + 56) == 0 ? 0 : -EBADMSG;
++        if (first == 0 && !probe->endpoint_eof && probe->packet_result < 0)
++                first = probe->packet_result;
++        int after = network_child_native_post(worker, probe->before.entered, probe->before.entered, &probe->after);
++        if (first == 0 && after < 0)
++                first = after;
++        probe->first_error = first;
++        if (probe->endpoint_eof && first == 0) {
++                child->endpoint_closed = true;
++                (void) network_child_stop_event(worker, event);
++                return 0;
++        }
++
++        network_child_write_header(probe->response, "AOSNFQ02", worker->purpose + 1U, sizeof(probe->response));
++        memcpy(probe->response + 16, child->challenge.bytes, 16);
++        memcpy(probe->response + 32, worker->worker_invocation.bytes, 16);
++        unaligned_write_be64(probe->response + 48, child->probe_count);
++        memcpy(probe->response + 56, child->request_digest, 32);
++        memcpy(probe->response + 88, worker->source_invocation.bytes, 16);
++        memcpy(probe->response + 104, enrollment.boot.bytes, 16);
++        unaligned_write_be32(probe->response + 120, (uint32_t) first);
++        probe->send_length = send(fd, probe->response, sizeof(probe->response), MSG_DONTWAIT | MSG_NOSIGNAL);
++        probe->send_result = probe->send_length < 0 ? -errno :
++                probe->send_length == sizeof(probe->response) ? 0 : -EIO;
++        if (first == 0 && probe->send_result < 0)
++                first = probe->send_result;
++        after = network_child_native_post(worker, true, true, &probe->send_after);
++        if (first == 0 && after < 0)
++                first = after;
++        probe->first_error = first;
++        if (first < 0) {
++                (void) network_child_refuse(worker, first);
++                (void) network_child_stop_event(worker, event);
++        } else if (child->probe_count == child->probe_limit)
++                (void) network_child_stop_event(worker, event);
++        return 0;
++}
++
++/* Fee is additional retained liability on the same original F, not another
++ * full resource envelope. CPU and the one active operation are already paid. */
++static int network_child_request_validate(AosNetworkWorkerOriginal *worker, const uint8_t *bytes,
++                                           size_t length) {
++        const AosSourceOrigin *source = &enrollment.network_origin;
++        const uint8_t *ceiling = source->exec_claim.vector;
++        AosNetworkChildProgrammeOriginal *programme = worker->programme;
++        const uint8_t *prior = worker->purpose == 1 ? programme->requests[0].record.payload :
++                programme->previous ? programme->previous->requests[1].record.payload : NULL;
++        uint64_t probes;
++
++        if (!network_child_header(bytes, length, "AOSNFR02", worker->purpose + 1U,
++                AOS_NETWORK_CHILD_REQUEST_BYTES) ||
++            memcmp(bytes + 16, enrollment.boot.bytes, 16) != 0 ||
++            memcmp(bytes + 32, source->transport.invocation.bytes, 16) != 0 ||
++            memcmp(bytes + 48, source->exec_claim.parent_digest, 32) != 0 ||
++            memcmp(bytes + 80, (uint8_t[16]) {}, 16) == 0 ||
++            memcmp(bytes + 96, (uint8_t[32]) {}, 32) == 0 || policy_u64(bytes + 128) == 0)
++                return -EBADMSG;
++        probes = policy_u64(bytes + 136);
++        if (probes == 0 || probes > SIZE_MAX / sizeof(AosNetworkChildProbeOriginal))
++                return -EOVERFLOW;
++        if (policy_u64(bytes + 144) != 0 || policy_u64(bytes + 144 + 21U * 8U) != 0 ||
++            policy_u64(bytes + 320) != policy_u64(ceiling) ||
++            policy_u64(bytes + 320 + 21U * 8U) != 1 ||
++            policy_u64(bytes + 144 + 8) == 0 || policy_u64(bytes + 144 + 16) == 0 ||
++            policy_u64(bytes + 144 + 24) == 0)
++                return -EBADMSG;
++        for (unsigned dimension = 0; dimension < 22; dimension++) {
++                uint64_t fee = policy_u64(bytes + 144 + 8U * dimension);
++                uint64_t baseline = policy_u64(bytes + 320 + 8U * dimension);
++                uint64_t total = policy_u64(ceiling + 8U * dimension);
++                uint64_t persistent = policy_u64(source->completion.payload + 128 + 8U * dimension);
++                if (baseline < persistent || baseline > total || fee > total - baseline)
++                        return -ENOSPC;
++                if (prior) {
++                        uint64_t prior_fee = policy_u64(prior + 144 + 8U * dimension);
++                        uint64_t prior_baseline = policy_u64(prior + 320 + 8U * dimension);
++                        if (prior_baseline > total || prior_fee > total - prior_baseline ||
++                            baseline < prior_baseline + prior_fee)
++                                return -ENOSPC;
++                }
++        }
++        worker->child.probe_limit = (size_t) probes;
++        worker->child.probes_memory = (size_t) probes * sizeof(AosNetworkChildProbeOriginal);
++        return 0;
++}
++
++static int network_child_prebirth_io(sd_event_source *event, int fd, uint32_t revents, void *userdata) {
++        AosNetworkChildSourceOriginal *owner = &enrollment.network_child_source;
++        AosSourceOrigin *source = &enrollment.network_origin;
++        _cleanup_(allocation_account_leave) AllocationAccountScope scope = {};
++        Unit *root_scope;
++        int first;
++
++        AosNetworkChildProgrammeOriginal *programme = owner->active;
++        if (owner->first_error < 0 || !programme ||
++            programme->requests_entered == ELEMENTSOF(programme->requests) ||
++            programme->phase != 3U * programme->requests_entered) {
++                (void) network_child_stop_source_event(event);
++                return 0;
++        }
++        unsigned index = programme->requests_entered++;
++        AosNetworkChildRequestOriginal *request = &programme->requests[index];
++        AosNetworkWorkerOriginal *worker = &programme->workers[index];
++        AosNetworkChildOriginal *child = &worker->child;
++        unsigned purpose = index + 1U;
++        AosLaunchRecord *native = &request->record.native;
++        uint8_t *bytes = request->record.payload;
++        first = aos_resource_parent_source_exec_scope(SERVICE(source->transport.unit), &scope);
++        root_scope = manager_get_unit(enrollment.manager, "init.scope");
++        if (first == 0 && (!root_scope || child->requested || worker->entered))
++                first = -EOWNERDEAD;
++        if (first < 0)
++                goto refused;
++        child->requested = true;
++        child->request_index = index;
++        worker->purpose = index;
++        worker->source_invocation = source->transport.invocation;
++        unit_ref_set(&worker->source, root_scope, source->transport.unit);
++        first = network_child_native_post(worker, false, false, &request->before);
++        if (first == 0)
++                first = aos_launch_record_receive_network_borrow_once(&request->record, fd);
++        if (first == 0 && (native->malformed || native->length != AOS_NETWORK_CHILD_REQUEST_BYTES ||
++            (native->flags & (MSG_TRUNC | MSG_CTRUNC)) != 0 || native->rights_count != 0 ||
++            native->credential_count != 1 || native->pidfd_count != 1 || native->descriptor_count != 1 ||
++            native->kernel_pidfd < 0 || native->credentials.pid != source->transport.recipient.pid ||
++            native->credentials.uid != 0 || native->credentials.gid != 0 || bytes[10] != purpose))
++                first = -EBADMSG;
++        if (first == 0) {
++                request->source_pidfd_result = fstat(native->kernel_pidfd, &request->source_pidfd) < 0 ? -errno : 0;
++                request->validation_result = network_child_request_validate(worker, bytes, native->length);
++                if (request->validation_result == 0 && index == 1 &&
++                    memcmp(bytes + 80, programme->requests[0].record.payload + 80, 56) != 0)
++                        request->validation_result = -EOWNERDEAD;
++                if (request->validation_result == 0 && index == 0 &&
++                    policy_u64(bytes + 128) <= programme->ordinal)
++                        request->validation_result = -EOWNERDEAD;
++                if (request->validation_result == 0 && index == 0)
++                        programme->ordinal = policy_u64(bytes + 128);
++                if (request->source_pidfd_result == 0 &&
++                    (request->source_pidfd.st_dev != source->clone_stat.st_dev ||
++                     request->source_pidfd.st_ino != source->clone_stat.st_ino))
++                        request->source_pidfd_result = -EOWNERDEAD;
++                if (request->source_pidfd_result < 0)
++                        first = request->source_pidfd_result;
++                else if (request->validation_result < 0)
++                        first = request->validation_result;
++        }
++        if (first == 0) {
++                /* The account debits bytes before libc is entered. A failed
++                 * allocation retains that spent debit and the request. */
++                child->probes = allocation_account_calloc(child->probe_limit, sizeof(*child->probes));
++                child->probes_allocation_result = child->probes ? 0 : -ENOMEM;
++                if (child->probes_allocation_result < 0)
++                        first = child->probes_allocation_result;
++        }
++        if (first == 0) {
++                child->challenge_result = sd_id128_randomize(&child->challenge);
++                if (child->challenge_result < 0)
++                        first = child->challenge_result;
++                else
++                        sha256_direct(bytes, AOS_NETWORK_CHILD_REQUEST_BYTES, child->request_digest);
++        }
++        int after = network_child_native_post(worker, false, false, &request->after);
++        if (first == 0 && after < 0)
++                first = after;
++        if (first < 0) {
++                (void) network_child_refuse(worker, first);
++                goto refused;
++        }
++
++        network_child_write_header(child->prepared_bytes, "AOSNFA02", purpose, sizeof(child->prepared_bytes));
++        memcpy(child->prepared_bytes + 16, enrollment.boot.bytes, 16);
++        memcpy(child->prepared_bytes + 32, worker->source_invocation.bytes, 16);
++        memcpy(child->prepared_bytes + 48, bytes + 80, 16);
++        memcpy(child->prepared_bytes + 64, child->request_digest, 32);
++        memcpy(child->prepared_bytes + 96, child->challenge.bytes, 16);
++        unaligned_write_be64(child->prepared_bytes + 112, source->exec_claim.cgroup_id);
++        unaligned_write_be64(child->prepared_bytes + 120, source->transport.recipient.pid);
++        unaligned_write_be64(child->prepared_bytes + 128, source->process_start[0]);
++        child->prepared_length = send(fd, child->prepared_bytes, sizeof(child->prepared_bytes),
++                MSG_DONTWAIT | MSG_NOSIGNAL);
++        child->prepared_send_result = child->prepared_length < 0 ? -errno :
++                child->prepared_length == sizeof(child->prepared_bytes) ? 0 : -EIO;
++        int sent_after = network_child_native_post(worker, false, false, &child->prepared_after);
++        first = child->prepared_send_result < 0 ? child->prepared_send_result : sent_after;
++        if (first < 0) {
++                (void) network_child_refuse(worker, first);
++                goto refused;
++        }
++        child->prepared = true;
++        programme->phase++;
++        return 0;
++
++refused:
++        if (owner->first_error == 0)
++                owner->first_error = first;
++        (void) aos_resource_parent_fail(owner->first_error);
++        (void) network_child_stop_source_event(event);
++        return 0;
++}
++
++static int network_child_send_bootstrap(AosNetworkWorkerOriginal *worker);
++
++static int network_child_arm_io(sd_event_source *event, int fd, uint32_t revents, void *userdata) {
++        AosNetworkChildSourceOriginal *owner = &enrollment.network_child_source;
++        AosSourceOrigin *source = &enrollment.network_origin;
++        _cleanup_(allocation_account_leave) AllocationAccountScope scope = {};
++        AosNetworkChildProgrammeOriginal *programme = owner->active;
++        int first;
++
++        if (!programme || programme->phase >= 6 || programme->phase % 3U != 1)
++                return aos_resource_parent_fail(-EOWNERDEAD);
++        unsigned index = programme->phase / 3U;
++        AosNetworkWorkerOriginal *worker = &programme->workers[index];
++        AosNetworkChildOriginal *child = &worker->child;
++        AosNetworkChildRequestOriginal *arm = &programme->arms[index];
++        first = aos_resource_parent_source_exec_scope(SERVICE(source->transport.unit), &scope);
++        if (first == 0 && (!child->birth_delivered || child->armed || child->first_error < 0))
++                first = -EOWNERDEAD;
++        if (first < 0)
++                goto refused;
++        first = network_child_native_post(worker, true, false, &arm->before);
++        if (first == 0)
++                first = aos_launch_record_receive_network_borrow_once(&arm->record, fd);
++        AosLaunchRecord *native = &arm->record.native;
++        uint8_t *bytes = arm->record.payload;
++        if (first == 0 && (native->malformed ||
++            !network_child_header(bytes, native->length, "AOSNFJ02", index + 1U, AOS_NETWORK_CHILD_ARM_BYTES) ||
++            (native->flags & (MSG_TRUNC | MSG_CTRUNC)) != 0 || native->rights_count != 0 ||
++            native->credential_count != 1 || native->pidfd_count != 1 || native->descriptor_count != 1 ||
++            native->kernel_pidfd < 0 || native->credentials.pid != source->transport.recipient.pid ||
++            native->credentials.uid != 0 || native->credentials.gid != 0 ||
++            memcmp(bytes + 16, child->birth_bytes + 16, AOS_NETWORK_CHILD_ARM_BYTES - 16U) != 0))
++                first = -EBADMSG;
++        arm->validation_result = first;
++        if (first == 0) {
++                arm->source_pidfd_result = fstat(native->kernel_pidfd, &arm->source_pidfd) < 0 ? -errno : 0;
++                if (arm->source_pidfd_result == 0 &&
++                    (arm->source_pidfd.st_dev != source->clone_stat.st_dev ||
++                     arm->source_pidfd.st_ino != source->clone_stat.st_ino))
++                        arm->source_pidfd_result = -EOWNERDEAD;
++                if (arm->source_pidfd_result < 0)
++                        first = arm->source_pidfd_result;
++        }
++        int after = network_child_native_post(worker, true, false, &arm->after);
++        if (first == 0 && after < 0)
++                first = after;
++        if (first < 0)
++                goto refused;
++
++        child->armed = true;
++        programme->phase++;
++        first = network_child_send_bootstrap(worker);
++        if (first < 0)
++                goto refused;
++        return 0;
++
++refused:
++        if (owner->first_error == 0)
++                owner->first_error = first;
++        (void) network_child_refuse(worker, first);
++        (void) network_child_stop_source_event(event);
++        return 0;
++}
++
++/* Each physical identity and both zero-time death polls are retained even
++ * when the authenticated trigger or another independent observation fails.
++ * An unlinked cgroup need not still have its old pathname. */
++static int network_child_terminal_identity(AosNetworkWorkerOriginal *worker,
++                                            AosNetworkChildTerminalOriginal *terminal, unsigned side) {
++        AosNetworkChildOriginal *child = &worker->child;
++        int first = 0;
++
++        terminal->pidfd_results[side] = fstat(worker->clone.pidfd, &terminal->pidfd_stats[side]) < 0 ? -errno : 0;
++        terminal->recipient_results[side] = fstat(child->transport.recipient.fd, &terminal->recipient_stats[side]) < 0 ? -errno : 0;
++        terminal->cgroup_results[side] = fstat(worker->cgroup_fd, &terminal->cgroup_stats[side]) < 0 ? -errno : 0;
++        terminal->event_results[side] = fstat(child->event_fd, &terminal->event_stats[side]) < 0 ? -errno : 0;
++        const int results[] = {
++                terminal->pidfd_results[side], terminal->recipient_results[side],
++                terminal->cgroup_results[side], terminal->event_results[side],
++        };
++        FOREACH_ELEMENT(result, results)
++                if (first == 0 && *result < 0)
++                        first = *result;
++        if (first == 0 && (terminal->pidfd_stats[side].st_dev != terminal->recipient_stats[side].st_dev ||
++            terminal->pidfd_stats[side].st_ino != terminal->recipient_stats[side].st_ino ||
++            terminal->cgroup_stats[side].st_dev != worker->cgroup_stat.st_dev ||
++            terminal->cgroup_stats[side].st_ino != worker->cgroup_stat.st_ino ||
++            terminal->event_stats[side].st_dev != child->event_stat.st_dev ||
++            terminal->event_stats[side].st_ino != child->event_stat.st_ino ||
++            (side > 0 && (terminal->pidfd_stats[side].st_dev != terminal->pidfd_stats[0].st_dev ||
++                          terminal->pidfd_stats[side].st_ino != terminal->pidfd_stats[0].st_ino))))
++                first = -EOWNERDEAD;
++        terminal->identity_results[side] = first;
++
++        terminal->death[side] = (struct pollfd) { .fd = worker->clone.pidfd, .events = POLLIN };
++        terminal->death_returned[side] = poll(&terminal->death[side], 1, 0);
++        terminal->death_native_results[side] = terminal->death_returned[side] < 0 ? -errno : 0;
++        terminal->death_results[side] = terminal->death_native_results[side] < 0 ? terminal->death_native_results[side] :
++                terminal->death_returned[side] == 1 && (terminal->death[side].revents & POLLIN) != 0 &&
++                (terminal->death[side].revents & (POLLERR | POLLNVAL)) == 0 ? 0 : -EBUSY;
++        return first < 0 ? first : terminal->death_results[side];
++}
++
++/* Match the existing held-events observation law: only the actual ENODEV
++ * read result means Retired. Missing names, EOF and truncated bytes do not. */
++static int network_child_terminal_population(AosNetworkWorkerOriginal *worker,
++                                              AosNetworkChildTerminalOriginal *terminal) {
++        terminal->population_length = pread(worker->child.event_fd, terminal->population_bytes,
++                sizeof(terminal->population_bytes), 0);
++        terminal->population_read_result = terminal->population_length < 0 ? -errno : 0;
++        if (terminal->population_read_result == -ENODEV) {
++                terminal->retired = true;
++                return terminal->population_result = 0;
++        }
++        if (terminal->population_read_result < 0)
++                return terminal->population_result = terminal->population_read_result;
++        if (terminal->population_length <= 0 ||
++            terminal->population_length >= (ssize_t) sizeof(terminal->population_bytes))
++                return terminal->population_result = -EBADMSG;
++
++        size_t offset = 0, length = (size_t) terminal->population_length;
++        while (offset < length) {
++                uint8_t *line = terminal->population_bytes + offset;
++                uint8_t *end = memchr(line, '\n', length - offset);
++                size_t count = end ? (size_t) (end - line) : length - offset;
++
++                if (count >= STRLEN("populated ") && memcmp(line, "populated ", STRLEN("populated ")) == 0) {
++                        if (count != STRLEN("populated 0") || !IN_SET(line[count - 1U], '0', '1'))
++                                return terminal->population_result = -EBADMSG;
++                        terminal->empty = line[count - 1U] == '0';
++                        return terminal->population_result = terminal->empty ? 0 : -EBUSY;
++                }
++                offset += count + (end ? 1U : 0U);
++        }
++        return terminal->population_result = -EBADMSG;
++}
++
++static int network_child_terminal_io(sd_event_source *event, int fd, uint32_t revents, void *userdata) {
++        AosNetworkChildSourceOriginal *owner = &enrollment.network_child_source;
++        AosNetworkChildProgrammeOriginal *programme = owner->active;
++        AosSourceOrigin *source = &enrollment.network_origin;
++        _cleanup_(allocation_account_leave) AllocationAccountScope scope = {};
++
++        if (!programme || programme->phase >= 6 || programme->phase % 3U != 2)
++                return aos_resource_parent_fail(-EOWNERDEAD);
++        unsigned index = programme->phase / 3U;
++        AosNetworkWorkerOriginal *worker = &programme->workers[index];
++        AosNetworkChildOriginal *child = &worker->child;
++        AosNetworkChildTerminalOriginal *terminal = &programme->terminals[index];
++        AosNetworkChildRequestOriginal *request = &terminal->request;
++        int first = aos_resource_parent_source_exec_scope(SERVICE(source->transport.unit), &scope);
++
++        if (terminal->entered)
++                first = first < 0 ? first : -EALREADY;
++        terminal->entered = true;
++        if (first == 0 && (!child->armed || !child->bootstrap_delivered || child->first_error < 0))
++                first = -EOWNERDEAD;
++        int before = network_child_native_post(worker, false, false, &request->before);
++        if (first == 0 && before < 0)
++                first = before;
++        if (first == 0)
++                first = aos_launch_record_receive_network_borrow_once(&request->record, fd);
++        AosLaunchRecord *native = &request->record.native;
++        uint8_t *bytes = request->record.payload;
++        if (first == 0 && (native->malformed ||
++            !network_child_header(bytes, native->length, "AOSNFK02", index + 1U, AOS_NETWORK_CHILD_TERMINAL_BYTES) ||
++            (native->flags & (MSG_TRUNC | MSG_CTRUNC)) != 0 || native->rights_count != 0 ||
++            native->credential_count != 1 || native->pidfd_count != 1 || native->descriptor_count != 1 ||
++            native->kernel_pidfd < 0 || native->credentials.pid != source->transport.recipient.pid ||
++            native->credentials.uid != 0 || native->credentials.gid != 0 ||
++            memcmp(bytes + 16, child->birth_bytes + 16, AOS_NETWORK_CHILD_TERMINAL_BYTES - 16U) != 0))
++                first = -EBADMSG;
++        request->validation_result = first;
++        if (native->attempted && native->kernel_pidfd >= 0) {
++                request->source_pidfd_result = fstat(native->kernel_pidfd, &request->source_pidfd) < 0 ? -errno : 0;
++                if (request->source_pidfd_result == 0 &&
++                    (request->source_pidfd.st_dev != source->clone_stat.st_dev ||
++                     request->source_pidfd.st_ino != source->clone_stat.st_ino))
++                        request->source_pidfd_result = -EOWNERDEAD;
++                if (first == 0 && request->source_pidfd_result < 0)
++                        first = request->source_pidfd_result;
++        }
++
++        int identity_before = network_child_terminal_identity(worker, terminal, 0);
++        int population = network_child_terminal_population(worker, terminal);
++        int identity_after = network_child_terminal_identity(worker, terminal, 1);
++        int after = network_child_native_post(worker, false, false, &request->after);
++        terminal->financial_result = aos_resource_parent_require_source_sender(SERVICE(source->transport.unit));
++        const int posts[] = { identity_before, population, identity_after, after, terminal->financial_result };
++        FOREACH_ELEMENT(post, posts)
++                if (first == 0 && *post < 0)
++                        first = *post;
++        if (first == 0) {
++                /* A dead worker's already-queued probe cannot later poison a
++                 * healthy Source after this independently observed terminal.
++                 * Disabling the endpoint grants no currentness or refund. */
++                terminal->event_stop_result = network_child_stop_event(worker, child->event);
++                if (terminal->event_stop_result < 0)
++                        first = terminal->event_stop_result;
++        }
++        terminal->first_error = first;
++        if (first < 0) {
++                if (owner->first_error == 0)
++                        owner->first_error = first;
++                (void) network_child_refuse(worker, first);
++                (void) network_child_stop_source_event(event);
++                return 0;
++        }
++        /* Native debt and old descriptors stay retained. A completed
++         * programme supplies ordering, never a financial refund or new bank. */
++        programme->phase++;
++        return 0;
++}
++
++static void network_child_programme_initialize(AosNetworkChildProgrammeOriginal *programme) {
++        FOREACH_ELEMENT(worker, programme->workers) {
++                *worker = (AosNetworkWorkerOriginal) {
++                        .programme = programme,
++                        .accepted_fd = -EBADF, .peer_fd = -EBADF, .peer = PIDREF_NULL,
++                        .cgroup_fd = -EBADF, .control_fds = { -EBADF, -EBADF },
++                        .clone = { .pidfd = -EBADF, .duplicate_pidfd = -EBADF },
++                        .child = { .executable_fd = -EBADF, .event_fd = -EBADF,
++                                   .transport = { .sockets = { -EBADF, -EBADF }, .recipient = PIDREF_NULL } },
++                };
++        }
++}
++
++/* Source M pays this finite additional programme before calloc, the next
++ * receive, DIR or event allocation. The account's prior spent debit remains.
++ * The first four-walk collector is never reset or lent to a successor. */
++static int network_child_programme_append(void) {
++        AosNetworkChildSourceOriginal *owner = &enrollment.network_child_source;
++        AosNetworkChildProgrammeOriginal *previous = owner->active;
++        AosSourceOrigin *source = &enrollment.network_origin;
++        AosNetworkWorkerOriginal *last = previous ? &previous->workers[1] : NULL;
++        _cleanup_(allocation_account_leave) AllocationAccountScope scope = {};
++        int first = aos_resource_parent_source_exec_scope(SERVICE(source->transport.unit), &scope);
++
++        if (!previous || previous->phase != 6 || previous->next ||
++            !previous->terminals[0].entered || !previous->terminals[1].entered ||
++            previous->terminals[0].first_error < 0 || previous->terminals[1].first_error < 0)
++                return aos_resource_parent_fail(first < 0 ? first : -EOWNERDEAD);
++        int before = network_child_native_post(last, false, false, &previous->append_before);
++        if (first == 0 && before < 0)
++                first = before;
++        if (first == 0) {
++                /* Actual struct bytes are charged by calloc itself. This
++                 * separate permit covers two IO events and glibc DIR storage.
++                 * Native FD peaks include received request/ARM/terminal PIDFDs,
++                 * image failure leaves and raw DIR plus retained duplicate. */
++                size_t memory = 2U * sizeof(sd_event_source) + 1024U * 1024U +
++                                fdset_network_collector_header_memory();
++                unsigned files = 2U * (2U + 1U + 4U + 3U) + AOS_NETWORK_IMAGE_READ_FILES +
++                                 2U * 7U + 6U + 2U;
++                previous->fee_result = allocation_account_charge(memory, files);
++                if (previous->fee_result < 0)
++                        first = previous->fee_result;
++        }
++        AosNetworkChildProgrammeOriginal *next = NULL;
++        if (first == 0) {
++                next = allocation_account_calloc(1, sizeof(*next));
++                previous->allocation_result = next ? 0 : -ENOMEM;
++                if (!next)
++                        first = previous->allocation_result;
++                else {
++                        next->continuation = true;
++                        next->previous = previous;
++                        next->ordinal = previous->ordinal;
++                        network_child_programme_initialize(next);
++                        previous->next = next;
++                }
++        }
++        int after = network_child_native_post(last, false, false, &previous->append_after);
++        if (first == 0 && after < 0)
++                first = after;
++        if (first < 0) {
++                if (owner->first_error == 0)
++                        owner->first_error = first;
++                return aos_resource_parent_fail(first);
++        }
++        owner->active = next;
++        return 0;
++}
++
++static int network_child_source_io(sd_event_source *event, int fd, uint32_t revents, void *userdata) {
++        AosNetworkChildSourceOriginal *owner = &enrollment.network_child_source;
++
++        if (owner->first_error < 0 || !owner->active ||
++            (owner->active->phase == 6 && network_child_programme_append() < 0)) {
++                (void) network_child_stop_source_event(event);
++                return 0;
++        }
++        switch (owner->active->phase % 3U) {
++        case 0:
++                return network_child_prebirth_io(event, fd, revents, userdata);
++        case 1:
++                return network_child_arm_io(event, fd, revents, userdata);
++        case 2:
++                return network_child_terminal_io(event, fd, revents, userdata);
++        default:
++                return aos_resource_parent_fail(-EOWNERDEAD);
++        }
++}
++
++static int network_child_source_begin(Service *service) {
++        AosNetworkChildSourceOriginal *owner = &enrollment.network_child_source;
++        AosSourceOrigin *source = &enrollment.network_origin;
++        int disabled = 0, first;
++        socklen_t length = sizeof(owner->rights_value);
++
++        if (owner->entered)
++                return aos_resource_parent_fail(-EALREADY);
++        owner->entered = true;
++        owner->first = owner->active = &enrollment.network_programme;
++        FOREACH_ELEMENT(worker, owner->active->workers)
++                worker->programme = owner->active;
++        owner->initial_source_before_result = aos_resource_parent_source_clone_post(
++                service, &source->exec_claim, &owner->initial_source_before);
++        first = owner->initial_source_before_result;
++        if (first == 0) {
++                owner->aggregate_result = aos_resource_parent_network_aggregate_capture(service,
++                        &source->exec_claim, &owner->aggregate, &owner->aggregate_id);
++                if (owner->aggregate_result < 0)
++                        first = owner->aggregate_result;
++        }
++        if (first == 0) {
++                /* Initial completion is already received. Later prebirth
++                 * records carry a genuine kernel PIDFD, never SCM_RIGHTS. */
++                owner->rights_set_result = setsockopt(source->transport.sockets[0], SOL_SOCKET,
++                        SO_PASSRIGHTS, &disabled, sizeof(disabled)) < 0 ? -errno : 0;
++                owner->rights_get_result = getsockopt(source->transport.sockets[0], SOL_SOCKET,
++                        SO_PASSRIGHTS, &owner->rights_value, &length) < 0 ? -errno :
++                        length == sizeof(owner->rights_value) && owner->rights_value == 0 ? 0 : -EOWNERDEAD;
++                if (owner->rights_set_result < 0)
++                        first = owner->rights_set_result;
++                else if (owner->rights_get_result < 0)
++                        first = owner->rights_get_result;
++        }
++        if (first == 0) {
++                owner->event_result = sd_event_add_io(UNIT(service)->manager->event, &owner->event,
++                        source->transport.sockets[0], EPOLLIN, network_child_source_io, owner);
++                if (owner->event_result < 0)
++                        first = owner->event_result;
++        }
++        /* Physical posts are owed after each entered setup prefix, including
++         * a failed control setter, event registration or aggregate opening. */
++        owner->initial_source_after_result = aos_resource_parent_source_clone_post(
++                service, &source->exec_claim, &owner->initial_source_after);
++        if (owner->aggregate.directory_fd >= 0)
++                owner->aggregate_after_result = aos_resource_parent_network_aggregate_post(service,
++                        &source->exec_claim, &owner->aggregate, &owner->aggregate_after);
++        if (first == 0 && owner->initial_source_after_result < 0)
++                first = owner->initial_source_after_result;
++        if (first == 0 && owner->aggregate_after_result < 0)
++                first = owner->aggregate_after_result;
++        if (first < 0) {
++                owner->first_error = first;
++                (void) network_child_stop_source_event(owner->event);
++                return aos_resource_parent_fail(first);
++        }
++        return 0;
++}
++
++static int network_child_prepare_transport(AosNetworkWorkerOriginal *worker, Service *service,
++                                            ExecCommand *command, ExecFlags flags) {
++        static const int options[] = { SO_PASSCRED, SO_PASSPIDFD, SO_PASSRIGHTS };
++        AosNetworkChildOriginal *child = &worker->child;
++        AosServiceLaunchTransport *transport = &child->transport;
++        int disabled = 0, first = 0;
++
++        if (!child->prepared || child->transport_entered || child->first_error < 0)
++                return network_child_refuse(worker, -EOWNERDEAD);
++        child->transport_entered = true;
++        transport->entered = true;
++        transport->unit = UNIT(service);
++        transport->main_command = command;
++        transport->main_flags = flags;
++        transport->invocation = UNIT(service)->invocation_id;
++        first = network_child_native_post(worker, false, false, &child->transport_before);
++        if (first == 0)
++                first = service_launch_pair_and_deliver(transport, service, AOS_SERVICE_LAUNCH_NETWORK_CHILD);
++        if (first == 0)
++                for (unsigned i = 0; i < ELEMENTSOF(options); i++) {
++                        socklen_t length = sizeof(child->socket_flag_values[i]);
++                        child->socket_flag_set_results[i] = setsockopt(transport->sockets[0],
++                                SOL_SOCKET, options[i], &disabled, sizeof(disabled)) < 0 ? -errno : 0;
++                        child->socket_flag_get_results[i] = getsockopt(transport->sockets[0],
++                                SOL_SOCKET, options[i], &child->socket_flag_values[i], &length) < 0 ? -errno :
++                                length == sizeof(child->socket_flag_values[i]) &&
++                                        child->socket_flag_values[i] == 0 ? 0 : -EOWNERDEAD;
++                        if (first == 0 && child->socket_flag_set_results[i] < 0)
++                                first = child->socket_flag_set_results[i];
++                        if (first == 0 && child->socket_flag_get_results[i] < 0)
++                                first = child->socket_flag_get_results[i];
++                }
++        if (first == 0) {
++                child->executable_fd = open(command->path, O_PATH | O_CLOEXEC);
++                child->executable_open_result = child->executable_fd < 0 ? -errno : 0;
++                if (child->executable_open_result < 0)
++                        first = child->executable_open_result;
++                else {
++                        child->executable_stat_result = fstat(child->executable_fd, &child->executable_stat) < 0 ? -errno : 0;
++                        if (child->executable_stat_result < 0)
++                                first = child->executable_stat_result;
++                        else if (!S_ISREG(child->executable_stat.st_mode) || child->executable_stat.st_uid != 0 ||
++                                 (child->executable_stat.st_mode & 0222) != 0)
++                                first = -EOWNERDEAD;
++                }
++        }
++        int after = network_child_native_post(worker, false, false, &child->transport_after);
++        if (first == 0 && after < 0)
++                first = after;
++        return first < 0 ? network_child_refuse(worker, first) : 0;
++}
++
++static int network_child_capture_events(AosNetworkWorkerOriginal *worker) {
++        AosNetworkChildOriginal *child = &worker->child;
++        int first = network_child_native_post(worker, false, false, &child->event_before);
++
++        if (first == 0) {
++                child->event_fd = openat(worker->cgroup_fd, "cgroup.events", O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
++                child->event_open_result = child->event_fd < 0 ? -errno : 0;
++                if (child->event_open_result < 0)
++                        first = child->event_open_result;
++                else {
++                        child->event_stat_result = fstat(child->event_fd, &child->event_stat) < 0 ? -errno : 0;
++                        child->event_named_result = fstatat(worker->cgroup_fd, "cgroup.events",
++                                &child->event_named_stat, AT_SYMLINK_NOFOLLOW) < 0 ? -errno : 0;
++                        if (child->event_stat_result < 0)
++                                first = child->event_stat_result;
++                        else if (child->event_named_result < 0)
++                                first = child->event_named_result;
++                        else if (!S_ISREG(child->event_stat.st_mode) || child->event_stat.st_uid != 0 ||
++                                 child->event_stat.st_dev != worker->cgroup_stat.st_dev ||
++                                 child->event_stat.st_dev != child->event_named_stat.st_dev ||
++                                 child->event_stat.st_ino != child->event_named_stat.st_ino)
++                                first = -EOWNERDEAD;
++                }
++        }
++        int after = network_child_native_post(worker, false, false, &child->event_after);
++        if (first == 0 && after < 0)
++                first = after;
++        return first < 0 ? network_child_refuse(worker, first) : 0;
++}
++
++/* Only the fixed birth3 and bootstrap9 roles reach this stack-only carrier. */
++static int network_child_send_rights(int socket, const uint8_t *bytes, size_t length,
++                                      const int *descriptors, unsigned count,
++                                      ssize_t *returned) {
++        if (!IN_SET(count, 3U, 9U))
++                return -EINVAL;
++
++        union { struct cmsghdr alignment; uint8_t bytes[CMSG_SPACE(9U * sizeof(int))]; } control = {};
++        struct iovec iov = { .iov_base = (void*) bytes, .iov_len = length };
++        struct msghdr message = {
++                .msg_iov = &iov, .msg_iovlen = 1,
++                .msg_control = control.bytes, .msg_controllen = CMSG_SPACE(count * sizeof(int)),
++        };
++
++        struct cmsghdr *header = CMSG_FIRSTHDR(&message);
++        header->cmsg_level = SOL_SOCKET;
++        header->cmsg_type = SCM_RIGHTS;
++        header->cmsg_len = CMSG_LEN(count * sizeof(int));
++        memcpy(CMSG_DATA(header), descriptors, count * sizeof(int));
++        *returned = sendmsg(socket, &message, MSG_DONTWAIT | MSG_NOSIGNAL);
++        return *returned < 0 ? -errno : *returned == length ? 0 : -EIO;
++}
++
++static int network_child_spawn_returned(AosNetworkWorkerOriginal *worker, Service *service,
++                                        int spawn_result, const PidRef *recipient) {
++        AosNetworkChildOriginal *child = &worker->child;
++        AosSourceOrigin *source = &enrollment.network_origin;
++        const uint8_t *request = worker->programme->requests[child->request_index].record.payload;
++        int first = service_launch_spawn_returned(&child->transport, service, spawn_result, recipient);
++
++        if (first < 0)
++                return network_child_refuse(worker, first);
++        if (child->bootstrap_entered)
++                return network_child_refuse(worker, -EALREADY);
++        child->bootstrap_entered = true;
++        child->process_start_result = pidref_get_start_time(&child->transport.recipient, &child->process_start);
++        if (child->process_start_result < 0)
++                first = child->process_start_result;
++        int before = network_child_native_post(worker, true, false, &child->birth_before);
++        if (first == 0 && before < 0)
++                first = before;
++        if (first == 0) {
++                network_child_write_header(child->birth_bytes, "AOSNFH02", worker->purpose + 1U,
++                        sizeof(child->birth_bytes));
++                memcpy(child->birth_bytes + 16, enrollment.boot.bytes, 16);
++                memcpy(child->birth_bytes + 32, worker->source_invocation.bytes, 16);
++                memcpy(child->birth_bytes + 48, worker->worker_invocation.bytes, 16);
++                memcpy(child->birth_bytes + 64, child->request_digest, 32);
++                memcpy(child->birth_bytes + 96, child->challenge.bytes, 16);
++                memcpy(child->birth_bytes + 112, request + 80, 16);
++                unaligned_write_be64(child->birth_bytes + 128, child->transport.recipient.pid);
++                unaligned_write_be64(child->birth_bytes + 136, child->process_start);
++                unaligned_write_be64(child->birth_bytes + 144, worker->cgroup_id);
++                const int descriptors[] = { worker->clone.pidfd, worker->cgroup_fd, child->event_fd };
++                child->birth_send_result = network_child_send_rights(source->transport.sockets[0],
++                        child->birth_bytes, sizeof(child->birth_bytes), descriptors,
++                        ELEMENTSOF(descriptors), &child->birth_length);
++                if (child->birth_send_result < 0)
++                        first = child->birth_send_result;
++        }
++        int after = network_child_native_post(worker, true, false, &child->birth_after);
++        if (first == 0 && after < 0)
++                first = after;
++        if (first < 0)
++                return network_child_refuse(worker, first);
++        child->birth_delivered = true;
++        return 0;
++}
++
++/* The child cannot enter its paid startup until its real lender has adopted
++ * native cleanup custody and acknowledged on the same original Source path. */
++static int network_child_send_bootstrap(AosNetworkWorkerOriginal *worker) {
++        AosNetworkChildOriginal *child = &worker->child;
++        AosSourceOrigin *source = &enrollment.network_origin;
++        AosNetworkChildSourceOriginal *owner = &enrollment.network_child_source;
++        const uint8_t *request = worker->programme->requests[child->request_index].record.payload;
++
++        if (!child->armed || !child->birth_delivered || child->bootstrap_delivered)
++                return network_child_refuse(worker, -EOWNERDEAD);
++        int first = network_child_native_post(worker, true, false, &child->bootstrap_before);
++        if (first == 0) {
++                uint8_t *bytes = child->bootstrap_bytes;
++                network_child_write_header(bytes, "AOSNFB02", worker->purpose + 1U, sizeof(child->bootstrap_bytes));
++                memcpy(bytes + 16, enrollment.boot.bytes, 16);
++                memcpy(bytes + 32, worker->source_invocation.bytes, 16);
++                memcpy(bytes + 48, worker->worker_invocation.bytes, 16);
++                memcpy(bytes + 64, child->request_digest, 32);
++                memcpy(bytes + 96, source->exec_claim.parent_digest, 32);
++                memcpy(bytes + 128, source->budget_digest, 32);
++                memcpy(bytes + 160, child->challenge.bytes, 16);
++                memcpy(bytes + 176, request + 80, 48);
++                unaligned_write_be64(bytes + 224, source->transport.recipient.pid);
++                unaligned_write_be64(bytes + 232, source->process_start[0]);
++                unaligned_write_be64(bytes + 240, source->exec_claim.cgroup_id);
++                unaligned_write_be64(bytes + 248, child->transport.recipient.pid);
++                unaligned_write_be64(bytes + 256, child->process_start);
++                unaligned_write_be64(bytes + 264, worker->cgroup_id);
++                unaligned_write_be64(bytes + 272, child->memory_max);
++                unaligned_write_be64(bytes + 280, child->nofile);
++                unaligned_write_be64(bytes + 288, child->tasks_max);
++                memcpy(bytes + 296, request + 128, 8);
++                memcpy(bytes + 304, request + 144, 352);
++                memcpy(bytes + 656, source->exec_claim.vector, 176);
++                unaligned_write_be64(bytes + 832, child->probe_limit);
++                const int descriptors[] = {
++                        source->transport.recipient.fd, source->exec_claim.limits.directory_fd,
++                        worker->cgroup_fd, worker->control_fds[0], worker->control_fds[1],
++                        owner->aggregate.directory_fd, owner->aggregate.control_fds[0],
++                        owner->aggregate.control_fds[1], owner->aggregate.control_fds[2],
++                };
++                child->event_result = sd_event_add_io(enrollment.manager->event, &child->event,
++                        child->transport.sockets[0], EPOLLIN, network_child_probe_io, worker);
++                if (child->event_result < 0)
++                        first = child->event_result;
++                else {
++                        child->bootstrap_send_result = network_child_send_rights(child->transport.sockets[0],
++                                bytes, sizeof(child->bootstrap_bytes), descriptors,
++                                ELEMENTSOF(descriptors), &child->bootstrap_length);
++                        if (child->bootstrap_send_result < 0)
++                                first = child->bootstrap_send_result;
++                }
++        }
++        int after = network_child_native_post(worker, true, false, &child->bootstrap_after);
++        if (first == 0 && after < 0)
++                first = after;
++        if (first < 0) {
++                (void) network_child_stop_event(worker, child->event);
++                return network_child_refuse(worker, first);
++        }
++        child->bootstrap_delivered = true;
++        return 0;
++}
+--- a/src/core/aos-network-worker-source.inc
++++ b/src/core/aos-network-worker-source.inc
+@@ -4,8 +4,9 @@
+  *
+  * Both fixed socket activations borrow the same original admitted Network M
+  * account. Accepted OFDs, stable peer pins, partial Unit models and native
+- * cgroup observations remain in its two once-only owners. No decoded request,
+- * caller-selected Unit or count can select a payer or rearm these slots.
++ * cgroup observations remain in distinct append-only programme owners.
++ * No decoded request, caller-selected Unit or count can select a payer or
++ * reset an earlier native original.
+  */
+ 
+ static int network_worker_refuse(AosNetworkWorkerOriginal *original, int error) {
+@@ -13,6 +14,111 @@
+         if (original->first_error == 0)
+                 original->first_error = error;
+         return aos_resource_parent_fail(original->first_error);
++}
++
++#include "aos-kernel-clone-cost.inc"
++
++static int kernel_clone_source_capture_once(AosKernelCloneSourceOriginal *original) {
++        static const char path[] = "/sys/kernel/notes";
++        static const char expected_hash[] = AOS_KERNEL_CLONE_V1_NOTES_SHA256;
++        int first = 0;
++
++        if (original->entered)
++                return original->complete ? 0 : aos_resource_parent_fail(
++                                original->first_error < 0 ? original->first_error : -EOWNERDEAD);
++        original->entered = true;
++        original->fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
++        original->open_result = original->fd < 0 ? -errno : 0;
++        if (original->open_result < 0) {
++                first = original->open_result;
++                goto finished;
++        }
++        original->stat_result = fstat(original->fd, &original->before) < 0 ? -errno : 0;
++        original->filesystem_result = fstatfs(original->fd, &original->filesystem) < 0 ? -errno : 0;
++        if (original->stat_result < 0)
++                first = original->stat_result;
++        else if (original->filesystem_result < 0)
++                first = original->filesystem_result;
++        else if (!S_ISREG(original->before.st_mode) || original->before.st_uid != 0 ||
++                 original->before.st_gid != 0 || (original->before.st_mode & 0222) != 0 ||
++                 original->filesystem.f_type != SYSFS_MAGIC)
++                first = -EOWNERDEAD;
++
++        if (first == 0) {
++                original->length = pread(original->fd, original->bytes, sizeof(original->bytes), 0);
++                original->read_result = original->length < 0 ? -errno :
++                        original->length == (ssize_t) AOS_KERNEL_CLONE_V1_NOTES_BYTES ? 0 : -EBADMSG;
++                if (original->read_result < 0)
++                        first = original->read_result;
++        }
++        if (first == 0) {
++                sha256_direct(original->bytes, AOS_KERNEL_CLONE_V1_NOTES_BYTES, original->digest);
++                original->hash_result = sizeof(expected_hash) == 65 ? 0 : -EBADMSG;
++                /* The generated canonical lower-hex digest is decoded without
++                 * allocating or accepting a caller's digest/profile bytes. */
++                for (unsigned i = 0; i < sizeof(original->digest) && original->hash_result == 0; i++) {
++                        int high = unhexchar(expected_hash[2U * i]);
++                        int low = unhexchar(expected_hash[2U * i + 1U]);
++                        if (high < 0 || low < 0 || original->digest[i] != (uint8_t) (high * 16 + low))
++                                original->hash_result = -EOWNERDEAD;
++                }
++                if (original->hash_result < 0)
++                        first = original->hash_result;
++        }
++
++        /* All three independent physical posts are entered even after a raw
++         * read, extent, digest or first native failure. The primary wins. */
++        original->after_result = fstat(original->fd, &original->after) < 0 ? -errno : 0;
++        original->filesystem_after_result = fstatfs(original->fd, &original->filesystem_after) < 0 ? -errno : 0;
++        original->named_after_result = fstatat(AT_FDCWD, path, &original->named_after, AT_SYMLINK_NOFOLLOW) < 0 ? -errno : 0;
++        if (first == 0 && original->after_result < 0)
++                first = original->after_result;
++        if (first == 0 && original->filesystem_after_result < 0)
++                first = original->filesystem_after_result;
++        if (first == 0 && original->named_after_result < 0)
++                first = original->named_after_result;
++        if (first == 0 && (original->after.st_dev != original->before.st_dev ||
++            original->after.st_ino != original->before.st_ino ||
++            original->after.st_mode != original->before.st_mode ||
++            original->after.st_uid != original->before.st_uid ||
++            original->after.st_gid != original->before.st_gid ||
++            original->filesystem_after.f_type != SYSFS_MAGIC ||
++            original->named_after.st_dev != original->before.st_dev ||
++            original->named_after.st_ino != original->before.st_ino ||
++            original->named_after.st_mode != original->before.st_mode ||
++            original->named_after.st_uid != original->before.st_uid ||
++            original->named_after.st_gid != original->before.st_gid))
++                first = -EOWNERDEAD;
++finished:
++        original->first_error = first;
++        original->complete = first == 0;
++        return first < 0 ? aos_resource_parent_fail(first) : 0;
++}
++
++/* The initial Source acquisition keeps its original BOOTTIME baseline and
++ * cutoff. No later P/O activation renews or borrows this startup window. */
++static int source_initial_clone_clock(const AosSourceOrigin *source,
++                                       AosSourceInitialCloneOriginal *original, unsigned phase) {
++        usec_t observed, prior;
++
++        if (phase >= ELEMENTSOF(original->clock) || original->clock_entered[phase] ||
++            (phase == 1 && !original->clock_entered[0]))
++                return -EALREADY;
++        original->clock_entered[phase] = true;
++        original->clock_results[phase] = clock_gettime(CLOCK_BOOTTIME, &original->clock[phase]) < 0 ? -errno : 0;
++        if (original->clock_results[phase] < 0)
++                return original->clock_results[phase];
++        observed = timespec_load(&original->clock[phase]);
++        prior = timespec_load(phase == 0 ? &source->exec_clock[0] : &original->clock[0]);
++        if (observed < prior || observed >= source->cutoff)
++                return -ETIMEDOUT;
++        return 0;
++}
++
++static AosNetworkWorkerOriginal *network_worker_active(unsigned purpose) {
++        AosNetworkChildProgrammeOriginal *programme = enrollment.network_child_source.active;
++
++        return programme && purpose < ELEMENTSOF(programme->workers) ? &programme->workers[purpose] : NULL;
+ }
+ 
+ static int network_worker_socket_purpose(Socket *socket) {
+@@ -138,7 +244,12 @@
+         r = aos_resource_parent_source_exec_scope(source, scope);
+         if (r < 0)
+                 return r;
+-        original = &enrollment.network_workers[purpose];
++        r = kernel_clone_source_capture_once(&enrollment.network_kernel);
++        if (r < 0)
++                return r;
++        original = network_worker_active((unsigned) purpose);
++        if (!original)
++                return aos_resource_parent_fail(-EOWNERDEAD);
+         original->purpose = (unsigned) purpose;
+         if (original->entered || original->first_error < 0)
+                 return network_worker_refuse(original, original->first_error < 0 ? original->first_error : -EALREADY);
+@@ -173,7 +284,11 @@
+ 
+         if (purpose < 0)
+                 return;
+-        original = &enrollment.network_workers[purpose];
++        original = network_worker_active((unsigned) purpose);
++        if (!original) {
++                (void) aos_resource_parent_fail(-EOWNERDEAD);
++                return;
++        }
+         original->accept_result = result;
+         if (result >= 0)
+                 original->accepted_fd = result;
+@@ -232,10 +347,14 @@
+         if (r < 0)
+                 return r;
+ 
+-        original = &enrollment.network_workers[purpose];
++        original = network_worker_active((unsigned) purpose);
++        if (!original)
++                return aos_resource_parent_fail(-EOWNERDEAD);
+         *ret = original;
+         if (original->entered)
+                 return network_worker_refuse(original, -EALREADY);
++        if (!original->child.prepared || original->child.first_error < 0)
++                return network_worker_refuse(original, -EOWNERDEAD);
+         root_scope = manager_get_unit(UNIT(socket)->manager, "init.scope");
+         if (!root_scope)
+                 return network_worker_refuse(original, -EOWNERDEAD);
+@@ -317,9 +436,11 @@
+ static AosNetworkWorkerOriginal *network_worker_for_service(Service *service) {
+         if (!enrollment.parent.selected)
+                 return NULL;
+-        FOREACH_ELEMENT(original, enrollment.network_workers)
+-                if (UNIT_DEREF(original->worker) == UNIT(service))
+-                        return original;
++        for (AosNetworkChildProgrammeOriginal *programme = enrollment.network_child_source.first;
++             programme; programme = programme->next)
++                FOREACH_ELEMENT(original, programme->workers)
++                        if (UNIT_DEREF(original->worker) == UNIT(service))
++                                return original;
+         return NULL;
+ }
+ 
+@@ -372,7 +493,9 @@
+         /* Selection comes from the accepted native source, independently of
+          * the loaded Slice. A wrong template/Slice cannot become ordinary. */
+         r = aos_network_verify_loaded_fragment_retaining(UNIT(service), &original->image);
+-        return r < 0 ? network_worker_refuse(original, r) : 0;
++        if (r < 0)
++                return network_worker_refuse(original, r);
++        return network_child_prepare_transport(original, service, command, flags);
+ }
+ 
+ /* unit_prepare_exec has already realized the unit's native controls. This
+@@ -380,7 +503,9 @@
+  * is passed directly to the existing atomic CLONE_INTO_CGROUP wrapper. */
+ static int network_worker_capture_cgroup(AosNetworkWorkerOriginal *original, Service *service) {
+         static const char *const names[] = { "memory.max", "pids.max" };
+-        static const char *const expected[] = { "268435456\n", "2\n" };
++        char expected_memory[DECIMAL_STR_MAX(uint64_t) + 1U];
++        char expected_tasks[DECIMAL_STR_MAX(uint64_t) + 1U];
++        const char *expected[] = { expected_memory, expected_tasks };
+         CGroupRuntime *runtime = unit_get_cgroup_runtime(UNIT(service));
+         CGroupContext *context = unit_get_cgroup_context(UNIT(service));
+         const struct rlimit *nofile = service->exec_context.rlimit[RLIMIT_NOFILE];
+@@ -392,23 +517,22 @@
+         original->cgroup_attempted = true;
+         expected_path = strjoina("/aoscomponents.slice/aoscomponents-network.slice/", UNIT(service)->id);
+         if (!runtime || !runtime->cgroup_id || !streq_ptr(runtime->cgroup_path, expected_path) ||
+-            !context || context->delegate || context->memory_max != 268435456U ||
++            !context || context->delegate || context->memory_max == 0 || context->memory_max == CGROUP_LIMIT_MAX ||
+             !service->exec_context.no_new_privileges ||
+             (service->exec_context.capability_bounding_set & (UINT64_C(1) << CAP_SYS_RESOURCE)) ||
+             (context->startup_memory_max_set && context->startup_memory_max != context->memory_max) ||
+-            context->tasks_max.value != 2 || context->tasks_max.scale != 0 ||
+-            !nofile || nofile->rlim_cur != 128 || nofile->rlim_max != 128)
++            context->tasks_max.value == 0 || context->tasks_max.value == CGROUP_LIMIT_MAX || context->tasks_max.scale != 0 ||
++            !nofile || nofile->rlim_cur < 3 || nofile->rlim_cur == RLIM_INFINITY ||
++            nofile->rlim_cur != nofile->rlim_max)
+                 return original->cgroup_result = network_worker_refuse(original, -EPERM);
+ 
+-        /* The trusted systemd executor also starts with this hard bound,
+-         * before its normal per-command rlimit application. No wider inherited
+-         * table is silently charged as the child's 128-entry source. */
+-        original->inherited_nofile_result = getrlimit(RLIMIT_NOFILE, &original->inherited_nofile) < 0 ? -errno : 0;
+-        if (original->inherited_nofile_result < 0)
+-                return original->cgroup_result = network_worker_refuse(original, original->inherited_nofile_result);
+-        if (original->inherited_nofile.rlim_cur != 128 || original->inherited_nofile.rlim_max != 128)
+-                return original->cgroup_result = network_worker_refuse(original, -EPERM);
+-
++        /* Administrative limits come from the same pinned effective fragment;
++         * they are physical backstops, not the additional child fee. */
++        original->child.memory_max = context->memory_max;
++        original->child.nofile = nofile->rlim_cur;
++        original->child.tasks_max = context->tasks_max.value;
++        xsprintf(expected_memory, "%" PRIu64 "\n", original->child.memory_max);
++        xsprintf(expected_tasks, "%" PRIu64 "\n", original->child.tasks_max);
+         original->cgroup_native_path = strjoin("/sys/fs/cgroup", expected_path);
+         if (!original->cgroup_native_path)
+                 return original->cgroup_result = network_worker_refuse(original, -ENOMEM);
+@@ -491,7 +615,7 @@
+ }
+ 
+ static int network_worker_spawn_original(Service *service, ExecCommand *command, ExecFlags flags,
+-                                           FixedCgroupSpawnOriginal **ret, int *ret_cgroup_fd) {
++                                           char * const *argv, FixedCgroupSpawnOriginal **ret, int *ret_cgroup_fd) {
+         AosNetworkWorkerOriginal *original = network_worker_for_service(service);
+         int primary, after;
+ 
+@@ -508,8 +632,35 @@
+         after = network_worker_observe_source(original, 1);
+         if (primary < 0 || after < 0)
+                 return primary < 0 ? primary : after;
++        primary = network_child_capture_events(original);
++        if (primary < 0)
++                return primary;
++
++        /* The same retained initial DIR observes the actual serialized
++         * table at this final crossing. CLOEXEC entries and the collector
++         * itself are copied by clone and therefore remain in this geometry. */
++        if (original->programme->continuation)
++                original->inherited_result = fdset_observe_network_continuation_geometry(
++                        &original->programme->collector, original->purpose, &original->inherited);
++        else
++                original->inherited_result = fdset_observe_network_clone_geometry(
++                        &enrollment.network_collector, original->purpose + 2U, &original->inherited);
++        if (original->inherited_result < 0)
++                return network_worker_refuse(original, original->inherited_result);
++        original->inheritance_cost_result = kernel_clone_dominant_permit(
++                        &original->inherited, argv, &original->inheritance_memory,
++                        &original->inherited_fd_peak);
++        if (original->inheritance_cost_result < 0)
++                return network_worker_refuse(original, original->inheritance_cost_result);
++        original->inheritance_charge_result = aos_resource_parent_require_source_sender(
++                        SERVICE(UNIT_DEREF(original->source)));
++        if (original->inheritance_charge_result >= 0)
++                original->inheritance_charge_result = allocation_account_charge(
++                                original->inheritance_memory, (unsigned) original->inherited_fd_peak);
++        if (original->inheritance_charge_result < 0)
++                return network_worker_refuse(original, original->inheritance_charge_result);
++
+         *ret = &original->clone;
+         *ret_cgroup_fd = original->cgroup_fd;
+         return 1;
+ }
+-
+--- a/src/core/aos-resource-enrollment.c
++++ b/src/core/aos-resource-enrollment.c
+@@ -1,6 +1,7 @@
+ /* SPDX-License-Identifier: LGPL-2.1-or-later */
+ 
+ #include <fcntl.h>
++#include <poll.h>
+ #include <linux/magic.h>
+ #include <linux/capability.h>
+ #include <sys/stat.h>
+@@ -10,7 +11,10 @@
+ #include <unistd.h>
+ 
+ #include "aos-resource-enrollment.h"
++#include "aos-kernel-clone-layout-v1.h"
++#include "aos-kernel-clone-association-v1.h"
+ #include "aos-launch-record.h"
++#include "../libsystemd/sd-event/event-source.h"
+ #include "aos-component-parent.h"
+ #include "aos-fixed-service-profile.h"
+ #include "aos-source-exec.h"
+@@ -21,6 +25,7 @@
+ #include "cgroup-util.h"
+ #include "cgroup.h"
+ #include "fd-util.h"
++#include "hexdecoct.h"
+ #include "mountpoint-util.h"
+ #include "initrd-util.h"
+ #include "load-fragment.h"
+@@ -33,6 +38,18 @@
+ #include "sha256.h"
+ #include "string-util.h"
+ #include "strv.h"
++
++/* The generated DATA must describe the target ABI used by this manager.
++ * Running-image applicability is still a separate retained native check. */
++assert_cc(AOS_KERNEL_CLONE_V1_FORMAT == 1);
++assert_cc(AOS_KERNEL_CLONE_V1_FILE_POINTER_BYTES == sizeof(void*));
++assert_cc(AOS_KERNEL_CLONE_V1_FILE_POINTER_BYTES == 8);
++assert_cc(AOS_KERNEL_CLONE_V1_BITS_PER_LONG == sizeof(unsigned long) * 8U);
++assert_cc(AOS_KERNEL_CLONE_V1_ULONG_BYTES == sizeof(unsigned long));
++assert_cc((AOS_KERNEL_CLONE_V1_NR_OPEN_DEFAULT & (AOS_KERNEL_CLONE_V1_NR_OPEN_DEFAULT - 1U)) == 0);
++assert_cc(AOS_KERNEL_CLONE_V1_NOTES_BYTES > 0);
++assert_cc(AOS_KERNEL_CLONE_V1_NOTES_BYTES <= 65536U);
++assert_cc(AOS_KERNEL_CLONE_V1_NOTES_BYTES < SSIZE_MAX);
+ 
+ #define AOS_RESOURCE_POLICY_BYTES 776U
+ #define AOS_RESOURCE_POLICY_BODY 744U
+@@ -184,11 +201,62 @@
+ typedef enum AosServiceLaunchPurpose {
+         AOS_SERVICE_LAUNCH_COMPONENT_ORIGIN,
+         AOS_SERVICE_LAUNCH_CONTROLLER_SUCCESSOR,
++        AOS_SERVICE_LAUNCH_NETWORK_CHILD,
+ } AosServiceLaunchPurpose;
++
++/* Actual immutable running-kernel association for the compiled native layout.
++ * The Source M admission pays this complete destination before its first open.
++ * The matching configured kernel artifact is a build dependency, never an RPC
++ * layout/count or an authority supplied by a worker. */
++typedef struct AosKernelCloneSourceOriginal {
++        bool entered;
++        bool complete;
++        int first_error;
++        int fd;
++        int open_result;
++        struct stat before;
++        struct stat after;
++        struct stat named_after;
++        struct statfs filesystem;
++        struct statfs filesystem_after;
++        int stat_result;
++        int filesystem_result;
++        int read_result;
++        int hash_result;
++        int after_result;
++        int named_after_result;
++        int filesystem_after_result;
++        ssize_t length;
++        uint8_t bytes[AOS_KERNEL_CLONE_V1_NOTES_BYTES + 1U];
++        uint8_t digest[32];
++} AosKernelCloneSourceOriginal;
++
++typedef struct AosSourceInitialCloneOriginal {
++        FDSetCloneOriginal geometry;
++        size_t memory;
++        uint64_t files;
++        int cost_result;
++        int charge_result;
++        struct timespec clock[2];
++        int clock_results[2];
++        bool clock_entered[2];
++        bool post_entered;
++        AosParentCheck source_post;
++        int source_post_result;
++        struct stat clone_pidfd_stat;
++        struct stat recipient_pidfd_stat;
++        int clone_pidfd_stat_result;
++        int recipient_pidfd_stat_result;
++        int recipient_verify_result;
++        int sender_post_result;
++} AosSourceInitialCloneOriginal;
++
++#include "aos-network-child-source-types.inc"
+ 
+ /* These two owners are prospective native costs of the original Network M
+  * sender. Neither an accepted UID nor a decoded worker request creates one. */
+ typedef struct AosNetworkWorkerOriginal {
++        AosNetworkChildProgrammeOriginal *programme;
+         bool entered;
+         int first_error;
+         unsigned purpose;
+@@ -207,15 +275,15 @@
+         int peer_fd;
+         int peer_adoption_result;
+         PidRef peer;
+-        int verify_before[2][3];
+-        int acquire_ids[2][3];
+-        uint64_t pidfd_ids[2][3];
+-        int verify_after[2][3];
+-        bool observed[2];
+-        Unit *peer_unit[2];
+-        int parent_profile[2];
+-        int parent_context[2];
+-        int parent_sender[2];
++        int verify_before[3][3];
++        int acquire_ids[3][3];
++        uint64_t pidfd_ids[3][3];
++        int verify_after[3][3];
++        bool observed[3];
++        Unit *peer_unit[3];
++        int parent_profile[3];
++        int parent_context[3];
++        int parent_sender[3];
+         int fragment_result;
+         int loaded_result;
+         int launch_result;
+@@ -242,11 +310,65 @@
+         struct stat named_controls_after[2];
+         int named_controls_after_results[2];
+         int cgroup_result;
+-        struct rlimit inherited_nofile;
+-        int inherited_nofile_result;
++        FDSetCloneOriginal inherited;
++        int inherited_result;
++        uint64_t inherited_fd_peak;
++        size_t inheritance_memory;
++        int inheritance_cost_result;
++        int clone_verify_after[3];
++        bool source_post_entered;
++        AosParentCheck source_post;
++        int source_post_result;
++        int inheritance_charge_result;
+         bool cgroup_attempted;
+         FixedCgroupSpawnOriginal clone;
++        AosNetworkChildOriginal child;
+ } AosNetworkWorkerOriginal;
++
++/* Each successor is appended under the same Source M account before any new
++ * receive, collector or worker birth. Completed originals are never reset. */
++struct AosNetworkChildProgrammeOriginal {
++        AosNetworkChildProgrammeOriginal *previous;
++        AosNetworkChildProgrammeOriginal *next;
++        uint64_t ordinal;
++        unsigned phase;
++        unsigned requests_entered;
++        bool continuation;
++        int fee_result;
++        int allocation_result;
++        AosNetworkChildNativePost append_before;
++        AosNetworkChildNativePost append_after;
++        FDSetNetworkCollectorOriginal collector;
++        AosNetworkWorkerOriginal workers[2];
++        AosNetworkChildRequestOriginal requests[2];
++        AosNetworkChildRequestOriginal arms[2];
++        AosNetworkChildTerminalOriginal terminals[2];
++};
++
++typedef struct AosNetworkChildSourceOriginal {
++        bool entered;
++        int first_error;
++        AosParentLimits aggregate;
++        uint64_t aggregate_id;
++        int aggregate_result;
++        int aggregate_id_result;
++        int rights_set_result;
++        int rights_get_result;
++        int rights_value;
++        sd_event_source *event;
++        int event_result;
++        bool event_disabled;
++        int event_disable_result;
++        AosNetworkChildProgrammeOriginal *first;
++        AosNetworkChildProgrammeOriginal *active;
++        AosNetworkChildNativePost event_stop_after;
++        AosParentCheck initial_source_before;
++        AosParentCheck initial_source_after;
++        int initial_source_before_result;
++        int initial_source_after_result;
++        AosParentCheck aggregate_after;
++        int aggregate_after_result;
++} AosNetworkChildSourceOriginal;
+ 
+ /* Each closed component service retains its own original transport and observations.
+  * Service cleanup releases only the delivery copy, never this origin owner. */
+@@ -426,7 +548,16 @@
+         AosSourceOrigin mount_origin;
+         AosSourceOrigin network_origin;
+         AosSourceOrigin boot_preparation_origin;
+-        AosNetworkWorkerOriginal network_workers[2];
++        AosNetworkChildProgrammeOriginal network_programme;
++        AosKernelCloneSourceOriginal network_kernel;
++        FDSetNetworkCollectorOriginal network_collector;
++        FDSetCloneOriginal network_initial_clone;
++        AosSourceInitialCloneOriginal network_initial_clone_original;
++        AosNetworkChildSourceOriginal network_child_source;
++        AosKernelCloneSourceOriginal boot_kernel;
++        FDSetNetworkCollectorOriginal boot_collector;
++        FDSetCloneOriginal boot_initial_clone;
++        AosSourceInitialCloneOriginal boot_initial_clone_original;
+         AosControllerRestart controller_restart;
+         AosResourceServiceCPU controller_cpu;
+         AosResourceServiceCPU storage_cpu;
+@@ -524,14 +655,23 @@
+         .cache_origin = AOS_COMPONENT_ORIGIN_EMPTY,
+         .mount_origin = AOS_COMPONENT_ORIGIN_EMPTY,
+         .network_origin = AOS_COMPONENT_ORIGIN_EMPTY,
+-        .network_workers = {
++        .network_kernel = { .fd = -EBADF },
++        .network_child_source = {
++                .aggregate = { .directory_fd = -EBADF, .control_fds = { -EBADF, -EBADF, -EBADF } },
++        },
++        .boot_kernel = { .fd = -EBADF },
++        .network_programme = { .workers = {
+                 { .accepted_fd = -EBADF, .peer_fd = -EBADF, .peer = PIDREF_NULL,
+                   .cgroup_fd = -EBADF, .control_fds = { -EBADF, -EBADF },
+-                  .clone = { .pidfd = -EBADF, .duplicate_pidfd = -EBADF } },
++                  .clone = { .pidfd = -EBADF, .duplicate_pidfd = -EBADF },
++                  .child = { .executable_fd = -EBADF, .event_fd = -EBADF,
++                             .transport = { .sockets = { -EBADF, -EBADF }, .recipient = PIDREF_NULL } } },
+                 { .accepted_fd = -EBADF, .peer_fd = -EBADF, .peer = PIDREF_NULL,
+                   .cgroup_fd = -EBADF, .control_fds = { -EBADF, -EBADF },
+-                  .clone = { .pidfd = -EBADF, .duplicate_pidfd = -EBADF } },
+-        },
++                  .clone = { .pidfd = -EBADF, .duplicate_pidfd = -EBADF },
++                  .child = { .executable_fd = -EBADF, .event_fd = -EBADF,
++                             .transport = { .sockets = { -EBADF, -EBADF }, .recipient = PIDREF_NULL } } },
++        } },
+         .controller_restart = {
+                 .current_transport = { .sockets = { -EBADF, -EBADF }, .recipient = PIDREF_NULL },
+                 .pending_transport = { .sockets = { -EBADF, -EBADF }, .recipient = PIDREF_NULL },
+@@ -1706,6 +1846,12 @@
+                 if (service->n_extra_fds != 0 || service->n_fd_store != 0)
+                         return -EPERM;
+                 break;
++        case AOS_SERVICE_LAUNCH_NETWORK_CHILD:
++                name = "aos-network-child-origin-v2";
++                slot = 0;
++                if (service->n_extra_fds != 0 || service->n_fd_store != 0)
++                        return -EPERM;
++                break;
+         case AOS_SERVICE_LAUNCH_CONTROLLER_SUCCESSOR:
+                 name = "aos-resource-controller-successor-v1";
+                 slot = 2;
+@@ -1745,7 +1891,7 @@
+                 if (original->passpidfd_results[i] < 0)
+                         return original->passpidfd_results[i];
+         }
+-        if (purpose == AOS_SERVICE_LAUNCH_COMPONENT_ORIGIN) {
++        if (IN_SET(purpose, AOS_SERVICE_LAUNCH_COMPONENT_ORIGIN, AOS_SERVICE_LAUNCH_NETWORK_CHILD)) {
+                 service->extra_fds = allocation_account_calloc(1, sizeof(ServiceExtraFD));
+                 original->allocation_result = service->extra_fds ? 0 : -ENOMEM;
+                 if (original->allocation_result < 0)
+@@ -1826,7 +1972,13 @@
+         }
+ }
+ 
++static int network_child_prepare_transport(AosNetworkWorkerOriginal *worker, Service *service,
++                                            ExecCommand *command, ExecFlags flags);
++static int network_child_capture_events(AosNetworkWorkerOriginal *worker);
++static int network_child_source_begin(Service *service);
++
+ #include "aos-network-worker-source.inc"
++#include "aos-network-child-source.inc"
+ 
+ static bool source_origin_selected(Service *service) {
+         return source_origin_original(service) != NULL;
+@@ -1864,8 +2016,31 @@
+         return 2U + 1U + 2U + 4U + 4U + 1U + 2U + 20U + 2U + 4U;
+ }
+ 
++/* This is a closed fixed-cost supplier for the already-installed Parent.
++ * It reads no caller geometry, performs no native IO and grants no fit. */
++static size_t source_parent_growth_memory(void) {
++        AosResourceParent *parent = aos_resource_parent_original();
++        size_t bytes;
++
++        if (!parent->installed || parent->nofile_after_result < 0 ||
++            parent->nofile_after.rlim_cur == RLIM_INFINITY ||
++            kernel_clone_parent_growth_permit(parent->nofile_after.rlim_cur, &bytes) < 0)
++                return SIZE_MAX;
++        return bytes;
++}
++
+ size_t aos_resource_network_origin_memory(void) {
+-        return aos_resource_source_origin_memory() + sizeof(enrollment.network_workers);
++        size_t fixed = aos_resource_source_origin_memory() + sizeof(enrollment.network_programme) +
++                sizeof(enrollment.network_kernel) + sizeof(enrollment.network_collector) +
++                sizeof(enrollment.network_initial_clone) + sizeof(enrollment.network_initial_clone_original) +
++                sizeof(enrollment.network_child_source) +
++                /* source_new(SOURCE_IO) allocates through the io member.
++                 * The complete actual type is a conservative upper permit. */
++                3U * sizeof(sd_event_source) +
++                fdset_network_collector_header_memory();
++        size_t total;
++
++        return kernel_clone_add(fixed, source_parent_growth_memory(), &total) < 0 ? SIZE_MAX : total;
+ }
+ 
+ unsigned aos_resource_network_origin_files(void) {
+@@ -1874,15 +2049,27 @@
+          * One failed image lookup holds all12 native leaves and prevents every
+          * later new primary. Positive image leaves close only after its full
+          * parser/path/identity conjunction. No financial charge is refunded. */
+-        return aos_resource_source_origin_files() + 2U * (2U + 1U + 4U + 3U) + AOS_NETWORK_IMAGE_READ_FILES;
++        return aos_resource_source_origin_files() + 2U * (2U + 1U + 4U + 3U) +
++               AOS_NETWORK_IMAGE_READ_FILES + 2U +
++               /* Each child: pair, Service copy, transport PIDFD, executable,
++                * events; two request, two ARMED and two terminal PIDFDs; one ancestor plus
++                * three controls. All failed receive debt remains retained. */
++               2U * 7U + 6U + 4U;
+ }
+ 
+ size_t aos_resource_boot_preparation_origin_memory(void) {
+-        return aos_resource_source_origin_memory();
++        size_t fixed = aos_resource_source_origin_memory() + sizeof(enrollment.boot_kernel) +
++                sizeof(enrollment.boot_collector) + sizeof(enrollment.boot_initial_clone) +
++                sizeof(enrollment.boot_initial_clone_original) + fdset_network_collector_header_memory();
++        size_t total;
++
++        return kernel_clone_add(fixed, source_parent_growth_memory(), &total) < 0 ? SIZE_MAX : total;
+ }
+ 
+ unsigned aos_resource_boot_preparation_origin_files(void) {
+-        return aos_resource_source_origin_files();
++        /* The retained procfs collector and immutable running-notes original
++         * are simultaneous with the existing Source delivery/exec flight. */
++        return aos_resource_source_origin_files() + 2U;
+ }
+ 
+ size_t aos_resource_ownership_origin_memory(void) {
+@@ -1949,8 +2136,44 @@
+             !FLAGS_SET(flags, EXEC_PASS_FDS))
+                 return spawn_result;
+         int r = service_launch_spawn_returned(&original->transport, service, spawn_result, recipient);
++        AosSourceInitialCloneOriginal *clone = original == &enrollment.network_origin ?
++                &enrollment.network_initial_clone_original : original == &enrollment.boot_preparation_origin ?
++                &enrollment.boot_initial_clone_original : NULL;
++        int after = 0;
++
++        /* Every entered native clone owes the independent Source-control,
++         * clone-PIDFD, returned-recipient and clock cuts before any primary
++         * failure is projected. No failed post creates a successor attempt. */
++        if (clone && original->clone.attempted) {
++                if (clone->post_entered)
++                        return source_exec_refuse(service, r < 0 ? r : -EALREADY);
++                clone->post_entered = true;
++                clone->source_post_result = aos_resource_parent_source_clone_post(
++                        service, &original->exec_claim, &clone->source_post);
++                clone->clone_pidfd_stat_result = fstat(original->clone.pidfd, &clone->clone_pidfd_stat) < 0 ? -errno : 0;
++                clone->recipient_pidfd_stat_result = recipient ?
++                        (fstat(recipient->fd, &clone->recipient_pidfd_stat) < 0 ? -errno : 0) : -ESRCH;
++                clone->recipient_verify_result = recipient ? pidref_verify(recipient) : -ESRCH;
++                clone->sender_post_result = aos_resource_parent_require_source_sender(service);
++                after = source_initial_clone_clock(original, clone, 1);
++                if (clone->source_post_result < 0)
++                        after = clone->source_post_result;
++                else if (clone->clone_pidfd_stat_result < 0)
++                        after = clone->clone_pidfd_stat_result;
++                else if (clone->recipient_pidfd_stat_result < 0)
++                        after = clone->recipient_pidfd_stat_result;
++                else if (clone->recipient_verify_result < 0)
++                        after = clone->recipient_verify_result;
++                else if (clone->sender_post_result < 0)
++                        after = clone->sender_post_result;
++                else if (clone->clone_pidfd_stat.st_dev != clone->recipient_pidfd_stat.st_dev ||
++                         clone->clone_pidfd_stat.st_ino != clone->recipient_pidfd_stat.st_ino)
++                        after = -EOWNERDEAD;
++        }
+         if (r < 0)
+                 return source_origin_refuse(service, r);
++        if (after < 0)
++                return source_exec_refuse(service, after);
+         /* Only a positive actual clone result permits disposal of this parent
+          * bootstrap alias. Leaving it non-CLOEXEC in PID1 would leak Source's
+          * channel into unrelated later executor children. The actual child
+@@ -2100,7 +2323,7 @@
+         if (original->send_results[3] < 0)
+                 return source_origin_refuse(service, original->send_results[3]);
+         original->transport.delivered = true;
+-        return 0;
++        return original == &enrollment.network_origin ? network_child_source_begin(service) : 0;
+ }
+ 
+ static int source_exec_refuse(Service *service, int error) {
+@@ -2137,11 +2360,6 @@
+             params->exec_fd < 0 || !sd_id128_equal(original->transport.invocation, unit->invocation_id))
+                 return source_exec_refuse(service, -EOWNERDEAD);
+         original->exec_prepared = true;
+-        /* The Boot producer cannot use the old post-exec inheritance invoice.
+-         * Its distinct M original must join the shared complete kernel-birth
+-         * supplier before this serialization boundary can be selected. */
+-        if (source_origin_role(service) == AOS_FIXED_PROFILE_BOOT_PREPARATION)
+-                return source_exec_refuse(service, -EOPNOTSUPP);
+         r = aos_resource_parent_source_environment(service, params);
+         if (r < 0)
+                 return source_exec_refuse(service, r);
+@@ -2161,8 +2379,21 @@
+         original->bootstrap_result = original->bootstrap_fd < 0 ? -errno : 0;
+         if (original->bootstrap_result < 0)
+                 return source_exec_refuse(service, original->bootstrap_result);
+-        original->inherited_result = fdset_observe_inheritance_geometry(original->exec_claim.nofile,
+-                                                                        &original->inherited);
++        /* The same kernel source belongs to the initial birth too. Its
++         * original M admission precedes these fixed native reads. Network's
++         * one prepaid DIR simultaneously records the old post-exec envelope
++         * and the complete copied table, then stays for the two later clones.
++         * Other Source roles retain their original consuming walker. */
++        if (original == &enrollment.network_origin || original == &enrollment.boot_preparation_origin) {
++                FDSetNetworkCollectorOriginal *collector = original == &enrollment.network_origin ?
++                        &enrollment.network_collector : &enrollment.boot_collector;
++                FDSetCloneOriginal *geometry = original == &enrollment.network_origin ?
++                        &enrollment.network_initial_clone : &enrollment.boot_initial_clone;
++                original->inherited_result = fdset_observe_network_initial_geometry(original->exec_claim.nofile,
++                                collector, &original->inherited, geometry);
++        } else
++                original->inherited_result = fdset_observe_inheritance_geometry(original->exec_claim.nofile,
++                                                                                &original->inherited);
+         if (original->inherited_result < 0)
+                 return source_exec_refuse(service, original->inherited_result);
+         if (original->inherited.high_descriptors > UINT64_MAX - original->exec_claim.nofile)
+@@ -2193,7 +2424,7 @@
+ }
+ 
+ int aos_resource_source_spawn_original(Unit *unit, ExecCommand *command, ExecFlags flags,
+-                                       FixedCgroupSpawnOriginal **ret, int *ret_cgroup_fd) {
++                                       char * const *argv, FixedCgroupSpawnOriginal **ret, int *ret_cgroup_fd) {
+         AosSourceOrigin *original;
+         Service *service;
+         int r;
+@@ -2211,6 +2442,32 @@
+             original->clone.attempted || original->exec_claim.limits.directory_fd < 0 ||
+             original->transport.unit != unit || !sd_id128_equal(original->transport.invocation, unit->invocation_id))
+                 return source_exec_refuse(service, -EOWNERDEAD);
++        if (original == &enrollment.network_origin || original == &enrollment.boot_preparation_origin) {
++                AosKernelCloneSourceOriginal *kernel = original == &enrollment.network_origin ?
++                        &enrollment.network_kernel : &enrollment.boot_kernel;
++                FDSetNetworkCollectorOriginal *collector = original == &enrollment.network_origin ?
++                        &enrollment.network_collector : &enrollment.boot_collector;
++                AosSourceInitialCloneOriginal *clone = original == &enrollment.network_origin ?
++                        &enrollment.network_initial_clone_original : &enrollment.boot_initial_clone_original;
++                r = kernel_clone_source_capture_once(kernel);
++                if (r < 0)
++                        return source_exec_refuse(service, r);
++                r = fdset_observe_network_clone_geometry(collector, 1, &clone->geometry);
++                if (r < 0)
++                        return source_exec_refuse(service, r);
++                clone->cost_result = kernel_clone_dominant_permit(
++                        &clone->geometry, argv,
++                        &clone->memory, &clone->files);
++                if (clone->cost_result < 0)
++                        return source_exec_refuse(service, clone->cost_result);
++                clone->charge_result = allocation_account_charge(
++                        clone->memory, (unsigned) clone->files);
++                if (clone->charge_result < 0)
++                        return source_exec_refuse(service, clone->charge_result);
++                r = source_initial_clone_clock(original, clone, 0);
++                if (r < 0)
++                        return source_exec_refuse(service, r);
++        }
+         *ret = &original->clone;
+         *ret_cgroup_fd = original->exec_claim.limits.directory_fd;
+         return 1;
+@@ -3092,10 +3349,25 @@
+         if (worker) {
+                 worker->launch_result = spawn_result;
+                 if (spawn_result < 0)
++                        (void) network_worker_refuse(worker, spawn_result);
++                /* The physical Source-control post and PIDFD bookends are
++                 * independent debts, including after a failed native clone. */
++                if (worker->clone.attempted && !worker->source_post_entered) {
++                        worker->source_post_entered = true;
++                        worker->source_post_result = aos_resource_parent_source_clone_post(
++                                SERVICE(UNIT_DEREF(worker->source)), &enrollment.network_origin.exec_claim,
++                                &worker->source_post);
++                }
++                int after = network_worker_observe_source(worker, 2);
++                if (spawn_result < 0)
+                         return network_worker_refuse(worker, spawn_result);
++                if (worker->source_post_result < 0)
++                        return network_worker_refuse(worker, worker->source_post_result);
++                if (after < 0)
++                        return after;
+                 if (!worker->clone.attempted || worker->clone.spawn_result != 0 || worker->clone.pidfd < 0)
+                         return network_worker_refuse(worker, -EOWNERDEAD);
+-                return spawn_result;
++                return network_child_spawn_returned(worker, service, spawn_result, recipient);
+         }
+         if (!controller_launch_selected(UNIT(service)) || command != service->exec_command[SERVICE_EXEC_START] ||
+             !FLAGS_SET(flags, EXEC_PASS_FDS))
+@@ -3116,7 +3388,7 @@
+ }
+ 
+ int aos_resource_service_spawn_original(Unit *unit, ExecCommand *command, ExecFlags flags,
+-                                        FixedCgroupSpawnOriginal **ret, int *ret_cgroup_fd) {
++                                        char * const *argv, FixedCgroupSpawnOriginal **ret, int *ret_cgroup_fd) {
+         FixedCgroupSpawnOriginal *source = NULL, *controller = NULL;
+         int source_cgroup = -EBADF, controller_cgroup = -EBADF;
+         FixedCgroupSpawnOriginal *root = aos_resource_root_spawn_original(unit);
+@@ -3125,10 +3397,10 @@
+         *ret = NULL;
+         *ret_cgroup_fd = -EBADF;
+         if (unit->type == UNIT_SERVICE && network_worker_requires_original(SERVICE(unit)))
+-                return network_worker_spawn_original(SERVICE(unit), command, flags, ret, ret_cgroup_fd);
++                return network_worker_spawn_original(SERVICE(unit), command, flags, argv, ret, ret_cgroup_fd);
+         if (aos_resource_root_protected_unit(unit) && !root)
+                 return -EOWNERDEAD;
+-        r = aos_resource_source_spawn_original(unit, command, flags, &source, &source_cgroup);
++        r = aos_resource_source_spawn_original(unit, command, flags, argv, &source, &source_cgroup);
+         if (r < 0)
+                 return r;
+         if ((r > 0) != (source && source_cgroup >= 0))
+--- a/src/core/aos-resource-enrollment.h
++++ b/src/core/aos-resource-enrollment.h
+@@ -72,10 +72,10 @@
+ 
+ int aos_resource_require_launch_sender(Service *service, ExecCommand *command, ExecFlags flags);
+ int aos_resource_service_spawn_original(Unit *unit, ExecCommand *command, ExecFlags flags,
+-                                        FixedCgroupSpawnOriginal **ret, int *ret_cgroup_fd);
++                                        char * const *argv, FixedCgroupSpawnOriginal **ret, int *ret_cgroup_fd);
+ /* Source F owns this genuine original implementation; no passive substitute. */
+ int aos_resource_source_spawn_original(Unit *unit, ExecCommand *command, ExecFlags flags,
+-                                       FixedCgroupSpawnOriginal **ret, int *ret_cgroup_fd);
++                                       char * const *argv, FixedCgroupSpawnOriginal **ret, int *ret_cgroup_fd);
+ 
+ /* Fixed socket selection borrows the actual private Network origin account. */
+ typedef struct AosNetworkWorkerOriginal AosNetworkWorkerOriginal;
+--- a/src/core/aos-source-exec-claim.h
++++ b/src/core/aos-source-exec-claim.h
+@@ -28,3 +28,13 @@
+                                              int *ret_fd, const uint8_t **ret_digest);
+ int aos_resource_parent_source_environment(Service *service, const ExecParameters *parameters);
+ int aos_resource_parent_source_exec_current(Service *service, AosSourceExecClaim *claim, unsigned phase);
++
++/* Retains an independently owed physical post under the original Source claim.
++ * The output is native DATA and cannot select a source, account or authority. */
++int aos_resource_parent_source_clone_post(Service *service, AosSourceExecClaim *claim,
++                                          AosParentCheck *post);
++
++int aos_resource_parent_network_aggregate_capture(Service *service, AosSourceExecClaim *claim,
++                                                   AosParentLimits *limits, uint64_t *identity);
++int aos_resource_parent_network_aggregate_post(Service *service, AosSourceExecClaim *claim,
++                                                AosParentLimits *limits, AosParentCheck *post);
+--- a/src/core/execute.c
++++ b/src/core/execute.c
+@@ -593,21 +593,25 @@
+         /* The executor binary is pinned, to avoid compatibility problems during upgrades. */
+         FixedCgroupSpawnOriginal *fixed_spawn;
+         int fixed_cgroup_fd;
+-        r = aos_resource_service_spawn_original(unit, command, params->flags, &fixed_spawn, &fixed_cgroup_fd);
++        char **fixed_argv = source_bootstrap >= 0 ?
++                STRV_MAKE(unit->manager->executor_path, "--deserialize", serialization_fd_number,
++                          "--log-level", max_log_levels, "--log-target", log_target_to_string(manager_get_executor_log_target(unit->manager)),
++                          "--aos-source-origin", source_fd_number, "--aos-source-nofile", source_nofile_number) :
++                STRV_MAKE(unit->manager->executor_path, "--deserialize", serialization_fd_number,
++                          "--log-level", max_log_levels, "--log-target", log_target_to_string(manager_get_executor_log_target(unit->manager)));
++        r = aos_resource_service_spawn_original(unit, command, params->flags, fixed_argv,
++                                               &fixed_spawn, &fixed_cgroup_fd);
+         if (r < 0)
+                 return log_unit_error_errno(unit, r, "Missing original fixed service clone custody: %m");
+         if (fixed_spawn && source_bootstrap >= 0)
+                 r = posix_spawn_wrapper_fixed_cgroup(
+                         FORMAT_PROC_FD_PATH(unit->manager->executor_fd),
+-                        STRV_MAKE(unit->manager->executor_path, "--deserialize", serialization_fd_number,
+-                                  "--log-level", max_log_levels, "--log-target", log_target_to_string(manager_get_executor_log_target(unit->manager)),
+-                                  "--aos-source-origin", source_fd_number, "--aos-source-nofile", source_nofile_number),
++                        fixed_argv,
+                         environ, fixed_cgroup_fd, fixed_spawn, &pidref);
+         else if (fixed_spawn)
+                 r = posix_spawn_wrapper_fixed_cgroup(
+                         FORMAT_PROC_FD_PATH(unit->manager->executor_fd),
+-                        STRV_MAKE(unit->manager->executor_path, "--deserialize", serialization_fd_number,
+-                                  "--log-level", max_log_levels, "--log-target", log_target_to_string(manager_get_executor_log_target(unit->manager))),
++                        fixed_argv,
+                         environ, fixed_cgroup_fd, fixed_spawn, &pidref);
+         else
+                 r = posix_spawn_wrapper(
+--- a/src/shared/aos-launch-record.c
++++ b/src/shared/aos-launch-record.c
+@@ -7,30 +7,15 @@
+ #include "macro.h"
+ #include "socket-util.h"
+ 
+-int aos_launch_record_receive_once(AosLaunchRecord *record, int socket, AosLaunchRecordShape shape) {
+-        size_t bytes;
++static int launch_record_receive_body(AosLaunchRecord *record, int socket, uint8_t *payload, size_t bytes) {
+         struct cmsghdr *header;
+ 
+         assert(record);
+         if (record->attempted)
+                 return record->receive_result < 0 ? record->receive_result : -EALREADY;
+-        switch (shape) {
+-        case AOS_LAUNCH_RECORD_128:
+-                bytes = 129; /* Detect an overlong record without accepting its prefix. */
+-                break;
+-        case AOS_LAUNCH_RECORD_SOURCE_BUDGET_368:
+-                bytes = 369;
+-                break;
+-        case AOS_LAUNCH_RECORD_SOURCE_COMPLETION_304:
+-                bytes = 305;
+-                break;
+-        default:
+-                return -EINVAL;
+-        }
+-
+         record->attempted = true;
+         record->kernel_pidfd = -EBADF;
+-        struct iovec iov = { .iov_base = record->payload, .iov_len = bytes };
++        struct iovec iov = { .iov_base = payload, .iov_len = bytes };
+         struct msghdr message = {
+                 .msg_iov = &iov, .msg_iovlen = 1,
+                 .msg_control = record->control.bytes, .msg_controllen = sizeof(record->control.bytes),
+@@ -81,3 +66,31 @@
+ 
+         return 0;
+ }
++
++int aos_launch_record_receive_once(AosLaunchRecord *record, int socket, AosLaunchRecordShape shape) {
++        size_t bytes;
++
++        assert(record);
++        if (record->attempted)
++                return record->receive_result < 0 ? record->receive_result : -EALREADY;
++        switch (shape) {
++        case AOS_LAUNCH_RECORD_128:
++                bytes = 129; /* Detect an overlong record without accepting its prefix. */
++                break;
++        case AOS_LAUNCH_RECORD_SOURCE_BUDGET_368:
++                bytes = 369;
++                break;
++        case AOS_LAUNCH_RECORD_SOURCE_COMPLETION_304:
++                bytes = 305;
++                break;
++        default:
++                return -EINVAL;
++        }
++
++        return launch_record_receive_body(record, socket, record->payload, bytes);
++}
++
++int aos_launch_record_receive_network_borrow_once(AosNetworkBorrowRecord *record, int socket) {
++        assert(record);
++        return launch_record_receive_body(&record->native, socket, record->payload, sizeof(record->payload));
++}
+--- a/src/shared/aos-launch-record.h
++++ b/src/shared/aos-launch-record.h
+@@ -34,3 +34,12 @@
+ /* Once entered, the complete actual outcome and every installed descriptor
+  * stay in the supplied native sample, including malformed ancillary data. */
+ int aos_launch_record_receive_once(AosLaunchRecord *record, int socket, AosLaunchRecordShape shape);
++
++/* A distinct closed Network prebirth receive preserves every existing launch
++ * shape and its native storage. This DATA cannot create a receiving origin. */
++typedef struct AosNetworkBorrowRecord {
++        AosLaunchRecord native;
++        uint8_t payload[497];
++} AosNetworkBorrowRecord;
++
++int aos_launch_record_receive_network_borrow_once(AosNetworkBorrowRecord *record, int socket);
+--- a/src/shared/fdset.c
++++ b/src/shared/fdset.c
+@@ -1,6 +1,9 @@
+ /* SPDX-License-Identifier: LGPL-2.1-or-later */
+ 
+ #include <fcntl.h>
++#include <linux/magic.h>
++#include <stddef.h>
++#include <pthread.h>
+ #include <unistd.h>
+ 
+ #include "sd-daemon.h"
+@@ -164,37 +167,54 @@
+         return set_remove(MAKE_SET(s), FD_TO_PTR(fd)) ? fd : -ENOENT;
+ }
+ 
+-static int fdset_scan(
++static int fdset_scan_engine(
+                 int filter_cloexec, /* if < 0 takes all fds, otherwise only those with O_CLOEXEC set (1) or unset (0) */
+                 FDSet **ret,
+                 uint64_t nofile,
+-                FDSetInheritanceGeometry *geometry) {
++                FDSetInheritanceGeometry *geometry,
++                FDSetCloneOriginal *clone,
++                FDSetNetworkCollectorOriginal *collector) {
+ 
+         _cleanup_(fdset_shallow_freep) FDSet *s = NULL;
+         _cleanup_closedir_ DIR *d = NULL;
+         int r;
+ 
+-        assert(ret || geometry);
++        assert(ret || geometry || clone);
+ 
+         /* Creates an fdset and fills in all currently open file descriptors. Also set all collected fds
+          * to CLOEXEC. */
+ 
+-        d = opendir("/proc/self/fd");
+-        if (!d) {
+-                if (errno == ENOENT && proc_mounted() == 0)
+-                        return log_debug_errno(SYNTHETIC_ERRNO(ENOSYS),
+-                                               "Failed to open /proc/self/fd/, /proc/ is not mounted.");
+-
+-                return log_debug_errno(errno, "Failed to open /proc/self/fd/: %m");
+-        }
+-
+-        if (!geometry) {
++        DIR *scan;
++        if (collector && collector->directory)
++                scan = collector->directory;
++        else {
++                d = opendir("/proc/self/fd");
++                if (collector)
++                        collector->open_result = d ? 0 : -errno;
++                if (!d) {
++                        /* The retained branch already owns its real opening
++                         * errno. It must not add an unretained mount probe. */
++                        if (collector)
++                                return collector->open_result;
++                        if (errno == ENOENT && proc_mounted() == 0)
++                                return log_debug_errno(SYNTHETIC_ERRNO(ENOSYS),
++                                                       "Failed to open /proc/self/fd/, /proc/ is not mounted.");
++
++                        return log_debug_errno(errno, "Failed to open /proc/self/fd/: %m");
++                }
++
++                scan = d;
++                if (collector)
++                        collector->directory = TAKE_PTR(d);
++        }
++
++        if (!geometry && !clone) {
+                 s = fdset_new();
+                 if (!s)
+                         return -ENOMEM;
+         }
+ 
+-        FOREACH_DIRENT(de, d, return -errno) {
++        FOREACH_DIRENT(de, scan, return -errno) {
+                 int fd;
+ 
+                 if (!IN_SET(de->d_type, DT_LNK, DT_UNKNOWN))
+@@ -204,9 +224,18 @@
+                 if (fd < 0)
+                         return fd;
+ 
+-                if (fd < 3)
+-                        continue;
+-                if (fd == dirfd(d))
++                /* Clone geometry counts every actual position, including
++                 * standard and CLOEXEC descriptors and this held collector.
++                 * The simultaneous post-exec envelope keeps its old filter. */
++                if (clone) {
++                        if (clone->descriptors == UINT64_MAX)
++                                return -EOVERFLOW;
++                        clone->descriptors++;
++                        clone->highest_fd = MAX(clone->highest_fd, (uint64_t) fd);
++                        if (!geometry)
++                                continue;
++                }
++                if (fd < 3 || fd == dirfd(scan))
+                         continue;
+ 
+                 if (filter_cloexec >= 0) {
+@@ -275,6 +304,169 @@
+         return 0;
+ }
+ 
++static int fdset_scan(int filter_cloexec, FDSet **ret, uint64_t nofile,
++                      FDSetInheritanceGeometry *geometry) {
++        return fdset_scan_engine(filter_cloexec, ret, nofile, geometry, NULL, NULL);
++}
++
++/* The existing source already reserves the bounded 1 MiB glibc directory
++ * buffer. Price its public-ABI header in addition before the initial open;
++ * the native collector owner itself is included by the source's sizeof bill. */
++size_t fdset_network_collector_header_memory(void) {
++        return sizeof(pthread_mutex_t) + 2U * sizeof(int) + 3U * sizeof(size_t) +
++               sizeof(off_t) + 2U * sizeof(max_align_t) + sizeof(struct stat);
++}
++
++static int fdset_network_collector_enter(FDSetNetworkCollectorOriginal *collector, unsigned phase) {
++        assert(collector);
++        if (collector->first_error < 0)
++                return collector->first_error;
++        if (phase >= ELEMENTSOF(collector->entered) || phase != collector->completed || collector->entered[phase])
++                return collector->first_error = -EALREADY;
++        collector->entered[phase] = true;
++        if (phase == 0) {
++                collector->directory = opendir("/proc/self/fd");
++                collector->open_result = collector->directory ? 0 : -errno;
++                return collector->open_result;
++        }
++        if (!collector->directory)
++                return collector->first_error = -EOWNERDEAD;
++
++        /* Pinned glibc2.39 Linux rewinddir performs one lseek and resets the
++         * same buffer. It does not allocate or install a descriptor. Its void
++         * API leaves that syscall's errno available; positive libc locking
++         * does not replace it. A negative rewind never permits a scan. */
++        errno = 0;
++        rewinddir(collector->directory);
++        collector->rewind_results[phase] = errno == 0 ? 0 : -errno;
++        if (collector->rewind_results[phase] < 0)
++                return collector->first_error = collector->rewind_results[phase];
++        return 0;
++}
++
++/* The same opened procfs directory is checked before each read and after
++ * every entered open/rewind/read, including a failed primary. These physical
++ * Results stay in distinct prepaid cells; no new descriptor is installed. */
++static int fdset_network_collector_before(FDSetNetworkCollectorOriginal *collector, unsigned phase) {
++        int fd = dirfd(collector->directory), first = 0;
++
++        collector->stat_before_results[phase] = fstat(fd, &collector->before[phase]) < 0 ? -errno : 0;
++        collector->filesystem_before_results[phase] = fstatfs(fd, &collector->filesystem_before[phase]) < 0 ? -errno : 0;
++        if (collector->stat_before_results[phase] < 0)
++                first = collector->stat_before_results[phase];
++        else if (collector->filesystem_before_results[phase] < 0)
++                first = collector->filesystem_before_results[phase];
++        else if (!S_ISDIR(collector->before[phase].st_mode) || collector->before[phase].st_uid != geteuid() ||
++                 collector->before[phase].st_gid != getegid() || collector->filesystem_before[phase].f_type != PROC_SUPER_MAGIC ||
++                 (phase > 0 && (collector->before[phase].st_dev != collector->before[0].st_dev ||
++                                collector->before[phase].st_ino != collector->before[0].st_ino)))
++                first = -EOWNERDEAD;
++        collector->before_results[phase] = first;
++        return first;
++}
++
++static int fdset_network_collector_after(FDSetNetworkCollectorOriginal *collector, unsigned phase) {
++        int fd = dirfd(collector->directory), first = 0;
++
++        collector->stat_after_results[phase] = fstat(fd, &collector->after[phase]) < 0 ? -errno : 0;
++        collector->filesystem_after_results[phase] = fstatfs(fd, &collector->filesystem_after[phase]) < 0 ? -errno : 0;
++        collector->named_after_results[phase] = stat("/proc/self/fd", &collector->named_after[phase]) < 0 ? -errno : 0;
++        if (collector->stat_after_results[phase] < 0)
++                first = collector->stat_after_results[phase];
++        else if (collector->filesystem_after_results[phase] < 0)
++                first = collector->filesystem_after_results[phase];
++        else if (collector->named_after_results[phase] < 0)
++                first = collector->named_after_results[phase];
++        else if (!S_ISDIR(collector->after[phase].st_mode) || collector->after[phase].st_uid != geteuid() ||
++                 collector->after[phase].st_gid != getegid() || collector->filesystem_after[phase].f_type != PROC_SUPER_MAGIC ||
++                 collector->after[phase].st_dev != collector->before[phase].st_dev ||
++                 collector->after[phase].st_ino != collector->before[phase].st_ino ||
++                 collector->named_after[phase].st_dev != collector->after[phase].st_dev ||
++                 collector->named_after[phase].st_ino != collector->after[phase].st_ino ||
++                 collector->named_after[phase].st_mode != collector->after[phase].st_mode ||
++                 collector->named_after[phase].st_uid != collector->after[phase].st_uid ||
++                 collector->named_after[phase].st_gid != collector->after[phase].st_gid)
++                first = -EOWNERDEAD;
++        collector->after_results[phase] = first;
++        return first;
++}
++
++static int fdset_network_collector_finish(FDSetNetworkCollectorOriginal *collector, unsigned phase, int result) {
++        collector->scan_results[phase] = result;
++        if (result < 0)
++                return collector->first_error = result;
++        collector->completed++;
++        return 0;
++}
++
++int fdset_observe_network_initial_geometry(uint64_t nofile, FDSetNetworkCollectorOriginal *collector,
++                                           FDSetInheritanceGeometry *geometry, FDSetCloneOriginal *clone) {
++        int primary, after = 0;
++        assert(geometry);
++        assert(clone);
++        if (clone->attempted)
++                return clone->result < 0 ? clone->result : -EALREADY;
++        clone->attempted = true;
++        if (nofile < 3)
++                return clone->result = -EINVAL;
++        primary = fdset_network_collector_enter(collector, 0);
++        if (primary == 0)
++                primary = fdset_network_collector_before(collector, 0);
++        if (primary == 0) {
++                *geometry = (FDSetInheritanceGeometry) { .descriptors = 3 };
++                primary = fdset_scan_engine(0, NULL, nofile, geometry, clone, collector);
++        }
++        if (collector->directory)
++                after = fdset_network_collector_after(collector, 0);
++        clone->result = primary < 0 ? primary : after;
++        return fdset_network_collector_finish(collector, 0, clone->result);
++}
++
++int fdset_observe_network_clone_geometry(FDSetNetworkCollectorOriginal *collector, unsigned phase,
++                                         FDSetCloneOriginal *original) {
++        int primary, after = 0;
++        assert(original);
++        if (original->attempted)
++                return original->result < 0 ? original->result : -EALREADY;
++        original->attempted = true;
++        if (phase == 0 || phase >= 4)
++                return original->result = -EINVAL;
++        primary = fdset_network_collector_enter(collector, phase);
++        if (!collector->entered[phase])
++                return original->result = primary;
++        if (primary == 0)
++                primary = fdset_network_collector_before(collector, phase);
++        if (primary == 0)
++                primary = fdset_scan_engine(-1, NULL, 0, NULL, original, collector);
++        if (collector->directory)
++                after = fdset_network_collector_after(collector, phase);
++        original->result = primary < 0 ? primary : after;
++        return fdset_network_collector_finish(collector, phase, original->result);
++}
++
++int fdset_observe_network_continuation_geometry(FDSetNetworkCollectorOriginal *collector, unsigned phase,
++                                                FDSetCloneOriginal *original) {
++        int primary, after = 0;
++
++        assert(original);
++        if (original->attempted)
++                return original->result < 0 ? original->result : -EALREADY;
++        original->attempted = true;
++        if (phase >= 2)
++                return original->result = -EINVAL;
++        primary = fdset_network_collector_enter(collector, phase);
++        if (!collector->entered[phase])
++                return original->result = primary;
++        if (primary == 0)
++                primary = fdset_network_collector_before(collector, phase);
++        if (primary == 0)
++                primary = fdset_scan_engine(-1, NULL, 0, NULL, original, collector);
++        if (collector->directory)
++                after = fdset_network_collector_after(collector, phase);
++        original->result = primary < 0 ? primary : after;
++        return fdset_network_collector_finish(collector, phase, original->result);
++}
++
+ int fdset_new_fill(int filter_cloexec, FDSet **ret) {
+         assert(ret);
+         return fdset_scan(filter_cloexec, ret, 0, NULL);
+--- a/src/shared/fdset.h
++++ b/src/shared/fdset.h
+@@ -2,6 +2,9 @@
+ #pragma once
+ 
+ #include <stdint.h>
++#include <dirent.h>
++#include <sys/stat.h>
++#include <sys/vfs.h>
+ 
+ #include "iterator.h"
+ #include "shared-forward.h"
+@@ -28,6 +31,43 @@
+ } FDSetInheritanceGeometry;
+ 
+ int fdset_observe_inheritance_geometry(uint64_t nofile, FDSetInheritanceGeometry *geometry);
++
++/* This native collector belongs to the original Network source. The initial
++ * post-exec inheritance pass and three final all-open clone passes share one
++ * actual DIR and buffer. An errored pass permanently prevents another pass. */
++typedef struct FDSetNetworkCollectorOriginal {
++        DIR *directory;
++        unsigned completed;
++        bool entered[4];
++        int open_result;
++        int rewind_results[4];
++        int scan_results[4];
++        struct stat before[4], after[4], named_after[4];
++        struct statfs filesystem_before[4], filesystem_after[4];
++        int stat_before_results[4], filesystem_before_results[4];
++        int stat_after_results[4], filesystem_after_results[4], named_after_results[4];
++        int before_results[4], after_results[4];
++        int first_error;
++} FDSetNetworkCollectorOriginal;
++
++/* A partial clone observation is DATA; its native collector remains on the
++ * same original source. No descriptor, directory or payer can be adopted. */
++typedef struct FDSetCloneOriginal {
++        uint64_t descriptors;
++        uint64_t highest_fd;
++        int result;
++        bool attempted;
++} FDSetCloneOriginal;
++
++size_t fdset_network_collector_header_memory(void);
++int fdset_observe_network_initial_geometry(uint64_t nofile, FDSetNetworkCollectorOriginal *collector,
++                                           FDSetInheritanceGeometry *geometry, FDSetCloneOriginal *clone);
++int fdset_observe_network_clone_geometry(FDSetNetworkCollectorOriginal *collector, unsigned phase,
++                                         FDSetCloneOriginal *original);
++/* A new Source-M-paid continuation owns a distinct two-walk collector.
++ * It cannot rewind or borrow the completed initial four-walk original. */
++int fdset_observe_network_continuation_geometry(FDSetNetworkCollectorOriginal *collector, unsigned phase,
++                                                FDSetCloneOriginal *original);
+ int fdset_new_listen_fds(FDSet **ret, bool unset);
+ 
+ int fdset_cloexec(FDSet *fds, bool b);
+--- a/src/test/test-aos-launch-record.c
++++ b/src/test/test-aos-launch-record.c
+@@ -126,4 +126,45 @@
+         assert_se(!aos_host_report_challenge_is_canonical(&report, sizeof(report.challenge), 0));
+ }
+ 
++TEST(network_borrow_uses_its_own_complete_record_and_retains_rights) {
++        _cleanup_close_pair_ int sockets[2] = EBADF_PAIR;
++        _cleanup_close_ int original = -EBADF;
++        AosNetworkBorrowRecord sample = {};
++        uint8_t bytes[496] = {};
++
++        assert_se(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sockets) == 0);
++        original = open("/dev/null", O_RDONLY | O_CLOEXEC);
++        assert_se(original >= 0);
++        memcpy(bytes, "AOSNFR02", 8);
++        bytes[495] = 73;
++        struct iovec iov = { .iov_base = bytes, .iov_len = sizeof(bytes) };
++        assert_se(send_one_fd_iov(sockets[0], original, &iov, 1, MSG_NOSIGNAL) == sizeof(bytes));
++
++        assert_se(aos_launch_record_receive_network_borrow_once(&sample, sockets[1]) == 0);
++        assert_se(sample.native.length == sizeof(bytes) && sample.payload[495] == 73);
++        assert_se(sample.native.rights_count == 1 && sample.native.descriptor_count == 1);
++        int retained = sample.native.descriptors[0];
++        assert_se(fcntl(retained, F_GETFD) >= 0);
++
++        /* This generic native capture grants no child permission. Even an
++         * ancillary shape that its owner rejects must retain actual custody. */
++        assert_se(aos_launch_record_receive_network_borrow_once(&sample, sockets[1]) == -EALREADY);
++        assert_se(sample.native.descriptors[0] == retained && fcntl(retained, F_GETFD) >= 0);
++        safe_close(retained);
++}
++
++TEST(network_borrow_detects_a_long_record_without_truncating_the_old_shapes) {
++        _cleanup_close_pair_ int sockets[2] = EBADF_PAIR;
++        AosNetworkBorrowRecord sample = {};
++        uint8_t bytes[497] = {};
++
++        assert_se(socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sockets) == 0);
++        assert_se(send(sockets[0], bytes, sizeof(bytes), MSG_NOSIGNAL) == sizeof(bytes));
++
++        assert_se(aos_launch_record_receive_network_borrow_once(&sample, sockets[1]) == 0);
++        assert_se(sample.native.length == sizeof(bytes));
++        assert_se(sizeof(((AosLaunchRecord*) 0)->payload) == 369);
++        assert_se(sample.native.descriptor_count == 0);
++}
++
+ DEFINE_TEST_MAIN(LOG_INFO);
+--- a/src/test/test-fdset.c
++++ b/src/test/test-fdset.c
+@@ -2,10 +2,15 @@
+ 
+ #include <fcntl.h>
+ 
++#include "alloc-util.h"
+ #include "fd-util.h"
+ #include "fdset.h"
+ #include "tests.h"
+ #include "tmpfile-util.h"
++#include "strv.h"
++
++#include "../core/aos-kernel-clone-layout-v1.h"
++#include "../core/aos-kernel-clone-cost.inc"
+ 
+ TEST(fdset_new_fill) {
+         _cleanup_fdset_free_ FDSet *fdset = NULL;
+@@ -231,4 +236,102 @@
+         assert_se(fd_validate(inherited) >= 0);
+ }
+ 
++TEST(network_collector_retains_cloexec_and_reuses_directory) {
++        FDSetNetworkCollectorOriginal collector = {};
++        FDSetInheritanceGeometry initial;
++        FDSetCloneOriginal initial_clone = {}, final_initial = {}, prepare = {}, observe = {}, reentry = {};
++        _cleanup_close_ int file = -EBADF, high = -EBADF;
++        int directory_fd;
++
++        file = open("/dev/null", O_RDONLY | O_CLOEXEC);
++        assert_se(file >= 0);
++        high = fcntl(file, F_DUPFD_CLOEXEC, 257);
++        assert_se(high >= 257);
++        assert_se(fdset_observe_network_initial_geometry(128, &collector, &initial, &initial_clone) == 0);
++        assert_se(collector.directory);
++        directory_fd = dirfd(collector.directory);
++        assert_se(directory_fd >= 0);
++
++        assert_se(fdset_observe_network_clone_geometry(&collector, 1, &final_initial) == 0);
++        assert_se(final_initial.descriptors == initial_clone.descriptors);
++        assert_se(fdset_observe_network_clone_geometry(&collector, 2, &prepare) == 0);
++        assert_se(initial_clone.highest_fd >= (uint64_t) high);
++        assert_se(prepare.highest_fd == initial_clone.highest_fd);
++        assert_se(prepare.descriptors == initial_clone.descriptors);
++        assert_se(dirfd(collector.directory) == directory_fd);
++        assert_se(FLAGS_SET(fcntl(high, F_GETFD), FD_CLOEXEC));
++
++        high = safe_close(high);
++        assert_se(fdset_observe_network_clone_geometry(&collector, 3, &observe) == 0);
++        assert_se(observe.descriptors + 1 == prepare.descriptors);
++        assert_se(dirfd(collector.directory) == directory_fd);
++        assert_se(collector.completed == 4);
++        assert_se(fdset_observe_network_clone_geometry(&collector, 3, &reentry) == -EALREADY);
++        assert_se(fd_validate(directory_fd) >= 0);
++
++        /* Only this test's completed whole pair is being disposed. */
++        assert_se(closedir(collector.directory) == 0);
++}
++
++TEST(network_collector_rewind_failure_keeps_original_and_blocks_next_pass) {
++        FDSetNetworkCollectorOriginal collector = {};
++        FDSetInheritanceGeometry initial;
++        FDSetCloneOriginal initial_clone = {}, prepare = {}, observe = {};
++
++        assert_se(fdset_observe_network_initial_geometry(128, &collector, &initial, &initial_clone) == 0);
++        assert_se(collector.directory);
++        assert_se(close(dirfd(collector.directory)) == 0);
++
++        assert_se(fdset_observe_network_clone_geometry(&collector, 1, &prepare) == -EBADF);
++        assert_se(collector.rewind_results[1] == -EBADF);
++        assert_se(collector.stat_after_results[1] == -EBADF);
++        assert_se(collector.filesystem_after_results[1] == -EBADF);
++        assert_se(collector.named_after_results[1] == 0);
++        assert_se(collector.first_error == -EBADF);
++        assert_se(collector.completed == 1);
++        assert_se(collector.directory);
++        assert_se(fdset_observe_network_clone_geometry(&collector, 2, &observe) == -EBADF);
++        assert_se(!collector.entered[2]);
++
++        /* The injected descriptor loss makes close fail, while libc still
++         * destroys this test's original directory allocation. */
++        assert_se(closedir(collector.directory) == -1);
++        assert_se(errno == EBADF);
++}
++
++TEST(clone_stack_counts_the_terminal_null_at_page_boundary) {
++        const size_t page = AOS_KERNEL_CLONE_V1_PAGE_BYTES;
++        const size_t fixed_stack = 512U + 32U * 1024U;
++        const size_t arguments = (page - fixed_stack % page) / sizeof(void*);
++        FDSetCloneOriginal geometry = {
++                .descriptors = 3,
++                .highest_fd = 2,
++                .attempted = true,
++        };
++        _cleanup_free_ char **argv = new0(char*, arguments + 1U);
++        size_t memory, table, parent_table, without_null, parent_growth;
++        uint64_t files;
++
++        assert_se(argv);
++        for (size_t i = 0; i < arguments; i++)
++                argv[i] = (char*) "x";
++        assert_se((fixed_stack + arguments * sizeof(void*)) % page == 0);
++
++        assert_se(kernel_clone_dominant_permit(&geometry, argv, &memory, &files) == 0);
++        assert_se(kernel_clone_fdtable_permit(geometry.highest_fd, &table) == 0);
++        assert_se(kernel_clone_fdtable_permit(geometry.highest_fd + 4U, &parent_table) == 0);
++        assert_se(kernel_clone_page_permit(fixed_stack + arguments * sizeof(void*), &without_null) == 0);
++        assert_se(memory == table + parent_table + without_null + page);
++        assert_se(files == 4);
++
++        /* The selected x86-64/4KiB build exercises exactly448 real entries. */
++        if (page == 4096U && sizeof(void*) == 8U)
++                assert_se(arguments == 448U);
++
++        assert_se(kernel_clone_parent_growth_permit(AOS_KERNEL_CLONE_V1_NR_OPEN_DEFAULT, &parent_growth) == 0);
++        assert_se(parent_growth == 0);
++        assert_se(kernel_clone_parent_growth_permit(2U * AOS_KERNEL_CLONE_V1_NR_OPEN_DEFAULT, &parent_growth) == 0);
++        assert_se(parent_growth > 0);
++}
++
+ DEFINE_TEST_MAIN(LOG_INFO);

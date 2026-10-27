@@ -12,8 +12,24 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -166,6 +182,19 @@ in
               --prefix=$out \
               --disable-static \
               --disable-nls
+          ''
+          else if stdenv.isCross && stdenv.hostPlatform.isLinux
+          then ''
+            # CC_FOR_BUILD deliberately isolates native generators from target
+            # hardening state. Pass this package's existing flexible-array
+            # exception explicitly for yat2m while retaining all other native
+            # compiler-wrapper hardening.
+            CC_FOR_BUILD="$BUILD_CC -fstrict-flex-arrays=1" \
+              ./configure \
+                $configureFlags \
+                --prefix=$out \
+                --disable-static \
+                --disable-nls
           ''
           else ''
             ./configure \

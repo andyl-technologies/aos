@@ -38,12 +38,14 @@
         {
           executable = {
             path = "${package}/bin/aos-var-crypt";
-            arguments = [
-              cfg.pcrPublicKey
-              cfg.signedPcrs
-              cfg.pinnedPcrs
-              cfg.recoveryKeyPath
-            ];
+            arguments =
+              [
+                cfg.pcrPublicKey
+                cfg.signedPcrs
+                cfg.pinnedPcrs
+                cfg.recoveryKeyPath
+              ]
+              ++ lib.optional (cfg.protectedVarContext != null) cfg.protectedVarContext;
           };
           ignore_failure = false;
         }
@@ -112,6 +114,12 @@
   };
 in {
   options.aos.security.measuredVar = {
+    protectedVarContext = lib.mkOption {
+      type = lib.types.nullOr (lib.types.enum ["system_u:object_r:var_t"]);
+      default = null;
+      description = "Exact durable root label required for protected ext4 /var, or null for ordinary state.";
+    };
+
     enable = lib.mkOption {
       type = lib.types.bool;
       default = false;

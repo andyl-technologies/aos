@@ -1,0 +1,858 @@
+--- a/src/core/aos-component-parent.c
++++ b/src/core/aos-component-parent.c
+@@ -58,6 +58,8 @@
+         "aos-sandbox-mountd.service",
+         "aos-netd.service",
+         "aos-sandbox-runtime-publisher.service",
++        "aos-sandbox-controller-floor-initialize.service",
++        "aos-sandbox-storage-floor-initialize.service",
+         "aos-sandbox-cache-signer-views.service",
+         "aos-sandbox-cache-journal-view.service",
+         "aos-sandbox-view-roots.service",
+@@ -193,6 +195,22 @@
+ 
+ static const uint8_t *boot_preparation_sender_vector(void) {
+         return aos_resource_parent_original()->manifest + 2566;
++}
++
++static const uint8_t *method46_initial_vector(AosFixedServiceProfileRole role, bool sender) {
++        unsigned offset;
++
++        switch (role) {
++        case AOS_FIXED_PROFILE_METHOD46_CONTROLLER_INITIAL:
++                offset = sender ? 2918 : 2742;
++                break;
++        case AOS_FIXED_PROFILE_METHOD46_STORAGE_INITIAL:
++                offset = sender ? 3270 : 3094;
++                break;
++        default:
++                return NULL;
++        }
++        return aos_resource_parent_original()->manifest + offset;
+ }
+ 
+ static const uint8_t *fixed_service_vector(AosFixedServiceProfileRole role) {
+@@ -209,6 +227,9 @@
+                 return network_vector();
+         case AOS_FIXED_PROFILE_BOOT_PREPARATION:
+                 return boot_preparation_vector();
++        case AOS_FIXED_PROFILE_METHOD46_CONTROLLER_INITIAL:
++        case AOS_FIXED_PROFILE_METHOD46_STORAGE_INITIAL:
++                return method46_initial_vector(role, false);
+         default:
+                 return NULL;
+         }
+@@ -240,7 +261,9 @@
+ 
+         /* The old canary uses the same unit name. Only an actual selected
+          * canonical Parent row can select the new source-owning purpose. */
+-        if (role == AOS_FIXED_PROFILE_BOOT_PREPARATION && parent_member_index(unit->id) < 0)
++        if (IN_SET(role, AOS_FIXED_PROFILE_BOOT_PREPARATION,
++                         AOS_FIXED_PROFILE_METHOD46_CONTROLLER_INITIAL, AOS_FIXED_PROFILE_METHOD46_STORAGE_INITIAL) &&
++            parent_member_index(unit->id) < 0)
+                 return AOS_FIXED_PROFILE_NONE;
+         return role;
+ }
+@@ -264,12 +287,13 @@
+         bool network_service = false, network_present = false, network_sender_present = false;
+         bool boot_service = false, boot_present = false, boot_sender_present = false;
+         bool source_present = false, sender_present = false, controller_sender_present = false;
+-
+-        if (parent->manifest_bytes < 2774 || memcmp(parent->manifest, "AOSRPE05", 8) != 0)
++        bool initial_service[2] = {}, initial_present[2] = {}, initial_sender_present[2] = {};
++
++        if (parent->manifest_bytes < AOS_PARENT_MIN_BYTES || memcmp(parent->manifest, "AOSRPE06", 8) != 0)
+                 return -EBADMSG;
+         count = parent_u16(parent->manifest + 452);
+         if (count == 0 || count > AOS_PARENT_MEMBERS ||
+-            parent->manifest_bytes != 2774U + count * AOS_PARENT_ROW_BYTES)
++            parent->manifest_bytes != AOS_PARENT_MIN_BYTES + count * AOS_PARENT_ROW_BYTES)
+                 return -EBADMSG;
+         sha256_direct(parent->manifest, parent->manifest_bytes - sizeof(digest), digest);
+         if (memcmp(digest, parent->manifest + parent->manifest_bytes - sizeof(digest), sizeof(digest)) != 0)
+@@ -292,10 +316,18 @@
+                 network_sender_present |= policy_u64(network_sender_vector() + i * 8) != 0;
+                 boot_present |= policy_u64(boot_preparation_vector() + i * 8) != 0;
+                 boot_sender_present |= policy_u64(boot_preparation_sender_vector() + i * 8) != 0;
++                for (unsigned purpose = 0; purpose < 2; purpose++) {
++                        AosFixedServiceProfileRole role = purpose == 0 ?
++                                AOS_FIXED_PROFILE_METHOD46_CONTROLLER_INITIAL : AOS_FIXED_PROFILE_METHOD46_STORAGE_INITIAL;
++
++                        initial_present[purpose] |= policy_u64(method46_initial_vector(role, false) + i * 8) != 0;
++                        initial_sender_present[purpose] |= policy_u64(method46_initial_vector(role, true) + i * 8) != 0;
++                }
+         }
+         if (source_present != sender_present || ownership_present != ownership_sender_present ||
+             cache_present != cache_sender_present || mount_present != mount_sender_present ||
+-            network_present != network_sender_present || boot_present != boot_sender_present)
++            network_present != network_sender_present || boot_present != boot_sender_present ||
++            initial_present[0] != initial_sender_present[0] || initial_present[1] != initial_sender_present[1])
+                 return -EBADMSG;
+ 
+         for (unsigned dimension = 0; dimension < 22; dimension++) {
+@@ -347,6 +379,18 @@
+                 uint64_t network_m = policy_u64(network_sender_vector() + dimension * 8);
+                 uint64_t boot_m = policy_u64(boot_preparation_sender_vector() + dimension * 8);
+                 uint64_t boot = policy_u64(boot_preparation_vector() + dimension * 8);
++                uint64_t initial_f[2], initial_m[2];
++
++                for (unsigned purpose = 0; purpose < 2; purpose++) {
++                        AosFixedServiceProfileRole role = purpose == 0 ?
++                                AOS_FIXED_PROFILE_METHOD46_CONTROLLER_INITIAL : AOS_FIXED_PROFILE_METHOD46_STORAGE_INITIAL;
++
++                        initial_f[purpose] = policy_u64(method46_initial_vector(role, false) + dimension * 8);
++                        initial_m[purpose] = policy_u64(method46_initial_vector(role, true) + dimension * 8);
++                        if (initial_present[purpose] && (dimension < 4 || dimension == 21) &&
++                            (initial_f[purpose] == 0 || initial_m[purpose] == 0))
++                                return -EBADMSG;
++                }
+ 
+                 /* The publisher receiver belongs to the existing HostService,
+                  * not F. Its separate PID1 sender remains inside the same M. */
+@@ -361,7 +405,8 @@
+                 if (m > baseline || f > baseline - m || boot_m > m ||
+                     !aos_fixed_service_subdivisions_fit(m - boot_m, f, source_f, ownership_f, cache_f,
+                                                        source_m, controller_m, ownership_m, cache_m,
+-                                                       mount_f, mount_m, network_f, network_m))
++                                                       mount_f, mount_m, network_f, network_m,
++                                                       initial_f[0], initial_f[1], initial_m[0], initial_m[1]))
+                         return -ERANGE;
+                 if (((mount_present && mount_f == 0) || (network_present && network_f == 0)) &&
+                     (dimension < 4 || dimension == 21))
+@@ -442,6 +487,22 @@
+                         return -ERANGE;
+         }
+ 
++        for (unsigned purpose = 0; purpose < 2; purpose++) {
++                AosFixedServiceProfileRole role = purpose == 0 ?
++                        AOS_FIXED_PROFILE_METHOD46_CONTROLLER_INITIAL : AOS_FIXED_PROFILE_METHOD46_STORAGE_INITIAL;
++                const uint8_t *receiving = method46_initial_vector(role, false);
++                const uint8_t *sending = method46_initial_vector(role, true);
++                uint64_t cpu = policy_u64(receiving), memory = policy_u64(receiving + 8);
++                uint64_t tasks = policy_u64(receiving + 16);
++
++                if (initial_present[purpose] && (cpu < 1000 || cpu % 1000 != 0 || cpu > UINT64_MAX / 10 ||
++                    memory == 0 || memory % 4096 != 0 || memory > INT64_MAX || tasks == 0 || tasks > INT64_MAX ||
++                    source_nofile > policy_u64(receiving + 24) || policy_u64(receiving + 21U * 8U) != 1 ||
++                    policy_u64(sending) == 0 || policy_u64(sending + 8) == 0 || policy_u64(sending + 16) == 0 ||
++                    policy_u64(sending + 24) == 0 || policy_u64(sending + 21U * 8U) != 1))
++                        return -ERANGE;
++        }
++
+         const uint8_t *boot = boot_preparation_vector(), *boot_sender = boot_preparation_sender_vector();
+         if (boot_present && (policy_u64(boot) < 1000 || policy_u64(boot) % 1000 != 0 ||
+             policy_u64(boot) > UINT64_MAX / 10 || policy_u64(boot + 8) == 0 ||
+@@ -483,6 +544,8 @@
+                 mount_service |= streq(name, "aos-sandbox-mountd.service");
+                 network_service |= streq(name, "aos-netd.service");
+                 boot_service |= streq(name, "aos-sandbox-runtime-publisher.service");
++                initial_service[0] |= streq(name, "aos-sandbox-controller-floor-initialize.service");
++                initial_service[1] |= streq(name, "aos-sandbox-storage-floor-initialize.service");
+                 journal |= streq(name, "systemd-journald.service");
+                 runtime_prep |= streq(name, "aos-journald-runtime-prep.service");
+                 for (unsigned file = 1; file <= 4; file++) {
+@@ -507,7 +570,8 @@
+         }
+         if (!slice || !journal || !runtime_prep || source_service != source_present ||
+             ownership_service != ownership_present || cache_service != cache_present ||
+-            mount_service != mount_present || network_service != network_present || boot_service != boot_present)
++            mount_service != mount_present || network_service != network_present || boot_service != boot_present ||
++            initial_service[0] != initial_present[0] || initial_service[1] != initial_present[1])
+                 return -EBADMSG;
+         parent->members = count;
+         return 0;
+@@ -636,7 +700,7 @@
+ static bool parent_empty_signer_dropin(const AosParentFile *original) {
+         AosResourceParent *parent = aos_resource_parent_original();
+ 
+-        if (memcmp(parent->manifest, "AOSRPE05", 8) != 0)
++        if (memcmp(parent->manifest, "AOSRPE06", 8) != 0)
+                 return false;
+         for (unsigned member = 0; member < parent->members; member++) {
+                 AosFixedServiceProfileRole role = aos_fixed_service_role((const char*) parent_row(member));
+@@ -810,7 +874,7 @@
+         if (parent->config_read_results[0] < 0)
+                 return parent_refuse(parent->config_read_results[0]);
+         if (parent->config_read_lengths[0] != 8 || parent->config_stats[0].st_size != 8 ||
+-            memcmp(parent->selector, "AOSRPE05", 8) != 0)
++            memcmp(parent->selector, "AOSRPE06", 8) != 0)
+                 return parent_refuse(-EBADMSG);
+         parent->config_read_lengths[1] = pread(parent->config_fds[1], parent->manifest, sizeof(parent->manifest), 0);
+         parent->config_read_results[1] = parent->config_read_lengths[1] < 0 ? -errno : 0;
+@@ -900,7 +964,9 @@
+              !streq_ptr(unit->id, "aos-sandbox-cache-signerd.service") &&
+              !streq_ptr(unit->id, "aos-sandbox-mountd.service") &&
+              !streq_ptr(unit->id, "aos-netd.service") &&
+-             !(streq_ptr(unit->id, "aos-sandbox-runtime-publisher.service") && parent_member_index(unit->id) >= 0)))
++             !(IN_SET(fixed_service_role(unit), AOS_FIXED_PROFILE_BOOT_PREPARATION,
++                       AOS_FIXED_PROFILE_METHOD46_CONTROLLER_INITIAL, AOS_FIXED_PROFILE_METHOD46_STORAGE_INITIAL) &&
++               parent_member_index(unit->id) >= 0)))
+                 return 0;
+         r = aos_resource_parent_error();
+         if (r < 0)
+@@ -924,11 +990,17 @@
+                 enclosure = 6;
+         else if (fixed_service_role(unit) == AOS_FIXED_PROFILE_BOOT_PREPARATION)
+                 enclosure = 7;
++        else if (fixed_service_role(unit) == AOS_FIXED_PROFILE_METHOD46_CONTROLLER_INITIAL)
++                enclosure = 8;
++        else if (fixed_service_role(unit) == AOS_FIXED_PROFILE_METHOD46_STORAGE_INITIAL)
++                enclosure = 9;
+         else
+                 return 0;
+         if (!context || !aos_resource_parent_original()->installed)
+                 return parent_refuse(-EOWNERDEAD);
+-        vector = enclosure == 7 ? boot_preparation_vector() : enclosure == 6 ? network_vector() : enclosure == 5 ? mount_vector() :
++        vector = enclosure == 9 ? method46_initial_vector(AOS_FIXED_PROFILE_METHOD46_STORAGE_INITIAL, false) :
++                 enclosure == 8 ? method46_initial_vector(AOS_FIXED_PROFILE_METHOD46_CONTROLLER_INITIAL, false) :
++                 enclosure == 7 ? boot_preparation_vector() : enclosure == 6 ? network_vector() : enclosure == 5 ? mount_vector() :
+                  enclosure == 4 ? cache_vector() : enclosure == 3 ? ownership_vector() :
+                  enclosure == 2 ? source_vector() : parent_vector(enclosure);
+         if (project && enclosure == 0) {
+@@ -1005,13 +1077,17 @@
+                                  !unit_has_name(unit, "aos-sandbox-cache-signerd.service") &&
+                                  !unit_has_name(unit, "aos-sandbox-mountd.service") &&
+                                  !unit_has_name(unit, "aos-netd.service") &&
+-                                 role != AOS_FIXED_PROFILE_BOOT_PREPARATION))
++                                 !IN_SET(role, AOS_FIXED_PROFILE_BOOT_PREPARATION,
++                                         AOS_FIXED_PROFILE_METHOD46_CONTROLLER_INITIAL,
++                                         AOS_FIXED_PROFILE_METHOD46_STORAGE_INITIAL)))
+                 return 0;
+         if (parent->first_error < 0)
+                 return parent->first_error;
+         if (role == AOS_FIXED_PROFILE_NONE)
+                 return parent_refuse(-EPERM);
+-        const AosParentSenderAdmission *sender = role == AOS_FIXED_PROFILE_BOOT_PREPARATION ? &parent->boot_preparation_sender :
++        int initial_index = aos_fixed_service_method46_initial_index(role);
++        const AosParentSenderAdmission *sender = initial_index >= 0 ? &parent->method46_initial_sender[initial_index] :
++                role == AOS_FIXED_PROFILE_BOOT_PREPARATION ? &parent->boot_preparation_sender :
+                 role == AOS_FIXED_PROFILE_NETWORK ? &parent->network_sender :
+                 role == AOS_FIXED_PROFILE_MOUNT ? &parent->mount_sender :
+                 role == AOS_FIXED_PROFILE_CACHE ? &parent->cache_sender :
+@@ -1038,6 +1114,14 @@
+              !command->argv || !command->argv[0] || !streq_ptr(command->argv[1], "--boot-preparation-v1") ||
+              command->argv[2]))
+                 return parent_refuse(-EPERM);
++
++        if (initial_index >= 0) {
++                const char *selector = initial_index == 0 ? "--controller-initial-v1" : "--storage-initial-v1";
++
++                if (service->type != SERVICE_ONESHOT || !service->remain_after_exit ||
++                    !command->argv || !command->argv[0] || !streq_ptr(command->argv[1], selector) || command->argv[2])
++                        return parent_refuse(-EPERM);
++        }
+ 
+         int r = socket_require_fixed_origin_activation(service);
+         return r < 0 ? parent_refuse(r) : 0;
+@@ -1299,6 +1383,8 @@
+         PARENT_SENDER_MOUNT,
+         PARENT_SENDER_NETWORK,
+         PARENT_SENDER_BOOT_PREPARATION,
++        PARENT_SENDER_METHOD46_CONTROLLER_INITIAL,
++        PARENT_SENDER_METHOD46_STORAGE_INITIAL,
+         PARENT_SENDER_CONTROLLER_SUCCESSOR,
+ } ParentSenderPurpose;
+ 
+@@ -1318,6 +1404,10 @@
+                 return &parent->network_sender;
+         case PARENT_SENDER_BOOT_PREPARATION:
+                 return &parent->boot_preparation_sender;
++        case PARENT_SENDER_METHOD46_CONTROLLER_INITIAL:
++                return &parent->method46_initial_sender[0];
++        case PARENT_SENDER_METHOD46_STORAGE_INITIAL:
++                return &parent->method46_initial_sender[1];
+         case PARENT_SENDER_CONTROLLER_SUCCESSOR:
+                 return &parent->controller_sender;
+         default:
+@@ -1339,6 +1429,10 @@
+                 return "aos-netd.service";
+         case PARENT_SENDER_BOOT_PREPARATION:
+                 return "aos-sandbox-runtime-publisher.service";
++        case PARENT_SENDER_METHOD46_CONTROLLER_INITIAL:
++                return "aos-sandbox-controller-floor-initialize.service";
++        case PARENT_SENDER_METHOD46_STORAGE_INITIAL:
++                return "aos-sandbox-storage-floor-initialize.service";
+         case PARENT_SENDER_CONTROLLER_SUCCESSOR:
+                 return "aos-sandboxd.service";
+         default:
+@@ -1356,6 +1450,10 @@
+                 return PARENT_SENDER_NETWORK;
+         case AOS_FIXED_PROFILE_BOOT_PREPARATION:
+                 return PARENT_SENDER_BOOT_PREPARATION;
++        case AOS_FIXED_PROFILE_METHOD46_CONTROLLER_INITIAL:
++                return PARENT_SENDER_METHOD46_CONTROLLER_INITIAL;
++        case AOS_FIXED_PROFILE_METHOD46_STORAGE_INITIAL:
++                return PARENT_SENDER_METHOD46_STORAGE_INITIAL;
+         case AOS_FIXED_PROFILE_OWNERSHIP:
+                 return PARENT_SENDER_OWNERSHIP;
+         case AOS_FIXED_PROFILE_SOURCE:
+@@ -1408,6 +1506,17 @@
+                 admission->memory = aos_resource_boot_preparation_origin_memory();
+                 admission->files = aos_resource_boot_preparation_origin_files();
+                 break;
++        case PARENT_SENDER_METHOD46_CONTROLLER_INITIAL:
++        case PARENT_SENDER_METHOD46_STORAGE_INITIAL: {
++                unsigned initial_index = purpose == PARENT_SENDER_METHOD46_CONTROLLER_INITIAL ? 0 : 1;
++                AosFixedServiceProfileRole role = initial_index == 0 ?
++                        AOS_FIXED_PROFILE_METHOD46_CONTROLLER_INITIAL : AOS_FIXED_PROFILE_METHOD46_STORAGE_INITIAL;
++
++                vector = method46_initial_vector(role, true);
++                admission->memory = aos_resource_method46_initial_origin_memory(initial_index);
++                admission->files = aos_resource_method46_initial_origin_files(initial_index);
++                break;
++        }
+         case PARENT_SENDER_CONTROLLER_SUCCESSOR:
+                 vector = controller_sender_vector();
+                 admission->memory = aos_resource_controller_successor_memory();
+@@ -1592,12 +1701,17 @@
+                 return claim->result < 0 ? claim->result : parent_refuse(-EALREADY);
+         claim->attempted = true;
+         AosFixedServiceProfileRole role = fixed_service_role(UNIT(service));
+-        bool *entered = role == AOS_FIXED_PROFILE_BOOT_PREPARATION ? &parent->boot_preparation_exec_entered :
++        int initial_index = aos_fixed_service_method46_initial_index(role);
++        if (role == AOS_FIXED_PROFILE_NONE)
++                return claim->result = parent_refuse(-EOWNERDEAD);
++        bool *entered = initial_index >= 0 ? &parent->method46_initial_exec_entered[initial_index] :
++                role == AOS_FIXED_PROFILE_BOOT_PREPARATION ? &parent->boot_preparation_exec_entered :
+                 role == AOS_FIXED_PROFILE_NETWORK ? &parent->network_exec_entered :
+                 role == AOS_FIXED_PROFILE_MOUNT ? &parent->mount_exec_entered :
+                 role == AOS_FIXED_PROFILE_CACHE ? &parent->cache_exec_entered :
+                 role == AOS_FIXED_PROFILE_OWNERSHIP ? &parent->ownership_exec_entered : &parent->source_exec_entered;
+-        AosSourceExecClaim **original = role == AOS_FIXED_PROFILE_BOOT_PREPARATION ? &parent->boot_preparation_exec_original :
++        AosSourceExecClaim **original = initial_index >= 0 ? &parent->method46_initial_exec_original[initial_index] :
++                role == AOS_FIXED_PROFILE_BOOT_PREPARATION ? &parent->boot_preparation_exec_original :
+                 role == AOS_FIXED_PROFILE_NETWORK ? &parent->network_exec_original :
+                 role == AOS_FIXED_PROFILE_MOUNT ? &parent->mount_exec_original :
+                 role == AOS_FIXED_PROFILE_CACHE ? &parent->cache_exec_original :
+@@ -1739,7 +1853,9 @@
+                                           AosParentCheck *post) {
+         AosResourceParent *parent = aos_resource_parent_original();
+         AosFixedServiceProfileRole role = fixed_service_role(UNIT(service));
+-        AosSourceExecClaim *original = role == AOS_FIXED_PROFILE_NETWORK ? parent->network_exec_original :
++        int initial_index = aos_fixed_service_method46_initial_index(role);
++        AosSourceExecClaim *original = initial_index >= 0 ? parent->method46_initial_exec_original[initial_index] :
++                role == AOS_FIXED_PROFILE_NETWORK ? parent->network_exec_original :
+                 role == AOS_FIXED_PROFILE_BOOT_PREPARATION ? parent->boot_preparation_exec_original : NULL;
+         if (!post || !claim || original != claim || !claim->attempted || claim->result < 0 ||
+             claim->limits.directory_fd < 0)
+@@ -1753,7 +1869,9 @@
+         if (r < 0)
+                 return r;
+         AosFixedServiceProfileRole role = fixed_service_role(UNIT(service));
+-        AosSourceExecClaim *original = role == AOS_FIXED_PROFILE_BOOT_PREPARATION ? parent->boot_preparation_exec_original :
++        int initial_index = aos_fixed_service_method46_initial_index(role);
++        AosSourceExecClaim *original = initial_index >= 0 ? parent->method46_initial_exec_original[initial_index] :
++                role == AOS_FIXED_PROFILE_BOOT_PREPARATION ? parent->boot_preparation_exec_original :
+                 role == AOS_FIXED_PROFILE_NETWORK ? parent->network_exec_original :
+                 role == AOS_FIXED_PROFILE_MOUNT ? parent->mount_exec_original :
+                 role == AOS_FIXED_PROFILE_CACHE ? parent->cache_exec_original :
+--- a/src/core/aos-component-parent.h
++++ b/src/core/aos-component-parent.h
+@@ -10,10 +10,11 @@
+ #include "service.h"
+ #include "sha256.h"
+ 
+-#define AOS_PARENT_MEMBERS 16U
++#define AOS_PARENT_MEMBERS 18U
+ #define AOS_PARENT_ROW_BYTES 1506U
+-#define AOS_PARENT_HEADER_BYTES 2742U
+-#define AOS_PARENT_MAX_BYTES (2774U + AOS_PARENT_MEMBERS * AOS_PARENT_ROW_BYTES)
++#define AOS_PARENT_HEADER_BYTES 3446U
++#define AOS_PARENT_MIN_BYTES (AOS_PARENT_HEADER_BYTES + SHA256_DIGEST_SIZE)
++#define AOS_PARENT_MAX_BYTES (AOS_PARENT_MIN_BYTES + AOS_PARENT_MEMBERS * AOS_PARENT_ROW_BYTES)
+ #define AOS_PARENT_FILE_BYTES 65536U
+ #define AOS_PARENT_CONTROLLERS (CGROUP_MASK_CPU | CGROUP_MASK_MEMORY | CGROUP_MASK_PIDS)
+ 
+@@ -127,6 +128,9 @@
+         AosParentSenderAdmission mount_sender;
+         AosParentSenderAdmission network_sender;
+         AosParentSenderAdmission boot_preparation_sender;
++        AosParentSenderAdmission method46_initial_sender[2];
++        bool method46_initial_exec_entered[2];
++        struct AosSourceExecClaim *method46_initial_exec_original[2];
+         bool boot_preparation_exec_entered;
+         struct AosSourceExecClaim *boot_preparation_exec_original;
+         bool mount_exec_entered;
+--- a/src/core/aos-fixed-service-profile.h
++++ b/src/core/aos-fixed-service-profile.h
+@@ -18,7 +18,21 @@
+         AOS_FIXED_PROFILE_MOUNT = 4,
+         AOS_FIXED_PROFILE_NETWORK = 5,
+         AOS_FIXED_PROFILE_BOOT_PREPARATION = 6,
++        AOS_FIXED_PROFILE_METHOD46_CONTROLLER_INITIAL = 7,
++        AOS_FIXED_PROFILE_METHOD46_STORAGE_INITIAL = 8,
+ } AosFixedServiceProfileRole;
++
++/* Closed array selection only; this numerical result is never a payer. */
++static inline int aos_fixed_service_method46_initial_index(AosFixedServiceProfileRole role) {
++        switch (role) {
++        case AOS_FIXED_PROFILE_METHOD46_CONTROLLER_INITIAL:
++                return 0;
++        case AOS_FIXED_PROFILE_METHOD46_STORAGE_INITIAL:
++                return 1;
++        default:
++                return -1;
++        }
++}
+ 
+ /* These selectors are immutable profile DATA. Only the real Parent/Unit and
+  * authenticated child owners can admit the corresponding financial original. */
+@@ -35,6 +49,10 @@
+                 return AOS_FIXED_PROFILE_NETWORK;
+         if (streq_ptr(name, "aos-sandbox-runtime-publisher.service"))
+                 return AOS_FIXED_PROFILE_BOOT_PREPARATION;
++        if (streq_ptr(name, "aos-sandbox-controller-floor-initialize.service"))
++                return AOS_FIXED_PROFILE_METHOD46_CONTROLLER_INITIAL;
++        if (streq_ptr(name, "aos-sandbox-storage-floor-initialize.service"))
++                return AOS_FIXED_PROFILE_METHOD46_STORAGE_INITIAL;
+         return AOS_FIXED_PROFILE_NONE;
+ }
+ 
+@@ -52,6 +70,10 @@
+                 return "aos-netd.service";
+         case AOS_FIXED_PROFILE_BOOT_PREPARATION:
+                 return "aos-sandbox-runtime-publisher.service";
++        case AOS_FIXED_PROFILE_METHOD46_CONTROLLER_INITIAL:
++                return "aos-sandbox-controller-floor-initialize.service";
++        case AOS_FIXED_PROFILE_METHOD46_STORAGE_INITIAL:
++                return "aos-sandbox-storage-floor-initialize.service";
+         default:
+                 return NULL;
+         }
+@@ -71,6 +93,10 @@
+                 return "/aoscomponents.slice/aoscomponents-network.slice/aos-netd.service";
+         case AOS_FIXED_PROFILE_BOOT_PREPARATION:
+                 return "/aos.slice/aos-control.slice/aos-sandbox-runtime-publisher.service";
++        case AOS_FIXED_PROFILE_METHOD46_CONTROLLER_INITIAL:
++                return "/aoscomponents.slice/aos-sandbox-controller-floor-initialize.service";
++        case AOS_FIXED_PROFILE_METHOD46_STORAGE_INITIAL:
++                return "/aoscomponents.slice/aos-sandbox-storage-floor-initialize.service";
+         default:
+                 return NULL;
+         }
+@@ -90,6 +116,10 @@
+                 return "/sys/fs/cgroup/aoscomponents.slice/aoscomponents-network.slice/aos-netd.service";
+         case AOS_FIXED_PROFILE_BOOT_PREPARATION:
+                 return "/sys/fs/cgroup/aos.slice/aos-control.slice/aos-sandbox-runtime-publisher.service";
++        case AOS_FIXED_PROFILE_METHOD46_CONTROLLER_INITIAL:
++                return "/sys/fs/cgroup/aoscomponents.slice/aos-sandbox-controller-floor-initialize.service";
++        case AOS_FIXED_PROFILE_METHOD46_STORAGE_INITIAL:
++                return "/sys/fs/cgroup/aoscomponents.slice/aos-sandbox-storage-floor-initialize.service";
+         default:
+                 return NULL;
+         }
+@@ -101,15 +131,29 @@
+                 uint64_t m, uint64_t f,
+                 uint64_t source_f, uint64_t ownership_f, uint64_t cache_f,
+                 uint64_t source_m, uint64_t controller_m, uint64_t ownership_m, uint64_t cache_m,
+-                uint64_t mount_f, uint64_t mount_m, uint64_t network_f, uint64_t network_m) {
+-        return source_f <= f && ownership_f <= f - source_f && cache_f <= f - source_f - ownership_f &&
+-               source_m <= m && controller_m <= m - source_m &&
+-               ownership_m <= m - source_m - controller_m &&
+-               cache_m <= m - source_m - controller_m - ownership_m &&
+-               mount_f <= f - source_f - ownership_f - cache_f &&
+-               network_f <= f - source_f - ownership_f - cache_f - mount_f &&
+-               mount_m <= m - source_m - controller_m - ownership_m - cache_m &&
+-               network_m <= m - source_m - controller_m - ownership_m - cache_m - mount_m;
++                uint64_t mount_f, uint64_t mount_m, uint64_t network_f, uint64_t network_m,
++                uint64_t controller_initial_f, uint64_t storage_initial_f,
++                uint64_t controller_initial_m, uint64_t storage_initial_m) {
++        const uint64_t receiving[] = {
++                source_f, ownership_f, cache_f, mount_f, network_f,
++                controller_initial_f, storage_initial_f,
++        };
++        const uint64_t sending[] = {
++                source_m, controller_m, ownership_m, cache_m, mount_m, network_m,
++                controller_initial_m, storage_initial_m,
++        };
++
++        FOREACH_ELEMENT(value, receiving) {
++                if (*value > f)
++                        return false;
++                f -= *value;
++        }
++        FOREACH_ELEMENT(value, sending) {
++                if (*value > m)
++                        return false;
++                m -= *value;
++        }
++        return true;
+ }
+ 
+ static inline bool aos_fixed_service_directories_match(
+@@ -118,7 +162,9 @@
+ 
+         if (!context || !IN_SET(role, AOS_FIXED_PROFILE_SOURCE, AOS_FIXED_PROFILE_OWNERSHIP, AOS_FIXED_PROFILE_CACHE,
+                                      AOS_FIXED_PROFILE_MOUNT, AOS_FIXED_PROFILE_NETWORK,
+-                                     AOS_FIXED_PROFILE_BOOT_PREPARATION))
++                                     AOS_FIXED_PROFILE_BOOT_PREPARATION,
++                                     AOS_FIXED_PROFILE_METHOD46_CONTROLLER_INITIAL,
++                                     AOS_FIXED_PROFILE_METHOD46_STORAGE_INITIAL))
+                 return false;
+ 
+         if (IN_SET(role, AOS_FIXED_PROFILE_MOUNT, AOS_FIXED_PROFILE_NETWORK)) {
+--- a/src/core/aos-resource-enrollment.c
++++ b/src/core/aos-resource-enrollment.c
+@@ -554,6 +554,16 @@
+         bool native_owner_transferred;
+ };
+ 
++/* Each manual purpose owns its full initial-birth/native-post custody.
++ * Neither purpose aliases Network, Boot preparation or the other endpoint. */
++typedef struct AosMethod46InitialSourceOriginal {
++        AosSourceOrigin origin;
++        AosKernelCloneSourceOriginal kernel;
++        FDSetNetworkCollectorOriginal collector;
++        FDSetCloneOriginal initial_clone;
++        AosSourceInitialCloneOriginal initial_clone_original;
++} AosMethod46InitialSourceOriginal;
++
+ typedef struct AosResourceEnrollment {
+         Manager *manager;
+         AosResourceParent parent;
+@@ -581,6 +591,7 @@
+         AosSourceOrigin mount_origin;
+         AosSourceOrigin network_origin;
+         AosSourceOrigin boot_preparation_origin;
++        AosMethod46InitialSourceOriginal method46_initial[2];
+         AosNetworkChildProgrammeOriginal network_programme;
+         AosKernelCloneSourceOriginal network_kernel;
+         FDSetNetworkCollectorOriginal network_collector;
+@@ -695,6 +706,10 @@
+                 .aggregate = { .directory_fd = -EBADF, .control_fds = { -EBADF, -EBADF, -EBADF } },
+         },
+         .boot_kernel = { .fd = -EBADF },
++        .method46_initial = {
++                { .origin = AOS_COMPONENT_ORIGIN_EMPTY, .kernel = { .fd = -EBADF } },
++                { .origin = AOS_COMPONENT_ORIGIN_EMPTY, .kernel = { .fd = -EBADF } },
++        },
+         .network_programme = { .workers = {
+                 { .accepted_fd = -EBADF, .peer_fd = -EBADF, .peer = PIDREF_NULL,
+                   .cgroup_fd = -EBADF, .control_fds = { -EBADF, -EBADF },
+@@ -1996,10 +2011,17 @@
+                 return AOS_FIXED_PROFILE_NONE;
+         AosFixedServiceProfileRole role = aos_fixed_service_role(UNIT(service)->id);
+ 
+-        if (role == AOS_FIXED_PROFILE_BOOT_PREPARATION &&
++        if (IN_SET(role, AOS_FIXED_PROFILE_BOOT_PREPARATION,
++                         AOS_FIXED_PROFILE_METHOD46_CONTROLLER_INITIAL, AOS_FIXED_PROFILE_METHOD46_STORAGE_INITIAL) &&
+             !aos_resource_parent_member_name(UNIT(service)->id))
+                 return AOS_FIXED_PROFILE_NONE;
+         return role;
++}
++
++static AosMethod46InitialSourceOriginal *method46_initial_source_original(Service *service) {
++        int index = aos_fixed_service_method46_initial_index(source_origin_role(service));
++
++        return index >= 0 ? &enrollment.method46_initial[index] : NULL;
+ }
+ 
+ static AosSourceOrigin *source_origin_original(Service *service) {
+@@ -2016,6 +2038,10 @@
+                 return &enrollment.network_origin;
+         case AOS_FIXED_PROFILE_BOOT_PREPARATION:
+                 return &enrollment.boot_preparation_origin;
++        case AOS_FIXED_PROFILE_METHOD46_CONTROLLER_INITIAL:
++                return &enrollment.method46_initial[0].origin;
++        case AOS_FIXED_PROFILE_METHOD46_STORAGE_INITIAL:
++                return &enrollment.method46_initial[1].origin;
+         default:
+                 return NULL;
+         }
+@@ -2118,6 +2144,27 @@
+ unsigned aos_resource_boot_preparation_origin_files(void) {
+         /* The retained procfs collector and immutable running-notes original
+          * are simultaneous with the existing Source delivery/exec flight. */
++        return aos_resource_source_origin_files() + 2U;
++}
++
++size_t aos_resource_method46_initial_origin_memory(unsigned purpose) {
++        size_t fixed, total;
++
++        if (purpose >= ELEMENTSOF(enrollment.method46_initial))
++                return SIZE_MAX;
++        if (kernel_clone_add(aos_resource_source_origin_memory(),
++                             sizeof(AosMethod46InitialSourceOriginal) - sizeof(AosSourceOrigin), &fixed) < 0 ||
++            kernel_clone_add(fixed, fdset_network_collector_header_memory(), &fixed) < 0 ||
++            kernel_clone_add(fixed, source_parent_growth_memory(), &total) < 0)
++                return SIZE_MAX;
++        return total;
++}
++
++unsigned aos_resource_method46_initial_origin_files(unsigned purpose) {
++        if (purpose >= ELEMENTSOF(enrollment.method46_initial))
++                return UINT_MAX;
++        /* A separate collector and running-notes FD remain resident alongside
++         * this purpose's own Source transport/exec originals. */
+         return aos_resource_source_origin_files() + 2U;
+ }
+ 
+@@ -2185,7 +2232,9 @@
+             !FLAGS_SET(flags, EXEC_PASS_FDS))
+                 return spawn_result;
+         int r = service_launch_spawn_returned(&original->transport, service, spawn_result, recipient);
+-        AosSourceInitialCloneOriginal *clone = original == &enrollment.network_origin ?
++        AosMethod46InitialSourceOriginal *manual = method46_initial_source_original(service);
++        AosSourceInitialCloneOriginal *clone = manual && original == &manual->origin ?
++                &manual->initial_clone_original : original == &enrollment.network_origin ?
+                 &enrollment.network_initial_clone_original : original == &enrollment.boot_preparation_origin ?
+                 &enrollment.boot_initial_clone_original : NULL;
+         int after = 0;
+@@ -2284,7 +2333,9 @@
+                 uint8_t *payload = original->payloads[i];
+                 struct iovec iov = { .iov_base = payload, .iov_len = 128 };
+ 
+-                memcpy(payload, source_origin_role(service) == AOS_FIXED_PROFILE_BOOT_PREPARATION ?
++                memcpy(payload, IN_SET(source_origin_role(service), AOS_FIXED_PROFILE_BOOT_PREPARATION,
++                                       AOS_FIXED_PROFILE_METHOD46_CONTROLLER_INITIAL,
++                                       AOS_FIXED_PROFILE_METHOD46_STORAGE_INITIAL) ?
+                                 "AOSRSO03" : source_origin_role(service) == AOS_FIXED_PROFILE_NETWORK ?
+                                 "AOSRSO02" : "AOSRSO01", 8);
+                 payload[8] = i;
+@@ -2433,11 +2484,13 @@
+          * one prepaid DIR simultaneously records the old post-exec envelope
+          * and the complete copied table, then stays for the two later clones.
+          * Other Source roles retain their original consuming walker. */
+-        if (original == &enrollment.network_origin || original == &enrollment.boot_preparation_origin) {
+-                FDSetNetworkCollectorOriginal *collector = original == &enrollment.network_origin ?
+-                        &enrollment.network_collector : &enrollment.boot_collector;
+-                FDSetCloneOriginal *geometry = original == &enrollment.network_origin ?
+-                        &enrollment.network_initial_clone : &enrollment.boot_initial_clone;
++        AosMethod46InitialSourceOriginal *manual = method46_initial_source_original(service);
++        if ((manual && original == &manual->origin) || original == &enrollment.network_origin ||
++            original == &enrollment.boot_preparation_origin) {
++                FDSetNetworkCollectorOriginal *collector = manual ? &manual->collector :
++                        original == &enrollment.network_origin ? &enrollment.network_collector : &enrollment.boot_collector;
++                FDSetCloneOriginal *geometry = manual ? &manual->initial_clone :
++                        original == &enrollment.network_origin ? &enrollment.network_initial_clone : &enrollment.boot_initial_clone;
+                 original->inherited_result = fdset_observe_network_initial_geometry(original->exec_claim.nofile,
+                                 collector, &original->inherited, geometry);
+         } else
+@@ -2491,13 +2544,15 @@
+             original->clone.attempted || original->exec_claim.limits.directory_fd < 0 ||
+             original->transport.unit != unit || !sd_id128_equal(original->transport.invocation, unit->invocation_id))
+                 return source_exec_refuse(service, -EOWNERDEAD);
+-        if (original == &enrollment.network_origin || original == &enrollment.boot_preparation_origin) {
+-                AosKernelCloneSourceOriginal *kernel = original == &enrollment.network_origin ?
+-                        &enrollment.network_kernel : &enrollment.boot_kernel;
+-                FDSetNetworkCollectorOriginal *collector = original == &enrollment.network_origin ?
+-                        &enrollment.network_collector : &enrollment.boot_collector;
+-                AosSourceInitialCloneOriginal *clone = original == &enrollment.network_origin ?
+-                        &enrollment.network_initial_clone_original : &enrollment.boot_initial_clone_original;
++        AosMethod46InitialSourceOriginal *manual = method46_initial_source_original(service);
++        if ((manual && original == &manual->origin) || original == &enrollment.network_origin ||
++            original == &enrollment.boot_preparation_origin) {
++                AosKernelCloneSourceOriginal *kernel = manual ? &manual->kernel :
++                        original == &enrollment.network_origin ? &enrollment.network_kernel : &enrollment.boot_kernel;
++                FDSetNetworkCollectorOriginal *collector = manual ? &manual->collector :
++                        original == &enrollment.network_origin ? &enrollment.network_collector : &enrollment.boot_collector;
++                AosSourceInitialCloneOriginal *clone = manual ? &manual->initial_clone_original :
++                        original == &enrollment.network_origin ? &enrollment.network_initial_clone_original : &enrollment.boot_initial_clone_original;
+                 r = kernel_clone_source_capture_once(kernel);
+                 if (r < 0)
+                         return source_exec_refuse(service, r);
+--- a/src/core/aos-resource-enrollment.h
++++ b/src/core/aos-resource-enrollment.h
+@@ -46,6 +46,8 @@
+ unsigned aos_resource_source_origin_files(void);
+ size_t aos_resource_boot_preparation_origin_memory(void);
+ unsigned aos_resource_boot_preparation_origin_files(void);
++size_t aos_resource_method46_initial_origin_memory(unsigned purpose);
++unsigned aos_resource_method46_initial_origin_files(unsigned purpose);
+ size_t aos_resource_ownership_origin_memory(void);
+ unsigned aos_resource_ownership_origin_files(void);
+ size_t aos_resource_cache_origin_memory(void);
+--- a/src/core/aos-source-executor.c
++++ b/src/core/aos-source-executor.c
+@@ -167,7 +167,7 @@
+             memcmp(original.budget.payload, "AOSSFB01", 8) != 0 ||
+             unaligned_read_be64(original.budget.payload + 104) != (uint64_t) getpid() ||
+             unaligned_read_be64(original.budget.payload + 152) != 1 ||
+-            !IN_SET(unaligned_read_be64(original.budget.payload + 184), 1U, 2U, 3U, 4U, 5U, 6U))
++            !IN_SET(unaligned_read_be64(original.budget.payload + 184), 1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U))
+                 return refuse(-EBADMSG);
+         original.role = unaligned_read_be64(original.budget.payload + 184);
+         uint64_t nofile = unaligned_read_be64(original.budget.payload + 144);
+--- a/src/core/socket.c
++++ b/src/core/socket.c
+@@ -3482,22 +3482,29 @@
+ 
+         role = aos_fixed_service_role(UNIT(service)->id);
+         bool signer = IN_SET(role, AOS_FIXED_PROFILE_SOURCE, AOS_FIXED_PROFILE_CACHE);
+-        bool stdin_listener = !IN_SET(role, AOS_FIXED_PROFILE_OWNERSHIP, AOS_FIXED_PROFILE_BOOT_PREPARATION);
++        int initial_index = aos_fixed_service_method46_initial_index(role);
++        bool stdin_listener = initial_index < 0 &&
++                !IN_SET(role, AOS_FIXED_PROFILE_OWNERSHIP, AOS_FIXED_PROFILE_BOOT_PREPARATION);
+         if (role == AOS_FIXED_PROFILE_NONE || service->socket_fd >= 0 ||
+             service->exec_context.std_input != (stdin_listener ? EXEC_INPUT_SOCKET : EXEC_INPUT_NULL))
+                 return -EPERM;
+ 
+-        const char *socket_unit = role == AOS_FIXED_PROFILE_BOOT_PREPARATION ? "aos-sandbox-runtime-publisher.socket" :
++        const char *socket_unit = initial_index == 0 ? "aos-sandbox-controller-floor-initialize.socket" :
++                initial_index == 1 ? "aos-sandbox-storage-floor-initialize.socket" :
++                role == AOS_FIXED_PROFILE_BOOT_PREPARATION ? "aos-sandbox-runtime-publisher.socket" :
+                 role == AOS_FIXED_PROFILE_MOUNT ? "aos-sandbox-mountd.socket" :
+                 role == AOS_FIXED_PROFILE_NETWORK ? "aos-netd.socket" :
+                 role == AOS_FIXED_PROFILE_CACHE ? "aos-sandbox-cache-signerd.socket" :
+                 signer ? "aos-sandbox-source-signerd.socket" : "aos-sandbox-ownershipd.socket";
+-        const char *socket_path = role == AOS_FIXED_PROFILE_BOOT_PREPARATION ? "/run/aos/sandbox/runtime-deployment.sock" :
++        const char *socket_path = initial_index == 0 ? "/run/aos/sandbox/method46-controller-initial.sock" :
++                initial_index == 1 ? "/run/aos/sandbox/method46-storage-initial.sock" :
++                role == AOS_FIXED_PROFILE_BOOT_PREPARATION ? "/run/aos/sandbox/runtime-deployment.sock" :
+                 role == AOS_FIXED_PROFILE_MOUNT ? "/run/aos/sandbox-mount/control.sock" :
+                 role == AOS_FIXED_PROFILE_NETWORK ? "/run/aos/sandbox-network/control.sock" :
+                 role == AOS_FIXED_PROFILE_CACHE ? "/run/aos/sandbox-cache-signerd.sock" :
+                 signer ? "/run/aos/sandbox-source-signerd.sock" : "/run/aos/sandbox-ownership/control.sock";
+-        const char *fd_name = stdin_listener ? NULL : role == AOS_FIXED_PROFILE_BOOT_PREPARATION ?
++        const char *fd_name = initial_index >= 0 ? "aos-method46-initial-approval" :
++                stdin_listener ? NULL : role == AOS_FIXED_PROFILE_BOOT_PREPARATION ?
+                 "aos-runtime-deployment" : "aos-sandbox-ownership";
+ 
+         UNIT_FOREACH_DEPENDENCY(u, UNIT(service), UNIT_ATOM_TRIGGERED_BY) {
+--- a/src/test/test-aos-fixed-service-profile.c
++++ b/src/test/test-aos-fixed-service-profile.c
+@@ -14,7 +14,7 @@
+         ASSERT_EQ(aos_fixed_service_role("aos-netd@other.service"), AOS_FIXED_PROFILE_NONE);
+         ASSERT_STREQ(aos_fixed_service_native_cgroup(AOS_FIXED_PROFILE_NETWORK),
+                      "/sys/fs/cgroup/aoscomponents.slice/aoscomponents-network.slice/aos-netd.service");
+-        ASSERT_NULL(aos_fixed_service_unit_name(7));
++        ASSERT_NULL(aos_fixed_service_unit_name(9));
+         ASSERT_NULL(aos_fixed_service_cgroup(0));
+         ASSERT_STREQ(aos_fixed_service_unit_name(AOS_FIXED_PROFILE_CACHE), "aos-sandbox-cache-signerd.service");
+         ASSERT_STREQ(aos_fixed_service_cgroup(AOS_FIXED_PROFILE_CACHE),
+@@ -33,22 +33,45 @@
+                      "/aos.slice/aos-control.slice/aos-sandbox-runtime-publisher.service");
+         ASSERT_STREQ(aos_fixed_service_native_cgroup(AOS_FIXED_PROFILE_BOOT_PREPARATION),
+                      "/sys/fs/cgroup/aos.slice/aos-control.slice/aos-sandbox-runtime-publisher.service");
+-        ASSERT_NULL(aos_fixed_service_cgroup(7));
+-        ASSERT_NULL(aos_fixed_service_native_cgroup(7));
++        ASSERT_NULL(aos_fixed_service_cgroup(9));
++        ASSERT_NULL(aos_fixed_service_native_cgroup(9));
++}
++
++TEST(manual_initial_roles_have_distinct_exact_units_and_component_anchors) {
++        ASSERT_EQ(aos_fixed_service_method46_initial_index(AOS_FIXED_PROFILE_METHOD46_CONTROLLER_INITIAL), 0);
++        ASSERT_EQ(aos_fixed_service_method46_initial_index(AOS_FIXED_PROFILE_METHOD46_STORAGE_INITIAL), 1);
++        ASSERT_EQ(aos_fixed_service_method46_initial_index(AOS_FIXED_PROFILE_BOOT_PREPARATION), -1);
++        ASSERT_EQ(aos_fixed_service_method46_initial_index(AOS_FIXED_PROFILE_NONE), -1);
++        ASSERT_EQ(aos_fixed_service_role("aos-sandbox-controller-floor-initialize.service"),
++                  AOS_FIXED_PROFILE_METHOD46_CONTROLLER_INITIAL);
++        ASSERT_EQ(aos_fixed_service_role("aos-sandbox-storage-floor-initialize.service"),
++                  AOS_FIXED_PROFILE_METHOD46_STORAGE_INITIAL);
++        ASSERT_EQ(aos_fixed_service_role("aos-sandbox-controller-floor-initialize@other.service"),
++                  AOS_FIXED_PROFILE_NONE);
++        ASSERT_EQ(aos_fixed_service_role("aos-sandbox-storage-floor-initialize.socket"),
++                  AOS_FIXED_PROFILE_NONE);
++        ASSERT_STREQ(aos_fixed_service_unit_name(AOS_FIXED_PROFILE_METHOD46_CONTROLLER_INITIAL),
++                     "aos-sandbox-controller-floor-initialize.service");
++        ASSERT_STREQ(aos_fixed_service_unit_name(AOS_FIXED_PROFILE_METHOD46_STORAGE_INITIAL),
++                     "aos-sandbox-storage-floor-initialize.service");
++        ASSERT_STREQ(aos_fixed_service_cgroup(AOS_FIXED_PROFILE_METHOD46_CONTROLLER_INITIAL),
++                     "/aoscomponents.slice/aos-sandbox-controller-floor-initialize.service");
++        ASSERT_STREQ(aos_fixed_service_native_cgroup(AOS_FIXED_PROFILE_METHOD46_STORAGE_INITIAL),
++                     "/sys/fs/cgroup/aoscomponents.slice/aos-sandbox-storage-floor-initialize.service");
+ }
+ 
+ TEST(subdivisions_are_checked_in_each_actual_dimension) {
+         /* These scalars are a single passive dimension, never a payer. The
+          * real Parent applies this exact helper to every one of its 22 dimensions. */
+-        ASSERT_TRUE(aos_fixed_service_subdivisions_fit(20, 12, 2, 3, 7, 2, 3, 4, 11, 0, 0, 0, 0));
+-        ASSERT_FALSE(aos_fixed_service_subdivisions_fit(20, 12, 2, 3, 8, 2, 3, 4, 11, 0, 0, 0, 0));
+-        ASSERT_FALSE(aos_fixed_service_subdivisions_fit(20, 12, 2, 3, 7, 2, 3, 4, 12, 0, 0, 0, 0));
++        ASSERT_TRUE(aos_fixed_service_subdivisions_fit(20, 12, 2, 3, 7, 2, 3, 4, 11, 0, 0, 0, 0, 0, 0, 0, 0));
++        ASSERT_FALSE(aos_fixed_service_subdivisions_fit(20, 12, 2, 3, 8, 2, 3, 4, 11, 0, 0, 0, 0, 0, 0, 0, 0));
++        ASSERT_FALSE(aos_fixed_service_subdivisions_fit(20, 12, 2, 3, 7, 2, 3, 4, 12, 0, 0, 0, 0, 0, 0, 0, 0));
+         ASSERT_FALSE(aos_fixed_service_subdivisions_fit(UINT64_MAX, UINT64_MAX,
+-                UINT64_MAX, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0));
++                UINT64_MAX, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0));
+         ASSERT_FALSE(aos_fixed_service_subdivisions_fit(UINT64_MAX, UINT64_MAX,
+-                0, 0, 0, UINT64_MAX, 0, 0, 1, 0, 0, 0, 0));
++                0, 0, 0, UINT64_MAX, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0));
+         ASSERT_TRUE(aos_fixed_service_subdivisions_fit(UINT64_MAX, UINT64_MAX,
+-                UINT64_MAX, 0, 0, UINT64_MAX, 0, 0, 0, 0, 0, 0, 0));
++                UINT64_MAX, 0, 0, UINT64_MAX, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0));
+ }
+ 
+ static ExecContext finite_context(const char *identity) {
+@@ -79,6 +102,25 @@
+         context.dynamic_user = false;
+         context.directories[EXEC_DIRECTORY_STATE].n_items = 1;
+         ASSERT_FALSE(aos_fixed_service_context_matches(&context, AOS_FIXED_PROFILE_CACHE));
++}
++
++TEST(manual_initial_contexts_cannot_add_helpers_or_automatic_directories) {
++        AosFixedServiceProfileRole role;
++
++        FOREACH_ARGUMENT(role, AOS_FIXED_PROFILE_METHOD46_CONTROLLER_INITIAL,
++                               AOS_FIXED_PROFILE_METHOD46_STORAGE_INITIAL) {
++                ExecContext context = finite_context("root");
++
++                ASSERT_TRUE(aos_fixed_service_context_matches(&context, role));
++                context.capability_bounding_set = CAP_TO_MASK(CAP_SYS_ADMIN);
++                ASSERT_FALSE(aos_fixed_service_context_matches(&context, role));
++                context.capability_bounding_set = 0;
++                context.directories[EXEC_DIRECTORY_STATE].n_items = 1;
++                ASSERT_FALSE(aos_fixed_service_context_matches(&context, role));
++                context.directories[EXEC_DIRECTORY_STATE].n_items = 0;
++                context.pam_name = (char*) "unexpected-helper";
++                ASSERT_FALSE(aos_fixed_service_context_matches(&context, role));
++        }
+ }
+ 
+ TEST(existing_source_and_ownership_contexts_remain_distinct) {
+@@ -131,11 +173,24 @@
+ }
+ 
+ TEST(new_subdivisions_remain_inside_the_original_totals) {
+-        ASSERT_TRUE(aos_fixed_service_subdivisions_fit(30, 30, 2, 3, 4, 2, 3, 4, 5, 6, 7, 8, 9));
+-        ASSERT_FALSE(aos_fixed_service_subdivisions_fit(30, 30, 2, 3, 4, 2, 3, 4, 5, 6, 7, 16, 9));
+-        ASSERT_FALSE(aos_fixed_service_subdivisions_fit(30, 30, 2, 3, 4, 2, 3, 4, 5, 6, 7, 8, 10));
++        ASSERT_TRUE(aos_fixed_service_subdivisions_fit(30, 30, 2, 3, 4, 2, 3, 4, 5, 6, 7, 8, 9, 0, 0, 0, 0));
++        ASSERT_FALSE(aos_fixed_service_subdivisions_fit(30, 30, 2, 3, 4, 2, 3, 4, 5, 6, 7, 16, 9, 0, 0, 0, 0));
++        ASSERT_FALSE(aos_fixed_service_subdivisions_fit(30, 30, 2, 3, 4, 2, 3, 4, 5, 6, 7, 8, 10, 0, 0, 0, 0));
+         ASSERT_FALSE(aos_fixed_service_subdivisions_fit(UINT64_MAX, UINT64_MAX,
+-                0, 0, 0, 0, 0, 0, 0, UINT64_MAX, 0, 1, 0));
++                0, 0, 0, 0, 0, 0, 0, UINT64_MAX, 0, 1, 0, 0, 0, 0, 0));
++}
++
++TEST(manual_subdivisions_cannot_overlap_or_wrap_the_existing_reservations) {
++        ASSERT_TRUE(aos_fixed_service_subdivisions_fit(20, 20,
++                2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 5, 5, 4, 4));
++        ASSERT_FALSE(aos_fixed_service_subdivisions_fit(20, 20,
++                2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 6, 5, 4, 4));
++        ASSERT_FALSE(aos_fixed_service_subdivisions_fit(20, 20,
++                2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 5, 5, 5, 4));
++        ASSERT_FALSE(aos_fixed_service_subdivisions_fit(UINT64_MAX, UINT64_MAX,
++                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, UINT64_MAX, 1, 0, 0));
++        ASSERT_FALSE(aos_fixed_service_subdivisions_fit(UINT64_MAX, UINT64_MAX,
++                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, UINT64_MAX, 1));
+ }
+ 
+ DEFINE_TEST_MAIN(LOG_INFO);
+--- a/src/core/load-fragment.c
++++ b/src/core/load-fragment.c
+@@ -6493,8 +6493,8 @@
+         if (r < 0)
+                 return r;
+         bool canonical_absent = false;
+-        r = aos_resource_open_image_resource(selector ? "resource-parent-enclosure-required-v5" :
+-                                                       "resource-parent-enclosure-v5", &canonical_absent);
++        r = aos_resource_open_image_resource(selector ? "resource-parent-enclosure-required-v6" :
++                                                       "resource-parent-enclosure-v6", &canonical_absent);
+         if (!canonical_absent) {
+                 if (absent)
+                         *absent = false;
+@@ -6505,8 +6505,11 @@
+          * this exact descriptor before its permanent obsolete-selection refusal;
+          * it never reads or accepts the old format as a positive Parent. */
+         bool obsolete_absent = false;
+-        r = aos_resource_open_image_resource(selector ? "resource-parent-enclosure-required-v4" :
+-                                                       "resource-parent-enclosure-v4", &obsolete_absent);
++        r = aos_resource_open_image_resource(selector ? "resource-parent-enclosure-required-v5" :
++                                                       "resource-parent-enclosure-v5", &obsolete_absent);
++        if (obsolete_absent)
++                r = aos_resource_open_image_resource(selector ? "resource-parent-enclosure-required-v4" :
++                                                               "resource-parent-enclosure-v4", &obsolete_absent);
+         if (obsolete_absent)
+                 r = aos_resource_open_image_resource(selector ? "resource-parent-enclosure-required-v3" :
+                                                                "resource-parent-enclosure-v3", &obsolete_absent);

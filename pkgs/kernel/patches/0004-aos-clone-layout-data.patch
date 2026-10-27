@@ -1,0 +1,88 @@
+diff --git a/Kbuild b/Kbuild
+--- a/Kbuild
++++ b/Kbuild
+@@ -40,16 +40,27 @@
+ 
+ targets += kernel/sched/rq-offsets.s
+ 
+ kernel/sched/rq-offsets.s: $(offsets-file)
+ 
+ $(rq-offsets-file): kernel/sched/rq-offsets.s FORCE
+ 	$(call filechk,offsets,__RQ_OFFSETS_H__)
+ 
++# Target-compiled FD-table DATA follows the ordinary generated bounds.
++# It is extracted from assembly and is never linked into the kernel.
++clone-layout-file := include/generated/aos-kernel-clone-layout-v1.h
++
++targets += kernel/aos-clone-layout.s
++
++kernel/aos-clone-layout.s: $(rq-offsets-file)
++
++$(clone-layout-file): kernel/aos-clone-layout.s FORCE
++	$(call filechk,offsets,__AOS_KERNEL_CLONE_LAYOUT_V1_H__)
++
+ # Check for missing system calls
+ 
+ missing-syscalls-file := .tmp_missing-syscalls$(missing_syscalls_instance)
+ 
+ targets += $(missing-syscalls-file)
+ 
+ quiet_cmd_syscalls = CALL    $< $(addprefix for ,$(missing_syscalls_instance))
+       cmd_syscalls = DEPFILE=$(depfile) $(CONFIG_SHELL) $< $(CC) $(c_flags) $(missing_syscalls_flags); touch $@
+@@ -82,17 +93,17 @@
+ 
+ targets += $(atomic-checks)
+ $(atomic-checks): $(obj)/.checked-%: include/linux/atomic/%  FORCE
+ 	$(call if_changed,check_sha1)
+ 
+ # A phony target that depends on all the preparation targets
+ 
+ PHONY += prepare
+-prepare: $(offsets-file) missing-syscalls $(atomic-checks)
++prepare: $(offsets-file) $(clone-layout-file) missing-syscalls $(atomic-checks)
+ 	@:
+ 
+ # Ordinary directory descending
+ # ---------------------------------------------------------------------------
+ 
+ obj-y			+= init/
+ obj-y			+= usr/
+ obj-y			+= arch/$(SRCARCH)/
+diff --git a/kernel/aos-clone-layout.c b/kernel/aos-clone-layout.c
+new file mode 100644
+--- /dev/null
++++ b/kernel/aos-clone-layout.c
+@@ -0,0 +1,33 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Build-only DATA for the configured kernel's private FD-table copy.
++ *
++ * The target compiler emits these constants through the existing Kbuild
++ * offsets extractor. No helper is executed or linked into the kernel.
++ * Runtime consumers must independently match the running kernel's notes
++ * and prepay their conservative dominant-buffer demand under the real
++ * parent/service limits; these facts grant no allocation or spawn authority.
++ */
++
++#define COMPILE_OFFSETS
++
++#include <linux/cache.h>
++#include <linux/fdtable.h>
++#include <linux/kbuild.h>
++#include <asm/page.h>
++
++int main(void)
++{
++	DEFINE(AOS_KERNEL_CLONE_V1_FORMAT, 1);
++	DEFINE(AOS_KERNEL_CLONE_V1_FILES_STRUCT_BYTES, sizeof(struct files_struct));
++	DEFINE(AOS_KERNEL_CLONE_V1_FDTABLE_BYTES, sizeof(struct fdtable));
++	DEFINE(AOS_KERNEL_CLONE_V1_FILE_POINTER_BYTES, sizeof(struct file *));
++	DEFINE(AOS_KERNEL_CLONE_V1_ULONG_BYTES, sizeof(unsigned long));
++	DEFINE(AOS_KERNEL_CLONE_V1_BITS_PER_LONG, BITS_PER_LONG);
++	DEFINE(AOS_KERNEL_CLONE_V1_NR_OPEN_DEFAULT, NR_OPEN_DEFAULT);
++	DEFINE(AOS_KERNEL_CLONE_V1_L1_CACHE_BYTES, L1_CACHE_BYTES);
++	DEFINE(AOS_KERNEL_CLONE_V1_PAGE_BYTES, PAGE_SIZE);
++
++	return 0;
++}
++

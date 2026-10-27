@@ -1,0 +1,477 @@
+--- a/src/core/aos-network-child-source-types.inc
++++ b/src/core/aos-network-child-source-types.inc
+@@ -8,6 +8,7 @@
+ #define AOS_NETWORK_CHILD_BIRTH_BYTES 160U
+ #define AOS_NETWORK_CHILD_ARM_BYTES 160U
+ #define AOS_NETWORK_CHILD_TERMINAL_BYTES 160U
++#define AOS_NETWORK_CHILD_EXIT_STATUS_BYTES 176U
+ 
+ typedef struct AosNetworkChildProgrammeOriginal AosNetworkChildProgrammeOriginal;
+ #define AOS_NETWORK_CHILD_PROBE_BYTES 64U
+@@ -90,6 +91,7 @@
+         int probes_allocation_result;
+         AosNetworkChildProbeOriginal *probes;
+         AosServiceLaunchTransport transport;
++        AosReapedChildStatus exit_status;
+         AosNetworkChildNativePost transport_before;
+         AosNetworkChildNativePost transport_after;
+         int socket_flag_set_results[3];
+@@ -142,6 +144,25 @@
+  * originals. Their DATA never grants death, Empty or Retired. */
+ typedef struct AosNetworkChildTerminalOriginal {
+         bool entered;
++        bool pending_status;
++        bool status_attempted;
++        bool status_delivered;
++        bool final_observed;
++        int pause_result;
++        int resume_result;
++        bool resume_attempted;
++        AosNetworkChildNativePost pause_after;
++        AosNetworkChildNativePost resume_after;
++        ServiceState final_state;
++        ServiceResult final_result;
++        sd_id128_t final_invocation;
++        ExecStatus final_main_status;
++        int status_join_result;
++        uint8_t status_bytes[AOS_NETWORK_CHILD_EXIT_STATUS_BYTES];
++        ssize_t status_length;
++        int status_send_result;
++        AosNetworkChildNativePost status_before;
++        AosNetworkChildNativePost status_after;
+         AosNetworkChildRequestOriginal request;
+         struct stat pidfd_stats[2];
+         struct stat recipient_stats[2];
+--- a/src/core/aos-network-child-source.inc
++++ b/src/core/aos-network-child-source.inc
+@@ -577,6 +577,148 @@
+         return terminal->population_result = -EBADMSG;
+ }
+ 
++/* K cleanup and successful execution are separate facts. A pending K keeps the
++ * same UnitRef, clone PIDFD and Source channel until the actual manager reap
++ * and the service's final result have both been observed. */
++static void network_child_latch_final_status(AosNetworkWorkerOriginal *worker, Service *service) {
++        AosNetworkChildTerminalOriginal *terminal = &worker->programme->terminals[worker->purpose];
++
++        if (terminal->final_observed || (!worker->child.exit_status.observed && !worker->child.armed) ||
++            !IN_SET(service->state, SERVICE_DEAD, SERVICE_FAILED, SERVICE_EXITED))
++                return;
++        /* Preserve the first actual final result even when K arrives later.
++         * ResetFailed or a later invocation cannot rewrite this completion. */
++        terminal->final_observed = true;
++        terminal->final_state = service->state;
++        terminal->final_result = service->result;
++        terminal->final_invocation = UNIT(service)->invocation_id;
++        terminal->final_main_status = service->main_exec_status;
++}
++
++static void network_child_finish_status(AosNetworkWorkerOriginal *worker) {
++        AosNetworkChildSourceOriginal *owner = &enrollment.network_child_source;
++        AosNetworkChildProgrammeOriginal *programme = worker->programme;
++        AosNetworkChildOriginal *child = &worker->child;
++        unsigned index = worker->purpose;
++        AosNetworkChildTerminalOriginal *terminal = &programme->terminals[index];
++        AosSourceOrigin *source = &enrollment.network_origin;
++        Service *service = UNIT_ISSET(worker->worker) ? SERVICE(UNIT_DEREF(worker->worker)) : NULL;
++        _cleanup_(allocation_account_leave) AllocationAccountScope scope = {};
++
++        if (!terminal->pending_status || terminal->status_attempted || !child->exit_status.reaped ||
++            !terminal->final_observed || !service)
++                return;
++        terminal->status_attempted = true;
++        terminal->status_join_result = aos_reaped_child_require_status(&child->exit_status,
++                terminal->final_main_status.pid, terminal->final_main_status.code,
++                terminal->final_main_status.status);
++        if (terminal->status_join_result == 0 &&
++            (!sd_id128_equal(terminal->final_invocation, worker->worker_invocation) ||
++             !sd_id128_equal(UNIT(service)->invocation_id, worker->worker_invocation) ||
++             terminal->final_main_status.pid != child->transport.recipient.pid ||
++             !dual_timestamp_is_set(&terminal->final_main_status.exit_timestamp)))
++                terminal->status_join_result = -EOWNERDEAD;
++
++        /* These fixed bytes are a report of native custody, never a new Source
++         * or a renewed D. Only the joined normal exit and final Unit success
++         * receive result zero; all other completed outcomes stay negative. */
++        uint8_t *bytes = terminal->status_bytes;
++        memset(bytes, 0, sizeof(terminal->status_bytes));
++        memcpy(bytes, "AOSNFL03", 8);
++        unaligned_write_be16(bytes + 8, 3);
++        bytes[10] = worker->purpose + 1U;
++        unaligned_write_be32(bytes + 12, sizeof(terminal->status_bytes));
++        memcpy(bytes + 16, child->birth_bytes + 16, AOS_NETWORK_CHILD_BIRTH_BYTES - 16U);
++        if (terminal->status_join_result == 0) {
++                unaligned_write_be32(bytes + 160, terminal->final_main_status.code);
++                unaligned_write_be32(bytes + 164, terminal->final_main_status.status);
++        }
++        bool success = terminal->status_join_result == 0 &&
++                terminal->final_main_status.code == CLD_EXITED && terminal->final_main_status.status == 0 &&
++                terminal->final_state != SERVICE_FAILED && terminal->final_result == SERVICE_SUCCESS;
++        unaligned_write_be32(bytes + 168, success ? 0 : 1);
++
++        int first = aos_resource_parent_source_exec_scope(SERVICE(source->transport.unit), &scope);
++        int before = network_child_native_post(worker, false, false, &terminal->status_before);
++        if (first == 0 && before < 0)
++                first = before;
++        if (first == 0) {
++                terminal->status_length = send(source->transport.sockets[0], bytes,
++                        sizeof(terminal->status_bytes), MSG_DONTWAIT | MSG_NOSIGNAL);
++                terminal->status_send_result = terminal->status_length < 0 ? -errno :
++                        terminal->status_length == sizeof(terminal->status_bytes) ? 0 : -EIO;
++                first = terminal->status_send_result;
++        }
++        int after = network_child_native_post(worker, false, false, &terminal->status_after);
++        if (first == 0 && after < 0)
++                first = after;
++        if (first == 0) {
++                terminal->resume_attempted = true;
++                terminal->resume_result = sd_event_source_set_enabled(owner->event, SD_EVENT_ON);
++                if (terminal->resume_result < 0)
++                        first = terminal->resume_result;
++        }
++        if (terminal->resume_attempted) {
++                int resume_after = network_child_native_post(worker, false, false, &terminal->resume_after);
++                if (first == 0 && resume_after < 0)
++                        first = resume_after;
++        }
++        terminal->first_error = first;
++        if (first < 0) {
++                if (owner->first_error == 0)
++                        owner->first_error = first;
++                (void) network_child_refuse(worker, first);
++                (void) network_child_stop_source_event(owner->event);
++                return;
++        }
++        terminal->status_delivered = true;
++        terminal->pending_status = false;
++        /* A negative execution result retires the same native debt as a
++         * successful result. No descriptor, paid prefix or owner is released. */
++        programme->phase++;
++}
++
++static void network_child_sigchld(Manager *manager, const siginfo_t *si) {
++        if (enrollment.manager != manager)
++                return;
++        for (AosNetworkChildProgrammeOriginal *programme = &enrollment.network_programme;
++             programme; programme = programme->next)
++                FOREACH_ELEMENT(worker, programme->workers)
++                        if (worker->child.transport.recipient.pid > 0 &&
++                            worker->child.transport.recipient.pid == si->si_pid &&
++                            !worker->child.exit_status.observed)
++                                (void) aos_reaped_child_observe_sigchld(&worker->child.exit_status,
++                                        worker->clone.pidfd, worker->child.transport.recipient.pid, si);
++}
++
++static void network_child_reaped(Manager *manager, pid_t pid, const siginfo_t *si, int result) {
++        if (enrollment.manager != manager)
++                return;
++        for (AosNetworkChildProgrammeOriginal *programme = &enrollment.network_programme;
++             programme; programme = programme->next)
++                FOREACH_ELEMENT(worker, programme->workers)
++                        if (worker->child.transport.recipient.pid > 0 &&
++                            worker->child.transport.recipient.pid == pid && !worker->child.exit_status.reaped) {
++                                (void) aos_reaped_child_observe_reaped(&worker->child.exit_status, pid, si, result);
++                                if (UNIT_ISSET(worker->worker))
++                                        network_child_latch_final_status(worker, SERVICE(UNIT_DEREF(worker->worker)));
++                                network_child_finish_status(worker);
++                        }
++}
++
++void aos_resource_network_worker_state_changed(Service *service) {
++        if (enrollment.manager != UNIT(service)->manager ||
++            !IN_SET(service->state, SERVICE_DEAD, SERVICE_FAILED, SERVICE_EXITED))
++                return;
++        for (AosNetworkChildProgrammeOriginal *programme = &enrollment.network_programme;
++             programme; programme = programme->next)
++                FOREACH_ELEMENT(worker, programme->workers)
++                        if (UNIT_ISSET(worker->worker) && UNIT_DEREF(worker->worker) == UNIT(service)) {
++                                network_child_latch_final_status(worker, service);
++                                network_child_finish_status(worker);
++                        }
++}
++
+ static int network_child_terminal_io(sd_event_source *event, int fd, uint32_t revents, void *userdata) {
+         AosNetworkChildSourceOriginal *owner = &enrollment.network_child_source;
+         AosNetworkChildProgrammeOriginal *programme = owner->active;
+@@ -640,6 +782,14 @@
+                 if (terminal->event_stop_result < 0)
+                         first = terminal->event_stop_result;
+         }
++        if (first == 0) {
++                terminal->pause_result = sd_event_source_set_enabled(event, SD_EVENT_OFF);
++                if (terminal->pause_result < 0)
++                        first = terminal->pause_result;
++                int pause_after = network_child_native_post(worker, false, false, &terminal->pause_after);
++                if (first == 0 && pause_after < 0)
++                        first = pause_after;
++        }
+         terminal->first_error = first;
+         if (first < 0) {
+                 if (owner->first_error == 0)
+@@ -648,9 +798,12 @@
+                 (void) network_child_stop_source_event(event);
+                 return 0;
+         }
+-        /* Native debt and old descriptors stay retained. A completed
+-         * programme supplies ordering, never a financial refund or new bank. */
+-        programme->phase++;
++        terminal->pending_status = true;
++        /* The immediate case uses the same callback port as the later reap.
++         * Close this fully posted scope before that port enters the same
++         * account; nested accounting scopes are intentionally forbidden. */
++        allocation_account_leave(&scope);
++        network_child_finish_status(worker);
+         return 0;
+ }
+ 
+@@ -679,7 +832,7 @@
+         int first = aos_resource_parent_source_exec_scope(SERVICE(source->transport.unit), &scope);
+ 
+         if (!previous || previous->phase != 6 || previous->next ||
+-            !previous->terminals[0].entered || !previous->terminals[1].entered ||
++            !previous->terminals[0].status_delivered || !previous->terminals[1].status_delivered ||
+             previous->terminals[0].first_error < 0 || previous->terminals[1].first_error < 0)
+                 return aos_resource_parent_fail(first < 0 ? first : -EOWNERDEAD);
+         int before = network_child_native_post(last, false, false, &previous->append_before);
+--- a/src/core/aos-resource-enrollment.c
++++ b/src/core/aos-resource-enrollment.c
+@@ -624,6 +624,8 @@
+ }
+ 
+ static void controller_sigchld(Manager *manager, const siginfo_t *si);
++static void network_child_sigchld(Manager *manager, const siginfo_t *si);
++static void network_child_reaped(Manager *manager, pid_t pid, const siginfo_t *si, int result);
+ static void controller_reaped(Manager *manager, pid_t pid, const siginfo_t *si, int result);
+ static void controller_before_cleanup(Unit *unit);
+ static bool controller_launch_selected(const Unit *unit);
+@@ -1339,6 +1341,7 @@
+ 
+ void aos_resource_root_sigchld(Manager *manager, const siginfo_t *si) {
+         controller_sigchld(manager, si);
++        network_child_sigchld(manager, si);
+         siginfo_t original = {};
+         int r;
+ 
+@@ -1366,6 +1369,7 @@
+ 
+ void aos_resource_root_reaped(Manager *manager, pid_t pid, const siginfo_t *si, int result) {
+         controller_reaped(manager, pid, si, result);
++        network_child_reaped(manager, pid, si, result);
+         if (enrollment.manager != manager || !enrollment.root_death_attempted ||
+             enrollment.root_death_join_result < 0 || enrollment.root_reap_attempted ||
+             pid != enrollment.root_child_death.si_pid)
+--- a/src/core/aos-resource-enrollment.h
++++ b/src/core/aos-resource-enrollment.h
+@@ -24,6 +24,7 @@
+ int aos_resource_root_cgroup_fd(Unit *unit);
+ void aos_resource_root_sigchld(Manager *manager, const siginfo_t *si);
+ void aos_resource_root_reaped(Manager *manager, pid_t pid, const siginfo_t *si, int result);
++void aos_resource_network_worker_state_changed(Service *service);
+ void aos_resource_root_oom(Unit *unit, bool managed_oom);
+ void aos_resource_root_before_cleanup(Unit *unit);
+ sd_id128_t aos_resource_unit_producer(Service *service);
+--- a/src/core/service.c
++++ b/src/core/service.c
+@@ -1608,6 +1608,7 @@
+                 log_unit_debug(u, "Changed %s -> %s", service_state_to_string(old_state), service_state_to_string(state));
+ 
+         unit_notify(u, table[old_state], table[state], s->reload_result == SERVICE_SUCCESS);
++        aos_resource_network_worker_state_changed(s);
+ }
+ 
+ static usec_t service_coldplug_timeout(Service *s) {
+--- a/src/shared/aos-launch-record.c
++++ b/src/shared/aos-launch-record.c
+@@ -2,10 +2,63 @@
+ 
+ #include <errno.h>
+ #include <string.h>
++#include <sys/wait.h>
+ 
+ #include "aos-launch-record.h"
+ #include "macro.h"
+ #include "socket-util.h"
++
++int aos_reaped_child_observe_sigchld(AosReapedChildStatus *original, int pidfd,
++                                   pid_t expected_pid, const siginfo_t *manager_death) {
++        assert(original);
++        assert(manager_death);
++
++        if (original->observed)
++                return original->death_result < 0 ? original->death_result : -EALREADY;
++        original->observed = true;
++        original->manager_death = *manager_death;
++        original->wait_result = waitid(P_PIDFD, pidfd, &original->held_death,
++                                      WEXITED | WNOHANG | WNOWAIT) < 0 ? -errno : 0;
++        original->death_result = original->wait_result < 0 ? original->wait_result :
++                expected_pid > 0 && original->held_death.si_pid == expected_pid &&
++                manager_death->si_pid == expected_pid &&
++                original->held_death.si_code == manager_death->si_code &&
++                original->held_death.si_status == manager_death->si_status &&
++                IN_SET(manager_death->si_code, CLD_EXITED, CLD_KILLED, CLD_DUMPED) ? 0 : -EOWNERDEAD;
++        return original->death_result;
++}
++
++int aos_reaped_child_observe_reaped(AosReapedChildStatus *original, pid_t pid,
++                                  const siginfo_t *reaped_death, int result) {
++        assert(original);
++        assert(reaped_death);
++
++        if (original->reaped)
++                return original->reap_join_result < 0 ? original->reap_join_result : -EALREADY;
++        original->reaped = true;
++        original->reaped_death = *reaped_death;
++        original->reap_result = result;
++        original->reap_join_result = result < 0 ? result :
++                original->observed && original->death_result == 0 && pid > 0 &&
++                pid == original->held_death.si_pid && reaped_death->si_pid == pid &&
++                reaped_death->si_code == original->held_death.si_code &&
++                reaped_death->si_status == original->held_death.si_status ? 0 : -EOWNERDEAD;
++        return original->reap_join_result;
++}
++
++int aos_reaped_child_require_status(const AosReapedChildStatus *original,
++                                   pid_t pid, int code, int status) {
++        assert(original);
++
++        if (!original->observed || !original->reaped)
++                return -EAGAIN;
++        if (original->death_result < 0)
++                return original->death_result;
++        if (original->reap_join_result < 0)
++                return original->reap_join_result;
++        return pid == original->held_death.si_pid && code == original->held_death.si_code &&
++                status == original->held_death.si_status ? 0 : -EOWNERDEAD;
++}
+ 
+ static int launch_record_receive_body(AosLaunchRecord *record, int socket, uint8_t *payload, size_t bytes) {
+         struct cmsghdr *header;
+--- a/src/shared/aos-launch-record.h
++++ b/src/shared/aos-launch-record.h
+@@ -3,6 +3,7 @@
+ 
+ #include <stdbool.h>
+ #include <stdint.h>
++#include <signal.h>
+ #include <sys/socket.h>
+ 
+ /* Inert native custody shared by closed launch owners. Neither the descriptor
+@@ -43,3 +44,24 @@
+ } AosNetworkBorrowRecord;
+ 
+ int aos_launch_record_receive_network_borrow_once(AosNetworkBorrowRecord *record, int socket);
++
++/* Native-only observation of the same held child before and after the manager's
++ * actual reap. This carries no Unit result or Source permission. */
++typedef struct AosReapedChildStatus {
++        bool observed;
++        bool reaped;
++        siginfo_t held_death;
++        siginfo_t manager_death;
++        siginfo_t reaped_death;
++        int wait_result;
++        int death_result;
++        int reap_result;
++        int reap_join_result;
++} AosReapedChildStatus;
++
++int aos_reaped_child_observe_sigchld(AosReapedChildStatus *original, int pidfd,
++                                   pid_t expected_pid, const siginfo_t *manager_death);
++int aos_reaped_child_observe_reaped(AosReapedChildStatus *original, pid_t pid,
++                                  const siginfo_t *reaped_death, int result);
++int aos_reaped_child_require_status(const AosReapedChildStatus *original,
++                                   pid_t pid, int code, int status);
+--- a/src/test/test-aos-launch-record.c
++++ b/src/test/test-aos-launch-record.c
+@@ -2,10 +2,13 @@
+ 
+ #include <fcntl.h>
+ #include <sys/socket.h>
++#include <sys/wait.h>
++#include <unistd.h>
+ 
+ #include "aos-launch-record.h"
+ #include "aos-host-readiness.h"
+ #include "fd-util.h"
++#include "pidref.h"
+ #include "socket-util.h"
+ #include "tests.h"
+ 
+@@ -167,4 +170,77 @@
+         assert_se(sample.native.descriptor_count == 0);
+ }
+ 
++/* The same native status engine used by PID1 must not turn a queued RESULT,
++ * PIDFD readability or WNOWAIT observation into a completed successful exit. */
++static void test_network_child_native_exit(int exit_status, int signal) {
++        _cleanup_close_pair_ int gate[2] = EBADF_PAIR;
++        _cleanup_(pidref_done) PidRef child = PIDREF_NULL;
++        AosReapedChildStatus original = {};
++        siginfo_t death = {}, reaped = {};
++        char byte;
++
++        assert_se(pipe2(gate, O_CLOEXEC) == 0);
++        pid_t pid = fork();
++        assert_se(pid >= 0);
++        if (pid == 0) {
++                safe_close(gate[1]);
++                if (read(gate[0], &byte, 1) != 1)
++                        _exit(120);
++                _exit(exit_status);
++        }
++        assert_se(pidref_set_pid(&child, pid) == 0);
++        assert_se(child.fd >= 0);
++        assert_se(aos_reaped_child_require_status(&original, pid, CLD_EXITED, 0) == -EAGAIN);
++        if (signal != 0)
++                assert_se(kill(pid, signal) == 0);
++        else
++                assert_se(write(gate[1], "x", 1) == 1);
++        assert_se(waitid(P_PID, pid, &death, WEXITED | WNOWAIT) == 0);
++        assert_se(aos_reaped_child_observe_sigchld(&original, child.fd, pid, &death) == 0);
++        assert_se(aos_reaped_child_require_status(&original, pid, death.si_code, death.si_status) == -EAGAIN);
++        assert_se(aos_reaped_child_observe_sigchld(&original, child.fd, pid, &death) == -EALREADY);
++
++        /* Actual waitid reaps this child before the retained status can pass. */
++        assert_se(waitid(P_PID, pid, &reaped, WEXITED) == 0);
++        assert_se(aos_reaped_child_observe_reaped(&original, pid, &reaped, 0) == 0);
++        assert_se(aos_reaped_child_require_status(&original, pid, reaped.si_code, reaped.si_status) == 0);
++        assert_se(aos_reaped_child_require_status(&original, pid + 1, reaped.si_code, reaped.si_status) == -EOWNERDEAD);
++        assert_se(aos_reaped_child_observe_reaped(&original, pid, &reaped, -EIO) == -EALREADY);
++        assert_se(original.reap_result == 0 && original.reaped_death.si_pid == pid);
++        if (signal != 0) {
++                assert_se(reaped.si_code == CLD_KILLED && reaped.si_status == signal);
++                assert_se(aos_reaped_child_require_status(&original, pid, CLD_EXITED, 0) == -EOWNERDEAD);
++        } else {
++                assert_se(reaped.si_code == CLD_EXITED && reaped.si_status == exit_status);
++                assert_se((aos_reaped_child_require_status(&original, pid, CLD_EXITED, 0) == 0) == (exit_status == 0));
++        }
++}
++
++TEST(network_child_success_requires_the_actual_reaped_exit) {
++        test_network_child_native_exit(0, 0);
++}
++
++TEST(network_child_nonzero_exit_cannot_become_success) {
++        test_network_child_native_exit(23, 0);
++}
++
++TEST(network_child_signal_exit_cannot_become_success) {
++        test_network_child_native_exit(0, SIGKILL);
++}
++
++TEST(network_child_failed_reap_retains_its_first_native_cause) {
++        AosReapedChildStatus original = {};
++        siginfo_t death = { .si_signo = SIGCHLD, .si_code = CLD_EXITED };
++        death.si_pid = getpid();
++        death.si_status = 0;
++
++        /* Invalid held PIDFD cannot be adopted from matching status DATA. */
++        int first = aos_reaped_child_observe_sigchld(&original, -EBADF, getpid(), &death);
++        assert_se(first < 0 && original.wait_result == first && original.death_result == first);
++        assert_se(aos_reaped_child_observe_reaped(&original, getpid(), &death, -ECHILD) == -ECHILD);
++        assert_se(aos_reaped_child_require_status(&original, getpid(), CLD_EXITED, 0) == first);
++        assert_se(aos_reaped_child_observe_sigchld(&original, -EBADF, getpid(), &death) == first);
++        assert_se(aos_reaped_child_observe_reaped(&original, getpid(), &death, 0) == -ECHILD);
++}
++
+ DEFINE_TEST_MAIN(LOG_INFO);

@@ -1,0 +1,282 @@
+--- /dev/null
++++ b/src/core/aos-method46-exclusion.h
+@@ -0,0 +1,80 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++#pragma once
++
++#include "manager.h"
++#include "strv.h"
++#include "unit.h"
++
++/* PID1 serializes job dispatch and migration. Keep this test at those native
++ * boundaries as well as transaction admission: jobs in the same transaction
++ * are not yet visible through Unit.job while the transaction is assembled. */
++static inline Unit *aos_method46_named_unit(Manager *m, const char *name) {
++        Unit *u = manager_get_unit(m, name);
++
++        return u ? unit_follow_merge(u) : NULL;
++}
++
++static inline bool aos_method46_unit_busy(Unit *u) {
++        return u && (u->job || u->nop_job || unit_active_state(u) != UNIT_INACTIVE);
++}
++
++static inline bool aos_method46_initial_interval_busy(Manager *m) {
++        if (!MANAGER_IS_SYSTEM(m))
++                return false;
++
++        FOREACH_STRING(name,
++                       "aos-sandbox-controller-floor-initialize.service",
++                       "aos-sandbox-storage-floor-initialize.service")
++                if (aos_method46_unit_busy(aos_method46_named_unit(m, name)))
++                        return true;
++
++        return false;
++}
++
++static inline int aos_method46_verify_start_exclusion(Unit *u) {
++        Manager *m = u->manager;
++        bool initial = false, normal = false;
++
++        if (!MANAGER_IS_SYSTEM(m))
++                return 0;
++
++        u = unit_follow_merge(u);
++
++        FOREACH_STRING(name,
++                       "aos-sandbox-controller-floor-initialize.service",
++                       "aos-sandbox-storage-floor-initialize.service") {
++                Unit *peer = aos_method46_named_unit(m, name);
++
++                if (peer == u)
++                        initial = true;
++        }
++
++        FOREACH_STRING(name, "aos-sandboxd.service", "aos-storaged.service")
++                if (aos_method46_named_unit(m, name) == u)
++                        normal = true;
++
++        if (normal && aos_method46_initial_interval_busy(m))
++                return -EBUSY;
++        if (!initial)
++                return 0;
++
++        FOREACH_STRING(name,
++                       "aos-sandbox-controller-floor-initialize.service",
++                       "aos-sandbox-storage-floor-initialize.service") {
++                Unit *peer = aos_method46_named_unit(m, name);
++
++                if (peer != u && aos_method46_unit_busy(peer))
++                        return -EBUSY;
++        }
++
++        /* Do not load a missing normal owner or stop it implicitly. The manual
++         * producer still proves the exact native empty cgroups and image. */
++        FOREACH_STRING(name, "aos-sandboxd.service", "aos-storaged.service") {
++                Unit *peer = aos_method46_named_unit(m, name);
++
++                if (!peer || peer->load_state != UNIT_LOADED || aos_method46_unit_busy(peer))
++                        return -EBUSY;
++        }
++
++        return 0;
++}
+--- a/src/core/unit.c
++++ b/src/core/unit.c
+@@ -5,6 +5,7 @@
+ #include <linux/capability.h>
+ #include <unistd.h>
+ 
++#include "aos-method46-exclusion.h"
+ #include "sd-bus.h"
+ #include "sd-id128.h"
+ #include "sd-messages.h"
+@@ -1979,6 +1980,10 @@
+ 
+         assert(u);
+ 
++        r = aos_method46_verify_start_exclusion(u);
++        if (r < 0)
++                return r;
++
+         /* Let's hold off running start jobs for mount units when /proc/self/mountinfo monitor is ratelimited. */
+         if (UNIT_VTABLE(u)->subsystem_ratelimited) {
+                 r = UNIT_VTABLE(u)->subsystem_ratelimited(u->manager);
+--- a/src/core/transaction.c
++++ b/src/core/transaction.c
+@@ -1,5 +1,6 @@
+ /* SPDX-License-Identifier: LGPL-2.1-or-later */
+ 
++#include "aos-method46-exclusion.h"
+ #include "sd-bus.h"
+ #include "sd-messages.h"
+ 
+@@ -1011,6 +1012,13 @@
+                                         UNIT(slice)->id, unit->id);
+         }
+ 
++        if (IN_SET(type, JOB_START, JOB_RESTART)) {
++                r = aos_method46_verify_start_exclusion(unit);
++                if (r < 0)
++                        return sd_bus_error_setf(e, SD_BUS_ERROR_LIMITS_EXCEEDED,
++                                                 "Unit %s conflicts with a manual METHOD46 initialization interval.", unit->id);
++        }
++
+         /* First add the job. */
+         job = transaction_add_one_job(tr, type, unit, &is_new);
+         if (!job)
+--- a/src/core/cgroup.c
++++ b/src/core/cgroup.c
+@@ -1,5 +1,6 @@
+ /* SPDX-License-Identifier: LGPL-2.1-or-later */
+ #include "aos-resource-enrollment.h"
++#include "aos-method46-exclusion.h"
+ 
+ #include <fcntl.h>
+ #include <sys/stat.h>
+@@ -2247,6 +2248,12 @@
+ 
+         assert(u);
+ 
++        /* Cover both AttachProcesses APIs and transient scope adoption, including
++         * moves out of a protected owner into an unrelated destination. Native
++         * child birth uses the separate exec path and is not migration. */
++        if (aos_method46_initial_interval_busy(u->manager))
++                return -EBUSY;
++
+         if (!UNIT_HAS_CGROUP_CONTEXT(u))
+                 return -EINVAL;
+ 
+--- a/src/test/test-aos-fixed-service-profile.c
++++ b/src/test/test-aos-fixed-service-profile.c
+@@ -2,6 +2,9 @@
+ 
+ #include "aos-fixed-service-profile.h"
+ #include "tests.h"
++#include "aos-method46-exclusion.h"
++#include "cgroup.h"
++#include "service.h"
+ 
+ TEST(fixed_role_names_are_closed_and_distinct) {
+         ASSERT_EQ(aos_fixed_service_role("aos-sandbox-source-signerd.service"), AOS_FIXED_PROFILE_SOURCE);
+@@ -193,4 +196,120 @@
+                 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, UINT64_MAX, 1));
+ }
+ 
++
++static Service method46_stopped_service(Manager *manager) {
++        return (Service) {
++                .meta = {
++                        .manager = manager,
++                        .type = UNIT_SERVICE,
++                        .load_state = UNIT_LOADED,
++                },
++                .state = SERVICE_DEAD,
++        };
++}
++
++/* These are native Unit/Job objects, without a running host manager or cgroup
++ * effects. Exercise the production dispatch boundary before any native work. */
++TEST(manual_initial_excludes_both_normal_owners_and_other_manual_jobs) {
++        _cleanup_hashmap_free_ Hashmap *units = hashmap_new(&string_hash_ops);
++        Manager manager = { .runtime_scope = RUNTIME_SCOPE_SYSTEM, .units = units };
++        Service controller = method46_stopped_service(&manager);
++        Service storage = method46_stopped_service(&manager);
++        Service first = method46_stopped_service(&manager);
++        Service second = method46_stopped_service(&manager);
++        Job queued = { .unit = UNIT(&storage), .type = JOB_START };
++        ServiceState state;
++
++        ASSERT_NOT_NULL(units);
++        ASSERT_OK(hashmap_put(units, "aos-sandboxd.service", UNIT(&controller)));
++        ASSERT_OK(hashmap_put(units, "aos-storaged.service", UNIT(&storage)));
++        ASSERT_OK(hashmap_put(units, "aos-sandbox-controller-floor-initialize.service", UNIT(&first)));
++        ASSERT_OK(hashmap_put(units, "aos-sandbox-storage-floor-initialize.service", UNIT(&second)));
++        ASSERT_OK(aos_method46_verify_start_exclusion(UNIT(&first)));
++        ASSERT_OK(aos_method46_verify_start_exclusion(UNIT(&second)));
++        ASSERT_FALSE(aos_method46_initial_interval_busy(&manager));
++
++        storage.meta.job = &queued;
++        ASSERT_ERROR(unit_start(UNIT(&first), NULL), EBUSY);
++        ASSERT_ERROR(unit_start(UNIT(&second), NULL), EBUSY);
++        storage.meta.job = NULL;
++
++        FOREACH_ARGUMENT(state, SERVICE_START, SERVICE_RUNNING, SERVICE_STOP, SERVICE_FAILED) {
++                storage.state = state;
++                ASSERT_ERROR(unit_start(UNIT(&first), NULL), EBUSY);
++                ASSERT_ERROR(unit_start(UNIT(&second), NULL), EBUSY);
++        }
++        storage.state = SERVICE_DEAD;
++        controller.state = SERVICE_RUNNING;
++        ASSERT_ERROR(unit_start(UNIT(&first), NULL), EBUSY);
++        controller.state = SERVICE_DEAD;
++
++        queued.unit = UNIT(&first);
++        first.meta.job = &queued;
++        ASSERT_ERROR(unit_start(UNIT(&controller), NULL), EBUSY);
++        ASSERT_ERROR(unit_start(UNIT(&storage), NULL), EBUSY);
++        ASSERT_ERROR(unit_start(UNIT(&second), NULL), EBUSY);
++        /* The candidate's own queued start does not conflict with itself. */
++        ASSERT_OK(aos_method46_verify_start_exclusion(UNIT(&first)));
++        first.meta.job = NULL;
++
++        FOREACH_ARGUMENT(state, SERVICE_START, SERVICE_RUNNING, SERVICE_STOP, SERVICE_FAILED) {
++                first.state = state;
++                ASSERT_TRUE(aos_method46_initial_interval_busy(&manager));
++                ASSERT_ERROR(unit_start(UNIT(&controller), NULL), EBUSY);
++                ASSERT_ERROR(unit_start(UNIT(&storage), NULL), EBUSY);
++                ASSERT_ERROR(unit_start(UNIT(&second), NULL), EBUSY);
++                /* Migration into any destination is refused, even before the
++                 * normal empty-PID shortcut. No cgroup can be touched. */
++                ASSERT_ERROR(unit_attach_pids_to_cgroup(UNIT(&storage), NULL, NULL), EBUSY);
++        }
++        first.state = SERVICE_DEAD;
++        ASSERT_FALSE(aos_method46_initial_interval_busy(&manager));
++        ASSERT_OK(aos_method46_verify_start_exclusion(UNIT(&controller)));
++        ASSERT_OK(aos_method46_verify_start_exclusion(UNIT(&storage)));
++
++        storage.meta.load_state = UNIT_NOT_FOUND;
++        ASSERT_ERROR(unit_start(UNIT(&first), NULL), EBUSY);
++        ASSERT_PTR_EQ(hashmap_remove(units, "aos-storaged.service"), UNIT(&storage));
++        ASSERT_ERROR(unit_start(UNIT(&first), NULL), EBUSY);
++}
++
++TEST(manual_initial_migration_exclusion_covers_foreign_destinations_and_aliases) {
++        _cleanup_hashmap_free_ Hashmap *units = hashmap_new(&string_hash_ops);
++        Manager manager = { .runtime_scope = RUNTIME_SCOPE_SYSTEM, .units = units };
++        Service initial = method46_stopped_service(&manager);
++        Service normal = method46_stopped_service(&manager);
++        Service foreign = method46_stopped_service(&manager);
++        Service alias = method46_stopped_service(&manager);
++        Job queued = { .unit = UNIT(&initial), .type = JOB_NOP };
++
++        ASSERT_NOT_NULL(units);
++        initial.state = SERVICE_RUNNING;
++        normal.meta.id = (char*) "owner-alias.service";
++        ASSERT_OK(hashmap_put(units, "aos-sandbox-storage-floor-initialize.service", UNIT(&initial)));
++        ASSERT_OK(hashmap_put(units, "aos-storaged.service", UNIT(&normal)));
++        ASSERT_ERROR(unit_start(UNIT(&normal), NULL), EBUSY);
++        /* A merged alias and its canonical unit share one exclusion identity. */
++        alias.meta.load_state = UNIT_MERGED;
++        alias.meta.merged_into = UNIT(&normal);
++        ASSERT_OK(hashmap_replace(units, "aos-storaged.service", UNIT(&alias)));
++        ASSERT_ERROR(unit_start(UNIT(&normal), NULL), EBUSY);
++        ASSERT_ERROR(unit_start(UNIT(&alias), NULL), EBUSY);
++        ASSERT_OK(aos_method46_verify_start_exclusion(UNIT(&foreign)));
++        ASSERT_ERROR(unit_attach_pids_to_cgroup(UNIT(&foreign), NULL, NULL), EBUSY);
++
++        initial.state = SERVICE_DEAD;
++        initial.meta.nop_job = &queued;
++        ASSERT_ERROR(unit_start(UNIT(&normal), NULL), EBUSY);
++        ASSERT_ERROR(unit_attach_pids_to_cgroup(UNIT(&foreign), NULL, NULL), EBUSY);
++        initial.meta.nop_job = NULL;
++        ASSERT_FALSE(aos_method46_initial_interval_busy(&manager));
++
++        /* System-service names have no special meaning inside a user manager. */
++        initial.state = SERVICE_RUNNING;
++        manager.runtime_scope = RUNTIME_SCOPE_USER;
++        ASSERT_FALSE(aos_method46_initial_interval_busy(&manager));
++        ASSERT_OK(aos_method46_verify_start_exclusion(UNIT(&normal)));
++}
++
+ DEFINE_TEST_MAIN(LOG_INFO);

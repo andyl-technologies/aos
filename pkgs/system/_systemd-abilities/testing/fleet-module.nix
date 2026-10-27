@@ -24,7 +24,7 @@
   agentPath = "${agentPackage}/share/aos-test-agent/aos-test-agent";
   runtimeAgentUnit = writeTextFile {
     name = "aos-fleet-test-agent-runtime-unit";
-    destination = "/aos-test-agent.service";
+    destination = "/lib/systemd/system/aos-test-agent.service";
     text = ''
       [Unit]
       Description=AOS VM Test Guest Agent
@@ -86,6 +86,11 @@ in {
         [Network]
         DHCP=ipv4
       '';
+    }
+    // lib.optionalAttrs bakeAgentUnit {
+      # The canonical /etc inventory gives this immutable inode its unit label.
+      # The bootstrap's /run symlink alone does not exist during image planning.
+      "systemd/system/aos-test-agent.service".source = "${runtimeAgentUnit}/lib/systemd/system/aos-test-agent.service";
     };
 
   systemd.services = lib.optionalAttrs bakeAgentUnit {
@@ -98,7 +103,7 @@ in {
       serviceConfig.Type = "oneshot";
       script = ''
         ${packages.coreutils}/bin/mkdir -p /run/systemd/system
-        ${packages.coreutils}/bin/ln -sfn ${runtimeAgentUnit}/aos-test-agent.service \
+        ${packages.coreutils}/bin/ln -sfn ${runtimeAgentUnit}/lib/systemd/system/aos-test-agent.service \
           /run/systemd/system/aos-test-agent.service
         ${packages.systemd}/bin/systemctl daemon-reload
         ${packages.systemd}/bin/systemctl start aos-test-agent.service

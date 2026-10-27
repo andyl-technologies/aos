@@ -4,7 +4,7 @@
 //! dispatches to after parsing the CLI defined in the `cli` module. Most
 //! take an `aos_nix::NixRunner` for evaluating/building Nix
 //! attributes and an `aos_cli_ui::output::Printer` for human/JSON output;
-//! the non-Nix commands (`serve`, `token`, `package`, `cache`,
+//! the non-Nix commands (`serve`, `token`, `package`, `cache`, `sandbox`,
 //! `completions`) take only what they need.
 
 pub mod ability;
@@ -29,6 +29,7 @@ pub mod profile;
 pub mod release;
 pub mod repl;
 pub mod runtime_docs;
+pub mod sandbox;
 pub mod serve;
 pub mod show;
 pub mod system;

@@ -1,0 +1,22 @@
+diff --git a/policy/modules/kernel/domain.te b/policy/modules/kernel/domain.te
+--- a/policy/modules/kernel/domain.te
++++ b/policy/modules/kernel/domain.te
+@@ -16,6 +16,10 @@
+ # Mark process types as domains
+ attribute domain;
+ 
++# AOS copied guest closures and fixed workers use explicit loader profiles.
++# This marker grants nothing; ordinary host domains retain upstream behavior.
++attribute aos_explicit_loader_domain;
++
+ # Transitions only allowed from domains to other domains
+ neverallow domain ~domain:process { dyntransition transition };
+ 
+@@ -145,5 +149,5 @@
+ optional_policy(`
+-	libs_use_ld_so(domain)
+-	libs_use_shared_libs(domain)
++	libs_use_ld_so({ domain -aos_explicit_loader_domain })
++	libs_use_shared_libs({ domain -aos_explicit_loader_domain })
+ ')
+ 

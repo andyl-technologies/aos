@@ -1,0 +1,56 @@
+--- a/src/core/dbus-manager.c
++++ b/src/core/dbus-manager.c
+@@ -2040,7 +2040,8 @@
+                 return sd_bus_error_set(reterr_error, SD_BUS_ERROR_NOT_SUPPORTED,
+                                         "Root switching is only supported by system manager.");
+ 
+-        r = mac_selinux_access_check(message, "reboot", reterr_error);
++        /* Keep initrd handoff separate from reboot, soft-reboot and kexec. */
++        r = mac_selinux_access_check(message, "aos_switch_root", reterr_error);
+         if (r < 0)
+                 return r;
+ 
+--- a/src/core/selinux-access.c
++++ b/src/core/selinux-access.c
+@@ -223,6 +223,13 @@
+         assert(permission);
+         assert(audit_info);
+         assert(audit_info->function);
++
++        /* libselinux permits an unknown permission under allow_unknown policies.
++         * Require deny/reject semantics for the dedicated initrd handoff, so an
++         * older policy cannot turn a missing permission into authorization. */
++        if (streq(permission, "aos_switch_root") && sym_security_deny_unknown() != 1)
++                return sd_bus_error_set(reterr_error, SD_BUS_ERROR_ACCESS_DENIED,
++                                        "SwitchRoot requires a policy that denies unknown permissions.");
+ 
+         r = sym_selinux_check_access(scon, tcon, tclass, permission, audit_info);
+         if (r < 0) {
+--- a/src/shared/selinux-util.c
++++ b/src/shared/selinux-util.c
+@@ -71,6 +71,7 @@
+ DLSYM_PROTOTYPE(getsockcreatecon_raw) = NULL;
+ DLSYM_PROTOTYPE(is_selinux_enabled) = NULL;
+ DLSYM_PROTOTYPE(security_compute_create_raw) = NULL;
++DLSYM_PROTOTYPE(security_deny_unknown) = NULL;
+ DLSYM_PROTOTYPE(security_getenforce) = NULL;
+ DLSYM_PROTOTYPE(selabel_close) = NULL;
+ DLSYM_PROTOTYPE(selabel_lookup_raw) = NULL;
+@@ -119,6 +120,7 @@
+                         DLSYM_ARG(getsockcreatecon_raw),
+                         DLSYM_ARG(is_selinux_enabled),
+                         DLSYM_ARG(security_compute_create_raw),
++                        DLSYM_ARG(security_deny_unknown),
+                         DLSYM_ARG(security_getenforce),
+                         DLSYM_ARG(selabel_close),
+                         DLSYM_ARG(selabel_lookup_raw),
+--- a/src/shared/selinux-util.h
++++ b/src/shared/selinux-util.h
+@@ -32,6 +32,7 @@
+ extern DLSYM_PROTOTYPE(getsockcreatecon_raw);
+ extern DLSYM_PROTOTYPE(is_selinux_enabled);
+ extern DLSYM_PROTOTYPE(security_compute_create_raw);
++extern DLSYM_PROTOTYPE(security_deny_unknown);
+ extern DLSYM_PROTOTYPE(security_getenforce);
+ extern DLSYM_PROTOTYPE(selabel_close);
+ extern DLSYM_PROTOTYPE(selabel_lookup_raw);

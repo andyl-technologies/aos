@@ -29,6 +29,7 @@
       ../../pkgs/filesystem/_aos-filesystem-provider/module.nix
       ../../pkgs/security/_polkit/module.nix
       ../../pkgs/security/_sudo/module.nix
+      ../../pkgs/system/_aos-host-policy/selinux.nix
       ../../pkgs/security/_refpolicy/module.nix
       ../../pkgs/tools/aos/_abilities/attestation-verifier.nix
       ../../pkgs/tools/aos/_abilities/package-attestation-quote.nix

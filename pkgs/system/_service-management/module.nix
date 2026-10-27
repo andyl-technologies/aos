@@ -5,6 +5,7 @@
   ...
 }: let
   operation = config.aos.abilities.serviceManagement.operations.realize;
+  retainImageDefinitions = config.aos.servicesRetainImageDefinitions;
   inputOptions = lib.submoduleOptions (lib.types.submodule operation.input) [];
   fields = builtins.attrNames (builtins.removeAttrs inputOptions ["_module"]);
 
@@ -67,11 +68,18 @@ in {
     ./listener.nix
   ];
 
+  options.aos.servicesRetainImageDefinitions = lib.mkOption {
+    type = lib.types.bool;
+    default = false;
+    description = "Require native services to retain their selected immutable image definitions throughout lifecycle reconciliation.";
+  };
+
   options.aos.services = lib.mkOption {
     type = lib.types.lazyAttrsOf (lib.types.submodule [
       operation.input
       ({name, ...}: {config.service = lib.mkDefault name;})
       {
+        config.retain_image_definition = lib.mkIf retainImageDefinitions true;
         options = {
           activationInputs = lib.mkOption {
             type = lib.types.listOf lib.types.effectOutput;

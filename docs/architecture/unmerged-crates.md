@@ -2,10 +2,11 @@
 
 The implemented base is [PR #715](https://github.com/andyl-technologies/aos/pull/715), branch
 `dplecki/crate-monorepo`, with 77 workspace packages. Original master comparison:
-`2ee6311aea39bef7aef6ba4b566f9f502649f3f2`. This inventory classifies future packages at exact
-checked PR heads; it does not merge or modify owning PRs. The [workspace
-design](crate-workspace.md) and [active inventory](crate-inventory.md) describe implemented
-ownership.
+`2ee6311aea39bef7aef6ba4b566f9f502649f3f2`. The original audit below classifies
+packages at exact checked PR heads.
+RFC-0021 Sandbox packages have since been migrated on this branch; their current
+status is recorded separately below. The [workspace design](crate-workspace.md)
+and [active inventory](crate-inventory.md) describe implemented ownership.
 
 The open-PR heads are pinned at `2026-10-09T21:52:35.570559+00:00`; later commits are outside
 this audit.
@@ -22,7 +23,8 @@ this audit.
 | [#231](https://github.com/andyl-technologies/aos/pull/231) | `69cc082e8c1b7be564556a4ef2d4c70fb9c67b78` | 0 / 0 | Darwin tooling |
 | [#716](https://github.com/andyl-technologies/aos/pull/716) | `a048a32b44f7a6652a02944d82bd1ae03e3115ef` | 5 / 0 | Dispatch assignment SDK/runtime/conformance |
 
-Future names below are proposed for code outside the base workspace. Generic journal,
+Except for the applied Sandbox migration described below, future names are
+proposed for code outside the current workspace. Generic journal,
 descriptor and SQLite promotion require API review; base extractions are already implemented.
 
 ## Proposed names for added packages
@@ -41,51 +43,40 @@ descriptor and SQLite promotion require API review; base extractions are already
 | #420 | `terrane-cli` | `terrane-cli` | `crates/terrane/cli/terrane-cli` |
 | #420 | `terrane-core` | `terrane-format` | `crates/terrane/sdk/terrane-format` |
 | #420 | `terrane-fs` | `terrane-linux` | `crates/terrane/linux/terrane-linux` |
-| #232 | `aos-filesystem-fuse` | `aos-sandbox-filesystem-fuse` | `crates/sandbox/filesystem/aos-sandbox-filesystem-fuse` |
-| #232 | `aos-filesystem-fuse-kernel-worker` | `aos-sandbox-filesystem-fuse-kernel-worker` | `crates/sandbox/filesystem/aos-sandbox-filesystem-fuse/tests/fixtures/kernel-worker` |
-| #232 | `aos-filesystem-fuse-link-consumer` | `aos-sandbox-filesystem-fuse-link-consumer` | `crates/sandbox/filesystem/aos-sandbox-filesystem-fuse/tests/fixtures/link-consumer` |
-| #232 | `aos-filesystem-view` | `aos-sandbox-filesystem-view` | `crates/sandbox/filesystem/aos-sandbox-filesystem-view` |
-| #232 | `aos-filesystem-view-core` | `aos-sandbox-filesystem-format` | `crates/sandbox/filesystem/aos-sandbox-filesystem-format` |
-| #232 | `aos-sandbox` | `aos-sandbox-controller-domain` | `crates/sandbox/controller/aos-sandbox-controller-domain` |
-| #232 | `aos-sandbox-agent` | `aos-sandbox-guest-protocol` | `crates/sandbox/protocol/aos-sandbox-guest-protocol` |
-| #232 | `aos-sandbox-broker` | `aos-sandbox-broker` | `crates/sandbox/host/aos-sandbox-broker` |
-| #232 | `aos-sandbox-broker-session-protocol` | `aos-sandbox-broker-session-protocol` | `crates/sandbox/protocol/aos-sandbox-broker-session-protocol` |
-| #232 | `aos-sandbox-broker-session-security` | `aos-sandbox-broker-session-security` | `crates/sandbox/security/aos-sandbox-broker-session-security` |
-| #232 | `aos-sandbox-cache-signer` | `aos-sandbox-cache-signer` | `crates/sandbox/security/aos-sandbox-cache-signer` |
-| #232 | `aos-sandbox-client` | `aos-sandbox-client` | `crates/sandbox/controller/aos-sandbox-client` |
-| #232 | `aos-sandbox-controller-runtime` | `aos-sandbox-controller-runtime` | `crates/sandbox/controller/aos-sandbox-controller-runtime` |
-| #232 | `aos-sandbox-coordinator-protocol` | `aos-sandbox-coordinator-protocol` | `crates/sandbox/protocol/aos-sandbox-coordinator-protocol` |
-| #232 | `aos-sandbox-core` | `aos-sandbox-model` | `crates/sandbox/model/aos-sandbox-model` |
-| #232 | `aos-sandbox-guardian` | `aos-sandbox-guardian` | `crates/sandbox/security/aos-sandbox-guardian` |
-| #232 | `aos-sandbox-guest` | `aos-sandbox-guest` | `crates/sandbox/guest/aos-sandbox-guest` |
-| #232 | `aos-sandbox-guest-root-realization` | `aos-sandbox-guest-root-realization` | `crates/sandbox/guest/aos-sandbox-guest-root-realization` |
-| #232 | `aos-sandbox-guest-root-tree` | `aos-sandbox-guest-root-measurement` | `crates/sandbox/guest/aos-sandbox-guest-root-measurement` |
-| #232 | `aos-sandbox-host` | `aos-sandbox-host` | `crates/sandbox/host/aos-sandbox-host` |
-| #232 | `aos-sandbox-journal` | `aos-sandbox-journal` | `crates/sandbox/controller/aos-sandbox-journal` |
-| #232 | `aos-sandbox-kernel-export-owner-peer` | `aos-sandbox-kernel-export-owner-peer` | `crates/sandbox/security/aos-sandbox-kernel-export-owner-peer` |
-| #232 | `aos-sandbox-linux` | `aos-sandbox-linux` | `crates/sandbox/host/aos-sandbox-linux` |
-| #232 | `aos-sandbox-mount` | `aos-sandbox-mount` | `crates/sandbox/host/aos-sandbox-mount` |
-| #232 | `aos-sandbox-network` | `aos-sandbox-network` | `crates/sandbox/host/aos-sandbox-network` |
-| #232 | `aos-sandbox-network-protected-store-fixture` | `aos-sandbox-network-protected-store-fixture` | `crates/sandbox/host/aos-sandbox-network/tests/fixtures/protected-store` |
-| #232 | `aos-sandbox-network-systemd-custody-fixture` | `aos-sandbox-network-systemd-custody-fixture` | `crates/sandbox/host/aos-sandbox-network/tests/fixtures/systemd-custody` |
-| #232 | `aos-sandbox-ownership` | `aos-sandbox-ownership` | `crates/sandbox/model/aos-sandbox-ownership` |
-| #232 | `aos-sandbox-ownership-protocol` | `aos-sandbox-ownership-protocol` | `crates/sandbox/protocol/aos-sandbox-ownership-protocol` |
-| #232 | `aos-sandbox-policy` | `aos-sandbox-policy` | `crates/sandbox/model/aos-sandbox-policy` |
-| #232 | `aos-sandbox-protocol` | `aos-sandbox-protocol` | `crates/sandbox/protocol/aos-sandbox-protocol` |
-| #232 | `aos-sandbox-service-journal-probe` | `aos-sandbox-service-journal-probe` | `crates/sandbox/controller/aos-sandbox-controller-domain/tests/fixtures/service-journal` |
-| #232 | `aos-sandbox-services` | `aos-sandbox-services` | `crates/sandbox/controller/aos-sandbox-services` |
-| #232 | `aos-sandbox-source-provider` | `aos-sandbox-source-provider` | `crates/sandbox/storage/aos-sandbox-source-provider` |
-| #232 | `aos-sandbox-source-provider-ledger` | `aos-sandbox-source-provider-ledger` | `crates/sandbox/storage/aos-sandbox-source-provider-ledger` |
-| #232 | `aos-sandbox-source-provider-protocol` | `aos-sandbox-source-provider-protocol` | `crates/sandbox/protocol/aos-sandbox-source-provider-protocol` |
-| #232 | `aos-sandbox-source-provider-security` | `aos-sandbox-source-provider-security` | `crates/sandbox/security/aos-sandbox-source-provider-security` |
-| #232 | `aos-sandbox-source-signer` | `aos-sandbox-source-signer` | `crates/sandbox/security/aos-sandbox-source-signer` |
-| #232 | `aos-sandbox-storage` | `aos-sandbox-storage` | `crates/sandbox/storage/aos-sandbox-storage` |
-| #232 | `aos-sandbox-verity-backing-probe` | `aos-sandbox-verity-backing-probe` | `crates/sandbox/host/aos-sandbox-linux/tests/fixtures/verity-backing` |
 | #716 | `dispatch-model` | `dispatch-model` | `crates/dispatch/model/dispatch-model` |
 | #716 | `dispatch-protocol` | `dispatch-protocol` | `crates/dispatch/protocol/dispatch-protocol` |
 | #716 | `dispatch-runtime` | `dispatch-runtime` | `crates/dispatch/runtime/dispatch-runtime` |
 | #716 | `dispatch` | `dispatch-sdk` | `crates/dispatch/sdk/dispatch-sdk` |
 | #716 | `dispatch-conformance` | `dispatch-conformance` | `crates/dispatch/testing/dispatch-conformance` |
+
+## Applied Sandbox migration on this branch
+
+The original #232 pin above is historical. This branch now contains 45 migrated
+Sandbox packages plus the separately created `aos-sandbox-api`: 46 Sandbox
+members alongside the 77 implemented base packages, for 123 total and 121
+default members. The optional coordinator and coordinator-protocol packages
+remain outside the default-member set. Six members are nested qualification
+fixtures; their directories move with their owning packages.
+
+Current names, paths and responsibilities are in the
+[active inventory](crate-inventory.md); old-to-current identities are in the
+[rename reference](crate-renames.md) and
+[Sandbox migration map](../../tools/dev/sandbox-crate-migration.json). The later
+coordinator, ledger-replay, mount-native, Publisher and native Source owners are
+included. The proposed native `aos-sandbox-cache` package is not materialized or
+counted in this checkout.
+
+Generated Sandbox public/local/shared coordinator contracts now have the actual
+`aos-sandbox-api` owner, sourced from `api/proto/aos/sandbox/`. The separate
+coordinator-protocol owner retains transport generation. Existing wire names,
+compatibility fixtures, namespace shape and installed executable identities are
+preserved. This source migration is not an RFC completion or build/test claim.
+
+Generic descriptor and journal promotion remain API-review decisions. In
+particular, `aos-systemd-client` still carries a Linux dependency on
+`aos-sandbox-linux` and Sandbox-specific custody APIs; separating those mechanics
+from Sandbox policy remains dependency-extraction work. Other future PR package
+proposals below retain their original audit scope.
 
 ## Uncommitted local crate observed at the pinned snapshot
 
@@ -129,15 +120,14 @@ with no owning-branch build/test claim or addition to the 77-member base.
 
 | Owning PR | Package | Directory | Responsibility |
 |---|---|---|---|
-| #232 | `aos-sandbox-api` | `crates/sandbox/protocol/aos-sandbox-api` | Generated public/local/shared coordinator message data from `api/proto/` |
 | #696 | `crucible-host-resources` | `crates/crucible/host/crucible-host-resources` | Crucible-specific host budgets, supervision, RAM placement and measurement controls, separate from generic quota mechanics |
 
 ## Required cross-PR boundaries
 
 - #696: `aos-linux-project-quota` stays generic; new supervision/RAM policy/measurement
   authority belongs in separate `crucible-host-resources`.
-- #232: generated sandbox data belongs in distinct `aos-sandbox-api` sourced from `api/proto/`;
-  `aos-build-api` is not a universal API umbrella.
+- #232: the applied `aos-sandbox-api` extraction owns generated Sandbox data from
+  `api/proto/aos/sandbox/`; `aos-build-api` retains its own build contracts.
 - #232: review generic Linux descriptor extraction so `aos-systemd-client` does not depend on
   sandbox implementation.
 - #232: generic journal promotion and #696 SQLite memory-control promotion remain API-review
@@ -160,19 +150,21 @@ owner tests.
 
 ## Validation status
 
-Static inventory only. No owning checkout was edited and no PR-branch build/test claims are
-made. Owning branches must rebase and run local hermetic builds plus project-specific
+The original pinned audit was static and made no owning-checkout edits or
+PR-branch build/test claims. The Sandbox section above records the later applied
+source migration, without extending that audit into runtime qualification. Owning branches must rebase and run local hermetic builds plus project-specific
 integration, portability and process/license gates after migration. Base names and exported
-namespaces were verified against the actual 77-member workspace. Future package moves and
-shared-library promotions remain work for owning branches.
+namespaces were verified against the incoming 77-member base. Other future
+package moves and shared-library promotions remain work for owning branches.
 
 ## Implemented exported namespaces and schema reuse
 
 The implemented base is PR [#715](https://github.com/andyl-technologies/aos/pull/715), branch
-`dplecki/crate-monorepo`. Its current workspace has 77 packages. The authoritative design is
-`docs/architecture/crate-workspace.md`, and active paths are in
-`docs/architecture/crate-inventory.md`. The table below describes implemented packages. Future
-packages in this inventory remain work for their owning PRs.
+`dplecki/crate-monorepo`. That implemented base contains 77 packages; the current
+branch also contains the 46 Sandbox packages described above. The authoritative
+design is `docs/architecture/crate-workspace.md`, and active paths are in
+`docs/architecture/crate-inventory.md`. The table below describes the base
+packages. Other future packages remain work for their owning PRs.
 
 | Former ownership | Current dependency / namespace |
 |---|---|

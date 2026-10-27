@@ -195,53 +195,89 @@
   mkSONAMECheck = {
     pkg,
     libs,
+    # Unmapped libraries still require a SONAME; mapped ones require this
+    # exact value. Reject unused keys so a misspelled expectation cannot pass.
+    expectedSONAMEs ? {},
   }: let
+    validExpectations =
+      builtins.isAttrs expectedSONAMEs
+      && builtins.all (
+        name:
+          builtins.elem name libs
+          && builtins.isString expectedSONAMEs.${name}
+          && expectedSONAMEs.${name} != ""
+      ) (builtins.attrNames expectedSONAMEs);
     libChecks = builtins.concatStringsSep "\n" (
       builtins.map (l: ''
-        check_soname "${pkg}/lib/${l}" "${l}"
+        check_soname ${lib.escapeShellArgs ["${pkg}/lib/${l}" l (expectedSONAMEs.${l} or "")]}
       '')
       libs
     );
   in
-    mkVMTest {
-      name = "${pkg.pname or "pkg"}-soname";
-      rootfsDeps = [
-        pkgs.elfutils
-        pkgs.grep
-        pkgs.sed
-        pkg
-      ];
-      testScript = ''
-        FAIL=0
+    assert validExpectations || throw "mkSONAMECheck: expectedSONAMEs must map declared libs to nonempty SONAME strings";
+      mkVMTest {
+        name = "${pkg.pname or "pkg"}-soname";
+        rootfsDeps = [
+          pkgs.elfutils
+          pkgs.grep
+          pkgs.sed
+          pkg
+        ];
+        testScript = ''
+          FAIL=0
 
-        check_soname() {
-          LIB_PATH="$1"
-          LIB_NAME="$2"
+          check_soname() {
+            LIB_PATH="$1"
+            LIB_NAME="$2"
+            EXPECTED_SONAME="$3"
 
-          if [ ! -f "$LIB_PATH" ]; then
-            echo "SKIP: $LIB_NAME ($LIB_PATH not found)"
-            return
+            if [ ! -f "$LIB_PATH" ]; then
+              echo "FAIL: $LIB_NAME ($LIB_PATH not found)"
+              FAIL=1
+              return
+            fi
+
+            # Capture the producer status before parsing; plausible partial output
+            # from a failed tool must never establish a passing library check.
+            if DYNAMIC_TAGS=$(readelf -d "$LIB_PATH" 2>&1); then
+              :
+            else
+              echo "FAIL: readelf failed for $LIB_NAME: $DYNAMIC_TAGS"
+              FAIL=1
+              return
+            fi
+
+            if SONAME=$(${pkgs.sed}/bin/sed -n 's/.*SONAME.*\[\([^][]*\)\].*/\1/p' <<< "$DYNAMIC_TAGS"); then
+              :
+            else
+              echo "FAIL: could not parse SONAME for $LIB_NAME"
+              FAIL=1
+              return
+            fi
+
+            if [ -z "$SONAME" ]; then
+              echo "FAIL: $LIB_NAME has no SONAME"
+              FAIL=1
+              return
+            fi
+            if [ -n "$EXPECTED_SONAME" ] && [ "$SONAME" != "$EXPECTED_SONAME" ]; then
+              echo "FAIL: $LIB_NAME SONAME $SONAME (expected $EXPECTED_SONAME)"
+              FAIL=1
+              return
+            fi
+            echo "PASS: $LIB_NAME SONAME: $SONAME"
+          }
+
+          echo "==> Checking SONAMEs"
+          ${libChecks}
+
+          if [ "$FAIL" -ne 0 ]; then
+            echo "==> SONAME check FAILED"
+            exit 1
           fi
-
-          SONAME_LINE=$(readelf -d "$LIB_PATH" 2>/dev/null | ${pkgs.grep}/bin/grep SONAME || true)
-          if [ -z "$SONAME_LINE" ]; then
-            echo "FAIL: $LIB_NAME has no SONAME"
-            FAIL=1
-            return
-          fi
-          echo "PASS: $LIB_NAME SONAME: $SONAME_LINE"
-        }
-
-        echo "==> Checking SONAMEs"
-        ${libChecks}
-
-        if [ "$FAIL" -ne 0 ]; then
-          echo "==> SONAME check FAILED"
-          exit 1
-        fi
-        echo "==> All SONAME checks passed"
-      '';
-    };
+          echo "==> All SONAME checks passed"
+        '';
+      };
 
   # -------------------------------------------------------------------------
   # mkRPATHCheck — Verify RPATH entries point to valid dirs
@@ -341,7 +377,7 @@
   }: let
     symbolChecks = builtins.concatStringsSep "\n" (
       builtins.map (sym: ''
-        check_symbol "${pkg}/lib/${libName}" "${libName}" "${sym}"
+        check_symbol ${lib.escapeShellArgs ["${pkg}/lib/${libName}" libName sym]}
       '')
       symbols
     );
@@ -362,16 +398,45 @@
           SYMBOL="$3"
 
           if [ ! -f "$LIB_PATH" ]; then
-            echo "SKIP: $LIB_NAME ($LIB_PATH not found)"
+            echo "FAIL: $LIB_NAME ($LIB_PATH not found)"
+            FAIL=1
             return
           fi
 
-          if nm -D "$LIB_PATH" 2>/dev/null | ${pkgs.grep}/bin/grep -q " T $SYMBOL"; then
-            echo "PASS: $LIB_NAME exports $SYMBOL"
+          if EXPORTS=$(nm -D --defined-only --format=posix "$LIB_PATH" 2>&1); then
+            :
           else
-            echo "FAIL: $LIB_NAME missing symbol $SYMBOL"
+            echo "FAIL: nm failed for $LIB_NAME: $EXPORTS"
             FAIL=1
+            return
           fi
+
+          # Match a complete defined text symbol, allowing only its ELF version
+          # suffix. Prefixes and regex metacharacters are not symbol identity.
+          while read -r EXPORTED_SYMBOL SYMBOL_TYPE REST; do
+            [ "$SYMBOL_TYPE" = T ] || continue
+            [ "''${EXPORTED_SYMBOL%%@*}" = "$SYMBOL" ] || continue
+
+            VERSION_SUFFIX="''${EXPORTED_SYMBOL#"$SYMBOL"}"
+            case "$VERSION_SUFFIX" in
+              "") ;;
+              @@*)
+                VERSION="''${VERSION_SUFFIX#@@}"
+                [ -n "$VERSION" ] && [[ "$VERSION" != *@* ]] || continue
+                ;;
+              @*)
+                VERSION="''${VERSION_SUFFIX#@}"
+                [ -n "$VERSION" ] && [[ "$VERSION" != *@* ]] || continue
+                ;;
+              *) continue ;;
+            esac
+
+            echo "PASS: $LIB_NAME exports $SYMBOL"
+            return
+          done <<< "$EXPORTS"
+
+          echo "FAIL: $LIB_NAME missing symbol $SYMBOL"
+          FAIL=1
         }
 
         echo "==> Checking symbol exports"

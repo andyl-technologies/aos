@@ -29,23 +29,33 @@
   # The selected image package owns its test disk shape. The harness only
   # supplies generic builders and the evaluated system inputs.
   mkTestDisk = arguments: let
+    guestPackages = arguments.system.pkgs or pkgs;
+    buildPackages = guestPackages.buildPackages;
     development = arguments.development or true;
-    inputs = builtins.removeAttrs arguments ["development"];
     platform = arguments.system.config.aos.image.platform;
   in
     if platform == null
     then throw "mkTestDisk requires a selected image-builder ability"
     else
       platform.buildTestDisk {
-        closureInfoFor = lib.build.closureInfo {inherit pkgs;};
-        inherit (pkgs) mkDerivation;
+        inherit buildPackages;
+        closureInfoFor = lib.build.closureInfo {pkgs = buildPackages;};
+        inherit (buildPackages) mkDerivation;
+        testAgent = guestPackages.aos-test-agent;
+        sshTools = buildPackages.openssh;
+        inputs =
+          (builtins.removeAttrs arguments ["development"])
+          // {
+            guestArchitecture = guestPackages.stdenv.hostPlatform.constraints.cpu;
+          };
         mkImageRecipe =
           if !development || (pkgs.sharedImageCacheDir or null) == null
           then null
-          else import ./image-recipe.nix {inherit pkgs lib;};
-        testAgent = pkgs.aos-test-agent;
-        sshTools = pkgs.openssh;
-        inherit inputs;
+          else
+            import ./image-recipe.nix {
+              inherit lib;
+              pkgs = buildPackages // {sharedImageCacheDir = pkgs.sharedImageCacheDir;};
+            };
       };
 
   # ---------------------------------------------------------------------------

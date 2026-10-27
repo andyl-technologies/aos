@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "path": "/var/lib/aos/sandboxd/broker-session/storage/session.journal",
+      "kind": "regular",
+      "context": "system_u:object_r:aos_method46_controller_main_t"
+    },
+    {
+      "path": "/var/lib/aos/sandboxd/broker-session/storage/session.journal.compact.tmp",
+      "kind": "regular",
+      "context": "system_u:object_r:aos_method46_controller_main_t"
+    },
+    {
+      "path": "/var/lib/aos/sandbox-storage/broker-session/session.journal",
+      "kind": "regular",
+      "context": "system_u:object_r:aos_method46_storage_main_t"
+    },
+    {
+      "path": "/var/lib/aos/sandbox-storage/broker-session/session.journal.compact.tmp",
+      "kind": "regular",
+      "context": "system_u:object_r:aos_method46_storage_main_t"
+    },
+    {
+      "path": "/var/lib/aos/sandboxd/controller.journal",
+      "kind": "regular",
+      "context": "system_u:object_r:aos_sandbox_root_read_journal_t"
+    },
+    {
+      "path": "/var/lib/aos/sandboxd/broker-session/host/session.journal",
+      "kind": "regular",
+      "context": "system_u:object_r:aos_sandbox_root_read_journal_t"
+    },
+    {
+      "path": "/var/lib/aos/sandboxd/broker-session/mount/session.journal",
+      "kind": "regular",
+      "context": "system_u:object_r:aos_sandbox_root_read_journal_t"
+    },
+    {
+      "path": "/var/lib/aos/sandboxd/broker-session/network/session.journal",
+      "kind": "regular",
+      "context": "system_u:object_r:aos_sandbox_root_read_journal_t"
+    },
+    {
+      "path": "/var/lib/aos/sandboxd/broker-session/storage/session-floor.initial-intent",
+      "kind": "regular",
+      "context": "system_u:object_r:aos_method46_controller_initial_intent_t"
+    },
+    {
+      "path": "/var/lib/aos/sandboxd/broker-session/storage/session-floor.initial-intent.pending",
+      "kind": "regular",
+      "context": "system_u:object_r:aos_method46_controller_initial_intent_t"
+    },
+    {
+      "path": "/var/lib/aos/sandbox-storage/broker-session/session-floor.initial-intent",
+      "kind": "regular",
+      "context": "system_u:object_r:aos_method46_storage_initial_intent_t"
+    },
+    {
+      "path": "/var/lib/aos/sandbox-storage/broker-session/session-floor.initial-intent.pending",
+      "kind": "regular",
+      "context": "system_u:object_r:aos_method46_storage_initial_intent_t"
+    }
+  ]
+}

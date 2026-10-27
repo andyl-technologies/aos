@@ -1,0 +1,139 @@
+Subject: [PATCH] core: authenticate the selected merged-usr image store
+
+The root builder retains immutable package inodes under /usr/lib/aos/nix
+and publishes the selected toplevel at /usr/lib/aos/toplevel. Walk those
+actual image paths without following symlinks or crossing mounts. Keep the
+logical /nix/store identity comparisons bound to the same selected members.
+
+--- a/src/core/main.c
++++ b/src/core/main.c
+@@ -2017,7 +2017,7 @@
+         if (root_fd < 0)
+                 return log_error_errno(root_fd, "Cannot open AOS handoff root: %m");
+         lower_fd = chase_and_open(
+-                        "/nix.lower",
++                        "/usr/lib/aos/nix",
+                         root,
+                         (root ? CHASE_PREFIX_ROOT : 0) |
+                         CHASE_PROHIBIT_SYMLINKS |
+--- a/src/core/load-fragment.c
++++ b/src/core/load-fragment.c
+@@ -6284,7 +6284,7 @@
+             (expected_suffix ? !streq_ptr(suffix, expected_suffix) : suffix != NULL))
+                 return -EPERM;
+ 
+-        *ret_path = strjoin("/nix.lower/store/", relative);
++        *ret_path = strjoin("/usr/lib/aos/nix/store/", relative);
+         return *ret_path ? 0 : -ENOMEM;
+ }
+ 
+@@ -6316,7 +6316,7 @@
+         if (!template_name)
+                 return -EINVAL;
+ 
+-        /* /aos-toplevel is part of the measured boot image. Follow only its
++        /* /usr/lib/aos/toplevel is part of the measured boot image. Follow only its
+          * fixed store-link chain through the physical EROFS lower store. */
+         if (stat("/", &root_st) < 0 || statfs("/", &fs) < 0 || statvfs("/", &vfs) < 0)
+                 return -errno;
+@@ -6324,7 +6324,7 @@
+             !FLAGS_SET(vfs.f_flag, ST_RDONLY | ST_NODEV))
+                 return -EPERM;
+ 
+-        r = aos_network_image_link_internal("/aos-toplevel", NULL, root_st.st_dev, AOS_IMAGE_LINK_EXACT, &top, original);
++        r = aos_network_image_link_internal("/usr/lib/aos/toplevel", NULL, root_st.st_dev, AOS_IMAGE_LINK_EXACT, &top, original);
+         if (r < 0)
+                 return r;
+         top_file.fd = aos_network_open_image_path_recipe(top, O_PATH | O_DIRECTORY, original);
+@@ -6397,7 +6397,7 @@
+             st.st_ino != u->aos_image_fragment_inode)
+                 return -EPERM;
+         return streq_ptr(u->fragment_path,
+-                         strjoina("/nix/store/", expected + strlen("/nix.lower/store/"))) ? 0 : -EPERM;
++                         strjoina("/nix/store/", expected + strlen("/usr/lib/aos/nix/store/"))) ? 0 : -EPERM;
+ }
+ 
+ static int aos_verify_loaded_image_fragment(const Unit *u) {
+@@ -6443,7 +6443,7 @@
+         if (fs.f_type != EROFS_SUPER_MAGIC_V1 ||
+             !FLAGS_SET(vfs.f_flag, ST_RDONLY | ST_NODEV))
+                 return log_error_errno(SYNTHETIC_ERRNO(EPERM), "Immutable enrollment root lacks EROFS, readonly or nodev: %m");
+-        r = aos_network_image_link("/aos-toplevel", NULL, root_st.st_dev, &top);
++        r = aos_network_image_link("/usr/lib/aos/toplevel", NULL, root_st.st_dev, &top);
+         if (r < 0)
+                 return log_error_errno(r, "Failed to authenticate immutable enrollment toplevel: %m");
+         link = path_join(top, "etc-basedir");
+@@ -6537,7 +6537,7 @@
+                 return -errno;
+         if (fs.f_type != EROFS_SUPER_MAGIC_V1 || !FLAGS_SET(vfs.f_flag, ST_RDONLY | ST_NODEV))
+                 return -EPERM;
+-        r = aos_network_image_link("/aos-toplevel", NULL, root_st.st_dev, &top);
++        r = aos_network_image_link("/usr/lib/aos/toplevel", NULL, root_st.st_dev, &top);
+         if (r < 0)
+                 return r;
+         link = path_join(top, "systemd-units");
+@@ -6555,7 +6555,7 @@
+                 return r;
+         /* One physical link result, then the exact canonical materializer
+          * targets. No fallback opens and no mutable lookup supplies authority. */
+-        suffix = strchr(*ret_path + strlen("/nix.lower/store/"), '/');
++        suffix = strchr(*ret_path + strlen("/usr/lib/aos/nix/store/"), '/');
+         if (!streq_ptr(suffix, strjoina("/", relative)) &&
+             !streq_ptr(suffix, strjoina("/lib/systemd/system/", relative)) &&
+             !streq_ptr(suffix, strjoina("/etc/systemd/system/", relative)))
+@@ -6640,7 +6640,7 @@
+             st.st_ino != u->aos_image_fragment_inode)
+                 return -EPERM;
+         return streq_ptr(u->fragment_path,
+-                         strjoina("/nix/store/", expected + strlen("/nix.lower/store/"))) ? 0 : -EPERM;
++                         strjoina("/nix/store/", expected + strlen("/usr/lib/aos/nix/store/"))) ? 0 : -EPERM;
+ }
+ 
+ int aos_fuse_worker_verify_executable(Unit *u, int descriptor) {
+@@ -6657,7 +6657,7 @@
+         relative = startswith(command->path, "/nix/store/");
+         if (!relative || !endswith(relative, "/bin/aos-filesystem-fuse-worker"))
+                 return -EPERM;
+-        physical = strjoin("/nix.lower/store/", relative);
++        physical = strjoin("/usr/lib/aos/nix/store/", relative);
+         if (!physical)
+                 return -ENOMEM;
+         image = aos_network_open_image_path(physical, O_RDONLY | O_NOFOLLOW | O_NOCTTY);
+@@ -6704,7 +6704,7 @@
+                 return r;
+         if (parsed->st_dev != physical.st_dev || parsed->st_ino != physical.st_ino ||
+             !streq_ptr(u->fragment_path,
+-                       strjoina("/nix/store/", expected + strlen("/nix.lower/store/"))))
++                       strjoina("/nix/store/", expected + strlen("/usr/lib/aos/nix/store/"))))
+                 return -EPERM;
+ 
+         s = SERVICE(u);
+@@ -6735,7 +6735,7 @@
+             physical.st_ino != s->aos_own_launcher_fragment_inode)
+                 return -EPERM;
+         return streq_ptr(u->fragment_path,
+-                         strjoina("/nix/store/", expected + strlen("/nix.lower/store/"))) ? 0 : -EPERM;
++                         strjoina("/nix/store/", expected + strlen("/usr/lib/aos/nix/store/"))) ? 0 : -EPERM;
+ }
+ 
+ static int unit_load_fragment_original(Unit *u) {
+@@ -6879,7 +6879,7 @@
+                 /* Keep the logical store path for independent V3 readback;
+                  * parse only the physical EROFS counterpart. */
+                 r = free_and_strdup(&u->fragment_path,
+-                                    image_fragment ? strjoina("/nix/store/", fragment + strlen("/nix.lower/store/"))
++                                    image_fragment ? strjoina("/nix/store/", fragment + strlen("/usr/lib/aos/nix/store/"))
+                                                    : fragment);
+                 if (r < 0)
+                         return r;
+--- a/src/core/aos-component-parent.c
++++ b/src/core/aos-component-parent.c
+@@ -1266,7 +1266,7 @@
+         if (!unit->aos_image_fragment_pinned ||
+             unit->aos_image_fragment_device != original->stat.st_dev ||
+             unit->aos_image_fragment_inode != original->stat.st_ino ||
+-            !streq_ptr(unit->fragment_path, strjoina("/nix/store/", original->physical_path + strlen("/nix.lower/store/"))))
++            !streq_ptr(unit->fragment_path, strjoina("/nix/store/", original->physical_path + strlen("/usr/lib/aos/nix/store/"))))
+                 return -EOWNERDEAD;
+         return aos_resource_parent_dropins((Unit*) unit, unit->dropin_paths, 0);
+ }

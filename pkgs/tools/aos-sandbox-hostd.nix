@@ -1,0 +1,96 @@
+##! aos-sandbox-hostd — fixed-function root broker for sandbox runtimes
+{
+  lib,
+  mkCargoPackage,
+  mkCargoArtifacts,
+  mkCargoDummySource,
+  aosWorkspaceVendor,
+  protobuf,
+  stdenv,
+  buildPackages,
+  linux,
+  kernelCloneLayout ? linux.dev,
+}: let
+  version = "0.1.0";
+  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  buildProtobuf =
+    if isDarwinCross
+    then buildPackages.protobuf
+    else protobuf;
+  workspaceCargo = import ./aos/_workspace-cargo.nix {inherit lib aosWorkspaceVendor;};
+  inherit (workspaceCargo) src cargoDeps;
+  cargoEnv = {
+    PROTOC = "${buildProtobuf}/bin/protoc";
+    AOS_KERNEL_CLONE_LAYOUT_DIR = "${kernelCloneLayout}/share/aos-kernel-clone-layout-v1";
+  };
+  cargoArtifactContract = {
+    family = "aos-sandbox-hostd-native";
+    checkType = "debug";
+    nativeInputs = map toString [buildProtobuf kernelCloneLayout];
+  };
+  cargoArtifacts = mkCargoArtifacts {
+    pname = "aos-sandbox-hostd-artifacts";
+    inherit version cargoDeps cargoArtifactContract cargoEnv;
+    src = mkCargoDummySource {
+      srcRoot = ../../crates;
+      name = "aos-sandbox-hostd-cargo-dummy-source";
+      cargoRoot = "crates";
+    };
+    cargoRoot = "crates";
+    checkType = "debug";
+    cargoBuildCommands = [
+      "build --release --frozen --offline -j$NIX_BUILD_CORES --no-default-features --features aos-sandbox-services/host,aos-sandbox-services/selected-kernel-clone-layout -p aos-sandbox-services --bin aos-sandbox-hostd --bin aos-sandbox-host-phase0-probe"
+      "test --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-broker-session-security --lib --test api_surface"
+      "test --no-run --frozen --offline -j$NIX_BUILD_CORES --no-default-features --features aos-sandbox-services/host,aos-sandbox-services/selected-kernel-clone-layout -p aos-sandbox-services"
+    ];
+    buildDeps = [buildProtobuf (toString kernelCloneLayout)];
+    runtimeDeps = [];
+  };
+in
+  mkCargoPackage {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
+    pname = "aos-sandbox-hostd";
+    inherit version src cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
+    cargoRoot = "crates";
+    cargoFlags = "--no-default-features --features aos-sandbox-services/host,aos-sandbox-services/selected-kernel-clone-layout -p aos-sandbox-services --bin aos-sandbox-hostd --bin aos-sandbox-host-phase0-probe";
+    checkType = "debug";
+    cargoTestFlags = "--no-default-features --features aos-sandbox-services/host,aos-sandbox-services/selected-kernel-clone-layout -p aos-sandbox-services -p aos-sandbox-broker-session-security";
+    cargoNextest = true;
+    cargoNextestProfile = "nix-sandbox";
+    # Match the workspace native test runner; installed stack limits stay fixed.
+    RUST_MIN_STACK = "33554432";
+    doCheck = true;
+    buildDeps = [buildProtobuf (toString kernelCloneLayout)];
+    runtimeDeps = [];
+
+    postInstall = ''
+      test -x "$out/bin/aos-sandbox-hostd"
+      test -x "$out/bin/aos-sandbox-host-phase0-probe"
+    '';
+
+    passthru = {
+      inherit cargoArtifacts cargoDeps cargoEnv;
+    };
+
+    meta = {
+      description = "Fixed-function root broker for AOS sandbox runtimes";
+      homepage = "https://github.com/andyl/andyl-os";
+      license = "Apache-2.0";
+    };
+  }

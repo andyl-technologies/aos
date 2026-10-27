@@ -9,8 +9,14 @@ use std::path::{Component, Path, PathBuf};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 
-use super::{ResourceGroup, resource_group_name, scalar};
+use super::{
+    Definition, Receipt, ResourceGroup, atomic_write, check_link, image_manager_owned,
+    private_directory, resource_group_name, resource_outputs, scalar, unit_path,
+};
 use crate::resource_effects::{digest, normalized_path, read_regular, reject_symlink_ancestors};
+use aos_activation::activation::{Action, Invocation};
+use aos_systemd_client::{PinnedSystemdManager, UnitActiveState};
+use serde_json::{Value, json};
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -163,6 +169,101 @@ pub(super) fn initial_at(
     }))
 }
 
+/// Authenticates the image's exact named slice without converting its alias.
+fn retained_at(
+    path: &Path,
+    input: &ResourceGroup,
+    selected_target: &Path,
+    read: impl Fn(&Path) -> Result<Vec<u8>>,
+) -> Result<ImageCustody> {
+    let image = initial_at(path, input, read)?
+        .context("retained group requires an immutable image alias")?;
+    ensure!(
+        selected_target == image.target,
+        "retained group differs from the selected image projection"
+    );
+    Ok(image)
+}
+
+/// Reconciles a selected image slice without changing its definition or PID 1.
+///
+/// # Errors
+/// Returns an error for removal, unfinished prior transitions, a missing or
+/// foreign image definition, foreign enablement, or unsuccessful manager jobs.
+pub(super) async fn retain(
+    invocation: &Invocation,
+    action: &str,
+    input: &ResourceGroup,
+    desired: &Definition,
+    previous: Option<&Receipt>,
+    receipt_path: &Path,
+    manager: &PinnedSystemdManager,
+) -> Result<Value> {
+    ensure!(
+        action != "remove" && invocation.action == Action::Apply,
+        "retained group requires an image transition for removal"
+    );
+    if let Some(previous) = previous {
+        ensure!(
+            previous.retiring.is_none() && previous.desired.unit == desired.unit,
+            "retained group has an unfinished definition transition"
+        );
+    }
+    let selected = Path::new("/usr/lib/aos/toplevel/systemd-units").join(&desired.unit);
+    let image = retained_at(
+        &unit_path(desired),
+        input,
+        &selected.canonicalize()?,
+        read_member,
+    )?;
+    let identity = image_manager_owned(manager, desired).await?;
+    let enabled = check_link(desired)?;
+    // Package groups are started explicitly after their prerequisites. They
+    // need no installation link, and foreign enablement must remain visible.
+    ensure!(!enabled, "retained group has unowned enablement");
+    let active = manager.active_state_exact(&desired.unit, &identity).await?;
+    if action == "observe" {
+        return Ok(
+            if previous.is_some_and(|receipt| {
+                receipt.complete && receipt.desired == *desired && receipt.image.is_some()
+            }) && active == UnitActiveState::Active
+            {
+                json!({"status":"current", "outputs":resource_outputs(desired, &active)})
+            } else {
+                json!({"status":"retry-safe"})
+            },
+        );
+    }
+
+    private_directory(receipt_path.parent().context("receipt has no parent")?)?;
+    let mut receipt = Receipt {
+        owner: invocation.id.clone(),
+        desired: desired.clone(),
+        retiring: None,
+        complete: false,
+        image: Some(image),
+    };
+    atomic_write(receipt_path, &serde_json::to_vec(&receipt)?, 0o600)?;
+    let job = manager.start_unit_exact(&desired.unit, &identity).await?;
+    ensure!(job.result.is_done(), "retained image group start failed");
+    let active = manager.active_state_exact(&desired.unit, &identity).await?;
+    ensure!(
+        active == UnitActiveState::Active,
+        "retained image group is not active"
+    );
+    // Recheck the selected alias after dispatch before marking the receipt
+    // complete. Equal bytes in another store member do not grant custody.
+    retained_at(
+        &unit_path(desired),
+        input,
+        &selected.canonicalize()?,
+        read_member,
+    )?;
+    receipt.complete = true;
+    atomic_write(receipt_path, &serde_json::to_vec(&receipt)?, 0o600)?;
+    Ok(resource_outputs(desired, &active))
+}
+
 /// Checks pending custody without granting authority to any replacement path.
 pub(super) fn alias_at(
     path: &Path,
@@ -275,6 +376,30 @@ mod tests {
                 initial_at(&path, &input(true), |_| panic!("noncanonical member read")).is_err()
             );
         }
+    }
+
+    #[test]
+    fn retained_group_requires_the_selected_member_and_keeps_its_alias() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("aos-pkg-nginx.slice");
+        std::os::unix::fs::symlink(target(), &path).unwrap();
+        let identity = fs::symlink_metadata(&path).unwrap().ino();
+        let seed = seed_text(&input(true)).unwrap();
+        let read = |_: &Path| Ok(seed.as_bytes().to_vec());
+
+        retained_at(&path, &input(true), &target(), read).unwrap();
+
+        assert_eq!(fs::read_link(&path).unwrap(), target());
+        assert_eq!(fs::symlink_metadata(&path).unwrap().ino(), identity);
+        let other = Path::new("/nix/store/11111111111111111111111111111111-other/group.slice");
+        assert!(retained_at(&path, &input(true), other, read).is_err());
+        assert!(retained_at(&path, &input(false), &target(), read).is_err());
+        assert!(retained_at(&path, &input(true), &target(), |_| Ok(b"foreign".to_vec())).is_err());
+
+        fs::remove_file(&path).unwrap();
+        fs::write(&path, &seed).unwrap();
+        assert!(retained_at(&path, &input(true), &target(), read).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), seed);
     }
 
     #[test]

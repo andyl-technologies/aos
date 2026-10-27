@@ -84,6 +84,9 @@ aos-package-maintenance = { workspace = true }
 aos-release-format = { workspace = true }
 aos-image-finalizer = { workspace = true }
 aos-closure-analysis = { workspace = true }
+aos-sandbox-api = { workspace = true }
+aos-sandbox-client = { workspace = true }
+aos-sandbox-protocol = { workspace = true }
 clap = { workspace = true }
 clap_complete = { workspace = true }
 anyhow = { workspace = true }

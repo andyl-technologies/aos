@@ -540,6 +540,7 @@ in rec {
     buildType ? "release",
     checkType ? buildType,
     cargoTestFlags ? "",
+    cargoTestFlagSets ? [],
     buildFeatures ? [],
     buildNoDefaultFeatures ? false,
     installBins ? true,
@@ -590,6 +591,16 @@ in rec {
       if checkType == "release"
       then "--release"
       else "";
+
+    # Each selection is a separate Cargo graph, including its test dependencies.
+    effectiveTestFlagSets =
+      if cargoTestFlagSets == []
+      then [cargoTestFlags]
+      else if
+        builtins.isList cargoTestFlagSets
+        && builtins.all (flags: builtins.isString flags && builtins.match "[[:space:]]*" flags == null) cargoTestFlagSets
+      then cargoTestFlagSets
+      else throw "cargoTestFlagSets must contain nonempty test selections";
 
     gitSourceLines = builtins.concatStringsSep "" (
       builtins.map (
@@ -705,6 +716,16 @@ in rec {
             # aos-dev cache pruning. It does not enter package outputs.
             touch "$CARGO_TARGET_DIR"
           fi
+          ${
+            if cargoSourceId == null
+            then ""
+            else ''
+              # Cargo build scripts may leave read-only outputs copied from
+              # vendored sources. The next Nix UID cannot overwrite them.
+              . ${./cargo-target-writable.sh}
+              aos_prepare_cargo_build_outputs "$CARGO_TARGET_DIR"
+            ''
+          }
           # Release and qualification builds retain the ordinary disabled
           # setting; aos-dev can enable incremental units independently of
           # the persistent target directory.
@@ -796,117 +817,124 @@ in rec {
               echo "skipping target runtime checks while cross-compiling for $AOS_TARGET_PLATFORM"
             else
               ${
-              if cargoNextest != null
-              then ''
-                ${
-                  if validatedNextestMaxTestThreads == null
-                  then ""
-                  else ''
-                    nextestTestThreads="$NIX_BUILD_CORES"
-                    if [ "$nextestTestThreads" -gt ${toString validatedNextestMaxTestThreads} ]; then
-                      nextestTestThreads=${toString validatedNextestMaxTestThreads}
-                    fi
-                  ''
-                }
-                ${
-                  if validatedNextestOpenFilesLimit == null
-                  then ""
-                  else ''
-                    # Nextest enumerates test binaries concurrently. Large
-                    # workspaces can exceed a conservative sandbox soft limit
-                    # without requiring more build or test parallelism.
-                    if ! ulimit -S -n ${toString validatedNextestOpenFilesLimit}; then
-                      echo "could not install the bounded Nextest open-file limit ${toString validatedNextestOpenFilesLimit}" >&2
-                      exit 1
-                    fi
-                    nextestOpenFilesLimit=$(ulimit -S -n)
-                    if [ "$nextestOpenFilesLimit" -lt ${toString validatedNextestOpenFilesLimit} ]; then
-                      echo "Nextest open-file soft limit is $nextestOpenFilesLimit, expected at least ${toString validatedNextestOpenFilesLimit}" >&2
-                      exit 1
-                    fi
-                  ''
-                }
-                # Nix may give builders a PTY. Animated progress then hides
-                # failures from streamed logs and repeats captured output.
-                nextestStatus=0
-                cargo nextest run \
-                  --show-progress none \
-                  ${
-                  if checkType == "release"
-                  then "--cargo-profile release"
-                  else ""
-                } \
-                  --frozen \
-                  --offline \
-                  ${nextestProfileFlag} \
-                  ${noDefaultFlag} \
-                  ${featuresFlag} \
-                  ${cargoTestFlags} \
-                  ${
-                  if validatedNextestMaxTestThreads == null
-                  then ""
-                  else ''--test-threads "$nextestTestThreads"''
-                } \
-                  ${nextestFlags} \
-                  || nextestStatus=$?
+              builtins.concatStringsSep "\n" (map (
+                  selectedTestFlags:
+                    if cargoNextest != null
+                    then ''
+                      ${
+                        if validatedNextestMaxTestThreads == null
+                        then ""
+                        else ''
+                          nextestTestThreads="$NIX_BUILD_CORES"
+                          if [ "$nextestTestThreads" -gt ${toString validatedNextestMaxTestThreads} ]; then
+                            nextestTestThreads=${toString validatedNextestMaxTestThreads}
+                          fi
+                        ''
+                      }
+                      ${
+                        if validatedNextestOpenFilesLimit == null
+                        then ""
+                        else ''
+                          # Nextest enumerates test binaries concurrently. Large
+                          # workspaces can exceed a conservative sandbox soft limit
+                          # without requiring more build or test parallelism.
+                          if ! ulimit -S -n ${toString validatedNextestOpenFilesLimit}; then
+                            echo "could not install the bounded Nextest open-file limit ${toString validatedNextestOpenFilesLimit}" >&2
+                            exit 1
+                          fi
+                          nextestOpenFilesLimit=$(ulimit -S -n)
+                          if [ "$nextestOpenFilesLimit" -lt ${toString validatedNextestOpenFilesLimit} ]; then
+                            echo "Nextest open-file soft limit is $nextestOpenFilesLimit, expected at least ${toString validatedNextestOpenFilesLimit}" >&2
+                            exit 1
+                          fi
+                        ''
+                      }
+                      # Nix may give builders a PTY. Animated progress then hides
+                      # failures from streamed logs and repeats captured output.
+                      nextestStatus=0
+                      cargo nextest run \
+                        --show-progress none \
+                        ${
+                        if checkType == "release"
+                        then "--cargo-profile release"
+                        else ""
+                      } \
+                        --frozen \
+                        --offline \
+                        ${nextestProfileFlag} \
+                        ${noDefaultFlag} \
+                        ${featuresFlag} \
+                        ${selectedTestFlags} \
+                        ${
+                        if validatedNextestMaxTestThreads == null
+                        then ""
+                        else ''--test-threads "$nextestTestThreads"''
+                      } \
+                        ${nextestFlags} \
+                        || nextestStatus=$?
 
-                if [ "$nextestStatus" -ne 0 ]; then
-                  ${
-                  if nextestJunitReport == null
-                  then ""
-                  else ''
-                    nextestJunitReport=${shellQuote nextestJunitReport}
-                    echo "Nextest failed; JUnit report: $nextestJunitReport" >&2
+                      if [ "$nextestStatus" -ne 0 ]; then
+                        ${
+                        if nextestJunitReport == null
+                        then ""
+                        else ''
+                          # Reporting errors must not replace the captured test exit status.
+                          (
+                            nextestJunitReport=${shellQuote nextestJunitReport}
+                            echo "Nextest failed; JUnit report: $nextestJunitReport" >&2
 
-                    if [ -s "$nextestJunitReport" ]; then
-                      # Passing test cases are self-closing elements. Retain
-                      # only failed/error cases and their captured output so a
-                      # large workspace report remains readable in Nix logs.
-                      nextestFailures="$NIX_BUILD_TOP/nextest-failures.xml"
-                      sed -n '
-                        /<testcase / { h; b }
-                        /<failure\|<error/ {
-                          x
-                          p
-                          x
-                          :failure
-                          p
-                          /<\/testcase>/ b
-                          n
-                          b failure
-                        }
-                      ' "$nextestJunitReport" > "$nextestFailures"
+                            if [ -s "$nextestJunitReport" ]; then
+                              # Passing test cases are self-closing elements. Retain
+                              # only failed/error cases and their captured output so a
+                              # large workspace report remains readable in Nix logs.
+                              nextestFailures="$NIX_BUILD_TOP/nextest-failures.xml"
+                              sed -n '
+                                /<testcase / { h; b }
+                                /<failure\|<error/ {
+                                  x
+                                  p
+                                  x
+                                  :failure
+                                  p
+                                  /<\/testcase>/ b
+                                  n
+                                  b failure
+                                }
+                              ' "$nextestJunitReport" > "$nextestFailures"
 
-                      if [ -s "$nextestFailures" ]; then
-                        head -n 1000 "$nextestFailures" >&2
-                        failureLines=$(wc -l < "$nextestFailures")
-                        if [ "$failureLines" -gt 1000 ]; then
-                          echo "Nextest failure details truncated after 1000 of $failureLines lines" >&2
-                        fi
-                      else
-                        echo "JUnit contains no completed failed test case; suite summary follows" >&2
-                        sed -n '/<testsuite /p' "$nextestJunitReport" >&2
+                              if [ -s "$nextestFailures" ]; then
+                                head -n 1000 "$nextestFailures" >&2
+                                failureLines=$(wc -l < "$nextestFailures")
+                                if [ "$failureLines" -gt 1000 ]; then
+                                  echo "Nextest failure details truncated after 1000 of $failureLines lines" >&2
+                                fi
+                              else
+                                echo "JUnit contains no completed failed test case; suite summary follows" >&2
+                                sed -n '/<testsuite /p' "$nextestJunitReport" | head -n 1000 >&2
+                              fi
+                            else
+                              echo "Nextest did not produce the configured JUnit report" >&2
+                            fi
+                          ) || true
+                        ''
+                      }
+                        exit "$nextestStatus"
                       fi
-                    else
-                      echo "Nextest did not produce the configured JUnit report" >&2
-                    fi
-                  ''
-                }
-                  exit "$nextestStatus"
-                fi
-              ''
-              else ''
-                cargo test \
-                  ${checkProfileFlag} \
-                  --frozen \
-                  --offline \
-                  ${
-                  if !doParallelCheck
-                  then "-- --test-threads=1"
-                  else ""
-                } \
-                  ${cargoTestFlags}
-              ''
+                    ''
+                    else ''
+                      cargo test \
+                        ${checkProfileFlag} \
+                        --frozen \
+                        --offline \
+                        ${
+                        if !doParallelCheck
+                        then "-- --test-threads=1"
+                        else ""
+                      } \
+                        ${selectedTestFlags}
+                    ''
+                )
+                effectiveTestFlagSets)
             }
             fi
           '';

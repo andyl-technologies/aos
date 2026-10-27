@@ -7,13 +7,17 @@
   aos-configuration-provider,
   aos-host-policy,
   mkDerivation,
-  buildPackages,
   stdenv,
+  buildPackages,
   fetchurl,
   gnumake,
   pkg-config,
   gawk,
   linux-headers,
+  linux,
+  kernelCloneLayout ? linux.dev,
+  bpftool,
+  libbpf,
   util-linux,
   kmod,
   zlib,
@@ -30,6 +34,8 @@
   getent,
   libcap,
   libxcrypt,
+  gcc-libs,
+  libidn2,
   pcre2,
   audit,
   libselinux,
@@ -48,7 +54,6 @@
   erofs-utils,
   fakeroot,
   findutils,
-  gcc-libs,
   gptfdisk,
   grep,
   iproute2,
@@ -103,6 +108,10 @@
     openssl
     libcap
     libxcrypt
+    # glibc loads these by SONAME for unwinding and IDN name-service paths.
+    # Keep the providers in PID 1's authenticated runtime closure explicitly.
+    gcc-libs
+    libidn2
     audit
     libselinux
     libsepol
@@ -111,6 +120,7 @@
     acl
     cryptsetup
     elfutils
+    libbpf
     linux-pam
     tpm2-tss
   ];
@@ -251,15 +261,96 @@ in
     #          rejects the dm-verity signed-key activation.
     #   0006 — Keep an embedded signed UKI command line authoritative over
     #          addon and SMBIOS fragments that run before initrd validation.
+    #   0007 — Add the closed AOS payload seccomp profile to nspawn and install
+    #          it after container setup, immediately before payload execution.
+    #   0008 — Consume a named supervisor-only root descriptor without
+    #          reopening its pathname or forwarding it to the payload.
+    #   0009 — Test fail-closed shutdown-intent state for retained-supervisor
+    #          reboot support. Runtime integration is a separate step.
+    #   0010 — Authenticate per-boot shutdown intent and reset the empty payload
+    #          cgroup while retaining the AOS supervisor and unit invocation.
+    #   0011 — Install a broker-owned attachment anchor from an exact named
+    #          descriptor with the target idmap and hard read-only attributes.
+    #   0012 — Reserve unit-reference lifetime control to root so an
+    #          unprivileged client cannot prevent exact terminal collection.
+    #   0013 — Route authenticated switch-root and daemon-reexec operations
+    #          through the immutable AOS SELinux guard without init fallback.
+    #   0014 — Deliver only an exact named, sealed guest-agent descriptor set
+    #          to the fixed PID 1 bootstrap, never generic activation FDs.
+    #   0015 — Require the AOS kernel no-set-ID task guard before seccomp for
+    #          RestrictSUIDSGID=, allowing safe descriptor-relative openat2.
+    #   0016 — Reject truncated sd-bus ancillary data even when the message
+    #          body does not reference the discarded descriptor.
+    #   0017 — Pin protected Network service fragments to the measured image
+    #          before every PID 1 spawn, including privileged prestart tasks.
+    #   0017-nspawn — Retain the payload cgroup and sealed original
+    #          credential/inode join for the fixed Guest owner bootstrap.
+    #   0020 — Bound the fixed Controller plaintext publisher-policy handoff
+    #          and deliver its credential mount with strict ownership and labels.
+    #   0021 — Loan PID1's current image only to the two sealed own-unit
+    #          Mount/Source principals; no generic executable or unit selector.
+    #   0022 — Pin every fixed online Nix command to the same physical EROFS
+    #          fragment, excluding mutable aliases, environment and overrides.
+    #   0024 — Opt-in original PID1/component CPU, memory and PID enclosures
+    #          before generators; preserve finite contexts and checked originals.
+    #   0025 — Retain fixed Source/Controller launch originals through exec and
+    #          charge bounded preparation to the original parent subdivisions.
+    #   0026 — Deliver Cache's distinct original through the same retained sender.
+    #   0027 — Select canonical Parent04 and distinct Mount/Network F/M slices,
+    #          preserving the enrolled Controller normal/recovery sender paths.
+    #   0039 — Keep namespace retirement notifications under Secure Boot
+    #          lockdown through typed fentry instead of a kprobe perf event.
     patches = [
       ./patches/0001-remove-usr-lib-unit-lookup-paths.patch
       ./patches/0002-add-prefix-to-conf-paths.patch
       ./patches/0004-skip-runtime-dir-for-test-run-manager.patch
       ./patches/0005-fail-closed-on-roothash-signature-rejection.patch
       ./patches/0006-ignore-external-cmdline-for-embedded-uki.patch
+      ./patches/0007-nspawn-aos-payload-seccomp-profile.patch
+      ./patches/0008-nspawn-owned-root-descriptor.patch
+      ./patches/0009-nspawn-shutdown-intent-state.patch
+      ./patches/0010-nspawn-retained-supervisor-reboot.patch
+      ./patches/0011-nspawn-attachment-anchor-descriptor.patch
+      ./patches/0012-restrict-unit-reference-methods.patch
+      ./patches/0013-aos-selinux-root-handoff.patch
+      ./patches/0014-nspawn-guest-agent-descriptors.patch
+      ./patches/0015-restrict-suid-sgid-kernel-guard.patch
+      ./patches/0016-reject-truncated-bus-ancillary-data.patch
+      ./patches/0017-pin-network-unit-fragments-before-spawn.patch
+      ./patches/0018-launch-image-fuse-worker-role.patch
+      ./patches/0017-nspawn-guest-cgroup-custody.patch
+      ./patches/0019-fixed-fuse-worker-private-transport.patch
+      ./patches/0020-bounded-controller-publisher-policy-credential.patch
+      ./patches/0021-fixed-source-launcher-image-loan.patch
+      ./patches/0021-nspawn-host-readiness-report.patch
+      ./patches/0022-pin-online-nix-unit-fragment-before-spawn.patch
+      ./patches/0023-controller-resource-enrollment.patch
+      ./patches/0024-component-parent-enclosure.patch
+      ./patches/0025-source-signer-origin.patch
+      ./patches/0026-cache-signer-origin.patch
+      ./patches/0027-fixed-service-parent04.patch
+      ./patches/0028-network-worker-source-custody.patch
+      ./patches/0029-host-component-readiness-report.patch
+      ./patches/0030-boot-preparation-source-origin.patch
+      ./patches/0031-source-clone-dominant-permits.patch
+      ./patches/0032-network-worker-reaped-status.patch
+      ./patches/0033-controller-prepaid-recipient-range.patch
+      ./patches/0034-resource-enrollment-startup-diagnostics.patch
+      ./patches/0035-merged-usr-immutable-image-paths.patch
+      ./patches/0036-select-sandbox-resource-unit-families.patch
+      ./patches/0037-account-view-root-preparation.patch
+      ./patches/0038-confine-offline-public-output.patch
+      ./patches/0039-nsresourced-retirement-fentry.patch
+      ./patches/0040-separate-switch-root-selinux-permission.patch
+      ./patches/0041-method46-initial-parent06.patch
+      ./patches/0042-method46-initial-job-exclusion.patch
+      ./patches/0043-method46-initial-launch-profile.patch
     ];
 
     buildDeps = [
+      bpftool
+      buildPackages.binutils
+      buildPackages.llvm
       binutils
       gnumake
       pkg-config
@@ -270,10 +361,15 @@ in
       python3
       gperf
       getent
+      grep
       # Kernel UAPI headers are compile-time only. Keeping them out of
       # runtimeDeps avoids a dead RPATH/RUNPATH entry (linux-headers ships no
       # shared library) and keeps the 7 MiB header tree out of the closure.
       linux-headers
+      # Preserve this exact target DATA output. Tool dependency splicing selects
+      # native packages by name and would substitute the default kernel variant.
+      # String coercion keeps its store dependency without treating it as a tool.
+      (toString kernelCloneLayout)
     ];
     # Installed helpers and the cryptsetup/ukify wrappers execute the target
     # interpreters. TPM2 supplies libtss2-esys/rc/mu and the device TCTI for
@@ -307,6 +403,7 @@ in
       {
         name = "patch-source";
         script = ''
+          cp ${./aos-resource-unit-name.h} src/core/aos-resource-unit-name.h
           nativePython=$(command -v python3)
 
           # kernel-install and its complete plugin set live with ukify in the
@@ -318,10 +415,14 @@ in
 
           # libseccomp is loaded on demand, so DT_NEEDED-based RPATH shrinking
           # cannot retain its search directory. Bind the loader to the AOS
-          # library explicitly so syscall filters work without host libraries.
+          # library's real inode: immutable stage 0 rejects an absolute dlopen
+          # path that still traverses even an in-store SONAME symlink.
           test "$(grep -Fc '"libseccomp.so.2"' src/shared/seccomp-util.c)" -eq 1
+          libseccomp_real=$(${coreutils}/bin/readlink -f \
+            ${libseccomp}/lib/libseccomp.so.2)
+          test -f "$libseccomp_real"
           sed -i \
-            's|"libseccomp.so.2"|"${libseccomp}/lib/libseccomp.so.2"|' \
+            "s|\"libseccomp.so.2\"|\"$libseccomp_real\"|" \
             src/shared/seccomp-util.c
 
           # Configure executes helpers such as git-setup.sh directly. Bind
@@ -363,6 +464,7 @@ in
       {
         name = "configure";
         script = ''
+                  cp ${./aos-offline-public-output.h} src/core/aos-offline-public-output.h
                   # Ensure meson's Python module, pefile, and pyelftools
                   # are findable both at meson-configure time and when
                   # ninja later invokes patched python3 scripts (e.g.
@@ -391,7 +493,50 @@ in
                   chmod +x .python-wrapper/bin/python3
                   export PATH="$(pwd)/.python-wrapper/bin:$PATH"
 
-                  # Explicit RPATH so systemd binaries find their own shared libs
+                  # Keep the numeric layout and its image association together.
+                  # Only these generated headers enter the source tree; none
+                  # embeds a development-output path in the running manager.
+                  clone_layout="${kernelCloneLayout}/share/aos-kernel-clone-layout-v1"
+                  for clone_header in \
+                    aos-kernel-clone-layout-v1.h \
+                    aos-kernel-clone-association-v1.h
+                  do
+                    test -s "$clone_layout/$clone_header"
+                    cp "$clone_layout/$clone_header" "src/core/$clone_header"
+                  done
+
+                  # Managed user namespaces require the BPF LSM skeleton. Bind
+                  # its CO-RE types to the selected AOS kernel, never host /sys.
+                  kernel_build="$(${findutils}/bin/find ${kernelCloneLayout}/lib/modules \
+                    -mindepth 2 -maxdepth 2 -name build -type d)"
+                  test -n "$kernel_build"
+                  test -s "$kernel_build/vmlinux"
+                  # Compiling a skeleton does not prove that its retirement
+                  # target exists or that this kernel supports BPF trampolines.
+                  # Inspect target metadata with native tools in cross builds.
+                  cp ${./_systemd-abilities/userns_bpf_kernel.py} userns_bpf_kernel.py
+                  cp ${./_systemd-abilities/userns_bpf_kernel_test.py} userns_bpf_kernel_test.py
+                  python3 -B userns_bpf_kernel_test.py
+                  bpftool btf dump file "$kernel_build/vmlinux" format raw > userns-kernel.btf
+                  python3 -B userns_bpf_kernel.py "$clone_layout/kernel.config" userns-kernel.btf
+                  bpftool btf dump file "$kernel_build/vmlinux" format c > vmlinux.h
+                  test -s vmlinux.h
+                  aos_vmlinux_header="$PWD/vmlinux.h"
+
+                  # Clang's BPF target has no libc search path. Supply only the
+                  # target's AOS UAPI/libc headers; leave ordinary C builds on
+                  # the existing compiler wrapper and its header ordering.
+                  mkdir -p .bpf-tools
+                  cat > .bpf-tools/clang <<'BPF_CLANG'
+          #!${buildPackages.bash}/bin/bash
+          exec ${buildPackages.llvm}/bin/clang \
+            -idirafter ${linux-headers}/include \
+            -idirafter ${lib.getDev stdenv.glibc}/include "$@"
+          BPF_CLANG
+                  chmod +x .bpf-tools/clang
+                  export PATH="$PWD/.bpf-tools:$PATH"
+
+                  # Explicit RPATH keeps systemd's own shared libs resolvable.
                   export LDFLAGS="''${LDFLAGS:-} -Wl,-rpath,$out/lib -Wl,-rpath,$out/lib/systemd"
 
                   # Override compiled-in binary paths so systemd references its
@@ -407,13 +552,19 @@ in
                   export C_INCLUDE_PATH="$(echo "$C_INCLUDE_PATH" | tr ':' '\n' | grep -v linux-headers | tr '\n' ':' | sed 's/:$//')"
 
                   mkdir -p build && cd build
+                  # The stage-2 launcher must carry a GNU build ID; Meson did
+                  # not retain it when it was supplied through LDFLAGS alone.
                   meson setup .. \
                     $mesonFlags \
                     --prefix=$out \
                     --sysconfdir=/etc \
                     -Dwerror=false \
                     --buildtype=release \
+                    '-Dc_link_args=["-Wl,--build-id=sha1"]' \
                     -Dmode=release \
+                    -Dbpf-framework=enabled \
+                    -Dvmlinux-h=provided \
+                    -Dvmlinux-h-path="$aos_vmlinux_header" \
                     -Dsysvinit-path="" \
                     -Dsysvrcnd-path="" \
                     -Dutmp=true \
@@ -513,6 +664,10 @@ in
                     -Ddbussystemservicedir=$out/share/dbus-1/system-services \
                     -Ddbus-interfaces-dir=$out/share/dbus-1/interfaces
 
+                  grep -Fxq '#define BPF_FRAMEWORK 1' config.h
+                  grep -Fxq '#define HAVE_LIBBPF 1' config.h
+                  grep -Fxq '#define HAVE_VMLINUX_H 1' config.h
+
                   # systemd's src/include/override/ has replacement headers (sys/syscall.h,
                   # sys/socket.h, sys/mount.h, linux/keyctl.h, etc.) that use
                   # #include_next to chain to glibc while adding missing defines
@@ -543,6 +698,51 @@ in
         name = "build";
         script = ''
           ninja -j$NIX_BUILD_CORES
+
+          # Inspect the generated BPF object, including in cross builds. A
+          # successful C build alone does not establish its attachment kind.
+          ${buildPackages.binutils}/bin/readelf -SW src/bpf/userns-restrict.bpf.o \
+            > userns-restrict-sections.txt
+          grep -Fq ' fentry/retire_userns_sysctls ' userns-restrict-sections.txt
+          if grep -Eq '[[:space:]]k(ret)?probe/' userns-restrict-sections.txt; then
+            echo 'namespace retirement unexpectedly retains a kprobe section' >&2
+            exit 1
+          fi
+        '';
+      }
+      {
+        name = "check-aos-payload-seccomp";
+        script =
+          if stdenv.isCross
+          then ''
+            # Target execution belongs to the architecture-specific VM gate.
+            true
+          ''
+          else ''
+            ./test-nspawn-seccomp
+          '';
+      }
+      {
+        name = "check-aos-fixed-service-profile";
+        script =
+          if stdenv.isCross
+          then ''
+            # Target execution belongs to the architecture-specific VM gate.
+            true
+          ''
+          else ''
+            ./test-aos-fixed-service-profile
+          '';
+      }
+      {
+        name = "check-aos-offline-public-output";
+        script = ''
+          for selinux_enabled in 0 1; do
+            $CC -std=c17 -Wall -Wextra -Werror \
+              -DHAVE_SELINUX=$selinux_enabled -I../src/core \
+              ${./tests/offline-public-output.c} -o test-aos-offline-public-output
+            ${lib.optionalString (!stdenv.isCross) "./test-aos-offline-public-output"}
+          done
         '';
       }
       {
@@ -553,6 +753,21 @@ in
         # is effectively a no-op for prefix-relative targets.
         script = ''
           DESTDIR=/ ninja install
+          ${elfutils}/bin/eu-readelf --notes "$out/lib/systemd/systemd" \
+            | grep -Fq 'Build ID:'
+          # A patch log is insufficient evidence that PID 1 contains the
+          # authenticated switch-root guard; enforce it on the installed ELF.
+          ${grep}/bin/grep -aFq 'Cannot open authenticated AOS root-handoff guard' \
+            "$out/lib/systemd/systemd"
+
+          # The fixed public-output label must be in the installed executor,
+          # not only in an unapplied patch or its isolated state-machine test.
+          ${grep}/bin/grep -aFq 'aos_nix_offline_public_output_t' \
+            "$out/lib/systemd/systemd-executor"
+          ${grep}/bin/grep -aFq 'aos_method46_controller_initial_output_t' \
+            "$out/lib/systemd/systemd-executor"
+          ${grep}/bin/grep -aFq 'aos_method46_storage_initial_output_t' \
+            "$out/lib/systemd/systemd-executor"
 
           # This target realizes the provider-neutral boot-integrity-failure
           # milestone for the selected systemd boot platform.
@@ -587,7 +802,9 @@ in
             "$out/lib/kernel/install.d/60-ukify.install"
 
           mkdir -p "$out/libexec"
-          sed 's|@bash@|${bash}|g' \
+          sed \
+            -e 's|@bash@|${bash}|g' \
+            -e 's|@libselinux@|${libselinux}|g' \
             ${./aos-systemd-verity-root-setup.sh.in} \
             > "$out/libexec/aos-systemd-verity-root-setup"
           chmod 0555 "$out/libexec/aos-systemd-verity-root-setup"
@@ -621,16 +838,26 @@ in
         script = ''
           # Meson does not preserve the cc-wrapper RPATH on every target.
           # First resolve direct dependencies and discard unused build paths,
-          # then retain the declared runtime paths for systemd's dlopen calls.
-          # Those libraries are deliberately absent from DT_NEEDED.
+          # then retain existing declared library directories for systemd's
+          # dlopen calls. Some runtime tools, notably bash, have no lib/; a
+          # nonexistent RPATH fails the immutable stage-0 closure audit.
+          runtime_library_path="$out/lib:$out/lib/systemd"
+          for dependency in ${builtins.concatStringsSep " " (map builtins.toString systemdRuntimeLibraries)}; do
+            if [ -d "$dependency/lib" ]; then
+              runtime_library_path="$runtime_library_path:$dependency/lib"
+            fi
+          done
           find "$out" -type f | while read -r executable; do
             patchelf --print-needed "$executable" >/dev/null 2>&1 || continue
-            patchelf --add-rpath \
-              "$out/lib:$out/lib/systemd:${systemdRuntimeLibraryPath}" \
+            patchelf --force-rpath --add-rpath \
+              "$runtime_library_path" \
               "$executable"
             patchelf --shrink-rpath "$executable"
-            patchelf --add-rpath \
-              "$out/lib:$out/lib/systemd:${systemdRuntimeLibraryPath}" \
+            # glibc's libgcc_s unwind load is an indirect dlopen. DT_RPATH
+            # carries the sealed directory set to linked descendants;
+            # DT_RUNPATH does not.
+            patchelf --force-rpath --add-rpath \
+              "$runtime_library_path" \
               "$executable"
           done
 
@@ -656,7 +883,7 @@ in
           # site-packages before invoking python3 on the original
           # script.
           if [ -x "$out/bin/ukify" ]; then
-            mkdir -p "$tools/bin"
+            mkdir -p "$tools/bin" "$tools/lib/systemd"
             mv "$out/bin/ukify" "$tools/bin/.ukify-unwrapped"
             sed -i "1c #!${python3}/bin/python3" \
               "$tools/bin/.ukify-unwrapped"
@@ -667,6 +894,13 @@ in
           exec "${python3}/bin/python3" "$tools/bin/.ukify-unwrapped" "\$@"
           EOF
             chmod +x "$tools/bin/ukify"
+
+            # Meson also installs a relative compatibility alias. Keep it
+            # beside the relocated tool; leaving it in $out points at the
+            # now-absent $out/bin/ukify and breaks the immutable stage-0
+            # runtime-closure audit.
+            mv "$out/lib/systemd/ukify" "$tools/lib/systemd/ukify"
+            test -x "$tools/lib/systemd/ukify"
           fi
 
           mkdir -p "$tools/lib/kernel"
@@ -685,6 +919,33 @@ in
           exec "${python3}/bin/python3" "$ukify_hook.unwrapped" "\$@"
           EOF
           chmod +x "$ukify_hook"
+        '';
+      }
+      {
+        name = "install-aos-payload-policy";
+        script = ''
+          test -x "$out/lib/systemd/systemd"
+          test -x "$out/bin/systemd-nspawn"
+          mkdir -p "$out/share/aos"
+          cp ${./payload-root-policy-v1} "$out/share/aos/payload-root-policy-v1"
+          # Meson leaves the phase in build/, one level below patched source.
+          cp ../src/nspawn/nspawn-seccomp.c "$out/share/aos/nspawn-seccomp-source-v1"
+          ${
+            if stdenv.isCross
+            then ''
+              # No target execution or substitute host artifact is implied. The
+              # selected canary's expected-program producer remains unavailable
+              # for cross builds; ordinary package features are unchanged.
+            ''
+            else ''
+              ./test-nspawn-seccomp --aos-export-payload-programs-v1 \
+                > "$out/share/aos/payload-filter-programs-v1"
+              program_bytes=$(${coreutils}/bin/stat -c %s \
+                "$out/share/aos/payload-filter-programs-v1")
+              test "$program_bytes" -gt 176
+              test "$program_bytes" -le 98504
+            ''
+          }
         '';
       }
       {
@@ -745,10 +1006,12 @@ in
           cp ${./_systemd-abilities/network-handler.py} "$handlers/libexec/aos-network-handler.py"
           cat > "$handlers/bin/aos-network-handler" << EOF
           #!${bash}/bin/bash
-          exec "${python3}/bin/python3" "$handlers/libexec/aos-network-handler.py" \\
+          exec "${python3}/bin/python3" -B "$handlers/libexec/aos-network-handler.py" \\
             --systemctl "$out/bin/systemctl" \\
             --wait-online "$out/lib/systemd/systemd-networkd-wait-online" \\
             --unit-directory "$out/lib/systemd/system" \\
+            --matchpathcon "${libselinux}/sbin/matchpathcon" \\
+            --setfilecon "${libselinux}/sbin/setfilecon" \\
             "\$@"
           EOF
           chmod +x "$handlers/bin/aos-network-handler"
@@ -769,6 +1032,8 @@ in
             --true-executable "${coreutils}/bin/true" \\
             --flock-executable "${util-linux}/bin/flock" \\
             --mac-condition-executable "$handlers/bin/aos-service-handler" \\
+            --matchpathcon "${libselinux}/sbin/matchpathcon" \\
+            --setfilecon "${libselinux}/sbin/setfilecon" \\
             "\$@"
           EOF
           chmod +x "$handlers/bin/aos-service-handler"
@@ -799,6 +1064,8 @@ in
             --systemd-creds "$out/bin/systemd-creds" \\
             --login-shell "${identityShells.login}" \\
             --nologin-shell "${identityShells.nologin}" \\
+            --matchpathcon "${libselinux}/sbin/matchpathcon" \\
+            --setfilecon "${libselinux}/sbin/setfilecon" \\
             "\$@"
           EOF
           chmod +x "$handlers/bin/aos-systemd-native-resources"
@@ -878,6 +1145,26 @@ in
         '';
       }
     ];
+
+    # Fixup strips nspawn and adjusts RPATHs; reference scrubbing can change
+    # either executable afterward. Bind the public artifact only once their
+    # installed bytes are final. Host independently verifies the live manager
+    # and executable; this metadata cannot grant backend readiness.
+    postFinalize = ''
+      pid1_digest=$(sha256sum "$out/lib/systemd/systemd")
+      nspawn_digest=$(sha256sum "$out/bin/systemd-nspawn")
+      payload_filter_digest=$(sha256sum "$out/share/aos/nspawn-seccomp-source-v1")
+      pid1_digest=''${pid1_digest%% *}
+      nspawn_digest=''${nspawn_digest%% *}
+      payload_filter_digest=''${payload_filter_digest%% *}
+      {
+        printf 'AOSBPA02\n'
+        printf '%s\n' "$pid1_digest"
+        printf '%s\n' "$nspawn_digest"
+        cat "$out/share/aos/payload-root-policy-v1"
+        printf '%s\n' "$payload_filter_digest"
+      } > "$out/share/aos/backend-policy-artifact-v2"
+    '';
 
     meta = {
       description = "systemd — system and service manager for Linux";

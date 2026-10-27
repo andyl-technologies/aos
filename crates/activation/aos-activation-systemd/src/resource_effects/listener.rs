@@ -12,7 +12,7 @@ use aos_activation::activation::{Action, Invocation};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::{STATE_ROOT, atomic_write, read_regular, state_path};
+use super::{atomic_write, read_regular, state_path, state_root};
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -96,7 +96,7 @@ pub(super) fn execute(invocation: &Invocation, action: &str) -> Result<Value> {
         }
         return Ok(json!({}));
     }
-    for entry in fs::read_dir(STATE_ROOT)? {
+    for entry in fs::read_dir(state_root())? {
         let entry = entry?;
         if entry.path() == path
             || !entry

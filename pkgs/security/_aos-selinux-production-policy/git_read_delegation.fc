@@ -1,0 +1,3 @@
+# Exact selected directory and its sole direct socket.
+/run/aos/git-upload-delegation -d system_u:object_r:aos_git_read_delegate_runtime_t:s0
+/run/aos/git-upload-delegation/control\.sock -s system_u:object_r:aos_git_read_delegate_runtime_t:s0

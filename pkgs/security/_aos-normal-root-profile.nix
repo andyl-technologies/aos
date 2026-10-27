@@ -1,0 +1,120 @@
+##! Selected-image, nonauthorizing normal policy-authority startup evidence.
+{
+  mkDerivation,
+  buildPackages,
+  aos-sandboxd,
+  systemd,
+  aos-selinux-production-policy,
+  aos-selinux-kernel-policy-readback,
+  unitContract,
+  identities,
+  cacheSignerGid,
+  environmentProvision ? null,
+}: let
+  support = ./_aos-selinux-production-policy;
+  sourcePolicy = "${aos-selinux-production-policy}/etc/selinux/aos/policy/policy.33";
+  effectivePolicyChecker =
+    if aos-selinux-production-policy.passthru ? effectivePolicyCheckerRelative
+    then "${aos-selinux-production-policy}/${aos-selinux-production-policy.passthru.effectivePolicyCheckerRelative}"
+    else "${support}/effective_policy.py";
+  effectivePolicyCheckerArguments = aos-selinux-production-policy.passthru.effectivePolicyCheckerArguments or "";
+in
+  mkDerivation {
+    pname = "aos-normal-root-startup-profile";
+    version =
+      if environmentProvision == null
+      then "2"
+      else "3";
+    src = ./aos-normal-root-profile.py;
+    buildDeps = [buildPackages.python3 buildPackages.patchelf buildPackages.binutils buildPackages.setools];
+    runtimeDeps = [];
+    propagatedDeps = [];
+    outputChecks = {};
+    inherit unitContract;
+    environmentProvisionRoot =
+      if environmentProvision == null
+      then ""
+      else toString environmentProvision;
+    identitiesJson = builtins.toJSON identities;
+    exportReferencesGraph.normalRootRuntimeClosure = [aos-sandboxd];
+    nukeRefsKeep =
+      [aos-sandboxd systemd aos-selinux-production-policy aos-selinux-kernel-policy-readback]
+      ++ (
+        if environmentProvision == null
+        then []
+        else [environmentProvision]
+      );
+
+    phases = [
+      {
+        name = "build";
+        script = ''
+          set -eu
+          export PYTHONPATH=${buildPackages.setools}/lib/python3/site-packages
+          # Run producer regressions in the same hermetic build that selects
+          # the profile. Keeping the helpers adjacent preserves their imports.
+          mkdir producer-tests
+          cp "$src" producer-tests/aos-normal-root-profile.py
+          cp ${./aos-normal-root-profile_test.py} producer-tests/aos-normal-root-profile_test.py
+          cp ${./aos-selinux-runtime-manifest.py} producer-tests/aos-selinux-runtime-manifest.py
+          ${buildPackages.python3}/bin/python3 -B producer-tests/aos-normal-root-profile_test.py
+
+          # Rerun the same attribute-expanded checker on the selected final
+          # binary. A marker or nonempty archived TSV alone is not success.
+          ${buildPackages.python3}/bin/python3 -B ${effectivePolicyChecker} \
+            ${effectivePolicyCheckerArguments} ${sourcePolicy} > effective-policy.tsv
+          test -s effective-policy.tsv
+          mkdir -p "$out"
+          install -m 0444 effective-policy.tsv "$out/effective-policy.tsv"
+          # The selected input is normally installed 0644. Retain its exact bytes
+          # as a read-only profile evidence file; do not weaken shared immutable
+          # measurement or grant Root generic access to other policy packages.
+          install -m 0444 ${sourcePolicy} "$out/source-policy.33"
+          # Structured attributes retain these strings in JSON rather than
+          # creating the passAsFile environment variables.
+          ${buildPackages.python3}/bin/python3 -B - "$NIX_ATTRS_JSON_FILE" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          attrs = json.loads(Path(sys.argv[1]).read_text())
+          Path("unit-contract").write_text(attrs["unitContract"])
+          Path("identities.json").write_text(attrs["identitiesJson"])
+          PY
+          if test -n "$environmentProvisionRoot"; then
+            set -- --environment-provision-root "$environmentProvisionRoot"
+          else
+            set --
+          fi
+          ${buildPackages.python3}/bin/python3 -B "$src" \
+            --attrs "$NIX_ATTRS_JSON_FILE" \
+            --helpers ${./aos-selinux-runtime-manifest.py} \
+            --executable ${aos-sandboxd}/bin/aos-sandbox-policy-authorityd \
+            --pid1 ${systemd}/lib/systemd/systemd \
+            --canonical-policy ${aos-selinux-kernel-policy-readback}/policy.33 \
+            --source-policy "$out/source-policy.33" \
+            --effective-matrix "$out/effective-policy.tsv" \
+            --unit-contract unit-contract --identities identities.json \
+            --cache-signer-gid ${toString cacheSignerGid} \
+            --patchelf ${buildPackages.patchelf}/bin/patchelf \
+            --readelf ${buildPackages.binutils}/bin/readelf \
+            --output "$out/profile.json" "$@"
+          chmod 0444 "$out/profile.json"
+        '';
+      }
+    ];
+    passthru.evidenceSources = [
+      ./aos-normal-root-profile.py
+      ./aos-selinux-runtime-manifest.py
+      support
+      (builtins.path {
+        path = ./_aos-normal-root-profile.nix;
+        name = "aos-normal-root-profile-recipe-source";
+      })
+    ];
+    meta = {
+      description = "Exact normal Root startup comparison inputs; no live client/read grant";
+      # The profile also co-retains the selected compiled Reference Policy.
+      license = "GPL-2.0-or-later";
+    };
+  }

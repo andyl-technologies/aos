@@ -3,9 +3,10 @@
 //! Receipts retain exact created database rows and membership deltas. Existing
 //! accounts are never adopted for deletion. The standard password-database lock
 //! serializes edits with system account tools; pending receipts precede writes.
+//! Immutable EROFS images reconcile existing rows without opening a writer.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
@@ -20,6 +21,54 @@ mod restore;
 pub(crate) use restore::restore;
 
 const LIMIT: u64 = 16_777_216;
+const EROFS_SUPER_MAGIC: u32 = 0xe0f5_e1e2;
+
+/// Retains the database mount and, when writable, its standard writer lock.
+struct DatabaseLock {
+    _directory: File,
+    _writer: Option<File>,
+}
+
+impl DatabaseLock {
+    fn acquire(root: &Path) -> Result<Self> {
+        let directory = OpenOptions::new()
+            .read(true)
+            .custom_flags(
+                (rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::NOFOLLOW).bits() as i32,
+            )
+            .open(root)?;
+        let read_only = rustix::fs::fstatvfs(&directory)?
+            .f_flag
+            .contains(rustix::fs::StatVfsMountFlags::RDONLY);
+        let immutable =
+            read_only && rustix::fs::fstatfs(&directory)?.f_type as u32 == EROFS_SUPER_MAGIC;
+
+        // An immutable image cannot admit a database writer or a new lock file.
+        // A read-only bind of a writable filesystem still requires the lock:
+        // another namespace may modify the same databases. Existing EROFS rows
+        // still pass the ordinary policy and ownership checks;
+        // a requested mutation must fail against the read-only mount.
+        let writer = if immutable {
+            None
+        } else {
+            let lock = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .mode(0o600)
+                .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+                .open(root.join(".pwd.lock"))?;
+            rustix::fs::fcntl_lock(&lock, rustix::fs::FlockOperation::LockExclusive)?;
+            Some(lock)
+        };
+
+        Ok(Self {
+            _directory: directory,
+            _writer: writer,
+        })
+    }
+}
 
 #[derive(Clone, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -205,6 +254,7 @@ fn reconcile_members(
         if file == "gshadow" && rows.is_empty() {
             continue;
         }
+        let original = rows.clone();
         for group in desired
             .iter()
             .chain(previous)
@@ -226,7 +276,9 @@ fn reconcile_members(
             }
             row[3] = names.into_iter().collect::<Vec<_>>().join(",");
         }
-        write_database(root, file, &rows)?;
+        if rows != original {
+            write_database(root, file, &rows)?;
+        }
     }
     Ok(())
 }
@@ -766,15 +818,7 @@ fn execute_at(
     operation: &str,
     shells: Option<(&str, &str)>,
 ) -> Result<Value> {
-    let lock = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
-        .open(root.join(".pwd.lock"))?;
-    rustix::fs::fcntl_lock(&lock, rustix::fs::FlockOperation::LockExclusive)?;
+    let _database_lock = DatabaseLock::acquire(root)?;
     let path = state_path(invocation, "identity");
     let prior: Option<Receipt> = read_regular(&path, 1_048_576)?
         .map(|bytes| serde_json::from_slice(&bytes))
@@ -943,6 +987,28 @@ mod tests {
         fs::write(root.path().join("shadow"), "external:!:0:0:99999:7:::\n").unwrap();
         root
     }
+
+    #[test]
+    fn unchanged_membership_reconciliation_preserves_image_database_inodes() {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let root = fixture();
+        let snapshot = || {
+            ["group", "gshadow"].map(|file| {
+                let path = root.path().join(file);
+                (fs::metadata(&path).unwrap().ino(), fs::read(path).unwrap())
+            })
+        };
+        let original = snapshot();
+
+        reconcile_members(root.path(), &BTreeSet::new(), &BTreeSet::new()).unwrap();
+        assert_eq!(snapshot(), original);
+
+        let existing = BTreeSet::from([("staff".into(), "external".into())]);
+        reconcile_members(root.path(), &existing, &existing).unwrap();
+        assert_eq!(snapshot(), original);
+    }
+
     #[test]
     fn existing_only_requires_account_and_exact_numeric_id() {
         let root = fixture();

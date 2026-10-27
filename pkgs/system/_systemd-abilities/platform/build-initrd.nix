@@ -56,6 +56,14 @@
     config = stageConfig;
     inherit lib;
   }));
+  initrdConfiguration = import ./_initrd-configuration.nix {
+    inherit lib;
+    inherit (buildContext) runCommand;
+    jq = artifacts.buildPackages.jq;
+    configurationProvider = artifacts.buildPackages.aos-configuration-provider;
+    nodes = stageConfig.aos.activation.graph.nodes;
+    sourceInputs = config.aos.activation.stages.initrd.supplementalInputs;
+  };
   initrdUnits =
     buildContext.runCommand "systemd-initrd-native-bootstrap" {
       inherit bootstrapJSON bootstrapGroupsJSON;
@@ -108,6 +116,7 @@
       lib.packageModuleLibrary
       deploymentBundle
     ]
+    ++ lib.optional (config.aos.boot.initrd.stage0 != null) config.aos.boot.initrd.stage0
   ));
   closureInfoFor = lib.build.closureInfo {
     pkgs = buildContext.packageSet.buildPackages;
@@ -132,18 +141,14 @@
     if config.aos.kernel.selected == null
     then throw "systemd initrd requires the exact selected kernel projection"
     else config.aos.kernel.selected;
-  accountSeed = import ./_identity-bootstrap.nix {
+  accountSeed = import ./_initrd-account-seed.nix {
     inherit lib;
-    identities = stageConfig.aos.abilities.identity.operations;
-    principalReferences =
-      lib.unique (builtins.concatLists
-        (map (effect: effect.input.accounts) (builtins.attrValues enabledNetworkEffects)));
-    accounts = stageConfig.aos.users;
+    config = stageConfig;
     shells = import ../identity-shells.nix {inherit (runtimePackages) bash util-linux;};
   };
   artifact = import ./_initrd-builder.nix {
     inherit accountSeed;
-    inherit lib runtimePackages handoff initrdNetworkDir initrdUnits;
+    inherit lib runtimePackages handoff initrdConfiguration initrdNetworkDir initrdUnits;
     inherit (buildContext) mkDerivation;
     diffutils = buildContext.packageSet.diffutils;
     kernel = selectedKernel;
@@ -158,6 +163,16 @@
         "rescue.target"
       ];
     validateBootIdentity = config.aos.security.verity.enable;
+    mountExecutableCarrier = config.boot.initrd.systemd.mountExecutableCarrier;
+    stage0Init = config.aos.boot.initrd.stage0;
+    immutableSelinuxPolicy = config.system.build.immutableSelinuxPolicy;
+    # These canonical roots already include admitted packages and runtime artifacts.
+    initrdExtraPackages = config.aos.boot.initrd.runtimeRoots;
+    nativeErofsUtils = buildContext.packageSet.buildPackages.erofs-utils;
+    nativeLibselinux = buildContext.packageSet.buildPackages.libselinux;
+    nativePatchelf = buildContext.packageSet.buildPackages.patchelf;
+    nativePython = buildContext.packageSet.buildPackages.python3;
+    nativeCryptsetup = buildContext.packageSet.buildPackages.cryptsetup;
   };
 in {
   inherit artifact deploymentBundle;

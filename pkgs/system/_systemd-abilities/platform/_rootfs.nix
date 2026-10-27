@@ -68,6 +68,7 @@
       label = "aos-root";
       fsType = config.aos.filesystems.rootFsType;
       erofsCompressionLevel = config.aos.image.erofsCompressionLevel;
+      erofsDeduplication = config.aos.image.erofsDeduplication;
       extraClosures = config.aos.image.hostConfigClosures;
       # The toplevel already retains these roots; export their commands into
       # the immutable /usr tree used by boot guards and the system profile.

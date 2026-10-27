@@ -1,0 +1,187 @@
+diff --git a/src/core/main.c b/src/core/main.c
+--- a/src/core/main.c
++++ b/src/core/main.c
+@@ -3686,10 +3686,12 @@
+         /* Selected fixed Guest-init exec only; ordinary manager entry, argv,
+          * activation and collect_fds paths remain unchanged. The report is
+          * emitted by this post-exec image, never inferred from bootstrap exe. */
+-        if (argc == 2 && streq(argv[1], "--aos-host-readiness-report")) {
++        if (argc == 2 && (streq(argv[1], "--aos-host-readiness-report") ||
++                          streq(argv[1], "--aos-host-component-readiness-report"))) {
+                 if (getpid_cached() != 1 || geteuid() != 0)
+                         return EXIT_FAILURE;
+                 aos_report.fd = AOS_HOST_REPORT_GUEST_FD;
++                aos_report.component = streq(argv[1], "--aos-host-component-readiness-report");
+                 r = fd_cloexec(aos_report.fd, true);
+                 if (r < 0)
+                         return EXIT_FAILURE;
+diff --git a/src/nspawn/nspawn-root-fd.c b/src/nspawn/nspawn-root-fd.c
+--- a/src/nspawn/nspawn-root-fd.c
++++ b/src/nspawn/nspawn-root-fd.c
+@@ -270,6 +270,7 @@
+                 bool with_attachment_anchor,
+                 bool with_guest_agent,
+                 bool with_host_report,
++                bool with_component_report,
+                 int *ret_root_fd,
+                 int *ret_lock_fd,
+                 char **ret_path,
+@@ -279,6 +280,9 @@
+                 int *ret_host_report) {
+         _cleanup_strv_free_ char **names = NULL;
+         int expected, guest_base, n, r;
++
++        if (with_component_report && !with_host_report)
++                return -EINVAL;
+ 
+         /* This is a setup-only descriptor, never a payload activation socket.
+          * Unsetting LISTEN_* makes the later fdset collector empty. Require the
+@@ -299,7 +303,8 @@
+               !streq_ptr(names[guest_base + 1], AOS_GUEST_AGENT_PROVISIONING_FD_NAME) ||
+               !streq_ptr(names[guest_base + 2], AOS_GUEST_ATTACH_TRUST_FD_NAME))) ||
+             (with_host_report &&
+-             (!with_guest_agent || !streq_ptr(names[guest_base + 3], AOS_HOST_REPORT_FD_NAME))))
++             (!with_guest_agent || !streq_ptr(names[guest_base + 3], with_component_report ?
++                     AOS_HOST_COMPONENT_REPORT_FD_NAME : AOS_HOST_REPORT_FD_NAME))))
+                 r = -EINVAL;
+         else {
+                 r = aos_root_directory_from_fd(SD_LISTEN_FDS_START, ret_root_fd, ret_lock_fd, ret_path);
+diff --git a/src/nspawn/nspawn-root-fd.h b/src/nspawn/nspawn-root-fd.h
+--- a/src/nspawn/nspawn-root-fd.h
++++ b/src/nspawn/nspawn-root-fd.h
+@@ -20,6 +20,7 @@
+                 bool with_attachment_anchor,
+                 bool with_guest_agent,
+                 bool with_host_report,
++                bool with_component_report,
+                 int *ret_root_fd,
+                 int *ret_lock_fd,
+                 char **ret_path,
+diff --git a/src/nspawn/nspawn.c b/src/nspawn/nspawn.c
+--- a/src/nspawn/nspawn.c
++++ b/src/nspawn/nspawn.c
+@@ -1208,6 +1208,14 @@
+                         arg_aos_host_report_selected = true;
+                         break;
+ 
++                OPTION_LONG("aos-host-component-readiness-report", NULL,
++                            "Report fixed original Host component observations"):
++                        if (arg_aos_host_report_selected)
++                                return -EINVAL;
++                        arg_aos_host_report_selected = true;
++                        arg_aos_host_report.component = true;
++                        break;
++
+                 OPTION_LONG("restrict-address-families", "LIST", "Restrict socket address families to the given allowlist"):
+                         r = parse_address_families(opts.arg, &arg_restrict_address_families, &arg_restrict_address_families_is_allowlist);
+                         if (r < 0)
+@@ -6482,6 +6490,7 @@
+                                 arg_aos_attachment_anchor_fd,
+                                 arg_aos_guest_agent_fds,
+                                 arg_aos_host_report_selected,
++                                arg_aos_host_report.component,
+                                 &aos_root_fd,
+                                 &aos_root_lock_fd,
+                                 &arg_directory,
+diff --git a/src/nspawn/test-nspawn-root-fd.c b/src/nspawn/test-nspawn-root-fd.c
+--- a/src/nspawn/test-nspawn-root-fd.c
++++ b/src/nspawn/test-nspawn-root-fd.c
+@@ -131,6 +131,7 @@
+                                                         c->with_anchor,
+                                                         false,
+                                                         false,
++                                                        false,
+                                                         &root,
+                                                         &lock,
+                                                         &alias,
+diff --git a/src/shared/aos-host-readiness.h b/src/shared/aos-host-readiness.h
+--- a/src/shared/aos-host-readiness.h
++++ b/src/shared/aos-host-readiness.h
+@@ -19,6 +19,7 @@
+ #define AOS_HOST_REPORT_CHALLENGE_BYTES 200U
+ #define AOS_HOST_REPORT_MAX_BYTES 98504U
+ #define AOS_HOST_REPORT_FD_NAME "aos-host-readiness-report"
++#define AOS_HOST_COMPONENT_REPORT_FD_NAME "aos-host-component-readiness-report"
+ #define AOS_HOST_REPORT_GUEST_FD 8
+ 
+ /* Private inherited transport DATA. These bytes never replace Host's actual
+@@ -31,6 +32,7 @@
+         uint8_t challenge[AOS_HOST_REPORT_CHALLENGE_BYTES];
+         bool attempted;
+         bool ready;
++        bool component;
+         int first_error;
+ } AosHostReport;
+ 
+@@ -53,6 +55,18 @@
+         now += (uint64_t) ts.tv_nsec;
+         deadline = unaligned_read_be64(report->challenge + 192);
+         return now < deadline ? 0 : -ETIMEDOUT;
++}
++
++static bool aos_host_report_challenge_is_canonical(const AosHostReport *report, size_t size, int flags) {
++        return size == sizeof(report->challenge) && !(flags & (MSG_TRUNC|MSG_CTRUNC)) &&
++                memcmp(report->challenge, report->component ? "AOSNHR01" : "AOSHCR01", 8) == 0 &&
++                unaligned_read_be16(report->challenge + 8) == 1 &&
++                unaligned_read_be16(report->challenge + 10) == 0 &&
++                unaligned_read_be32(report->challenge + 12) == sizeof(report->challenge) &&
++                unaligned_read_be32(report->challenge + 160) == 0 &&
++                unaligned_read_be32(report->challenge + 164) == 0 &&
++                unaligned_read_be64(report->challenge + 168) == 0 &&
++                unaligned_read_be64(report->challenge + 192) != 0;
+ }
+ 
+ static int aos_host_report_challenge(AosHostReport *report) {
+@@ -85,15 +99,7 @@
+         if (n < 0)
+                 return report->first_error = (int) n;
+         cmsg_close_all(&message);
+-        if (n != sizeof(report->challenge) || message.msg_flags & (MSG_TRUNC|MSG_CTRUNC) ||
+-            memcmp(report->challenge, "AOSHCR01", 8) != 0 ||
+-            unaligned_read_be16(report->challenge + 8) != 1 ||
+-            unaligned_read_be16(report->challenge + 10) != 0 ||
+-            unaligned_read_be32(report->challenge + 12) != sizeof(report->challenge) ||
+-            unaligned_read_be32(report->challenge + 160) != 0 ||
+-            unaligned_read_be32(report->challenge + 164) != 0 ||
+-            unaligned_read_be64(report->challenge + 168) != 0 ||
+-            unaligned_read_be64(report->challenge + 192) == 0)
++        if (!aos_host_report_challenge_is_canonical(report, n, message.msg_flags))
+                 return report->first_error = -EBADMSG;
+         report->ready = true;
+         r = aos_host_report_before(report);
+diff --git a/src/test/test-aos-launch-record.c b/src/test/test-aos-launch-record.c
+--- a/src/test/test-aos-launch-record.c
++++ b/src/test/test-aos-launch-record.c
+@@ -4,6 +4,7 @@
+ #include <sys/socket.h>
+ 
+ #include "aos-launch-record.h"
++#include "aos-host-readiness.h"
+ #include "fd-util.h"
+ #include "socket-util.h"
+ #include "tests.h"
+@@ -105,4 +106,24 @@
+         safe_close(retained);
+ }
+ 
++TEST(component_report_kind_is_bound_before_originals) {
++        AosHostReport report = AOS_HOST_REPORT_INIT;
++
++        memcpy(report.challenge, "AOSHCR01", 8);
++        unaligned_write_be16(report.challenge + 8, 1);
++        unaligned_write_be32(report.challenge + 12, sizeof(report.challenge));
++        unaligned_write_be64(report.challenge + 192, UINT64_MAX);
++
++        assert_se(aos_host_report_challenge_is_canonical(&report, sizeof(report.challenge), 0));
++        report.component = true;
++        assert_se(!aos_host_report_challenge_is_canonical(&report, sizeof(report.challenge), 0));
++
++        memcpy(report.challenge, "AOSNHR01", 8);
++        assert_se(aos_host_report_challenge_is_canonical(&report, sizeof(report.challenge), 0));
++        assert_se(!aos_host_report_challenge_is_canonical(&report, sizeof(report.challenge) - 1, 0));
++        assert_se(!aos_host_report_challenge_is_canonical(&report, sizeof(report.challenge), MSG_CTRUNC));
++        report.component = false;
++        assert_se(!aos_host_report_challenge_is_canonical(&report, sizeof(report.challenge), 0));
++}
++
+ DEFINE_TEST_MAIN(LOG_INFO);

@@ -1,0 +1,32 @@
+[package]
+name = "aos-sandbox-publisher"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+autobins = false
+
+[features]
+default = []
+kernel-tests = ["aos-sandbox-linux/kernel-tests"]
+
+[dependencies]
+aos-sandbox-model.workspace = true
+aos-sandbox-protocol.workspace = true
+rand.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+aos-sandbox-linux.workspace = true
+aos-linux-descriptors.workspace = true
+
+[dev-dependencies]
+rustix = { workspace = true, features = ["net"] }
+tempfile.workspace = true
+
+[[bin]]
+name = "aos-view-publisher"
+path = "src/bin/aos-view-publisher.rs"
+
+[lints]
+workspace = true

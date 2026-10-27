@@ -15,6 +15,11 @@ from unittest.mock import MagicMock, patch
 
 SOURCE = Path(sys.argv.pop(1)).resolve()
 RESOLVER_POLICY = Path(sys.argv.pop(1)).resolve(strict=True)
+resources_path = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else SOURCE.parent / "aos_service_resources.py"
+resources_spec = importlib.util.spec_from_file_location("aos_service_resources", resources_path)
+resources = importlib.util.module_from_spec(resources_spec)
+sys.modules["aos_service_resources"] = resources
+resources_spec.loader.exec_module(resources)
 specification = importlib.util.spec_from_file_location("network_handler", SOURCE)
 handler = importlib.util.module_from_spec(specification)
 specification.loader.exec_module(handler)
@@ -35,16 +40,19 @@ def isolated_network():
     with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
         root = Path(directory).resolve(strict=True)
         (root / "etc").mkdir()
-        state_path = root / "state"
-        state_path.mkdir(mode=0o700)
         # Host tests retain real file/link/receipt IO without requiring root.
         # Only the private state directory's owner metadata is simulated.
-        state = MagicMock(wraps=state_path)
-        state.__truediv__.side_effect = state_path.__truediv__
-        state.stat.return_value = SimpleNamespace(st_uid=0, st_mode=state_path.stat().st_mode)
-        stack.enter_context(patch.object(handler, "STATE", state))
+        for variable, name in (("STATE", "state"), ("INITRD_STATE", "initrd-state")):
+            state_path = root / name
+            state_path.mkdir(mode=0o700)
+            state = MagicMock(wraps=state_path)
+            state.__truediv__.side_effect = state_path.__truediv__
+            state.stat.return_value = SimpleNamespace(st_uid=0, st_mode=state_path.stat().st_mode)
+            stack.enter_context(patch.object(handler, variable, state))
+        stack.enter_context(patch.object(handler, "in_initrd", return_value=False))
         stack.enter_context(patch.object(handler, "Path", side_effect=lambda path: root if path == "/" else Path(path)))
         stack.enter_context(patch.object(handler, "units", return_value={}))
+        stack.enter_context(patch.object(handler, "label_systemd_unit"))
         commands = stack.enter_context(patch.object(handler, "command"))
         args = SimpleNamespace(action="apply", systemctl="fixture-systemctl")
         invocation = {
@@ -66,6 +74,247 @@ def physical(name="eth0"):
 
 def policy(links):
     return {"authority": "operator", "mtu": 9000, "links": links, "resolver": {"enabled": True, "nameservers": ["192.0.2.53"], "search": ["example.test"], "dnssec": "yes"}}
+
+
+@contextmanager
+def readonly_image():
+    """Keeps real file IO while supplying native image mount/owner metadata."""
+    native_fstat = os.fstat
+
+    def root_metadata(descriptor):
+        metadata = native_fstat(descriptor)
+        return SimpleNamespace(
+            st_mode=metadata.st_mode, st_uid=0, st_gid=0,
+            st_nlink=metadata.st_nlink,
+        )
+
+    with patch.object(handler.os, "fstatvfs", return_value=SimpleNamespace(f_flag=os.ST_RDONLY)), patch.object(handler.os, "fstat", side_effect=root_metadata):
+        yield
+
+
+class UnitLabelTests(unittest.TestCase):
+    def test_absent_selinux_mount_needs_no_context(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.assertFalse(resources._selinux_policy_loaded(root / "enforce", root / "kernel"))
+
+    def test_mounted_unloaded_selinux_needs_no_labels(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            enforce, context = root / "enforce", root / "kernel"
+            enforce.write_text("1")
+
+            for contents in (b"kernel", b"kernel\0", b"kernel\n"):
+                with self.subTest(contents=contents):
+                    context.write_bytes(contents)
+                    self.assertFalse(resources._selinux_policy_loaded(enforce, context))
+
+    def test_permissive_loaded_policy_still_requires_labels(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            enforce, context = root / "enforce", root / "kernel"
+            enforce.write_text("0")
+            context.write_bytes(b"system_u:system_r:kernel_t:s0\0")
+
+            self.assertTrue(resources._selinux_policy_loaded(enforce, context))
+
+    def test_unavailable_or_invalid_kernel_context_never_disables_labels(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            enforce, context = root / "enforce", root / "kernel"
+            enforce.write_text("1")
+
+            with self.assertRaises(FileNotFoundError):
+                resources._selinux_policy_loaded(enforce, context)
+            with self.assertRaises(IsADirectoryError):
+                resources._selinux_policy_loaded(enforce, root)
+            invalid = (
+                b"", b"unrecognized", b"system_u::kernel_t:s0",
+                b"system_u:system_r:kernel_t extra", b"kernel\0extra",
+                b"\xff", b"k" * 4097,
+            )
+            for contents in invalid:
+                with self.subTest(contents=contents[:80]):
+                    context.write_bytes(contents)
+                    with self.assertRaises(ValueError):
+                        resources._selinux_policy_loaded(enforce, context)
+
+    def test_disabled_selinux_never_invokes_policy_tools(self):
+        with (
+            patch.object(resources, "_selinux_policy_loaded", return_value=False),
+            patch.object(resources.subprocess, "run") as run,
+        ):
+            resources.label_systemd_unit("unused", "example.service", None, None)
+        run.assert_not_called()
+
+    def test_unit_is_labeled_before_atomic_publication(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "example.service"
+            target.write_bytes(b"old unit")
+
+            def run(argv, **kwargs):
+                self.assertEqual(target.read_bytes(), b"old unit")
+                if argv[0] == "matchpathcon":
+                    self.assertEqual(argv[1:], ["-n", "-m", "file", "/usr/lib/systemd/system/example.service"])
+                    return subprocess.CompletedProcess(argv, 0, "system_u:object_r:systemd_unit_t:s0\n", "")
+                self.assertEqual(argv[:2], ["setfilecon", "system_u:object_r:systemd_unit_t:s0"])
+                self.assertEqual(Path(argv[2]).read_bytes(), b"new unit")
+                self.assertNotEqual(Path(argv[2]), target)
+                return subprocess.CompletedProcess(argv, 0, "", "")
+
+            with (
+                patch.object(resources, "_selinux_policy_loaded", return_value=True),
+                patch.object(resources.subprocess, "run", side_effect=run) as tool,
+            ):
+                resources.durable_write(
+                    target, b"new unit",
+                    prepare=lambda staged: resources.label_systemd_unit(staged, target.name, "matchpathcon", "setfilecon"),
+                )
+
+            self.assertEqual(tool.call_count, 2)
+            self.assertEqual(target.read_bytes(), b"new unit")
+            self.assertEqual(list(Path(directory).iterdir()), [target])
+
+    def test_label_failures_preserve_prior_unit_and_remove_staging(self):
+        for failure in ("lookup", "label", "", "<<none>>", "multiple contexts"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                target = Path(directory) / "example.service"
+                target.write_bytes(b"old unit")
+
+                def run(argv, **kwargs):
+                    lookup_failed = failure == "lookup" and argv[0] == "matchpathcon"
+                    label_failed = failure == "label" and argv[0] == "setfilecon"
+                    if lookup_failed or label_failed:
+                        raise subprocess.CalledProcessError(1, argv)
+                    context = "system_u:object_r:systemd_unit_t:s0" if failure == "label" else failure
+                    return subprocess.CompletedProcess(argv, 0, context, "")
+
+                with (
+                    patch.object(resources, "_selinux_policy_loaded", return_value=True),
+                    patch.object(resources.subprocess, "run", side_effect=run),
+                ):
+                    with self.assertRaises((ValueError, subprocess.CalledProcessError)):
+                        resources.durable_write(
+                            target, b"new unit",
+                            prepare=lambda staged: resources.label_systemd_unit(staged, target.name, "matchpathcon", "setfilecon"),
+                        )
+
+                self.assertEqual(target.read_bytes(), b"old unit")
+                self.assertEqual(list(Path(directory).iterdir()), [target])
+
+
+class NetworkInitrdTests(unittest.TestCase):
+    def test_unit_labeling_precedes_reload_and_rejects_failed_publication(self):
+        for fail in (False, True):
+            with self.subTest(fail=fail), isolated_network() as (root, args, invocation, commands):
+                args.matchpathcon = "matchpathcon"
+                args.setfilecon = "setfilecon"
+                invocation["input"]["resolver"]["enabled"] = False
+                target = root / "run/systemd/system/systemd-networkd.socket"
+
+                def label(staged, name, lookup, setter):
+                    self.assertEqual(name, target.name)
+                    self.assertEqual((lookup, setter), (args.matchpathcon, args.setfilecon))
+                    self.assertEqual(staged.read_text(), "socket unit")
+                    self.assertFalse(target.exists())
+                    commands.assert_not_called()
+                    if fail:
+                        raise ValueError("label refused")
+
+                with (
+                    patch.object(handler, "in_initrd", return_value=True),
+                    patch.object(handler, "immutable_image_file", return_value=False),
+                    patch.object(handler, "units", return_value={"run/systemd/system/systemd-networkd.socket": "socket unit"}),
+                    patch.object(handler, "label_systemd_unit", side_effect=label) as labeling,
+                ):
+                    if fail:
+                        with self.assertRaisesRegex(ValueError, "label refused"):
+                            handler.converge(args, invocation)
+                    else:
+                        handler.converge(args, invocation)
+
+                labeling.assert_called_once()
+                if fail:
+                    commands.assert_not_called()
+                    self.assertFalse(target.exists())
+                    receipt = next((root / "initrd-state").glob("*.json"))
+                    self.assertFalse(json.loads(receipt.read_text())["complete"])
+                else:
+                    self.assertEqual(target.read_text(), "socket unit")
+                    commands.assert_any_call([args.systemctl, "daemon-reload"])
+
+    def test_initrd_reuses_exact_image_files_and_releases_only_its_receipt(self):
+        with isolated_network() as (root, args, invocation, commands):
+            invocation["input"]["authority"] = "image"
+            invocation["input"]["resolver"] = {"enabled": False, "nameservers": [], "search": [], "dnssec": "no"}
+            invocation["input"]["links"] = [physical()]
+            image_files = handler.render(invocation["input"])
+            identities = {}
+            for relative, content in image_files.items():
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content)
+                path.chmod(0o444)
+                identities[path] = path.stat()
+
+            with patch.object(handler, "in_initrd", return_value=True), readonly_image():
+                handler.converge(args, invocation)
+                self.assertEqual(list((root / "state").iterdir()), [])
+                self.assertEqual(len(list((root / "initrd-state").glob("*.json"))), 1)
+
+                args.action = "observe"
+                self.assertEqual(handler.converge(args, invocation)["status"], "current")
+
+                args.action = invocation["action"] = "remove"
+                self.assertEqual(handler.converge(args, invocation), {})
+                args.action = "observe"
+                self.assertEqual(handler.converge(args, invocation), {"status": "absent"})
+
+            commands.assert_any_call([args.systemctl, "stop", "systemd-networkd.service", "systemd-networkd.socket"])
+            self.assertEqual(list((root / "initrd-state").glob("*.json")), [])
+            for path, original in identities.items():
+                observed = path.stat()
+                for field in ("st_ino", "st_mode", "st_size", "st_mtime_ns"):
+                    self.assertEqual(getattr(observed, field), getattr(original, field))
+                self.assertEqual(path.read_text(), image_files[str(path.relative_to(root))])
+
+    def test_readonly_image_rejects_changed_bytes_and_unsafe_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory).resolve() / "network"
+            path.write_text("expected")
+            path.chmod(0o444)
+            with readonly_image():
+                self.assertTrue(handler.immutable_image_file(path, "expected"))
+                with self.assertRaisesRegex(ValueError, "image file differs"):
+                    handler.immutable_image_file(path, "changed")
+                path.chmod(0o666)
+                with self.assertRaisesRegex(ValueError, "metadata differs"):
+                    handler.immutable_image_file(path, "expected")
+
+    def test_manager_unit_overrides_use_run_only_in_initrd(self):
+        args = SimpleNamespace(unit_directory=str(RESOLVER_POLICY.parents[2] / "lib/systemd/system"))
+        host = handler.units(args, True)
+        initrd = handler.units(args, True, initrd=True)
+        self.assertEqual(len(host), 4)
+        self.assertEqual(initrd, {path.replace("etc/", "run/", 1): text for path, text in host.items()})
+
+    def test_discovered_initrd_bootstrap_uses_runtime_network_files(self):
+        with isolated_network() as (root, args, invocation, commands):
+            invocation["effect"]["identity"][-2] = "bootstrap"
+            invocation["input"] = {"configuration": {
+                "selector": {"kind": "name", "value": "eth0"},
+                "addresses": ["192.0.2.5/24"], "dns": [],
+            }}
+            with patch.object(handler, "in_initrd", return_value=True):
+                handler.converge(args, invocation)
+                files = list((root / "run/systemd/network").glob("01-aos-bootstrap-*.network"))
+                self.assertEqual(len(files), 1)
+                self.assertIn("Address=192.0.2.5/24", files[0].read_text())
+                self.assertEqual(list((root / "etc").iterdir()), [])
+                self.assertEqual(list((root / "state").iterdir()), [])
+                args.action = invocation["action"] = "remove"
+                handler.converge(args, invocation)
+                self.assertFalse(files[0].exists())
 
 
 class SystemdNetworkParserTests(unittest.TestCase):
@@ -533,7 +782,13 @@ class NativeNetworkTests(unittest.TestCase):
 
     def test_empty_bootstrap_uses_native_invocation_and_observation(self):
         invocation = {"id": "fixture", "revision": "0" * 64, "effect": {"identity": ["fixture", "network", "bootstrap", "empty"]}, "input": {"configuration": None}, "action": "apply", "previous": None}
-        result = subprocess.run([sys.executable, str(SOURCE), "observe"], input=json.dumps(invocation), capture_output=True, text=True, check=True)
+        with tempfile.TemporaryDirectory() as directory:
+            # Installed handlers share a directory with their modules; Nix
+            # supplies the test inputs as separate single-file store paths.
+            entrypoint = Path(directory) / "network-handler.py"
+            entrypoint.write_bytes(SOURCE.read_bytes())
+            (Path(directory) / "aos_service_resources.py").write_bytes(resources_path.read_bytes())
+            result = subprocess.run([sys.executable, "-B", str(entrypoint), "observe"], input=json.dumps(invocation), capture_output=True, text=True, check=True)
         self.assertEqual(json.loads(result.stdout), {"status": "current", "outputs": {"resource": "systemd-network-bootstrap-empty"}})
 
 

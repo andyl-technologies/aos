@@ -50,11 +50,11 @@ struct RetainedEffect {
 /// Returns an error for invalid authority, incomplete or conflicting receipts,
 /// database conflicts, unavailable pinned shells, or failed durable writes.
 pub(crate) fn restore(bytes: &[u8], shells: Option<(&str, &str)>) -> Result<()> {
-    super::super::private_directory(Path::new(super::super::STATE_ROOT))?;
-    let lock = lock(Path::new(super::super::STATE_ROOT), ".lock")?;
+    super::super::private_directory(super::super::state_root())?;
+    let lock = lock(super::super::state_root(), ".lock")?;
     let result = restore_at(
         Path::new("/etc"),
-        Path::new(super::super::STATE_ROOT),
+        super::super::state_root(),
         bytes,
         shells,
     );

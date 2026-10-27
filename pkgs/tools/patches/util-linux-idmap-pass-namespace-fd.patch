@@ -1,0 +1,148 @@
+--- a/libmount/src/hook_idmap.c
++++ b/libmount/src/hook_idmap.c
+@@ -188,6 +188,96 @@
+ 	return 0;
+ }
+ 
++/* The child opens its own namespace. Opening /proc/<child>/ns/user from
++ * the parent would additionally require CAP_SYS_PTRACE in the new userns. */
++static int send_userns_fd(int channel, int namespace_fd)
++{
++	char ready = '1';
++	struct iovec iov = { .iov_base = &ready, .iov_len = sizeof(ready) };
++	union {
++		struct cmsghdr alignment;
++		char bytes[CMSG_SPACE(sizeof(int))];
++	} control = {0};
++	struct msghdr message = {
++		.msg_iov = &iov,
++		.msg_iovlen = 1,
++		.msg_control = control.bytes,
++		.msg_controllen = sizeof(control.bytes),
++	};
++	struct cmsghdr *header = CMSG_FIRSTHDR(&message);
++	ssize_t result;
++
++	header->cmsg_level = SOL_SOCKET;
++	header->cmsg_type = SCM_RIGHTS;
++	header->cmsg_len = CMSG_LEN(sizeof(int));
++	memcpy(CMSG_DATA(header), &namespace_fd, sizeof(namespace_fd));
++
++	do {
++		result = sendmsg(channel, &message, MSG_NOSIGNAL);
++	} while (result < 0 && errno == EINTR);
++
++	return result == 1 ? 0 : -1;
++}
++
++static int receive_userns_fd(int channel)
++{
++	char ready = 0;
++	struct iovec iov = { .iov_base = &ready, .iov_len = sizeof(ready) };
++	union {
++		struct cmsghdr alignment;
++		char bytes[CMSG_SPACE(2 * sizeof(int))];
++	} control = {0};
++	struct msghdr message = {
++		.msg_iov = &iov,
++		.msg_iovlen = 1,
++		.msg_control = control.bytes,
++		.msg_controllen = sizeof(control.bytes),
++	};
++	ssize_t result;
++	int namespace_fd = -1;
++	unsigned count = 0;
++
++	do {
++		result = recvmsg(channel, &message, MSG_CMSG_CLOEXEC);
++	} while (result < 0 && errno == EINTR);
++	if (result < 0)
++		return -1;
++
++	bool valid = result == 1 && ready == '1' &&
++		!(message.msg_flags & (MSG_TRUNC | MSG_CTRUNC));
++	for (struct cmsghdr *header = CMSG_FIRSTHDR(&message); header;
++	     header = CMSG_NXTHDR(&message, header)) {
++		if (header->cmsg_level != SOL_SOCKET || header->cmsg_type != SCM_RIGHTS ||
++		    header->cmsg_len < CMSG_LEN(0)) {
++			valid = false;
++			continue;
++		}
++
++		size_t bytes = header->cmsg_len - CMSG_LEN(0);
++		if (bytes != sizeof(int))
++			valid = false;
++		/* Alignment can fit two FDs in space intended for one. Close every
++		 * actually received FD, including malformed or truncated handoffs. */
++		for (size_t offset = 0; offset + sizeof(int) <= bytes; offset += sizeof(int)) {
++			int received;
++			memcpy(&received, (char *)CMSG_DATA(header) + offset, sizeof(received));
++			if (count++ == 0)
++				namespace_fd = received;
++			else
++				close(received);
++		}
++	}
++
++	if (!valid || count != 1) {
++		if (namespace_fd >= 0)
++			close(namespace_fd);
++		errno = EPROTO;
++		return -1;
++	}
++
++	return namespace_fd;
++}
++
+ static int get_userns_fd_from_idmap(struct list_head *idmap)
+ {
+ 	int fd_userns = -1;
+@@ -195,7 +285,6 @@
+ 	char c = '1';
+ 	pid_t pid;
+ 	int sock_fds[2];
+-	char path[PATH_MAX];
+ 
+ 	rc = socketpair(PF_LOCAL, SOCK_STREAM | SOCK_CLOEXEC, 0, sock_fds);
+ 	if (rc < 0)
+@@ -212,9 +301,14 @@
+ 		if (rc < 0)
+ 			_exit(EXIT_FAILURE);
+ 
+-		/* Let parent know we're ready to have the idmapping written. */
+-		rc = write_all(sock_fds[0], &c, 1);
+-		if (rc)
++		fd_userns = open("/proc/self/ns/user", O_RDONLY | O_CLOEXEC | O_NOCTTY);
++		if (fd_userns < 0)
++			_exit(EXIT_FAILURE);
++
++		/* Transfer readiness and the held namespace over our private pair. */
++		rc = send_userns_fd(sock_fds[0], fd_userns);
++		close(fd_userns);
++		if (rc < 0)
+ 			_exit(EXIT_FAILURE);
+ 
+ 		/* Hang around until the parent has persisted our namespace. */
+@@ -229,9 +323,9 @@
+ 	close(sock_fds[0]);
+ 	sock_fds[0] = -1;
+ 
+-	/* Wait for child to set up a new namespace. */
+-	rc = read_all(sock_fds[1], &c, 1);
+-	if (rc != 1) {
++	/* Receive only the namespace opened by this original private child. */
++	fd_userns = receive_userns_fd(sock_fds[1]);
++	if (fd_userns < 0) {
+ 		kill(pid, SIGKILL);
+ 		goto err_wait;
+ 	}
+@@ -241,9 +335,6 @@
+ 		kill(pid, SIGKILL);
+ 		goto err_wait;
+ 	}
+-
+-	snprintf(path, sizeof(path), "/proc/%d/ns/user", pid);
+-	fd_userns = open(path, O_RDONLY | O_CLOEXEC | O_NOCTTY);
+ 
+ 	/* Let child know we've persisted its namespace. */
+ 	(void)write_all(sock_fds[1], &c, 1);

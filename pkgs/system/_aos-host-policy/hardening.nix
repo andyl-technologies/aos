@@ -6,6 +6,7 @@
 }: let
   cfg = config.aos.security.hardening;
   containerTarget = config.aos.initSystem.container or false;
+  hostStage = (config.aos.boot.stage or "host") == "host";
 in {
   options.aos.security.hardening = {
     ## Enable system hardening (sysctl, core dump restrictions).
@@ -117,14 +118,16 @@ in {
   };
   config = lib.mkIf cfg.enable {
     aos.kernel.sysctl = cfg.sysctl;
-    aos.security.hardening.files = lib.mkIf (!cfg.coreDump.enable) {
+    # PAM limits belong to the host configuration lower. The authenticated
+    # initrd has no writable host /etc or host configuration receipt directory.
+    aos.security.hardening.files = lib.mkIf (hostStage && !cfg.coreDump.enable) {
       "security/limits.d/aos-hardening.conf".text = ''
         # Disable core dumps for all users.
         *  hard  core  0
         *  soft  core  0
       '';
     };
-    aos.abilities.configuration.operations.file.effects.hardening-limits = lib.mkIf (!cfg.coreDump.enable) {
+    aos.abilities.configuration.operations.file.effects.hardening-limits = lib.mkIf (hostStage && !cfg.coreDump.enable) {
       input = {
         path = "/etc/security/limits.d/aos-hardening.conf";
         content = cfg.files."security/limits.d/aos-hardening.conf".text;

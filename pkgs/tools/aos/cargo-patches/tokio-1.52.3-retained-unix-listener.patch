@@ -1,0 +1,407 @@
+--- a/src/io/poll_evented.rs
++++ b/src/io/poll_evented.rs
+@@ -113,13 +113,35 @@
+ 
+     #[track_caller]
+     pub(crate) fn new_with_interest_and_handle(
+-        mut io: E,
++        io: E,
+         interest: Interest,
+         handle: scheduler::Handle,
+     ) -> io::Result<Self> {
+-        let registration = Registration::new_with_interest_and_handle(&mut io, interest, handle)?;
++        // The local slot preserves the owned constructor's error/unwind boundary.
++        let mut io = Some(io);
++        Self::new_with_retained_io_and_handle(&mut io, interest, handle)
++    }
++
++    /// Registers an occupied source without consuming it on error or unwind.
++    #[track_caller]
++    pub(crate) fn new_with_retained_io_and_handle(
++        io: &mut Option<E>,
++        interest: Interest,
++        handle: scheduler::Handle,
++    ) -> io::Result<Self> {
++        let Some(source) = io.as_mut() else {
++            return Err(io::Error::new(
++                io::ErrorKind::InvalidInput,
++                "I/O registration requires an occupied source slot",
++            ));
++        };
++
++        let registration = Registration::new_with_interest_and_handle(source, interest, handle)?;
++
++        // The exclusive source loan kept the slot occupied. Transfer only moves;
++        // no check or user code may run between registration and assembly.
+         Ok(Self {
+-            io: Some(io),
++            io: io.take(),
+             registration,
+         })
+     }
+--- a/src/net/mod.rs
++++ b/src/net/mod.rs
+@@ -54,7 +54,7 @@
+ cfg_net_unix! {
+     pub mod unix;
+     pub use unix::datagram::socket::UnixDatagram;
+-    pub use unix::listener::UnixListener;
++    pub use unix::listener::{UnixListener, UnixListenerRegistrationAttempt};
+     pub use unix::stream::UnixStream;
+     pub use unix::socket::UnixSocket;
+ }
+--- a/src/net/unix/listener.rs
++++ b/src/net/unix/listener.rs
+@@ -53,6 +53,115 @@
+     #[cfg_attr(docsrs, doc(alias = "uds"))]
+     pub struct UnixListener {
+         io: PollEvented<mio::net::UnixListener>,
++    }
++
++    /// Holds the original Unix listener through one borrowed registration attempt.
++    ///
++    /// The attempt takes ownership without observing or registering the listener.
++    /// It must remain owned by the caller while [`register`](Self::register) is
++    /// borrowed. An error or unwind leaves the original listener in the attempt;
++    /// dropping the attempt still closes that listener normally.
++    ///
++    /// Successful registration transfers the original into the returned
++    /// [`UnixListener`]. A failed or unwinding registration is not transactional
++    /// rollback and must not be retried. This type provides ordinary I/O custody,
++    /// not authorization, resource funding, or a guarantee about reactor cleanup.
++    ///
++    /// Its `Debug` output exposes only whether registration was attempted and
++    /// whether a std or Mio listener remains resident, not descriptor identities.
++    pub struct UnixListenerRegistrationAttempt {
++        listener: Option<net::UnixListener>,
++        source: Option<mio::net::UnixListener>,
++        attempted: bool,
++    }
++}
++
++impl UnixListenerRegistrationAttempt {
++    /// Takes ownership of an original listener without performing I/O.
++    ///
++    /// The listener must already be nonblocking before [`register`](Self::register)
++    /// is called. Construction does not check or change that flag.
++    pub fn new(listener: net::UnixListener) -> Self {
++        Self {
++            listener: Some(listener),
++            source: None,
++            attempted: false,
++        }
++    }
++
++    /// Registers the resident original once and transfers it only on success.
++    ///
++    /// The original stays resident during the blocking check, runtime lookup and
++    /// reactor registration. On success, the caller must retain the returned
++    /// [`UnixListener`]; the attempt then holds no listener.
++    ///
++    /// # Errors
++    ///
++    /// Returns the original blocking-check or reactor-registration error unchanged.
++    /// Returns [`io::ErrorKind::InvalidInput`] if registration was already attempted.
++    /// Every outcome, including unwind, forbids another attempt. A failed source
++    /// may already contain registration state; retention does not imply rollback.
++    ///
++    /// # Panics
++    ///
++    /// Panics outside a Tokio runtime with I/O enabled, as [`UnixListener::from_std`]
++    /// does. Registering a blocking socket is erroneous and can also panic.
++    /// The attempt retains the listener only while its caller retains the attempt;
++    /// it does not catch a panic or preserve a caller that unwinds and drops it.
++    ///
++    /// # Examples
++    ///
++    /// A conversion can borrow an attempt already parked in its caller:
++    ///
++    /// ```no_run
++    /// use std::io;
++    /// use tokio::net::{UnixListener, UnixListenerRegistrationAttempt};
++    ///
++    /// async fn register_parked(
++    ///     attempt: &mut UnixListenerRegistrationAttempt,
++    /// ) -> io::Result<UnixListener> {
++    ///     attempt.register()
++    /// }
++    /// ```
++    #[track_caller]
++    pub fn register(&mut self) -> io::Result<UnixListener> {
++        if self.attempted {
++            return Err(io::Error::new(
++                io::ErrorKind::InvalidInput,
++                "Unix listener registration was already attempted",
++            ));
++        }
++
++        // Arm before even the blocking check, which can fail or panic.
++        self.attempted = true;
++        let Some(listener) = self.listener.as_ref() else {
++            return Err(io::Error::new(
++                io::ErrorKind::InvalidInput,
++                "Unix listener registration requires its original listener",
++            ));
++        };
++        check_socket_for_blocking(listener)?;
++
++        // Mio wraps the same original by an infallible move. Park it before
++        // runtime lookup or registration can fail or unwind.
++        self.source = self.listener.take().map(mio::net::UnixListener::from_std);
++
++        let io = PollEvented::new_with_retained_io_and_handle(
++            &mut self.source,
++            Interest::READABLE | Interest::WRITABLE,
++            crate::runtime::scheduler::Handle::current(),
++        )?;
++        Ok(UnixListener { io })
++    }
++}
++
++impl fmt::Debug for UnixListenerRegistrationAttempt {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        f.debug_struct("UnixListenerRegistrationAttempt")
++            .field("attempted", &self.attempted)
++            .field("owns_std_listener", &self.listener.is_some())
++            .field("owns_mio_listener", &self.source.is_some())
++            .finish()
+     }
+ }
+ 
+--- a/src/runtime/blocking/pool.rs
++++ b/src/runtime/blocking/pool.rs
+@@ -608,3 +608,16 @@
+         fmt.debug_struct("blocking::Spawner").finish()
+     }
+ }
++
++#[cfg(all(target_os = "linux", feature = "rt", feature = "net", feature = "time"))]
++impl BlockingPool {
++    pub(crate) fn default_receiving_bytes_v4() -> Option<usize> {
++        // No worker is spawned by pool construction. The queue and worker map
++        // are empty; the actual shutdown channel owns one additional Arc.
++        let arcs = std::mem::size_of::<Inner>()
++            .checked_add(std::mem::size_of::<crate::sync::oneshot::Sender<()>>())?
++            .checked_add(4 * std::mem::size_of::<usize>())?;
++        arcs.checked_mul(2)?
++            .checked_add(crate::sync::oneshot::channel_receiving_bytes_v4::<()>()?)
++    }
++}
+--- a/src/runtime/builder.rs
++++ b/src/runtime/builder.rs
+@@ -241,6 +241,9 @@
+     MultiThread,
+ }
+ 
++// Shared with the passive default current-thread geometry below.
++const DEFAULT_IO_EVENTS_V4: usize = 1024;
++
+ impl Builder {
+     /// Returns a new builder with the current thread scheduler selected.
+     ///
+@@ -285,7 +288,7 @@
+ 
+             // I/O defaults to "off"
+             enable_io: false,
+-            nevents: 1024,
++            nevents: DEFAULT_IO_EVENTS_V4,
+ 
+             // Time defaults to "off"
+             enable_time: false,
+@@ -1940,3 +1943,34 @@
+         }
+     }
+ }
++
++#[cfg(all(target_os = "linux", feature = "rt", feature = "net", feature = "time"))]
++impl Builder {
++    /// Bounds the default Linux current-thread IO/time constructor storage.
++    ///
++    /// This allocation-free DATA helper uses the actual private driver,
++    /// scheduler, shutdown channel, signal registry and initial queue layouts.
++    /// It applies only to `new_current_thread().enable_io().enable_time()` with
++    /// otherwise-default settings. It grants no Runtime, native resource,
++    /// account or permission and does not bound arbitrary spawned-task growth.
++    /// The caller must separately price its actual tasks and native resources.
++    #[must_use]
++    pub fn default_current_thread_io_time_receiving_bytes_v4() -> Option<usize> {
++        let bytes = std::mem::size_of::<Builder>()
++            .checked_add(std::mem::size_of::<Runtime>())?
++            // The default thread-name closure has no captures but its Arc
++            // owns two counters. The seed generators are inline above.
++            .checked_add(2 * std::mem::size_of::<usize>())?
++            .checked_mul(2)?
++            .checked_add(crate::runtime::io::Driver::default_receiving_bytes_v4(
++                DEFAULT_IO_EVENTS_V4,
++            )?)?
++            .checked_add(crate::runtime::time::Driver::default_receiving_bytes_v4()?)?
++            .checked_add(CurrentThread::default_receiving_bytes_v4()?)?
++            .checked_add(blocking::BlockingPool::default_receiving_bytes_v4()?)?
++            .checked_add(crate::runtime::park::default_receiving_bytes_v4()?)?;
++        #[cfg(any(feature = "signal", feature = "process"))]
++        let bytes = bytes.checked_add(crate::signal::unix::global_receiving_bytes_v4()?)?;
++        Some(bytes)
++    }
++}
+--- a/src/runtime/io/driver.rs
++++ b/src/runtime/io/driver.rs
+@@ -332,3 +332,16 @@
+         }
+     }
+ }
++
++#[cfg(all(target_os = "linux", feature = "rt", feature = "net", feature = "time"))]
++impl Driver {
++    pub(crate) fn default_receiving_bytes_v4(events: usize) -> Option<usize> {
++        let inline = std::mem::size_of::<Self>()
++            .checked_add(std::mem::size_of::<Handle>())?
++            .checked_add(2 * std::mem::size_of::<usize>())?;
++        // mio::Event contains the actual Linux epoll event representation.
++        inline.checked_mul(2)?
++            .checked_add(events.checked_mul(std::mem::size_of::<mio::event::Event>())?)?
++            .checked_add(RegistrationSet::default_receiving_bytes_v4()?)
++    }
++}
+--- a/src/runtime/io/registration_set.rs
++++ b/src/runtime/io/registration_set.rs
+@@ -147,3 +147,16 @@
+         unsafe { NonNull::new_unchecked(target.as_ref().linked_list_pointers.get()) }
+     }
+ }
++
++#[cfg(all(target_os = "linux", feature = "rt", feature = "net", feature = "time"))]
++impl RegistrationSet {
++    pub(super) fn default_receiving_bytes_v4() -> Option<usize> {
++        // The actual pending-release Vec reserves NOTIFY_AFTER at construction.
++        // Two native registrations cover the fixed socket's connect/stream
++        // stages; their ownership does not create application-level authority.
++        NOTIFY_AFTER.checked_mul(std::mem::size_of::<Arc<ScheduledIo>>())?
++            .checked_add(2usize.checked_mul(
++                std::mem::size_of::<ScheduledIo>().checked_add(2 * std::mem::size_of::<usize>())?,
++            )?)
++    }
++}
+--- a/src/runtime/park.rs
++++ b/src/runtime/park.rs
+@@ -360,3 +360,12 @@
+ pub(crate) fn current_thread_park_count() -> usize {
+     CURRENT_THREAD_PARK_COUNT.with(|count| count.load(SeqCst))
+ }
++
++#[cfg(all(target_os = "linux", feature = "rt", feature = "net", feature = "time"))]
++pub(crate) fn default_receiving_bytes_v4() -> Option<usize> {
++    // The real thread-local parker can be first initialized by block_on or
++    // shutdown. Its Arc remains process/thread-local, never a caller grant.
++    std::mem::size_of::<Inner>()
++        .checked_add(2 * std::mem::size_of::<usize>())?
++        .checked_mul(2)
++}
+--- a/src/runtime/scheduler/current_thread/mod.rs
++++ b/src/runtime/scheduler/current_thread/mod.rs
+@@ -884,3 +884,15 @@
+         }
+     }
+ }
++
++#[cfg(all(target_os = "linux", feature = "rt", feature = "net", feature = "time"))]
++impl CurrentThread {
++    pub(crate) fn default_receiving_bytes_v4() -> Option<usize> {
++        let controls = std::mem::size_of::<Core>()
++            .checked_add(std::mem::size_of::<Handle>())?
++            .checked_add(2 * std::mem::size_of::<usize>())?;
++        controls.checked_mul(2)?
++            .checked_add(INITIAL_CAPACITY.checked_mul(std::mem::size_of::<Notified>())?)?
++            .checked_add(OwnedTasks::<Arc<Handle>>::single_thread_receiving_bytes_v4()?)
++    }
++}
+--- a/src/runtime/task/list.rs
++++ b/src/runtime/task/list.rs
+@@ -368,3 +368,15 @@
+         }
+     }
+ }
++
++#[cfg(all(target_os = "linux", feature = "rt", feature = "net", feature = "time"))]
++impl<S: 'static> OwnedTasks<S> {
++    pub(crate) fn single_thread_receiving_bytes_v4() -> Option<usize> {
++        // Share the actual source shard formula used by OwnedTasks::new(1).
++        Self::gen_shared_list_size(1).checked_mul(
++            std::mem::size_of::<crate::loom::sync::Mutex<
++                LinkedList<Task<S>, <Task<S> as Link>::Target>,
++            >>(),
++        )?.checked_mul(2)
++    }
++}
+--- a/src/runtime/time/mod.rs
++++ b/src/runtime/time/mod.rs
+@@ -491,3 +491,13 @@
+ 
+ #[cfg(test)]
+ mod tests;
++
++#[cfg(all(target_os = "linux", feature = "rt", feature = "net", feature = "time"))]
++impl Driver {
++    pub(crate) fn default_receiving_bytes_v4() -> Option<usize> {
++        std::mem::size_of::<Inner>()
++            .checked_add(2 * std::mem::size_of::<usize>())?
++            .checked_mul(2)?
++            .checked_add(wheel::default_receiving_bytes_v4()?)
++    }
++}
+--- a/src/runtime/time/wheel/mod.rs
++++ b/src/runtime/time/wheel/mod.rs
+@@ -333,3 +333,9 @@
+         }
+     }
+ }
++
++#[cfg(all(target_os = "linux", feature = "rt", feature = "net", feature = "time"))]
++pub(super) fn default_receiving_bytes_v4() -> Option<usize> {
++    // The same six levels are built in a Vec and moved into its fixed Box.
++    NUM_LEVELS.checked_mul(std::mem::size_of::<Level>())?.checked_mul(2)
++}
+--- a/src/signal/unix.rs
++++ b/src/signal/unix.rs
+@@ -548,3 +548,16 @@
+         assert_eq!(value, libc::SIGINT as _);
+     }
+ }
++
++#[cfg(all(target_os = "linux", feature = "rt", feature = "net", feature = "time"))]
++pub(crate) fn global_receiving_bytes_v4() -> Option<usize> {
++    // This is the same Linux SIGRTMAX row count used by OsStorage::default.
++    // Each SignalInfo constructs one watch channel even before any handler.
++    let signals = usize::try_from(libc::SIGRTMAX()).ok()?;
++    let row = std::mem::size_of::<SignalInfo>()
++        .checked_mul(2)?
++        .checked_add(crate::sync::watch::channel_receiving_bytes_v4::<()>()?)?;
++    signals.checked_mul(row)?
++        .checked_add(2 * std::mem::size_of::<OsExtraData>())?
++        .checked_add(4 * std::mem::size_of::<usize>())
++}
+--- a/src/sync/oneshot.rs
++++ b/src/sync/oneshot.rs
+@@ -1605,3 +1605,10 @@
+             .finish()
+     }
+ }
++
++#[cfg(all(target_os = "linux", feature = "rt", feature = "net", feature = "time"))]
++pub(crate) fn channel_receiving_bytes_v4<T>() -> Option<usize> {
++    std::mem::size_of::<Inner<T>>()
++        .checked_add(2 * std::mem::size_of::<usize>())?
++        .checked_mul(2)
++}
+--- a/src/sync/watch.rs
++++ b/src/sync/watch.rs
+@@ -1554,3 +1554,10 @@
+         });
+     }
+ }
++
++#[cfg(all(target_os = "linux", feature = "rt", feature = "net", feature = "time"))]
++pub(crate) fn channel_receiving_bytes_v4<T>() -> Option<usize> {
++    std::mem::size_of::<Shared<T>>()
++        .checked_add(2 * std::mem::size_of::<usize>())?
++        .checked_mul(2)
++}

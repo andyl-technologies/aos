@@ -40,6 +40,7 @@
     util-linux = artifactFor "util-linux";
   };
   buildTestDisk = {
+    buildPackages,
     closureInfoFor,
     mkImageRecipe ? null,
     mkDerivation,
@@ -48,7 +49,7 @@
     inputs,
   }:
     import ../testing/disk.nix {
-      inherit closureInfoFor lib mkImageRecipe;
+      inherit buildPackages closureInfoFor lib mkImageRecipe;
       packages = testDiskPackagesFor {inherit mkDerivation sshTools testAgent;};
     }
     inputs;
@@ -76,6 +77,8 @@
   }: let
     imagePackages = {
       inherit mkDerivation writeTextFile;
+      # Root construction executes native tools even for a cross-built image.
+      inherit (pkgs) buildPackages;
       aos-uki = import ./_uki-builder.nix {
         inherit mkDerivation targetPlatform;
         binutils = artifactFor "binutils";

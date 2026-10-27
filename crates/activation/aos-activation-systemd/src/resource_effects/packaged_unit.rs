@@ -12,9 +12,10 @@ use aos_systemd_client::PinnedSystemdManager;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::{atomic_write, normalized_path, read_regular, reject_symlink_ancestors, state_path};
+use super::{
+    atomic_write, normalized_path, read_regular, reject_symlink_ancestors, state_path, unit_root,
+};
 
-const UNIT_ROOT: &str = "/etc/systemd/system";
 const LIMIT: u64 = 262_144;
 
 #[derive(Deserialize)]
@@ -117,7 +118,7 @@ fn definition(invocation: &Invocation) -> Result<Definition> {
 }
 
 fn paths(definition: &Definition) -> (PathBuf, PathBuf) {
-    let root = Path::new(UNIT_ROOT);
+    let root = unit_root();
     (
         root.join(&definition.unit),
         root.join(format!("{}.d", definition.unit))
@@ -248,7 +249,7 @@ pub(super) async fn execute(invocation: &Invocation, action: &str) -> Result<Val
     };
     atomic_write(&path, &serde_json::to_vec(&receipt)?, 0o600)?;
     let (unit, drop_in) = paths(&desired);
-    directory(Path::new(UNIT_ROOT))?;
+    directory(unit_root())?;
     directory(drop_in.parent().context("drop-in has no parent")?)?;
     atomic_write(&unit, &desired.contents, 0o644)?;
     atomic_write(&drop_in, &desired.drop_in, 0o644)?;

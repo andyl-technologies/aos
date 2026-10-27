@@ -22,7 +22,7 @@ pkgs.mkDerivation {
         # Nix may mount its daemon-side /bin/sh into the sandbox. The derivation
         # remains hermetic when its declared builder and CONFIG_SHELL are the
         # AOS bash, so verify the shell that is actually executing this phase.
-        if [ "$CONFIG_SHELL" != ${pkgs.bash}/bin/bash ] || ! cmp -s /proc/$$/exe ${pkgs.bash}/bin/bash; then
+        if [ "$CONFIG_SHELL" != ${pkgs.stdenv.shell} ] || ! cmp -s /proc/$$/exe ${pkgs.stdenv.shell}; then
           echo "build phase is not running under the declared AOS bash" >&2
           failed=1
         fi

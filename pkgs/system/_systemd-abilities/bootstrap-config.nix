@@ -5,10 +5,14 @@
   ...
 }: let
   literalText = import ../_aos-host-policy/literal-text.nix;
-  services = import ./bootstrap-services.nix {
-    inherit config lib;
-    pkgs = {};
-  };
+  # Sealed definitions also include ordinary services. Their configuration is
+  # still realized in dependency order by activation, not seeded for early boot.
+  services =
+    lib.filterAttrs (_: service: service.bootstrap || service.activation_owner != "ability")
+    (import ./bootstrap-services.nix {
+      inherit config lib;
+      pkgs = {};
+    });
   references = builtins.concatMap (service: service.dependencyValues) (builtins.attrValues services);
   effects = lib.filterAttrs (_: effect:
     effect.enable

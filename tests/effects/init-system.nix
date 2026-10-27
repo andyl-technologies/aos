@@ -63,16 +63,17 @@ let
       };
     }
   ];
-  systemdConfiguration = evaluate [
-    base
-    (import (repo + /pkgs/system/_systemd-abilities/core.nix) {
+  systemdCore = stage:
+    import (repo + /pkgs/system/_systemd-abilities/core.nix) {
       inherit lib;
+      config.aos.boot.stage = stage;
       package = {
         outPath = (artifact "systemd").path;
         handlers.outPath = (artifact "systemd-handlers").path;
       };
-    })
-  ];
+    };
+  systemdConfiguration = evaluate [base (systemdCore "host")];
+  systemdInitrdConfiguration = evaluate [base (systemdCore "initrd")];
   explicitUnsupported = evaluate [base {aos.services.nginx.enable = true;}];
   containerStartup = evaluate [
     (import (repo + /pkgs/system/_systemd-abilities/container-startup.nix))
@@ -104,6 +105,9 @@ in {
     assert locator.content == "/nix/store/00000000000000000000000000000000-systemd-handlers/bin/aos-systemd-credential-encrypt\n";
     assert locator.mode == "0444";
     assert systemdConfiguration.config.aos.abilities.initSystem.operations.install.effects.default.input.arguments == []; true;
+  initrdDoesNotInstallCredentialAuthoringLocator = assert allAssertions systemdInitrdConfiguration;
+  assert !(systemdInitrdConfiguration.config.aos.abilities.configuration.operations.file.effects ? systemd-credential-encrypt-provider);
+  assert systemdInitrdConfiguration.config.aos.abilities.initSystem.operations.install.effects.default.input.arguments == []; true;
   bootstrapPreparedBeforeManager = let
     startupNodes = builtins.filter (node: lib.hasPrefix "systemd-container-startup" (lib.last node.identity)) (builtins.attrValues containerStartup.deployment.graph.nodes);
   in

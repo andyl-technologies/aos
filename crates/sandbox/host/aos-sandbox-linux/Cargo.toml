@@ -1,0 +1,49 @@
+[package]
+name = "aos-sandbox-linux"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[features]
+# Explicit AOS VM qualification; ordinary package builds lack a cgroup2 mount.
+kernel-tests = []
+# Only the same configured AOS kernel's build-only artifact enables this path.
+selected-kernel-clone-layout = []
+
+[dependencies]
+aos-linux-descriptors.workspace = true
+libc.workspace = true
+rustix = { workspace = true, features = ["event", "fs", "mount", "net", "pipe", "process", "stdio", "thread", "time"] }
+sha2.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+
+[build-dependencies]
+sha2.workspace = true
+
+[dev-dependencies]
+aos-linux-descriptors = { workspace = true, features = ["test-fixtures"] }
+tempfile = "3"
+
+[[test]]
+name = "fixed-process-session"
+path = "tests/fixed_process_session.rs"
+harness = false
+
+[[test]]
+name = "network-namespace-bootstrap"
+path = "tests/network_namespace_bootstrap.rs"
+harness = false
+required-features = ["kernel-tests"]
+
+[[test]]
+name = "initial-approval-exchange"
+path = "tests/initial_approval_exchange.rs"
+harness = false
+required-features = ["kernel-tests"]
+
+[[test]]
+name = "inherited-file-mount"
+path = "tests/inherited_file_mount.rs"
+harness = false
+required-features = ["kernel-tests"]

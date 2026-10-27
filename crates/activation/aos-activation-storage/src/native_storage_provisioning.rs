@@ -132,6 +132,9 @@ struct Context {
     mdadm: PathBuf,
     mkfs_ext4: PathBuf,
     mkfs_xfs: PathBuf,
+    debugfs: PathBuf,
+    sync: PathBuf,
+    protected_var_context: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -176,6 +179,7 @@ pub fn handle(action: &str, bytes: &[u8]) -> Result<Vec<u8>> {
         plan: input.plan,
     };
     validate_desired(&desired)?;
+    validate_var_context(input.tools.protected_var_context.as_deref())?;
     let _lock = native_state::Lock::acquire(Path::new(SCRATCH_ROOT))?;
     let deadline = operation_deadline(invocation.effect.timeout_ms)?;
     ensure!(
@@ -226,6 +230,7 @@ fn converge(desired: &Desired, context: &Context, target: &str, deadline: Instan
     let rendered = render_pending(desired, target, Path::new(SCRATCH_ROOT))?;
     let root_disk = root_disk(&context.lsblk, &desired.request.root_device, deadline)?;
     let targets = rendered_targets(&rendered, &root_disk)?;
+    let mut protected_var = protected_var_volume(desired, context)?;
 
     for target in &targets {
         run_repart(
@@ -235,6 +240,26 @@ fn converge(desired: &Desired, context: &Context, target: &str, deadline: Instan
             false,
             remaining(deadline)?.min(15_000),
         )?;
+        if let Some(var) = protected_var.as_mut() {
+            if var.source == aos_storage_layout::topology::VolumeSource::Partition
+                && target.device == root_disk
+            {
+                let planned = run_repart(
+                    context,
+                    target,
+                    true,
+                    true,
+                    remaining(deadline)?.min(15_000),
+                )?;
+                var.created = plans_new_var(&planned)?;
+            }
+        }
+    }
+    if let Some(var) = &protected_var {
+        ensure!(
+            !var.created || !var.device.exists(),
+            "planned-new protected /var already exists before repart"
+        );
     }
     for target in &targets {
         apply_repart(deadline, |dry_run, json_output, budget| {
@@ -243,6 +268,23 @@ fn converge(desired: &Desired, context: &Context, target: &str, deadline: Instan
     }
 
     let _ = settle(&context.udevadm, remaining(deadline)?);
+    if let Some(var) = &protected_var {
+        if var.source == aos_storage_layout::topology::VolumeSource::Partition {
+            wait_for_path(&var.device, deadline)?;
+            let device = fs::canonicalize(&var.device)?;
+            let parent = inspect_value(
+                &context.lsblk,
+                &["-ndo", "PKNAME", "--"],
+                &device,
+                deadline,
+            )?;
+            ensure!(
+                format!("/dev/{parent}") == root_disk,
+                "protected /var belongs to another disk"
+            );
+            prepare_var_root_label(context, &device, var.created, deadline)?;
+        }
+    }
     prepare_topology(desired, context, deadline)?;
     let pending = wait_for_label(PENDING_LABEL, deadline)?;
     let marker = checked_marker(desired, context, &pending, &root_disk, deadline, true)?;
@@ -251,6 +293,7 @@ fn converge(desired: &Desired, context: &Context, target: &str, deadline: Instan
         &marker,
         &root_disk,
         desired.plan.source.label(),
+        protected_var.as_ref().map(|var| var.device.as_path()),
         deadline,
         run_success,
     )?;
@@ -338,14 +381,215 @@ fn prepare_topology(desired: &Desired, context: &Context, deadline: Instant) -> 
             "xfs" => &context.mkfs_xfs,
             _ => bail!("unsupported array filesystem {filesystem}"),
         };
+        let mut arguments = vec!["-q", "-L", volume.label.as_str()];
+        let root_context;
+        if volume.is_system_state() {
+            if let Some(context_value) = &context.protected_var_context {
+                ensure!(
+                    filesystem == "ext4" && volume.label == "var",
+                    "protected /var requires its exact plain ext4 array identity"
+                );
+                require_unmounted_block_device(Path::new(&volume.device))?;
+                let signature = run_native(
+                    &context.blkid,
+                    &["-p", "-s", "TYPE", "-o", "value", &volume.device],
+                    remaining(deadline)?,
+                )?;
+                ensure!(
+                    signature.status.code() == Some(2)
+                        && signature.stdout.iter().all(u8::is_ascii_whitespace),
+                    "new protected /var array is not provably blank"
+                );
+                root_context = format!("root_selinux={context_value}");
+                arguments.extend(["-E", root_context.as_str()]);
+            }
+        }
+        arguments.push(&volume.device);
         run_success(
             formatter,
-            &["-q", "-L", &volume.label, &volume.device],
+            &arguments,
             remaining(deadline)?,
             "formatting declared MD volume",
         )?;
+        if volume.is_system_state() && context.protected_var_context.is_some() {
+            run_success(
+                &context.sync,
+                &[&volume.device],
+                remaining(deadline)?,
+                "syncing protected /var",
+            )?;
+            prepare_var_root_label(context, Path::new(&volume.device), false, deadline)?;
+        }
     }
     settle(&context.udevadm, remaining(deadline)?)?;
+    Ok(())
+}
+
+/// Tracks the actual plain /var selected by the validated topology. Only the
+/// pre-mutation repart observation can mark a partition as newly created.
+struct ProtectedVarVolume {
+    device: PathBuf,
+    source: aos_storage_layout::topology::VolumeSource,
+    created: bool,
+}
+
+fn protected_var_volume(desired: &Desired, context: &Context) -> Result<Option<ProtectedVarVolume>> {
+    if context.protected_var_context.is_none() {
+        return Ok(None);
+    }
+    let topology = aos_storage_layout::topology::resolve_topology(
+        &shared_plan(&desired.plan),
+        desired.plan.measured_boot,
+    )?;
+    let Some(var) = topology
+        .volumes
+        .iter()
+        .find(|volume| volume.is_system_state())
+    else {
+        bail!("validated protected /var volume is missing");
+    };
+    if var.encryption != aos_storage_layout::topology::Encryption::None {
+        // The existing measured-boot encryption owner formats the inner volume.
+        return Ok(None);
+    }
+    ensure!(
+        var.filesystem.as_deref() == Some("ext4") && var.label == "var",
+        "protected /var requires its exact plain ext4 identity"
+    );
+    Ok(Some(ProtectedVarVolume {
+        device: var.device.clone().into(),
+        source: var.source,
+        created: false,
+    }))
+}
+
+fn plans_new_var(observation: &Value) -> Result<bool> {
+    let rows = observation
+        .as_array()
+        .context("repart preflight is not an array")?;
+    let mut var_rows = rows
+        .iter()
+        .filter(|row| row.get("label").and_then(Value::as_str) == Some("var"));
+    let first = var_rows.next();
+    Ok(var_rows.next().is_none()
+        && first
+            .and_then(|row| row.get("activity"))
+            .and_then(Value::as_str)
+            == Some("create"))
+}
+
+fn validate_var_context(context: Option<&str>) -> Result<()> {
+    if let Some(context) = context {
+        let fields = context.split(':').collect::<Vec<_>>();
+        ensure!(
+            fields.len() == 3
+                && fields.iter().all(|field| {
+                    !field.is_empty()
+                        && field
+                            .bytes()
+                            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+                }),
+            "protected /var requires an exact non-MLS SELinux context"
+        );
+    }
+    Ok(())
+}
+
+fn require_unmounted_block_device(device: &Path) -> Result<()> {
+    let metadata = fs::metadata(device)?;
+    ensure!(
+        metadata.file_type().is_block_device(),
+        "protected /var is not a block device"
+    );
+    let number = metadata.rdev();
+    let device_number = format!(
+        "{}:{}",
+        rustix::fs::major(number),
+        rustix::fs::minor(number)
+    );
+    let mounts = fs::read_to_string("/proc/self/mountinfo")?;
+    ensure!(
+        !mounts
+            .lines()
+            .any(|line| line.split_ascii_whitespace().nth(2) == Some(device_number.as_str())),
+        "protected /var must be unmounted"
+    );
+    Ok(())
+}
+
+fn root_label_display(context: &str) -> String {
+    format!("security.selinux ({}) = \"{context}\"", context.len())
+}
+
+fn require_initial_var_label(label: &str) -> Result<()> {
+    ensure!(
+        label.is_empty() || label == root_label_display("system_u:object_r:unlabeled_t"),
+        "new protected /var has an unexpected root SELinux label"
+    );
+    Ok(())
+}
+
+fn read_var_root_label(context: &Context, device: &str, deadline: Instant) -> Result<String> {
+    let output = run_native(
+        &context.debugfs,
+        &["-R", "ea_get / security.selinux", device],
+        remaining(deadline)?,
+    )?;
+    ensure!(
+        output.status.success(),
+        "cannot read protected /var root SELinux label"
+    );
+    Ok(String::from_utf8(output.stdout)?.trim().to_string())
+}
+
+/// The only label write is for an absent-before-repart partition proved newly
+/// created by that transaction. Existing filesystems are checked, never repaired.
+fn prepare_var_root_label(
+    context: &Context,
+    device: &Path,
+    created: bool,
+    deadline: Instant,
+) -> Result<()> {
+    let expected = context
+        .protected_var_context
+        .as_deref()
+        .context("protected /var policy is missing")?;
+    validate_var_context(Some(expected))?;
+    require_unmounted_block_device(device)?;
+    ensure!(
+        inspect_value(
+            &context.blkid,
+            &["-p", "-s", "TYPE", "-o", "value", "--"],
+            device,
+            deadline,
+        )? == "ext4",
+        "protected /var is not an ext4 filesystem"
+    );
+    let device = device
+        .to_str()
+        .context("protected /var device path is not UTF-8")?;
+    let mut label = read_var_root_label(context, device, deadline)?;
+    if created {
+        require_initial_var_label(&label)?;
+        let command = format!("ea_set / security.selinux {expected}");
+        run_success(
+            &context.debugfs,
+            &["-w", "-R", &command, device],
+            remaining(deadline)?,
+            "labeling new protected /var",
+        )?;
+        run_success(
+            &context.sync,
+            &[device],
+            remaining(deadline)?,
+            "syncing protected /var root label",
+        )?;
+        label = read_var_root_label(context, device, deadline)?;
+    }
+    ensure!(
+        label == root_label_display(expected),
+        "protected /var lacks its durable exact root SELinux label"
+    );
     Ok(())
 }
 
@@ -888,9 +1132,14 @@ fn publish_marker(
     marker: &CheckedMarker,
     disk: &str,
     label: &str,
+    protected_var: Option<&Path>,
     deadline: Instant,
     mut execute: impl FnMut(&Path, &[&str], u64, &str) -> Result<()>,
 ) -> Result<()> {
+    if let Some(device) = protected_var {
+        prepare_var_root_label(context, device, false, deadline)?;
+    }
+
     // The immutable root may already hold another partition on this disk.
     // A label changes no geometry, so avoid BLKRRPART while retaining GPT fsync.
     execute(
@@ -1362,6 +1611,68 @@ mod tests {
     }
 
     #[test]
+    fn protected_var_requires_one_new_partition_and_an_exact_initial_label() {
+        assert!(plans_new_var(&json!([{"label":"var", "activity":"create"}])).unwrap());
+        for observation in [
+            json!([]),
+            json!([{"label":"var", "activity":"unchanged"}]),
+            json!([{"label":"other", "activity":"create"}]),
+            json!([
+                {"label":"var", "activity":"create"},
+                {"label":"var", "activity":"create"}
+            ]),
+        ] {
+            assert!(!plans_new_var(&observation).unwrap());
+        }
+        assert!(plans_new_var(&Value::Null).is_err());
+
+        require_initial_var_label("").unwrap();
+        require_initial_var_label(&root_label_display("system_u:object_r:unlabeled_t")).unwrap();
+        for existing in ["system_u:object_r:var_t", "system_u:object_r:other_t"] {
+            assert!(require_initial_var_label(&root_label_display(existing)).is_err());
+        }
+        assert!(
+            validate_var_context(Some("system_u:object_r:var_t; ea_set / security.selinux other"))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn failed_protected_var_verification_prevents_any_marker_publication() {
+        let directory = tempfile::tempdir().unwrap();
+        let foreign = directory.path().join("not-a-block-device");
+        fs::write(&foreign, b"existing filesystem must not be repaired").unwrap();
+        let mut context = test_context();
+        context.protected_var_context = Some("system_u:object_r:var_t".into());
+        let marker = CheckedMarker {
+            device: "/dev/vda6".into(),
+            partition: "6".into(),
+        };
+        let mut publications = 0;
+
+        let error = publish_marker(
+            &context,
+            &marker,
+            "/dev/vda",
+            OPERATOR_LABEL,
+            Some(&foreign),
+            operation_deadline(2_000).unwrap(),
+            |_, _, _, _| {
+                publications += 1;
+                Ok(())
+            },
+        )
+        .expect_err("the exact label check must precede GPT publication");
+
+        assert!(error.to_string().contains("not a block device"));
+        assert_eq!(publications, 0);
+        assert_eq!(
+            fs::read(&foreign).unwrap(),
+            b"existing filesystem must not be repaired"
+        );
+    }
+
+    #[test]
     fn marker_publication_only_refreshes_its_partition_after_a_durable_write() {
         let context = test_context();
         let marker = CheckedMarker {
@@ -1375,6 +1686,7 @@ mod tests {
             &marker,
             "/dev/vda",
             OPERATOR_LABEL,
+            None,
             operation_deadline(2_000).expect("deadline"),
             |executable, arguments, budget, _| {
                 assert!(budget > 0 && budget <= 2_000);
@@ -1421,6 +1733,7 @@ mod tests {
                 &marker,
                 "/dev/vda",
                 OPERATOR_LABEL,
+                None,
                 operation_deadline(2_000).expect("deadline"),
                 |_, _, _, _| {
                     calls += 1;
@@ -1503,6 +1816,9 @@ mod tests {
             mdadm: "/nix/store/mdadm".into(),
             mkfs_ext4: "/nix/store/mkfs-ext4".into(),
             mkfs_xfs: "/nix/store/mkfs-xfs".into(),
+            debugfs: "/nix/store/debugfs".into(),
+            sync: "/nix/store/sync".into(),
+            protected_var_context: None,
         }
     }
 }

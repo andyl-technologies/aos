@@ -1,0 +1,186 @@
+--- a/src/core/aos-fixed-service-profile.h
++++ b/src/core/aos-fixed-service-profile.h
+@@ -221,6 +221,11 @@
+                 const ExecContext *context,
+                 AosFixedServiceProfileRole role) {
+ 
++        const uint64_t ambient = role == AOS_FIXED_PROFILE_MOUNT ?
++                CAP_TO_MASK(CAP_SYS_ADMIN) | CAP_TO_MASK(CAP_SYS_CHROOT) : 0;
++        const uint64_t bounding = aos_fixed_service_method46_initial_index(role) >= 0 ?
++                CAP_TO_MASK(CAP_CHOWN) | CAP_TO_MASK(CAP_DAC_OVERRIDE) : ambient;
++
+         if (!context || !aos_fixed_service_directories_match(context, role))
+                 return false;
+         if (context->private_users != PRIVATE_USERS_NO || context->private_pids != PRIVATE_PIDS_NO ||
+@@ -231,10 +236,7 @@
+             !strv_isempty(context->extension_directories) || context->n_temporary_filesystems != 0 ||
+             context->private_tmp != PRIVATE_TMP_CONNECTED || context->private_var_tmp != PRIVATE_TMP_CONNECTED ||
+             !isempty(context->pam_name) || !strv_isempty(context->environment_files) ||
+-            context->capability_bounding_set != (role == AOS_FIXED_PROFILE_MOUNT ?
+-                    CAP_TO_MASK(CAP_SYS_ADMIN) | CAP_TO_MASK(CAP_SYS_CHROOT) : 0) ||
+-            context->capability_ambient_set != (role == AOS_FIXED_PROFILE_MOUNT ?
+-                    CAP_TO_MASK(CAP_SYS_ADMIN) | CAP_TO_MASK(CAP_SYS_CHROOT) : 0))
++            context->capability_bounding_set != bounding || context->capability_ambient_set != ambient)
+                 return false;
+ 
+         if (IN_SET(role, AOS_FIXED_PROFILE_SOURCE, AOS_FIXED_PROFILE_CACHE)) {
+--- /dev/null
++++ b/src/core/aos-method46-initial-profile.h
+@@ -0,0 +1,20 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++#pragma once
++
++#include "aos-fixed-service-profile.h"
++#include "service.h"
++
++/* Compare only the fixed manual launch grammar. Parent admission, pinned
++ * executable identity and the actual child original remain independent. */
++static inline bool aos_method46_initial_start_matches(const Service *service, const ExecCommand *command) {
++        if (!service || !command ||
++            aos_fixed_service_method46_initial_index(aos_fixed_service_role(service->meta.id)) < 0)
++                return false;
++
++        /* Type=exec retains the live invocation through the producer's posts.
++         * The two fixed executables select their purpose without argv selectors. */
++        return service->type == SERVICE_EXEC && !service->remain_after_exit &&
++               command == service->exec_command[SERVICE_EXEC_START] && !command->command_next &&
++               !isempty(command->path) && command->argv &&
++               streq_ptr(command->argv[0], command->path) && !command->argv[1];
++}
+--- a/src/core/aos-component-parent.c
++++ b/src/core/aos-component-parent.c
+@@ -8,6 +8,7 @@
+ 
+ #include "aos-component-parent.h"
+ #include "aos-fixed-service-profile.h"
++#include "aos-method46-initial-profile.h"
+ #include "aos-source-exec-claim.h"
+ #include "aos-resource-enrollment.h"
+ #include "alloc-util.h"
+@@ -1115,13 +1116,8 @@
+              command->argv[2]))
+                 return parent_refuse(-EPERM);
+ 
+-        if (initial_index >= 0) {
+-                const char *selector = initial_index == 0 ? "--controller-initial-v1" : "--storage-initial-v1";
+-
+-                if (service->type != SERVICE_ONESHOT || !service->remain_after_exit ||
+-                    !command->argv || !command->argv[0] || !streq_ptr(command->argv[1], selector) || command->argv[2])
+-                        return parent_refuse(-EPERM);
+-        }
++        if (initial_index >= 0 && !aos_method46_initial_start_matches(service, command))
++                return parent_refuse(-EPERM);
+ 
+         int r = socket_require_fixed_origin_activation(service);
+         return r < 0 ? parent_refuse(r) : 0;
+--- a/src/test/test-aos-fixed-service-profile.c
++++ b/src/test/test-aos-fixed-service-profile.c
+@@ -1,6 +1,7 @@
+ /* SPDX-License-Identifier: LGPL-2.1-or-later */
+ 
+ #include "aos-fixed-service-profile.h"
++#include "aos-method46-initial-profile.h"
+ #include "tests.h"
+ #include "aos-method46-exclusion.h"
+ #include "cgroup.h"
+@@ -108,21 +109,97 @@
+ }
+ 
+ TEST(manual_initial_contexts_cannot_add_helpers_or_automatic_directories) {
++        const uint64_t bounding = CAP_TO_MASK(CAP_CHOWN) | CAP_TO_MASK(CAP_DAC_OVERRIDE);
+         AosFixedServiceProfileRole role;
+ 
+         FOREACH_ARGUMENT(role, AOS_FIXED_PROFILE_METHOD46_CONTROLLER_INITIAL,
+                                AOS_FIXED_PROFILE_METHOD46_STORAGE_INITIAL) {
+                 ExecContext context = finite_context("root");
++                context.capability_bounding_set = bounding;
+ 
+                 ASSERT_TRUE(aos_fixed_service_context_matches(&context, role));
+-                context.capability_bounding_set = CAP_TO_MASK(CAP_SYS_ADMIN);
+-                ASSERT_FALSE(aos_fixed_service_context_matches(&context, role));
+-                context.capability_bounding_set = 0;
++                ASSERT_FALSE(aos_fixed_service_context_matches(&context, AOS_FIXED_PROFILE_BOOT_PREPARATION));
++                ASSERT_FALSE(aos_fixed_service_context_matches(&context, AOS_FIXED_PROFILE_MOUNT));
++
++                const uint64_t invalid_bounds[] = {
++                        0, CAP_TO_MASK(CAP_CHOWN), CAP_TO_MASK(CAP_DAC_OVERRIDE),
++                        bounding | CAP_TO_MASK(CAP_SYS_ADMIN),
++                };
++                FOREACH_ELEMENT(value, invalid_bounds) {
++                        context.capability_bounding_set = *value;
++                        ASSERT_FALSE(aos_fixed_service_context_matches(&context, role));
++                }
++                context.capability_bounding_set = bounding;
++                context.capability_ambient_set = bounding;
++                ASSERT_FALSE(aos_fixed_service_context_matches(&context, role));
++                context.capability_ambient_set = 0;
++
++                context.user = (char*) "aos-source-signer";
++                ASSERT_FALSE(aos_fixed_service_context_matches(&context, role));
++                context.user = (char*) "root";
++                context.group = (char*) "aos-source-signer";
++                ASSERT_FALSE(aos_fixed_service_context_matches(&context, role));
++                context.group = (char*) "root";
+                 context.directories[EXEC_DIRECTORY_STATE].n_items = 1;
+                 ASSERT_FALSE(aos_fixed_service_context_matches(&context, role));
+                 context.directories[EXEC_DIRECTORY_STATE].n_items = 0;
+                 context.pam_name = (char*) "unexpected-helper";
+                 ASSERT_FALSE(aos_fixed_service_context_matches(&context, role));
++                context.pam_name = NULL;
++                ASSERT_TRUE(aos_fixed_service_context_matches(&context, role));
++        }
++}
++
++TEST(manual_initial_start_requires_argument_free_live_exec) {
++        AosFixedServiceProfileRole role;
++
++        FOREACH_ARGUMENT(role, AOS_FIXED_PROFILE_METHOD46_CONTROLLER_INITIAL,
++                               AOS_FIXED_PROFILE_METHOD46_STORAGE_INITIAL) {
++                char *argv[] = { (char*) "/fixed/initial-producer", NULL, NULL };
++                ExecCommand command = { .path = argv[0], .argv = argv };
++                Service service = {
++                        .meta.id = (char*) aos_fixed_service_unit_name(role),
++                        .type = SERVICE_EXEC,
++                        .exec_command[SERVICE_EXEC_START] = &command,
++                };
++                ExecCommand foreign = command;
++
++                ASSERT_TRUE(aos_method46_initial_start_matches(&service, &command));
++                ASSERT_FALSE(aos_method46_initial_start_matches(NULL, &command));
++                ASSERT_FALSE(aos_method46_initial_start_matches(&service, NULL));
++                ASSERT_FALSE(aos_method46_initial_start_matches(&service, &foreign));
++
++                service.type = SERVICE_ONESHOT;
++                service.remain_after_exit = true;
++                argv[1] = (char*) (role == AOS_FIXED_PROFILE_METHOD46_CONTROLLER_INITIAL ?
++                        "--controller-initial-v1" : "--storage-initial-v1");
++                ASSERT_FALSE(aos_method46_initial_start_matches(&service, &command));
++                service.type = SERVICE_EXEC;
++                service.remain_after_exit = false;
++                ASSERT_FALSE(aos_method46_initial_start_matches(&service, &command));
++                argv[1] = NULL;
++                service.remain_after_exit = true;
++                ASSERT_FALSE(aos_method46_initial_start_matches(&service, &command));
++                service.remain_after_exit = false;
++                service.type = SERVICE_ONESHOT;
++                ASSERT_FALSE(aos_method46_initial_start_matches(&service, &command));
++                service.type = SERVICE_EXEC;
++
++                command.command_next = &foreign;
++                ASSERT_FALSE(aos_method46_initial_start_matches(&service, &command));
++                command.command_next = NULL;
++                command.argv = NULL;
++                ASSERT_FALSE(aos_method46_initial_start_matches(&service, &command));
++                command.argv = argv;
++                argv[0] = NULL;
++                ASSERT_FALSE(aos_method46_initial_start_matches(&service, &command));
++                argv[0] = (char*) "/foreign/producer";
++                ASSERT_FALSE(aos_method46_initial_start_matches(&service, &command));
++                argv[0] = command.path;
++                service.meta.id = (char*) "aos-sandbox-runtime-publisher.service";
++                ASSERT_FALSE(aos_method46_initial_start_matches(&service, &command));
++                service.meta.id = (char*) aos_fixed_service_unit_name(role);
++                ASSERT_TRUE(aos_method46_initial_start_matches(&service, &command));
+         }
+ }
+ 

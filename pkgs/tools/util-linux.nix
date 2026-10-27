@@ -6,6 +6,7 @@
   fetchurl,
   gnumake,
   pkg-config,
+  patch,
   zlib,
   ncurses,
   libselinux,
@@ -27,6 +28,16 @@
   # libmount/src/hook_mount.c:547-548). Required by the apm-side
   # stage-2 /etc swap (spec v12 §7.1 Phase B).
   version = "2.42.3";
+  src = fetchurl {
+    urls = [
+      "https://cdn.kernel.org/pub/linux/utils/util-linux/v2.42/util-linux-${version}.tar.xz"
+    ];
+    hash = "sha256-Zqx8DnJSeOsrA54xBPLJERk0HZQbQbrHooXGlflAvVc=";
+  };
+  sourceRecipe = builtins.path {
+    path = ./util-linux.nix;
+    name = "util-linux.nix";
+  };
 in
   mkDerivation {
     platformSupport = {
@@ -137,20 +148,15 @@ in
 
     # Keep module compatibility at this release until a broader policy is reviewed.
     version = "=${version}";
+    inherit src;
     # Mounting filesystems does not require the optional Python bindings.
     # Keep those bindings available without retaining Python in boot images.
     outputs = ["out" "python"];
 
-    src = fetchurl {
-      urls = [
-        "https://cdn.kernel.org/pub/linux/utils/util-linux/v2.42/util-linux-${version}.tar.xz"
-      ];
-      hash = "sha256-Zqx8DnJSeOsrA54xBPLJERk0HZQbQbrHooXGlflAvVc=";
-    };
-
     buildDeps = [
       gnumake
       pkg-config
+      patch
       gettext
       python3
       cython
@@ -197,6 +203,11 @@ in
           # this new caller. Upstream now includes fileutils.h here as well.
           test "$(grep -c '^#include "all-io.h"' libmount/src/hook_idmap.c)" -eq 1
           sed -i '/^#include "all-io.h"/a #include "fileutils.h"' libmount/src/hook_idmap.c
+
+          # Failed mapping must release the waiting namespace child even when
+          # a confined caller cannot kill it. Never wait with its socket open.
+          patch -p1 < ${./patches/util-linux-idmap-close-before-reap.patch}
+          patch -p1 < ${./patches/util-linux-idmap-pass-namespace-fd.patch}
         '';
       }
       {
@@ -302,6 +313,17 @@ in
           }
         '';
       };
+    };
+
+    # This recipe carries the hook_idmap source correction applied at unpack.
+    passthru = {
+      sourceRecipes = [sourceRecipe];
+      evidenceSources = [
+        src
+        sourceRecipe
+        ./patches/util-linux-idmap-close-before-reap.patch
+        ./patches/util-linux-idmap-pass-namespace-fd.patch
+      ];
     };
 
     meta = {

@@ -1,0 +1,719 @@
+diff --git a/systemd-261.2/src/core/aos-fuse-worker.c b/src/core/aos-fuse-worker.c
+new file mode 100644
+index 0000000..1863f1d
+--- /dev/null
++++ b/src/core/aos-fuse-worker.c
+@@ -0,0 +1,267 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++
++#include <fcntl.h>
++#include <sys/pidfd.h>
++#include <sys/socket.h>
++#include <sys/stat.h>
++#include <sys/sysmacros.h>
++#include <sys/un.h>
++#include <unistd.h>
++
++#include "alloc-util.h"
++#include "aos-fuse-worker.h"
++#include "fd-util.h"
++#include "load-fragment.h"
++#include "service.h"
++#include "set.h"
++#include "socket-util.h"
++#include "string-util.h"
++
++#define AOS_FUSE_WORKER_FDS 5U
++#define AOS_FUSE_WORKER_PLAN_MAX (64U * 1024U * 1024U)
++
++static const char *const role_names[AOS_FUSE_WORKER_FDS] = {
++        "fuse-worker-executable-v1",
++        "fuse-worker-plan-v1",
++        "fuse-worker-connection-v1",
++        "fuse-worker-records-v1",
++        "fuse-worker-cancellation-v1",
++};
++
++bool aos_fuse_worker_protected_name(const char *name) {
++        /* Reserve malformed instances too: they must not fall through to
++         * an ordinary transient service with caller-selected commands. */
++        return name && startswith(name, "aos-view-worker@") && endswith(name, ".service");
++}
++
++bool aos_fuse_worker_protected_unit(const Unit *u) {
++        const char *alias;
++
++        if (aos_fuse_worker_protected_name(u->id))
++                return true;
++        SET_FOREACH(alias, u->aliases)
++                if (aos_fuse_worker_protected_name(alias))
++                        return true;
++        return false;
++}
++
++bool aos_fuse_worker_valid_name(const char *name) {
++        const char *instance;
++
++        instance = name ? startswith(name, "aos-view-worker@") : NULL;
++        return instance && strlen(instance) == 40 &&
++               strspn(instance, "0123456789abcdef") == 32 &&
++               strspn(instance, "0") != 32 && streq(instance + 32, ".service");
++}
++
++int aos_fuse_worker_instance_name(const char *instance, char **ret) {
++        if (!instance || strlen(instance) != 32 ||
++            strspn(instance, "0123456789abcdef") != 32 ||
++            strspn(instance, "0") == 32)
++                return -EINVAL;
++
++        *ret = strjoin("aos-view-worker@", instance, ".service");
++        return *ret ? 0 : -ENOMEM;
++}
++
++int aos_fuse_worker_require_host(sd_bus_message *message) {
++        _cleanup_(sd_bus_creds_unrefp) sd_bus_creds *sender = NULL, *pinned = NULL;
++        _cleanup_close_ int pidfd = -EBADF;
++        const char *cgroup;
++        uid_t sender_uid, pinned_uid;
++        int r;
++
++        /* This is the existing Host principal, not a new root launcher.
++         * Obtain a kernel process pin from bus-authenticated sender custody,
++         * then derive credentials and cgroup from that same pin. */
++        r = sd_bus_query_sender_creds(message, SD_BUS_CREDS_EUID | SD_BUS_CREDS_PIDFD, &sender);
++        if (r < 0)
++                return r;
++        r = sd_bus_creds_get_euid(sender, &sender_uid);
++        if (r < 0 || sender_uid != 0)
++                return -EPERM;
++        r = sd_bus_creds_get_pidfd_dup(sender, &pidfd);
++        if (r < 0)
++                return r;
++        r = sd_bus_creds_new_from_pidfd(&pinned, pidfd, SD_BUS_CREDS_EUID | SD_BUS_CREDS_CGROUP);
++        if (r < 0)
++                return r;
++        r = sd_bus_creds_get_euid(pinned, &pinned_uid);
++        if (r < 0 || pinned_uid != sender_uid)
++                return -EPERM;
++        r = sd_bus_creds_get_cgroup(pinned, &cgroup);
++        if (r < 0 || !streq_ptr(cgroup, "/system.slice/aos-sandbox-hostd.service"))
++                return -EPERM;
++        return pidfd_send_signal(pidfd, 0, NULL, 0) < 0 ? -errno : 0;
++}
++
++static int verify_role(Unit *u, unsigned role, int fd) {
++        struct stat st;
++        int flags, seals, type, enabled;
++        struct sockaddr_un peer;
++        socklen_t length;
++
++        if (fstat(fd, &st) < 0)
++                return -errno;
++        flags = fcntl(fd, F_GETFL);
++        if (flags < 0)
++                return -errno;
++
++        switch (role) {
++        case 0:
++                if ((flags & O_ACCMODE) != O_RDONLY)
++                        return -EPERM;
++                return aos_fuse_worker_verify_executable(u, fd);
++        case 1:
++                seals = fcntl(fd, F_GET_SEALS);
++                if (!S_ISREG(st.st_mode) || st.st_nlink != 0 || st.st_size <= 0 ||
++                    st.st_size > AOS_FUSE_WORKER_PLAN_MAX || seals < 0 ||
++                    (flags & O_ACCMODE) == O_WRONLY ||
++                    !FLAGS_SET(seals, F_SEAL_SEAL | F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_WRITE))
++                        return -EPERM;
++                return 0;
++        case 2:
++                /* Shape is not fresh-connection authority. Mount retains the
++                 * internally opened original OFD and held launch flight. */
++                return S_ISCHR(st.st_mode) && major(st.st_rdev) == 10 && minor(st.st_rdev) == 229 &&
++                       (flags & O_ACCMODE) == O_RDWR && FLAGS_SET(flags, O_NONBLOCK) ? 0 : -EPERM;
++        case 3:
++                length = sizeof(type);
++                if (getsockopt(fd, SOL_SOCKET, SO_TYPE, &type, &length) < 0)
++                        return -errno;
++                if (length != sizeof(type) || type != SOCK_SEQPACKET || !FLAGS_SET(flags, O_NONBLOCK))
++                        return -EPERM;
++                length = sizeof(peer);
++                if (getpeername(fd, (struct sockaddr*) &peer, &length) < 0)
++                        return -errno;
++                if (peer.sun_family != AF_UNIX)
++                        return -EPERM;
++                length = sizeof(enabled);
++                if (getsockopt(fd, SOL_SOCKET, SO_PASSCRED, &enabled, &length) < 0 ||
++                    length != sizeof(enabled) || enabled != 1)
++                        return -EPERM;
++                length = sizeof(enabled);
++                if (getsockopt(fd, SOL_SOCKET, SO_PASSPIDFD, &enabled, &length) < 0 ||
++                    length != sizeof(enabled) || enabled != 1)
++                        return -EPERM;
++                return 0;
++        case 4:
++                return S_ISFIFO(st.st_mode) && (flags & O_ACCMODE) == O_RDONLY &&
++                       FLAGS_SET(flags, O_NONBLOCK) ? 0 : -EPERM;
++        default:
++                return -EINVAL;
++        }
++}
++
++static void free_role_table(ServiceExtraFD **table) {
++        if (!*table)
++                return;
++        for (unsigned i = 0; i < AOS_FUSE_WORKER_FDS; i++) {
++                safe_close((*table)[i].fd);
++                free((*table)[i].fdname);
++        }
++        free(*table);
++}
++
++int aos_fuse_worker_arm(Unit *u, sd_bus_message *message, sd_bus_error *error) {
++        _cleanup_(free_role_table) ServiceExtraFD *table = NULL;
++        Service *s = SERVICE(u);
++        unsigned count = 0;
++        int r;
++
++        r = aos_fuse_worker_verify_loaded_fragment(u);
++        if (r < 0)
++                return r;
++        if (unit_active_state(u) != UNIT_INACTIVE || u->job ||
++            !sd_id128_is_null(u->invocation_id) || s->aos_fuse_worker_launch_armed ||
++            s->n_extra_fds != 0 || s->n_fd_store != 0)
++                return sd_bus_error_setf(error, SD_BUS_ERROR_ACCESS_DENIED,
++                                         "FUSE worker instance already has launch custody");
++
++        table = new0(ServiceExtraFD, AOS_FUSE_WORKER_FDS);
++        if (!table)
++                return -ENOMEM;
++        for (unsigned i = 0; i < AOS_FUSE_WORKER_FDS; i++)
++                table[i].fd = -EBADF;
++
++        r = sd_bus_message_enter_container(message, 'a', "(hs)");
++        if (r < 0)
++                return r;
++        for (;;) {
++                const char *name;
++                int fd;
++
++                r = sd_bus_message_read(message, "(hs)", &fd, &name);
++                if (r < 0)
++                        return r;
++                if (r == 0)
++                        break;
++                if (count >= AOS_FUSE_WORKER_FDS || !streq(name, role_names[count]))
++                        return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS,
++                                                 "FUSE worker requires the exact five-role descriptor table");
++                r = verify_role(u, count, fd);
++                if (r < 0)
++                        return r;
++                table[count].fdname = strdup(name);
++                if (!table[count].fdname)
++                        return -ENOMEM;
++                table[count].fd = fcntl(fd, F_DUPFD_CLOEXEC, 3);
++                if (table[count].fd < 0)
++                        return -errno;
++                count++;
++        }
++        r = sd_bus_message_exit_container(message);
++        if (r < 0)
++                return r;
++        if (count != AOS_FUSE_WORKER_FDS)
++                return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS,
++                                         "FUSE worker descriptor table is incomplete");
++
++        s->extra_fds = TAKE_PTR(table);
++        s->n_extra_fds = AOS_FUSE_WORKER_FDS;
++        s->aos_fuse_worker_launch_armed = true;
++        return 0;
++}
++
++int aos_fuse_worker_take_launch(Service *s, ExecCommand *command) {
++        int r;
++
++        r = aos_fuse_worker_verify_loaded_fragment(UNIT(s));
++        if (r < 0)
++                return r;
++        if (!s->aos_fuse_worker_launch_armed || s->n_extra_fds != AOS_FUSE_WORKER_FDS ||
++            s->n_fd_store != 0 || command != s->exec_command[SERVICE_EXEC_START] || command->command_next)
++                return -EPERM;
++        for (unsigned i = 0; i < _SERVICE_EXEC_COMMAND_MAX; i++)
++                if (i != SERVICE_EXEC_START && s->exec_command[i])
++                        return -EPERM;
++        for (unsigned i = 0; i < AOS_FUSE_WORKER_FDS; i++) {
++                if (!streq_ptr(s->extra_fds[i].fdname, role_names[i]))
++                        return -EPERM;
++                r = verify_role(UNIT(s), i, s->extra_fds[i].fd);
++                if (r < 0)
++                        return r;
++        }
++
++        /* Never serialize this arm: reexec before the first spawn is
++         * ambiguous, and neither restart nor a recovered scalar can re-arm. */
++        s->aos_fuse_worker_launch_armed = false;
++        return 0;
++}
++
++void aos_fuse_worker_release_launch_fds(Service *s) {
++        assert(s);
++        assert(aos_fuse_worker_protected_unit(UNIT(s)));
++        assert(!s->aos_fuse_worker_launch_armed);
++        assert(s->n_extra_fds == AOS_FUSE_WORKER_FDS);
++
++        /* The executor inherited its own serialized copies. Close the
++         * originals synchronously: async close is not a handoff barrier. */
++        FOREACH_ARRAY(i, s->extra_fds, s->n_extra_fds) {
++                i->fd = safe_close(i->fd);
++                free(i->fdname);
++        }
++
++        s->extra_fds = mfree(s->extra_fds);
++        s->n_extra_fds = 0;
++}
+diff --git a/systemd-261.2/src/core/aos-fuse-worker.h b/src/core/aos-fuse-worker.h
+new file mode 100644
+index 0000000..7d9bf29
+--- /dev/null
++++ b/src/core/aos-fuse-worker.h
+@@ -0,0 +1,16 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++#pragma once
++
++#include "sd-bus.h"
++#include "core-forward.h"
++
++bool aos_fuse_worker_protected_name(const char *name);
++bool aos_fuse_worker_valid_name(const char *name);
++bool aos_fuse_worker_protected_unit(const Unit *u);
++int aos_fuse_worker_instance_name(const char *instance, char **ret);
++int aos_fuse_worker_verify_loaded_fragment(const Unit *u);
++int aos_fuse_worker_verify_executable(Unit *u, int fd);
++int aos_fuse_worker_require_host(sd_bus_message *message);
++int aos_fuse_worker_arm(Unit *u, sd_bus_message *message, sd_bus_error *error);
++int aos_fuse_worker_take_launch(Service *s, ExecCommand *command);
++void aos_fuse_worker_release_launch_fds(Service *s);
+diff --git a/src/core/dbus-manager.c b/src/core/dbus-manager.c
+index 595136f..bf82bf0 100644
+--- a/src/core/dbus-manager.c
++++ b/src/core/dbus-manager.c
+@@ -5,6 +5,7 @@
+ #include <unistd.h>
+ 
+ #include "alloc-util.h"
++#include "aos-fuse-worker.h"
+ #include "architecture.h"
+ #include "bitfield.h"
+ #include "build.h"
+@@ -1149,6 +1150,43 @@ static int method_start_transient_unit(sd_bus_message *message, void *userdata,
+         return bus_unit_queue_job(message, u, JOB_START, mode, 0, reterr_error);
+ }
+ 
++static int method_launch_aos_fuse_worker_v1(sd_bus_message *message, void *userdata, sd_bus_error *reterr_error) {
++        _cleanup_free_ char *name = NULL;
++        const char *instance;
++        Manager *m = ASSERT_PTR(userdata);
++        Unit *u;
++        int r;
++
++        r = aos_fuse_worker_require_host(message);
++        if (r < 0)
++                return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_ACCESS_DENIED,
++                                         "Fixed FUSE launch requires the pinned Host service");
++        r = sd_bus_message_read(message, "s", &instance);
++        if (r < 0)
++                return r;
++        r = aos_fuse_worker_instance_name(instance, &name);
++        if (r < 0)
++                return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_INVALID_ARGS,
++                                         "Invalid fixed FUSE worker instance");
++        r = bus_verify_manage_units_async_impl(m, name, "start",
++                                              N_("Authentication is required to start fixed FUSE worker '$(unit)'."),
++                                              message, reterr_error);
++        if (r < 0)
++                return r;
++        if (r == 0)
++                return 1;
++        r = manager_load_unit(m, name, NULL, reterr_error, &u);
++        if (r < 0)
++                return r;
++        r = mac_selinux_unit_access_check(u, message, "start", reterr_error);
++        if (r < 0)
++                return r;
++        r = aos_fuse_worker_arm(u, message, reterr_error);
++        if (r < 0)
++                return r;
++        return bus_unit_queue_job(message, u, JOB_START, JOB_FAIL, 0, reterr_error);
++}
++
+ static int method_get_job(sd_bus_message *message, void *userdata, sd_bus_error *reterr_error) {
+         _cleanup_free_ char *path = NULL;
+         Manager *m = ASSERT_PTR(userdata);
+@@ -3163,6 +3201,11 @@ const sd_bus_vtable bus_manager_vtable[] = {
+                                 SD_BUS_RESULT("o", job),
+                                 method_start_transient_unit,
+                                 SD_BUS_VTABLE_UNPRIVILEGED),
++        SD_BUS_METHOD_WITH_ARGS("LaunchAosFuseWorkerV1",
++                                SD_BUS_ARGS("s", instance, "a(hs)", descriptors),
++                                SD_BUS_RESULT("o", job),
++                                method_launch_aos_fuse_worker_v1,
++                                SD_BUS_VTABLE_UNPRIVILEGED),
+         SD_BUS_METHOD_WITH_ARGS("GetUnitProcesses",
+                                 SD_BUS_ARGS("s", name),
+                                 SD_BUS_RESULT("a(sus)", processes),
+diff --git a/src/core/dbus-unit.c b/src/core/dbus-unit.c
+index ae100fd..d56ab2a 100644
+--- a/src/core/dbus-unit.c
++++ b/src/core/dbus-unit.c
+@@ -20,6 +20,7 @@
+ #include "format-util.h"
+ #include "install.h"
+ #include "load-fragment.h"
++#include "aos-fuse-worker.h"
+ #include "locale-util.h"
+ #include "log.h"
+ #include "manager.h"
+@@ -2596,6 +2597,9 @@ int bus_unit_set_properties(
+         assert(message);
+ 
+         /* Reject in-memory control overrides before the first setter runs. */
++        if (aos_fuse_worker_protected_unit(u))
++                return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_ACCESS_DENIED,
++                                         "Fixed FUSE workers do not accept property overrides");
+         if (aos_network_image_guard_active() && aos_network_protected_unit(u))
+                 return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_ACCESS_DENIED,
+                                          "Protected Network units do not accept property overrides");
+diff --git a/src/core/load-dropin.c b/src/core/load-dropin.c
+index 6ea65bf..aece49b 100644
+--- a/src/core/load-dropin.c
++++ b/src/core/load-dropin.c
+@@ -5,6 +5,7 @@
+ #include "fs-util.h"
+ #include "load-dropin.h"
+ #include "load-fragment.h"
++#include "aos-fuse-worker.h"
+ #include "log.h"
+ #include "manager.h"
+ #include "path-util.h"
+@@ -37,7 +38,8 @@ static int process_deps(Unit *u, UnitDependency dependency, const char *dir_suff
+         if (r < 0)
+                 return r;
+ 
+-        if (aos_network_image_guard_active() && aos_network_protected_unit(u) && !strv_isempty(paths))
++        if (((aos_network_image_guard_active() && aos_network_protected_unit(u)) ||
++             aos_fuse_worker_protected_unit(u)) && !strv_isempty(paths))
+                 return log_unit_error_errno(u, SYNTHETIC_ERRNO(EPERM),
+                                             "Refusing Network unit dependency drop-ins: %m");
+ 
+@@ -134,7 +136,8 @@ int unit_load_dropin(Unit *u) {
+         if (r <= 0)
+                 return 0;
+ 
+-        if (aos_network_image_guard_active() && aos_network_protected_unit(u))
++        if ((aos_network_image_guard_active() && aos_network_protected_unit(u)) ||
++            aos_fuse_worker_protected_unit(u))
+                 return log_unit_error_errno(u, SYNTHETIC_ERRNO(EPERM),
+                                             "Refusing Network unit configuration drop-ins: %m");
+ 
+diff --git a/src/core/load-fragment.c b/src/core/load-fragment.c
+index 9203e11..e68ea10 100644
+--- a/src/core/load-fragment.c
++++ b/src/core/load-fragment.c
+@@ -35,6 +35,8 @@
+ #include "exec-credential.h"
+ #include "execute.h"
+ #include "extract-word.h"
++#include "aos-fuse-worker.h"
++#include "service.h"
+ #include "fd-util.h"
+ #include "fs-util.h"
+ #include "fstab-util.h"
+@@ -6153,6 +6155,10 @@ bool aos_network_image_guard_active(void) {
+ }
+ 
+ static const char *aos_network_template_name(const char *name) {
++        /* The Network protected-name set is unchanged. Only the private image
++         * path resolver is shared with the separately armed fixed FUSE role. */
++        if (aos_fuse_worker_valid_name(name))
++                return "aos-view-worker@.service";
+         if (streq(name, "aos-netd.service"))
+                 return name;
+         if (startswith(name, "aos-sandbox-network-namespace-inspector@") && endswith(name, ".service"))
+@@ -6315,6 +6321,54 @@ int aos_network_verify_loaded_fragment(const Unit *u) {
+                          strjoina("/nix/store/", expected + strlen("/nix.lower/store/"))) ? 0 : -EPERM;
+ }
+ 
++int aos_fuse_worker_verify_loaded_fragment(const Unit *u) {
++        _cleanup_free_ char *expected = NULL;
++        struct stat st;
++        int r;
++
++        if (!aos_fuse_worker_valid_name(u->id) || u->type != UNIT_SERVICE || u->transient ||
++            u->load_state != UNIT_LOADED || !set_isempty(u->aliases) ||
++            !strv_isempty(u->dropin_paths) || !isempty(u->source_path))
++                return -EPERM;
++        r = aos_network_image_fragment(u->id, &expected, NULL, &st);
++        if (r < 0)
++                return r;
++        if (!u->aos_image_fragment_pinned || st.st_dev != u->aos_image_fragment_device ||
++            st.st_ino != u->aos_image_fragment_inode)
++                return -EPERM;
++        return streq_ptr(u->fragment_path,
++                         strjoina("/nix/store/", expected + strlen("/nix.lower/store/"))) ? 0 : -EPERM;
++}
++
++int aos_fuse_worker_verify_executable(Unit *u, int descriptor) {
++        _cleanup_free_ char *physical = NULL;
++        _cleanup_close_ int image = -EBADF;
++        const ExecCommand *command;
++        const char *relative;
++        struct stat held, expected, root;
++        struct statfs fs;
++
++        command = SERVICE(u)->exec_command[SERVICE_EXEC_START];
++        if (!command || command->command_next || !path_is_normalized(command->path))
++                return -EPERM;
++        relative = startswith(command->path, "/nix/store/");
++        if (!relative || !endswith(relative, "/bin/aos-filesystem-fuse-worker"))
++                return -EPERM;
++        physical = strjoin("/nix.lower/store/", relative);
++        if (!physical)
++                return -ENOMEM;
++        image = aos_network_open_image_path(physical, O_RDONLY | O_NOFOLLOW | O_NOCTTY);
++        if (image < 0)
++                return image;
++        if (fstat(image, &expected) < 0 || fstat(descriptor, &held) < 0 ||
++            fstatfs(image, &fs) < 0 || stat("/", &root) < 0)
++                return -errno;
++        return S_ISREG(expected.st_mode) && expected.st_uid == 0 && expected.st_gid == 0 &&
++               expected.st_dev == root.st_dev && fs.f_type == EROFS_SUPER_MAGIC_V1 &&
++               (expected.st_mode & 0222) == 0 && (expected.st_mode & 0111) != 0 &&
++               held.st_dev == expected.st_dev && held.st_ino == expected.st_ino ? 0 : -EPERM;
++}
++
+ int unit_load_fragment(Unit *u) {
+         _cleanup_free_ char *image_fragment = NULL;
+         _cleanup_close_ int image_fd = -EBADF;
+@@ -6325,7 +6379,8 @@ int unit_load_fragment(Unit *u) {
+         assert(u->id);
+ 
+         if (u->transient) {
+-                if (aos_network_image_guard_active() && aos_network_protected_unit(u))
++                if ((aos_network_image_guard_active() && aos_network_protected_unit(u)) ||
++                    aos_fuse_worker_protected_unit(u))
+                         return -EPERM;
+                 u->access_selinux_context = mfree(u->access_selinux_context);
+                 u->load_state = UNIT_LOADED;
+@@ -6351,7 +6406,8 @@ int unit_load_fragment(Unit *u) {
+         if (r < 0 && r != -ENOENT)
+                 return r;
+ 
+-        if (aos_network_image_guard_active() && aos_network_protected_name(u->id)) {
++        if ((aos_network_image_guard_active() && aos_network_protected_name(u->id)) ||
++            aos_fuse_worker_protected_name(u->id)) {
+                 r = aos_network_image_fragment(u->id, &image_fragment, &image_fd, NULL);
+                 if (r < 0)
+                         return log_unit_error_errno(u, r, "Cannot pin Network unit to boot-image EROFS: %m");
+diff --git a/src/core/meson.build b/src/core/meson.build
+index af50a2a..f5a97c3 100644
+--- a/src/core/meson.build
++++ b/src/core/meson.build
+@@ -23,6 +23,7 @@ systemd_executor_sources = files(
+ )
+ 
+ libcore_sources = files(
++        'aos-fuse-worker.c',
+         'audit-fd.c',
+         'automount.c',
+         'bpf-bind-iface.c',
+diff --git a/src/core/service.c b/src/core/service.c
+index 05e7344..32a9ea7 100644
+--- a/src/core/service.c
++++ b/src/core/service.c
+@@ -34,6 +34,7 @@
+ #include "glyph-util.h"
+ #include "image-policy.h"
+ #include "load-fragment.h"
++#include "aos-fuse-worker.h"
+ #include "log.h"
+ #include "manager.h"
+ #include "memfd-util.h"
+@@ -1987,6 +1988,12 @@ static int service_spawn_internal(
+         assert(c);
+         assert(ret_pid);
+ 
++        if (aos_fuse_worker_protected_unit(UNIT(s))) {
++                r = aos_fuse_worker_take_launch(s, c);
++                if (r < 0)
++                        return log_unit_error_errno(UNIT(s), r, "Refusing unarmed fixed FUSE worker: %m");
++        }
++
+         /* Every command, including privileged ExecCondition/ExecStartPre,
+          * passes here. Repeat after daemon-reexec and on later restarts. */
+         if (aos_network_image_guard_active()) {
+@@ -2228,6 +2235,9 @@ static int service_spawn_internal(
+         if (r < 0)
+                 return r;
+ 
++        if (aos_fuse_worker_protected_unit(UNIT(s)))
++                aos_fuse_worker_release_launch_fds(s);
++
+         s->exec_fd_event_source = TAKE_PTR(exec_fd_source);
+         s->exec_fd_hot = false;
+ 
+diff --git a/src/core/service.h b/src/core/service.h
+index b57634c..136f0e0 100644
+--- a/src/core/service.h
++++ b/src/core/service.h
+@@ -256,6 +256,8 @@ typedef struct Service {
+         /* If service spawned from transient unit, extra file descriptors can be passed via dbus API */
+         ServiceExtraFD *extra_fds;
+         size_t n_extra_fds;
++        /* One local FD-only launch arm, deliberately absent from serialization. */
++        bool aos_fuse_worker_launch_armed;
+ 
+         LIST_HEAD(OpenFile, open_files);
+ 
+diff --git a/src/core/unit.c b/src/core/unit.c
+index 47018fa..60aee57 100644
+--- a/src/core/unit.c
++++ b/src/core/unit.c
+@@ -11,6 +11,7 @@
+ 
+ #include "all-units.h"
+ #include "alloc-util.h"
++#include "aos-fuse-worker.h"
+ #include "ansi-color.h"
+ #include "bitfield.h"
+ #include "bpf-restrict-fs.h"
+@@ -1803,7 +1804,8 @@ static int log_unit_internal(void *userdata, int level, int error, const char *f
+ static int aos_network_unit_environment(Unit *u, char ***ret) {
+         char **env;
+ 
+-        if (!aos_network_image_guard_active() || !aos_network_protected_unit(u))
++        if ((!aos_network_image_guard_active() || !aos_network_protected_unit(u)) &&
++            !aos_fuse_worker_protected_unit(u))
+                 return manager_get_effective_environment(u->manager, ret);
+ 
+         /* Manager SetEnvironment and transient imports are mutable after
+@@ -6681,7 +6683,8 @@ int unit_live_mount(
+         assert(u);
+         assert(UNIT_VTABLE(u)->live_mount);
+ 
+-        if (aos_network_image_guard_active() && aos_network_protected_unit(u))
++        if ((aos_network_image_guard_active() && aos_network_protected_unit(u)) ||
++            aos_fuse_worker_protected_unit(u))
+                 return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_ACCESS_DENIED,
+                                          "Protected Network units do not accept live mounts");
+ 
+diff --git a/src/test/meson.build b/src/test/meson.build
+index 5d96b2f..854709a 100644
+--- a/src/test/meson.build
++++ b/src/test/meson.build
+@@ -495,6 +495,10 @@ executables += [
+         },
+ 
+         # Tests that link to libcore, i.e. tests for pid1 code.
++        core_test_template + {
++                'sources' : files('test-aos-fuse-worker.c'),
++                'dependencies' : common_test_dependencies,
++        },
+         core_test_template + {
+                 'sources' : files('test-bpf-devices.c'),
+                 'dependencies' : common_test_dependencies,
+diff --git a/systemd-261.2/src/test/test-aos-fuse-worker.c b/src/test/test-aos-fuse-worker.c
+new file mode 100644
+index 0000000..df57565
+--- /dev/null
++++ b/src/test/test-aos-fuse-worker.c
+@@ -0,0 +1,90 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++
++#include <fcntl.h>
++
++#include "alloc-util.h"
++#include "aos-fuse-worker.h"
++#include "load-fragment.h"
++#include "service.h"
++#include "strv.h"
++#include "tests.h"
++
++TEST(instance_name) {
++        _cleanup_free_ char *name = NULL;
++
++        ASSERT_OK(aos_fuse_worker_instance_name("00000000000000000000000000000001", &name));
++        ASSERT_STREQ(name, "aos-view-worker@00000000000000000000000000000001.service");
++        ASSERT_TRUE(aos_fuse_worker_valid_name(name));
++        ASSERT_TRUE(aos_fuse_worker_protected_name(name));
++
++        FOREACH_STRING(instance,
++                       "", "00000000000000000000000000000000",
++                       "0000000000000000000000000000001",
++                       "000000000000000000000000000000001",
++                       "0000000000000000000000000000000A",
++                       "0000000000000000000000000000000g",
++                       "0000000000000000000000000000000/") {
++                _cleanup_free_ char *rejected = NULL;
++
++                ASSERT_ERROR(aos_fuse_worker_instance_name(instance, &rejected), EINVAL);
++                ASSERT_NULL(rejected);
++        }
++        ASSERT_ERROR(aos_fuse_worker_instance_name(NULL, &name), EINVAL);
++}
++
++TEST(reserved_malformed_instances) {
++        /* Invalid instances stay reserved instead of becoming caller-owned
++         * transient units with an arbitrary executable or environment. */
++        FOREACH_STRING(name,
++                       "aos-view-worker@.service",
++                       "aos-view-worker@00000000000000000000000000000000.service",
++                       "aos-view-worker@0000000000000000000000000000000A.service",
++                       "aos-view-worker@short.service") {
++                ASSERT_TRUE(aos_fuse_worker_protected_name(name));
++                ASSERT_FALSE(aos_fuse_worker_valid_name(name));
++        }
++        ASSERT_FALSE(aos_fuse_worker_protected_name(NULL));
++        ASSERT_FALSE(aos_fuse_worker_valid_name(NULL));
++        ASSERT_FALSE(aos_fuse_worker_protected_name("aos-view-worker.service"));
++        ASSERT_FALSE(aos_fuse_worker_protected_name("aos-view-worker@1.socket"));
++}
++
++TEST(network_name_set_is_unchanged) {
++        ASSERT_TRUE(aos_network_protected_name("aos-netd.service"));
++        ASSERT_TRUE(aos_network_protected_name("aos-sandbox-network-namespace-inspector@original.service"));
++        ASSERT_TRUE(aos_network_protected_name("aos-sandbox-network-lifecycle-worker@original.service"));
++        ASSERT_FALSE(aos_network_protected_name("aos-view-worker@00000000000000000000000000000001.service"));
++        ASSERT_FALSE(aos_network_protected_name("aos-netd.socket"));
++        ASSERT_FALSE(aos_network_protected_name("ordinary.service"));
++}
++
++TEST(launch_role_copies_close_synchronously) {
++        Service service = {
++                .meta.id = (char*) "aos-view-worker@00000000000000000000000000000001.service",
++                .n_extra_fds = 5,
++        };
++        int original_fds[5];
++
++        service.extra_fds = new0(ServiceExtraFD, service.n_extra_fds);
++        ASSERT_NOT_NULL(service.extra_fds);
++        for (size_t i = 0; i < service.n_extra_fds; i++) {
++                original_fds[i] = open("/dev/null", O_RDONLY|O_CLOEXEC);
++                ASSERT_OK(original_fds[i]);
++                service.extra_fds[i].fd = original_fds[i];
++                service.extra_fds[i].fdname = strdup("validated-role");
++                ASSERT_NOT_NULL(service.extra_fds[i].fdname);
++        }
++
++        aos_fuse_worker_release_launch_fds(&service);
++
++        ASSERT_NULL(service.extra_fds);
++        ASSERT_EQ(service.n_extra_fds, 0U);
++        for (size_t i = 0; i < ELEMENTSOF(original_fds); i++) {
++                errno = 0;
++                ASSERT_EQ(fcntl(original_fds[i], F_GETFD), -1);
++                ASSERT_EQ(errno, EBADF);
++        }
++}
++
++DEFINE_TEST_MAIN(LOG_INFO);
++

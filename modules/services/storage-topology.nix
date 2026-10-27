@@ -10,7 +10,7 @@ in {
   config = lib.mkIf (!zfsState) {
     environment.systemPackages = [pkgs.mdadm pkgs.xfsprogs];
     environment.etc."mdadm.conf".source = "${pkgs.mdadm}/etc/mdadm.conf";
-    aos.boot.initrd.extraPackages = [pkgs.mdadm pkgs.xfsprogs];
+    aos.boot.initrd.packageRoots = [pkgs.mdadm pkgs.xfsprogs];
     aos.boot.initrd.modules = ["raid0" "raid1" "raid10" "raid456" "xfs"];
   };
 }

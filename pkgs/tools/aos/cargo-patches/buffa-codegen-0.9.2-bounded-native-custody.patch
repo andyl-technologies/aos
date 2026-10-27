@@ -1,0 +1,63 @@
+--- a/src/impl_message.rs
++++ b/src/impl_message.rs
+@@ -551,18 +551,18 @@
+                         data: ::buffa::UnknownFieldData::LengthDelimited(bytes),
+                     });
+                 } else {
+-                    self.__buffa_unknown_fields.push(
+-                        ::buffa::encoding::decode_unknown_field(tag, buf, ctx)?
+-                    );
++                    ::buffa::encoding::merge_unknown_field_retaining(
++                        tag, buf, ctx, &mut self.__buffa_unknown_fields,
++                    )?;
+                 }
+             }
+         }
+     } else if preserve_unknown_fields {
+         quote! {
+             _ => {
+-                self.__buffa_unknown_fields.push(
+-                    ::buffa::encoding::decode_unknown_field(tag, buf, ctx)?
+-                );
++                ::buffa::encoding::merge_unknown_field_retaining(
++                    tag, buf, ctx, &mut self.__buffa_unknown_fields,
++                )?;
+             }
+         }
+     } else {
+@@ -2387,8 +2387,15 @@
+                 #wire_check
+                 let mut elem = ::core::default::Default::default();
+                 ctx.register_element_memory(::buffa::__private::element_footprint(&elem))?;
+-                ::buffa::Message::merge_length_delimited(&mut elem, buf, ctx)?;
+-                self.#ident.push(elem);
++                let result = ::buffa::Message::merge_length_delimited(&mut elem, buf, ctx);
++                if ctx.retains_partial_children() {
++                    // Park the actual child before propagating its parser error.
++                    self.#ident.push(elem);
++                    result?;
++                } else {
++                    result?;
++                    self.#ident.push(elem);
++                }
+             }
+         });
+     }
+@@ -2403,8 +2410,15 @@
+                 #wire_check
+                 let mut elem = ::core::default::Default::default();
+                 ctx.register_element_memory(::buffa::__private::element_footprint(&elem))?;
+-                ::buffa::Message::merge_group(&mut elem, buf, ctx, #field_number)?;
+-                self.#ident.push(elem);
++                let result = ::buffa::Message::merge_group(&mut elem, buf, ctx, #field_number);
++                if ctx.retains_partial_children() {
++                    // Park the actual child before propagating its parser error.
++                    self.#ident.push(elem);
++                    result?;
++                } else {
++                    result?;
++                    self.#ident.push(elem);
++                }
+             }
+         });
+     }
