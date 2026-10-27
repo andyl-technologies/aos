@@ -6,10 +6,12 @@
 //! Recipe, Initial or native member. Original banks remain with Completion.
 
 use super::*;
+use crate::node_adapters::cnp::PacketCompleteSemanticSource;
 use crate::node_adapters::cnp::semantic::source::{
     private_birth_clone_construction_data, private_birth_clone_counter_scratch_data,
 };
 use crate::node_contract::RuntimeError;
+use crate::node_contract::restored_owner_history::OriginalOwnerCapacityMetadataData;
 use std::mem::size_of;
 
 pub(in crate::node_adapters::cnp::semantic::packet_complete_source) struct OriginalImport18PrivateSeed
@@ -201,31 +203,128 @@ impl OriginalImport18PrivateSeed {
             + size_of::<Result<(), RuntimeError>>()
     }
 
+    /// Records all original seed fields, including failed and transferred prefixes.
+    ///
+    /// File/kernel custody remains a separate descriptor obligation. No File is
+    /// reopened, key regenerated, failure cleared or lifecycle permission issued.
+    ///
+    /// # Errors
+    /// Refuses foreign creator custody or checked census geometry/work limits.
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn record_retained_capacity_data(
+        &self,
+        census: &mut OriginalOwnerCapacityMetadataData<'_>,
+    ) -> Result<(), RuntimeError> {
+        if self.process != std::process::id() || self.thread != std::thread::current().id() {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        let Self {
+            host,
+            private_launch,
+            file,
+            revision,
+            key,
+            birth_id,
+            started,
+            complete,
+            failure,
+            process,
+            thread,
+        } = self;
+        census.observe(host)?;
+        census.observe(private_launch)?;
+        census.observe_inline_data(&file.is_some())?;
+        census.observe_inline_data(key)?;
+        census.observe_inline_data(birth_id)?;
+        census.observe_inline_data(started)?;
+        census.observe_inline_data(complete)?;
+        census.observe_inline_data(process)?;
+        census.observe_inline_data(thread)?;
+
+        census.observe_inline_data(&revision.is_some())?;
+        if let Some(HostRevision {
+            device,
+            inode,
+            length,
+            uid,
+            mode,
+            modified,
+            changed,
+        }) = revision
+        {
+            census.observe_inline_data(device)?;
+            census.observe_inline_data(inode)?;
+            census.observe_inline_data(length)?;
+            census.observe_inline_data(uid)?;
+            census.observe_inline_data(mode)?;
+            census.observe_inline_data(modified)?;
+            census.observe_inline_data(changed)?;
+        }
+        census.observe_inline_data(&failure.is_some())?;
+        if let Some(error) = failure {
+            census.observe_work_data(1)?;
+            // Keep the closed error roster: future owning variants require an
+            // explicit census decision rather than a wildcard omission.
+            match error {
+                RuntimeError::SchedulerRefused(message) => census.observe(message)?,
+                RuntimeError::ResourceLimit
+                | RuntimeError::ThreadAffinity
+                | RuntimeError::UnknownNode
+                | RuntimeError::InvalidRoute
+                | RuntimeError::DuplicateOperation
+                | RuntimeError::OwnerBusy
+                | RuntimeError::OwnerUnavailable
+                | RuntimeError::NotActivated
+                | RuntimeError::ForeignAuthority
+                | RuntimeError::UnsupportedFacet
+                | RuntimeError::InvalidTiming
+                | RuntimeError::InvalidReceipt
+                | RuntimeError::OutstandingObligations
+                | RuntimeError::PublicationFailed => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Reports the same seed's direct child backing without granting admission.
+    ///
+    /// # Errors
+    /// Refuses foreign creator custody or checked census geometry/work overflow.
     pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn known_backing(
         &self,
     ) -> Result<usize, RuntimeError> {
-        let mut bytes = self
-            .private_launch
-            .as_ref()
-            .map_or(0, Id::allocated_capacity);
-        if let Some(host) = &self.host {
-            for text in [
-                &host.hash.algorithm,
-                &host.hash.domain,
-                &host.hash.digest,
-                &host.media_type,
-            ] {
-                bytes = bytes
-                    .checked_add(text.capacity())
-                    .ok_or(RuntimeError::ResourceLimit)?;
-            }
-        }
-        if let Some(RuntimeError::SchedulerRefused(message)) = &self.failure {
-            bytes = bytes
-                .checked_add(message.capacity())
-                .ok_or(RuntimeError::ResourceLimit)?;
-        }
-        Ok(bytes)
+        let mut census = OriginalOwnerCapacityMetadataData::new(usize::MAX, None);
+        self.record_retained_capacity_data(&mut census)?;
+        PacketCompleteSemanticSource::complete_retained_metadata_storage_precredit_data(
+            &census.finish(),
+            usize::MAX,
+        )
+    }
+
+    /// Names the actual borrowed field, census and private revision controls.
+    fn capacity_counter_scratch_data() -> usize {
+        OriginalOwnerCapacityMetadataData::counter_scratch_data()
+            + size_of::<&Self>()
+            + size_of::<&mut OriginalOwnerCapacityMetadataData<'static>>()
+            + size_of::<(
+                &Option<ContentRef>,
+                &Option<Id>,
+                &Option<File>,
+                &Option<HostRevision>,
+                &[u8; 32],
+                &Option<[u8; 32]>,
+                &bool,
+                &bool,
+                &Option<RuntimeError>,
+                &u32,
+                &ThreadId,
+            )>()
+            + size_of::<(&u64, &u64, &u64, &u32, &u32, &(i64, i64), &(i64, i64))>()
+            + size_of::<&RuntimeError>()
+            + size_of::<&String>()
+            + size_of::<bool>() * 3
+            + size_of::<crucible_node_transport::retained_metadata::RetainedProtocolMetadataFacts>()
+            + size_of::<Result<usize, RuntimeError>>()
+            + size_of::<Result<(), RuntimeError>>()
     }
 
     pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn construction_data(
@@ -270,6 +369,7 @@ impl OriginalImport18PrivateSeed {
         HOST_EXECUTABLE_STREAM_BYTES
             + private_identity::delegation_controls()
             + private_birth_clone_counter_scratch_data()
+            + Self::capacity_counter_scratch_data()
             + size_of::<&Self>()
             + size_of::<&mut Self>()
             + size_of::<&ContentRef>()

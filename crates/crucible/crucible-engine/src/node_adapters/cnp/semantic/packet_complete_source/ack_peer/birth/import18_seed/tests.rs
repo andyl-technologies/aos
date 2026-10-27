@@ -227,3 +227,97 @@ fn construction_census_refuses_started_boot_and_retains_failed_birth_backing() {
         Err(RuntimeError::OutstandingObligations)
     );
 }
+
+#[test]
+fn seed_census_retains_failed_clones_spare_capacity_and_original_file() {
+    let text = |capacity, value: &str| {
+        let mut text = String::with_capacity(capacity);
+        text.push_str(value);
+        text
+    };
+    let mut seed = OriginalImport18PrivateSeed::empty();
+    seed.host = Some(ContentRef {
+        hash: HashRef {
+            algorithm: text(41, "blake3-256"),
+            domain: text(53, "retained-seed-data"),
+            digest: text(79, "not-a-private-birth-grant"),
+        },
+        length: U64::new(0),
+        media_type: text(97, "application/octet-stream"),
+    });
+    seed.private_launch = Some(Id::new(text(149, "retained-seed-launch")).unwrap());
+    seed.file = Some(File::open("/proc/self/exe").unwrap());
+    seed.revision = Some(private_identity::read_revision(seed.file.as_ref().unwrap()).unwrap());
+    seed.key = [7; 32];
+    seed.birth_id = Some([9; 32]);
+    seed.started = true;
+    seed.failure = Some(RuntimeError::SchedulerRefused(text(
+        131,
+        "original failed prefix",
+    )));
+    let descriptor = seed.file.as_ref().unwrap().as_raw_fd();
+    let original_media = seed.host.as_ref().unwrap().media_type.as_ptr();
+    let expected_bytes = 41 + 53 + 79 + 97 + 149 + 131;
+    let mut census = OriginalOwnerCapacityMetadataData::new(6, None);
+
+    seed.record_retained_capacity_data(&mut census).unwrap();
+    let facts = census.finish();
+
+    assert_eq!(facts.capacity_records, 6);
+    assert_eq!(facts.string_banks, 6);
+    assert_eq!(facts.string_capacity_bytes, expected_bytes);
+    assert_eq!(facts.vector_banks, 0);
+    assert_eq!(facts.shared_backing_views, 0);
+    assert_eq!(facts.boxed_value_bytes, 0);
+    assert!(facts.observed_nodes > facts.capacity_records);
+    assert_eq!(seed.known_backing(), Ok(expected_bytes));
+    assert_eq!(
+        PacketCompleteSemanticSource::complete_retained_metadata_storage_precredit_data(
+            &facts,
+            expected_bytes - 1,
+        ),
+        Err(RuntimeError::ResourceLimit)
+    );
+    assert_eq!(seed.file.as_ref().unwrap().as_raw_fd(), descriptor);
+    assert_eq!(
+        seed.host.as_ref().unwrap().media_type.as_ptr(),
+        original_media
+    );
+    assert!(seed.started && !seed.complete && seed.failure.is_some());
+    assert_eq!(seed.key, [7; 32]);
+    assert_eq!(seed.birth_id, Some([9; 32]));
+
+    let mut short = OriginalOwnerCapacityMetadataData::new(5, None);
+    assert_eq!(
+        seed.record_retained_capacity_data(&mut short),
+        Err(RuntimeError::ResourceLimit)
+    );
+    assert_eq!(short.finish().capacity_records, 5);
+    assert_eq!(seed.known_backing(), Ok(expected_bytes));
+    assert_eq!(seed.file.as_ref().unwrap().as_raw_fd(), descriptor);
+}
+
+#[test]
+fn empty_seed_census_counts_fixed_work_and_foreign_creator_refuses_before_rows() {
+    let mut seed = OriginalImport18PrivateSeed::empty();
+    let mut census = OriginalOwnerCapacityMetadataData::new(0, None);
+
+    seed.record_retained_capacity_data(&mut census).unwrap();
+    let facts = census.finish();
+
+    assert_eq!(facts.capacity_records, 0);
+    assert_eq!(facts.observed_nodes, 11);
+    assert_eq!(seed.known_backing(), Ok(0));
+    assert!(!seed.started && !seed.complete);
+    assert_eq!(seed.key, [0; 32]);
+
+    seed.process = seed.process.wrapping_add(1);
+    let mut foreign = OriginalOwnerCapacityMetadataData::new(0, None);
+    assert_eq!(
+        seed.record_retained_capacity_data(&mut foreign),
+        Err(RuntimeError::ForeignAuthority)
+    );
+    assert_eq!(foreign.finish(), Default::default());
+    assert_eq!(seed.known_backing(), Err(RuntimeError::ForeignAuthority));
+    assert!(!seed.started && !seed.complete && seed.failure.is_none());
+}
