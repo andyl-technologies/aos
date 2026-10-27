@@ -31,6 +31,24 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- A reusable installed-VM configuration now selects both real manual initializer
+  services with their separate M/F subdivisions, required normal-owner floors,
+  caller-supplied public approval pins and actual Host/Storage session credential
+  declarations. Controller stays unstarted while external inputs are absent;
+  the manual producer must still prove both normal writers stopped. Each role
+  receives 28 external credential sources and its own receiving limits. Two
+  additional credential/device backing allowances are charged to the existing
+  F/Components allocation without increasing node capacity. The new
+  `checks.build.sandbox-method46-initial-installation` passes through `aos-dev
+  --release`, including complete valid-configuration assertions and eight
+  independent missing-approval, missing-auth, missing-sender and automatic-start
+  mutations. Its audited 494-derivation closure excludes production policy, and
+  the exact output derivation is independently verified. This is installation
+  composition, not native Parent06 compiler or programme-fit qualification:
+  external credential bytes, original Source entry, approved TPM provisioning,
+  both normal hooks and enforcing crash/power-loss execution remain required.
+  The existing networkd approval remains pending; admission stays closed.
+
 - Closed initial-role selection now follows the actual manual Controller and
   Storage service options. The production recipe composes each selected role's
   fixed entrypoints, contexts and immutable checker DATA together, and installs
