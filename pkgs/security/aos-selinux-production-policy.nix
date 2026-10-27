@@ -35,8 +35,15 @@
   aos-nix-online-store-reader ? null,
 }: let
   policyVersion = "33";
-  policySupport = ./_aos-selinux-production-policy;
-  initialPolicy = import (policySupport + "/method46-initial.nix") {
+  policySource = ./_aos-selinux-production-policy;
+  # Keep evaluation reads on repository source paths. Only build-side imports
+  # and installed checker copies consume the cache-free source snapshot.
+  policySupport = builtins.path {
+    path = policySource;
+    name = "aos-selinux-policy-support-source";
+    filter = path: _: builtins.baseNameOf path != "__pycache__";
+  };
+  initialPolicy = import (policySource + "/method46-initial.nix") {
     purposes = method46InitialPurposes;
     initialPackage = aos-method46-floor-initializers;
     helperPackage = aos-method46-initial-tpm-helpers;
@@ -120,7 +127,7 @@
   # The false branch restores the exact original newline, not a blank block.
   closedSelectedSource = path: let
     source = closedRuntimeSource (
-      if path == policySupport + "/owner_confinement.te"
+      if path == policySource + "/owner_confinement.te"
       then closedHostComponentSource (closedResourceBankSource (closedOnlineSource (builtins.readFile path)))
       else builtins.readFile path
     );
@@ -146,8 +153,8 @@
       "ENVIRONMENT_PROVISION = False"
       "ENVIRONMENT_PROVISION = False"
       "ENVIRONMENT_PROVISION = True"
-      (builtins.readFile (policySupport + "/owner_policy.py"))
-    else builtins.readFile (policySupport + "/owner_policy.py");
+      (builtins.readFile (policySource + "/owner_policy.py"))
+    else builtins.readFile (policySource + "/owner_policy.py");
   resourceBankOwnerData =
     if resourceBankEnrollment
     then
@@ -200,8 +207,8 @@
       "HOST_COMPONENT_CONTROL = False"
       "HOST_COMPONENT_CONTROL = False"
       "HOST_COMPONENT_CONTROL = True"
-      (builtins.readFile (policySupport + "/effective_policy.py"))
-    else builtins.readFile (policySupport + "/effective_policy.py")
+      (builtins.readFile (policySource + "/effective_policy.py"))
+    else builtins.readFile (policySource + "/effective_policy.py")
   );
   # Selected checks import the rendered immutable DATA beside the same checker.
   # No policy observation or runtime option chooses its expected permissions.
@@ -285,23 +292,23 @@
     && builtins.match systemdPinPathRegex ((systemdPinPath "nix" systemdBasename) + "0") == null
     && builtins.match systemdPinPathRegex ((systemdPinPath "nix" systemdBasename) + "/extra") == null;
   ownerModule = builtins.toFile "aos_sandbox.te" (
-    builtins.readFile (policySupport + "/aos_sandbox.te")
+    builtins.readFile (policySource + "/aos_sandbox.te")
     + "\n"
-    + closedSelectedSource (policySupport + "/owner_confinement.te")
+    + closedSelectedSource (policySource + "/owner_confinement.te")
     + "\n"
-    + builtins.readFile (policySupport + "/view_confinement.te")
+    + builtins.readFile (policySource + "/view_confinement.te")
     + "\n"
-    + builtins.readFile (policySupport + "/recovery_confinement.te")
+    + builtins.readFile (policySource + "/recovery_confinement.te")
     + "\n"
     + initialPolicy.moduleText
     + (
       if environmentProvision != null
-      then "\n" + builtins.readFile (policySupport + "/environment_confinement.te")
+      then "\n" + builtins.readFile (policySource + "/environment_confinement.te")
       else ""
     )
     + (
       if gitReadDelegation
-      then "\n" + builtins.readFile (policySupport + "/git_read_delegation.te")
+      then "\n" + builtins.readFile (policySource + "/git_read_delegation.te")
       else ""
     )
   );
@@ -511,11 +518,11 @@
             then [(exactPackageBasename "aos-sandbox-mountd" aos-sandbox-mountd) (exactPackageBasename "aos-source-providerd" aos-source-providerd)]
             else []
           ))
-        (closedSelectedSource (policySupport + "/aos_sandbox.fc"))
+        (closedSelectedSource (policySource + "/aos_sandbox.fc"))
         + builtins.concatStringsSep "" (map viewEntrypointContext viewPreparers)
         + (
           if gitReadDelegation
-          then builtins.readFile (policySupport + "/git_read_delegation.fc")
+          then builtins.readFile (policySource + "/git_read_delegation.fc")
           else ""
         )
         + onlineFileContexts

@@ -31,6 +31,20 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- Production policy build/checker inputs now exclude local `__pycache__`
+  directories. Evaluation reads retain their original repository paths, so
+  pure selection does not require reading an unregistered filtered store path.
+  Exact candidate comparison preserves all 53 support source files, selected
+  TE/contexts/DATA, dependency derivations and builder arguments after the
+  support/recipe/output path substitutions; 19 local cache files are excluded.
+  The native custody/rendering check still passes on its audited 546-derivation
+  closure without production policy, with its exact output derivation verified.
+  The real parent image also instantiates with both initializer profiles; its
+  pre-filter dependency audit contains 1,033 derivations including production
+  policy. Instantiation is not native parent compilation or programme-fit
+  evidence. Linked policy and installed qualification still await the existing
+  networkd approval; admission remains closed.
+
 - The installed-VM configuration now declares normal Root's independent
   NoApply signing credential and Host's paired public pin through their existing
   production options. Both initializers borrow that same public source through
