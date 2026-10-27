@@ -8,6 +8,24 @@
     },
     "source": "/nix/store/spd1v3k5gra5si5ka2pijjh5wc07lss4-aos-workspace-src"
   },
+  "application_compilation_validation": {
+    "binding_scope": "Historical artifact-audit checkpoint Rust sources; subsequent license and complete-dependency reader changes require their own source-bound checks.",
+    "cargo_build_messages_sha256": "cdf28ef80b2bac755a38d0d109b316bc7870e22d494cce0eca50a0bc7b9b6ea3",
+    "compiled_test_artifacts": 185,
+    "derivation": "/nix/store/i0zxp3h92mkvjqd9v44s8fycvdrrw8y4-aos-test-targets-0.1.0.drv",
+    "output": "/nix/store/n127y63g6rpip1lnrq2p02w071893h9q-aos-test-targets-0.1.0",
+    "scope": "Required aos/aos-* application unit and integration target compilation; the focused Cargo/Bazel gate separately compiles and executes the Crucible structural audits.",
+    "source_binding": {
+      "derivation": "/nix/store/i0zxp3h92mkvjqd9v44s8fycvdrrw8y4-aos-test-targets-0.1.0.drv",
+      "rust_sources_sha256": {
+        "crates/crucible/crucible-test-support/tests/crate_artifact_types.rs": "0263f0672dc9c778b2c8f56ff2b556a9251a2da8c89d3b4ca68828f40c0719ea",
+        "crates/crucible/crucible-test-support/tests/support/architecture.rs": "3180b66ba6a40bc8ea692470b4022d080e23c6fdaa54cb50a4135030a36c769a",
+        "crates/crucible/crucible-test-support/tests/support/artifact_type_bazel.rs": "878e45bf43bcd0fdde142869bf2929dfc8cee073e4215193aec5c1b08958ee88"
+      },
+      "source": "/nix/store/spd1v3k5gra5si5ka2pijjh5wc07lss4-aos-workspace-src"
+    },
+    "status": "PASS"
+  },
   "audited_crucible_packages": [
     "crucible-campaign",
     "crucible-cli",
@@ -303,9 +321,7 @@
   ],
   "oracle": "/nix/store/yvfmvkzs7rg57qkar82pdc6x94vx0f0r-aos-bazel-crucible-controller-architecture-cargo-oracle-1",
   "oracle_derivation": "/nix/store/3l9jy48h7cc5dy7aikiwra47dw911y5j-aos-bazel-crucible-controller-architecture-cargo-oracle-1.drv",
-  "pending_checkpoint_validation": [
-    "required checks.rust.aos-test-targets application compilation"
-  ],
+  "pending_checkpoint_validation": [],
   "public_controller_cutover_qualified": false,
   "qualification_derivation": "/nix/store/42cy8mwhdj8s6wics89f45rq81fh7fqh-aos-bazel-crucible-controller-architecture-parity.drv",
   "qualification_helper_source": "/nix/store/z7gc2grl6qx1d3d0d40dvsvd28v571y5-aos-controller-architecture-qualification-tools",
