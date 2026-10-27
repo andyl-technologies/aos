@@ -18,6 +18,7 @@ mod dictionaries;
 mod files;
 mod inspection;
 mod manifest;
+mod packed_chunks;
 mod quarantine;
 mod verification;
 

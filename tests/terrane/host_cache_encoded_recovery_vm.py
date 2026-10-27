@@ -54,6 +54,10 @@ def run(vm, uuid):
         policy = vm.root(case) / "state/cache/records.toml"
         old = tomllib.loads(policy.read_text()) if policy.exists() else None
         output = vm.actor(case, "recover-encoded" if recovers else "refuse-encoded", uuid)
+        if case == "encoded-data-pack":
+            vm.require(output.splitlines().count(
+                "PASS actual verified pack extraction preserves original envelopes, descriptors and cursor without admission or Resume") == 1,
+                "missing genuine native pack extraction witness")
         witness = ("original pair registered after Resume" if case == "encoded-metadata-only"
                    else "original inodes served under durable consumer pins")
         vm.require((witness in output) if recovers

@@ -88,6 +88,34 @@ impl DerivedIndexRepair {
         self.index.as_ref().map(RetainedFile::file)
     }
 
+    /// Reads a chunk's original envelope from the independently verified pack.
+    ///
+    /// The descriptor comes from the original verified record. Whole-pack and
+    /// dictionary-source hashes are checked before and after selection, using
+    /// the retained native descriptors. No pathname selects replacement bytes.
+    /// The returned payload reuses the bounded pack buffer and preserves the
+    /// exact stored codec, including an ordinary dictionary dependency.
+    ///
+    /// This read grants no admission, pin or serving authority. An owner importing
+    /// the bytes must fund its actual writes and retain the dictionary's genuine
+    /// admission before admitting a dependent chunk. This is a content read;
+    /// metadata-only GC must use its separate tracing path.
+    ///
+    /// # Errors
+    /// Refuses a foreign identity profile or kind, an absent chunk, exceeded
+    /// allocation bounds, and changed pack, index or dictionary-source custody.
+    pub fn read_chunk_encoded(&self, identity: &Identity) -> io::Result<(Descriptor, Vec<u8>)> {
+        self.check_current()?;
+        let limits = self.pack.context().reads;
+        let bytes = self.pack.read(limits.max_allocation_bytes)?;
+        TERRANE_V1
+            .verify(self.pack_identity(), &bytes)
+            .map_err(invalid)?;
+        let selected = super::packed_chunks::select(bytes, identity, limits)?;
+        self.check_current()?;
+        Ok(selected)
+    }
+
     /// Reads the original verified metadata pair within its inspection budget.
     ///
     /// # Errors

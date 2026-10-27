@@ -1,7 +1,9 @@
 //! Exercises cold canonical encodings through genuine recovery and consumer pins.
 
 use super::*;
-use std::{os::unix::fs::MetadataExt, time::UNIX_EPOCH};
+use std::{io::Seek, os::unix::fs::MetadataExt, time::UNIX_EPOCH};
+use terrane_linux::host_cache::{NativeRecoveryInspector, VerifiedEncodedBody};
+use terrane_sdk::pack::NativeBodyDecoder;
 use terrane_sdk::store::Clock;
 
 struct Chunk {
@@ -61,6 +63,35 @@ fn path(inputs: &Inputs, chunk: &Chunk, codec: u8) -> io::Result<std::path::Path
         .join(format!("{hash}.{codec}")))
 }
 
+fn packed_chunks() -> io::Result<Vec<Chunk>> {
+    let terminal = b"packed terminal vocabulary ".repeat(16);
+    let middle = b"packed terminal vocabulary intermediate ".repeat(64);
+    let root = b"packed terminal vocabulary intermediate content ".repeat(128);
+    let maximum = ChunkProfile::cdc_1m([0; 32]).maximum();
+    let terminal_encoded = [vec![0], terminal.clone()].concat();
+    let middle_encoded = terrane_sdk::codec::encode_chunk(&middle, maximum, 3, Some(&terminal))
+        .map_err(io::Error::other)?;
+    let root_encoded = terrane_sdk::codec::encode_chunk(&root, maximum, 3, Some(&middle))
+        .map_err(io::Error::other)?;
+    if middle_encoded[0] != 2 || root_encoded[0] != 2 {
+        return Err(invalid("packed fixture lacks nested dictionary envelopes"));
+    }
+    Ok(vec![
+        Chunk {
+            bytes: terminal,
+            encoded: terminal_encoded,
+        },
+        Chunk {
+            bytes: middle,
+            encoded: middle_encoded,
+        },
+        Chunk {
+            bytes: root,
+            encoded: root_encoded,
+        },
+    ])
+}
+
 fn metadata_pair(data_pack: bool) -> io::Result<terrane_sdk::pack::SealedPack> {
     let id = PackId::from_random_bytes([117; 16]);
     let class = if data_pack {
@@ -70,9 +101,35 @@ fn metadata_pair(data_pack: bool) -> io::Result<terrane_sdk::pack::SealedPack> {
     };
     let mut writer = PackWriter::new(id, class, false);
     if data_pack {
-        writer
-            .append_raw(EntryKind::Chunk, b"unadmitted data pack dictionary")
-            .map_err(io::Error::other)?;
+        let chunks = packed_chunks()?;
+        let dictionaries = chunks[..2]
+            .iter()
+            .map(|chunk| {
+                let identity = TERRANE_V1
+                    .calculate(IdentityKind::Chunk, &chunk.bytes)
+                    .map_err(io::Error::other)?;
+                Ok((
+                    identity.terrane_v1_digest().map_err(io::Error::other)?,
+                    chunk.bytes.clone(),
+                ))
+            })
+            .collect::<io::Result<BTreeMap<_, _>>>()?;
+        let profile = ChunkProfile::cdc_1m([0; 32]);
+        let decoder = NativeBodyDecoder::new(&profile, &dictionaries);
+        for chunk in chunks {
+            let identity = TERRANE_V1
+                .calculate(IdentityKind::Chunk, &chunk.bytes)
+                .map_err(io::Error::other)?;
+            writer
+                .append_chunk(
+                    identity.terrane_v1_digest().map_err(io::Error::other)?,
+                    &chunk.encoded,
+                    u32::try_from(chunk.bytes.len()).map_err(io::Error::other)?,
+                    0,
+                    &decoder,
+                )
+                .map_err(io::Error::other)?;
+        }
     } else {
         let data = super::super::manifest_publication::data(false, false)?;
         writer
@@ -91,6 +148,74 @@ fn metadata_paths(inputs: &Inputs) -> [std::path::PathBuf; 2] {
         parent.join(format!("{id}.idx")),
         parent.join(format!("{id}.pack")),
     ]
+}
+
+/// Reads original packed envelopes using genuine drained native inspection.
+///
+/// # Errors
+/// Refuses missing verified custody, changed envelopes, descriptors or cursors,
+/// and incorrect missing-entry or wrong-kind refusals. This grants no admission.
+pub(crate) fn inspect_pack(inspector: &NativeRecoveryInspector) -> io::Result<()> {
+    let inspection = inspector.inspect()?;
+    let pack = inspection
+        .candidates()
+        .iter()
+        .find_map(|candidate| match candidate.verified() {
+            Some(VerifiedEncodedBody::Pack(pack))
+                if pack.pack_id() == PackId::from_random_bytes([117; 16])
+                    && candidate.issues().is_empty() =>
+            {
+                Some(pack)
+            }
+            _ => None,
+        })
+        .ok_or_else(|| invalid("actual native data pack was not independently verified"))?;
+    let mut file = pack.pack_file();
+    let original_cursor = file.stream_position()?;
+    file.seek(io::SeekFrom::Start(7))?;
+    let original = file.metadata()?;
+
+    for chunk in packed_chunks()? {
+        let identity = TERRANE_V1
+            .calculate(IdentityKind::Chunk, &chunk.bytes)
+            .map_err(io::Error::other)?;
+        let (descriptor, encoded) = pack.read_chunk_encoded(&identity)?;
+        let verified = descriptor
+            .verify_bytes(&TERRANE_V1, IdentityKind::Chunk, &chunk.bytes)
+            .map_err(io::Error::other)?;
+        if encoded != chunk.encoded || verified != identity || file.stream_position()? != 7 {
+            return Err(invalid(
+                "packed extraction changed original envelope, descriptor or cursor",
+            ));
+        }
+    }
+    for (kind, expected) in [
+        (IdentityKind::Chunk, io::ErrorKind::NotFound),
+        (IdentityKind::Manifest, io::ErrorKind::InvalidInput),
+    ] {
+        let identity = TERRANE_V1
+            .calculate(kind, b"absent packed entry")
+            .map_err(io::Error::other)?;
+        let error = pack
+            .read_chunk_encoded(&identity)
+            .err()
+            .ok_or_else(|| invalid("invalid packed selection succeeded"))?;
+        if error.kind() != expected || file.stream_position()? != 7 {
+            return Err(invalid("packed selection refusal kind or cursor changed"));
+        }
+    }
+    let current = file.metadata()?;
+    if (original.dev(), original.ino(), original.len())
+        != (current.dev(), current.ino(), current.len())
+    {
+        return Err(invalid("packed extraction replaced original native source"));
+    }
+    file.seek(io::SeekFrom::Start(original_cursor))?;
+    pack.check_current()?;
+    println!(
+        "PASS actual verified pack extraction preserves original envelopes, descriptors and cursor without admission or Resume"
+    );
+    Ok(())
 }
 
 /// Seeds untrusted canonical encodings under explicit root administration.
