@@ -55,8 +55,26 @@ integration targets, and matched all 8,408 and 8,410 frozen Rust/Cargo inputs
 respectively. These source snapshots include local user changes and do not
 qualify a clean final PR checkout.
 
-The retained-installation census, target derivation from the immutable launch
-and target construction demand remain local work undergoing qualification.
+Retained-installation census checkpoint `9a5f28e2fa` counts failed and installed
+prefixes through actual archive/model custody. Target checkpoint `96f6cfe3e4`
+derives the fresh selection and complete coordinator from the immutable original
+launch. Construction checkpoints `f56b938c51` and `7439c78cf9` separately price
+the actual target and current inventory boundary before held installation.
+
+All four checkpoints passed seven-package all-feature/all-target compilation,
+seven architecture gates and complete SDK/Engine suites in both codecs. SDK
+totals are 2,396, 2,396, 2,397 and 2,398 passed respectively, with 20 ignored per
+codec. Engine totals remain 2,227 passed and 34 ignored per codec. Their mandatory
+application builds each compiled 185 test artifacts across 58 packages,
+including 76 integration targets, and matched 8,412, 8,412, 8,413 and 8,415 frozen
+Rust/Cargo inputs respectively. Those snapshots include local user changes.
+
+Original Source boundary loans, native graph-prefix decoding, Capture-history
+roster matching and installer/Hold construction layouts remain local work
+undergoing qualification. The native Capture writer currently emits fifteen
+fields even for a selected output cut, while the current-cut reader requires
+separate registration and confirmation-receipt slots. A real retained producer
+must supply those owners; relaxing framing cannot establish their proof.
 The model controls cover actual producer/reactive transfers and refusal custody;
 a positive complete sealed-archive installation is not yet demonstrated.
 Genuine Native18 admission and the full phase lifecycle remain unproven.
