@@ -13,7 +13,7 @@ from source_cleanup_vm import files, quota
 CASES = ["encoded-recovery", "encoded-cold", "encoded-corrupt", "encoded-duplicate",
          "encoded-missing-dictionary", "encoded-unknown", "encoded-sealed", "encoded-old-range",
          "encoded-metadata", "encoded-metadata-only", "encoded-data-pack",
-         "encoded-packed-manifest", "encoded-packed-manifest-bad-whole"]
+         "encoded-packed-manifest", "encoded-packed-manifest-bad-whole", "encoded-external-data-pack"]
 
 
 def seed(vm, uuid):
@@ -55,7 +55,7 @@ def run(vm, uuid):
     """Checks real consumer reads, unchanged source inodes and retained cold promises."""
     for case in CASES:
         recovers = case in {"encoded-recovery", "encoded-cold", "encoded-sealed", "encoded-metadata", "encoded-metadata-only", "encoded-data-pack",
-                            "encoded-packed-manifest", "encoded-packed-manifest-bad-whole"}
+                            "encoded-packed-manifest", "encoded-packed-manifest-bad-whole", "encoded-external-data-pack"}
         sources = list((vm.root(case) / "chunks").glob("*/*")) + list((vm.root(case) / "objects/pack").glob("*/*"))
         before = {path: (path.stat().st_dev, path.stat().st_ino, path.read_bytes())
                   for path in sources if path.is_file()}
@@ -89,12 +89,70 @@ def run(vm, uuid):
                        "cold encoding recovery discarded old policy: " + case)
             if case.startswith("encoded-packed-manifest"):
                 check_packed_manifest(vm, case, before, new)
+            if case == "encoded-external-data-pack":
+                vm.require(output.splitlines().count(
+                    "PASS cold external data pair serves its original packed root through nested standalone dictionary custody without extraction") == 1,
+                    "missing original cold external-dictionary consumer witness")
+                check_external_pack(vm, case, before, new)
 
         if case == "encoded-data-pack":
             retire_data_pack(vm, uuid, check_recovery)
+        elif case == "encoded-external-data-pack":
+            originals = []
+            try:
+                for path in sources:
+                    originals.append(Original(vm, case, path, 840))
+                check_recovery(vm.actor(case, "recover-encoded", uuid))
+                for original in originals:
+                    original.check(1)
+            finally:
+                for original in originals:
+                    original.close()
         else:
             check_recovery(vm.actor(case, "recover-encoded" if recovers else "refuse-encoded", uuid))
     print("PASS actual cold encoded recovery, original consumer custody and refusal controls", flush=True)
+
+
+def check_external_pack(vm, case, originals, state):
+    """Checks cold dependency edges, funding and the unchanged original namespace."""
+    root = vm.root(case)
+    chunks = list((root / "chunks").glob("*/*"))
+    pairs = list((root / "objects/pack").glob("*/*"))
+    vm.require(len(originals) == 8 and len(chunks) == 6 and len(pairs) == 2
+               and len(files(root / "chunks")) == 6 and not files(root / "pending-delete"),
+               "cold external recovery extracted or retired a source allocation")
+    terminal = [path for path in chunks if path.read_bytes() == b"\0" + b"packed terminal vocabulary " * 16]
+    vm.require(len(terminal) == 1, "cold external pack lost its exact terminal dictionary")
+    middle = [path for path in chunks if path.suffix == ".2"
+              and path.read_bytes()[1:33].hex() == terminal[0].stem]
+    vm.require(len(middle) == 1, "cold external middle is not bound to its original terminal")
+    pack = next(path for path in pairs if path.suffix == ".pack").read_bytes()
+    detached = next(path for path in pairs if path.suffix == ".idx").read_bytes()
+    vm.require(pack[:8] == b"TRPK\x01\0\0\0" and pack[8:24] == bytes([117]) * 16
+               and pack[-4:] == b"TRPE", "cold external data header changed")
+    offset = struct.unpack_from("<Q", pack, len(pack) - 16)[0]
+    vm.require(pack[offset:offset + 4] == b"TRIX"
+               and struct.unpack_from("<Q", pack, offset + 4)[0] == 1
+               and offset + 12 + 56 == len(pack) - 16
+               and detached == pack[:24] + pack[offset:-16],
+               "cold external pack lost its original one-record index")
+    record = pack[offset + 12:offset + 12 + 56]
+    start, size, length, codec, kind = struct.unpack_from("<QIIBB", record, 32)
+    vm.require(24 <= start < start + size <= offset and codec == 2 and kind == 0
+               and record[50:] == bytes(6) and pack[start] == 2
+               and pack[start + 1:start + 33].hex() == middle[0].stem
+               and length == len(b"packed terminal vocabulary intermediate content " * 128)
+               and not any(path.stem == record[:32].hex() for path in chunks),
+               "cold external packed root lost its actual dictionary or was extracted")
+    dependencies = [row for row in state["pins"] if row["owner"].startswith("cache-dependency:")]
+    vm.require(len(dependencies) == 3
+               and {terminal[0].stem, middle[0].stem} <= {row["hash"] for row in dependencies}
+               and len(state["reservations"]) == 1 and state["reservations"][0]["bytes"] == 262144
+               and not any(row["owner"].startswith("admission:") for row in state["pins"]),
+               "cold external pair lacks durable dictionary dependencies or retains producer funding")
+    vm.require(quota(vm, case) + 262144 <= 6 * 1024 * 1024,
+               "cold external recovery exceeds the original physical capacity")
+    print("PASS independent cold observer verifies eight original inodes, external dictionary import and durable dependencies without extraction", flush=True)
 
 
 def check_packed_manifest(vm, case, originals, state):

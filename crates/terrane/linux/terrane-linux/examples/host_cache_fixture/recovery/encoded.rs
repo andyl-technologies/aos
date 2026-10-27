@@ -92,15 +92,20 @@ fn packed_chunks() -> io::Result<Vec<Chunk>> {
     ])
 }
 
-fn metadata_pair(data_pack: bool) -> io::Result<terrane_sdk::pack::SealedPack> {
+enum PackFixture {
+    Metadata,
+    ClosedData,
+    ExternalData,
+}
+
+fn metadata_pair(fixture: PackFixture) -> io::Result<terrane_sdk::pack::SealedPack> {
     let id = PackId::from_random_bytes([117; 16]);
-    let class = if data_pack {
-        PackClass::Data
-    } else {
-        PackClass::Meta
+    let class = match fixture {
+        PackFixture::Metadata => PackClass::Meta,
+        PackFixture::ClosedData | PackFixture::ExternalData => PackClass::Data,
     };
     let mut writer = PackWriter::new(id, class, false);
-    if data_pack {
+    if class == PackClass::Data {
         let chunks = packed_chunks()?;
         let dictionaries = chunks[..2]
             .iter()
@@ -116,7 +121,12 @@ fn metadata_pair(data_pack: bool) -> io::Result<terrane_sdk::pack::SealedPack> {
             .collect::<io::Result<BTreeMap<_, _>>>()?;
         let profile = ChunkProfile::cdc_1m([0; 32]);
         let decoder = NativeBodyDecoder::new(&profile, &dictionaries);
-        for chunk in chunks {
+        let first = if matches!(fixture, PackFixture::ExternalData) {
+            2
+        } else {
+            0
+        };
+        for chunk in chunks.into_iter().skip(first) {
             let identity = TERRANE_V1
                 .calculate(IdentityKind::Chunk, &chunk.bytes)
                 .map_err(io::Error::other)?;
@@ -137,6 +147,18 @@ fn metadata_pair(data_pack: bool) -> io::Result<terrane_sdk::pack::SealedPack> {
             .map_err(io::Error::other)?;
     }
     writer.seal().map_err(io::Error::other)
+}
+
+/// Seeds real standalone dictionary originals before their dependent cold pair.
+fn cold_chunks(inputs: &Inputs) -> io::Result<Vec<Chunk>> {
+    if inputs.domain == "tenant:encoded-metadata-only" || super::packed_manifest::selected(inputs) {
+        return Ok(Vec::new());
+    }
+    let mut chunks = chunks()?;
+    if inputs.domain == "tenant:encoded-external-data-pack" {
+        chunks.extend(packed_chunks()?.into_iter().take(2));
+    }
+    Ok(chunks)
 }
 
 pub(super) fn pack_paths(inputs: &Inputs) -> [std::path::PathBuf; 2] {
@@ -227,11 +249,7 @@ pub(crate) fn seed() -> io::Result<()> {
     if super::packed_manifest::selected(&inputs) {
         return super::packed_manifest::seed(&inputs);
     }
-    let chunks = if inputs.domain == "tenant:encoded-metadata-only" {
-        Vec::new()
-    } else {
-        chunks()?
-    };
+    let chunks = cold_chunks(&inputs)?;
     for chunk in &chunks {
         let file = path(&inputs, chunk, chunk.encoded[0])?;
         let parent = file
@@ -248,9 +266,17 @@ pub(crate) fn seed() -> io::Result<()> {
     }
     if matches!(
         inputs.domain.as_str(),
-        "tenant:encoded-metadata" | "tenant:encoded-metadata-only" | "tenant:encoded-data-pack"
+        "tenant:encoded-metadata"
+            | "tenant:encoded-metadata-only"
+            | "tenant:encoded-data-pack"
+            | "tenant:encoded-external-data-pack"
     ) {
-        let pair = metadata_pair(inputs.domain == "tenant:encoded-data-pack")?;
+        let fixture = match inputs.domain.as_str() {
+            "tenant:encoded-data-pack" => PackFixture::ClosedData,
+            "tenant:encoded-external-data-pack" => PackFixture::ExternalData,
+            _ => PackFixture::Metadata,
+        };
+        let pair = metadata_pair(fixture)?;
         let [index, pack] = pack_paths(&inputs);
         let parent = pack
             .parent()
@@ -344,7 +370,11 @@ fn verify_packed_consumers(
     expires: u64,
 ) -> io::Result<()> {
     let standalone_before = standalone_count(inputs)?;
-    for chunk in packed_chunks()? {
+    let external = inputs.domain == "tenant:encoded-external-data-pack";
+    for chunk in packed_chunks()?
+        .into_iter()
+        .skip(if external { 2 } else { 0 })
+    {
         let identity = TERRANE_V1
             .calculate(IdentityKind::Chunk, &chunk.bytes)
             .map_err(io::Error::other)?;
@@ -366,9 +396,15 @@ fn verify_packed_consumers(
             "data pack consumers allocated standalone chunk copies",
         ));
     }
-    println!(
-        "PASS cold data pack serves original raw and nested dictionary envelopes through actual consumer pins without standalone extraction"
-    );
+    if external {
+        println!(
+            "PASS cold external data pair serves its original packed root through nested standalone dictionary custody without extraction"
+        );
+    } else {
+        println!(
+            "PASS cold data pack serves original raw and nested dictionary envelopes through actual consumer pins without standalone extraction"
+        );
+    }
     Ok(())
 }
 
@@ -412,13 +448,7 @@ pub(crate) fn run(
     }
     let completed = recovered?;
     completed.check_current()?;
-    let chunks = if inputs.domain == "tenant:encoded-metadata-only"
-        || super::packed_manifest::selected(inputs)
-    {
-        Vec::new()
-    } else {
-        chunks()?
-    };
+    let chunks = cold_chunks(inputs)?;
     let inodes = chunks
         .iter()
         .map(|chunk| {
@@ -428,7 +458,10 @@ pub(crate) fn run(
         .collect::<io::Result<Vec<_>>>()?;
     let metadata = if matches!(
         inputs.domain.as_str(),
-        "tenant:encoded-metadata" | "tenant:encoded-metadata-only" | "tenant:encoded-data-pack"
+        "tenant:encoded-metadata"
+            | "tenant:encoded-metadata-only"
+            | "tenant:encoded-data-pack"
+            | "tenant:encoded-external-data-pack"
     ) {
         pack_paths(inputs)
             .into_iter()
@@ -477,7 +510,7 @@ pub(crate) fn run(
     if !metadata.is_empty() {
         let snapshot = inputs.root.join("state/cache/records.toml");
         let before = fs::read(&snapshot)?;
-        let pack = metadata_pair(false)?;
+        let pack = metadata_pair(PackFixture::Metadata)?;
         let refused = runtime.block_on(owner.admit_metadata_pack(
             PackId::from_random_bytes([117; 16]),
             pack.bytes().to_vec(),
@@ -498,7 +531,10 @@ pub(crate) fn run(
         .as_secs()
         .checked_add(90)
         .ok_or_else(|| invalid("encoded consumer expiry overflow"))?;
-    if inputs.domain == "tenant:encoded-data-pack" {
+    if matches!(
+        inputs.domain.as_str(),
+        "tenant:encoded-data-pack" | "tenant:encoded-external-data-pack"
+    ) {
         verify_packed_consumers(owner, runtime, inputs, expires)?;
     }
     let mut retained_consumers = Vec::new();

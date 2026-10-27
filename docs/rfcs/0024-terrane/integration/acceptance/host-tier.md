@@ -136,8 +136,14 @@ dependency jobs, original envelope edges, native bytes and retained protection.
 Both increments pass feature-enabled all-target Clippy with warnings denied.
 The frozen `0353648de6` snapshot has passed required application compilation
 (190 targets across 59 packages) and four source-bound image reviews. Its
-runtime run is pending completion. These artifact checks do not qualify the
-later data-pack and packed-manifest implementation.
+runtime run failed after 2,065.936 seconds: the SDK `inline-dictionaries` actor
+exited 1 in 4.700 seconds with 154.233 seconds remaining at actor start. Six cache
+guests passed and their outputs, exact 148/276 ordinary plus five creator cases,
+and retained ELF identities were independently reviewed and preserved. The SDK
+refusal guest and three aggregates did not complete. Failed original serial,
+Firecracker log and VM configuration are hash-preserved. The internal error is
+redacted, so its cause remains unproven. These artifact and partial runtime
+checks do not qualify the later implementation or accept a complete task.
 
 Cold recovery now imports an original data pack/index pair when all dictionary
 dependencies remain inside that pack. Consumer grants retain that actual
@@ -207,6 +213,16 @@ cover a four-allocation read, duplicate-source deduplication, bounded refusal an
 external dictionary identity/envelope verification. A new native producer case
 and independent observer check reads before and after dictionary handoff, all
 four original inodes, nested edges, funding and durable dependency pins.
+
+A separate cold scenario seeds six standalone originals and a one-record data
+pair. Two of those standalone files form the packed root's nested dictionary
+chain. A fresh owner must complete real recovery and Resume, serve the original
+root without extraction, preserve the eight original inodes and all cold
+promises, and release inspection descriptors before serving. The independent
+observer retains original descriptors and checks the actual pack/index binding,
+dictionary edges, durable dependencies, funding and unchanged namespace. The
+scenario is registered in both base and feature-enabled recovery guests under
+their existing resources and deadlines; execution remains pending.
 
 Feature-enabled and minimal all-target Clippy pass with warnings denied; exact
 source inventories contain 154/282 ordinary tests plus five creator tests. These

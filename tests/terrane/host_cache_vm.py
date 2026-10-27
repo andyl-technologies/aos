@@ -114,6 +114,7 @@ CASES += ["sealed-consumer"]
 CASES += ["sealed-consumer-cold"]
 CASES += ["admission-data-pack"]
 CASES += ["admission-external-data-pack"]
+CASES += ["encoded-external-data-pack"]
 BUDGET = HARD * len(CASES)
 PROVISION_CAPS = "-all,+sys_admin,+dac_read_search,+fowner,+chown,+fsetid"
 QUERY_CAPS = "-all,+sys_admin,+dac_read_search"
