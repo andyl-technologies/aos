@@ -814,45 +814,4 @@ mod tests {
             assert!(startup.finish_source_after_owed_once_v1(Ok(())).is_err());
         }
     }
-
-    // Compile the complete simultaneous-borrow composition without constructing
-    // a fake positive Source, approved cut or native publication authority.
-    fn publish_cold_intent_from_originals(
-        startup: &Method46InitialStartupOriginalV1,
-    ) -> Result<(), Method46InitialDataErrorV1> {
-        let readback = startup
-            .lend_provisioning_readback_once_v1()
-            .map_err(|_| Method46InitialDataErrorV1::Conflict)?;
-        let provision = Method46InitialProvisionDecodeOriginalV1::decode_captured_v1(readback);
-        startup
-            .capture_initial_main_writer_once_v1()
-            .map_err(|_| Method46InitialDataErrorV1::Conflict)?;
-        startup
-            .prepare_initial_floor_writer_once_v1()
-            .map_err(|_| Method46InitialDataErrorV1::Conflict)?;
-        let readback = startup
-            .lend_initial_main_readback_once_v1()
-            .map_err(|_| Method46InitialDataErrorV1::Conflict)?;
-        let main =
-            Method46InitialMainCutOriginalV1::hash_and_validate_captured_v1(readback, &provision);
-        provision.capture_initial_intent_files_once_v1(&main)?;
-        provision.verify_captured_initial_intent_once_v1(&main)?;
-        provision.publish_approved_initial_intent_once_v1(&main)?;
-        provision.prepare_approved_initial_tpm_locks_once_v1(&main)?;
-        provision.prepare_approved_initial_tpm_helper_once_v1(&main)?;
-        provision.reconcile_approved_initial_nv_once_v1(&main)
-    }
-
-    #[test]
-    fn method46_initial_intent_publication_cannot_start_from_an_inert_startup() {
-        for role in [
-            Method46InitialServiceRoleV1::ControllerStorageClient,
-            Method46InitialServiceRoleV1::StorageBroker,
-        ] {
-            let startup = ManuallyDrop::new(Method46InitialStartupOriginalV1::new(role));
-
-            assert!(publish_cold_intent_from_originals(&startup).is_err());
-            assert!(startup.finish_source_after_owed_once_v1(Ok(())).is_err());
-        }
-    }
 }

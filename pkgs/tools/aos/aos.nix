@@ -175,6 +175,9 @@
     + builtins.concatStringsSep " " (
       map (package: "-p ${package}") applicationTestPackages
     );
+  # Initializers remain absent from normal/default role graphs. Their selected
+  # bins and subprocess integration target need a distinct compile invocation.
+  initialFloorTestFlags = "--no-default-features --features aos-sandbox-services/method46-initial -p aos-sandbox-services";
   # Build both command surfaces in one feature-unified Cargo invocation so
   # their shared dependencies are compiled only once.
   releaseBuildCommands = [
@@ -243,6 +246,9 @@
       releaseBuildCommands
       ++ lib.optionals withTests [
         "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${applicationTestFlags}"
+      ]
+      ++ lib.optionals (withTests && stdenv.hostPlatform.isLinux) [
+        "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${initialFloorTestFlags}"
       ];
     cargoEnv =
       if withTests
@@ -262,6 +268,7 @@
   mkTestTargets = {
     pname,
     cargoFlags,
+    extraCargoFlags ? [],
   }:
     mkAosCargoPackage {
       inherit pname version cargoDeps;
@@ -273,9 +280,11 @@
       cargoEnv = testCargoEnv;
       aosWorkspaceIntegrationInputs = true;
       cargoRoot = "crates";
-      cargoBuildCommands = [
-        "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${cargoFlags}"
-      ];
+      cargoBuildCommands =
+        [
+          "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${cargoFlags}"
+        ]
+        ++ map (flags: "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${flags}") extraCargoFlags;
       buildDeps =
         [buildPerl buildPkgConfig buildProtobuf buildCmake]
         ++ lib.optionals (!isDarwinCross) [aos-fuse-transport];
@@ -288,6 +297,7 @@
   testTargets = mkTestTargets {
     pname = "aos-test-targets";
     cargoFlags = applicationTestFlags;
+    extraCargoFlags = lib.optional stdenv.hostPlatform.isLinux initialFloorTestFlags;
   };
   # The Coordinator's explicit Domain multi-node feature belongs to its own
   # compile gate; it must not unify into the normal application invocation.

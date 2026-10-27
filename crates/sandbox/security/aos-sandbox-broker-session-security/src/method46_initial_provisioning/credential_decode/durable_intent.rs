@@ -154,6 +154,44 @@ impl<'owner> Method46InitialProvisionDecodeOriginalV1<'owner> {
         result
     }
 
+    /// Obtains approval from the same captured final intent or fixed listener.
+    ///
+    /// A complete intent read from the actual final name selects cold signature
+    /// verification. Only an actually absent final intent selects fresh exchange;
+    /// an invalid existing intent never falls back to a new approval. The native
+    /// stage capture has already rejected unsafe or conflicting prefixes. No
+    /// caller supplies a mode, intent, request, key or signature.
+    ///
+    /// # Errors
+    /// Refuses missing/failed capture, busy custody, prior approval, invalid cold
+    /// signature, changed current request or failed original transport/posts.
+    /// Every refusal fences the same startup and retains independently owed work.
+    pub fn approve_captured_initial_intent_once_v1(
+        &self,
+        main: &Method46InitialMainCutOriginalV1<'_>,
+    ) -> Result<(), Method46InitialDataErrorV1> {
+        let captured = self
+            .intent
+            .try_borrow()
+            .ok()
+            .and_then(|intent| match intent.captured {
+                Some(Ok(Some(_))) => Some(true),
+                Some(Ok(None)) => Some(false),
+                _ => None,
+            });
+        let result = match captured {
+            Some(true) => self
+                .verify_captured_initial_intent_once_v1(main)
+                .map(|_| ()),
+            Some(false) => self.exchange_captured_approval_once_v1(main).map(|_| ()),
+            None => Err(Method46InitialDataErrorV1::Conflict),
+        };
+        if result.is_err() {
+            self.refuse_intent_and_finish_after();
+        }
+        result
+    }
+
     /// Durably publishes the resident same-Source verified initial intent once.
     ///
     /// The canonical request is rederived from the genuine admitted main and

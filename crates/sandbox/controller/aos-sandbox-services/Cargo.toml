@@ -124,6 +124,12 @@ source-provider = [
 ]
 runtime-publisher = ["dep:aos-sandbox-controller-domain", "dep:aos-sandbox-broker-session-security"]
 runtime-boot-preparation = ["runtime-publisher"]
+# Manual initial-floor services have their own graph and fixed entrypoints.
+method46-initial = [
+    "dep:aos-sandbox-broker",
+    "dep:aos-sandbox-controller-domain",
+    "dep:aos-sandbox-broker-session-security",
+]
 nix-provision = [
     "dep:aos-sandbox-controller-domain",
     "dep:aos-sandbox-broker-session-security",
@@ -265,6 +271,16 @@ required-features = ["source-provider"]
 name = "aos-sandbox-runtime-publisher"
 path = "src/bin/aos-sandbox-runtime-publisher.rs"
 required-features = ["runtime-publisher"]
+
+[[bin]]
+name = "aos-sandbox-controller-floor-initialize"
+path = "src/bin/aos-sandbox-controller-floor-initialize.rs"
+required-features = ["method46-initial"]
+
+[[bin]]
+name = "aos-sandbox-storage-floor-initialize"
+path = "src/bin/aos-sandbox-storage-floor-initialize.rs"
+required-features = ["method46-initial"]
 
 [[bin]]
 name = "aos-sandbox-nix-floor-provision"

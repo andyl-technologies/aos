@@ -41,3 +41,8 @@ pub mod cache_signer_exchange;
 // The installed Source signer feature selects only its protected role runner.
 #[cfg(any(feature = "policy", feature = "controller"))]
 pub mod source_signer_exchange;
+
+// Manual initialization is independently selected and never part of normal
+// daemon startup. Its two binaries retain their own fixed service identities.
+#[cfg(feature = "method46-initial")]
+pub mod method46_initial;

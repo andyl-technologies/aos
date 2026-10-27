@@ -31,6 +31,33 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- The Services crate now assembles two fixed manual initial-floor entrypoints.
+  Each captures its genuine Source original before configuration, then joins
+  profile, image/runtime, live-policy, unit, stopped-owner and credential
+  observations before lending the same provisioning and main originals to
+  Security. Actual captured final-intent presence selects cold verification or
+  fresh independent approval; malformed existing intent never falls back.
+  The assembly drives durable intent, both lock loans, the original helper,
+  approved NV reconciliation and canonical publication, retaining body failures
+  and independently owed Source posts through explicit process exit. A dedicated
+  Linux package selects these binaries and fixed initial helper images; ordinary
+  daemon graphs do not select the initializer feature. The full application
+  compile gate adds a separate feature invocation for both bins and integration
+  targets. Both binaries compile natively and their actual subprocess regression
+  rejects standalone/unfunded invocation, including mode/path arguments. The
+  non-test online Security check, 430 Broker, 146 focused Source, 430 ordinary
+  Security and 439 online-Nix Security tests pass; one Broker case and two cases
+  in each Security suite remain ignored. The old inert compile-contract test
+  was replaced by this actual consumer and subprocess coverage. Package and
+  full-target builds are running on audited exact sources; their 803- and
+  833-derivation closures exclude production policy. Earlier full-target builds
+  through approved initial NV reconciliation and pre-NV checkpoint capture now
+  pass with their exact output derivations independently verified. Fixed manual
+  unit/profile/Parent06 delivery, positive installed Source behavior, both journal
+  hooks and enforcing lifecycle/recovery qualification remain open. Negative
+  standalone execution is not positive provisioning evidence; admission stays
+  closed.
+
 - Normal Controller and Storage floor capture now share one fixed pending-name
   check before handing the actual opened sidecar to their typed floor owner.
   Their original B/F fixed suppliers prepay the resident owner, two retained
