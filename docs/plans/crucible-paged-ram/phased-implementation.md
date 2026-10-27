@@ -225,12 +225,26 @@ uses the already prepaid validation carrier. A caller cancellation remains first
 when its own callback also revokes the original.
 
 All-target compilation, strict store/campaign library Clippy and the four new
-revocation controls pass. The broader RAM, transfer and policy suites are running.
+revocation controls pass. The broader 237-case RAM invocation completes with
+216 passes, including the incompressible and shared 512-MiB volume cases, and
+21 failures launching isolated child executables with `ENOENT`. Each of those
+21 cases passes when rebuilt in a dedicated output directory and rerun against
+the same frozen source; all 277 store files match checkpoint `1ea0e81eec`.
+These are separate passing observations, not a passing whole-suite invocation,
+and they predate the later custody and archive-inspection changes.
 Formatting and coverage inventory pass: 665 model, 25 format and nineteen native
 bindings qualify no capability. Mandatory application compilation is running
 against an immutable source matching all 7,943 frozen inputs, including 5,479
 Rust, TOML and lockfile inputs. No passing application result or blocked-I/O
 deadline qualification is recorded for this component.
+
+The child-launch investigation also finds that separate source snapshots sharing
+one Cargo output directory can reuse a later snapshot's executable as fresh.
+That first shared-directory retry contains 799 tests instead of this checkpoint's
+797 and is excluded from exact-source evidence. Subsequent definitive checks use
+dedicated source and output directories; the matching-source retry above has
+797 tests. Shared-directory development results remain diagnostics where binary
+provenance is unresolved. Hermetic application-target builds are unaffected.
 
 The source contracts now require the three-part callback/original/provider result
 handling, sticky original refusal, both liveness checks and saved-original custody
