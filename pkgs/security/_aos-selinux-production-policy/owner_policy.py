@@ -7,6 +7,7 @@ delivery exceptions grant no owner state access or preparation authority.
 
 import view_policy
 import recovery_policy
+import method46_policy
 
 
 ENVIRONMENT_PROVISION = False
@@ -900,6 +901,12 @@ def matrix(Access, Transition, accesses, ordinary_domains):
     positive.extend(view_positive)
     negative.extend(view_negative)
     transitions.extend(view_transitions)
+    main_positive, main_negative, main_transitions = method46_policy.matrix(
+        Access, Transition, accesses, all_roles,
+    )
+    positive.extend(main_positive)
+    negative.extend(main_negative)
+    transitions.extend(main_transitions)
     return tuple(sorted(set(positive))), tuple(sorted(set(negative))), tuple(transitions)
 
 

@@ -136,6 +136,7 @@ GUARDED_OBJECT_TYPES = (
     owner_policy.recovery_policy.RUNTIME,
     owner_policy.ROOT_NO_APPLY_SIGNING_CREDENTIAL,
     owner_policy.HOST_NO_APPLY_CREDENTIAL,
+    *owner_policy.method46_policy.MAIN_TYPES,
     *(("aos_runtime_deployment_credential_t",
        "aos_runtime_deployment_state_t",
        "aos_runtime_deployment_lock_t") if owner_policy.RUNTIME_DOMAINS else ()),
@@ -1717,6 +1718,38 @@ def check_policy(setools: Any, policy: Any, *, git_read_delegation: bool = False
             raise ValueError(f"normal owner has automatic entry transition: {domain}")
         evidence.append(f"deny-default-entry\t{domain}")
 
+    # Dedicated main journals must not inherit blanket history/floor access.
+    # Scan foreign and disabled grants with the same expanded query engine.
+    main_policy = owner_policy.method46_policy
+    for role, main in zip(main_policy.ROLES, main_policy.MAIN_TYPES):
+        owner = f"aos_sandbox_{role}_t"
+        floor = f"aos_method46_{role}_floor_t"
+        candidates = setools.TERuleQuery(
+            policy,
+            ruletype=[setools.TERuletype.type_transition],
+            source_indirect=True,
+            target_indirect=True,
+            tclass=["file"],
+            default=main,
+        )
+        for rule in candidates.results():
+            sources = {str(member) for member in rule.source.expand()}
+            targets = {str(member) for member in rule.target.expand()}
+            try:
+                filename = rule.filename
+            except setools.exception.TERuleNoFilename:
+                filename = None
+            if sources != {owner} or targets != {floor} or filename not in main_policy.MAIN_NAMES:
+                raise ValueError(f"foreign method46 main label transition exists: {rule}")
+        evidence.append(f"exclusive-method46-main-transitions\t{main}")
+
+        for permission in (*main_policy.READ, *main_policy.WRITE, "lock", *main_policy.FORBIDDEN):
+            permitted_sources = main_policy.main_sources(role, permission)
+            for rule in allow_rules(setools, policy, Access("*", main, "file", permission)):
+                if {str(member) for member in rule.source.expand()} - permitted_sources:
+                    raise ValueError(f"foreign method46 main custody grant exists: {rule}")
+            evidence.append(f"deny-foreign-method46-main\t{main}\t{permission}")
+
     # Scan all sources, including attributes and domains not named by AOS.
     # A finite AOS role list cannot establish the Root nondelegation boundary.
     root = "aos_sandbox_policy_authority_t"
@@ -1787,6 +1820,10 @@ def check_policy(setools: Any, policy: Any, *, git_read_delegation: bool = False
             evidence.append(f"member-attribute\t{domain}\tdomain")
 
     file_types = attribute_members(setools, policy, "file_type")
+    for main in owner_policy.method46_policy.MAIN_TYPES:
+        if main in domains:
+            raise ValueError(f"method46 main object inherited domain: {main}")
+        evidence.append(f"deny-attribute\t{main}\tdomain")
     for attribute, members in (("domain", domains), ("file_type", file_types)):
         source = owner_policy.STORAGE_CREDENTIAL_SOURCE
         if source in members:

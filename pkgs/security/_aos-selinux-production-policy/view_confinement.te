@@ -203,6 +203,10 @@ allow aos_sandbox_cache_view_preparer_t { aos_sandbox_controller_state_t aos_met
 allow aos_sandbox_cache_view_preparer_t { aos_sandbox_controller_state_t aos_method46_controller_floor_t aos_method46_controller_lock_t aos_sandbox_source_journal_t }:file getattr;
 allow aos_sandbox_policy_authority_t { aos_sandbox_controller_state_t aos_method46_controller_floor_t aos_sandbox_source_journal_t aos_sandbox_cache_object_t }:dir { getattr open read search };
 allow aos_sandbox_policy_authority_t { aos_sandbox_root_read_journal_t aos_method46_controller_lock_t aos_sandbox_source_journal_t aos_sandbox_cache_object_t }:file { getattr open read };
+# The fixed Storage-session main stays readable through Root's existing view,
+# independently of the shared history label and the private floor sidecar.
+allow aos_sandbox_policy_authority_t aos_method46_controller_main_t:file { getattr open read };
+allow aos_sandbox_cache_view_preparer_t aos_method46_controller_main_t:file getattr;
 
 # A mapped Controller directory must not expose arbitrary private Controller
 # files to Root. Only these exact journal names acquire this read-only label.
@@ -221,5 +225,3 @@ type_transition aos_sandbox_controller_t aos_sandbox_controller_state_t:file aos
 type_transition aos_sandbox_controller_t aos_sandbox_controller_state_t:file aos_sandbox_root_read_journal_t "session.journal";
 type_transition aos_sandbox_controller_t aos_sandbox_controller_state_t:file aos_sandbox_root_read_journal_t "session.journal.lock";
 type_transition aos_sandbox_controller_t aos_sandbox_controller_state_t:file aos_sandbox_root_read_journal_t "session.journal.compact.tmp";
-type_transition aos_sandbox_controller_t aos_method46_controller_floor_t:file aos_sandbox_root_read_journal_t "session.journal";
-type_transition aos_sandbox_controller_t aos_method46_controller_floor_t:file aos_sandbox_root_read_journal_t "session.journal.compact.tmp";

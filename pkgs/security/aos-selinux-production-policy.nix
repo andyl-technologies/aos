@@ -738,6 +738,10 @@ in
             -o emit-kernel-classmap
           ./emit-kernel-classmap > kernel-classmap.tsv
 
+          AOS_SELINUX_FILE_CONTEXTS_LIBRARY=${libselinux}/lib/libselinux.so.1 \
+          AOS_SELINUX_KERNEL_CLASSMAP="$PWD/kernel-classmap.tsv" \
+            ${python3}/bin/python3 ${policySupport}/method46_policy_test.py
+
           ${python3}/bin/python3 ${policySupport}/coverage_test.py
           ${python3}/bin/python3 ${policySupport}/coverage.py check \
             kernel-classmap.tsv final-policy.cil observed-policy-classmap.tsv
@@ -815,6 +819,12 @@ in
             -o file_contexts.bin \
             file_contexts
           test -s file_contexts.bin
+          # The compiled complete map must keep fixed session mains separate
+          # from each other and from unrelated Controller history.
+          ${python3}/bin/python3 ${policySupport}/verify_context_lookups.py \
+            --file-contexts file_contexts.bin \
+            --libselinux ${libselinux}/lib/libselinux.so.1 \
+            --expected ${policySupport}/method46-main-contexts.json
           ${python3}/bin/python3 ${policySupport}/verify_context_lookups.py \
             --file-contexts file_contexts.bin \
             --libselinux ${libselinux}/lib/libselinux.so.1 \

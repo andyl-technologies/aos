@@ -31,6 +31,25 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- Controller's Storage-session main and Storage's own main now have separate
+  SELinux labels, selected only for their exact journal and compaction names.
+  Normal writers retain their existing operations; Root retains only its
+  existing Controller readback, and the view preparer retains metadata access.
+  TPM helpers, the other endpoint and unrelated readers gain no main access.
+  The same effective-policy checker scans all expanded sources and disabled
+  grants, rejects foreign or generic label transitions and broad type/domain
+  membership, and covers every permission in the selected kernel's file class.
+  The new AOS Nix `checks.selinux-method46-main` passes nine tests using the
+  production class-map emitter/parser and source-built libselinux lookups.
+  Its audited 543-derivation closure excludes production policy; its exact
+  output derivation is independently verified. The broader working-tree
+  checker regression passes all 179 tests. Pure evaluation verifies that the
+  actual production recipe composes the dedicated TE and file-context labels;
+  its linked-policy scan and installed MAC tests have not run while the prior
+  networkd approval is pending. Existing old-label files are not silently
+  relabeled. This is the journal-custody prerequisite for the still-missing
+  initial service/helper roles, not permission to initialize or open admission.
+
 - The two manual initializers now share the existing fixed-unit public-output
   socket owner with offline provisioning. Exact unit/context pairs select
   separate Controller and Storage output labels; foreign contexts, ignored

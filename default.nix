@@ -2194,6 +2194,7 @@ in rec {
       inherit pkgs lib;
       mkSystem = mkFixtureSystem;
     };
+    selinux-method46-main = import ./lib/testing/selinux-method46-main.nix {inherit pkgs;};
     package-documentation = import ./tests/packages/documentation.nix {
       inherit pkgs lib;
       system = serverSystem;
@@ -2321,6 +2322,7 @@ in rec {
           eval
           module-args
           module-enforcement
+          selinux-method46-main
           package-documentation
           registry-hub
           sandbox-broker-credentials

@@ -95,6 +95,8 @@ class FakePolicy:
                 FakeRule(
                     f"type_transition {transition}",
                     default=transition.default,
+                    source=FakeAttribute("transition_source", (transition.source,)),
+                    target=FakeTypeAttribute({transition.target}),
                     filename_value=(
                         transition.filename if isinstance(transition.filename, str) else None
                     ),
@@ -882,6 +884,11 @@ class EffectivePolicyTest(unittest.TestCase):
             + 1
             + len(effective_policy.FORBIDDEN_PROVISIONER_TRANSITION_SOURCES)
             + len(effective_policy.GUARDED_OBJECT_TYPES)
+            + len(effective_policy.owner_policy.method46_policy.MAIN_TYPES) * (
+                2 + len(effective_policy.owner_policy.method46_policy.READ)
+                + len(effective_policy.owner_policy.method46_policy.WRITE)
+                + 1 + len(effective_policy.owner_policy.method46_policy.FORBIDDEN)
+            )
             + 2 * sum(len(domains) for _, domains in effective_policy.EXPLICIT_DOMAIN_ATTRIBUTES)
             + len(effective_policy.POSITIVE_ACCESS)
             + len(effective_policy.NEGATIVE_ACCESS)
