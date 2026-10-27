@@ -9,6 +9,20 @@ exports_files([
 ])
 
 filegroup(
+    name = "controller_audit_inputs",
+    srcs = [
+        "campaign-gate-matrix-inventory.toml",
+        "campaign-release-acceptance-contract.toml",
+        "phase9-campaign-release-acceptance-contract.nix",
+        "phase9-campaign-release-acceptance.nix",
+        "_phase9-campaign-release-acceptance.sh",
+        "_e2e-determinism-native-runner.sh",
+        "default.nix",
+    ],
+    visibility = ["//crates/crucible/crucible-test-support:__pkg__"],
+)
+
+filegroup(
     name = "qemu_host_gate_audit",
     testonly = True,
     srcs = ["default.nix", "phase2-qemu-inert.nix", "phase2-patch-microtests.nix"],

@@ -133,6 +133,68 @@ config_setting(
     constraint_values = ["@platforms//cpu:aarch64"],
 )
 
+# The ordinary controller tests the guest crate as a dynamic host program.
+# The independently packaged guest retains its static runtime above.
+rust_binary(
+    name = "controller_guest",
+    testonly = True,
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "crucible_guest",
+    crate_root = "src/main.rs",
+    srcs = ["src/main.rs", "src/selectable_group.rs"],
+    deps = [":lib_host", "//crates/crucible/crucible-campaign:lib_controller"] + DEPENDENCIES,
+)
+
+aos_rust_test(
+    name = "unit_controller",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate = ":lib_host",
+    deps = ["//crates/crucible/crucible-campaign:lib_controller"],
+)
+
+aos_rust_test(
+    name = "bin_crucible-guest_controller",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate = ":controller_guest",
+)
+
+[
+    aos_rust_test(
+        name = source.removeprefix("tests/").removesuffix(".rs") + "_controller",
+        package = RUST_PACKAGE,
+        lint_config = "//tools/bazel/rules:workspace_lints",
+        crate_root = source,
+        srcs = [source],
+        deps = [":lib_host", "//crates/crucible/crucible-campaign:lib_controller"] + DEPENDENCIES,
+        data = ["//:MODULE.bazel"] + ([
+            ":BUILD.bazel",
+            "//tests/build:_bazel-guest.nix",
+        ] if source == "tests/gate_abi_conformance.rs" else [
+            "//tests/crucible:phase1-production-fingerprint-sample.nix",
+            "//tests/crucible:phase7-production-rust-plugin-flight.nix",
+            "//docs/rfcs/0010-crucible:24-determinism-harness-testing.md",
+        ]),
+    )
+    for source in INTEGRATIONS
+]
+
+CONTROLLER_TESTS = [":unit_controller", ":bin_crucible-guest_controller"] + [
+    ":" + source.removeprefix("tests/").removesuffix(".rs") + "_controller"
+    for source in INTEGRATIONS
+]
+
+test_suite(name = "controller_tests", tests = CONTROLLER_TESTS)
+
+aos_license_check(
+    name = "controller_test_license_closure",
+    testonly = True,
+    roots = [":controller_guest"] + [target + "_binary" for target in CONTROLLER_TESTS],
+    license_domain = RUST_PACKAGE.license_domain,
+)
+
 aos_python_generator(
     name = "build_info",
     script = "//tools/bazel/metadata:guest_build_info.py",

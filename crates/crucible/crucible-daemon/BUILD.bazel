@@ -1,5 +1,6 @@
 load("@rules_rust//rust:defs.bzl", "rust_clippy", "rust_doc", "rust_doc_test", "rustfmt_test")
 load("//tools/bazel/rules:compile.bzl", "rust_binary", "rust_library")
+load("//tools/bazel/rules:controller_graph.bzl", "controller_dependencies", "controller_library", "controller_tests")
 load("//tools/bazel/rules:daemon_graph.bzl", "DAEMON_VARIANTS", "daemon_dependencies", "daemon_session_test_double_libraries")
 load("//tools/bazel/rules:license.bzl", "aos_license_check")
 load("//tools/bazel/rules:package.bzl", "aos_package")
@@ -180,6 +181,23 @@ aos_source_package(
     package = RUST_PACKAGE,
     srcs = glob(["**/*.rs"]),
     visibility = ["//visibility:public"],
+)
+
+# The combined controller tests use one coherent feature graph.
+controller_library(
+    package = RUST_PACKAGE,
+    sources = SOURCES,
+    common_deps = COMMON_DEPENDENCIES,
+    library_names = LIBRARIES,
+)
+
+controller_tests(
+    package = RUST_PACKAGE,
+    integrations = INTEGRATIONS,
+    dependencies = COMMON_DEPENDENCIES + controller_dependencies(LIBRARIES),
+    development_deps = DEVELOPMENT_DEPENDENCIES,
+    unit_compile_data = COMPILE_INPUTS,
+    unit_data = ["//tests/crucible:daemon_fixture_inputs"],
 )
 
 # The ordinary controller deliberately installs this development fixture.

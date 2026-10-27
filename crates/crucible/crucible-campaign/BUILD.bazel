@@ -1,5 +1,6 @@
 load("@rules_rust//rust:defs.bzl", "rust_clippy", "rust_doc", "rust_doc_test", "rustfmt_test")
 load("//tools/bazel/rules:compile.bzl", "rust_library")
+load("//tools/bazel/rules:controller_graph.bzl", "controller_dependencies", "controller_library", "controller_tests")
 load("//tools/bazel/rules:license.bzl", "aos_license_check")
 load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")
 load("//tools/bazel/rules:test.bzl", "aos_rust_test")
@@ -29,6 +30,22 @@ DEVELOPMENT_DEPENDENCIES = [
     "//third_party/rust:core_serde_json",
     "//third_party/rust:core_tempfile",
 ]
+
+# The combined controller tests retain the S3 development feature graph.
+controller_library(
+    package = RUST_PACKAGE,
+    sources = glob(["src/**/*.rs"], exclude = ["src/bin/**"]),
+    common_deps = DEPENDENCIES,
+    library_names = ["store"],
+)
+
+controller_tests(
+    package = RUST_PACKAGE,
+    integrations = glob(["tests/*.rs"], exclude = ["tests/gate_campaign_mutation_scaling.rs"], allow_empty = True),
+    dependencies = DEPENDENCIES + controller_dependencies(["store"]),
+    development_deps = DEVELOPMENT_DEPENDENCIES,
+    unit_compile_data = ["//docs/rfcs/0020-crucible-campaigns:schema-registry.tsv", "//docs/rfcs/0020-crucible-campaigns:11-implementation-plan.md"],
+)
 
 # Each nondefault variant selects the same named family configuration in both
 # packages. Default application consumers retain the ordinary feature graph.

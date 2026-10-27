@@ -25,13 +25,14 @@
     aos-activation-kubernetes = "aos-kubernetes-provider";
     aos-activation-nftables = "aos-network-ruleset-provider";
   };
+  configurationProviderSources = "pkgs/system/_aos-configuration-provider";
   rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
   family = import ./_bazel-rust-family.nix {
     inherit pkgs packages dependencyPackages sourceInventory rustcFlags;
     pname = "aos-bazel-activation-core";
     dependencyProfile = "activation-core-tests";
     repositories = pkgs.aosBazelRepositories // pkgs.aosBazelRustRepositories.activation-core-tests;
-    extraSourceDirectories = builtins.attrValues dependencyPackages;
+    extraSourceDirectories = [configurationProviderSources] ++ builtins.attrValues dependencyPackages;
     extraTests = map (name: "//${packages.${name}}:bin_${commands.${name}}") (builtins.attrNames commands);
     extraEditorTargets = pkgs.lib.concatMap (name: [
       "//${packages.${name}}:${commands.${name}}"
@@ -52,7 +53,7 @@
     repositories = pkgs.aosBazelRepositories // pkgs.aosBazelRustRepositories.activation-core;
     sourceDirectories =
       pkgs.lib.optionals (sourceInventory == null)
-      (["tools/bazel" "third_party/rust"] ++ builtins.attrValues packages ++ builtins.attrValues dependencyPackages);
+      (["tools/bazel" "third_party/rust" configurationProviderSources] ++ builtins.attrValues packages ++ builtins.attrValues dependencyPackages);
     analysisTargets = productionTargets;
   };
 in

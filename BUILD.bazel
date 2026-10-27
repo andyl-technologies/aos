@@ -48,5 +48,5 @@ filegroup(
         "pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch",
         "pkgs/emulation/qemu-patches/_atomic-patch.nix",
     ],
-    visibility = ["//crates/crucible/crucible-qemu-plugin:__pkg__"],
+    visibility = ["//crates/crucible/crucible-qemu-plugin:__pkg__", "//crates/crucible/crucible-test-support:__pkg__"],
 )

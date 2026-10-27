@@ -1,4 +1,5 @@
 load("//tools/bazel/rules:compile.bzl", "rust_library")
+load("//tools/bazel/rules:license.bzl", "aos_license_check")
 load("//tools/bazel/rules:package.bzl", "aos_package")
 load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")
 load("//tools/bazel/rules:source_package.bzl", "aos_source_package")
@@ -72,6 +73,70 @@ rust_doc_test(
 # fallback relative: rules_rust's absolute default embeds a sandbox sequence
 # number in env!("CARGO_MANIFEST_DIR"), making audit binaries depend on scheduling.
 SOURCE_AUDIT_COMPILER_ENV = {"CARGO_MANIFEST_DIR": "crates/crucible/crucible-test-support"}
+
+# This legacy consumer is compiled for inventory comparison only. The declared
+# toolchain Cargo supports sysroot metadata and rejects first-party builds;
+# runtime qualification requires migrating these nested checks to Bazel.
+CONTROLLER_FEATURE_COMPILER_ENV = dict(SOURCE_AUDIT_COMPILER_ENV.items() + {
+    "CARGO": "$(execpath @aos_tools//:cargo)",
+}.items())
+
+# The full controller includes every harness integration root, including the
+# audits whose Cargo-dependent runtime inputs still need migration. These
+# declarations establish compilation coverage, not passing runtime parity.
+CONTROLLER_DEVELOPMENT_DEPENDENCIES = [
+    "//third_party/rust:core_" + name
+    for name in ["rustix", "serde", "serde_json", "sha2", "tempfile", "toml"]
+]
+CONTROLLER_INTEGRATIONS = glob(["tests/*.rs"])
+CONTROLLER_COMPILE_INPUTS = [
+    "//crates/crucible/crucible-engine:source_package",
+    "//tests/crucible:controller_audit_inputs",
+    "//docs/rfcs/0020-crucible-campaigns:controller_audit_inputs",
+    "//:qemu_plugin_gate_audit",
+]
+
+aos_rust_test(
+    name = "unit_controller",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate = ":lib",
+    deps = CONTROLLER_DEVELOPMENT_DEPENDENCIES,
+)
+
+[
+    aos_rust_test(
+        name = source.removeprefix("tests/").removesuffix(".rs") + "_controller",
+        package = RUST_PACKAGE,
+        lint_config = "//tools/bazel/rules:workspace_lints",
+        crate_root = source,
+        srcs = [source] + glob([source.removesuffix(".rs") + "/**/*.rs", "tests/support/**/*.rs"], allow_empty = True),
+        compile_data = CONTROLLER_COMPILE_INPUTS + (["@aos_tools//:cargo"] if source == "tests/feature_powerset.rs" else []),
+        rustc_env = CONTROLLER_FEATURE_COMPILER_ENV if source == "tests/feature_powerset.rs" else SOURCE_AUDIT_COMPILER_ENV,
+        env = {"AOS_SOURCE_CATALOG": "crates/source_catalog.json"},
+        data = ["//crates:source_catalog"] + CONTROLLER_COMPILE_INPUTS + [
+            "//tests/crucible:engineering-hygiene-baseline.txt",
+            "//tests/crucible:testing-standards-baseline.txt",
+            "//docs/rfcs/0010-crucible:spec_index_audit",
+        ],
+        deps = [":lib"] + CONTROLLER_DEVELOPMENT_DEPENDENCIES,
+    )
+    for source in CONTROLLER_INTEGRATIONS
+]
+
+CONTROLLER_TESTS = [":unit_controller"] + [
+    ":" + source.removeprefix("tests/").removesuffix(".rs") + "_controller"
+    for source in CONTROLLER_INTEGRATIONS
+]
+
+test_suite(name = "controller_tests", tests = CONTROLLER_TESTS)
+
+aos_license_check(
+    name = "controller_test_license_closure",
+    testonly = True,
+    roots = [":lib"] + [target + "_binary" for target in CONTROLLER_TESTS],
+    license_domain = RUST_PACKAGE.license_domain,
+)
 
 aos_rust_test(
     name = "crate_unsafe_fence",

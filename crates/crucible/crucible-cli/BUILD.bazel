@@ -1,5 +1,6 @@
 load("@rules_rust//rust:defs.bzl", "rust_clippy", "rust_doc", "rustfmt_test")
 load("//tools/bazel/rules:compile.bzl", "rust_binary")
+load("//tools/bazel/rules:controller_graph.bzl", "controller_dependencies", "controller_features")
 load("//tools/bazel/rules:crucible_cli_graph.bzl", "CRUCIBLE_CLI_VARIANTS", "cli_dependencies", "cli_integration_sources")
 load("//tools/bazel/rules:license.bzl", "aos_license_check")
 load("//tools/bazel/rules:package.bzl", "aos_package")
@@ -145,6 +146,67 @@ aos_source_package(
     package = RUST_PACKAGE,
     srcs = glob(["**/*.rs"]),
     visibility = ["//visibility:public"],
+)
+
+# The combined controller tests use one coherent feature graph.
+CONTROLLER_FEATURES = controller_features(RUST_PACKAGE)
+CONTROLLER_DEPENDENCIES = COMMON_DEPENDENCIES + DEVELOPMENT_DEPENDENCIES + controller_dependencies(LIBRARIES + ["engine", "qemu", "store"])
+
+rust_binary(
+    name = "controller_test_cli",
+    testonly = True,
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "crucible",
+    crate_root = "src/main.rs",
+    srcs = SOURCES,
+    compile_data = SOURCE_AUDIT_INPUTS,
+    crate_features = CONTROLLER_FEATURES,
+    deps = CONTROLLER_DEPENDENCIES,
+)
+
+aos_rust_test(
+    name = "bin_crucible_controller",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "crucible",
+    crate_root = "src/main.rs",
+    srcs = SOURCES,
+    compile_data = TEST_COMPILE_INPUTS,
+    crate_features = CONTROLLER_FEATURES,
+    runfile_env = {"SSL_CERT_FILE": "@aos_cli_runtime//:ca-certificates.crt"},
+    deps = CONTROLLER_DEPENDENCIES,
+)
+
+[
+    aos_rust_test(
+        name = source.removeprefix("tests/").removesuffix(".rs") + "_controller",
+        package = RUST_PACKAGE,
+        lint_config = "//tools/bazel/rules:workspace_lints",
+        crate_root = source,
+        srcs = cli_integration_sources(source),
+        compile_data = TEST_COMPILE_INPUTS,
+        crate_features = CONTROLLER_FEATURES,
+        data = [":controller_test_cli"],
+        rustc_env = {"CARGO_BIN_EXE_crucible": "$(rootpath :controller_test_cli)"},
+        runfile_env = {"SSL_CERT_FILE": "@aos_cli_runtime//:ca-certificates.crt"},
+        deps = CONTROLLER_DEPENDENCIES,
+    )
+    for source in INTEGRATIONS
+]
+
+CONTROLLER_TESTS = [":bin_crucible_controller"] + [
+    ":" + source.removeprefix("tests/").removesuffix(".rs") + "_controller"
+    for source in INTEGRATIONS
+]
+
+test_suite(name = "controller_tests", tests = CONTROLLER_TESTS)
+
+aos_license_check(
+    name = "controller_test_license_closure",
+    testonly = True,
+    roots = [":controller_test_cli"] + [target + "_binary" for target in CONTROLLER_TESTS],
+    license_domain = RUST_PACKAGE.license_domain,
 )
 
 # The installed controller CLI excludes every test-only backend feature.

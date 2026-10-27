@@ -80,6 +80,7 @@ include("//third_party/rust:qemu-test-oracle-host/repositories.MODULE.bazel")
 include("//third_party/rust:store-s3/repositories.MODULE.bazel")
 include("//third_party/rust:daemon/repositories.MODULE.bazel")
 include("//third_party/rust:crucible-cli/repositories.MODULE.bazel")
+include("//third_party/rust:controller-tests/repositories.MODULE.bazel")
 include("//third_party/rust:formats/repositories.MODULE.bazel")
 
 include("//third_party/rust:native-foundation/repositories.MODULE.bazel")

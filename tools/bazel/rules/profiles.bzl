@@ -3,6 +3,7 @@
 def _dependency_profile_impl(ctx):
     if ctx.build_setting_value not in [
         "aos-cli-tests",
+        "controller-tests",
         "aos-cli-fleet-tests",
         "aos-cli-production",
         "hub-worker-tests",

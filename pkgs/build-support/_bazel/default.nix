@@ -456,6 +456,11 @@
       root = ../../..;
       family = "crucible-cli";
     };
+    controller-tests = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "controller-tests";
+    };
     daemon = import ./rust-sources.nix {
       inherit pkgs lib;
       root = ../../..;

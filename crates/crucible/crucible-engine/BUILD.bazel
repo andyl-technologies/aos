@@ -1,5 +1,6 @@
 load("@rules_rust//rust:defs.bzl", "rust_clippy", "rust_doc", "rust_doc_test", "rustfmt_test")
 load("//tools/bazel/rules:compile.bzl", "rust_binary", "rust_library")
+load("//tools/bazel/rules:controller_graph.bzl", "controller_dependency", "controller_library", "controller_tests")
 load("//tools/bazel/rules:daemon_graph.bzl", "daemon_dependency_libraries")
 load("//tools/bazel/rules:license.bzl", "aos_license_check")
 load("//tools/bazel/rules:package.bzl", "aos_package")
@@ -316,6 +317,25 @@ aos_source_package(
     package = RUST_PACKAGE,
     srcs = glob(["**/*.rs"]),
     visibility = ["//visibility:public"],
+)
+
+# The combined controller tests use one coherent feature graph.
+controller_library(
+    package = RUST_PACKAGE,
+    sources = SOURCES,
+    common_deps = [controller_dependency(dependency) for dependency in DEPENDENCIES],
+    compile_data = ["//crates/crucible/crucible-qemu-shmem:src/abi_version.in"],
+)
+
+controller_tests(
+    package = RUST_PACKAGE,
+    integrations = INTEGRATIONS,
+    dependencies = [controller_dependency(dependency) for dependency in DEPENDENCIES],
+    development_deps = DEVELOPMENT_DEPENDENCIES,
+    compile_inputs = TEST_COMPILE_INPUTS,
+    source_inputs = TEST_SOURCE_INPUTS,
+    runtime_inputs = TEST_RUNTIME_INPUTS,
+    environments = TEST_ENVIRONMENTS,
 )
 
 # This fixture is rebuilt independently from the installed controller CLI.

@@ -7,3 +7,9 @@ exports_files(
     ["11-implementation-plan.md"],
     visibility = ["//crates/crucible/crucible-campaign:__pkg__"],
 )
+
+filegroup(
+    name = "controller_audit_inputs",
+    srcs = glob(["*.md", "*.tsv"]),
+    visibility = ["//crates/crucible/crucible-test-support:__pkg__"],
+)

@@ -91,6 +91,7 @@ load(":qemu-test-oracle-host/aliases.bzl", QEMU_TEST_ORACLE_HOST_CRATES = "CRATE
 load(":store-s3/aliases.bzl", STORE_S3_CRATES = "CRATES")
 load(":daemon/aliases.bzl", DAEMON_CRATES = "CRATES")
 load(":crucible-cli/aliases.bzl", CRUCIBLE_CLI_CRATES = "CRATES")
+load(":controller-tests/aliases.bzl", CONTROLLER_TEST_CRATES = "CRATES")
 load(":formats/aliases.bzl", FORMATS_CRATES = "CRATES")
 
 load(":native-foundation/aliases.bzl", NATIVE_FOUNDATION_CRATES = "CRATES")
@@ -174,6 +175,7 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
             "//tools/bazel/rules:native_foundation_dependencies": NATIVE_FOUNDATION_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:formats_dependencies": FORMATS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:crucible_cli_dependencies": CRUCIBLE_CLI_CRATES.get(name, "//tools/bazel/rules:crucible_cli_profile_required"),
+            "//tools/bazel/rules:controller_test_dependencies": CONTROLLER_TEST_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:daemon_dependencies": DAEMON_CRATES.get(name, "//tools/bazel/rules:daemon_profile_required"),
             "//tools/bazel/rules:store_s3_dependencies": STORE_S3_CRATES.get(name, "//tools/bazel/rules:store_s3_profile_required"),
             "//tools/bazel/rules:qemu_host_dependencies": QEMU_HOST_CRATES.get(name, "//tools/bazel/rules:qemu_host_profile_required"),
@@ -190,6 +192,7 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
     )
     for name in sorted(dict(
         NATIVE_BINDING_CRATES.items()
+        + CONTROLLER_TEST_CRATES.items()
         + HUB_SERVICE_CRATES.items()
         + HUB_SERVICE_TESTS_CRATES.items()
         + HUB_SERVICE_ALL_FEATURES_CRATES.items()
@@ -424,6 +427,12 @@ CRUCIBLE_CLI_PACKAGES = dict(DAEMON_PACKAGES.items() + {
     "tokio-rustls": crate.spec(version = "=0.26.4"),
     "url": crate.spec(version = "=2.5.8"),
     "zeroize": crate.spec(version = "=1.9.0"),
+}.items())
+
+# Selecting every controller package also selects the S3 adapter's development
+# configuration. Keep that feature closure out of installed CLI compilations.
+CONTROLLER_TEST_PACKAGES = dict(CRUCIBLE_CLI_PACKAGES.items() + {
+    "aws-config": STORE_S3_PACKAGES["aws-config"],
 }.items())
 
 # Portable formats and their contract consumers share one coherent graph.
@@ -1904,6 +1913,13 @@ FAMILY_FEATURE_VARIANTS = {
             "features": ["default", "std"],
         }),
     },
+    "controller-tests": {
+        "indexmap": json.encode({
+            "version": "2.14.0",
+            "resolved_features": ["default", "serde", "std"],
+            "features": ["default", "std"],
+        }),
+    },
     # Cargo retains indexmap's target-side default/std unit in the daemon.
     "daemon": {
         "indexmap": json.encode({
@@ -2040,7 +2056,7 @@ APPROVED_LICENSES = [
         permissive_crates = (
             NATIVE_FOUNDATION_PERMISSIVE_CRATES if family in ["native-foundation", "native-foundation-tests", "native-foundation-minimal"]
             else FORMATS_PERMISSIVE_CRATES if family == "formats"
-            else DAEMON_PERMISSIVE_CRATES if family in ["daemon", "crucible-cli"]
+            else DAEMON_PERMISSIVE_CRATES if family in ["daemon", "crucible-cli", "controller-tests"]
             else ACTIVATION_CRUCIBLE_PERMISSIVE_CRATES if family == "activation-crucible"
             else ENGINE_PERMISSIVE_CRATES if family in ["activation-crucible-tests", "engine", "session", "control", "qemu-host", "qemu-test-oracle-host"]
             else GUEST_PERMISSIVE_CRATES if family == "guest"
@@ -2127,6 +2143,7 @@ APPROVED_LICENSES = [
         ("store-s3", STORE_S3_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
         ("daemon", DAEMON_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
         ("crucible-cli", CRUCIBLE_CLI_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
+        ("controller-tests", CONTROLLER_TEST_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
         ("native-foundation", NATIVE_FOUNDATION_PACKAGES, NATIVE_FOUNDATION_ANNOTATIONS, "apache-host"),
         ("native-bindings", NATIVE_BINDING_PACKAGES, {name: NATIVE_FOUNDATION_ANNOTATIONS[name] for name in ["openssl-sys", "libz-sys"]}, "apache-host"),
         ("native-foundation-tests", NATIVE_FOUNDATION_TESTS_PACKAGES, NATIVE_FOUNDATION_ANNOTATIONS, "apache-host"),
@@ -2218,6 +2235,7 @@ APPROVED_LICENSES = [
         "store-s3",
         "daemon",
         "crucible-cli",
+        "controller-tests",
         "native-foundation",
         "native-bindings",
         "native-foundation-tests",

@@ -21,6 +21,12 @@ config_setting(
     visibility = ["//visibility:public"],
 )
 
+config_setting(
+    name = "controller_test_dependencies",
+    flag_values = {":dependency_profile": "controller-tests"},
+    visibility = ["//visibility:public"],
+)
+
 daemon_profile_required(
     name = "daemon_profile_required",
     visibility = ["//visibility:public"],
