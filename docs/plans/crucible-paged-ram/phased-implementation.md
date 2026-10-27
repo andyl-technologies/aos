@@ -69,7 +69,7 @@ failed attempts appear in the dated entries below.
 | Native compiler correction | Signed atomic `4b64466043`, conventional `3038851ffc`, preserves the deliberately disconnected RR birth body and all CPU admission refusals, documenting its unused state. Fresh configure, actual owning Source object, direct default/provider Source objects, six syntax checks and extraction pass with unchanged warnings. The packaged configuration completes all 1,941 x86 image compile/link actions with its existing system libfdt. | The separate minimal configuration's bundled-libfdt compiler failure remains recorded. Compilation and linking establish no runtime qualification. Complete execution backing, containing prebirth payment and external collection remain absent. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The retained license-boundary run stops at strict controller Clippy before its boundary assertions. The latest isolated strict host-library check reports 20 errors: one large-error return, sixteen unused-code diagnostics and three large enum variants. The QMP propagation warning is corrected; remaining carrier and integration work is unfinished. No current-source boundary-pass result is recorded. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 713 bindings: 694 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
+| Requirements | 723 unique numbered-requirement cases: 708 component and fifteen live-VM bindings, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
 
 #### Archive transfer and receiving retention
 
@@ -144,10 +144,25 @@ adapter corrections and checked inspection; it does not validate those later
 components. The inventory for this copying component contains 659 model,
 25 format and nineteen native bindings, with no qualified or advertised capability.
 
-Blocked-I/O deadlines remain unqualified. Private export and finding-midpoint
-callers retain paired outer GC guards. Those callers need a destination publication
-handoff before their overlapping guards can be removed. This component does not
-close those gaps.
+Blocked-I/O deadlines remain unqualified. The private-export source-journal and
+final bundle-publication handoff remains under implementation.
+
+#### Finding import source-reader handoff
+
+Finding imports acquire an independent reader claim for the exact named source
+archive before inspection and planning. The destination GC guard spans checked
+copying, exact-pin persistence, archive and campaign ref publication, and midpoint
+construction. The destination guard closes before the source reader claim retires;
+a different archive plan refuses before destination acquisition.
+
+Three real Directory controls pass. An 8 KiB RAM image remains reachable through
+the source reader alone while source GC collects unrelated garbage during copying.
+After destination publication and reader retirement, source GC collects the RAM
+root, trees and page while the destination archive independently retains them.
+Cancellation after an observed destination write retains the original typed cause
+and storage-cleanup state, publishes no destination ref, and permits actual GC of
+the copied orphan. These component results do not qualify native import, receiver
+execution readiness, blocked-I/O deadlines or crash reconciliation.
 
 #### Checked source archive-metadata staging
 
@@ -321,17 +336,18 @@ paid data and retain credit until the final clone closes; finite digest refusal
 retains its actual original custody.
 
 All 471 campaign library tests pass, including the million-continuation and
-10,000-transition controls. The six focused inspection controls and the large
-metadata-staging cancellation/retry control pass. Campaign/store all-target
-compilation, strict library Clippy, exact-file formatting and the engineering
-hygiene gate pass. A final formatter-only change to the closure facade is checked
-against the formatter output of the tested source; consumer compilation and the
-mandatory application-target build are tracked separately.
+10,000-transition controls. All 800 store library tests pass, including both
+512 MiB packed-storage exercises. The six focused inspection controls and the
+large metadata-staging cancellation/retry control pass. Campaign, store, daemon
+and CLI all-target compilation, strict campaign/store library Clippy, exact-file
+formatting and the engineering hygiene gate pass. The 95 testing-standard and
+hygiene controls pass for the checked-closure checkpoint. Its mandatory
+application-target build is tracked separately.
 
-The binding inventory has 243 requirements and 720 unique numbered-requirement
-cases: 680 model, 25 format and fifteen live-VM bindings. It still qualifies zero
+The binding inventory has 243 requirements and 723 unique numbered-requirement
+cases: 683 model, 25 format and fifteen live-VM bindings. It still qualifies zero
 requirements and advertises no capabilities. Blocked-I/O deadlines, complete
-physical funding, source/destination handoff joins, native activation and physical
+physical funding, private-export handoff completion, native activation and physical
 resource return remain unfinished; these component results do not finish the RFC.
 
 #### Executor exact-candidate handoff retention

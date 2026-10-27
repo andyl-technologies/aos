@@ -5,12 +5,109 @@ use crate::imported_checkpoint::{
     AuthenticatedImportedCheckpoint, ImportedCheckpointAdmission, ReceiverCheckpointPolicy,
 };
 use crucible_campaign::{
-    CampaignArchiveCheckpointResolver, CampaignArchiveCheckpointSelection,
-    CampaignArchiveManifestId, CampaignArchivePolicy, CampaignFactId, ConfigurationId,
-    ExactCheckpointId, FindingId,
+    CampaignArchiveCheckpointResolver, CampaignArchiveCheckpointSelection, CampaignArchiveLease,
+    CampaignArchiveManifestId, CampaignArchivePlan, CampaignArchivePolicy, CampaignFactId,
+    ConfigurationId, ExactCheckpointId, FindingId,
 };
 use crucible_store::content_store::DurabilityRequirement;
+use crucible_store::owned_decode::DecodeBudget;
 use crucible_store::ram::RamStoreError;
+
+#[cfg(test)]
+mod tests;
+
+const FINDING_BUNDLE_ARCHIVE_NAME: &str = "exported-finding-bundle";
+
+/// Retains the named source archive until one destination publication succeeds.
+///
+/// The reader claim replaces a lifetime source GC exclusion. Copying acquires
+/// only the destination exclusion, and the handoff runs before that exclusion
+/// and the source claim are released in that order.
+struct RetainedFindingArchiveTransfer<'a> {
+    source: &'a CampaignRepository,
+    destination: &'a CampaignRepository,
+    archive: CampaignArchiveManifestId,
+    source_lease: CampaignArchiveLease,
+}
+
+impl<'a> RetainedFindingArchiveTransfer<'a> {
+    /// Installs an independent source owner for the exact bundle archive.
+    ///
+    /// # Errors
+    /// Returns an error when the named source archive changed, its reader claim
+    /// cannot be published, or the original operation boundary is refused.
+    fn retain(
+        source: &'a CampaignRepository,
+        destination: &'a CampaignRepository,
+        archive: CampaignArchiveManifestId,
+        boundary: &mut dyn FnMut() -> Result<(), RamStoreError>,
+    ) -> Result<Self, CampaignRepositoryError> {
+        let source_lease = source.retain_campaign_archive_ref_with_boundary(
+            FINDING_BUNDLE_ARCHIVE_NAME,
+            archive,
+            boundary,
+        )?;
+        Ok(Self {
+            source,
+            destination,
+            archive,
+            source_lease,
+        })
+    }
+
+    /// Copies the retained archive and installs its destination successor.
+    ///
+    /// The handoff runs while destination GC remains excluded. Its successful
+    /// result must therefore be produced only after publishing an ordinary
+    /// archive ref. Failure releases partial destination objects without
+    /// replacing the initiating error.
+    ///
+    /// # Errors
+    /// Returns the exact copy or handoff error after releasing the destination
+    /// exclusion before the independent source reader claim.
+    fn transfer_with_handoff<T, E>(
+        self,
+        plan: &CampaignArchivePlan,
+        durability: DurabilityRequirement,
+        source_original: Option<&DecodeBudget>,
+        destination_original: Option<&DecodeBudget>,
+        boundary: &mut dyn FnMut() -> Result<(), RamStoreError>,
+        handoff: impl FnOnce(&mut dyn FnMut() -> Result<(), RamStoreError>) -> Result<T, E>,
+    ) -> Result<T, E>
+    where
+        E: From<CampaignRepositoryError>,
+    {
+        let Self {
+            source,
+            destination,
+            archive,
+            source_lease,
+        } = self;
+        if plan.manifest_id() != archive {
+            return Err(E::from(CampaignRepositoryError::Integrity {
+                reason: "retained-finding-archive-plan-mismatch",
+            }));
+        }
+        let destination_gc = destination.acquire_gc_exclusion_guard().map_err(E::from)?;
+        let result = source
+            .transfer_campaign_archive_objects_with_boundary(
+                destination,
+                plan,
+                durability,
+                source_original,
+                destination_original,
+                boundary,
+            )
+            .map_err(E::from)
+            .and_then(|_| handoff(boundary));
+
+        // The published destination root, when present, precedes source claim
+        // retirement. On failure, partial destination objects remain orphaned.
+        drop(destination_gc);
+        drop(source_lease);
+        result
+    }
+}
 
 /// A receiver-published finding and its original full resource owner.
 ///
@@ -214,8 +311,10 @@ impl GuardedCampaignOwner {
     /// Refuses a repository without original namespace metadata admission.
     pub fn repository_decode_budget(
         &self,
-    ) -> Result<&crucible_engine::owned_decode::DecodeBudget, crucible_store::content_store::StoreError>
-    {
+    ) -> Result<
+        &crucible_engine::owned_decode::DecodeBudget,
+        crucible_store::content_store::StoreError,
+    > {
         self.inner.repository.ram_admission().original().ok_or(
             crucible_store::content_store::StoreError::Unsupported {
                 capability: "decoded-metadata-resources",
@@ -294,8 +393,10 @@ impl GuardedCampaignOwner {
 
     /// Publishes a private authenticated finding copy under its admitted quota.
     ///
-    /// The input repository is read only. The owner must already contain the
-    /// caller's exact packaged lifecycle and fault replay recipe. Imported
+    /// Source objects and campaign refs remain unchanged. A temporary archive
+    /// reader claim retains the exact source closure until the receiver's
+    /// archive and campaign refs replace it. The owner must already contain
+    /// the caller's exact packaged lifecycle and fault replay recipe. Imported
     /// execution rows are never installed; native launch follows full receiver
     /// archive and durable pin authentication.
     ///
@@ -327,6 +428,12 @@ impl GuardedCampaignOwner {
                 .into()
             })
         };
+        let retained = RetainedFindingArchiveTransfer::retain(
+            source,
+            &self.inner.repository,
+            archive,
+            &mut boundary,
+        )?;
         let inspected = source.inspect_campaign_archive_with_boundary(archive, &mut boundary)?;
         if inspected.manifest().policy() != CampaignArchivePolicy::Executable {
             return Err(GuardedFindingMidpointError::Refused(
@@ -348,79 +455,79 @@ impl GuardedCampaignOwner {
         }
         let campaign = self.campaign(scenario.scenario_def().seed())?;
         let archive_name = campaign.as_str().to_owned();
-        // Both real namespaces remain fenced through root-last publication.
-        let _source_gc = source.acquire_gc_exclusion_guard()?;
-        let _receiver_gc = self.inner.repository.acquire_gc_exclusion_guard()?;
         decoding.check()?;
-        source.transfer_campaign_archive_objects_with_boundary(
-            &self.inner.repository,
+        retained.transfer_with_handoff(
             &plan,
             DurabilityRequirement::new(1, false)?,
             source.ram_admission().original(),
             Some(original),
             &mut boundary,
-        )?;
-        let selections_path = self
-            .inner
-            .journal_root()
-            .join(&archive_name)
-            .join("imported-pins");
-        let mut selections = crate::DirectoryExactPinMaterializationStore::open(&selections_path)?;
-        for selection in plan.manifest().checkpoint_selections() {
-            boundary()?;
-            let prepared = crate::ExactPinMaterializationSelection::prepare_at_snapshot(
-                &self.inner.repository,
-                &self.inner.checkpoints,
-                &campaign,
-                plan.manifest().source_snapshot(),
-                selection.configuration(),
-                selection.pin_fact(),
-                selection.checkpoint(),
-            )?;
-            selections.select_import_if_absent(prepared)?;
-        }
-        self.inner
-            .repository
-            .publish_campaign_archive_with_boundary(&archive_name, None, &plan, &mut boundary)?;
-        self.inner
-            .repository
-            .publish_transferred_campaign_with_boundary(
-                campaign.as_str(),
-                None,
-                archive,
-                &mut boundary,
-            )?;
-        let midpoint =
-            crate::campaign_finding_handoff::prepare_archived_finding_debug_midpoint_with_boundary(
-                &self.inner.repository,
-                archive,
-                finding,
-                &self.inner.checkpoints,
-                authentication.context()?.cancellation(),
-                &mut boundary,
-            )?;
-        if midpoint.source().id() != scenario.id() {
-            return Err(GuardedFindingMidpointError::Refused(
-                "finding scenario differs",
-            ));
-        }
-        decoding.check()?;
-        decoding.charge_bytes(
-            (std::mem::size_of::<GuardedFindingMidpointInner>() + 2 * std::mem::size_of::<usize>())
-                as u64,
-        )?;
-        authentication.complete()?;
-        drop(authentication);
-        Ok(GuardedImportedFindingMidpoint {
-            inner: Arc::new(GuardedFindingMidpointInner {
-                owner: self.clone(),
-                midpoint,
-                decoding,
-                archive: archive_name,
-                campaign,
-                selections: selections_path,
-            }),
-        })
+            |boundary| {
+                let selections_path = self
+                    .inner
+                    .journal_root()
+                    .join(&archive_name)
+                    .join("imported-pins");
+                let mut selections =
+                    crate::DirectoryExactPinMaterializationStore::open(&selections_path)?;
+                for selection in plan.manifest().checkpoint_selections() {
+                    boundary()?;
+                    let prepared = crate::ExactPinMaterializationSelection::prepare_at_snapshot(
+                        &self.inner.repository,
+                        &self.inner.checkpoints,
+                        &campaign,
+                        plan.manifest().source_snapshot(),
+                        selection.configuration(),
+                        selection.pin_fact(),
+                        selection.checkpoint(),
+                    )?;
+                    selections.select_import_if_absent(prepared)?;
+                }
+                self.inner.repository.publish_campaign_archive_with_boundary(
+                    &archive_name,
+                    None,
+                    &plan,
+                    boundary,
+                )?;
+                self.inner
+                    .repository
+                    .publish_transferred_campaign_with_boundary(
+                        campaign.as_str(),
+                        None,
+                        archive,
+                        boundary,
+                    )?;
+                let midpoint = crate::campaign_finding_handoff::prepare_archived_finding_debug_midpoint_with_boundary(
+                    &self.inner.repository,
+                    archive,
+                    finding,
+                    &self.inner.checkpoints,
+                    authentication.context()?.cancellation(),
+                    boundary,
+                )?;
+                if midpoint.source().id() != scenario.id() {
+                    return Err(GuardedFindingMidpointError::Refused(
+                        "finding scenario differs",
+                    ));
+                }
+                decoding.check()?;
+                decoding.charge_bytes(
+                    (std::mem::size_of::<GuardedFindingMidpointInner>()
+                        + 2 * std::mem::size_of::<usize>()) as u64,
+                )?;
+                authentication.complete()?;
+                Ok(GuardedImportedFindingMidpoint {
+                    inner: Arc::new(GuardedFindingMidpointInner {
+                        owner: self.clone(),
+                        midpoint,
+                        decoding,
+                        archive: archive_name,
+                        campaign,
+                        selections: selections_path,
+                    }),
+                })
+            },
+        )
     }
 }
 

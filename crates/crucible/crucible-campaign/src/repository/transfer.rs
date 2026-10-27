@@ -421,9 +421,10 @@ impl CampaignRepository {
     /// Destination presence is never trusted. An existing object is read to
     /// authenticated EOF. A copied object is accepted only after a durable,
     /// length-matching receipt and a second authenticated destination read.
-    /// This local-copy primitive requires both namespace GC fences to remain
-    /// held through final destination ref publication. It does not provide
-    /// crash-recoverable transfer journals.
+    /// The source closure must remain protected by its namespace GC fence or
+    /// an independently registered retention owner. The destination GC fence
+    /// remains held through final destination ref publication. This primitive
+    /// does not provide crash-recoverable transfer journals.
     ///
     /// # Errors
     ///
@@ -458,10 +459,12 @@ impl CampaignRepository {
 
     /// Copies a local archive while retaining its original operation boundary.
     ///
-    /// The caller holds both real namespace GC fences through final durable
-    /// archive/ref publication. Canonical local transfer identity authenticates
-    /// the bounded page protocol; it does not establish distributed retry
-    /// authority or replace persisted transfer journals.
+    /// The caller retains the complete source closure through its namespace GC
+    /// fence or an independently registered retention owner, and holds the
+    /// destination GC fence through final durable archive/ref publication.
+    /// Canonical local transfer identity authenticates the bounded page
+    /// protocol; it does not establish distributed retry authority or replace
+    /// persisted transfer journals.
     ///
     /// # Errors
     /// Refuses invalid source state, corrupt destination objects, insufficient
@@ -497,8 +500,12 @@ impl CampaignRepository {
     /// Copies an archive under its journal-bound operation and destination.
     ///
     /// RAM requests carry authenticated logical coordinates and bounded object
-    /// chunks. The caller retains both journals before entering this operation;
-    /// the resulting receipt establishes archive possession only.
+    /// chunks. The caller protects the complete source closure and destination
+    /// objects through registered retention owners or namespace GC fences.
+    /// Crash-recoverable transfers retain their journals before entering this
+    /// operation; a local handoff retains the destination fence through final
+    /// ref publication. The resulting receipt establishes archive possession
+    /// only.
     ///
     /// # Errors
     ///
