@@ -35,7 +35,7 @@ in
         build = toString context.build;
         broad_build = toString broad.${name}.build;
         workspace = toString context.workspace.source;
-        source_inventory = toString sourceInventories.${name};
+        source_inventory = "${sourceInventories.${name}}";
       })
       strict)}
     JSON
