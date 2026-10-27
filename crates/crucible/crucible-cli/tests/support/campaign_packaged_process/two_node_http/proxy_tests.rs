@@ -1,7 +1,7 @@
 //! Three-guest proxy topology, routed completion, and setup admission checks.
 
 use super::*;
-use crucible_core::{ConditionEvaluationPass, ConditionLeaf, ObservableEvent};
+use ::crucible_engine::{ConditionEvaluationPass, ConditionLeaf, ObservableEvent};
 
 #[test]
 fn proxy_profile_roundtrips_with_only_the_two_world_mediated_legs() -> Result<(), Box<dyn Error>> {
@@ -104,7 +104,7 @@ fn proxy_completion_requires_request_and_exact_body_on_both_legs() -> Result<(),
         ),
     ];
     let evaluate = |events| -> Result<bool, Box<dyn Error>> {
-        let prefix = crucible_core::test_support::condition_prefix_from_observable_events_for_test(
+        let prefix = ::crucible_engine::test_support::condition_prefix_from_observable_events_for_test(
             at.ticks, events,
         )?;
         let mut pass =

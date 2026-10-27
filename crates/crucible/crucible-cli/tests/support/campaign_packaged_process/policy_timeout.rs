@@ -78,7 +78,7 @@ pub(super) fn validate(fixture: &FlightFixture, explanation: &Value) -> Result<(
         ),
         "retained reproduction",
     )?;
-    let configuration = crucible_core::Configuration {
+    let configuration = ::crucible_engine::Configuration {
         def: artifact.scenario_def(),
         schedule: artifact.schedule().clone(),
     }
@@ -93,12 +93,12 @@ pub(super) fn validate(fixture: &FlightFixture, explanation: &Value) -> Result<(
         artifact,
     };
     // The record's log segments are served by the repository by position.
-    let log_segments = crucible_core::SharedSegmentStore::new();
+    let log_segments = ::crucible_engine::SharedSegmentStore::new();
     for (index, segment) in (0_u32..).zip(replay_record.log_segments()) {
         let bytes = repository.read_finding_triage_replay_log_segment(replay_id, index)?;
-        crucible_core::SegmentSink::put_segment(&log_segments, segment.content(), &bytes)?;
+        ::crucible_engine::SegmentSink::put_segment(&log_segments, segment.content(), &bytes)?;
     }
-    let native_replay = crucible_core::FailureTriageReplayEvidence::from_compact_binary(
+    let native_replay = ::crucible_engine::FailureTriageReplayEvidence::from_compact_binary(
         native_finding,
         replay_record.payload(),
         std::sync::Arc::new(log_segments),

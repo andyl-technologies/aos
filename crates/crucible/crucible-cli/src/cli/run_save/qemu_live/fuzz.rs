@@ -905,9 +905,9 @@ mod finding_tests {
 
     #[test]
     fn duplicate_coverage_does_not_enter_future_sampling_guidance() {
-        let feedback = crucible::ContentHash::default();
-        let first = crucible::ContentHash::from_bytes(b"covered-block");
-        let second = crucible::ContentHash::from_bytes(b"new-block");
+        let feedback = crate::crucible_engine::ContentHash::default();
+        let first = crate::crucible_engine::ContentHash::from_bytes(b"covered-block");
+        let second = crate::crucible_engine::ContentHash::from_bytes(b"new-block");
         let mut observed = std::collections::BTreeSet::new();
         let mut guidance = Vec::new();
 

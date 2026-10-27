@@ -958,12 +958,12 @@ fn validate_replayed_failure_boundary(
             replay,
         };
         // The record's log segments are served by the repository by position.
-        let log_segments = crucible_core::SharedSegmentStore::new();
+        let log_segments = ::crucible_engine::SharedSegmentStore::new();
         for (index, segment) in (0_u32..).zip(record.log_segments()) {
             let bytes = repository.read_finding_triage_replay_log_segment(replay_id, index)?;
-            crucible_core::SegmentSink::put_segment(&log_segments, segment.content(), &bytes)?;
+            ::crucible_engine::SegmentSink::put_segment(&log_segments, segment.content(), &bytes)?;
         }
-        let native_replay = crucible_core::FailureTriageReplayEvidence::from_compact_binary(
+        let native_replay = ::crucible_engine::FailureTriageReplayEvidence::from_compact_binary(
             native_finding,
             record.payload(),
             std::sync::Arc::new(log_segments),

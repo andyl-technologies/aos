@@ -2,7 +2,7 @@
 
 use super::*;
 
-use crucible_engine::{
+use crate::crucible_engine::{
     ChoiceTag, Decision, DeliveryOrderDecision, EventKey, IrqVector, NetworkLinkDirection, NodeId,
     OverrideDecision, PreemptionDecision, PreemptionKind, RngDecision, RngDrawAddress, RngStreamId,
     Schedule, SchedulerNodeId, SchedulingNodeKind, SchedulingPoint, VcpuId, VirtualInstant,

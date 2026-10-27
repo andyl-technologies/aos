@@ -302,8 +302,8 @@ pub(crate) fn load_campaign_run_deployment(
 /// host watchdog. A lifecycle ceiling below the policy deadline would instead
 /// stall every node at the ceiling until the quantum allowance ran out.
 fn packaged_campaign_lifecycle(
-    lifecycle: &crucible_control_api::ProductionVmLifecycleConfig,
-) -> Result<crucible_control_api::ProductionVmLifecycleConfig, CliError> {
+    lifecycle: &crucible_daemon::ProductionVmLifecycleConfig,
+) -> Result<crucible_daemon::ProductionVmLifecycleConfig, CliError> {
     if lifecycle.rendezvous_interval_ticks().is_none() {
         return Err(serve_error(
             "packaged campaign execution requires a scheduler rendezvous interval",

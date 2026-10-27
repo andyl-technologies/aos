@@ -531,7 +531,7 @@ mod tests {
     use super::*;
 
     fn coverage_block(sequence: u64, guest_pc: u64) -> crucible_engine::SchedulerEventLogEntry {
-        crucible_core::test_support::condition_observation_entry_for_test(
+        ::crucible_engine::test_support::condition_observation_entry_for_test(
             sequence,
             &crucible_engine::ObservableEvent::coverage_block(
                 crucible_engine::Icount {

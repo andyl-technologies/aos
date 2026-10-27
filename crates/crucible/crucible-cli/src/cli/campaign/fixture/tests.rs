@@ -391,19 +391,19 @@ fn guest_assertion_emissions(source: &str) -> Vec<(String, String, String)> {
 
 fn guest_assertion_kind(assertion: &AssertionDef) -> Option<&'static str> {
     match &assertion.property {
-        crucible_core::Property::Always {
+        ::crucible_engine::Property::Always {
             predicate: Predicate::GuestMarker { .. },
         } => Some("always"),
-        crucible_core::Property::Sometimes {
+        ::crucible_engine::Property::Sometimes {
             predicate: Predicate::GuestMarker { .. },
         } => Some("sometimes"),
-        crucible_core::Property::Reachable {
+        ::crucible_engine::Property::Reachable {
             predicate: Predicate::GuestMarker { .. },
-            expectation: crucible_core::ReachabilityExpectation::Reachable { .. },
+            expectation: ::crucible_engine::ReachabilityExpectation::Reachable { .. },
         } => Some("reachable"),
-        crucible_core::Property::Reachable {
+        ::crucible_engine::Property::Reachable {
             predicate: Predicate::GuestMarker { .. },
-            expectation: crucible_core::ReachabilityExpectation::Unreachable,
+            expectation: ::crucible_engine::ReachabilityExpectation::Unreachable,
         } => Some("unreachable"),
         _ => None,
     }

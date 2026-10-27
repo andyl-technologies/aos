@@ -566,7 +566,7 @@ fn verify_complete_trace_content_id(trace: ContentId, bytes: &[u8]) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crucible_core::{GuestMeasurementValue, GuestSemanticMarkerDetail, Icount, NodeId};
+    use ::crucible_engine::{GuestMeasurementValue, GuestSemanticMarkerDetail, Icount, NodeId};
 
     #[test]
     fn projects_authenticated_marker_identity_without_guest_details()

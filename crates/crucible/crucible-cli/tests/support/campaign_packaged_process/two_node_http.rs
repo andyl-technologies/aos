@@ -617,7 +617,7 @@ fn quiet_envoy_profile_changes_only_kernel_console_arguments() -> Result<(), Box
 #[test]
 fn envoy_completion_requires_routed_request_exact_response_and_guest_marker()
 -> Result<(), Box<dyn Error>> {
-    use crucible_core::{ConditionEvaluationPass, ConditionLeaf, ObservableEvent};
+    use ::crucible_engine::{ConditionEvaluationPass, ConditionLeaf, ObservableEvent};
 
     let asset = ContentAddressedBlobRef::from_hash(ContentHash::from_bytes(b"asset"));
     let form = http_scenario(HttpServer::EnvoyDirect, asset, asset)?;
@@ -652,7 +652,7 @@ fn envoy_completion_requires_routed_request_exact_response_and_guest_marker()
     let wrong_response =
         ObservableEvent::network_delivered(at, Some(link), HttpServer::Nginx.response().to_vec());
     let evaluate = |events| -> Result<bool, Box<dyn Error>> {
-        let prefix = crucible_core::test_support::condition_prefix_from_observable_events_for_test(
+        let prefix = ::crucible_engine::test_support::condition_prefix_from_observable_events_for_test(
             at.ticks, events,
         )?;
         let mut pass =
@@ -768,10 +768,7 @@ fn http_measurement_publication_accepts_only_the_declared_client_marker()
         verify_crucible_measurement_publication,
     };
     use crucible_engine::SchedulerEventLogEntry;
-    use crucible_engine::model::{
-        MeasurementAggregateValue, MeasurementEvaluationError, MeasurementSampleValue,
-        MeasurementTerminalState, MeasurementWindowOutcome,
-    };
+    use crucible_engine::model::{MeasurementAggregateValue, MeasurementTerminalState};
 
     let client = NodeId {
         name: "curl".into(),

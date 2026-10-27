@@ -1223,7 +1223,7 @@ pub(super) fn require_network_effect(
         });
         if applied {
             let trace = json_string(evidence, "resolved_effect_trace")?;
-            crucible_cas::content_store::ContentId::parse(&trace)?;
+            crucible_store::content_store::ContentId::parse(&trace)?;
             return Ok(());
         }
     }

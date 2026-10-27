@@ -363,14 +363,14 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
         replay_pass.clone(),
         replay_pass,
     )?;
-    let native_replay = crucible_core::test_support::replay_evidence_for_test(
+    let native_replay = ::crucible_engine::test_support::replay_evidence_for_test(
         report.finding.clone(),
         report.failure.clone(),
         &report.causal_entries,
         report.recorded_event_log.coverage_fingerprint(),
     )?;
     let minimized_report = triage_evidence_for_finding(minimized_model_finding.clone(), &report)?;
-    let minimized_native_replay = crucible_core::test_support::replay_evidence_for_test(
+    let minimized_native_replay = ::crucible_engine::test_support::replay_evidence_for_test(
         minimized_report.finding.clone(),
         minimized_report.failure.clone(),
         &minimized_report.causal_entries,
@@ -383,7 +383,7 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
         "finding-export-verification-complete",
     ));
     let verification_selected_native_replay =
-        crucible_core::test_support::replay_evidence_for_test(
+        ::crucible_engine::test_support::replay_evidence_for_test(
             minimized_report.finding.clone(),
             minimized_report.failure.clone(),
             &verification_entries,
@@ -769,7 +769,7 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
     alternate_selected_entries.push(finding_export_observational_entry(
         "finding-export-second-valid-occurrence",
     ));
-    let alternate_selected_replay = crucible_core::test_support::replay_evidence_for_test(
+    let alternate_selected_replay = ::crucible_engine::test_support::replay_evidence_for_test(
         minimized_report.finding.clone(),
         minimized_report.failure.clone(),
         &alternate_selected_entries,
@@ -823,7 +823,7 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
 
     // Distinct coverage changes only the native signature's coverage class and
     // evidence binding, which the campaign signature does not carry.
-    let coverage_distinct_replay = crucible_core::test_support::replay_evidence_for_test(
+    let coverage_distinct_replay = ::crucible_engine::test_support::replay_evidence_for_test(
         report.finding.clone(),
         report.failure.clone(),
         &report.causal_entries,
@@ -881,7 +881,7 @@ pub(super) fn campaign_findings_round_trip_authenticates_occurrence_objects_and_
         model_finding.clone(),
         finding_export_violation(&model_finding, FOREIGN_PROPERTY)?,
     )?;
-    let foreign_native_replay = crucible_core::test_support::replay_evidence_for_test(
+    let foreign_native_replay = ::crucible_engine::test_support::replay_evidence_for_test(
         foreign_report.finding,
         foreign_report.failure,
         &foreign_report.causal_entries,

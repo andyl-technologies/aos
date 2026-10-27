@@ -394,7 +394,7 @@ async fn query_resolved_effect_trace(
 /// Segment reads continue the acknowledged manifest query, so they are not
 /// recorded as separate session commands.
 async fn query_resolved_effect_trace_segment(
-    control: &crucible_control_api::ClientControlStream,
+    control: &crucible_control_client::ClientControlStream,
     command_id: &mut u64,
     segment: crucible_session::engine::ContentId,
 ) -> Result<Vec<u8>, CliError> {
