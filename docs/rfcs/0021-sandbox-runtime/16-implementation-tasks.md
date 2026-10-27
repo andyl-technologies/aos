@@ -31,6 +31,13 @@ is deferred until its backend contract settles.
 
 Recent committed startup fixes close narrower prerequisites:
 
+- The Storage package selected by the current provisioning and fault VMs passes
+  its full package check: 457 tests passed and two were skipped. Its registered
+  output is `/nix/store/d23sjbrz5xi7fj4db1vzhaz2ylyip2ld-aos-storaged-0.1.0`
+  (NAR hash `sha256-fFvMiCTH8gu1hYQGV9pLyXCD975GkFdQsyNy0O9V5UI=`), with the
+  selected systemd output in its runtime references. This proves package
+  verification, not installed normal journal-hook or lifecycle execution.
+
 - `checks.fleet.sandbox-method46-initial-partial-publication-restart` prepares
   a separate resource-failure recovery case for both installed initializers.
   After the real successful NV Extend, a host transport gate holds its response
@@ -73,8 +80,9 @@ Recent committed startup fixes close narrower prerequisites:
   They kill/reap QEMU and swtpm, authenticate the retained NV state before the
   replacement boot, then require the same signed intent and cold completion
   without a new approval peer. Final sidecar/NV comparisons and completed-state
-  repeat refusal remain required. These variants have not executed; the baseline
-  installed provisioning run is still building. Actual interrupted initialization,
+  repeat refusal remain required. The baseline and both fault test builds are
+  in progress; none has produced an installed execution receipt. Their guest
+  image and selected native packages are shared. Actual interrupted initialization,
   authenticated TPM readback and cold recovery remain unqualified.
 
 - Installed initial-producer qualification exposed stale manager validation:
