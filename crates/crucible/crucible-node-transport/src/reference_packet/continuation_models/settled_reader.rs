@@ -16,6 +16,9 @@ use crate::protocol_snapshot::owned11::typed::{
 #[path = "settled_reader/vocabulary.rs"]
 mod vocabulary;
 
+#[path = "settled_reader/installation18.rs"]
+mod installation18;
+
 #[path = "settled_reader/prepared.rs"]
 pub(crate) mod prepared;
 

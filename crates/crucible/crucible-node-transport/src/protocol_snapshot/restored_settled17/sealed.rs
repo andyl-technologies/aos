@@ -27,6 +27,9 @@ pub(crate) use model_adoption18::RestoredSettledNative18ModelAdoption;
 mod model_construction18;
 pub use model_construction18::RestoredSettledNativeImportModelConstructionData;
 
+#[path = "sealed/boundary_construction18.rs"]
+mod boundary_construction18;
+
 #[path = "sealed_graph_cache.rs"]
 mod graph_cache;
 use graph_cache::NativeGraph17DecodeCache;

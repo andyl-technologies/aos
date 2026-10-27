@@ -225,3 +225,51 @@ fn native18_installation_derives_the_whole_original_coordinator() -> Result<(), 
     assert_ne!(foreign, *coordinator);
     Ok(())
 }
+
+#[test]
+fn native18_installation_boundary_quote_preserves_actual_current_inventory()
+-> Result<(), ProviderError> {
+    for reactive in [false, true] {
+        let mut actual = super::super::super::native5::current_control17_fixture_data(reactive)?;
+        actual.program.open_gate()?;
+        let model = decode_model(&actual)?;
+        let before = serde_json::to_vec(&model.borrowed_program17_data()).unwrap();
+        let formatter = model.installation_boundary18_quote_formatter_data(usize::MAX)?;
+        assert_eq!(
+            model.installation_boundary18_quote_formatter_data(formatter)?,
+            formatter
+        );
+        if formatter > 0 {
+            assert!(
+                model
+                    .installation_boundary18_quote_formatter_data(formatter - 1)
+                    .is_err()
+            );
+        }
+
+        let row = model.installation_boundary18_construction_data(usize::MAX)?;
+        let peak = row
+            .into_iter()
+            .try_fold(0usize, |total, term| total.checked_add(term))
+            .ok_or_else(refused18)?;
+        assert_eq!(model.installation_boundary18_construction_data(peak)?, row);
+        assert!(
+            model
+                .installation_boundary18_construction_data(peak - 1)
+                .is_err()
+        );
+
+        let boundary = model.installation_boundary18_data()?;
+        let retained_hash = boundary.inventory_hash.algorithm.capacity()
+            + boundary.inventory_hash.domain.capacity()
+            + boundary.inventory_hash.digest.capacity();
+        assert!(row[0] >= retained_hash);
+        assert!(row[1] > 0 && row[2] > 0);
+        assert_eq!(boundary.inventory_hash, actual.program.inventory_hash()?);
+        assert_eq!(
+            serde_json::to_vec(&model.borrowed_program17_data()).unwrap(),
+            before
+        );
+    }
+    Ok(())
+}
