@@ -14,6 +14,8 @@
   retainActionGraph ? false,
   sharedBuildCache ? true,
   cacheNamespace ? null,
+  # Qualification builds vary the private root to expose embedded action paths.
+  outputBaseName ? "bazel",
   requiredSystemFeatures ? [],
 }: let
   cache =
@@ -38,6 +40,7 @@ in
   assert command == "test" || testArguments == [];
   assert !inventoryOnly || command == "build";
   assert cacheNamespace == null || builtins.match "[a-zA-Z0-9][a-zA-Z0-9_-]*" cacheNamespace != null;
+  assert builtins.match "[a-zA-Z0-9][a-zA-Z0-9_-]*" outputBaseName != null;
     pkgs.mkDerivation {
       inherit pname version requiredSystemFeatures;
       passthru.bazelSelection = {inherit workspace targets testArguments;};
@@ -63,7 +66,7 @@ in
                   trap - EXIT
                   if ! ${pkgs.python3}/bin/python3 ${../../../tools/bazel/launcher.py} \
                     --config ${workspace.configuration} --workspace "$aos_bazel_workspace" \
-                    --output-base "$TMPDIR/bazel" --nix-sandbox -- shutdown \
+                    --output-base "$TMPDIR/${outputBaseName}" --nix-sandbox -- shutdown \
                     > "$TMPDIR/bazel-shutdown.log" 2>&1; then
                     cat "$TMPDIR/bazel-shutdown.log" >&2
                     if [ "$aos_bazel_status" -eq 0 ]; then aos_bazel_status=1; fi
@@ -74,7 +77,7 @@ in
               ''}
               ${pkgs.python3}/bin/python3 ${../../../tools/bazel/launcher.py} \
                 --config ${workspace.configuration} --workspace "$PWD/workspace" \
-                --output-base "$TMPDIR/bazel" --nix-sandbox \
+                --output-base "$TMPDIR/${outputBaseName}" --nix-sandbox \
                 ${lib.optionalString retainActionGraph "--materialize-action-outputs"} \
                 --metrics "$TMPDIR/metrics.json" \
                 ${lib.optionalString (cache != null) "--cache ${lib.escapeShellArg cache}"} \
@@ -92,7 +95,7 @@ in
               # which aspects resolve to their underlying targets.
               ${pkgs.python3}/bin/python3 ${../../../tools/bazel/launcher.py} \
                 --config ${workspace.configuration} --workspace "$PWD/workspace" \
-                --output-base "$TMPDIR/bazel" --nix-sandbox --metrics "$TMPDIR/configured-discovery-metrics.json" \
+                --output-base "$TMPDIR/${outputBaseName}" --nix-sandbox --metrics "$TMPDIR/configured-discovery-metrics.json" \
                 ${lib.optionalString retainActionGraph "--materialize-action-outputs"} \
                 -- cquery ${lib.escapeShellArg ("deps(set(" + lib.concatStringsSep " " targets + "))")} \
                 --output=label > "$TMPDIR/configured-labels.txt"
@@ -101,7 +104,7 @@ in
                 --configured-labels "$TMPDIR/configured-labels.txt"
               ${pkgs.python3}/bin/python3 ${../../../tools/bazel/launcher.py} \
                 --config ${workspace.configuration} --workspace "$PWD/workspace" \
-                --output-base "$TMPDIR/bazel" --nix-sandbox --metrics "$TMPDIR/discovery-metrics.json" \
+                --output-base "$TMPDIR/${outputBaseName}" --nix-sandbox --metrics "$TMPDIR/discovery-metrics.json" \
                 -- query --query_file="$TMPDIR/declaration-query.txt" \
                 --output=label > "$TMPDIR/declarations.txt"
 
@@ -126,12 +129,12 @@ in
             + lib.optionalString retainActionGraph ''
               ${pkgs.python3}/bin/python3 ${../../../tools/bazel/launcher.py} \
                 --config ${workspace.configuration} --workspace "$PWD/workspace" \
-                --output-base "$TMPDIR/bazel" --nix-sandbox \
+                --output-base "$TMPDIR/${outputBaseName}" --nix-sandbox \
                 --materialize-action-outputs \
                 -- aquery ${lib.escapeShellArg ("deps(set(" + lib.concatStringsSep " " targets + "))")} \
                 --include_param_files --include_file_write_contents --output=jsonproto > "$out/evidence/actions.json"
               ${pkgs.python3}/bin/python3 ${compilerEvidenceTools}/retain_compiler_inputs.py \
-                --build "$out" --execution-root "$TMPDIR/bazel/execroot/_main" \
+                --build "$out" --execution-root "$TMPDIR/${outputBaseName}/execroot/_main" \
                 --output "$out/evidence/compiler-inputs.json"
               ${pkgs.python3}/bin/python3 ${compilerEvidenceTools}/reconstruct_compiler_inputs.py \
                 --build "$out" --output "$out/evidence/compiler-invocations.json"

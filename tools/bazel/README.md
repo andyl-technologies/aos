@@ -4308,6 +4308,28 @@ used by the transport regression test, without selecting first-party Cargo
 metadata. It does not launch nested Cargo builds. Other Cargo-dependent structural
 audits still require migration before the full combined test suite can pass.
 
+`checks.build.bazel.controller-native.check` qualifies the controller's pinned
+`ring` dependency using four uncached builds. Strict and broad source selections
+use deliberately different private output bases. The ordinary compiler must
+reproduce differing native intermediates; the source-path mapping must produce
+identical native objects, archives, Rust library, and downstream Rust compiler
+action identity. Retained bytes are checked against the actual compiler input
+digests, and DWARF inspection confirms that private sandbox paths were removed.
+Both the build script and Rust compiler must run in the Linux sandbox.
+
+```sh
+nix-build tools/bazel/tests/controller-native.nix -A check --no-out-link
+```
+
+This check uses the existing opt-in native compiler adapter. It does not change
+the controller's default toolchain or establish a shared-cache hit, whole-graph
+repeatability, controller runtime behavior, or production cutover readiness.
+The [native repeatability receipt](tests/evidence/controller-native-repeatability.json)
+retains the four builds and their compiler-input bindings. A separate
+[controller comparison](tests/evidence/crucible-controller-mapped-determinism.json)
+retains identical strict/broad binaries and compiler actions for the four
+previously differing test executables, with unchanged case and ignore lists.
+
 These are compilation and generator checks. Public controller integration still
 requires its mandatory suite tests, Clippy, documentation, doctests, installed
 metadata and closure checks, and the applicable ABI and license gates. Native

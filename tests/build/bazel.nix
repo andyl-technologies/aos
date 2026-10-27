@@ -122,6 +122,7 @@ in
     feature-powerset = import ./_bazel-feature-powerset.nix {inherit pkgs;};
     crucible-feature-policy = import ./_bazel-crucible-feature-policy.nix {inherit pkgs;};
     crucible-controller = import ./_bazel-crucible-controller-tests.nix {inherit pkgs;};
+    controller-native = import ../../tools/bazel/tests/controller-native.nix {inherit pkgs;};
     rust-source-patches = import ./_bazel-rust-source-patches.nix {inherit pkgs;};
     openssl-linkage = import ./_bazel-openssl-linkage.nix {inherit pkgs;};
     sysroot-metadata = import ./_bazel-sysroot-metadata.nix {inherit pkgs;};

@@ -1,0 +1,98 @@
+{
+  "action_identity_limit": "Selected four compiler actions only; no shared-cache hit, whole-graph action parity, runtime behavior, or public cutover is qualified.",
+  "binaries": {
+    "//crates/crucible/crucible-control-server:transport_dependency_versions_controller_binary": "da68649c84daa8c5aaf77e006841fc561f205b0c1a5a0201bbcd14f4cf91c5b6",
+    "//crates/crucible/crucible-daemon:unit_controller_binary": "8c172e29d9d0ef1e59dbaeed43805524056463b42e3edb1c795ccfde721a4eb6",
+    "//crates/crucible/crucible-engine:source_size_controller_binary": "9410f53f1461d7e682dc62fe064612c5ea980667512d057f092840deca01a048",
+    "//crates/crucible/crucible-engine:workload_model_controller_binary": "7348a14f522727f14a412503536aa1740118a7dbb0ba0a10595b6288be622f8b"
+  },
+  "builds": {
+    "conservative": {
+      "actions": {
+        "//crates/crucible/crucible-control-server:transport_dependency_versions_controller_binary": {
+          "action_digest": null,
+          "cache_hit": false,
+          "fingerprint": "05d4b12e08f84459c542db25c84bd13bac99806561cc6440eb3b45fb3a72542c",
+          "runner": "linux-sandbox"
+        },
+        "//crates/crucible/crucible-daemon:unit_controller_binary": {
+          "action_digest": null,
+          "cache_hit": false,
+          "fingerprint": "c06355dff6b40bed3c10c77716f1c1662c8cd8634a877a9cf07a8aaccc55e495",
+          "runner": "linux-sandbox"
+        },
+        "//crates/crucible/crucible-engine:source_size_controller_binary": {
+          "action_digest": null,
+          "cache_hit": false,
+          "fingerprint": "8c43ad9c82e3589b673c9e150f3dea7cdcff950d9da919843053aa477978ad0d",
+          "runner": "linux-sandbox"
+        },
+        "//crates/crucible/crucible-engine:workload_model_controller_binary": {
+          "action_digest": null,
+          "cache_hit": false,
+          "fingerprint": "4657a23d0912816982503f9b82ce257bf243b1042920b864ab3f164b6f8c4d66",
+          "runner": "linux-sandbox"
+        }
+      },
+      "discovery_sha256": "552ec34935e6db867a0bd7eb15dfa8b75d4978489f0a3506341ce55474ee8525",
+      "execution_sha256": "bae2a4f86c998e79cc2f1c3becb23a14df646af8df9d7599ed77dd2f318df033",
+      "execution_summary": {
+        "linux-sandbox": 657
+      },
+      "output": "/nix/store/ghi73vjyyfn75kr6aa4qh7c2514f9zp6-aos-bazel-crucible-controller-mapped-determinism-conservative-1"
+    },
+    "strict": {
+      "actions": {
+        "//crates/crucible/crucible-control-server:transport_dependency_versions_controller_binary": {
+          "action_digest": null,
+          "cache_hit": false,
+          "fingerprint": "05d4b12e08f84459c542db25c84bd13bac99806561cc6440eb3b45fb3a72542c",
+          "runner": "linux-sandbox"
+        },
+        "//crates/crucible/crucible-daemon:unit_controller_binary": {
+          "action_digest": null,
+          "cache_hit": false,
+          "fingerprint": "c06355dff6b40bed3c10c77716f1c1662c8cd8634a877a9cf07a8aaccc55e495",
+          "runner": "linux-sandbox"
+        },
+        "//crates/crucible/crucible-engine:source_size_controller_binary": {
+          "action_digest": null,
+          "cache_hit": false,
+          "fingerprint": "8c43ad9c82e3589b673c9e150f3dea7cdcff950d9da919843053aa477978ad0d",
+          "runner": "linux-sandbox"
+        },
+        "//crates/crucible/crucible-engine:workload_model_controller_binary": {
+          "action_digest": null,
+          "cache_hit": false,
+          "fingerprint": "4657a23d0912816982503f9b82ce257bf243b1042920b864ab3f164b6f8c4d66",
+          "runner": "linux-sandbox"
+        }
+      },
+      "discovery_sha256": "552ec34935e6db867a0bd7eb15dfa8b75d4978489f0a3506341ce55474ee8525",
+      "execution_sha256": "23cb75c04ebce3d820a75af3eb990e42f45c35616e51b444b8565180e45a8e6f",
+      "execution_summary": {
+        "linux-sandbox": 657
+      },
+      "output": "/nix/store/bsw0j8sqag36yzspms93i8hh54096c7h-aos-bazel-crucible-controller-mapped-determinism-strict-1"
+    }
+  },
+  "case_and_ignore_lists_unchanged_from": "/nix/store/wj7ahf28kb2bjn84wbcy9cx1f0nfmn4y-aos-bazel-crucible-controller-test-compilation-1",
+  "controller_graph_sha256": "fe5ebb41d8dbf7e9e35934893158e0abc6ee7648a55e3723569e5d1b65468b5e",
+  "differing_transitive_inputs": {},
+  "discovered_cases": 1151,
+  "ignored_cases": 22,
+  "native_compiler_mapping": true,
+  "public_controller_cutover_qualified": false,
+  "qualification_expression_sha256": "5f0bc2058a566b474eb782f1f829e62743ee21a76016eb860de41962d75aead4",
+  "schema_version": 1,
+  "scope": "The four remaining controller test binaries that previously embedded scheduling-dependent manifest directories. Compilation and case discovery only.",
+  "source_sha256": {
+    "pkgs/build-support/_bazel/native-source-paths.nix": "64b2f1137b068dde6a17019cef36c2601b9b66c1fe745120ed5793877f799189",
+    "tests/build/_bazel-crucible-controller-tests.nix": "a43d9013cea2d273148acf0ae468e63e7ce7f784345c241eb71672c428bf123e",
+    "tools/bazel/toolchains/native_cc.py": "0a59bda447623e0a070b31095c95e9c47e0e1ca8056508c586f1607ee6e07631"
+  },
+  "strict_conservative_action_identity_equal": true,
+  "strict_conservative_binary_equal": true,
+  "test_execution_qualified": false,
+  "whole_controller_byte_parity_qualified": false
+}

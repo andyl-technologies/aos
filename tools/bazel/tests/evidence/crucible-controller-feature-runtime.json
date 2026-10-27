@@ -38,6 +38,14 @@
   },
   "public_controller_cutover_qualified": false,
   "qualified_cases": 6,
+  "required_application_test_target_compilation": {
+    "derivation": "/nix/store/9yvmag0xkzh473yrykfrhhqzhpp2y3a2-aos-test-targets-0.1.0.drv",
+    "log_sha256": "20954fd259c0d1bf7388cd91685e5ed406e935887ed71b1aaec857c41b023cdf",
+    "output": "/nix/store/3xlf5d954656w0w86pnpz15c1i1760l7-aos-test-targets-0.1.0",
+    "scope": "Mandatory checks.rust.aos-test-targets gate: all aos and aos-* application unit/integration test targets compile without running. This is not a complete Crucible test compilation or execution gate.",
+    "source": "/nix/store/gvhi0g66vbf1hz1az5w8kq1l7n7qzfhq-aos-workspace-src",
+    "status": "PASS"
+  },
   "runtime_inventory": {
     "analysis_output": "/nix/store/8pxw55s68cs0212c1hgncr67lx6l6xj0-aos-bazel-crucible-controller-test-inventory-1",
     "distinct_reports": 1007,

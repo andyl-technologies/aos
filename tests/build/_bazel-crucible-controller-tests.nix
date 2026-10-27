@@ -2,6 +2,7 @@
 {
   pkgs,
   sourceInventory ? ../../tools/bazel/metadata/crucible-controller-tests-inventory.json,
+  toolchains ? pkgs.aosBazelToolchains,
 }: let
   names =
     builtins.filter
@@ -73,7 +74,7 @@
   targets = map (target: target + "_binary") testTargets ++ licenseTargets;
   workspace = pkgs.mkAosBazelWorkspace {
     root = ../..;
-    inherit sourceInventory;
+    inherit sourceInventory toolchains;
     sourceDirectories = pkgs.lib.optionals (sourceInventory == null) [
       "BUILD.bazel"
       "AGENTS.md"
