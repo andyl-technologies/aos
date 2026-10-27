@@ -368,7 +368,7 @@ mod tests {
     use super::*;
     use crate::dependencies::{gpl2_compatible_external_license, permissive_external_license};
 
-    fn fixture() -> (Value, Value) {
+    fn fixture() -> Result<(Value, Value), Box<dyn Error>> {
         let mut graph = json!({
             "schema_version": 1,
             "selection": "union of all declared production platform/feature branches",
@@ -389,10 +389,13 @@ mod tests {
         ] {
             let directory = format!("crates/crucible/{name}");
             let target = format!("//{directory}:lib");
-            graph["packages"].as_array_mut().unwrap().push(json!({
-                "name": name, "directory": directory, "version": "0.1.0", "license": license,
-                "production_targets": [target], "production_dependencies": [],
-            }));
+            graph["packages"]
+                .as_array_mut()
+                .ok_or("fixture packages must be an array")?
+                .push(json!({
+                    "name": name, "directory": directory, "version": "0.1.0", "license": license,
+                    "production_targets": [target], "production_dependencies": [],
+                }));
             graph["target_dependencies"][&target] = json!([]);
             graph["compilation_targets"][&target] = json!({
                 "package": name, "kind": kind, "crate_name": name.replace('-', "_"),
@@ -416,7 +419,7 @@ mod tests {
                 ],
             }},
         });
-        (graph, document)
+        Ok((graph, document))
     }
 
     fn parse_fixture(graph: &Value, document: Value) -> Result<Closures, Box<dyn Error>> {
@@ -425,12 +428,13 @@ mod tests {
     }
 
     #[test]
-    fn configured_closures_apply_the_existing_external_license_choices() {
-        let (graph, mut document) = fixture();
+    fn configured_closures_apply_the_existing_external_license_choices()
+    -> Result<(), Box<dyn Error>> {
+        let (graph, mut document) = fixture()?;
         let target = "//crates/crucible/crucible-qemu-plugin:lib";
         let allowed = ["crucible-qemu-plugin", "crucible-qemu-protocol"];
 
-        let valid = parse_fixture(&graph, document.clone()).unwrap();
+        let valid = parse_fixture(&graph, document.clone())?;
         assert!(
             valid
                 .failures(
@@ -438,13 +442,12 @@ mod tests {
                     &allowed,
                     gpl2_compatible_external_license,
                     "plugin"
-                )
-                .unwrap()
+                )?
                 .is_empty()
         );
 
         document["closures"][target]["packages"][2]["license"] = json!("Apache-2.0");
-        let invalid = parse_fixture(&graph, document.clone()).unwrap();
+        let invalid = parse_fixture(&graph, document.clone())?;
         assert_eq!(
             invalid
                 .failures(
@@ -452,22 +455,20 @@ mod tests {
                     &allowed,
                     gpl2_compatible_external_license,
                     "plugin"
-                )
-                .unwrap()
+                )?
                 .len(),
             1
         );
 
         document["closures"][target]["packages"][2]["license"] = json!("GPL-2.0-only");
-        let gpl = parse_fixture(&graph, document).unwrap();
+        let gpl = parse_fixture(&graph, document)?;
         assert!(
             gpl.failures(
                 "crucible-qemu-plugin",
                 &allowed,
                 gpl2_compatible_external_license,
                 "plugin"
-            )
-            .unwrap()
+            )?
             .is_empty()
         );
         assert_eq!(
@@ -476,26 +477,26 @@ mod tests {
                 &allowed,
                 permissive_external_license,
                 "boundary"
-            )
-            .unwrap()
+            )?
             .len(),
             1
         );
+
+        Ok(())
     }
 
     #[test]
-    fn configured_closures_reject_unapproved_local_boundary_packages() {
-        let (graph, document) = fixture();
-        let closures = parse_fixture(&graph, document).unwrap();
+    fn configured_closures_reject_unapproved_local_boundary_packages() -> Result<(), Box<dyn Error>>
+    {
+        let (graph, document) = fixture()?;
+        let closures = parse_fixture(&graph, document)?;
 
-        let failures = closures
-            .failures(
-                "crucible-qemu-plugin",
-                &["crucible-qemu-plugin"],
-                gpl2_compatible_external_license,
-                "plugin",
-            )
-            .unwrap();
+        let failures = closures.failures(
+            "crucible-qemu-plugin",
+            &["crucible-qemu-plugin"],
+            gpl2_compatible_external_license,
+            "plugin",
+        )?;
 
         assert!(
             failures
@@ -507,11 +508,14 @@ mod tests {
                 .failures("absent-root", &[], permissive_external_license, "boundary")
                 .is_err()
         );
+
+        Ok(())
     }
 
     #[test]
-    fn configured_closures_reject_stale_or_incomplete_source_identities() {
-        let (graph, original) = fixture();
+    fn configured_closures_reject_stale_or_incomplete_source_identities()
+    -> Result<(), Box<dyn Error>> {
+        let (graph, original) = fixture()?;
         let target = "//crates/crucible/crucible-qemu-plugin:lib";
         let mut variants = Vec::new();
         let mut document = original.clone();
@@ -538,19 +542,21 @@ mod tests {
         let mut document = original.clone();
         document["closures"][target]["packages"]
             .as_array_mut()
-            .unwrap()
+            .ok_or("fixture closure packages must be an array")?
             .remove(0);
         variants.push(document);
         let mut document = original.clone();
         let duplicate = document["closures"][target]["packages"][2].clone();
         document["closures"][target]["packages"]
             .as_array_mut()
-            .unwrap()
+            .ok_or("fixture closure packages must be an array")?
             .push(duplicate);
         variants.push(document);
 
         for document in variants {
             assert!(parse_fixture(&graph, document).is_err());
         }
+
+        Ok(())
     }
 }

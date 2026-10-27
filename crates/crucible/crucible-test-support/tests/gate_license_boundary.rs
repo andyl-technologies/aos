@@ -486,7 +486,7 @@ fn cargo_internal_boundaries(crates: &Path) -> Result<Vec<String>, Box<dyn Error
     let mut failures = Vec::new();
 
     for gpl_package in [PLUGIN_PACKAGE, DEBUG_GATEWAY_PACKAGE] {
-        let manifest_path = workspace::package_directory(&crates, gpl_package)?.join("Cargo.toml");
+        let manifest_path = workspace::package_directory(crates, gpl_package)?.join("Cargo.toml");
         let manifest: Value = fs::read_to_string(&manifest_path)?.parse()?;
         dependencies::visit_production_dependency_tables(
             &manifest,
@@ -510,10 +510,9 @@ fn cargo_internal_boundaries(crates: &Path) -> Result<Vec<String>, Box<dyn Error
     }
 
     for boundary in BOUNDARY_PACKAGES {
-        let boundary_manifest: Value = fs::read_to_string(
-            workspace::package_directory(&crates, boundary)?.join("Cargo.toml"),
-        )?
-        .parse()?;
+        let boundary_manifest: Value =
+            fs::read_to_string(workspace::package_directory(crates, boundary)?.join("Cargo.toml"))?
+                .parse()?;
         assert_eq!(
             boundary_manifest["package"]["license"].as_str(),
             Some(BOUNDARY_LICENSE),
@@ -526,7 +525,7 @@ fn cargo_internal_boundaries(crates: &Path) -> Result<Vec<String>, Box<dyn Error
 
 fn cargo_artifact_types(crates: &Path) -> Result<(), Box<dyn Error>> {
     let plugin: Value = fs::read_to_string(
-        workspace::package_directory(&crates, PLUGIN_PACKAGE)?.join("Cargo.toml"),
+        workspace::package_directory(crates, PLUGIN_PACKAGE)?.join("Cargo.toml"),
     )?
     .parse()?;
     let plugin_artifacts = plugin["lib"]["crate-type"]
@@ -538,10 +537,9 @@ fn cargo_artifact_types(crates: &Path) -> Result<(), Box<dyn Error>> {
     );
 
     for boundary in BOUNDARY_PACKAGES {
-        let manifest: Value = fs::read_to_string(
-            workspace::package_directory(&crates, boundary)?.join("Cargo.toml"),
-        )?
-        .parse()?;
+        let manifest: Value =
+            fs::read_to_string(workspace::package_directory(crates, boundary)?.join("Cargo.toml"))?
+                .parse()?;
         assert!(
             manifest
                 .get("lib")

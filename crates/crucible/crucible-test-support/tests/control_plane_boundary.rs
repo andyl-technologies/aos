@@ -172,14 +172,14 @@ fn architecture_metadata_preserves_declared_dependency_names() -> Result<(), Box
 }
 
 #[test]
-fn architecture_metadata_rejects_incomplete_or_inconsistent_graphs() {
+fn architecture_metadata_rejects_incomplete_or_inconsistent_graphs() -> Result<(), Box<dyn Error>> {
     let original = architecture_fixture();
     let mut fixtures = Vec::new();
 
     let mut duplicate = original.clone();
     duplicate["packages"]
         .as_array_mut()
-        .unwrap()
+        .ok_or_else(|| std::io::Error::other("architecture fixture packages must be an array"))?
         .push(original["packages"][0].clone());
     fixtures.push(("duplicate package", duplicate));
 
@@ -213,6 +213,8 @@ fn architecture_metadata_rejects_incomplete_or_inconsistent_graphs() {
             "accepted {name}"
         );
     }
+
+    Ok(())
 }
 
 fn architecture_fixture() -> serde_json::Value {
