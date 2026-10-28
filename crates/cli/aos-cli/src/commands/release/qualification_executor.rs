@@ -2,8 +2,9 @@
 //!
 //! The Nix-built registry selects executable closures; a remote request cannot
 //! supply a command. Scenarios receive the original request on stdin and read
-//! `objects.json` for verified local paths and `downloads.json` for transfer
-//! evidence in their private working directory. Their stdout is a canonical
+//! `objects.json` for local paths in their private working directory. Every
+//! listed object was downloaded and checked against its signed length and
+//! SHA-256 digest before the scenario starts. Their stdout is a canonical
 //! executor response. Every attempt is retained, including failures; the
 //! coordinator still independently validates coverage.
 
@@ -103,19 +104,6 @@ struct ScenarioReport {
     capabilities: Option<aos_release_format::qualification::capabilities::CapabilityEvidence>,
     #[serde(default)]
     native_adapter_matrix: Option<NativeAdapterMatrixObservation>,
-}
-
-#[derive(Serialize)]
-struct DownloadTrace {
-    mode: &'static str,
-    requests: Vec<DownloadRequestTrace>,
-}
-
-#[derive(Serialize)]
-struct DownloadRequestTrace {
-    status: u16,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    content_range: Option<String>,
 }
 
 /// Prints the cases one destination's profile selects at a hold point.
@@ -481,11 +469,10 @@ async fn execute(args: &ReleaseQualificationExecuteArgs) -> Result<()> {
             .build()?;
         let resumed_artifact = resumed_artifact(&request)?;
         let mut objects = BTreeMap::new();
-        let mut downloads = BTreeMap::new();
         for object in &request.objects {
             let filename = Sha256Digest::of_bytes(object.artifact_id.as_bytes()).hex();
             let path = directory.join(filename);
-            let trace = download_object(
+            download_object(
                 &client,
                 object,
                 &path,
@@ -493,13 +480,8 @@ async fn execute(args: &ReleaseQualificationExecuteArgs) -> Result<()> {
             )
             .await?;
             objects.insert(object.artifact_id.clone(), path);
-            downloads.insert(object.artifact_id.clone(), trace);
         }
         fs::write(directory.join("objects.json"), canonical::to_vec(&objects)?)?;
-        fs::write(
-            directory.join("downloads.json"),
-            canonical::to_vec(&downloads)?,
-        )?;
 
         let predecessor_directory = directory.join("predecessor");
         let mut predecessor_objects = BTreeMap::new();
@@ -617,16 +599,20 @@ fn resumed_artifact(request: &QualificationExecutorRequest) -> Result<Option<Str
         .context("image resume qualification has no resumable subject object")
 }
 
+/// Downloads one signed object and checks its exact length and SHA-256 digest.
+///
+/// With `resume`, the object arrives through two exact HTTP ranges, which is
+/// how an image case exercises interrupted-download recovery. Scenarios rely
+/// on this check and do not hash the objects again.
 async fn download_object(
     client: &reqwest::Client,
     object: &aos_release_format::evidence::QualificationObject,
     path: &Path,
     resume: bool,
-) -> Result<DownloadTrace> {
+) -> Result<()> {
     let mut file = File::options().create_new(true).write(true).open(path)?;
     let mut size = 0_u64;
     let mut hash = Sha256::new();
-    let mut requests = Vec::new();
 
     if resume {
         let first_size = (object.size_bytes / 2).min(1024 * 1024).max(1);
@@ -646,8 +632,7 @@ async fn download_object(
                 .get(CONTENT_RANGE)
                 .context("resumed object download omitted Content-Range")?
                 .to_str()
-                .context("resumed object Content-Range is not ASCII")?
-                .to_owned();
+                .context("resumed object Content-Range is not ASCII")?;
             if content_range != expected_content_range {
                 bail!(
                     "resumed object download for {} returned an unexpected Content-Range",
@@ -663,10 +648,6 @@ async fn download_object(
                 object.size_bytes,
             )
             .await?;
-            requests.push(DownloadRequestTrace {
-                status: reqwest::StatusCode::PARTIAL_CONTENT.as_u16(),
-                content_range: Some(content_range),
-            });
         }
     } else {
         let response = client.get(&object.url).send().await?;
@@ -685,10 +666,6 @@ async fn download_object(
             object.size_bytes,
         )
         .await?;
-        requests.push(DownloadRequestTrace {
-            status: reqwest::StatusCode::OK.as_u16(),
-            content_range: None,
-        });
     }
 
     if size != object.size_bytes
@@ -700,11 +677,7 @@ async fn download_object(
         );
     }
     file.sync_all()?;
-
-    Ok(DownloadTrace {
-        mode: if resume { "range-resume" } else { "complete" },
-        requests,
-    })
+    Ok(())
 }
 
 async fn write_response(
