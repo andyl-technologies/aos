@@ -1611,6 +1611,12 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     };
 in rec {
   inherit lib pkgs stdenv buildStdenv buildPackages modules mkSystem mkAbilityQualificationProjection containerImages containerDefinitions releaseQualificationExecutor releaseTooling allPackages;
+
+  # The versioned builder contract for downstream flakes. The flake exports it
+  # per system as `lib.<system>`; docs/engineering/downstream/flake-api.md
+  # documents every name.
+  downstreamLib = import ./lib/downstream-api.nix {inherit pkgs;};
+
   # nix-build does not descend through arbitrary nested check attrsets. An
   # explicit list reaches every gate while stopping at derivations, whose
   # passthru attributes are metadata rather than additional checks.
