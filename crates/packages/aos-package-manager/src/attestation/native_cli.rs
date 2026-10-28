@@ -8,7 +8,7 @@ use aos_core::Sha256Digest;
 use serde::Deserialize;
 
 use super::native::{
-    GenerationEvidence, ImageAdmission, InputEvidence, MeasuredImageEvidence, VerifiedRelease,
+    GenerationRecord, ImageCatalogRef, InputIdentity, MeasuredImageEvidence, VerifiedRelease,
 };
 
 #[derive(Deserialize)]
@@ -19,7 +19,7 @@ pub(crate) struct Policy {
     pub expected_pcr7: String,
     pub expected_pcr12: String,
     pub library_nar_hash: Sha256Digest,
-    pub image_roots: Vec<(ImageAdmission, BTreeMap<String, InputEvidence>)>,
+    pub image_roots: Vec<(ImageCatalogRef, BTreeMap<String, InputIdentity>)>,
     #[serde(default)]
     pub allow_local_root_runtime_modules: bool,
     #[serde(default)]
@@ -29,7 +29,7 @@ pub(crate) struct Policy {
 pub(crate) fn authenticate_releases(
     cache: &Path,
     trusted_keys: Vec<PathBuf>,
-    record: &GenerationEvidence,
+    record: &GenerationRecord,
 ) -> Result<(Vec<String>, Vec<String>, Vec<VerifiedRelease>)> {
     let keys = aos_registry_client::security::KeyStore::new(trusted_keys);
     let mut active = Vec::new();

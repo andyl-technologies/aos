@@ -135,7 +135,7 @@ pub(crate) fn validate(command: &PackageCommand) -> Result<()> {
     if !command.is_runtime_internal() {
         if boundary.container && !crate::container_environment::package_state_writable() {
             boundary.read_only = true;
-        } else if let Some(state) = crate::container_admission::synchronize()? {
+        } else if let Some(state) = crate::container_init_sync::synchronize()? {
             boundary.read_only |= state.is_read_only();
         }
     }
@@ -152,7 +152,7 @@ pub(crate) fn validate_registry(command: &RegistryCommand, system: bool) -> Resu
     let mut boundary = RuntimeBoundary::from_env();
     if boundary.container && !crate::container_environment::package_state_writable() {
         boundary.read_only = true;
-    } else if let Some(state) = crate::container_admission::synchronize()? {
+    } else if let Some(state) = crate::container_init_sync::synchronize()? {
         boundary.read_only |= state.is_read_only();
     }
     boundary.validate_registry(command, system)

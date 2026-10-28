@@ -1,8 +1,9 @@
-//! Native generation evidence bound to original admission and measured image pins.
+//! Native generation records bound to their input identities and measured image pins.
 //!
-//! A record describes an already committed native profile generation and its
-//! immutable pre-evaluation descriptor. Admission receipts remain evidence of
-//! the original image or signed release; they never become independent trust
+//! A [`GenerationRecord`] describes an already committed native profile
+//! generation and its immutable pre-evaluation descriptor. Each
+//! [`InputIdentity`] names the signed release or [`ImageCatalogRef`] that
+//! originally admitted a root; those references never become independent trust
 //! anchors merely because their names appear in a quoted record.
 
 use std::collections::BTreeMap;
@@ -15,20 +16,20 @@ use serde::{Deserialize, Serialize};
 use aos_deployment_format::input::EvaluationInput;
 use aos_registry_client::registry::ReleaseTrustReceipt;
 
-/// Identifies an original receipt bound to the verified bootstrap image.
+/// Locates the bootstrap image catalog document that listed a root and pins its bytes.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct ImageAdmission {
-    /// Locates the immutable admission document.
+pub struct ImageCatalogRef {
+    /// Locates the immutable catalog document.
     pub path: PathBuf,
     /// Binds its bytes to the original authenticated image authority.
     pub digest: Sha256Digest,
 }
 
-/// Records the exact NAR identity and original authority admitted for one root.
+/// Records the exact NAR identity of one input root and the authority that admitted it.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct InputEvidence {
+pub struct InputIdentity {
     /// Identifies the canonical immutable store root.
     pub store_path: String,
     /// Identifies the complete uncompressed NAR bytes.
@@ -40,7 +41,7 @@ pub struct InputEvidence {
     /// Preserves the signed release that authenticated this root.
     pub release: Option<ReleaseTrustReceipt>,
     /// Preserves the image authority when this root came from bootstrap.
-    pub image: Option<ImageAdmission>,
+    pub image: Option<ImageCatalogRef>,
     /// Preserves a caller-authenticated domain proof for supplementary sources.
     #[serde(default)]
     pub source_authority: Option<crate::native_deployment::SourceAuthorization>,
@@ -62,10 +63,10 @@ pub struct MeasuredImageEvidence {
     pub root_verity_uuid: Option<String>,
 }
 
-/// Binds a committed native package generation to immutable authenticated inputs.
+/// Records a committed native package generation, its authenticated inputs, and its quote.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct GenerationEvidence {
+pub struct GenerationRecord {
     /// Identifies the native generation attestation contract.
     pub schema: String,
     /// Names this quote transaction independently from earlier activations.
@@ -84,8 +85,8 @@ pub struct GenerationEvidence {
     pub evaluation: EvaluationInput,
     /// Preserves the exact supplemental root set of the committed deployment.
     pub deployment_inputs: Vec<String>,
-    /// Records original admission for all retained generation roots.
-    pub inputs: BTreeMap<String, InputEvidence>,
+    /// Records the identity and original authority of every retained generation root.
+    pub inputs: BTreeMap<String, InputIdentity>,
     /// Records the exact checked runtime results committed by this generation.
     pub outputs: BTreeMap<String, serde_json::Value>,
     /// Records independently authenticated physical image expectations.
@@ -103,11 +104,11 @@ pub const GENERATION_SCHEMA: &str = "aos.package.generation-attestation";
 ///
 /// # Errors
 /// Returns an error for serialization or canonical JSON limits.
-pub fn record_hash(record: &GenerationEvidence) -> Result<Sha256Digest> {
+pub fn record_hash(record: &GenerationRecord) -> Result<Sha256Digest> {
     Ok(Sha256Digest::of_bytes(bare_record_bytes(record)?))
 }
 
-fn bare_record_bytes(record: &GenerationEvidence) -> Result<Vec<u8>> {
+fn bare_record_bytes(record: &GenerationRecord) -> Result<Vec<u8>> {
     let mut bare = record.clone();
     bare.quote.clear();
     aos_core::json::canonical_json(&serde_json::to_value(bare)?)
@@ -139,12 +140,12 @@ pub fn persist(
     image: MeasuredImageEvidence,
     require_quote: bool,
     detect_tpm: bool,
-) -> Result<GenerationEvidence> {
+) -> Result<GenerationRecord> {
     let directory = profile.join(format!("gen-{generation}"));
     let transaction_path = directory.join(".native-attestation.pending.json");
     let record_path = directory.join("gen-attestation.json");
     let mut record = collect(profile, generation, image)?;
-    let retained: Option<GenerationEvidence> = match std::fs::read(&transaction_path) {
+    let retained: Option<GenerationRecord> = match std::fs::read(&transaction_path) {
         Ok(bytes) => Some(serde_json::from_slice(&bytes)?),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => return Err(error).context("reading native quote transaction"),
@@ -235,7 +236,7 @@ pub fn collect(
     profile: &Path,
     generation: u32,
     image: MeasuredImageEvidence,
-) -> Result<GenerationEvidence> {
+) -> Result<GenerationRecord> {
     let committed = crate::profile::deployment::committed_generation(profile, generation)?;
     let executable = crate::install::native::packaged_path("AOS_NIX_STORE")?;
     let (descriptor, bytes) = aos_deployment::document::read_descriptor_in(
@@ -262,7 +263,7 @@ pub fn collect(
         std::env::var_os("AOS_NIX_STORE")
             .context("native attestation requires its packaged Nix store executable")?,
     );
-    let mut admission = crate::native_registry::RegistryAdmission::new(
+    let mut admission = crate::native_registry::VerifiedRegistryRoots::new(
         executable,
         &profile.join("deployment/registry-admissions"),
     )?;
@@ -275,7 +276,7 @@ pub fn collect(
             .map(|artifact| &artifact.path),
     ) {
         if !inputs.contains_key(root) {
-            inputs.insert(root.clone(), admission.evidence(root)?);
+            inputs.insert(root.clone(), admission.input_identity(root)?);
         }
     }
     let (library_root, _) = aos_deployment::nix::store_root_and_suffix(&evaluation.library)?;
@@ -285,7 +286,7 @@ pub fn collect(
             .is_some_and(|evidence| evidence.nar_hash == evaluation.library_nar_hash),
         "library identity differs from its original admission"
     );
-    Ok(GenerationEvidence {
+    Ok(GenerationRecord {
         schema: GENERATION_SCHEMA.into(),
         activation_id: Sha256Digest::of_bytes(rand::random::<[u8; 32]>()),
         profile_generation: generation,
@@ -309,7 +310,7 @@ pub struct VerifiedRelease {
     /// Carries the independently verified name-bound tag and signer identity.
     pub receipt: ReleaseTrustReceipt,
     /// Carries exact NAR identities recovered from the authenticated store graph.
-    pub roots: BTreeMap<String, InputEvidence>,
+    pub roots: BTreeMap<String, InputIdentity>,
 }
 
 /// Describes source roots authenticated independently under a domain proof.
@@ -322,7 +323,7 @@ pub struct VerifiedSourceAuthorization {
     /// Pins the original independently verified domain proof.
     pub authority: crate::native_deployment::SourceAuthorization,
     /// Maps authorized roots to their exact NAR identities and direct references.
-    pub roots: BTreeMap<String, InputEvidence>,
+    pub roots: BTreeMap<String, InputIdentity>,
 }
 
 /// Replays the exact immutable native evaluation and validates retained results.
@@ -332,7 +333,7 @@ pub struct VerifiedSourceAuthorization {
 /// # Errors
 /// Returns an error for changed descriptor bytes/NARs, failed pure evaluation,
 /// unknown or malformed retained results, or an incomplete result set.
-pub fn rederive(record: &GenerationEvidence) -> Result<String> {
+pub fn rederive(record: &GenerationRecord) -> Result<String> {
     let descriptor = aos_deployment::input::read_evaluation_input(&record.evaluation_input)?;
     ensure!(
         descriptor == record.evaluation,
@@ -424,14 +425,14 @@ pub struct VerifierPolicy {
     /// Supplies independently authenticated signed release catalogs.
     pub releases: Vec<VerifiedRelease>,
     /// Supplies original image receipt identities and their authenticated roots.
-    pub image_roots: Vec<(ImageAdmission, BTreeMap<String, InputEvidence>)>,
+    pub image_roots: Vec<(ImageCatalogRef, BTreeMap<String, InputIdentity>)>,
     /// Explicitly accepts local root as authority for operator module snapshots.
     pub allow_local_root_runtime_modules: bool,
     /// Supplies independently authenticated domain proof pins; quote claims cannot supply these.
     pub source_authorities: Vec<VerifiedSourceAuthorization>,
 }
 
-fn same_nar(left: &InputEvidence, right: &InputEvidence) -> bool {
+fn same_nar(left: &InputIdentity, right: &InputIdentity) -> bool {
     left.store_path == right.store_path
         && left.nar_hash == right.nar_hash
         && left.nar_size == right.nar_size
@@ -450,11 +451,11 @@ fn same_nar(left: &InputEvidence, right: &InputEvidence) -> bool {
 /// replay, source identity or signer mismatches, disallowed operator authority,
 /// or a native re-derivation that differs from the committed deployment.
 pub fn verify(
-    record: &GenerationEvidence,
+    record: &GenerationRecord,
     checker: &dyn super::QuoteChecker,
     policy: &VerifierPolicy,
     nonce: &[u8],
-    rederive: &dyn Fn(&GenerationEvidence) -> Result<String>,
+    rederive: &dyn Fn(&GenerationRecord) -> Result<String>,
 ) -> Result<()> {
     ensure!(
         record.schema == GENERATION_SCHEMA
@@ -637,7 +638,7 @@ pub fn verify(
 // checks the evidence for this root before evaluating the retained sources.
 fn trusted_receipt_root(
     root: &str,
-    evidence: &InputEvidence,
+    evidence: &InputIdentity,
     policy: &VerifierPolicy,
 ) -> Result<bool> {
     let Some(receipt) = evidence.image.as_ref() else {
@@ -706,7 +707,7 @@ mod tests {
         }
     }
 
-    fn fixture() -> (GenerationEvidence, VerifierPolicy, CheckedQuote) {
+    fn fixture() -> (GenerationRecord, VerifierPolicy, CheckedQuote) {
         let library = format!("/nix/store/{}-library", "a".repeat(32));
         let descriptor = format!("/nix/store/{}-evaluation.json", "b".repeat(32));
         let baseline = format!("/nix/store/{}-baseline", "c".repeat(32));
@@ -717,12 +718,12 @@ mod tests {
             root_verity_roothash: Some("e".repeat(64)),
             root_verity_uuid: None,
         };
-        let receipt = ImageAdmission {
+        let receipt = ImageCatalogRef {
             path: PathBuf::from(format!("/nix/store/{}-receipt.json", "f".repeat(32))),
             digest: Sha256Digest::of_bytes(b"authenticated image receipt"),
         };
         let library_hash = Sha256Digest::of_bytes(b"library NAR");
-        let evidence = |path: &str, hash, image| InputEvidence {
+        let evidence = |path: &str, hash, image| InputIdentity {
             store_path: path.into(),
             nar_hash: hash,
             nar_size: 128,
@@ -744,7 +745,7 @@ mod tests {
             ),
             (baseline.clone(), baseline_evidence.clone()),
         ]);
-        let record = GenerationEvidence {
+        let record = GenerationRecord {
             schema: GENERATION_SCHEMA.into(),
             activation_id: Sha256Digest::of_bytes(b"activation"),
             profile_generation: 3,
@@ -862,7 +863,7 @@ mod tests {
         let receipt = policy.image_roots[0].0.clone();
         let (root, _) = aos_deployment::nix::store_root_and_suffix(&receipt.path).unwrap();
         let root = root.to_str().unwrap();
-        let mut evidence = InputEvidence {
+        let mut evidence = InputIdentity {
             store_path: root.into(),
             nar_hash: Sha256Digest::of_bytes(b"receipt NAR"),
             nar_size: 128,
@@ -875,7 +876,7 @@ mod tests {
         policy.image_roots.clear();
         assert!(!trusted_receipt_root(root, &evidence, &policy).unwrap());
 
-        let invalid = ImageAdmission {
+        let invalid = ImageCatalogRef {
             path: Path::new(root).join("other.json"),
             ..receipt
         };
