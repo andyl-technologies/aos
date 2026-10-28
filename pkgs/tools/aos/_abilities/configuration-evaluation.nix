@@ -232,7 +232,7 @@
       ++ lib.optional cfg.measuredBoot "--require-attestation-quote"
       ++ lib.optionals cfg.measuredBoot [
         "--image-evidence-executable"
-        config.aos.boot.imageEvidenceExecutable
+        config.aos.boot.bootMeasurementsExecutable
         "--pcr-public-key"
         cfg.pcrPublicKey
       ]

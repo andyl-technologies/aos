@@ -55,7 +55,7 @@ pub struct InspectionRecord {
     pub dispatch: Option<DispatchIdentity>,
 }
 
-/// Identifies the last transaction with a durable completion receipt.
+/// Identifies the last transaction with a durable completion record.
 #[derive(Clone, Debug, Serialize)]
 pub struct CompletedTransaction {
     /// Names the caller-supplied transaction identity.
@@ -64,7 +64,7 @@ pub struct CompletedTransaction {
     pub content: String,
     /// Names desired operations awaiting startup rather than completed outcomes.
     pub deferred: BTreeSet<String>,
-    /// Identifies the execution environment bound to this receipt.
+    /// Identifies the execution environment bound to this completion record.
     pub policy: super::ExecutionPolicy,
     /// Preserves exact checked completion outcomes for paired-journal validation.
     /// These potentially sensitive results are omitted from inspection JSON.
@@ -409,7 +409,7 @@ mod tests {
     }
 
     #[test]
-    fn inspection_distinguishes_pending_dispatch_from_completed_receipt() -> Result<()> {
+    fn inspection_distinguishes_pending_dispatch_from_completed_transaction_record() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("effects.journal");
         let desired = graph(Some("example"), "instance");

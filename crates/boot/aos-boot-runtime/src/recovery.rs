@@ -1,10 +1,11 @@
 //! Validates the recovery copy paired with one staged systemd image generation.
 //!
 //! Recovery payloads stay private until boot selection publishes their exact
-//! bytes before the normal UKI. The evidence uses the same snake_case fields
+//! bytes before the normal UKI. The recovery entry uses the same snake_case fields
 //! written by initrd profile seeding; it belongs to this provider, not APM.
 //!
-//! The generation's provider evidence contains this optional `recovery` object:
+//! The generation's installed boot entry, stored under the provider state's
+//! `evidence` key, contains this optional `recovery` object:
 //!
 //! ```json
 //! {
@@ -42,7 +43,7 @@ const RECOVERY_CMDLINE: &str =
 /// Records the authenticated recovery identity and its owned publication paths.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct RecoveryEvidence {
+pub(crate) struct RecoveryEntry {
     /// Names the root slot whose recovery copy is replaced.
     pub(crate) copy: String,
     /// Names the recovery UKI relative to the ESP.
@@ -63,14 +64,14 @@ pub(crate) struct RecoveryEvidence {
 
 /// Holds checked bytes ready for ordered firmware publication.
 pub(crate) struct RecoveryPayload {
-    /// Contains the exact recovery UKI bytes named by the evidence.
+    /// Contains the exact recovery UKI bytes named by the recovery entry.
     pub(crate) uki: Vec<u8>,
     /// Contains the canonical loader entry for the same release and copy.
     pub(crate) entry: Vec<u8>,
 }
 
-impl RecoveryEvidence {
-    /// Checks that the evidence owns only the selected slot's recovery paths.
+impl RecoveryEntry {
+    /// Checks that the entry owns only the selected slot's recovery paths.
     ///
     /// # Errors
     /// Returns an error for mismatched slots, paths, malformed release or
@@ -99,7 +100,7 @@ impl RecoveryEvidence {
     /// Produces the canonical loader entry for the paired release and copy.
     ///
     /// # Errors
-    /// Returns an error when the evidence has an invalid identity.
+    /// Returns an error when the entry has an invalid identity.
     pub(crate) fn entry_bytes(&self) -> Result<Vec<u8>> {
         self.validate_identity(&self.copy)?;
         Ok(format!(
@@ -295,7 +296,7 @@ mod tests {
         bytes
     }
 
-    fn fixture(profile: &Path) -> RecoveryEvidence {
+    fn fixture(profile: &Path) -> RecoveryEntry {
         let directory = profile.join("candidates/2");
         fs::create_dir_all(&directory).unwrap();
         let bytes = write_uki(
@@ -303,7 +304,7 @@ mod tests {
             CMDLINE,
             "VERSION_ID=\"1.2.3\"\nAOS_RECOVERY_COPY=B\nAOS_RECOVERY_ABI=1\n",
         );
-        let evidence = RecoveryEvidence {
+        let evidence = RecoveryEntry {
             copy: "B".into(),
             uki_path: "EFI/AOS/recovery-b.efi".into(),
             entry_path: "loader/entries/recovery-b.conf".into(),
@@ -341,7 +342,7 @@ mod tests {
 
         evidence.source_path = "recovery-b.efi".into();
         let encoded = serde_json::to_value(&evidence).unwrap();
-        let seeded: RecoveryEvidence = serde_json::from_value(encoded).unwrap();
+        let seeded: RecoveryEntry = serde_json::from_value(encoded).unwrap();
         seeded.validate_identity("B").unwrap();
     }
 
@@ -359,7 +360,7 @@ mod tests {
                 "sha256" => "sha256:1234",
                 _ => "1.2.3\nefi /other.efi",
             });
-            let changed: RecoveryEvidence = serde_json::from_value(value).unwrap();
+            let changed: RecoveryEntry = serde_json::from_value(value).unwrap();
             assert!(changed.validate_identity("B").is_err(), "accepted {field}");
         }
         for size in [0, MAX_RECOVERY_BYTES + 1] {

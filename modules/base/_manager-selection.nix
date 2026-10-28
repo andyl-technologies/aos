@@ -67,7 +67,7 @@
       };
       deploymentBundle = lib.mkOption {
         type = lib.types.package;
-        description = "Initrd transaction, resolved packages, and authenticated admission inputs.";
+        description = "Initrd transaction, resolved packages, and authenticated trusted artifact manifest.";
       };
     };
   };

@@ -3,11 +3,19 @@
   lib,
   package,
   ...
-}: {
-  options.aos.boot.imageEvidenceExecutable = lib.mkOption {
+}: let
+  bootMeasurementsExecutable = "${package.handlers}/bin/aos-systemd-boot-measurements";
+in {
+  options.aos.boot.bootMeasurementsExecutable = lib.mkOption {
     type = lib.types.pathInStore;
     readOnly = true;
     description = "Retained executable that recomputes boot image measurement evidence.";
+  };
+  # Former name, kept so existing configurations that read it still evaluate.
+  options.aos.boot.imageEvidenceExecutable = lib.mkOption {
+    type = lib.types.pathInStore;
+    readOnly = true;
+    description = "Alias of aos.boot.bootMeasurementsExecutable.";
   };
   options.aos.boot.imageRolloutPlatformExecutable = lib.mkOption {
     type = lib.types.pathInStore;
@@ -16,7 +24,8 @@
     description = "Retained executable implementing authenticated boot image transitions.";
   };
 
-  config.aos.boot.imageEvidenceExecutable = "${package.handlers}/bin/aos-systemd-image-evidence";
+  config.aos.boot.bootMeasurementsExecutable = bootMeasurementsExecutable;
+  config.aos.boot.imageEvidenceExecutable = bootMeasurementsExecutable;
   config.aos.boot.imageRolloutPlatformExecutable = "${package.handlers}/bin/aos-systemd-boot-platform";
   config.aos.abilities.initSystem.operations.install.effects.default.input = {
     executable = "${package}/lib/systemd/systemd";
