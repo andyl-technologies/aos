@@ -1968,9 +1968,7 @@ async fn finish_reporter(reporter: Option<JoinHandle<()>>) -> Result<()> {
 mod tests {
     use super::*;
     use aos_oci_types::{
-        Annotations, CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA, CONTAINER_RELEASE_SCHEMA_VERSION,
-        ContainerEvidenceMappingQualification, ContainerEvidenceQualification,
-        ContainerEvidenceQualificationCheck, ContainerNixProvenance, ContainerOciRelease,
+        Annotations, CONTAINER_RELEASE_SCHEMA_VERSION, ContainerNixProvenance, ContainerOciRelease,
         ContainerReleaseEvidence, ContainerReleaseIdentity, Descriptor, MediaType,
         NixDefinitionIdentity, NixOutputIdentity, Platform,
     };
@@ -2441,22 +2439,7 @@ mod tests {
                 },
                 closure: evidence_descriptor(MediaType::AosNixClosure, "closure"),
             },
-            qualification: ContainerEvidenceQualification {
-                schema: CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA.to_string(),
-                mapping: ContainerEvidenceMappingQualification {
-                    complete: true,
-                    unknown_paths: Vec::new(),
-                },
-                corresponding_source: ContainerEvidenceQualificationCheck {
-                    complete: true,
-                    unknown_paths: Vec::new(),
-                },
-                licensing: ContainerEvidenceQualificationCheck {
-                    complete: true,
-                    unknown_paths: Vec::new(),
-                },
-                ready_for_verified_publication: true,
-            },
+            v1_qualification: None,
             evidence: ContainerReleaseEvidence {
                 abilities: evidence_descriptor(MediaType::AosContainerStaticAbilities, "abilities"),
                 sbom: evidence_descriptor(MediaType::SpdxJson, "sbom"),

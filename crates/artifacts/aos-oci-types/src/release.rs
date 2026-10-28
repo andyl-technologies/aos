@@ -7,7 +7,7 @@
 //!
 //! ```json
 //! {
-//!   "schemaVersion": 1,
+//!   "schemaVersion": 2,
 //!   "mediaType": "application/vnd.aos.container-release.v1+json",
 //!   "identity": {
 //!     "release": "1.0.0",
@@ -26,13 +26,6 @@
 //!     "output": { "name": "out", "storePath": "/nix/store/...-aos-container" },
 //!     "closure": { "mediaType": "application/vnd.oci.image.manifest.v1+json", "artifactType": "application/vnd.aos.nix-closure.v1+json", "digest": "sha256:...", "size": 640 }
 //!   },
-//!   "qualification": {
-//!     "schema": "aos.container.evidence-qualification/v1",
-//!     "mapping": { "complete": true, "unknownPaths": [] },
-//!     "correspondingSource": { "complete": true, "unknownPaths": [] },
-//!     "licensing": { "complete": true, "unknownPaths": [] },
-//!     "readyForVerifiedPublication": true
-//!   },
 //!   "evidence": {
 //!     "abilities": { "mediaType": "application/vnd.oci.image.manifest.v1+json", "artifactType": "application/vnd.aos.container.static-abilities.v1+json", "digest": "sha256:...", "size": 640 },
 //!     "sbom": { "mediaType": "application/vnd.oci.image.manifest.v1+json", "artifactType": "application/spdx+json", "digest": "sha256:...", "size": 640 },
@@ -43,6 +36,26 @@
 //!   }
 //! }
 //! ```
+//!
+//! The Nix evidence build fails unless every runtime closure path maps to one
+//! package with retained corresponding source and license metadata, so a
+//! sidecar exists only for a complete closure and carries no completeness
+//! field. Schema version 1 sidecars and `aos.container.signature-input/v1`
+//! inputs repeated that result as a `qualification` object whose only
+//! admissible value is the complete one:
+//!
+//! ```json
+//! "qualification": {
+//!   "schema": "aos.container.evidence-qualification/v1",
+//!   "mapping": { "complete": true, "unknownPaths": [] },
+//!   "correspondingSource": { "complete": true, "unknownPaths": [] },
+//!   "licensing": { "complete": true, "unknownPaths": [] },
+//!   "readyForVerifiedPublication": true
+//! }
+//! ```
+//!
+//! Readers still accept those already-published version 1 documents and
+//! re-encode them byte for byte; writers emit only version 2.
 //!
 //! Unlike generic OCI projections, this AOS-owned signed schema rejects
 //! unknown fields at every nested object. Descriptors still retain standard
@@ -61,7 +74,6 @@ use crate::error::{Error, Result};
 use crate::limits::{
     MAX_CONTAINER_RELEASE_IDENTITY_BYTES, MAX_JSON_BYTES, MAX_NIX_DEFINITION_ATTRIBUTE_BYTES,
     MAX_NIX_OUTPUT_NAME_BYTES, MAX_NIX_STORE_PATH_BYTES, MAX_PLATFORMS_PER_INDEX,
-    MAX_REACHABLE_DESCRIPTORS,
 };
 use crate::media_type::MediaType;
 use crate::model::{Descriptor, Platform};
@@ -69,11 +81,17 @@ use crate::model::{Descriptor, Platform};
 /// Stable registry-relative location of the first container-release sidecar.
 pub const CONTAINER_RELEASE_SIDECAR_PATH: &str = "containers/v1/index.json";
 
-/// Schema version carried by signed [`ContainerRelease`] values.
-pub const CONTAINER_RELEASE_SCHEMA_VERSION: u32 = 1;
+/// Schema version written in new signed [`ContainerRelease`] values.
+pub const CONTAINER_RELEASE_SCHEMA_VERSION: u32 = 2;
 
-/// Schema identifier carried by signed [`ContainerSignatureInput`] values.
-pub const CONTAINER_SIGNATURE_INPUT_SCHEMA: &str = "aos.container.signature-input/v1";
+/// Schema version of published sidecars that carry a qualification object.
+pub const CONTAINER_RELEASE_SCHEMA_VERSION_V1: u32 = 1;
+
+/// Schema identifier written in new signed [`ContainerSignatureInput`] values.
+pub const CONTAINER_SIGNATURE_INPUT_SCHEMA: &str = "aos.container.signature-input/v2";
+
+/// Schema identifier of published signature inputs that carry a qualification object.
+pub const CONTAINER_SIGNATURE_INPUT_SCHEMA_V1: &str = "aos.container.signature-input/v1";
 
 /// DSSE payload type used for exact AOS container signature-input bytes.
 pub const CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE: &str =
@@ -82,8 +100,8 @@ pub const CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE: &str =
 /// SSHSIG namespace used when an AOS trust key signs container DSSE PAE bytes.
 pub const CONTAINER_DSSE_SIGNATURE_NAMESPACE: &str = "aos-container-signature-dsse-v1";
 
-/// Schema identifier carried by [`ContainerEvidenceQualification`].
-pub const CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA: &str = "aos.container.evidence-qualification/v1";
+/// Schema identifier inside a version 1 qualification object.
+const V1_QUALIFICATION_SCHEMA: &str = "aos.container.evidence-qualification/v1";
 
 /// Returns whether a Nix definition attribute names the exact logical image.
 ///
@@ -118,8 +136,18 @@ pub struct ContainerRelease {
     pub oci: ContainerOciRelease,
     /// Nix definition, realized output, and closure-manifest identity.
     pub nix: ContainerNixProvenance,
-    /// Full-closure mapping, source, and licensing qualification.
-    pub qualification: ContainerEvidenceQualification,
+    /// Complete-closure marker carried only by version 1 documents.
+    ///
+    /// Version 1 repeated the build's completeness result, which was always
+    /// complete in an admissible document. It is `None` for every document
+    /// this crate writes and is retained so published version 1 bytes still
+    /// parse and re-encode exactly.
+    #[serde(
+        default,
+        rename = "qualification",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub v1_qualification: Option<ContainerV1Qualification>,
     /// Required source, compliance, provenance, and signature evidence.
     ///
     /// Static ability evidence is retained as an opaque OCI descriptor here.
@@ -145,19 +173,29 @@ impl ContainerRelease {
     ///
     /// # Errors
     ///
-    /// Returns an error for the wrong schema or media type, invalid or
-    /// overlong identities, malformed descriptors, duplicate platforms,
-    /// invalid Nix paths, or a missing/mistyped evidence role.
+    /// Returns an error for an unsupported schema version or the wrong media
+    /// type, a qualification object that does not match the schema version,
+    /// invalid or overlong identities, malformed descriptors, duplicate
+    /// platforms, invalid Nix paths, or a missing/mistyped evidence role.
     pub fn validate(&self) -> Result<()> {
-        if self.schema_version != CONTAINER_RELEASE_SCHEMA_VERSION {
-            return Err(Error::invalid(
-                "container release schemaVersion",
-                format!(
-                    "expected {CONTAINER_RELEASE_SCHEMA_VERSION}, got {}",
-                    self.schema_version
-                ),
-            ));
-        }
+        let carries_v1_qualification = match self.schema_version {
+            CONTAINER_RELEASE_SCHEMA_VERSION => false,
+            CONTAINER_RELEASE_SCHEMA_VERSION_V1 => true,
+            other => {
+                return Err(Error::invalid(
+                    "container release schemaVersion",
+                    format!(
+                        "expected {CONTAINER_RELEASE_SCHEMA_VERSION} or \
+                         {CONTAINER_RELEASE_SCHEMA_VERSION_V1}, got {other}"
+                    ),
+                ));
+            }
+        };
+        validate_v1_qualification_presence(
+            self.v1_qualification.is_some(),
+            carries_v1_qualification,
+            "container release qualification",
+        )?;
         if self.media_type != MediaType::AosContainerRelease {
             return Err(Error::invalid(
                 "container release mediaType",
@@ -172,13 +210,6 @@ impl ContainerRelease {
         self.identity.validate()?;
         self.oci.validate()?;
         self.nix.validate()?;
-        self.qualification.validate()?;
-        if !self.qualification.ready_for_verified_publication {
-            return Err(Error::invalid(
-                "container release qualification",
-                "readyForVerifiedPublication must be true",
-            ));
-        }
         self.evidence.validate()?;
         validate_unique_release_descriptors(self)?;
         to_canonical_json(self).map(|_| ())
@@ -216,8 +247,18 @@ pub struct ContainerSignatureInput {
     pub nix: ContainerNixProvenance,
     /// Unsigned evidence roots emitted by the hermetic Nix build.
     pub evidence: ContainerSignatureInputEvidence,
-    /// Full-closure qualification emitted by the hermetic Nix build.
-    pub qualification: ContainerEvidenceQualification,
+    /// Complete-closure marker carried only by version 1 documents.
+    ///
+    /// Version 1 repeated the build's completeness result, which was always
+    /// complete in an admissible document. It is `None` for every document
+    /// this crate writes and is retained so published version 1 bytes still
+    /// parse and re-encode exactly.
+    #[serde(
+        default,
+        rename = "qualification",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub v1_qualification: Option<ContainerV1Qualification>,
 }
 
 impl ContainerSignatureInput {
@@ -250,51 +291,59 @@ impl ContainerSignatureInput {
         Ok(input)
     }
 
-    /// Validates the versioned identity, roots, evidence, and qualification.
-    ///
-    /// This structural check permits an explicitly unqualified input so tools
-    /// can diagnose it. Verified publication must additionally use
-    /// [`Self::validate_final_release`], which fails closed unless it is ready.
+    /// Validates the versioned identity, roots, and evidence.
     ///
     /// # Errors
     ///
-    /// Returns an error for the wrong schema or for invalid nested contracts.
+    /// Returns an error for an unsupported schema, a qualification object that
+    /// does not match the schema, or invalid nested contracts.
     pub fn validate(&self) -> Result<()> {
-        if self.schema != CONTAINER_SIGNATURE_INPUT_SCHEMA {
-            return Err(Error::invalid(
-                "container signature input schema",
-                format!(
-                    "expected {CONTAINER_SIGNATURE_INPUT_SCHEMA}, got {}",
-                    self.schema
-                ),
-            ));
-        }
+        let carries_v1_qualification = match self.schema.as_str() {
+            CONTAINER_SIGNATURE_INPUT_SCHEMA => false,
+            CONTAINER_SIGNATURE_INPUT_SCHEMA_V1 => true,
+            other => {
+                return Err(Error::invalid(
+                    "container signature input schema",
+                    format!(
+                        "expected {CONTAINER_SIGNATURE_INPUT_SCHEMA} or \
+                         {CONTAINER_SIGNATURE_INPUT_SCHEMA_V1}, got {other}"
+                    ),
+                ));
+            }
+        };
+        validate_v1_qualification_presence(
+            self.v1_qualification.is_some(),
+            carries_v1_qualification,
+            "container signature input qualification",
+        )?;
         self.identity.validate()?;
         self.oci.validate()?;
         self.nix.validate()?;
         self.evidence.validate()?;
-        self.qualification.validate()?;
         validate_unique_signature_input_descriptors(self)?;
         to_canonical_json(self).map(|_| ())
     }
 
-    /// Requires a ready input and an exact final-sidecar binding.
+    /// Requires an exact final-sidecar binding.
     ///
     /// The final sidecar may add only the DSSE signature descriptor. Every
-    /// unsigned identity, OCI, Nix, evidence, and qualification field must be
-    /// byte-model equal to the externally authorized signature input.
+    /// unsigned identity, OCI, Nix, and evidence field must be byte-model
+    /// equal to the externally authorized signature input, and a version 1
+    /// input binds only a version 1 sidecar.
     ///
     /// # Errors
     ///
-    /// Returns an error when either contract is invalid or unqualified, or
-    /// when any unsigned field differs.
+    /// Returns an error when either contract is invalid, when their schema
+    /// versions differ, or when any unsigned field differs.
     pub fn validate_final_release(&self, release: &ContainerRelease) -> Result<()> {
         self.validate()?;
         release.validate()?;
-        if !self.qualification.ready_for_verified_publication {
+        // Each document's own validation ties qualification presence to its
+        // schema version, so comparing presence also compares versions.
+        if self.v1_qualification != release.v1_qualification {
             return Err(Error::invalid(
-                "container signature input qualification",
-                "readyForVerifiedPublication must be true",
+                "container signature input schema",
+                "final sidecar schema version differs from the unsigned input",
             ));
         }
         if self.identity != release.identity {
@@ -319,12 +368,6 @@ impl ContainerSignatureInput {
             return Err(Error::invalid(
                 "container signature input evidence",
                 "final sidecar unsigned evidence differs from the unsigned input",
-            ));
-        }
-        if self.qualification != release.qualification {
-            return Err(Error::invalid(
-                "container signature input qualification",
-                "final sidecar qualification differs from the unsigned input",
             ));
         }
         Ok(())
@@ -560,293 +603,108 @@ impl ContainerSignatureInputEvidence {
     }
 }
 
-/// Full-closure evidence gate shared by Nix, APR, the CLI, and Hub.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Marker for the complete-closure qualification object of version 1 documents.
+///
+/// The object has exactly one admissible value: every check complete with no
+/// unknown paths. Deserialization rejects any other value, and serialization
+/// writes that value back, so a parsed version 1 document re-encodes to its
+/// original canonical bytes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ContainerV1Qualification;
+
+/// Strict wire shape of the version 1 qualification object.
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ContainerEvidenceQualification {
-    /// Required exact qualification schema identifier.
-    pub schema: String,
-    /// Mapping coverage for every runtime closure path.
-    pub mapping: ContainerEvidenceMappingQualification,
-    /// Corresponding-source coverage for every mapped runtime path.
-    pub corresponding_source: ContainerEvidenceQualificationCheck,
-    /// License-metadata coverage for every mapped runtime path.
-    pub licensing: ContainerEvidenceQualificationCheck,
-    /// Whether all three mandatory qualification gates are complete.
-    pub ready_for_verified_publication: bool,
+struct V1QualificationWire {
+    schema: String,
+    mapping: V1QualificationCheckWire,
+    corresponding_source: V1QualificationCheckWire,
+    licensing: V1QualificationCheckWire,
+    ready_for_verified_publication: bool,
 }
 
-impl ContainerEvidenceQualification {
-    /// Validates the schema, bounded diagnostics, and derived ready state.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when a check is internally inconsistent, diagnostic
-    /// paths are duplicated or unsorted, or the ready bit is not exactly the
-    /// conjunction of the three completeness bits.
-    pub fn validate(&self) -> Result<()> {
-        if self.schema != CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA {
-            return Err(Error::invalid(
-                "container evidence qualification schema",
-                format!(
-                    "expected {CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA}, got {}",
-                    self.schema
-                ),
+/// One version 1 completeness check.
+///
+/// `unknownPaths` is decoded as raw JSON values only to report a precise
+/// error; any entry makes the object inadmissible.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct V1QualificationCheckWire {
+    complete: bool,
+    unknown_paths: Vec<serde_json::Value>,
+}
+
+impl V1QualificationCheckWire {
+    fn complete() -> Self {
+        Self {
+            complete: true,
+            unknown_paths: Vec::new(),
+        }
+    }
+
+    fn is_complete(&self) -> bool {
+        self.complete && self.unknown_paths.is_empty()
+    }
+}
+
+impl Serialize for ContainerV1Qualification {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        V1QualificationWire {
+            schema: V1_QUALIFICATION_SCHEMA.to_string(),
+            mapping: V1QualificationCheckWire::complete(),
+            corresponding_source: V1QualificationCheckWire::complete(),
+            licensing: V1QualificationCheckWire::complete(),
+            ready_for_verified_publication: true,
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for ContainerV1Qualification {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = V1QualificationWire::deserialize(deserializer)?;
+        if wire.schema != V1_QUALIFICATION_SCHEMA {
+            return Err(serde::de::Error::custom(format!(
+                "qualification schema must be {V1_QUALIFICATION_SCHEMA}"
+            )));
+        }
+
+        // Signed version 1 documents were admitted only when every check was
+        // complete, so any other value cannot belong to a published release.
+        let complete = wire.mapping.is_complete()
+            && wire.corresponding_source.is_complete()
+            && wire.licensing.is_complete()
+            && wire.ready_for_verified_publication;
+        if !complete {
+            return Err(serde::de::Error::custom(
+                "qualification must record a complete closure with no unknown paths",
             ));
         }
-        self.mapping.validate()?;
-        self.corresponding_source
-            .validate("container corresponding-source qualification")?;
-        self.licensing
-            .validate("container licensing qualification")?;
-        let expected =
-            self.mapping.complete && self.corresponding_source.complete && self.licensing.complete;
-        if self.ready_for_verified_publication != expected {
-            return Err(Error::invalid(
-                "container evidence qualification readyForVerifiedPublication",
-                "value must equal mapping.complete && correspondingSource.complete && licensing.complete",
-            ));
-        }
-        Ok(())
+        Ok(Self)
     }
 }
 
-/// Closure-to-package mapping qualification and its bounded diagnostics.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ContainerEvidenceMappingQualification {
-    /// Whether every runtime closure path maps to exactly one package.
-    pub complete: bool,
-    /// Sorted diagnostics for paths without one unambiguous package mapping.
-    pub unknown_paths: Vec<ContainerEvidenceMappingUnknownPath>,
-}
-
-impl ContainerEvidenceMappingQualification {
-    /// Validates completeness, path ordering, and candidate bounds.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when completeness disagrees with the diagnostic list,
-    /// paths are unsorted or duplicated, or a diagnostic is invalid.
-    pub fn validate(&self) -> Result<()> {
-        validate_item_count(
-            self.unknown_paths.len(),
-            "container mapping qualification unknownPaths",
-            MAX_REACHABLE_DESCRIPTORS,
-        )?;
-        if self.complete != self.unknown_paths.is_empty() {
-            return Err(Error::invalid(
-                "container mapping qualification complete",
-                "complete must be true exactly when unknownPaths is empty",
-            ));
-        }
-        validate_sorted_unique_paths(
-            self.unknown_paths.iter().map(|entry| entry.path.as_str()),
-            "container mapping qualification unknownPaths",
-        )?;
-        for entry in &self.unknown_paths {
-            entry.validate()?;
-        }
-        Ok(())
-    }
-}
-
-/// One path whose evaluated package mapping is missing or ambiguous.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ContainerEvidenceMappingUnknownPath {
-    /// Exact realized Nix store path that could not be mapped uniquely.
-    pub path: String,
-    /// Stable qualification reason emitted by the evidence builder.
-    pub reason: String,
-    /// Deterministically ordered package candidates for an ambiguous path.
-    pub candidates: Vec<ContainerEvidencePackageCandidate>,
-}
-
-impl ContainerEvidenceMappingUnknownPath {
-    fn validate(&self) -> Result<()> {
-        validate_store_path(
-            &self.path,
-            "container mapping qualification unknown path",
-            false,
-        )?;
-        validate_diagnostic_text(
-            &self.reason,
-            "container mapping qualification unknown reason",
-        )?;
-        validate_item_count(
-            self.candidates.len(),
-            "container mapping qualification candidates",
-            MAX_PLATFORMS_PER_INDEX,
-        )?;
-        for candidate in &self.candidates {
-            candidate.validate()?;
-        }
-        Ok(())
-    }
-}
-
-/// One evaluated AOS package candidate for an ambiguous closure path.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ContainerEvidencePackageCandidate {
-    /// Exact derivation store path for the package definition.
-    pub derivation_path: String,
-    /// Evaluated package name.
-    pub pname: String,
-    /// Evaluated package version.
-    pub version: String,
-    /// Evaluated license identifiers.
-    pub licenses: Vec<String>,
-    /// Evaluated source identities.
-    pub sources: Vec<ContainerEvidenceSourceIdentity>,
-    /// Runtime dependency output paths used during evidence selection.
-    pub runtime_dependencies: Vec<String>,
-    /// Candidate output name and realized path.
-    pub output: ContainerEvidencePackageOutput,
-}
-
-impl ContainerEvidencePackageCandidate {
-    fn validate(&self) -> Result<()> {
-        validate_store_path(
-            &self.derivation_path,
-            "container mapping candidate derivationPath",
-            true,
-        )?;
-        validate_diagnostic_text(&self.pname, "container mapping candidate pname")?;
-        validate_diagnostic_text(&self.version, "container mapping candidate version")?;
-        validate_item_count(
-            self.licenses.len(),
-            "container mapping candidate licenses",
-            MAX_PLATFORMS_PER_INDEX,
-        )?;
-        validate_item_count(
-            self.sources.len(),
-            "container mapping candidate sources",
-            MAX_PLATFORMS_PER_INDEX,
-        )?;
-        validate_item_count(
-            self.runtime_dependencies.len(),
-            "container mapping candidate runtimeDependencies",
-            MAX_REACHABLE_DESCRIPTORS,
-        )?;
-        for license in &self.licenses {
-            validate_diagnostic_text(license, "container mapping candidate license")?;
-        }
-        for source in &self.sources {
-            source.validate()?;
-        }
-        for dependency in &self.runtime_dependencies {
-            validate_store_path(
-                dependency,
-                "container mapping candidate runtime dependency",
-                false,
-            )?;
-        }
-        self.output.validate()
-    }
-}
-
-/// Evaluated source identity retained for one package candidate.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ContainerEvidenceSourceIdentity {
-    /// Realized source store path.
-    pub path: String,
-    /// Source derivation path, when the source exposes one.
-    pub derivation_path: Option<String>,
-    /// Declared upstream source URLs.
-    pub urls: Vec<String>,
-    /// Declared fixed-output content hash, when available.
-    pub content_hash: Option<String>,
-}
-
-impl ContainerEvidenceSourceIdentity {
-    fn validate(&self) -> Result<()> {
-        validate_store_path(&self.path, "container evidence source path", false)?;
-        if let Some(derivation_path) = &self.derivation_path {
-            validate_store_path(
-                derivation_path,
-                "container evidence source derivationPath",
-                true,
-            )?;
-        }
-        validate_item_count(
-            self.urls.len(),
-            "container evidence source URLs",
-            MAX_PLATFORMS_PER_INDEX,
-        )?;
-        for url in &self.urls {
-            validate_long_text(url, "container evidence source URL")?;
-        }
-        if let Some(content_hash) = &self.content_hash {
-            validate_long_text(content_hash, "container evidence source contentHash")?;
-        }
-        Ok(())
-    }
-}
-
-/// Evaluated name and realized path for one package candidate output.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ContainerEvidencePackageOutput {
-    /// Named Nix output, such as `out`.
-    pub name: String,
-    /// Exact realized Nix store path.
-    pub path: String,
-}
-
-impl ContainerEvidencePackageOutput {
-    fn validate(&self) -> Result<()> {
-        validate_nix_output_name(&self.name)?;
-        validate_store_path(&self.path, "container mapping candidate output path", false)
-    }
-}
-
-/// One source or license coverage diagnostic for a runtime closure path.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ContainerEvidenceUnknownPath {
-    /// Exact realized Nix store path that failed the coverage check.
-    pub path: String,
-    /// Stable qualification reason emitted by the evidence builder.
-    pub reason: String,
-}
-
-impl ContainerEvidenceUnknownPath {
-    fn validate(&self, field: &'static str) -> Result<()> {
-        validate_store_path(&self.path, field, false)?;
-        validate_diagnostic_text(&self.reason, field)
-    }
-}
-
-/// One boolean qualification gate and its sorted failure diagnostics.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ContainerEvidenceQualificationCheck {
-    /// Whether every path passed this evidence gate.
-    pub complete: bool,
-    /// Sorted diagnostics for paths that failed this gate.
-    pub unknown_paths: Vec<ContainerEvidenceUnknownPath>,
-}
-
-impl ContainerEvidenceQualificationCheck {
-    fn validate(&self, field: &'static str) -> Result<()> {
-        validate_item_count(self.unknown_paths.len(), field, MAX_REACHABLE_DESCRIPTORS)?;
-        if self.complete != self.unknown_paths.is_empty() {
-            return Err(Error::invalid(
-                field,
-                "complete must be true exactly when unknownPaths is empty",
-            ));
-        }
-        validate_sorted_unique_paths(
-            self.unknown_paths.iter().map(|entry| entry.path.as_str()),
+fn validate_v1_qualification_presence(
+    present: bool,
+    required: bool,
+    field: &'static str,
+) -> Result<()> {
+    match (present, required) {
+        (true, false) => Err(Error::invalid(
             field,
-        )?;
-        for entry in &self.unknown_paths {
-            entry.validate(field)?;
-        }
-        Ok(())
+            "only schema version 1 documents carry a qualification object",
+        )),
+        (false, true) => Err(Error::invalid(
+            field,
+            "schema version 1 documents require a qualification object",
+        )),
+        _ => Ok(()),
     }
 }
 
@@ -1287,64 +1145,6 @@ fn validate_unique_signature_input_descriptors(input: &ContainerSignatureInput) 
     Ok(())
 }
 
-fn validate_item_count(actual: usize, field: &'static str, limit: usize) -> Result<()> {
-    if actual > limit {
-        return Err(Error::TooManyItems {
-            field,
-            limit,
-            actual,
-        });
-    }
-    Ok(())
-}
-
-fn validate_sorted_unique_paths<'a>(
-    paths: impl Iterator<Item = &'a str>,
-    field: &'static str,
-) -> Result<()> {
-    let mut previous = None;
-    for path in paths {
-        if previous.is_some_and(|value| value >= path) {
-            return Err(Error::invalid(
-                field,
-                "unknownPaths must be sorted by path without duplicates",
-            ));
-        }
-        previous = Some(path);
-    }
-    Ok(())
-}
-
-fn validate_diagnostic_text(value: &str, field: &'static str) -> Result<()> {
-    validate_text(value, field, MAX_CONTAINER_RELEASE_IDENTITY_BYTES)
-}
-
-fn validate_long_text(value: &str, field: &'static str) -> Result<()> {
-    validate_text(value, field, MAX_NIX_STORE_PATH_BYTES)
-}
-
-fn validate_text(value: &str, field: &'static str, limit: usize) -> Result<()> {
-    if value.is_empty() {
-        return Err(Error::invalid(field, "value must not be empty"));
-    }
-    if value.len() > limit {
-        return Err(Error::invalid(
-            field,
-            format!("value is {} bytes; the limit is {limit}", value.len()),
-        ));
-    }
-    if value
-        .chars()
-        .any(|character| character.is_control() && character != '\t')
-    {
-        return Err(Error::invalid(
-            field,
-            "value must not contain control characters",
-        ));
-    }
-    Ok(())
-}
-
 fn validate_package_name(value: &str) -> Result<()> {
     validate_identity_length(value, "container release identity package")?;
     let valid_start = value
@@ -1626,25 +1426,6 @@ mod tests {
         }
     }
 
-    fn qualification_fixture() -> ContainerEvidenceQualification {
-        ContainerEvidenceQualification {
-            schema: CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA.to_string(),
-            mapping: ContainerEvidenceMappingQualification {
-                complete: true,
-                unknown_paths: Vec::new(),
-            },
-            corresponding_source: ContainerEvidenceQualificationCheck {
-                complete: true,
-                unknown_paths: Vec::new(),
-            },
-            licensing: ContainerEvidenceQualificationCheck {
-                complete: true,
-                unknown_paths: Vec::new(),
-            },
-            ready_for_verified_publication: true,
-        }
-    }
-
     fn release_fixture() -> ContainerRelease {
         let mut platform_manifest = descriptor(MediaType::OciImageManifest, "amd64-manifest");
         platform_manifest.platform = Some(Platform::linux_amd64());
@@ -1674,7 +1455,7 @@ mod tests {
                 },
                 closure: evidence_descriptor(MediaType::AosNixClosure, "closure"),
             },
-            qualification: qualification_fixture(),
+            v1_qualification: None,
             evidence: ContainerReleaseEvidence {
                 abilities: evidence_descriptor(MediaType::AosContainerStaticAbilities, "abilities"),
                 sbom: evidence_descriptor(MediaType::SpdxJson, "sbom"),
@@ -1700,8 +1481,123 @@ mod tests {
                 license: release.evidence.license,
                 provenance: release.evidence.provenance,
             },
-            qualification: release.qualification,
+            v1_qualification: release.v1_qualification,
         }
+    }
+
+    /// Returns the version 1 qualification object exactly as published.
+    fn v1_qualification_json() -> serde_json::Value {
+        let complete = serde_json::json!({ "complete": true, "unknownPaths": [] });
+        serde_json::json!({
+            "schema": "aos.container.evidence-qualification/v1",
+            "mapping": complete,
+            "correspondingSource": complete,
+            "licensing": complete,
+            "readyForVerifiedPublication": true,
+        })
+    }
+
+    /// Encodes the fixture release as canonical version 1 sidecar bytes.
+    fn v1_release_bytes(qualification: serde_json::Value) -> Vec<u8> {
+        let mut value = serde_json::to_value(release_fixture()).expect("release JSON");
+        value["schemaVersion"] = serde_json::json!(1);
+        value["qualification"] = qualification;
+        to_canonical_json(&value).expect("canonical v1 release")
+    }
+
+    /// Encodes the fixture signature input as canonical version 1 bytes.
+    fn v1_signature_input_bytes() -> Vec<u8> {
+        let mut value = serde_json::to_value(signature_input_fixture()).expect("input JSON");
+        value["schema"] = serde_json::json!(CONTAINER_SIGNATURE_INPUT_SCHEMA_V1);
+        value["qualification"] = v1_qualification_json();
+        to_canonical_json(&value).expect("canonical v1 input")
+    }
+
+    #[test]
+    fn version_1_documents_parse_and_reencode_byte_for_byte() {
+        let release_bytes = v1_release_bytes(v1_qualification_json());
+        let release = ContainerRelease::from_canonical_json(&release_bytes).expect("v1 release");
+        assert_eq!(release.schema_version, CONTAINER_RELEASE_SCHEMA_VERSION_V1);
+        assert_eq!(release.v1_qualification, Some(ContainerV1Qualification));
+        assert_eq!(
+            to_canonical_json(&release).expect("re-encode"),
+            release_bytes
+        );
+
+        let input_bytes = v1_signature_input_bytes();
+        let input = ContainerSignatureInput::from_canonical_json(&input_bytes).expect("v1 input");
+        assert_eq!(to_canonical_json(&input).expect("re-encode"), input_bytes);
+        input
+            .validate_final_release(&release)
+            .expect("v1 input binds v1 release");
+    }
+
+    #[test]
+    fn version_1_qualification_rejects_incomplete_or_altered_values() {
+        let mut unknown = v1_qualification_json();
+        unknown["licensing"] = serde_json::json!({
+            "complete": false,
+            "unknownPaths": [{
+                "path": "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-unlicensed",
+                "reason": "missing-license-metadata"
+            }],
+        });
+        unknown["readyForVerifiedPublication"] = serde_json::json!(false);
+
+        let mut wrong_schema = v1_qualification_json();
+        wrong_schema["schema"] = serde_json::json!("aos.container.evidence-qualification/v2");
+
+        let mut extra_field = v1_qualification_json();
+        extra_field["mapping"]["future"] = serde_json::json!(true);
+
+        for (case, qualification) in [
+            ("incomplete licensing", unknown),
+            ("wrong schema", wrong_schema),
+            ("unknown field", extra_field),
+        ] {
+            assert!(
+                ContainerRelease::from_json(&v1_release_bytes(qualification)).is_err(),
+                "{case} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn qualification_presence_must_match_the_schema_version() {
+        let mut current = serde_json::to_value(release_fixture()).expect("release JSON");
+        current["qualification"] = v1_qualification_json();
+        assert!(
+            ContainerRelease::from_json(&serde_json::to_vec(&current).expect("bytes")).is_err()
+        );
+
+        let mut v1_without = serde_json::to_value(release_fixture()).expect("release JSON");
+        v1_without["schemaVersion"] = serde_json::json!(1);
+        assert!(
+            ContainerRelease::from_json(&serde_json::to_vec(&v1_without).expect("bytes")).is_err()
+        );
+
+        let mut input = signature_input_fixture();
+        input.v1_qualification = Some(ContainerV1Qualification);
+        assert!(input.validate().is_err());
+
+        let mut input = signature_input_fixture();
+        input.schema = CONTAINER_SIGNATURE_INPUT_SCHEMA_V1.to_string();
+        assert!(input.validate().is_err());
+    }
+
+    #[test]
+    fn signature_input_and_release_versions_must_match() {
+        let v1_release =
+            ContainerRelease::from_json(&v1_release_bytes(v1_qualification_json())).expect("v1");
+        assert!(
+            signature_input_fixture()
+                .validate_final_release(&v1_release)
+                .is_err()
+        );
+
+        let v1_input =
+            ContainerSignatureInput::from_json(&v1_signature_input_bytes()).expect("v1 input");
+        assert!(v1_input.validate_final_release(&release_fixture()).is_err());
     }
 
     #[test]
@@ -1832,12 +1728,12 @@ mod tests {
     #[test]
     fn reports_exact_schema_identity_and_media_errors() {
         let mut release = release_fixture();
-        release.schema_version = 2;
+        release.schema_version = 3;
         assert_eq!(
             release.validate(),
             Err(Error::InvalidValue {
                 field: "container release schemaVersion",
-                reason: "expected 1, got 2".to_string(),
+                reason: "expected 2 or 1, got 3".to_string(),
             })
         );
 
