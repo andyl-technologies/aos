@@ -25,7 +25,7 @@ use tokio_util::io::ReaderStream;
 
 use aos_hub_db::db::Database;
 use aos_hub_service::egress_protocol::{
-    self, ChallengeEvidence, RequestEvidence, ResponseEvidence,
+    self, ChallengeObservation, ResponseObservation, SignedRequestParts,
 };
 
 const REQUEST_CAP: usize = aos_hub_service::service::MAX_UPLOAD_BYTES;
@@ -120,7 +120,7 @@ impl EgressGateway {
             .context("invalid challenge timestamp")?;
         let nonce = require_header(headers, "x-aos-egress-nonce")?;
         let signature = require_header(headers, "x-aos-egress-signature")?;
-        let evidence = ChallengeEvidence { timestamp, nonce };
+        let evidence = ChallengeObservation { timestamp, nonce };
         egress_protocol::verify_challenge(key, &evidence, signature)?;
         let now = aos_hub_model::clock::now_unix_secs();
         require_fresh_past_timestamp(timestamp, now).context("stale challenge")?;
@@ -133,7 +133,7 @@ impl EgressGateway {
             "replayed challenge"
         );
         let response_timestamp = aos_hub_model::clock::now_unix_secs();
-        let response_evidence = ChallengeEvidence {
+        let response_evidence = ChallengeObservation {
             timestamp: response_timestamp,
             nonce,
         };
@@ -176,7 +176,7 @@ impl EgressGateway {
             optional_header(&headers, "x-aos-egress-upstream-webhook-signature")?;
         let webhook_delivery_id =
             optional_header(&headers, "x-aos-egress-upstream-webhook-delivery-id")?;
-        let evidence = RequestEvidence {
+        let evidence = SignedRequestParts {
             timestamp,
             nonce,
             target_url,
@@ -323,7 +323,7 @@ impl EgressGateway {
         let response_timestamp = aos_hub_model::clock::now_unix_secs();
         let response_signature = egress_protocol::sign_response(
             key,
-            &ResponseEvidence {
+            &ResponseObservation {
                 timestamp: response_timestamp,
                 nonce,
                 final_url: &final_url,
@@ -468,7 +468,7 @@ mod tests {
     }
 
     fn challenge_request(key_id: &str, key: &[u8], timestamp: i64, nonce: &str) -> Request {
-        let evidence = ChallengeEvidence { timestamp, nonce };
+        let evidence = ChallengeObservation { timestamp, nonce };
         let signature = egress_protocol::sign_challenge(key, &evidence).unwrap();
         Request::builder()
             .method("POST")
@@ -554,7 +554,7 @@ mod tests {
         let now = aos_hub_model::clock::now_unix_secs();
         let nonce = "bodydigestabcdefghijklmnopqrstuvwxyz0123456789";
         let expected_digest = egress_protocol::body_sha256(b"expected");
-        let evidence = RequestEvidence {
+        let evidence = SignedRequestParts {
             timestamp: now,
             nonce,
             target_url: "https://example.com/object",
@@ -608,7 +608,7 @@ mod tests {
         let digest = egress_protocol::body_sha256(body);
         let webhook_signature =
             "sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-        let evidence = RequestEvidence {
+        let evidence = SignedRequestParts {
             timestamp: now,
             nonce,
             target_url: "https://example.com/hook",

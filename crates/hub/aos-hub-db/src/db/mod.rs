@@ -440,9 +440,9 @@ mod snapshot_insert_tests {
     }
 }
 
-mod cache_write_admission;
+mod cache_upload_tickets_batch;
 mod controller_leases;
-pub use cache_write_admission::*;
+pub use cache_upload_tickets_batch::*;
 pub use controller_leases::{ControllerLeaseFence, CONTROLLER_LEASE_TTL_SECONDS};
 mod delivery_identity;
 pub use delivery_identity::*;
@@ -465,7 +465,7 @@ mod oci_namespaces;
 pub use oci_namespaces::*;
 mod oci_release_projection;
 mod placement_policy;
-mod publication_admission;
+mod publication_manifest_batch;
 mod registry_delete;
 pub use registry_delete::*;
 mod registry_delete_operation;
@@ -488,7 +488,7 @@ mod signing_keys;
 mod topology;
 mod worker_jobs;
 pub use placement_policy::*;
-pub use publication_admission::*;
+pub use publication_manifest_batch::*;
 pub use registry_index_build::*;
 pub use release_publication::*;
 pub use signing_keys::*;
