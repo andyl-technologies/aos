@@ -257,8 +257,6 @@ pub struct OciUntrackedRepairPlanRecord {
     pub provider_request_id: Option<String>,
     /// Strong entity tag used by a successful conditional delete.
     pub conditional_etag: Option<String>,
-    /// Canonical digest over the complete provider response evidence.
-    pub evidence_digest: Option<Sha256Digest>,
     /// Provider absence confirmation time.
     pub confirmed_at: Option<i64>,
     /// Optimistic-concurrency version.
@@ -1069,8 +1067,7 @@ const UNTRACKED_REPAIR_COLUMNS: &str = "SELECT repair.id, repair.registry_id, re
             repair.expires_at, repair.created_at, repair.applied_at,
             repair.finished_at, repair.last_error, repair.resource_version,
             evidence.outcome, evidence.provider_request_id,
-            evidence.conditional_etag, evidence.evidence_digest,
-            evidence.confirmed_at
+            evidence.conditional_etag, evidence.confirmed_at
      FROM oci_untracked_repair_plans repair
      LEFT JOIN oci_untracked_repair_evidence evidence ON evidence.plan_id = repair.id";
 
@@ -1129,11 +1126,7 @@ fn row_to_untracked_repair(row: &crate::value::Row) -> Result<OciUntrackedRepair
         outcome,
         provider_request_id: row.get(36)?,
         conditional_etag: row.get(37)?,
-        evidence_digest: row
-            .get::<Option<String>>(38)?
-            .map(|value| Sha256Digest::parse(&value))
-            .transpose()?,
-        confirmed_at: row.get(39)?,
+        confirmed_at: row.get(38)?,
         resource_version: row.get(34)?,
     })
 }
