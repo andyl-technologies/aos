@@ -1513,9 +1513,14 @@ in
                         "$f" 2>/dev/null || true
                     done
 
-                  # Patch Python bootstrap template shebang placeholder
-                  sed -i "s|%shebang%|#!${buildPython3}/bin/python3|" \
+                  # These Python launcher templates are not used to build Bazel;
+                  # they ship in its embedded tools and run on the installed
+                  # host. Use that host's AOS interpreters, never the build
+                  # platform's or a system path such as /bin/sh.
+                  sed -i "s|%shebang%|#!${python3}/bin/python3|" \
                     tools/python/python_bootstrap_template.txt 2>/dev/null || true
+                  sed -i '1s|^#!/bin/sh$|#!${bash}/bin/bash|' tools/python/pywrapper_template.txt
+                  test "$(head -n 1 tools/python/pywrapper_template.txt)" = "#!${bash}/bin/bash"
 
                   # Apply strict_action_env patch (substitute placeholder with AOS tool paths)
                   patch --batch -p1 < ${./bazel-patches/strict_action_env.patch} || true
