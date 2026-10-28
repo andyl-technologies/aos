@@ -45,8 +45,9 @@ application observations; packet-order claims need the modeled fabric's own
 evidence.
 
 The campaign materializer must bind its typed environment fault choices to
-Crucible's modeled network adapters and deliver the RFC-0014 fault signal at
-the transport boundary. The guest image does not inject host-side faults.
+Crucible's modeled network adapters and deliver the
+[signal-driven fault](../../../../docs/users/crucible/signal-driven-faults.md)
+signal at the transport boundary. The guest image does not inject host-side faults.
 
 The guest-to-guest readiness channel terminates at A's port 9090 on the modeled
 fabric. West, B, and C contact A directly; east sends readiness through C's
@@ -77,5 +78,6 @@ the second group. The guest monitor continues traffic after
 Envoy and nginx on loopback. It verifies the initial three-proxy route, the
 A-to-C backup after B exits, and the unsafe direct response. The smoke check
 is diagnostic only. Release acceptance requires the automated five-VM Envoy
-product gate plus the local packaged-QEMU deterministic fleet validation in
-RFC-0020 §14.
+product gate plus the local packaged-QEMU deterministic fleet validation
+described in
+[campaign release acceptance](../../../../docs/engineering/crucible/campaigns/performance-and-validation.md#release-acceptance).
