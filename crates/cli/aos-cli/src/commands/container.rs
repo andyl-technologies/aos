@@ -2439,7 +2439,6 @@ mod tests {
                 },
                 closure: evidence_descriptor(MediaType::AosNixClosure, "closure"),
             },
-            v1_qualification: None,
             evidence: ContainerReleaseEvidence {
                 abilities: evidence_descriptor(MediaType::AosContainerStaticAbilities, "abilities"),
                 sbom: evidence_descriptor(MediaType::SpdxJson, "sbom"),

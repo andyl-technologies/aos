@@ -261,7 +261,6 @@ pub fn add_signed_release_graph(fixture: &Fixture) -> ContainerRelease {
             },
             closure: artifact("closure", MediaType::AosNixClosure),
         },
-        v1_qualification: None,
         evidence: ContainerReleaseEvidence {
             abilities: artifact("abilities", MediaType::AosContainerStaticAbilities),
             sbom: artifact("sbom", MediaType::SpdxJson),
@@ -286,7 +285,6 @@ pub fn publication_signature_input(release: &ContainerRelease) -> ContainerSigna
             license: release.evidence.license.clone(),
             provenance: release.evidence.provenance.clone(),
         },
-        v1_qualification: release.v1_qualification,
     }
 }
 

@@ -3,9 +3,7 @@ mod common;
 use anyhow::{Context, Result};
 use aos_nix_cache::AuthOptions;
 use aos_oci_types::{
-    Annotations, CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA, CONTAINER_RELEASE_SCHEMA_VERSION,
-    ContainerEvidenceMappingQualification, ContainerEvidenceQualification,
-    ContainerEvidenceQualificationCheck, ContainerNixProvenance, ContainerOciRelease,
+    Annotations, CONTAINER_RELEASE_SCHEMA_VERSION, ContainerNixProvenance, ContainerOciRelease,
     ContainerRelease, ContainerReleaseEvidence, ContainerReleaseIdentity, Descriptor, MediaType,
     NixDefinitionIdentity, NixOutputIdentity, Platform, Sha256Digest, to_canonical_json,
 };
@@ -72,22 +70,6 @@ fn container_release_attachment(version: &str) -> Result<ContainerReleaseAttachm
                 store_path: "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-aos-container".to_string(),
             },
             closure: evidence_descriptor(MediaType::AosNixClosure, "closure"),
-        },
-        qualification: ContainerEvidenceQualification {
-            schema: CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA.to_string(),
-            mapping: ContainerEvidenceMappingQualification {
-                complete: true,
-                unknown_paths: Vec::new(),
-            },
-            corresponding_source: ContainerEvidenceQualificationCheck {
-                complete: true,
-                unknown_paths: Vec::new(),
-            },
-            licensing: ContainerEvidenceQualificationCheck {
-                complete: true,
-                unknown_paths: Vec::new(),
-            },
-            ready_for_verified_publication: true,
         },
         evidence: ContainerReleaseEvidence {
             abilities: evidence_descriptor(MediaType::AosContainerStaticAbilities, "abilities"),

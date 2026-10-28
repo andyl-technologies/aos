@@ -37,25 +37,10 @@
 //! }
 //! ```
 //!
-//! The Nix evidence build fails unless every runtime closure path maps to one
+//! The Nix referrer build fails unless every runtime closure path maps to one
 //! package with retained corresponding source and license metadata, so a
 //! sidecar exists only for a complete closure and carries no completeness
-//! field. Schema version 1 sidecars and `aos.container.signature-input/v1`
-//! inputs repeated that result as a `qualification` object whose only
-//! admissible value is the complete one:
-//!
-//! ```json
-//! "qualification": {
-//!   "schema": "aos.container.evidence-qualification/v1",
-//!   "mapping": { "complete": true, "unknownPaths": [] },
-//!   "correspondingSource": { "complete": true, "unknownPaths": [] },
-//!   "licensing": { "complete": true, "unknownPaths": [] },
-//!   "readyForVerifiedPublication": true
-//! }
-//! ```
-//!
-//! Readers still accept those already-published version 1 documents and
-//! re-encode them byte for byte; writers emit only version 2.
+//! field.
 //!
 //! Unlike generic OCI projections, this AOS-owned signed schema rejects
 //! unknown fields at every nested object. Descriptors still retain standard
@@ -84,14 +69,8 @@ pub const CONTAINER_RELEASE_SIDECAR_PATH: &str = "containers/v1/index.json";
 /// Schema version written in new signed [`ContainerRelease`] values.
 pub const CONTAINER_RELEASE_SCHEMA_VERSION: u32 = 2;
 
-/// Schema version of published sidecars that carry a qualification object.
-pub const CONTAINER_RELEASE_SCHEMA_VERSION_V1: u32 = 1;
-
 /// Schema identifier written in new signed [`ContainerSignatureInput`] values.
 pub const CONTAINER_SIGNATURE_INPUT_SCHEMA: &str = "aos.container.signature-input/v2";
-
-/// Schema identifier of published signature inputs that carry a qualification object.
-pub const CONTAINER_SIGNATURE_INPUT_SCHEMA_V1: &str = "aos.container.signature-input/v1";
 
 /// DSSE payload type used for exact AOS container signature-input bytes.
 pub const CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE: &str =
@@ -99,9 +78,6 @@ pub const CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE: &str =
 
 /// SSHSIG namespace used when an AOS trust key signs container DSSE PAE bytes.
 pub const CONTAINER_DSSE_SIGNATURE_NAMESPACE: &str = "aos-container-signature-dsse-v1";
-
-/// Schema identifier inside a version 1 qualification object.
-const V1_QUALIFICATION_SCHEMA: &str = "aos.container.evidence-qualification/v1";
 
 /// Returns whether a Nix definition attribute names the exact logical image.
 ///
@@ -136,18 +112,6 @@ pub struct ContainerRelease {
     pub oci: ContainerOciRelease,
     /// Nix definition, realized output, and closure-manifest identity.
     pub nix: ContainerNixProvenance,
-    /// Complete-closure marker carried only by version 1 documents.
-    ///
-    /// Version 1 repeated the build's completeness result, which was always
-    /// complete in an admissible document. It is `None` for every document
-    /// this crate writes and is retained so published version 1 bytes still
-    /// parse and re-encode exactly.
-    #[serde(
-        default,
-        rename = "qualification",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub v1_qualification: Option<ContainerV1Qualification>,
     /// Required source, compliance, provenance, and signature evidence.
     ///
     /// Static ability evidence is retained as an opaque OCI descriptor here.
@@ -174,28 +138,18 @@ impl ContainerRelease {
     /// # Errors
     ///
     /// Returns an error for an unsupported schema version or the wrong media
-    /// type, a qualification object that does not match the schema version,
-    /// invalid or overlong identities, malformed descriptors, duplicate
+    /// type, invalid or overlong identities, malformed descriptors, duplicate
     /// platforms, invalid Nix paths, or a missing/mistyped evidence role.
     pub fn validate(&self) -> Result<()> {
-        let carries_v1_qualification = match self.schema_version {
-            CONTAINER_RELEASE_SCHEMA_VERSION => false,
-            CONTAINER_RELEASE_SCHEMA_VERSION_V1 => true,
-            other => {
-                return Err(Error::invalid(
-                    "container release schemaVersion",
-                    format!(
-                        "expected {CONTAINER_RELEASE_SCHEMA_VERSION} or \
-                         {CONTAINER_RELEASE_SCHEMA_VERSION_V1}, got {other}"
-                    ),
-                ));
-            }
-        };
-        validate_v1_qualification_presence(
-            self.v1_qualification.is_some(),
-            carries_v1_qualification,
-            "container release qualification",
-        )?;
+        if self.schema_version != CONTAINER_RELEASE_SCHEMA_VERSION {
+            return Err(Error::invalid(
+                "container release schemaVersion",
+                format!(
+                    "expected {CONTAINER_RELEASE_SCHEMA_VERSION}, got {}",
+                    self.schema_version
+                ),
+            ));
+        }
         if self.media_type != MediaType::AosContainerRelease {
             return Err(Error::invalid(
                 "container release mediaType",
@@ -247,18 +201,6 @@ pub struct ContainerSignatureInput {
     pub nix: ContainerNixProvenance,
     /// Unsigned evidence roots emitted by the hermetic Nix build.
     pub evidence: ContainerSignatureInputEvidence,
-    /// Complete-closure marker carried only by version 1 documents.
-    ///
-    /// Version 1 repeated the build's completeness result, which was always
-    /// complete in an admissible document. It is `None` for every document
-    /// this crate writes and is retained so published version 1 bytes still
-    /// parse and re-encode exactly.
-    #[serde(
-        default,
-        rename = "qualification",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub v1_qualification: Option<ContainerV1Qualification>,
 }
 
 impl ContainerSignatureInput {
@@ -295,27 +237,17 @@ impl ContainerSignatureInput {
     ///
     /// # Errors
     ///
-    /// Returns an error for an unsupported schema, a qualification object that
-    /// does not match the schema, or invalid nested contracts.
+    /// Returns an error for an unsupported schema or invalid nested contracts.
     pub fn validate(&self) -> Result<()> {
-        let carries_v1_qualification = match self.schema.as_str() {
-            CONTAINER_SIGNATURE_INPUT_SCHEMA => false,
-            CONTAINER_SIGNATURE_INPUT_SCHEMA_V1 => true,
-            other => {
-                return Err(Error::invalid(
-                    "container signature input schema",
-                    format!(
-                        "expected {CONTAINER_SIGNATURE_INPUT_SCHEMA} or \
-                         {CONTAINER_SIGNATURE_INPUT_SCHEMA_V1}, got {other}"
-                    ),
-                ));
-            }
-        };
-        validate_v1_qualification_presence(
-            self.v1_qualification.is_some(),
-            carries_v1_qualification,
-            "container signature input qualification",
-        )?;
+        if self.schema != CONTAINER_SIGNATURE_INPUT_SCHEMA {
+            return Err(Error::invalid(
+                "container signature input schema",
+                format!(
+                    "expected {CONTAINER_SIGNATURE_INPUT_SCHEMA}, got {}",
+                    self.schema
+                ),
+            ));
+        }
         self.identity.validate()?;
         self.oci.validate()?;
         self.nix.validate()?;
@@ -328,24 +260,15 @@ impl ContainerSignatureInput {
     ///
     /// The final sidecar may add only the DSSE signature descriptor. Every
     /// unsigned identity, OCI, Nix, and evidence field must be byte-model
-    /// equal to the externally authorized signature input, and a version 1
-    /// input binds only a version 1 sidecar.
+    /// equal to the externally authorized signature input.
     ///
     /// # Errors
     ///
-    /// Returns an error when either contract is invalid, when their schema
-    /// versions differ, or when any unsigned field differs.
+    /// Returns an error when either contract is invalid or when any unsigned
+    /// field differs.
     pub fn validate_final_release(&self, release: &ContainerRelease) -> Result<()> {
         self.validate()?;
         release.validate()?;
-        // Each document's own validation ties qualification presence to its
-        // schema version, so comparing presence also compares versions.
-        if self.v1_qualification != release.v1_qualification {
-            return Err(Error::invalid(
-                "container signature input schema",
-                "final sidecar schema version differs from the unsigned input",
-            ));
-        }
         if self.identity != release.identity {
             return Err(Error::invalid(
                 "container signature input identity",
@@ -600,111 +523,6 @@ impl ContainerSignatureInputEvidence {
             && self.source == evidence.source
             && self.license == evidence.license
             && self.provenance == evidence.provenance
-    }
-}
-
-/// Marker for the complete-closure qualification object of version 1 documents.
-///
-/// The object has exactly one admissible value: every check complete with no
-/// unknown paths. Deserialization rejects any other value, and serialization
-/// writes that value back, so a parsed version 1 document re-encodes to its
-/// original canonical bytes.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ContainerV1Qualification;
-
-/// Strict wire shape of the version 1 qualification object.
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct V1QualificationWire {
-    schema: String,
-    mapping: V1QualificationCheckWire,
-    corresponding_source: V1QualificationCheckWire,
-    licensing: V1QualificationCheckWire,
-    ready_for_verified_publication: bool,
-}
-
-/// One version 1 completeness check.
-///
-/// `unknownPaths` is decoded as raw JSON values only to report a precise
-/// error; any entry makes the object inadmissible.
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct V1QualificationCheckWire {
-    complete: bool,
-    unknown_paths: Vec<serde_json::Value>,
-}
-
-impl V1QualificationCheckWire {
-    fn complete() -> Self {
-        Self {
-            complete: true,
-            unknown_paths: Vec::new(),
-        }
-    }
-
-    fn is_complete(&self) -> bool {
-        self.complete && self.unknown_paths.is_empty()
-    }
-}
-
-impl Serialize for ContainerV1Qualification {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        V1QualificationWire {
-            schema: V1_QUALIFICATION_SCHEMA.to_string(),
-            mapping: V1QualificationCheckWire::complete(),
-            corresponding_source: V1QualificationCheckWire::complete(),
-            licensing: V1QualificationCheckWire::complete(),
-            ready_for_verified_publication: true,
-        }
-        .serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for ContainerV1Qualification {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let wire = V1QualificationWire::deserialize(deserializer)?;
-        if wire.schema != V1_QUALIFICATION_SCHEMA {
-            return Err(serde::de::Error::custom(format!(
-                "qualification schema must be {V1_QUALIFICATION_SCHEMA}"
-            )));
-        }
-
-        // Signed version 1 documents were admitted only when every check was
-        // complete, so any other value cannot belong to a published release.
-        let complete = wire.mapping.is_complete()
-            && wire.corresponding_source.is_complete()
-            && wire.licensing.is_complete()
-            && wire.ready_for_verified_publication;
-        if !complete {
-            return Err(serde::de::Error::custom(
-                "qualification must record a complete closure with no unknown paths",
-            ));
-        }
-        Ok(Self)
-    }
-}
-
-fn validate_v1_qualification_presence(
-    present: bool,
-    required: bool,
-    field: &'static str,
-) -> Result<()> {
-    match (present, required) {
-        (true, false) => Err(Error::invalid(
-            field,
-            "only schema version 1 documents carry a qualification object",
-        )),
-        (false, true) => Err(Error::invalid(
-            field,
-            "schema version 1 documents require a qualification object",
-        )),
-        _ => Ok(()),
     }
 }
 
@@ -1455,7 +1273,6 @@ mod tests {
                 },
                 closure: evidence_descriptor(MediaType::AosNixClosure, "closure"),
             },
-            v1_qualification: None,
             evidence: ContainerReleaseEvidence {
                 abilities: evidence_descriptor(MediaType::AosContainerStaticAbilities, "abilities"),
                 sbom: evidence_descriptor(MediaType::SpdxJson, "sbom"),
@@ -1481,123 +1298,7 @@ mod tests {
                 license: release.evidence.license,
                 provenance: release.evidence.provenance,
             },
-            v1_qualification: release.v1_qualification,
         }
-    }
-
-    /// Returns the version 1 qualification object exactly as published.
-    fn v1_qualification_json() -> serde_json::Value {
-        let complete = serde_json::json!({ "complete": true, "unknownPaths": [] });
-        serde_json::json!({
-            "schema": "aos.container.evidence-qualification/v1",
-            "mapping": complete,
-            "correspondingSource": complete,
-            "licensing": complete,
-            "readyForVerifiedPublication": true,
-        })
-    }
-
-    /// Encodes the fixture release as canonical version 1 sidecar bytes.
-    fn v1_release_bytes(qualification: serde_json::Value) -> Vec<u8> {
-        let mut value = serde_json::to_value(release_fixture()).expect("release JSON");
-        value["schemaVersion"] = serde_json::json!(1);
-        value["qualification"] = qualification;
-        to_canonical_json(&value).expect("canonical v1 release")
-    }
-
-    /// Encodes the fixture signature input as canonical version 1 bytes.
-    fn v1_signature_input_bytes() -> Vec<u8> {
-        let mut value = serde_json::to_value(signature_input_fixture()).expect("input JSON");
-        value["schema"] = serde_json::json!(CONTAINER_SIGNATURE_INPUT_SCHEMA_V1);
-        value["qualification"] = v1_qualification_json();
-        to_canonical_json(&value).expect("canonical v1 input")
-    }
-
-    #[test]
-    fn version_1_documents_parse_and_reencode_byte_for_byte() {
-        let release_bytes = v1_release_bytes(v1_qualification_json());
-        let release = ContainerRelease::from_canonical_json(&release_bytes).expect("v1 release");
-        assert_eq!(release.schema_version, CONTAINER_RELEASE_SCHEMA_VERSION_V1);
-        assert_eq!(release.v1_qualification, Some(ContainerV1Qualification));
-        assert_eq!(
-            to_canonical_json(&release).expect("re-encode"),
-            release_bytes
-        );
-
-        let input_bytes = v1_signature_input_bytes();
-        let input = ContainerSignatureInput::from_canonical_json(&input_bytes).expect("v1 input");
-        assert_eq!(to_canonical_json(&input).expect("re-encode"), input_bytes);
-        input
-            .validate_final_release(&release)
-            .expect("v1 input binds v1 release");
-    }
-
-    #[test]
-    fn version_1_qualification_rejects_incomplete_or_altered_values() {
-        let mut unknown = v1_qualification_json();
-        unknown["licensing"] = serde_json::json!({
-            "complete": false,
-            "unknownPaths": [{
-                "path": "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-unlicensed",
-                "reason": "missing-license-metadata"
-            }],
-        });
-        unknown["readyForVerifiedPublication"] = serde_json::json!(false);
-
-        let mut wrong_schema = v1_qualification_json();
-        wrong_schema["schema"] = serde_json::json!("aos.container.evidence-qualification/v2");
-
-        let mut extra_field = v1_qualification_json();
-        extra_field["mapping"]["future"] = serde_json::json!(true);
-
-        for (case, qualification) in [
-            ("incomplete licensing", unknown),
-            ("wrong schema", wrong_schema),
-            ("unknown field", extra_field),
-        ] {
-            assert!(
-                ContainerRelease::from_json(&v1_release_bytes(qualification)).is_err(),
-                "{case} must be rejected"
-            );
-        }
-    }
-
-    #[test]
-    fn qualification_presence_must_match_the_schema_version() {
-        let mut current = serde_json::to_value(release_fixture()).expect("release JSON");
-        current["qualification"] = v1_qualification_json();
-        assert!(
-            ContainerRelease::from_json(&serde_json::to_vec(&current).expect("bytes")).is_err()
-        );
-
-        let mut v1_without = serde_json::to_value(release_fixture()).expect("release JSON");
-        v1_without["schemaVersion"] = serde_json::json!(1);
-        assert!(
-            ContainerRelease::from_json(&serde_json::to_vec(&v1_without).expect("bytes")).is_err()
-        );
-
-        let mut input = signature_input_fixture();
-        input.v1_qualification = Some(ContainerV1Qualification);
-        assert!(input.validate().is_err());
-
-        let mut input = signature_input_fixture();
-        input.schema = CONTAINER_SIGNATURE_INPUT_SCHEMA_V1.to_string();
-        assert!(input.validate().is_err());
-    }
-
-    #[test]
-    fn signature_input_and_release_versions_must_match() {
-        let v1_release =
-            ContainerRelease::from_json(&v1_release_bytes(v1_qualification_json())).expect("v1");
-        assert!(
-            signature_input_fixture()
-                .validate_final_release(&v1_release)
-                .is_err()
-        );
-
-        let v1_input =
-            ContainerSignatureInput::from_json(&v1_signature_input_bytes()).expect("v1 input");
-        assert!(v1_input.validate_final_release(&release_fixture()).is_err());
     }
 
     #[test]

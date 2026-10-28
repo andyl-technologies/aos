@@ -56,11 +56,9 @@ pub use model::{
 pub use reference::{ManifestReference, RepositoryName, Tag};
 pub use release::{
     CONTAINER_DSSE_SIGNATURE_NAMESPACE, CONTAINER_RELEASE_SCHEMA_VERSION,
-    CONTAINER_RELEASE_SCHEMA_VERSION_V1, CONTAINER_RELEASE_SIDECAR_PATH,
-    CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE, CONTAINER_SIGNATURE_INPUT_SCHEMA,
-    CONTAINER_SIGNATURE_INPUT_SCHEMA_V1, ContainerDsseEnvelope, ContainerDsseSignature,
+    CONTAINER_RELEASE_SIDECAR_PATH, CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE,
+    CONTAINER_SIGNATURE_INPUT_SCHEMA, ContainerDsseEnvelope, ContainerDsseSignature,
     ContainerNixProvenance, ContainerOciRelease, ContainerRelease, ContainerReleaseEvidence,
     ContainerReleaseIdentity, ContainerSignatureInput, ContainerSignatureInputEvidence,
-    ContainerV1Qualification, NixDefinitionIdentity, NixOutputIdentity,
-    definition_attribute_matches_image,
+    NixDefinitionIdentity, NixOutputIdentity, definition_attribute_matches_image,
 };

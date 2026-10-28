@@ -4,12 +4,11 @@
 
 use aos_oci_types::limits::SCHEMA_VERSION;
 use aos_oci_types::{
-    Annotations, CONTAINER_RELEASE_SCHEMA_VERSION, CONTAINER_RELEASE_SCHEMA_VERSION_V1,
-    ContainerNixProvenance, ContainerOciRelease, ContainerRelease, ContainerReleaseEvidence,
-    ContainerReleaseIdentity, ContainerV1Qualification, Descriptor, DistributionError,
-    DistributionErrorCode, DistributionErrorEnvelope, HistoryEntry, ImageConfig, ImageIndex,
-    ImageManifest, ImageRuntimeConfig, MediaType, NixDefinitionIdentity, NixOutputIdentity,
-    Platform, RootFs, RootFsType, Sha256Digest, to_canonical_json,
+    Annotations, CONTAINER_RELEASE_SCHEMA_VERSION, ContainerNixProvenance, ContainerOciRelease,
+    ContainerRelease, ContainerReleaseEvidence, ContainerReleaseIdentity, Descriptor,
+    DistributionError, DistributionErrorCode, DistributionErrorEnvelope, HistoryEntry, ImageConfig,
+    ImageIndex, ImageManifest, ImageRuntimeConfig, MediaType, NixDefinitionIdentity,
+    NixOutputIdentity, Platform, RootFs, RootFsType, Sha256Digest, to_canonical_json,
 };
 
 fn descriptor(media_type: MediaType, content: &[u8]) -> Descriptor {
@@ -146,7 +145,7 @@ fn distribution_error_golden_vector() {
     );
 }
 
-/// Returns the release fields shared by the version 1 and version 2 vectors.
+/// Returns the release encoded by the golden sidecar vector.
 fn golden_container_release() -> ContainerRelease {
     let mut platform_manifest = descriptor(MediaType::OciImageManifest, b"amd64-manifest");
     platform_manifest.platform = Some(Platform::linux_amd64());
@@ -175,7 +174,6 @@ fn golden_container_release() -> ContainerRelease {
             },
             closure: artifact_descriptor(MediaType::AosNixClosure, b"closure"),
         },
-        v1_qualification: None,
         evidence: ContainerReleaseEvidence {
             abilities: artifact_descriptor(MediaType::AosContainerStaticAbilities, b"abilities"),
             sbom: artifact_descriptor(MediaType::SpdxJson, b"sbom"),
@@ -187,7 +185,7 @@ fn golden_container_release() -> ContainerRelease {
     }
 }
 
-/// Canonical fields that precede `schemaVersion` in both sidecar versions.
+/// Canonical fields that precede `schemaVersion` in the golden sidecar.
 const GOLDEN_CONTAINER_RELEASE_PREFIX: &str = concat!(
     r#"{"evidence":{"abilities":{"artifactType":"application/vnd.aos.container.static-abilities.v1+json","digest":"sha256:cfae417a8bcd2cfe163182bed6d7b730a0c57140cf27d4d0dd14fe2fc47b7c54","mediaType":"application/vnd.oci.image.manifest.v1+json","size":9},"#,
     r#""license":{"artifactType":"application/vnd.aos.license-report.v1+json","digest":"sha256:cc1d3b0234846714b0aeda6cc34b057b4305bb83dd447fb88f816efeb59a4e96","mediaType":"application/vnd.oci.image.manifest.v1+json","size":7},"#,
@@ -213,25 +211,5 @@ fn container_release_golden_vector() {
     assert_eq!(
         ContainerRelease::from_canonical_json(&json).expect("parse container release"),
         release
-    );
-}
-
-/// Published version 1 sidecars must keep parsing and re-encoding exactly.
-#[test]
-fn container_release_v1_golden_vector() {
-    let v1_tail = r#""qualification":{"correspondingSource":{"complete":true,"unknownPaths":[]},"licensing":{"complete":true,"unknownPaths":[]},"mapping":{"complete":true,"unknownPaths":[]},"readyForVerifiedPublication":true,"schema":"aos.container.evidence-qualification/v1"},"schemaVersion":1}"#;
-    let expected = format!("{GOLDEN_CONTAINER_RELEASE_PREFIX}{v1_tail}");
-    let release = ContainerRelease {
-        schema_version: CONTAINER_RELEASE_SCHEMA_VERSION_V1,
-        v1_qualification: Some(ContainerV1Qualification),
-        ..golden_container_release()
-    };
-
-    let parsed = ContainerRelease::from_canonical_json(expected.as_bytes())
-        .expect("parse published v1 container release");
-    assert_eq!(parsed, release);
-    assert_eq!(
-        to_canonical_json(&parsed).expect("re-encode v1 container release"),
-        expected.as_bytes()
     );
 }

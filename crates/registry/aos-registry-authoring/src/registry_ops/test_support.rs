@@ -17,12 +17,10 @@ use crate::testutil;
 use anyhow::{Context, Result};
 use aos_nix_cache::AuthOptions;
 use aos_oci_types::{
-    Annotations, CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA, CONTAINER_RELEASE_SCHEMA_VERSION,
-    CONTAINER_SIGNATURE_INPUT_SCHEMA, ContainerEvidenceMappingQualification,
-    ContainerEvidenceQualification, ContainerEvidenceQualificationCheck, ContainerNixProvenance,
-    ContainerOciRelease, ContainerRelease, ContainerReleaseEvidence, ContainerReleaseIdentity,
-    ContainerSignatureInput, ContainerSignatureInputEvidence, Descriptor, MediaType,
-    NixDefinitionIdentity, NixOutputIdentity, Platform, Sha256Digest,
+    Annotations, CONTAINER_RELEASE_SCHEMA_VERSION, CONTAINER_SIGNATURE_INPUT_SCHEMA,
+    ContainerNixProvenance, ContainerOciRelease, ContainerRelease, ContainerReleaseEvidence,
+    ContainerReleaseIdentity, ContainerSignatureInput, ContainerSignatureInputEvidence, Descriptor,
+    MediaType, NixDefinitionIdentity, NixOutputIdentity, Platform, Sha256Digest,
 };
 use aos_registry_client::config::ApmConfig;
 use aos_registry_client::provenance::TrustedProvenanceKey;
@@ -231,22 +229,6 @@ pub(in crate::registry_ops) fn container_release_inputs(
 
     let mut manifest = descriptor(MediaType::OciImageManifest, "manifest");
     manifest.platform = Some(Platform::linux_amd64());
-    let qualification = ContainerEvidenceQualification {
-        schema: CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA.to_string(),
-        mapping: ContainerEvidenceMappingQualification {
-            complete: true,
-            unknown_paths: Vec::new(),
-        },
-        corresponding_source: ContainerEvidenceQualificationCheck {
-            complete: true,
-            unknown_paths: Vec::new(),
-        },
-        licensing: ContainerEvidenceQualificationCheck {
-            complete: true,
-            unknown_paths: Vec::new(),
-        },
-        ready_for_verified_publication: true,
-    };
     let release = ContainerRelease {
         schema_version: CONTAINER_RELEASE_SCHEMA_VERSION,
         media_type: MediaType::AosContainerRelease,
@@ -272,7 +254,6 @@ pub(in crate::registry_ops) fn container_release_inputs(
             },
             closure: evidence_descriptor(MediaType::AosNixClosure, "closure"),
         },
-        qualification: qualification.clone(),
         evidence: ContainerReleaseEvidence {
             abilities: evidence_descriptor(MediaType::AosContainerStaticAbilities, "abilities"),
             sbom: evidence_descriptor(MediaType::SpdxJson, "sbom"),
@@ -294,7 +275,6 @@ pub(in crate::registry_ops) fn container_release_inputs(
             license: release.evidence.license.clone(),
             provenance: release.evidence.provenance.clone(),
         },
-        qualification,
     };
     (release, input)
 }

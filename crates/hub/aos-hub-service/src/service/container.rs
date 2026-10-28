@@ -832,25 +832,6 @@ mod staging_tests {
         }
     }
 
-    fn qualification_fixture() -> ContainerEvidenceQualification {
-        ContainerEvidenceQualification {
-            schema: CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA.to_string(),
-            mapping: ContainerEvidenceMappingQualification {
-                complete: true,
-                unknown_paths: Vec::new(),
-            },
-            corresponding_source: ContainerEvidenceQualificationCheck {
-                complete: true,
-                unknown_paths: Vec::new(),
-            },
-            licensing: ContainerEvidenceQualificationCheck {
-                complete: true,
-                unknown_paths: Vec::new(),
-            },
-            ready_for_verified_publication: true,
-        }
-    }
-
     fn release_fixture() -> ContainerRelease {
         let mut platform_manifest = descriptor(MediaType::OciImageManifest, "amd64-manifest");
         platform_manifest.platform = Some(Platform::linux_amd64());
@@ -880,7 +861,6 @@ mod staging_tests {
                 },
                 closure: evidence_descriptor(MediaType::AosNixClosure, "closure"),
             },
-            qualification: qualification_fixture(),
             evidence: ContainerReleaseEvidence {
                 abilities: evidence_descriptor(MediaType::AosContainerStaticAbilities, "abilities"),
                 sbom: evidence_descriptor(MediaType::SpdxJson, "sbom"),

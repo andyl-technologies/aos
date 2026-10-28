@@ -3323,12 +3323,10 @@ mod tests {
     use crate::fetch::{StreamedRead, SurfaceFetch};
     use aos_hub_db::db::Database;
     use aos_oci_types::{
-        to_canonical_json, Annotations, ContainerDsseSignature,
-        ContainerEvidenceMappingQualification, ContainerEvidenceQualification,
-        ContainerEvidenceQualificationCheck, ContainerNixProvenance, ContainerOciRelease,
-        ContainerReleaseEvidence, ContainerReleaseIdentity, ContainerSignatureInput,
-        ContainerSignatureInputEvidence, NixDefinitionIdentity, NixOutputIdentity, Platform,
-        CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA, CONTAINER_RELEASE_SCHEMA_VERSION,
+        to_canonical_json, Annotations, ContainerDsseSignature, ContainerNixProvenance,
+        ContainerOciRelease, ContainerReleaseEvidence, ContainerReleaseIdentity,
+        ContainerSignatureInput, ContainerSignatureInputEvidence, NixDefinitionIdentity,
+        NixOutputIdentity, Platform, CONTAINER_RELEASE_SCHEMA_VERSION,
         CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE, CONTAINER_SIGNATURE_INPUT_SCHEMA,
     };
 
@@ -3353,22 +3351,6 @@ mod tests {
             let mut descriptor = container_descriptor(MediaType::OciImageManifest, label);
             descriptor.artifact_type = Some(kind);
             descriptor
-        };
-        let qualification = ContainerEvidenceQualification {
-            schema: CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA.to_string(),
-            mapping: ContainerEvidenceMappingQualification {
-                complete: true,
-                unknown_paths: Vec::new(),
-            },
-            corresponding_source: ContainerEvidenceQualificationCheck {
-                complete: true,
-                unknown_paths: Vec::new(),
-            },
-            licensing: ContainerEvidenceQualificationCheck {
-                complete: true,
-                unknown_paths: Vec::new(),
-            },
-            ready_for_verified_publication: true,
         };
         let identity = ContainerReleaseIdentity {
             release: "1.0.0".to_string(),
@@ -3411,7 +3393,6 @@ mod tests {
                 license: release_evidence.license.clone(),
                 provenance: release_evidence.provenance.clone(),
             },
-            qualification: qualification.clone(),
         };
         let release = ContainerRelease {
             schema_version: CONTAINER_RELEASE_SCHEMA_VERSION,
@@ -3419,7 +3400,6 @@ mod tests {
             identity,
             oci,
             nix,
-            qualification,
             evidence: release_evidence,
         };
         (release, input)

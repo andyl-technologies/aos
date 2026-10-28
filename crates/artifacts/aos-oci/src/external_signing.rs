@@ -513,7 +513,6 @@ fn signed_release(
         identity: input.identity.clone(),
         oci: input.oci.clone(),
         nix: input.nix.clone(),
-        v1_qualification: None,
         evidence: ContainerReleaseEvidence {
             abilities: input.evidence.abilities.clone(),
             sbom: input.evidence.sbom.clone(),

@@ -28,10 +28,9 @@ use aos_hub_native::server::{AppState, router};
 use aos_oci::{PullOptions, RegistryClient, RegistryReference};
 use aos_oci_types::{
     CONTAINER_DSSE_SIGNATURE_NAMESPACE, CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE,
-    CONTAINER_SIGNATURE_INPUT_SCHEMA, CONTAINER_SIGNATURE_INPUT_SCHEMA_V1, ContainerDsseEnvelope,
-    ContainerDsseSignature, ContainerRelease, ContainerSignatureInput,
-    ContainerSignatureInputEvidence, ContainerV1Qualification, MediaType, RepositoryName,
-    Sha256Digest, Tag, to_canonical_json,
+    CONTAINER_SIGNATURE_INPUT_SCHEMA, ContainerDsseEnvelope, ContainerDsseSignature,
+    ContainerRelease, ContainerSignatureInput, ContainerSignatureInputEvidence, MediaType,
+    RepositoryName, Sha256Digest, Tag, to_canonical_json,
 };
 use aos_registry_client::security::parse_signing_key;
 use axum::body::Body;
@@ -107,7 +106,6 @@ async fn signed_apr_release_admits_and_publishes_the_staged_graph() -> Result<()
         workspace.path(),
         fixture.root(),
         &release,
-        &release_path,
         &signature_input,
     )
     .await?;
@@ -555,7 +553,6 @@ fn signature_input(release: &ContainerRelease) -> ContainerSignatureInput {
             license: release.evidence.license.clone(),
             provenance: release.evidence.provenance.clone(),
         },
-        v1_qualification: release.v1_qualification,
     }
 }
 
@@ -602,7 +599,6 @@ async fn assert_local_publication_rejections(
     workspace: &Path,
     layout: &Path,
     release: &ContainerRelease,
-    release_path: &Path,
     signature_input: &ContainerSignatureInput,
 ) -> Result<()> {
     let noncanonical = workspace.join("noncanonical-release.json");
@@ -622,29 +618,6 @@ async fn assert_local_publication_rejections(
     )?;
     assert_failure_contains(&rejected, "document must use canonical JSON");
 
-    // A version 1 input is valid on its own but cannot authorize a version 2
-    // sidecar, so the version binding is checked before any network effect.
-    let v1_input = ContainerSignatureInput {
-        schema: CONTAINER_SIGNATURE_INPUT_SCHEMA_V1.to_string(),
-        v1_qualification: Some(ContainerV1Qualification),
-        ..signature_input.clone()
-    };
-    let v1_input_path = workspace.join("v1-signature-input.json");
-    fs::write(&v1_input_path, to_canonical_json(&v1_input)?)?;
-    let rejected = publish_output(
-        hub,
-        workspace,
-        layout,
-        release_path,
-        &v1_input_path,
-        &reference,
-        "reject-version-mismatch",
-        true,
-    )?;
-    assert_failure_contains(
-        &rejected,
-        "final sidecar schema version differs from the unsigned input",
-    );
     assert!(hub.observations.lock().unwrap().is_empty());
     assert!(
         hub.db
