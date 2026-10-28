@@ -77,7 +77,7 @@ real binary** rather than trusting hand-entry:
 - expected PCR-11 → dump the assembled UKI's measured PE sections and feed
   them to `systemd-measure` (now in the build,
   [`measured-boot.md`](measured-boot.md)). The catalog records the final
-  `enter-initrd:leave-initrd:sysinit:ready` prediction. RFC-0011 orders
+  `enter-initrd:leave-initrd:sysinit:ready` prediction. On-host configuration orders
   activation after `systemd-pcrphase.service`, so this value is byte-identical
   to PCR 11 in the generation quote; the measured-boot VM checks that equality.
   `/var` unlock instead consumes the signed multi-phase `.pcrsig` policy at
