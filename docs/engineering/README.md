@@ -15,3 +15,12 @@ is; when the code changes, the page changes with it.
   modules, package expressions, comments, tests, and embedded shell.
 - [Rust workspace](rust-workspace.md) covers crate naming, ownership, directory
   groups, dependency direction, and the inventory of workspace packages.
+
+## Build system
+
+- [Build system](build/README.md) maps the bootstrap, toolchain tiers, stdenv,
+  and language builders.
+- [Toolchain ladder](build/toolchain-ladder.md) covers the source bootstrap,
+  GCC tiers, per-tier stdenv, and producer validation rules.
+- [Rust builds](build/rust-builds.md) covers reusable Cargo dependency
+  artifacts, their compatibility contract, development caches, and nextest.
