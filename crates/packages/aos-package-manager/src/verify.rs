@@ -12,7 +12,7 @@
 //!   importing the object into a Nix store.
 //! - **Layer 4c** ([`verify_nar_blessed`]): the decompressed NAR's SHA-256
 //!   and size must match a *blessed* NAR in the signed `store/` realisation
-//!   graph (RFC-0005) - unlike 4a/4b, whose expected values come from the
+//!   graph - unlike 4a/4b, whose expected values come from the
 //!   unauthenticated narinfo, this roots the bytes at the registry
 //!   signature. Decompression is capped at the largest blessed size so
 //!   untrusted compressed input cannot expand unboundedly.

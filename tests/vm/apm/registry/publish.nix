@@ -93,7 +93,7 @@
       STORE_HASH=$(basename ${aosPkg} | cut -d- -f1)
       assert_file_exists "$REG_DIR/store/$(printf %.2s "$STORE_HASH")/$STORE_HASH" \
         "apr publish writes store realisation record"
-      # References no longer live in the package TOML (RFC-0005): the per-path
+      # References no longer live in the package TOML: the per-path
       # store record carries them as `ia:` dependency edges instead.
       assert_file_contains "$REG_DIR/store/$(printf %.2s "$STORE_HASH")/$STORE_HASH" \
         "ia:sha256:" "store record lists dependency edges"

@@ -1,6 +1,6 @@
 # tests/fleet/measured-boot.nix — measured/verified boot + TPM-sealed /var.
 #
-# RFC-0006 phase 3. Proves the boot is measured into a (virtual) TPM and
+# Proves the boot is measured into a (virtual) TPM and
 # that /var is LUKS2-encrypted with its key sealed to a *signed PCR
 # policy*, so it unlocks unattended across reboots:
 #
@@ -1231,8 +1231,8 @@ in {
       # temporary generation also records recovery B exactly as a production
       # slot-B generation would; initrd seeding rejects cross-slot recovery
       # metadata before switch-root.
-      candidate_name = "aos-phase3-slot-b+3.efi"
-      stable_name = "aos-phase3-slot-b.efi"
+      candidate_name = "aos-qualify-slot-b+3.efi"
+      stable_name = "aos-qualify-slot-b.efi"
       image_state_a_text = target.succeed("cat /var/lib/profiles/image/state.json")
       image_state_a = json.loads(image_state_a_text)
       running_a = image_state_a["running"]
@@ -1274,8 +1274,8 @@ in {
                  | del(.initrd_pcr11, .expected_pcr11))
             | .default = $running
             | .pending = null
-          ' /var/lib/profiles/image/state.json > /var/lib/profiles/image/.state.json.phase3-b
-          mv /var/lib/profiles/image/.state.json.phase3-b /var/lib/profiles/image/state.json
+          ' /var/lib/profiles/image/state.json > /var/lib/profiles/image/.state.json.qualify-b
+          mv /var/lib/profiles/image/.state.json.qualify-b /var/lib/profiles/image/state.json
           sync /var/lib/profiles/image
           {BOOTCTL} set-oneshot {stable_name}
           {MOUNT} -o remount,ro /boot
@@ -1286,7 +1286,7 @@ in {
       assert read_pcr12() == clean_pcr12, "counted slot-B boot changed PCR 12"
       assert "/dev/disk/by-partlabel/root-b" in target.succeed("cat /proc/cmdline")
       assert var_source() == "/dev/mapper/var"
-      target.succeed("test -e /boot/EFI/Linux/aos-phase3-slot-b+2-1.efi")
+      target.succeed("test -e /boot/EFI/Linux/aos-qualify-slot-b+2-1.efi")
       image_state_b = json.loads(target.succeed("cat /var/lib/profiles/image/state.json"))
       generation_b = next(
           generation for generation in image_state_b["generations"]
@@ -1326,8 +1326,8 @@ in {
       # Restore the exact coherent AOS image index and durable A entry before
       # later tests exercise the production evaluation/commit services.
       target.succeed(f"""
-          printf '%s' {image_state_a_encoded} | base64 -d > /var/lib/profiles/image/.state.json.phase3-a
-          mv /var/lib/profiles/image/.state.json.phase3-a /var/lib/profiles/image/state.json
+          printf '%s' {image_state_a_encoded} | base64 -d > /var/lib/profiles/image/.state.json.qualify-a
+          mv /var/lib/profiles/image/.state.json.qualify-a /var/lib/profiles/image/state.json
           sync /var/lib/profiles/image
           {MOUNT} -o remount,rw /boot
           {BOOTCTL} set-default {stable_a_name}

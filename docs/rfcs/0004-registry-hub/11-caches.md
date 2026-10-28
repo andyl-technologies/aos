@@ -369,7 +369,7 @@ indexer with a cache-GC pass (no new Worker plumbing).
   `CacheClosure(store_hash)` RPC returns nodes + edges (sizes, signer,
   presence); the no-JS page renders the immediate edge table, and the
   `aos-registry-spa` SPA renders the interactive closure graph — reusing
-  RFC-0005's store/ realisation-graph model so there is one closure renderer.
+  the store/ realisation-graph model so there is one closure renderer.
 - **NAR file explorer + downloader.** A `ListNarContents(store_hash)` RPC
   lists a NAR's internal file tree (parsed via the existing `artifacts/aos-nar/src`
   reader, which already runs on wasm); the browse page renders the tree with
@@ -740,8 +740,8 @@ the current spec. Phases are orderable; A lands first, E last.
 - [x] `CacheClosure(store_hash)` RPC (BFS over `refs`, capped) + no-JS
       transitive-closure page (`/<cache>/-/closure/<hash>`, linked from each
       object) + `aos-hub cache closure` CLI — the dependency graph in flat form
-      on both shells. (An interactive SPA closure graph sharing the RFC-0005
-      model is a later refinement.)
+      on both shells. (An interactive SPA closure graph sharing the store/
+      realisation-graph model is a later refinement.)
 - [x] **NAR explorer (native):** a `narlist` parser walks the NAR archive
       (skipping contents; depth+entry-capped, bounds-checked) and the native hub
       renders the file tree at `/<cache>/<nar>?explore` (decompression-bomb-

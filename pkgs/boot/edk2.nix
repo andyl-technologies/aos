@@ -491,8 +491,8 @@ in
           # measures the boot (incl. PCR 7 = Secure Boot state) into an
           # attached vTPM, and exposes the EFI TCG2 protocol that sd-stub
           # uses to extend the UKI sections into PCR 11. Without it the
-          # firmware does no measurement and TPM-sealed /var (RFC-0006
-          # phase 3) cannot bind to PCR 7/11. Harmless when no TPM is
+          # firmware does no measurement and TPM-sealed /var cannot bind
+          # to PCR 7/11. Harmless when no TPM is
           # attached (the measurement calls just no-op).
           ${
             if buildAarch64Firmware

@@ -212,6 +212,37 @@ recovery set plus one complete inactive-slot transaction. Inspect
 when changing UKI contents or recovery tooling; a build fails instead of
 silently producing an ESP that cannot stage the transaction.
 
+## Configure verified boot
+
+Secure Boot, lockdown, and measured boot are opt-in per variant under
+`aos.boot.secureBoot`. The base image owns no key, so a variant that enables
+them must supply its own key material:
+
+| Option | Purpose |
+| --- | --- |
+| `enable`, `dbCert` | Sign systemd-boot and UKIs; the public db certificate is baked into the image |
+| `dbKey` | Private db key for in-build signing; forbidden under external finalization |
+| `enrollAuthDir` | Public `db.auth`, `KEK.auth`, and `PK.auth` for `aos-sb-enroll` |
+| `lockdown.enable`, `lockdown.mode` | Lockdown kernel with enforced module signing and signed kexec |
+| `lockdown.moduleSigningKey` or `lockdown.moduleSigningCert` | In-build module key, or the public certificate for external signing |
+| `measuredBoot.enable`, `measuredBoot.pcrPublicKey` | Signed PCR policy and TPM-sealed `/var` |
+| `measuredBoot.pcrPrivateKey` | Private PCR-policy key for in-build signing |
+| `measuredBoot.signedPcrs`, `measuredBoot.pinnedPcrs` | PCR selection; defaults `11` and `7+12` |
+| `externalFinalization.enable` | Emit an unsigned assembly and obtain all signatures from external role-bound signers |
+
+Recovery UKIs (`aos.boot.recovery.enable`) follow automatically when Secure
+Boot and `aos.security.verity.enable` are both on. External finalization
+requires lockdown, measured boot, recovery, and dm-verity together.
+
+In-build signing copies the private keys into the builder's Nix store and is
+suitable only for disposable test or staging identities. Production variants
+use external finalization with `aos maintain release step finalize-image`, as
+described in the [canonical release runbook](canonical-releases.md). The
+`systems/server-secureboot*.nix` and `systems/server-measured-boot.nix`
+fixtures use public test keys and must not be enrolled on real hardware.
+Implementation details are in [Secure Boot](../engineering/boot/secure-boot.md)
+and [Measured boot](../engineering/boot/measured-boot.md).
+
 ## Validate the release artifact
 
 Build the variant's image contract check before publishing it:

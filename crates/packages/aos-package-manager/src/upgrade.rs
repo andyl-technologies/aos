@@ -293,7 +293,7 @@ pub async fn run(
         }
     }
 
-    // Trust-graph totality (RFC-0005 §2.6): seed from the WHOLE graph closure
+    // Trust-graph totality: seed from the WHOLE graph closure
     // of each upgraded root, so the check covers every reachable member
     // (including anonymous non-package paths) over the whole closure, not just
     // the missing subset - a stripped/partial graph fails even when the gap is
@@ -402,8 +402,8 @@ pub async fn run(
         .await?;
         downloaded_count = results.len();
 
-        // Verify downloads against each path's source-registry store/ graph
-        // (RFC-0005); totality was already enforced above.
+        // Verify downloads against each path's source-registry store/ graph;
+        // totality was already enforced above.
         printer.step(5, 7, "Verifying downloads...");
         verify_downloads(&results, &trust_ctx, printer)?;
         verify_secondary_artifact_downloads(&results, &secondary_artifacts)?;

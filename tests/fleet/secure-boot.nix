@@ -1,6 +1,6 @@
 # tests/fleet/secure-boot.nix — Secure Boot enforcement, end to end.
 #
-# RFC-0006 phase 1. Proves the firmware actually ENFORCES Secure Boot
+# Proves the firmware actually ENFORCES Secure Boot
 # against our own keys, using the real Setup-Mode → User-Mode enrollment
 # path (no offline vars injection):
 #

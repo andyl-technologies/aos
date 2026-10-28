@@ -203,7 +203,7 @@ in
           # systemd's store path, not cryptsetup's. Point the search at a
           # runtime dir so a consumer (the measured-boot /var unlock) can
           # symlink the systemd plugin into it; LD_LIBRARY_PATH does not
-          # affect this absolute-path dlopen. (RFC-0006 phase 3.)
+          # affect this absolute-path dlopen.
           ./configure \
             --prefix=$out \
             --disable-static \

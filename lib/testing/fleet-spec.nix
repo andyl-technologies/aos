@@ -230,7 +230,7 @@
           Attach an emulated TPM 2.0 (swtpm) to this machine. The driver
           launches a swtpm process per machine and wires QEMU's
           `tpm-tis` device to it over a control socket. Needed by
-          measured-boot tests (RFC-0006 phase 3); harmless otherwise.
+          measured-boot tests; harmless otherwise.
         '';
       };
 
