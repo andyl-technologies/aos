@@ -540,7 +540,7 @@
             throw ''
               fleet '${name}': interactive mode does not support image-boot
               machines yet — drive the sandboxed test, or boot the image by
-              hand per docs/boot/qemu-uefi.md.
+              hand per docs/maintainers/source-build-quickstart.md.
             ''
           else ''
             echo ""

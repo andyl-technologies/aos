@@ -291,7 +291,7 @@ AOS_DEV_ROOT="$PWD" nix develop --accept-flake-config --file cargo-shell.nix -c 
 These rules apply to every Rust crate under `crates/`. Write idiomatic Rust to
 the standard of the Rust standard library and the largest, best-documented
 projects in the ecosystem (for example, Tokio). The repository-wide coding
-standard is in [`docs/code-style.md`](docs/code-style.md).
+standard is in [`docs/engineering/code-style.md`](docs/engineering/code-style.md).
 
 - **Treat all code as user-facing porcelain.** Document items with rustdoc that
   would look great on docs.rs and abide by all Rust documentation conventions —
@@ -353,7 +353,7 @@ The concrete bar for "docs.rs quality" in this workspace:
 
 ## Nix code style
 
-Nix source follows [`docs/code-style.md`](docs/code-style.md), including the
+Nix source follows [`docs/engineering/code-style.md`](docs/engineering/code-style.md), including the
 repository's Dendritic module organization. In addition to the hermetic build
 and package rules above:
 

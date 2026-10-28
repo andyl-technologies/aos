@@ -25,8 +25,8 @@ result-*
 # Doc index cache
 .aos-doc-cache.json
 
-# Per-operator ignition config (bakes in an SSH authorized_key; see
-# docs/boot/qemu-uefi.md §0 — explicitly "not checked in").
+# Per-operator boot configuration that bakes in an SSH authorized_key; keep it
+# out of the tree (see docs/maintainers/source-build-quickstart.md).
 /tests/ignition-test.json
 
 # crucible CLI default runtime store (main.rs --store default_value)

@@ -125,6 +125,11 @@ state partitions.
   -nic user,model=virtio-net-pci,hostfwd=tcp::2222-:22
 ```
 
+AOS images are self-booting UEFI disk images, so the command passes no
+separate kernel, initrd, or kernel command line. First-boot configuration comes
+only from the metadata ISO; AOS does not read Ignition configuration or a
+`fw_cfg` key.
+
 Leave QEMU running. From another terminal, connect with the public key baked
 into the image:
 
