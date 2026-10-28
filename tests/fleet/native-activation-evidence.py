@@ -49,8 +49,7 @@ def event_identity(event: dict[str, Any]) -> tuple[Any, ...]:
 
 def checked_inspection(view: dict[str, Any]) -> None:
     """Requires the explicit native checked-reader provenance marker."""
-    # Earlier readers also emitted a constant false liveStateVerified marker.
-    if view.get("schema") != "aos.activation.inspection" or view.get("liveStateVerified", False) is not False:
+    if view.get("schema") != "aos.activation.inspection":
         raise ValueError("expected checked native journal inspection")
     if view.get("incompleteTailBytes") != 0:
         raise ValueError("qualification requires a complete native journal prefix")

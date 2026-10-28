@@ -7,8 +7,8 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
 use super::frame::{
-    FrameCursor, FrameFormat, JournalError, JournalLimits, JournalPayload, JournalRecord,
-    MAGIC_LENGTH, MAX_HEADER_LENGTH, RecoveryReport, encode,
+    FrameCursor, HEADER_LENGTH, JournalError, JournalLimits, JournalPayload, JournalRecord,
+    MAGIC_LENGTH, RecoveryReport, encode,
 };
 use rustix::fs::{FlockOperation, Mode, OFlags};
 
@@ -230,8 +230,8 @@ where
     /// A partial final frame is truncated only after every preceding frame has
     /// passed sequence, header-checksum, body-checksum, canonical-encoding,
     /// limits, and schema checks. A complete invalid frame is left untouched.
-    /// Existing version 1 frames are verified with their legacy digest chain;
-    /// subsequent appends use the current frame format.
+    /// A journal in an earlier on-disk format is rejected with
+    /// [`JournalError::UnsupportedFormat`] and left unchanged.
     ///
     /// # Errors
     ///
@@ -316,8 +316,7 @@ where
             )));
         }
 
-        let maximum_frame_bytes = FrameFormat::CURRENT
-            .header_length()
+        let maximum_frame_bytes = HEADER_LENGTH
             .checked_add(self.limits.max_body_bytes)
             .and_then(|bytes| u64::try_from(bytes).ok())
             .ok_or_else(|| JournalError::Limit("journal frame capacity overflow".to_string()))?;
@@ -479,23 +478,20 @@ where
             )));
         }
 
-        // The magic selects the header layout. Every short read below
-        // exhausts the captured cut, so it can only be a torn final frame.
-        let mut header = [0_u8; MAX_HEADER_LENGTH];
-        let magic_bytes = read_to_end_of_buffer(&mut reader, &mut header[..MAGIC_LENGTH])
+        // Every short read below exhausts the captured cut, so it can only be
+        // a torn final frame. A foreign format is rejected before that rule
+        // applies, so recovery never truncates an older journal.
+        let mut header = [0_u8; HEADER_LENGTH];
+        let header_bytes = read_to_end_of_buffer(&mut reader, &mut header)
             .map_err(|source| io_error("read frame header", path, source))?;
-        if magic_bytes < MAGIC_LENGTH {
-            break;
+        if header_bytes >= MAGIC_LENGTH {
+            cursor.check_magic(&header[..MAGIC_LENGTH])?;
         }
-        let header_length = cursor.header_length(&header[..MAGIC_LENGTH]);
-        let header = &mut header[..header_length];
-        let header_bytes = read_to_end_of_buffer(&mut reader, &mut header[MAGIC_LENGTH..])
-            .map_err(|source| io_error("read frame header", path, source))?;
-        if MAGIC_LENGTH + header_bytes < header_length {
+        if header_bytes < HEADER_LENGTH {
             break;
         }
 
-        let parsed = cursor.read_header(header, limits)?;
+        let parsed = cursor.read_header(&header, limits)?;
         let mut body = vec![0_u8; parsed.body_length()];
         let body_bytes = read_to_end_of_buffer(&mut reader, &mut body)
             .map_err(|source| io_error("read frame body", path, source))?;
@@ -503,7 +499,7 @@ where
             break;
         }
 
-        records.push(cursor.accept(header, &parsed, &body, limits)?);
+        records.push(cursor.accept(&parsed, &body, limits)?);
     }
 
     if reader.limit() != 0 {
@@ -610,9 +606,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::journal::frame::{encode_legacy, reseal_frame, reseal_header};
-
-    const HEADER_LENGTH: usize = FrameFormat::CURRENT.header_length();
+    use crate::journal::frame::{reseal_frame, reseal_header};
 
     #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
     #[serde(deny_unknown_fields)]
@@ -980,94 +974,30 @@ mod tests {
     }
 
     #[test]
-    fn legacy_journal_is_recovered_and_continues_in_the_current_format()
+    fn earlier_format_journal_is_rejected_without_modification()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = TempDir::new()?;
         let path = directory.path().join("execution.journal");
-        let legacy = write_legacy_journal(&path, &[event("intent", 1), event("started", 1)])?;
 
-        let opened = FileJournal::<TestEvent>::open(&path, JournalLimits::default())?;
-        assert_eq!(opened.recovery.records().len(), 2);
-        assert_eq!(opened.recovery.records()[1].body(), &event("started", 1));
-        assert_eq!(opened.recovery.discarded_torn_bytes(), 0);
-        let mut journal = opened.journal;
-        assert_eq!(journal.append(&event("completed", 1))?.sequence(), 3);
-        drop(journal);
-
-        let bytes = fs::read(&path)?;
-        assert_eq!(&bytes[..legacy.len()], legacy.as_slice());
-        assert_eq!(&bytes[legacy.len()..legacy.len() + 8], b"AOSJNL2\n");
-        let reopened = FileJournal::<TestEvent>::open(&path, JournalLimits::default())?;
-        let bodies: Vec<_> = reopened
-            .recovery
-            .records()
-            .iter()
-            .map(|record| record.body().clone())
-            .collect();
-        assert_eq!(
-            bodies,
-            [
-                event("intent", 1),
-                event("started", 1),
-                event("completed", 1)
-            ]
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn legacy_torn_tail_is_repaired_using_the_legacy_header_length()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let directory = TempDir::new()?;
-        let path = directory.path().join("execution.journal");
-        let first_frame = encode_legacy(&event("intent", 1), 1, None);
-
-        // A partial legacy header that is longer than a current header, and an
-        // unrecognized tail of the same length, must both remain torn tails.
-        let second_frame = encode_legacy(&event("completed", 1), 2, Some(&first_frame));
-        for tail in [second_frame[..100].to_vec(), vec![0_u8; 100]] {
-            let mut bytes = first_frame.clone();
-            bytes.extend_from_slice(&tail);
+        // A complete earlier-format frame and a fragment shorter than a
+        // current header must both be reported, never treated as torn tails.
+        for length in [200, 40] {
+            let mut bytes = b"AOSJNL1\n".to_vec();
+            bytes.resize(length, 0);
             write_private(&path, &bytes)?;
 
-            let opened = FileJournal::<TestEvent>::open(&path, JournalLimits::default())?;
-            assert_eq!(opened.recovery.records().len(), 1);
-            assert_eq!(opened.recovery.discarded_torn_bytes(), 100);
-            assert_eq!(
-                fs::metadata(&path)?.len(),
-                u64::try_from(first_frame.len())?
+            let error = FileJournal::<TestEvent>::open(&path, JournalLimits::default())
+                .expect_err("an earlier journal format must not be read");
+            assert!(matches!(
+                &error,
+                JournalError::UnsupportedFormat { offset: 0, format } if format == "AOSJNL1"
+            ));
+            assert!(error.to_string().contains("unsupported format AOSJNL1"));
+            assert!(
+                FileJournal::<TestEvent>::read_unlocked(&path, JournalLimits::default()).is_err()
             );
+            assert_eq!(fs::read(&path)?, bytes);
         }
-        Ok(())
-    }
-
-    #[test]
-    fn legacy_frame_with_a_broken_chain_is_corruption() -> Result<(), Box<dyn std::error::Error>> {
-        let directory = TempDir::new()?;
-        let path = directory.path().join("execution.journal");
-        let mut bytes = encode_legacy(&event("intent", 1), 1, None);
-        bytes.extend_from_slice(&encode_legacy(&event("completed", 1), 2, None));
-        write_private(&path, &bytes)?;
-
-        let error = FileJournal::<TestEvent>::open(&path, JournalLimits::default())
-            .expect_err("a legacy frame must continue its predecessor's digest chain");
-        assert!(matches!(error, JournalError::Corrupt { sequence: 2, .. }));
-        assert_eq!(fs::read(&path)?, bytes);
-        Ok(())
-    }
-
-    #[test]
-    fn legacy_frame_after_a_current_frame_is_corruption() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let directory = TempDir::new()?;
-        let path = one_record_journal(&directory)?;
-        let mut bytes = fs::read(&path)?;
-        bytes.extend_from_slice(&encode_legacy(&event("completed", 1), 2, None));
-        write_private(&path, &bytes)?;
-
-        let error = FileJournal::<TestEvent>::open(&path, JournalLimits::default())
-            .expect_err("a writer never returns to the legacy format");
-        assert!(matches!(error, JournalError::Corrupt { sequence: 2, .. }));
         Ok(())
     }
 
@@ -1145,21 +1075,6 @@ mod tests {
         journal.append(&event("intent", 1))?;
         drop(journal);
         Ok(path)
-    }
-
-    fn write_legacy_journal(
-        path: &Path,
-        events: &[TestEvent],
-    ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-        let mut bytes = Vec::new();
-        let mut previous: Option<Vec<u8>> = None;
-        for (index, event) in events.iter().enumerate() {
-            let frame = encode_legacy(event, u64::try_from(index + 1)?, previous.as_deref());
-            bytes.extend_from_slice(&frame);
-            previous = Some(frame);
-        }
-        write_private(path, &bytes)?;
-        Ok(bytes)
     }
 
     fn write_private(path: &Path, bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {

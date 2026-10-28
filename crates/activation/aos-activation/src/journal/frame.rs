@@ -1,32 +1,24 @@
 //! Portable journal frame encoding and verification.
 //!
-//! Writers emit version 2 frames. Readers also accept the version 1 frames
-//! written by earlier releases, so a journal that already exists on a host
-//! remains replayable and repairable. All integers are big-endian:
+//! Every frame is a fixed 88-byte header followed by its body. All integers
+//! are big-endian:
 //!
 //! ```text
-//! offset  version 2 (written)        version 1 (read only)
-//! 0       magic "AOSJNL2\n"          magic "AOSJNL1\n"
-//! 8       u16 version = 2            u16 version = 1
-//! 10      u16 flags = 0              u16 flags = 0
-//! 12      u32 body length            u32 body length
-//! 16      u64 sequence               u64 sequence
-//! 24      body digest                previous-frame digest
-//! 56      header digest              body digest
-//! 88      body                       header digest
-//! 120                                body
+//! offset  field
+//! 0       magic "AOSJNL2\n"
+//! 8       u16 format version = 2
+//! 10      u16 flags = 0
+//! 12      u32 body length
+//! 16      u64 sequence
+//! 24      body digest
+//! 56      header digest
+//! 88      body
 //! ```
 //!
 //! The header digest covers every preceding header byte and the body digest
-//! covers the body; both use format-specific domain separation. Version 1 also
-//! chained each frame to the digest of its predecessor. That chain is still
-//! verified across a legacy prefix, but no caller ever retained the head
-//! digest, so it never detected the loss of a complete suffix and version 2
-//! drops it.
-//!
-//! An existing version 1 file keeps its legacy prefix and continues with
-//! version 2 frames after the next append. A version 1 frame that follows a
-//! version 2 frame is corruption.
+//! covers the body, each with its own domain separation. Only this format is
+//! read. A frame carrying the magic of an earlier journal format, such as
+//! version 1 (`AOSJNL1`), fails with [`JournalError::UnsupportedFormat`].
 
 use std::fmt;
 use std::io::{self, Write};
@@ -36,79 +28,20 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use thiserror::Error;
 
-/// Length of the magic prefix that selects a frame layout.
+/// Length of the magic prefix that identifies the frame format.
 pub(super) const MAGIC_LENGTH: usize = 8;
-/// Length of the longest accepted header, which is the legacy layout.
-pub(super) const MAX_HEADER_LENGTH: usize = FrameFormat::ChainedV1.header_length();
+/// Complete header length, including the trailing header digest.
+pub(super) const HEADER_LENGTH: usize = 88;
 
+const MAGIC: &[u8; MAGIC_LENGTH] = b"AOSJNL2\n";
+/// Prefix shared by every journal format's magic.
+const MAGIC_FAMILY: &[u8] = b"AOSJNL";
+const FORMAT_VERSION: u16 = 2;
 const DIGEST_LENGTH: usize = 32;
-const LEGACY_FRAME_DIGEST_DOMAIN: &str = "aos.ability.execution.journal.frame/v1";
-
-/// Names an on-disk frame layout accepted by the reader.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum FrameFormat {
-    /// Legacy frames that also carry the previous frame's digest.
-    ChainedV1,
-    /// Current frames protected by header and body checksums only.
-    ChecksummedV2,
-}
-
-impl FrameFormat {
-    /// The layout used for every appended frame.
-    pub(super) const CURRENT: Self = Self::ChecksummedV2;
-
-    fn from_magic(magic: &[u8]) -> Option<Self> {
-        [Self::ChainedV1, Self::ChecksummedV2]
-            .into_iter()
-            .find(|format| format.magic().as_slice() == magic)
-    }
-
-    const fn magic(self) -> &'static [u8; MAGIC_LENGTH] {
-        match self {
-            Self::ChainedV1 => b"AOSJNL1\n",
-            Self::ChecksummedV2 => b"AOSJNL2\n",
-        }
-    }
-
-    const fn version(self) -> u16 {
-        match self {
-            Self::ChainedV1 => 1,
-            Self::ChecksummedV2 => 2,
-        }
-    }
-
-    /// Returns the complete header length, including its trailing digest.
-    pub(super) const fn header_length(self) -> usize {
-        match self {
-            Self::ChainedV1 => 120,
-            Self::ChecksummedV2 => 88,
-        }
-    }
-
-    /// Returns the header prefix covered by the header digest.
-    const fn checksummed_length(self) -> usize {
-        self.header_length() - DIGEST_LENGTH
-    }
-
-    /// Returns the offset of the body digest, which precedes the header digest.
-    const fn body_digest_offset(self) -> usize {
-        self.checksummed_length() - DIGEST_LENGTH
-    }
-
-    const fn body_digest_domain(self) -> &'static str {
-        match self {
-            Self::ChainedV1 => "aos.ability.execution.journal.body/v1",
-            Self::ChecksummedV2 => "aos.ability.execution.journal.body/v2",
-        }
-    }
-
-    const fn header_digest_domain(self) -> &'static str {
-        match self {
-            Self::ChainedV1 => "aos.ability.execution.journal.header/v1",
-            Self::ChecksummedV2 => "aos.ability.execution.journal.header/v2",
-        }
-    }
-}
+const CHECKSUMMED_LENGTH: usize = HEADER_LENGTH - DIGEST_LENGTH;
+const BODY_DIGEST_OFFSET: usize = CHECKSUMMED_LENGTH - DIGEST_LENGTH;
+const BODY_DIGEST_DOMAIN: &str = "aos.ability.execution.journal.body/v2";
+const HEADER_DIGEST_DOMAIN: &str = "aos.ability.execution.journal.header/v2";
 
 /// Resource limits enforced for every journal record body.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -270,6 +203,18 @@ pub enum JournalError {
     /// The journal cannot accept more records after an uncertain write.
     #[error("journal append state is uncertain; reopen and recover it before appending")]
     RequiresRecovery,
+
+    /// A frame uses a journal format this release does not read.
+    #[error(
+        "journal frame at byte {offset} uses unsupported format {format}; \
+         only AOSJNL2 journals are supported"
+    )]
+    UnsupportedFormat {
+        /// The byte offset of the frame.
+        offset: u64,
+        /// The frame's magic, rendered printably, such as `AOSJNL1`.
+        format: String,
+    },
 }
 
 /// Encodes one body as a complete frame in the current layout.
@@ -308,15 +253,14 @@ where
         JournalError::Limit("record body does not fit the frame length field".to_string())
     })?;
 
-    let format = FrameFormat::CURRENT;
-    let mut bytes = Vec::with_capacity(format.header_length() + body.len());
-    bytes.extend_from_slice(format.magic());
-    bytes.extend_from_slice(&format.version().to_be_bytes());
+    let mut bytes = Vec::with_capacity(HEADER_LENGTH + body.len());
+    bytes.extend_from_slice(MAGIC);
+    bytes.extend_from_slice(&FORMAT_VERSION.to_be_bytes());
     bytes.extend_from_slice(&0_u16.to_be_bytes());
     bytes.extend_from_slice(&body_length.to_be_bytes());
     bytes.extend_from_slice(&sequence.to_be_bytes());
-    bytes.extend_from_slice(Sha256Digest::separated(format.body_digest_domain(), &body).as_bytes());
-    let header_digest = Sha256Digest::separated(format.header_digest_domain(), &bytes);
+    bytes.extend_from_slice(Sha256Digest::separated(BODY_DIGEST_DOMAIN, &body).as_bytes());
+    let header_digest = Sha256Digest::separated(HEADER_DIGEST_DOMAIN, &bytes);
     bytes.extend_from_slice(header_digest.as_bytes());
     bytes.extend_from_slice(&body);
 
@@ -379,7 +323,6 @@ impl Write for LimitedWriter {
 
 /// A complete header that passed structural and checksum validation.
 pub(super) struct FrameHeader {
-    format: FrameFormat,
     body_length: usize,
     body_digest: Sha256Digest,
 }
@@ -391,23 +334,18 @@ impl FrameHeader {
     }
 }
 
-/// Tracks the expected position, sequence, and legacy chain while reading.
+/// Tracks the expected position and sequence while reading frames.
 pub(super) struct FrameCursor {
     offset: u64,
     next_sequence: u64,
-    last_format: Option<FrameFormat>,
-    /// Digest of the preceding version 1 frame, or zero before the first.
-    legacy_previous: Sha256Digest,
 }
 
 impl FrameCursor {
     /// Starts at the first frame of a journal.
-    pub(super) fn new() -> Self {
+    pub(super) const fn new() -> Self {
         Self {
             offset: 0,
             next_sequence: 1,
-            last_format: None,
-            legacy_previous: Sha256Digest::from_bytes([0_u8; DIGEST_LENGTH]),
         }
     }
 
@@ -416,51 +354,41 @@ impl FrameCursor {
         self.offset
     }
 
-    /// Selects the header length of a frame that begins with `magic`.
+    /// Rejects a frame whose magic names another journal format.
     ///
-    /// An unrecognized magic is measured with the preceding frame's layout, or
-    /// the current layout for a first frame. A shorter unreadable remainder is
-    /// therefore still a torn tail, exactly as it was for that layout, while a
-    /// complete unrecognized header is reported as corruption.
-    pub(super) fn header_length(&self, magic: &[u8]) -> usize {
-        FrameFormat::from_magic(magic)
-            .or(self.last_format)
-            .unwrap_or(FrameFormat::CURRENT)
-            .header_length()
+    /// This runs as soon as the magic is available, before torn-tail handling,
+    /// so a journal written in an earlier format is reported rather than
+    /// truncated by recovery.
+    pub(super) fn check_magic(&self, magic: &[u8]) -> Result<(), JournalError> {
+        if magic != MAGIC && magic.starts_with(MAGIC_FAMILY) {
+            return Err(JournalError::UnsupportedFormat {
+                offset: self.offset,
+                format: String::from_utf8_lossy(magic).trim_end().to_string(),
+            });
+        }
+        Ok(())
     }
 
     /// Validates a complete header at the cursor position.
-    ///
-    /// `header` holds exactly [`FrameCursor::header_length`] bytes. Version 1
-    /// headers must also continue the legacy digest chain. This check precedes
-    /// any body read, so a broken chain is corruption even when the body is torn.
     pub(super) fn read_header(
         &self,
-        header: &[u8],
+        header: &[u8; HEADER_LENGTH],
         limits: JournalLimits,
     ) -> Result<FrameHeader, JournalError> {
-        let format = header
-            .get(..MAGIC_LENGTH)
-            .and_then(FrameFormat::from_magic)
-            .ok_or_else(|| self.corrupt("invalid magic"))?;
-        if header.len() != format.header_length() {
-            return Err(self.corrupt("header length does not match its magic"));
-        }
-        if format == FrameFormat::ChainedV1 && self.last_format == Some(FrameFormat::ChecksummedV2)
-        {
-            return Err(self.corrupt("version 1 frame follows a version 2 frame"));
+        self.check_magic(&header[..MAGIC_LENGTH])?;
+        if &header[..MAGIC_LENGTH] != MAGIC {
+            return Err(self.corrupt("invalid magic"));
         }
 
-        let checksummed = &header[..format.checksummed_length()];
-        let recorded_header_digest = self.digest_field(header, format.checksummed_length())?;
+        let recorded_header_digest = self.digest_field(header, CHECKSUMMED_LENGTH)?;
         let actual_header_digest =
-            Sha256Digest::separated(format.header_digest_domain(), checksummed);
+            Sha256Digest::separated(HEADER_DIGEST_DOMAIN, &header[..CHECKSUMMED_LENGTH]);
         if recorded_header_digest != actual_header_digest {
             return Err(self.corrupt("header digest mismatch"));
         }
 
         let version = u16::from_be_bytes([header[8], header[9]]);
-        if version != format.version() {
+        if version != FORMAT_VERSION {
             return Err(self.corrupt(format!("unsupported frame version {version}")));
         }
 
@@ -478,12 +406,6 @@ impl FrameCursor {
             return Err(self.corrupt(format!("found sequence {sequence}")));
         }
 
-        if format == FrameFormat::ChainedV1
-            && self.digest_field(header, 24)? != self.legacy_previous
-        {
-            return Err(self.corrupt("previous-record digest mismatch"));
-        }
-
         let body_length = u32::from_be_bytes([header[12], header[13], header[14], header[15]]);
         let body_length = usize::try_from(body_length)
             .map_err(|_| self.corrupt("body length is not representable on this platform"))?;
@@ -495,9 +417,8 @@ impl FrameCursor {
         }
 
         Ok(FrameHeader {
-            format,
             body_length,
-            body_digest: self.digest_field(header, format.body_digest_offset())?,
+            body_digest: self.digest_field(header, BODY_DIGEST_OFFSET)?,
         })
     }
 
@@ -507,7 +428,6 @@ impl FrameCursor {
     /// a schema-valid `T`.
     pub(super) fn accept<T>(
         &mut self,
-        header_bytes: &[u8],
         header: &FrameHeader,
         body: &[u8],
         limits: JournalLimits,
@@ -518,24 +438,16 @@ impl FrameCursor {
         if body.len() != header.body_length {
             return Err(self.corrupt("body length does not match the complete frame"));
         }
-        let actual_body_digest = Sha256Digest::separated(header.format.body_digest_domain(), body);
-        if header.body_digest != actual_body_digest {
+        if header.body_digest != Sha256Digest::separated(BODY_DIGEST_DOMAIN, body) {
             return Err(self.corrupt("body digest mismatch"));
         }
         let decoded = self.decode_body::<T>(body, limits)?;
-
-        if header.format == FrameFormat::ChainedV1 {
-            let mut frame = Vec::with_capacity(header_bytes.len() + body.len());
-            frame.extend_from_slice(header_bytes);
-            frame.extend_from_slice(body);
-            self.legacy_previous = Sha256Digest::separated(LEGACY_FRAME_DIGEST_DOMAIN, frame);
-        }
 
         let record = JournalRecord {
             sequence: self.next_sequence,
             body: decoded,
         };
-        let frame_length = u64::try_from(header_bytes.len() + body.len()).map_err(|_| {
+        let frame_length = u64::try_from(HEADER_LENGTH + body.len()).map_err(|_| {
             JournalError::Limit("frame length is not representable as u64".to_string())
         })?;
         self.offset = self
@@ -546,7 +458,6 @@ impl FrameCursor {
             .next_sequence
             .checked_add(1)
             .ok_or_else(|| JournalError::Limit("journal sequence number exhausted".to_string()))?;
-        self.last_format = Some(header.format);
 
         Ok(record)
     }
@@ -593,57 +504,17 @@ impl FrameCursor {
     }
 }
 
-/// Encodes a version 1 frame for legacy compatibility tests.
-#[cfg(test)]
-pub(super) fn encode_legacy<T>(body: &T, sequence: u64, previous: Option<&[u8]>) -> Vec<u8>
-where
-    T: Serialize,
-{
-    let format = FrameFormat::ChainedV1;
-    let body = json::to_vec(body).expect("test body must encode");
-    let previous_digest = previous.map_or_else(
-        || Sha256Digest::from_bytes([0_u8; DIGEST_LENGTH]),
-        |frame| Sha256Digest::separated(LEGACY_FRAME_DIGEST_DOMAIN, frame),
-    );
-
-    let mut bytes = Vec::with_capacity(format.header_length() + body.len());
-    bytes.extend_from_slice(format.magic());
-    bytes.extend_from_slice(&format.version().to_be_bytes());
-    bytes.extend_from_slice(&0_u16.to_be_bytes());
-    bytes.extend_from_slice(
-        &u32::try_from(body.len())
-            .expect("test body fits")
-            .to_be_bytes(),
-    );
-    bytes.extend_from_slice(&sequence.to_be_bytes());
-    bytes.extend_from_slice(previous_digest.as_bytes());
-    bytes.extend_from_slice(Sha256Digest::separated(format.body_digest_domain(), &body).as_bytes());
-    let header_digest = Sha256Digest::separated(format.header_digest_domain(), &bytes);
-    bytes.extend_from_slice(header_digest.as_bytes());
-    bytes.extend_from_slice(&body);
-    bytes
-}
-
-/// Recomputes the header digest of a current-format header for tests.
+/// Recomputes the header digest of one frame header for tests.
 #[cfg(test)]
 pub(super) fn reseal_header(header: &mut [u8]) {
-    let format = FrameFormat::CURRENT;
-    let digest = Sha256Digest::separated(
-        format.header_digest_domain(),
-        &header[..format.checksummed_length()],
-    );
-    header[format.checksummed_length()..format.header_length()].copy_from_slice(digest.as_bytes());
+    let digest = Sha256Digest::separated(HEADER_DIGEST_DOMAIN, &header[..CHECKSUMMED_LENGTH]);
+    header[CHECKSUMMED_LENGTH..HEADER_LENGTH].copy_from_slice(digest.as_bytes());
 }
 
-/// Recomputes body and header digests of one current-format frame for tests.
+/// Recomputes body and header digests of one complete frame for tests.
 #[cfg(test)]
 pub(super) fn reseal_frame(frame: &mut [u8]) {
-    let format = FrameFormat::CURRENT;
-    let body_digest = Sha256Digest::separated(
-        format.body_digest_domain(),
-        &frame[format.header_length()..],
-    );
-    frame[format.body_digest_offset()..format.checksummed_length()]
-        .copy_from_slice(body_digest.as_bytes());
+    let body_digest = Sha256Digest::separated(BODY_DIGEST_DOMAIN, &frame[HEADER_LENGTH..]);
+    frame[BODY_DIGEST_OFFSET..CHECKSUMMED_LENGTH].copy_from_slice(body_digest.as_bytes());
     reseal_header(frame);
 }
