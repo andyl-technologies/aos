@@ -31,4 +31,5 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 crucible-engine = { path = "../crucible-engine", features = ["test-double"] }
+crucible-test-support = { path = "../crucible-test-support" }
 rustix = { workspace = true, features = ["time"] }

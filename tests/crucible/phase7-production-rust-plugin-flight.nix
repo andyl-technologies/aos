@@ -33,10 +33,6 @@
         || lib.hasPrefix "${crates}/" pathString
         || pathString == licenses
         || lib.hasPrefix "${licenses}/" pathString
-        || pathString == "${repoRootString}/docs"
-        || pathString == "${repoRootString}/docs/rfcs"
-        || pathString == "${repoRootString}/docs/rfcs/0020-crucible-campaigns"
-        || pathString == "${repoRootString}/docs/rfcs/0020-crucible-campaigns/schema-registry.tsv"
         || pathString == "${repoRootString}/tests"
         || pathString == "${repoRootString}/tests/crucible"
         || pathString == "${repoRootString}/tests/crucible/fixtures"
