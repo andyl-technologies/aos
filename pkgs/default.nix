@@ -392,7 +392,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       }
     );
   mkOciPackageEvidence = {packageSet ? self, ...} @ args:
-    import ./containers/_aos-oci-backend/container/package-evidence.nix (
+    import ./containers/_aos-oci-backend/container/package-source-map.nix (
       (builtins.removeAttrs args ["packageSet"])
       // {
         inherit lib;
