@@ -969,7 +969,7 @@ impl Snapshot {
 /// Returns an error for missing or insecure journals, lock contention, corrupt
 /// complete frames, exceeded limits, or invalid generation/activation history.
 pub fn inspect(directory: &Path, limits: JournalLimits) -> Result<Snapshot> {
-    let journal = FileJournal::<Event>::read_only(directory.join("generations.journal"), limits)?;
+    let journal = FileJournal::<Event>::read_locked(directory.join("generations.journal"), limits)?;
     let mut state = GenerationState::default();
     for record in journal.snapshot().records() {
         state.replay(record.body())?;

@@ -34,9 +34,12 @@ SUPPORTED_POSTCONDITIONS = {
     "foreign-attempt-rejected-before-mutation", "prerequisite-failure-recorded",
 }
 INSPECTION_FIELDS = {
-    "schema", "liveStateVerified", "incompleteTailBytes", "transaction",
+    "schema", "incompleteTailBytes", "transaction",
     "pending", "completed", "desired", "retainedOutputs", "retiredEffects", "records",
 }
+# Inspections recorded by earlier readers also carried a constant false
+# liveStateVerified marker. Accept that shape so retained evidence stays valid.
+LEGACY_INSPECTION_FIELDS = INSPECTION_FIELDS | {"liveStateVerified"}
 
 
 def require(condition: bool, message: str) -> None:
@@ -90,9 +93,10 @@ def _validate_physical_precondition(selected: dict[str, Any]) -> None:
 
 def inspect(value: Any) -> list[dict[str, Any]]:
     """Rechecks the native projection's ordering and pending intent state."""
-    require(isinstance(value, dict) and set(value) == INSPECTION_FIELDS,
+    require(isinstance(value, dict) and set(value) in (INSPECTION_FIELDS, LEGACY_INSPECTION_FIELDS),
             "native inspection has unexpected fields")
-    require(value["schema"] == "aos.activation.inspection" and value["liveStateVerified"] is False,
+    require(value["schema"] == "aos.activation.inspection"
+            and value.get("liveStateVerified", False) is False,
             "qualification requires a checked native journal reader")
     require(type(value["incompleteTailBytes"]) is int and value["incompleteTailBytes"] == 0,
             "qualification requires a complete journal prefix")

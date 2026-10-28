@@ -44,7 +44,6 @@
         document = json.loads(target.succeed(
             f"{AOS} ability diagnostic {PROFILE} {number} --audience deployment"
         ))
-        assert document["liveStateVerified"] is False, document
         assert document["desired"]["schema"] == "aos.package.transaction", document
         return document["desired"]
 

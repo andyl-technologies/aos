@@ -100,7 +100,6 @@ class NativeCohortTests(unittest.TestCase):
         }
         before = {
             "schema": "aos.activation.inspection",
-            "liveStateVerified": False,
             "incompleteTailBytes": 0,
             "transaction": "candidate",
             "pending": dispatch,
@@ -724,6 +723,12 @@ class NativeCohortTests(unittest.TestCase):
         self.flight["journalAfter"]["liveStateVerified"] = True
         with self.assertRaisesRegex(RuntimeError, "checked native"):
             self.run_cohort()
+
+    def test_retained_inspection_with_the_former_false_marker_is_accepted(self):
+        self.flight["journalBefore"]["liveStateVerified"] = False
+        self.flight["journalAfter"]["liveStateVerified"] = False
+        cells, _ = self.run_cohort()
+        self.assertTrue(cells)
 
     def test_missing_observation_return_rejects_pending_recovery(self):
         self.flight["boundaries"].pop()

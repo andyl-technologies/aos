@@ -7,10 +7,9 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
 use super::frame::{
-    HEADER_LENGTH, JournalError, JournalLimits, JournalPayload, JournalRecord, RecoveryReport,
-    decode, encode, encoded_body_length,
+    FrameCursor, FrameFormat, JournalError, JournalLimits, JournalPayload, JournalRecord,
+    MAGIC_LENGTH, MAX_HEADER_LENGTH, RecoveryReport, encode,
 };
-use aos_core::Sha256Digest;
 use rustix::fs::{FlockOperation, Mode, OFlags};
 
 /// A newly opened journal together with its verified recovery report.
@@ -35,7 +34,7 @@ pub struct JournalSnapshot<T> {
 }
 
 impl<T> JournalSnapshot<T> {
-    /// Returns the complete digest-verified record prefix.
+    /// Returns the complete checksum-verified record prefix.
     #[must_use]
     pub fn records(&self) -> &[JournalRecord<T>] {
         &self.records
@@ -98,7 +97,6 @@ pub struct FileJournal<T> {
     file: LockedFile,
     limits: JournalLimits,
     next_sequence: u64,
-    previous_digest: Sha256Digest,
     requires_recovery: bool,
     marker: PhantomData<fn() -> T>,
 }
@@ -139,7 +137,6 @@ impl<T> std::fmt::Debug for FileJournal<T> {
             .field("path", &self.path)
             .field("limits", &self.limits)
             .field("next_sequence", &self.next_sequence)
-            .field("previous_digest", &self.previous_digest)
             .field("requires_recovery", &self.requires_recovery)
             .finish_non_exhaustive()
     }
@@ -149,22 +146,47 @@ impl<T> FileJournal<T>
 where
     T: JournalPayload,
 {
-    /// Observes a bounded verified prefix while a writer may remain active.
+    /// Reads a verified prefix under a shared lock held by the returned reader.
+    ///
+    /// The existing path is opened read-only with `NOFOLLOW` and a nonblocking
+    /// shared lock. An active writer's exclusive lock therefore makes the read
+    /// fail instead of racing the writer. A partial final frame is reported
+    /// through [`JournalSnapshot::incomplete_tail_bytes`] and remains
+    /// untouched. Retain the [`JournalReader`] while reading related state
+    /// protected by the same journal ownership order; call
+    /// [`JournalReader::into_snapshot`] when only the records are needed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the path is absent, insecure, unavailable for a
+    /// shared lock, exceeds configured limits, or contains a corrupt complete
+    /// frame or invalid record body. No bytes are changed.
+    pub fn read_locked(
+        path: impl AsRef<Path>,
+        limits: JournalLimits,
+    ) -> Result<JournalReader<T>, JournalError> {
+        let path = path.as_ref();
+        read_locked_file(open_read_only(path)?, path, limits)
+    }
+
+    /// Reads a bounded verified prefix without a lock while a writer may remain active.
     ///
     /// The existing private regular file is opened read-only with `NOFOLLOW`.
     /// Decoding stops at the length captured from that descriptor, so later
-    /// appends cannot extend this observation. An incomplete final frame is
-    /// reported without repair; every complete frame receives the same checks
-    /// as a locked reader.
+    /// appends cannot extend this read. An incomplete final frame is reported
+    /// without repair; every complete frame receives the same checks as a
+    /// locked read.
     ///
     /// This is an observation of checksummed bytes, not evidence that the
-    /// writer's synchronization completed. It must not replace locked readers
-    /// when establishing retained execution authority or reading related files.
+    /// writer's synchronization completed. It must not replace
+    /// [`FileJournal::read_locked`] when establishing retained execution
+    /// authority or reading related files.
     ///
     /// # Errors
+    ///
     /// Returns an error for absent or insecure files, exceeded limits, corrupt
-    /// complete frames, invalid bodies, or truncation during the observation.
-    pub fn observe_snapshot(
+    /// complete frames, invalid bodies, or truncation during the read.
+    pub fn read_unlocked(
         path: impl AsRef<Path>,
         limits: JournalLimits,
     ) -> Result<JournalSnapshot<T>, JournalError> {
@@ -179,7 +201,7 @@ where
 
         // A concurrent controller may repair an incomplete suffix. If that
         // truncation happens during this read, reject the raced cut instead of
-        // implying a stable endpoint. A later observation can read the new cut.
+        // implying a stable endpoint. A later read can observe the new cut.
         let captured_length = valid_bytes + discarded_torn_bytes;
         let current_length = file
             .metadata()
@@ -203,97 +225,13 @@ where
         })
     }
 
-    /// Reads a stable verified prefix without modifying the journal.
-    ///
-    /// The existing path is opened read-only with `NOFOLLOW` and a nonblocking
-    /// shared lock. An active writer's exclusive lock therefore makes the
-    /// snapshot unavailable instead of allowing a racing observation. A
-    /// partial final frame is reported through
-    /// [`JournalSnapshot::incomplete_tail_bytes`] and remains untouched.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the path is absent, insecure, unavailable for a
-    /// shared lock, exceeds configured limits, or contains a corrupt complete
-    /// frame or invalid record body.
-    pub fn read_only_snapshot(
-        path: impl AsRef<Path>,
-        limits: JournalLimits,
-    ) -> Result<JournalSnapshot<T>, JournalError> {
-        Ok(Self::read_only(path, limits)?.into_snapshot())
-    }
-
-    /// Reads a verified prefix from an already opened file without modifying it.
-    ///
-    /// This form lets a caller retain descriptor-anchored parent validation
-    /// across the snapshot. `path` is used only for diagnostics. The supplied
-    /// descriptor is checked as a private regular file and held under a
-    /// nonblocking shared lock while decoding.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the descriptor is insecure, unavailable for a
-    /// shared lock, exceeds configured limits, or contains a corrupt complete
-    /// frame or invalid record body.
-    pub fn read_only_snapshot_file(
-        file: File,
-        path: impl AsRef<Path>,
-        limits: JournalLimits,
-    ) -> Result<JournalSnapshot<T>, JournalError> {
-        Ok(Self::read_only_file(file, path, limits)?.into_snapshot())
-    }
-
-    /// Opens a verified read-only prefix under a lifetime-bound shared lock.
-    ///
-    /// # Errors
-    /// Returns an error for missing or insecure files, contention, corrupt
-    /// complete frames, invalid bodies, or exceeded limits. Torn tails remain.
-    pub fn read_only(
-        path: impl AsRef<Path>,
-        limits: JournalLimits,
-    ) -> Result<JournalReader<T>, JournalError> {
-        let path = path.as_ref();
-        Self::read_only_file(open_read_only(path)?, path, limits)
-    }
-
-    /// Verifies an opened descriptor while retaining its shared lock.
-    ///
-    /// The path is diagnostic only; callers can anchor parent traversal to
-    /// their own directory descriptors. The file must be private and regular.
-    ///
-    /// # Errors
-    /// Returns an error for insecure files, contention, corrupt complete
-    /// frames, invalid bodies, or exceeded limits. No bytes are changed.
-    pub fn read_only_file(
-        file: File,
-        path: impl AsRef<Path>,
-        limits: JournalLimits,
-    ) -> Result<JournalReader<T>, JournalError> {
-        let path = path.as_ref();
-        rustix::fs::flock(&file, FlockOperation::NonBlockingLockShared)
-            .map_err(|source| io_error("acquire shared lock", path, source.into()))?;
-        let mut file = LockedFile(file);
-        validate_private_regular_file(&file, path)?;
-        let RecoveryReport {
-            records,
-            valid_bytes,
-            discarded_torn_bytes,
-        } = recover::<T>(&mut file, path, limits)?;
-        Ok(JournalReader {
-            _file: file,
-            snapshot: JournalSnapshot {
-                records,
-                verified_bytes: valid_bytes,
-                incomplete_tail_bytes: discarded_torn_bytes,
-            },
-        })
-    }
-
     /// Opens a journal, verifies its complete prefix, and repairs a torn tail.
     ///
     /// A partial final frame is truncated only after every preceding frame has
-    /// passed sequence, digest-chain, body-digest, canonical-encoding, limits,
-    /// and schema checks. A complete invalid frame is left untouched.
+    /// passed sequence, header-checksum, body-checksum, canonical-encoding,
+    /// limits, and schema checks. A complete invalid frame is left untouched.
+    /// Existing version 1 frames are verified with their legacy digest chain;
+    /// subsequent appends use the current frame format.
     ///
     /// # Errors
     ///
@@ -335,10 +273,6 @@ where
             })?,
             None => 1,
         };
-        let previous_digest = recovery
-            .records()
-            .last()
-            .map_or_else(zero_digest, JournalRecord::digest);
 
         Ok(JournalOpenResult {
             journal: Self {
@@ -346,7 +280,6 @@ where
                 file,
                 limits,
                 next_sequence,
-                previous_digest,
                 requires_recovery: false,
                 marker: PhantomData,
             },
@@ -383,7 +316,8 @@ where
             )));
         }
 
-        let maximum_frame_bytes = HEADER_LENGTH
+        let maximum_frame_bytes = FrameFormat::CURRENT
+            .header_length()
             .checked_add(self.limits.max_body_bytes)
             .and_then(|bytes| u64::try_from(bytes).ok())
             .ok_or_else(|| JournalError::Limit("journal frame capacity overflow".to_string()))?;
@@ -421,8 +355,8 @@ where
             return Err(JournalError::RequiresRecovery);
         }
 
-        let encoded = encode(body, self.next_sequence, self.previous_digest, self.limits)?;
-        let encoded_length = u64::try_from(encoded.bytes.len()).map_err(|_| {
+        let encoded = encode(body, self.next_sequence, self.limits)?;
+        let encoded_length = u64::try_from(encoded.len()).map_err(|_| {
             JournalError::Limit("encoded frame length is not representable as u64".to_string())
         })?;
         let current_length = self
@@ -446,7 +380,7 @@ where
         }
         self.requires_recovery = true;
         self.file
-            .write_all(&encoded.bytes)
+            .write_all(&encoded)
             .map_err(|source| io_error("append", &self.path, source))?;
         self.file
             .sync_all()
@@ -454,18 +388,45 @@ where
 
         let record = JournalRecord {
             sequence: self.next_sequence,
-            digest: encoded.digest,
             body: (),
         };
         self.next_sequence = self
             .next_sequence
             .checked_add(1)
             .ok_or_else(|| JournalError::Limit("journal sequence number exhausted".to_string()))?;
-        self.previous_digest = encoded.digest;
         self.requires_recovery = false;
 
         Ok(record)
     }
+}
+
+/// Locks and verifies an opened descriptor; `path` is diagnostic only.
+fn read_locked_file<T>(
+    file: File,
+    path: &Path,
+    limits: JournalLimits,
+) -> Result<JournalReader<T>, JournalError>
+where
+    T: JournalPayload,
+{
+    rustix::fs::flock(&file, FlockOperation::NonBlockingLockShared)
+        .map_err(|source| io_error("acquire shared lock", path, source.into()))?;
+    let mut file = LockedFile(file);
+    validate_private_regular_file(&file, path)?;
+    let RecoveryReport {
+        records,
+        valid_bytes,
+        discarded_torn_bytes,
+    } = recover::<T>(&mut file, path, limits)?;
+
+    Ok(JournalReader {
+        _file: file,
+        snapshot: JournalSnapshot {
+            records,
+            verified_bytes: valid_bytes,
+            incomplete_tail_bytes: discarded_torn_bytes,
+        },
+    })
 }
 
 fn recover<T>(
@@ -505,13 +466,11 @@ where
     // In particular, an unlocked observer must not chase an appending writer.
     let mut reader = reader.take(file_length);
     let mut records = Vec::new();
-    let mut offset = 0_u64;
-    let mut expected_sequence = 1_u64;
-    let mut expected_previous = zero_digest();
+    let mut cursor = FrameCursor::new();
 
     loop {
         if records.len() == limits.max_records {
-            if offset == file_length {
+            if cursor.offset() == file_length {
                 break;
             }
             return Err(JournalError::Limit(format!(
@@ -520,48 +479,31 @@ where
             )));
         }
 
-        let mut header = [0_u8; HEADER_LENGTH];
-        let header_bytes = read_to_end_of_buffer(&mut reader, &mut header)
+        // The magic selects the header layout. Every short read below
+        // exhausts the captured cut, so it can only be a torn final frame.
+        let mut header = [0_u8; MAX_HEADER_LENGTH];
+        let magic_bytes = read_to_end_of_buffer(&mut reader, &mut header[..MAGIC_LENGTH])
             .map_err(|source| io_error("read frame header", path, source))?;
-        if header_bytes == 0 {
+        if magic_bytes < MAGIC_LENGTH {
             break;
         }
-        if header_bytes < HEADER_LENGTH {
+        let header_length = cursor.header_length(&header[..MAGIC_LENGTH]);
+        let header = &mut header[..header_length];
+        let header_bytes = read_to_end_of_buffer(&mut reader, &mut header[MAGIC_LENGTH..])
+            .map_err(|source| io_error("read frame header", path, source))?;
+        if MAGIC_LENGTH + header_bytes < header_length {
             break;
         }
 
-        let body_length = encoded_body_length(
-            &header,
-            expected_sequence,
-            expected_previous,
-            offset,
-            limits,
-        )?;
-        let mut body = vec![0_u8; body_length];
+        let parsed = cursor.read_header(header, limits)?;
+        let mut body = vec![0_u8; parsed.body_length()];
         let body_bytes = read_to_end_of_buffer(&mut reader, &mut body)
             .map_err(|source| io_error("read frame body", path, source))?;
-        if body_bytes < body_length {
+        if body_bytes < parsed.body_length() {
             break;
         }
 
-        let decoded = decode(
-            &header,
-            &body,
-            expected_sequence,
-            expected_previous,
-            offset,
-            limits,
-        )?;
-        offset = offset
-            .checked_add(u64::try_from(decoded.encoded_length).map_err(|_| {
-                JournalError::Limit("frame length is not representable as u64".to_string())
-            })?)
-            .ok_or_else(|| JournalError::Limit("journal offset overflow".to_string()))?;
-        expected_sequence = expected_sequence
-            .checked_add(1)
-            .ok_or_else(|| JournalError::Limit("journal sequence number exhausted".to_string()))?;
-        expected_previous = decoded.record.digest();
-        records.push(decoded.record);
+        records.push(cursor.accept(header, &parsed, &body, limits)?);
     }
 
     if reader.limit() != 0 {
@@ -577,8 +519,8 @@ where
 
     Ok(RecoveryReport {
         records,
-        valid_bytes: offset,
-        discarded_torn_bytes: file_length.saturating_sub(offset),
+        valid_bytes: cursor.offset(),
+        discarded_torn_bytes: file_length.saturating_sub(cursor.offset()),
     })
 }
 
@@ -649,10 +591,6 @@ fn sync_parent(path: &Path) -> Result<(), JournalError> {
         .map_err(|source| io_error("sync containing directory", parent, source))
 }
 
-fn zero_digest() -> Sha256Digest {
-    Sha256Digest::from_bytes([0_u8; 32])
-}
-
 fn io_error(operation: &'static str, path: &Path, source: std::io::Error) -> JournalError {
     JournalError::Io {
         operation,
@@ -667,13 +605,14 @@ mod observation_tests;
 
 #[cfg(test)]
 mod tests {
-    use aos_core::Sha256Digest;
     use serde::{Deserialize, Serialize};
     use std::fs::{self, OpenOptions};
     use tempfile::TempDir;
 
     use super::*;
-    use crate::journal::frame::{HEADER_DIGEST_DOMAIN, HEADER_LENGTH, HEADER_PREFIX_LENGTH};
+    use crate::journal::frame::{encode_legacy, reseal_frame, reseal_header};
+
+    const HEADER_LENGTH: usize = FrameFormat::CURRENT.header_length();
 
     #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
     #[serde(deny_unknown_fields)]
@@ -731,12 +670,7 @@ mod tests {
         let reopened = FileJournal::<TestEvent>::open(&path, limits).unwrap();
         drop(reopened);
 
-        FileJournal::<TestEvent>::read_only_snapshot_file(
-            inherited.try_clone().unwrap(),
-            &path,
-            limits,
-        )
-        .unwrap();
+        read_locked_file::<TestEvent>(inherited.try_clone().unwrap(), &path, limits).unwrap();
         // The inherited descriptor remains open across both ownership scopes.
         // It must not keep either writer or inspection locks alive.
         let _writer = FileJournal::<TestEvent>::open(&path, limits).unwrap();
@@ -744,8 +678,7 @@ mod tests {
     }
 
     #[test]
-    fn append_is_recovered_with_sequence_and_digest_chain() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn append_is_recovered_with_sequence_numbers() -> Result<(), Box<dyn std::error::Error>> {
         let directory = TempDir::new()?;
         let path = directory.path().join("execution.journal");
         let opened = FileJournal::<TestEvent>::open(&path, JournalLimits::default())?;
@@ -758,10 +691,10 @@ mod tests {
         let reopened = FileJournal::<TestEvent>::open(&path, JournalLimits::default())?;
         assert_eq!(reopened.recovery.discarded_torn_bytes(), 0);
         assert_eq!(reopened.recovery.records().len(), 2);
+        assert_eq!(first.sequence(), 1);
+        assert_eq!(second.sequence(), 2);
         assert_eq!(reopened.recovery.records()[0].sequence(), 1);
-        assert_eq!(reopened.recovery.records()[0].digest(), first.digest());
         assert_eq!(reopened.recovery.records()[1].sequence(), 2);
-        assert_eq!(reopened.recovery.records()[1].digest(), second.digest());
         assert_eq!(
             reopened.recovery.records()[1].body(),
             &event("completed", 1)
@@ -795,7 +728,7 @@ mod tests {
     }
 
     #[test]
-    fn read_only_snapshot_reports_a_torn_tail_without_repairing_it()
+    fn locked_read_reports_a_torn_tail_without_repairing_it()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = TempDir::new()?;
         let path = directory.path().join("execution.journal");
@@ -813,7 +746,7 @@ mod tests {
             .set_len(torn_length)?;
 
         let snapshot =
-            FileJournal::<TestEvent>::read_only_snapshot(&path, JournalLimits::default())?;
+            FileJournal::<TestEvent>::read_locked(&path, JournalLimits::default())?.into_snapshot();
         assert_eq!(snapshot.records().len(), 1);
         assert_eq!(snapshot.records()[0].body(), &event("intent", 1));
         assert!(snapshot.incomplete_tail_bytes() > 0);
@@ -826,12 +759,13 @@ mod tests {
     }
 
     #[test]
-    fn read_only_snapshot_never_creates_a_missing_journal() {
+    fn locked_read_never_creates_a_missing_journal() {
         let directory = TempDir::new().expect("temporary directory must exist");
         let path = directory.path().join("missing.journal");
 
-        let error = FileJournal::<TestEvent>::read_only_snapshot(&path, JournalLimits::default())
-            .expect_err("inspection must require an existing journal");
+        let error = FileJournal::<TestEvent>::read_locked(&path, JournalLimits::default())
+            .err()
+            .expect("inspection must require an existing journal");
 
         assert!(matches!(
             error,
@@ -844,14 +778,15 @@ mod tests {
     }
 
     #[test]
-    fn read_only_snapshot_rejects_a_fifo_without_waiting_for_a_writer()
+    fn locked_read_rejects_a_fifo_without_waiting_for_a_writer()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = TempDir::new()?;
         let path = directory.path().join("execution.journal");
         rustix::fs::mkfifoat(rustix::fs::CWD, &path, Mode::RUSR | Mode::WUSR)?;
 
-        let error = FileJournal::<TestEvent>::read_only_snapshot(&path, JournalLimits::default())
-            .expect_err("a FIFO must fail regular-file validation");
+        let error = FileJournal::<TestEvent>::read_locked(&path, JournalLimits::default())
+            .err()
+            .expect("a FIFO must fail regular-file validation");
 
         assert!(matches!(error, JournalError::Limit(_)));
         Ok(())
@@ -876,9 +811,9 @@ mod tests {
         file.sync_all()?;
         drop(file);
 
-        let snapshot_error =
-            FileJournal::<TestEvent>::read_only_snapshot(&path, JournalLimits::default())
-                .expect_err("read-only inspection must report a corrupt complete frame");
+        let snapshot_error = FileJournal::<TestEvent>::read_locked(&path, JournalLimits::default())
+            .err()
+            .expect("read-only inspection must report a corrupt complete frame");
         assert!(matches!(snapshot_error, JournalError::Corrupt { .. }));
         assert_eq!(fs::metadata(&path)?.len(), complete_length);
 
@@ -931,14 +866,14 @@ mod tests {
     }
 
     #[test]
-    fn writer_lock_excludes_a_racing_read_only_snapshot() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn writer_lock_excludes_a_racing_locked_read() -> Result<(), Box<dyn std::error::Error>> {
         let directory = TempDir::new()?;
         let path = directory.path().join("execution.journal");
         let writer = FileJournal::<TestEvent>::open(&path, JournalLimits::default())?;
 
-        let error = FileJournal::<TestEvent>::read_only_snapshot(&path, JournalLimits::default())
-            .expect_err("inspection must not race an active writer");
+        let error = FileJournal::<TestEvent>::read_locked(&path, JournalLimits::default())
+            .err()
+            .expect("inspection must not race an active writer");
 
         assert!(matches!(
             error,
@@ -1031,15 +966,108 @@ mod tests {
     }
 
     #[test]
-    fn changed_previous_digest_is_corruption_even_with_a_valid_header_checksum()
-    -> Result<(), Box<dyn std::error::Error>> {
+    fn appended_frames_use_the_current_header_layout() -> Result<(), Box<dyn std::error::Error>> {
         let directory = TempDir::new()?;
         let path = one_record_journal(&directory)?;
-        rewrite_header(&path, true, |header| header[55] ^= 1)?;
+        let bytes = fs::read(&path)?;
+
+        assert_eq!(&bytes[..8], b"AOSJNL2\n");
+        assert_eq!(u16::from_be_bytes([bytes[8], bytes[9]]), 2);
+        let body_length = u32::from_be_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]);
+        assert_eq!(bytes.len(), HEADER_LENGTH + usize::try_from(body_length)?);
+        assert_eq!(HEADER_LENGTH, 88);
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_journal_is_recovered_and_continues_in_the_current_format()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = TempDir::new()?;
+        let path = directory.path().join("execution.journal");
+        let legacy = write_legacy_journal(&path, &[event("intent", 1), event("started", 1)])?;
+
+        let opened = FileJournal::<TestEvent>::open(&path, JournalLimits::default())?;
+        assert_eq!(opened.recovery.records().len(), 2);
+        assert_eq!(opened.recovery.records()[1].body(), &event("started", 1));
+        assert_eq!(opened.recovery.discarded_torn_bytes(), 0);
+        let mut journal = opened.journal;
+        assert_eq!(journal.append(&event("completed", 1))?.sequence(), 3);
+        drop(journal);
+
+        let bytes = fs::read(&path)?;
+        assert_eq!(&bytes[..legacy.len()], legacy.as_slice());
+        assert_eq!(&bytes[legacy.len()..legacy.len() + 8], b"AOSJNL2\n");
+        let reopened = FileJournal::<TestEvent>::open(&path, JournalLimits::default())?;
+        let bodies: Vec<_> = reopened
+            .recovery
+            .records()
+            .iter()
+            .map(|record| record.body().clone())
+            .collect();
+        assert_eq!(
+            bodies,
+            [
+                event("intent", 1),
+                event("started", 1),
+                event("completed", 1)
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_torn_tail_is_repaired_using_the_legacy_header_length()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = TempDir::new()?;
+        let path = directory.path().join("execution.journal");
+        let first_frame = encode_legacy(&event("intent", 1), 1, None);
+
+        // A partial legacy header that is longer than a current header, and an
+        // unrecognized tail of the same length, must both remain torn tails.
+        let second_frame = encode_legacy(&event("completed", 1), 2, Some(&first_frame));
+        for tail in [second_frame[..100].to_vec(), vec![0_u8; 100]] {
+            let mut bytes = first_frame.clone();
+            bytes.extend_from_slice(&tail);
+            write_private(&path, &bytes)?;
+
+            let opened = FileJournal::<TestEvent>::open(&path, JournalLimits::default())?;
+            assert_eq!(opened.recovery.records().len(), 1);
+            assert_eq!(opened.recovery.discarded_torn_bytes(), 100);
+            assert_eq!(
+                fs::metadata(&path)?.len(),
+                u64::try_from(first_frame.len())?
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_frame_with_a_broken_chain_is_corruption() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = TempDir::new()?;
+        let path = directory.path().join("execution.journal");
+        let mut bytes = encode_legacy(&event("intent", 1), 1, None);
+        bytes.extend_from_slice(&encode_legacy(&event("completed", 1), 2, None));
+        write_private(&path, &bytes)?;
 
         let error = FileJournal::<TestEvent>::open(&path, JournalLimits::default())
-            .expect_err("an unexpected previous digest must be corrupt");
-        assert!(matches!(error, JournalError::Corrupt { .. }));
+            .expect_err("a legacy frame must continue its predecessor's digest chain");
+        assert!(matches!(error, JournalError::Corrupt { sequence: 2, .. }));
+        assert_eq!(fs::read(&path)?, bytes);
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_frame_after_a_current_frame_is_corruption() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let directory = TempDir::new()?;
+        let path = one_record_journal(&directory)?;
+        let mut bytes = fs::read(&path)?;
+        bytes.extend_from_slice(&encode_legacy(&event("completed", 1), 2, None));
+        write_private(&path, &bytes)?;
+
+        let error = FileJournal::<TestEvent>::open(&path, JournalLimits::default())
+            .expect_err("a writer never returns to the legacy format");
+        assert!(matches!(error, JournalError::Corrupt { sequence: 2, .. }));
         Ok(())
     }
 
@@ -1119,6 +1147,27 @@ mod tests {
         Ok(path)
     }
 
+    fn write_legacy_journal(
+        path: &Path,
+        events: &[TestEvent],
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let mut bytes = Vec::new();
+        let mut previous: Option<Vec<u8>> = None;
+        for (index, event) in events.iter().enumerate() {
+            let frame = encode_legacy(event, u64::try_from(index + 1)?, previous.as_deref());
+            bytes.extend_from_slice(&frame);
+            previous = Some(frame);
+        }
+        write_private(path, &bytes)?;
+        Ok(bytes)
+    }
+
+    fn write_private(path: &Path, bytes: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+        fs::write(path, bytes)?;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+        Ok(())
+    }
+
     fn rewrite_header(
         path: &Path,
         refresh_checksum: bool,
@@ -1129,9 +1178,7 @@ mod tests {
         file.read_exact(&mut header)?;
         mutate(&mut header);
         if refresh_checksum {
-            let digest =
-                Sha256Digest::separated(HEADER_DIGEST_DOMAIN, &header[..HEADER_PREFIX_LENGTH]);
-            header[HEADER_PREFIX_LENGTH..HEADER_LENGTH].copy_from_slice(digest.as_bytes());
+            reseal_header(&mut header);
         }
         file.seek(SeekFrom::Start(0))?;
         file.write_all(&header)?;
@@ -1153,15 +1200,7 @@ mod tests {
             .position(|window| window == from)
             .expect("test frame must contain the schema text");
         bytes[position..position + from.len()].copy_from_slice(to);
-
-        let body_digest = Sha256Digest::separated(
-            "aos.ability.execution.journal.body/v1",
-            &bytes[HEADER_LENGTH..],
-        );
-        bytes[56..88].copy_from_slice(body_digest.as_bytes());
-        let header_digest =
-            Sha256Digest::separated(HEADER_DIGEST_DOMAIN, &bytes[..HEADER_PREFIX_LENGTH]);
-        bytes[HEADER_PREFIX_LENGTH..HEADER_LENGTH].copy_from_slice(header_digest.as_bytes());
+        reseal_frame(&mut bytes);
 
         file.seek(SeekFrom::Start(0))?;
         file.write_all(&bytes)?;

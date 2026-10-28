@@ -28,7 +28,7 @@ class NativeEvidenceTests(unittest.TestCase):
         self.event = {"schema": "aos.activation.boundary", "transaction": "candidate", "effect": "owned", "revision": "resolved-revision", "action": "apply", "journal_sequence": 2, "boundary": "dispatch-returned"}
         dispatch = {"effect": "owned", "revision": "resolved-revision", "action": "apply", "journalSequence": 2}
         self.before = {
-            "schema": "aos.activation.inspection", "liveStateVerified": False, "incompleteTailBytes": 0,
+            "schema": "aos.activation.inspection", "incompleteTailBytes": 0,
             "transaction": "candidate", "pending": dispatch, "restoration": None, "completed": None, "desired": self.graph,
             "retainedOutputs": {}, "retiredEffects": [],
             "records": [{"sequence": 1, "event": "begin", "transaction": "candidate", "dispatch": None}, {"sequence": 2, "event": "started", "transaction": "candidate", "dispatch": dispatch}],
@@ -164,7 +164,7 @@ class NativeEvidenceTests(unittest.TestCase):
         self.assertEqual(subjects[self.cell]["resolvedRevision"], "resolved-revision")
         self.assertEqual(subjects[self.cell]["effect"]["revision"], "graph-revision")
         self.assertEqual(probes[self.cell]["disposition"], "checked")
-        self.assertIn(b'"liveStateVerified":false', evidence[self.cell])
+        self.assertIn(b'"schema":"aos.activation.inspection"', evidence[self.cell])
 
     def rejection(self):
         self.cell = "files/filesystem/entry/apply/durability-recovery/reject-uncertain-recovery"

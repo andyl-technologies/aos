@@ -28,19 +28,19 @@ fn observation_preserves_held_writer_and_its_verified_snapshot() {
     writer.append(&Event { counter: 1 }).unwrap();
     let before = fs::read(&path).unwrap();
 
-    let snapshot = FileJournal::<Event>::observe_snapshot(&path, limits).unwrap();
+    let snapshot = FileJournal::<Event>::read_unlocked(&path, limits).unwrap();
 
     assert_eq!(snapshot.records().len(), 1);
     assert_eq!(snapshot.records()[0].body(), &Event { counter: 1 });
     assert_eq!(snapshot.verified_bytes(), before.len() as u64);
     assert_eq!(snapshot.incomplete_tail_bytes(), 0);
     assert_eq!(fs::read(&path).unwrap(), before);
-    assert!(FileJournal::<Event>::read_only_snapshot(&path, limits).is_err());
+    assert!(FileJournal::<Event>::read_locked(&path, limits).is_err());
     assert!(FileJournal::<Event>::open(&path, limits).is_err());
 
     writer.append(&Event { counter: 2 }).unwrap();
     assert_eq!(snapshot.records().len(), 1);
-    let later = FileJournal::<Event>::observe_snapshot(&path, limits).unwrap();
+    let later = FileJournal::<Event>::read_unlocked(&path, limits).unwrap();
     assert_eq!(later.records().len(), 2);
     assert_eq!(later.records()[1].sequence(), 2);
     assert_eq!(later.records()[1].body(), &Event { counter: 2 });
@@ -114,7 +114,7 @@ fn observation_reports_incomplete_tail_without_repair_under_writer_lock() {
         .unwrap();
     let before = fs::read(&path).unwrap();
 
-    let snapshot = FileJournal::<Event>::observe_snapshot(&path, limits).unwrap();
+    let snapshot = FileJournal::<Event>::read_unlocked(&path, limits).unwrap();
 
     assert_eq!(snapshot.records().len(), 1);
     assert_eq!(snapshot.verified_bytes(), complete_length);
@@ -136,10 +136,10 @@ fn observation_rejects_complete_corruption_without_mutating_or_unlocking() {
     file.seek(SeekFrom::Start(0)).unwrap();
     file.write_all(&corrupt).unwrap();
 
-    let error = FileJournal::<Event>::observe_snapshot(&path, limits).unwrap_err();
+    let error = FileJournal::<Event>::read_unlocked(&path, limits).unwrap_err();
 
     assert!(matches!(error, JournalError::Corrupt { .. }));
     assert_eq!(fs::read(&path).unwrap(), corrupt);
-    assert!(FileJournal::<Event>::read_only_snapshot(&path, limits).is_err());
+    assert!(FileJournal::<Event>::read_locked(&path, limits).is_err());
     assert!(FileJournal::<Event>::open(&path, limits).is_err());
 }
