@@ -7,7 +7,7 @@
 > to `aos-registry-authoring`; installation to `aos-package-manager`; and cache
 > transport to `aos-nix-cache`. The live build server is `aos-build-server`.
 > Use the [as-built registry reference](../../registry/current-state.md) and
-> [crate rename map](../../architecture/crate-renames.md) for current ownership.
+> [Rust workspace guide](../../engineering/rust-workspace.md) for current ownership.
 
 
 > The original transport decision log predates explicit unpublished release
