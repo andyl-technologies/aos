@@ -1,5 +1,4 @@
-//! Git-backed configuration change requests (RFC-0004 "Configuration
-//! management", git-backed path).
+//! Git-backed configuration change requests.
 //!
 //! Covers the hub side end to end: [`propose_config_change`] writes a
 //! draft-signed change-request commit and ref and records a change-set +

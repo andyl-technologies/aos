@@ -407,7 +407,7 @@ impl Database {
 
     /// Soft-delete a user, failing if they are the sole owner of any org.
     ///
-    /// RFC-0004 offboarding: a user may not be deleted while they are the only
+    /// Offboarding rule: a user may not be deleted while they are the only
     /// `Owner` of an org — the ownership must be transferred first
     /// ([`Database::transfer_org_ownership`]). On the blocking path this
     /// returns an `Err` whose message lists the offending org slugs and makes

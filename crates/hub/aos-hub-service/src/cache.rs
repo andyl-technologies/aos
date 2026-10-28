@@ -1,6 +1,6 @@
-//! Read-through KV caching for hot point-key state (RFC-0004 ch.14 Phase C).
+//! Read-through KV caching for hot point-key state.
 //!
-//! Phase C moves the request hot path's point-key lookups — sessions, API
+//! The hub moves the request hot path's point-key lookups — sessions, API
 //! tokens, instance config, the host→registry routing table, trust rosters —
 //! off the relational `Backend` (which carries a per-request session
 //! cost) and in front of a [`KvStore`]. The pattern is

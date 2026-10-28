@@ -3,7 +3,7 @@
 use super::*;
 
 impl RpcService {
-    // -- BinaryCacheService (RFC-0004 "11-caches") ---------------------------------
+    // -- BinaryCacheService -------------------------------------------------------
 
     /// Resolves a managed cache by immutable stable identity or canonical slug.
     ///

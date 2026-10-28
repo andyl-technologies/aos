@@ -1,12 +1,12 @@
 //! Instance-key loading for the hub's at-rest secret sealing.
 //!
 //! The sealing crypto — the [`SecretSealer`] trait, the production
-//! [`AesGcmSealer`], the dev/test [`XorSealer`], and the [`parse_key`] decoder —
-//! lives in [`aos_hub_model::auth::seal`] (RFC-0004 Phase 5) so the
-//! Cloudflare Worker shares it; they are re-exported here so the hub's
-//! `auth::seal::…` paths are unchanged. What stays native is the IO-bound
-//! [`instance_sealer`], which loads (or creates) the per-instance key from the
-//! filesystem and returns a sealer bound to it.
+//! [`AesGcmSealer`], the dev/test [`XorSealer`], and the [`parse_key`] decoder
+//! — lives in [`aos_hub_model::auth::seal`] so the Cloudflare Worker shares it;
+//! they are re-exported here so the hub's `auth::seal::…` paths are unchanged.
+//! What stays native is the IO-bound [`instance_sealer`], which loads (or
+//! creates) the per-instance key from the filesystem and returns a sealer bound
+//! to it.
 //!
 //! # Instance key
 //!

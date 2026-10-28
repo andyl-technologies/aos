@@ -1,5 +1,4 @@
-//! Integration coverage for the email + password login path (RFC-0004, the
-//! operator-requested reversal of the original "no passwords" stance).
+//! Integration coverage for the email + password login path.
 //!
 //! Exercises the Argon2id hash/verify primitives, the pre-auth
 //! `POST /login/password` route (success creates a session; failure re-renders

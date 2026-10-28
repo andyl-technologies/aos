@@ -99,7 +99,7 @@ pub struct SetCachePopulationTarget {
 /// optionally associated with a retained signing-key usage and exposed through routes.
 /// Where a registry serves a git wire surface, a cache serves a Nix
 /// binary cache (`nix-cache-info` + content-addressed NARs + Ed25519-signed
-/// `.narinfo`). See RFC-0004 `11-caches`.
+/// `.narinfo`). See `docs/engineering/registry/nix-cache.md`.
 #[derive(Debug, Clone)]
 pub struct BinaryCache {
     /// Database id.

@@ -1,10 +1,9 @@
 //! Tenancy and IAM domain model: orgs, projects, principals, and the pure
 //! authorization kernel.
 //!
-//! This module owns the *meaning* of the tenancy hierarchy described in
-//! RFC-0004's "Tenancy and IAM" section — the org → project → registry
-//! tree, the principal kinds that act on it, and the role/permission/scope
-//! algebra that decides what each principal may do.
+//! This module owns the *meaning* of the tenancy hierarchy — the org → project
+//! → registry tree, the principal kinds that act on it, and the
+//! role/permission/scope algebra that decides what each principal may do.
 //!
 //! Its core, [`iam`], is **IO-free and wasm-clean**: pure functions over
 //! roles, permissions, and stable scope identities. The thin database bridge that
@@ -14,7 +13,7 @@
 //!
 //! # Principals
 //!
-//! A [`Principal`] is the actor in an authorization decision. RFC-0004 has
+//! A [`Principal`] is the actor in an authorization decision. There are
 //! two grantable principal kinds — human **users** and token-only
 //! **service accounts** — distinguished on the wire by the
 //! `memberships.principal_kind` column (`"user"` / `"service_account"`).

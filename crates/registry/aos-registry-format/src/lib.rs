@@ -1,4 +1,4 @@
-//! Pure-Rust, no-IO reader for the AOS registry wire surface (RFC-0004).
+//! Pure-Rust, no-IO reader for the AOS registry wire surface.
 //!
 //! Portable registry records and everything `apm` reads over dumb-HTTP, readable in-process and without
 //! the git CLI — which is what lets the *same code* run on a native

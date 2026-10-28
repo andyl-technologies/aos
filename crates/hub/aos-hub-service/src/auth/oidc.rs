@@ -1,11 +1,11 @@
 //! Per-org OIDC single sign-on: the authorization-code + PKCE flow.
 //!
-//! This module implements RFC-0004's "Per-org OIDC SSO": each org may
+//! This module implements per-org OIDC single sign-on: each org may
 //! configure one OpenID Connect identity provider; an email-first login on a
 //! captured domain routes to that IdP, and a successful round-trip provisions
 //! or links a hub user keyed on the token verifier and subject.
 //!
-//! # Runtime-neutral by construction (RFC-0004 Phase 5, console-dedup stage F)
+//! # Runtime-neutral by construction
 //!
 //! The flow makes only two network calls — the token exchange and the JWKS
 //! fetch — and it makes both through the

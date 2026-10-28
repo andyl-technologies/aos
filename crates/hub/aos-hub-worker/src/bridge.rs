@@ -1,6 +1,6 @@
 //! The hand-rolled Workers ↔ `axum` request/response bridge (wasm32-only).
 //!
-//! RFC-0004 Phase 5 serves the registry-hub RPC surface from the *same*
+//! The registry-hub RPC surface is served from the *same*
 //! [`aos_hub_service::connect`] router on both deployment targets. The native
 //! hub mounts that router under `axum::serve`; the Cloudflare Worker has no
 //! hyper/tokio server, so it drives the router one request at a time with

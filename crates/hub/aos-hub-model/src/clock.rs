@@ -4,8 +4,8 @@
 //! timestamps. On a native build that is `std::time::SystemTime`; on the
 //! Cloudflare Worker (`wasm32-unknown-unknown`) `SystemTime::now()` is
 //! unavailable and panics, so this module reads the host JS clock through
-//! `js_sys::Date::now()` instead (RFC-0004 Phase 5). Callers use the single
-//! [`now_unix_secs`] entry point and never branch on the target themselves.
+//! `js_sys::Date::now()` instead. Callers use the single [`now_unix_secs`]
+//! entry point and never branch on the target themselves.
 
 /// The current Unix time in whole seconds.
 ///

@@ -1,6 +1,6 @@
 //! The `aos-hub` binary: local-first registry hub server.
 //!
-//! Local-first operation is a hard requirement of RFC-0004: this binary, a
+//! Local-first operation is a hard requirement: this binary, a
 //! SQLite database, and local bindings form a complete hub. Ordinary
 //! organization, registry, cache, binding, and delivery administration uses
 //! the typed `aos hub` API; this process binary owns serving, indexing,

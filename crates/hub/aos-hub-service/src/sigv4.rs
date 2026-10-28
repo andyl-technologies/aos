@@ -1,5 +1,5 @@
 //! AWS Signature Version 4 presigned-URL signing for authenticated-origin
-//! cache proxying (RFC-0004 "11-caches": proxy to an authenticated origin).
+//! cache proxying.
 //!
 //! When a managed cache's binding is a **private** external S3/R2
 //! bucket, the hub never hands the bucket's bare URL to a consumer. Instead it

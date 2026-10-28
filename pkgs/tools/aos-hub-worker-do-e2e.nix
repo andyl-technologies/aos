@@ -2,12 +2,11 @@
 ##! with a **real SQLite-backed `HubDb` Durable Object** and assert the
 ##! managed-registry and multipart-write invariants.
 ##!
-##! The production system of record is the `HubDb` colocated-SQLite Durable Object
-##! (RFC-0004 ch.14 Phase E), reached over
-##! [`SqlDoBackend`](aos_hub_worker::sqldobackend). This check drives
-##! **workerd directly**
-##! with a capnp config that sets `enableSql = true` on the `HubDb` namespace, so
-##! the worker's create + read logic runs against the genuine DO SQLite engine.
+##! The production system of record is the `HubDb` colocated-SQLite Durable
+##! Object, reached over [`SqlDoBackend`](aos_hub_worker::sqldobackend). This
+##! check drives **workerd directly** with a capnp config that sets `enableSql =
+##! true` on the `HubDb` namespace, so the worker's create + read logic runs
+##! against the genuine DO SQLite engine.
 ##!
 ##! It POSTs the `do-e2e`-gated bootstrap endpoint to install disposable
 ##! topology/authentication state and prove checked-batch rollback. Every

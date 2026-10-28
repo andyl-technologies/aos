@@ -1,6 +1,6 @@
 //! In-browser channel verification — the honest badge.
 //!
-//! RFC-0004's web surface promises a verification badge that runs *real*
+//! The web surface shows a verification badge that runs *real*
 //! Ed25519 verification in the visitor's browser, against the registry's
 //! committed roster, rendering "verified in your browser: partition →
 //! 1.4.2 → commit ab12…". This module is that verifier. It reuses the exact

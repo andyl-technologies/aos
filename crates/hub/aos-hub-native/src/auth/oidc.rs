@@ -1,12 +1,11 @@
 //! Per-org OIDC single sign-on — re-export shim over the shared core module.
 //!
 //! The OIDC authorization-code + PKCE flow moved to
-//! [`aos_hub_service::auth::oidc`] (RFC-0004 Phase 5, console-dedup stage F)
-//! so the native hub and the Cloudflare Worker run the *same* SSO code: a
-//! toolchain change lets `jsonwebtoken` (via `ring`) compile to
-//! `wasm32-unknown-unknown`, so the RS256 id_token verifier did not need
-//! reimplementing — the module moved unchanged in its crypto. Its two network
-//! calls now go through the
+//! [`aos_hub_service::auth::oidc`] so the native hub and the Cloudflare Worker
+//! run the *same* SSO code: a toolchain change lets `jsonwebtoken` (via `ring`)
+//! compile to `wasm32-unknown-unknown`, so the RS256 id_token verifier did not
+//! need reimplementing — the module moved unchanged in its crypto. Its two
+//! network calls now go through the
 //! [`HttpClient`](aos_hub_service::web::console::ports::HttpClient) port
 //! instead of a concrete `reqwest::Client`.
 //!

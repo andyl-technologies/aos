@@ -7,8 +7,7 @@ impl Database {
     ///
     /// Identical to [`Self::create_changeset`] but additionally records the
     /// draft ref (`refs/hub/changes/<change_id>`) the hub wrote and the signed
-    /// draft-commit oid it points at (RFC-0004 "Configuration management",
-    /// git-backed path). These columns are `NULL` for SQL-only change-sets;
+    /// draft-commit oid it points at. These columns are `NULL` for SQL-only change-sets;
     /// their presence is what marks a change-set as a git-backed change request
     /// the console and `apr change` surface and promote.
     ///

@@ -1,12 +1,12 @@
 //! The key-value store port: hot, point-key, read-mostly state off the SQL DB.
 //!
-//! RFC-0004 chapter 14 moves the request hot path's point-key lookups —
-//! sessions, API tokens, instance config, the host→registry routing table, trust
-//! rosters, and short-lived auth artifacts — out of the relational `Backend` and
-//! onto a key-value store, because each relational lookup carries per-request session
+//! The hub moves the request hot path's point-key lookups — sessions, API
+//! tokens, instance config, the host→registry routing table, trust rosters, and
+//! short-lived auth artifacts — out of the relational `Backend` and onto a
+//! key-value store, because each relational lookup carries per-request session
 //! cost for a single-key `get` that needs none of the database's transactional
-//! model. Cloudflare recommends exactly this for "session data, credentials (API
-//! keys), and configuration data."
+//! model. Cloudflare recommends exactly this for "session data, credentials
+//! (API keys), and configuration data."
 //!
 //! [`KvStore`] is the narrow port both shells implement:
 //!

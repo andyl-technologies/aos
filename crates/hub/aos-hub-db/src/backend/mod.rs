@@ -1,10 +1,10 @@
 //! The async database backend trait and the helpers its drivers share.
 //!
 //! [`Backend`] is the narrow waist between the hub's `Database` methods and the
-//! SQL engines. It is **async** (RFC-0004 Phase 5): a concrete driver runs
-//! every query over its own connection — `sqlx` pools for the native hub and
-//! the `HubDb` Durable Object's colocated SQLite for the Worker — so one
-//! `Database` implementation serves both runtimes. Each driver applies
+//! SQL engines. It is **async**: a concrete driver runs every query over its
+//! own connection — `sqlx` pools for the native hub and the `HubDb` Durable
+//! Object's colocated SQLite for the Worker — so one `Database` implementation
+//! serves both runtimes. Each driver applies
 //! [`Dialect::translate`](crate::dialect::Dialect::translate) (via [`prepare`])
 //! before handing SQL to its engine.
 //!
@@ -52,7 +52,7 @@ pub use aos_hub_model::runtime::RuntimeBounds as BackendBounds;
 /// statement must be self-contained: ids are assigned client-side rather than
 /// read from `last_insert_rowid`, and any guard is encoded in a `WHERE` clause
 /// rather than a read-then-branch. This is the seam the unified
-/// native/Cloudflare runtime is built on (RFC-0004 Phase 5).
+/// native/Cloudflare runtime is built on.
 #[derive(Debug, Clone)]
 pub struct Statement {
     /// The source SQL, in the sqlite dialect the `Database` methods write; each
@@ -130,9 +130,9 @@ impl CheckedStatement {
 /// their [`Backend::dialect`] before executing. All methods take the source
 /// (sqlite-flavored) SQL the `Database` methods write.
 ///
-/// The trait is **async** (RFC-0004 Phase 5): every query is a future driven on
-/// the host runtime by the underlying engine. It is `Send`-bounded on native
-/// (via [`BackendBounds`]) and `?Send` on the single-threaded Worker.
+/// The trait is **async**: every query is a future driven on the host runtime
+/// by the underlying engine. It is `Send`-bounded on native (via
+/// [`BackendBounds`]) and `?Send` on the single-threaded Worker.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 pub trait Backend: BackendBounds {
@@ -357,15 +357,15 @@ pub fn prepare(dialect: Dialect, sql: &str, params: &[Value]) -> Result<(String,
 // It is the hub's backend (and the CLI's); the Cloudflare Worker supplies a HubDb
 // `Backend` instead. `sqlx` is a native-only dependency — it does not build for
 // `wasm32-unknown-unknown` — so the driver and its connection-URL helper are
-// compiled out of the Worker target (RFC-0004 Phase 5).
+// compiled out of the Worker target.
 #[cfg(not(target_arch = "wasm32"))]
 mod sqlx;
 #[cfg(not(target_arch = "wasm32"))]
 pub use sqlx::SqlxBackend;
 
-// Per-statement query timing (RFC-0004 ch.14 Phase A): a `Backend` decorator
-// that records each statement's wall-clock duration for a `Server-Timing`
-// header, so the per-request Worker database cost is measurable at the call site.
+// Per-statement query timing: a `Backend` decorator that records each
+// statement's wall-clock duration for a `Server-Timing` header, so the
+// per-request Worker database cost is measurable at the call site.
 // Feature-gated (`query-timing`, off by default) so production pays nothing.
 #[cfg(feature = "query-timing")]
 mod timing;

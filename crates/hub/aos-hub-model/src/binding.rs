@@ -1,4 +1,4 @@
-//! Storage-binding kinds and the per-runtime capability model (RFC-0004).
+//! Storage-binding kinds and the per-runtime capability model.
 //!
 //! A *binding* is a per-org named storage backend that a managed
 //! registry or cache roots its surface on. The on-disk/wire form of a binding's

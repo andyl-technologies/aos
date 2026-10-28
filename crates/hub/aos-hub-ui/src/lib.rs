@@ -1,8 +1,8 @@
 //! Closed deep-link registry for the Hub management application.
 //!
-//! The parser recognizes only the canonical settings roots recorded by
-//! RFC-0012. It does not provide aliases or a prefix-wide fallback: an unknown
-//! page remains a server-side 404 instead of receiving the application shell.
+//! The parser recognizes only the canonical settings roots. It does not provide
+//! aliases or a prefix-wide fallback: an unknown page remains a server-side 404
+//! instead of receiving the application shell.
 
 /// One destination in the signed-in masthead navigation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1688,7 +1688,7 @@ mod tests {
     #[test]
     fn every_page_is_backed_by_a_declared_web_workflow() {
         let manifest: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../../docs/rfcs/0012-hub-surface-topology/hub-control-plane-capabilities-v1.json"
+            "../../aos-hub-api/contracts/hub-control-plane-capabilities-v1.json"
         ))
         .expect("capability manifest must be valid JSON");
         let services = manifest["services"]

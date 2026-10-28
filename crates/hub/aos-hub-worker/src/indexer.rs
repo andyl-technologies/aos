@@ -1,13 +1,12 @@
 //! Queue-triggered registry and cache reconciliation over the shared database.
 //!
-//! RFC-0004 drives the Worker's indexer from a **Cron Trigger** ("Cron
-//! Triggers/Queues drive the indexer, validator, and mirror jobs"). The
-//! maintenance dispatcher schedules each public registry's surface — read from the
-//! R2 bucket rather than over HTTP — and replaces its derived SQL index by calling the
-//! **shared core indexer** ([`aos_hub_service::indexer::index_and_record`]),
-//! the exact same fetch → verify → load → index orchestration the native hub
-//! runs. One indexer, two shells: the Worker's eventual index is byte-identical
-//! to the native hub's.
+//! The Worker's indexer is driven by a **Cron Trigger**. The maintenance
+//! dispatcher schedules each public registry's surface — read from the R2
+//! bucket rather than over HTTP — and replaces its derived SQL index by calling
+//! the **shared core indexer**
+//! ([`aos_hub_service::indexer::index_and_record`]), the exact same fetch →
+//! verify → load → index orchestration the native hub runs. One indexer, two
+//! shells: the Worker's eventual index is byte-identical to the native hub's.
 //!
 //! # How it wires up
 //!

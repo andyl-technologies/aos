@@ -24,10 +24,10 @@ use std::time::Duration;
 use anyhow::{bail, Context as _, Result};
 use async_trait::async_trait;
 
-// The pure SSRF/path guards moved to the runtime-agnostic core crate (RFC-0004
-// Phase 5) so the Worker shares them; the native DNS pre-check, validating
-// resolver, and symlink-escape canonicalization stay here. Re-export the pure
-// items so existing `crate::fetch::…` paths (used across the hub) are unchanged.
+// The pure SSRF/path guards moved to the runtime-agnostic core crate so the
+// Worker shares them; the native DNS pre-check, validating resolver, and
+// symlink-escape canonicalization stay here. Re-export the pure items so
+// existing `crate::fetch::…` paths (used across the hub) are unchanged.
 use aos_hub_model::url_guard::{self, fetch_err};
 pub use aos_hub_model::url_guard::{
     is_fetch_error, safe_join, validate_http_surface_path, FetchError,

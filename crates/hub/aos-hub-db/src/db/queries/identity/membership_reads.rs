@@ -34,7 +34,7 @@ impl Database {
     /// Whether a live (unexpired, unaccepted) invitation exists for `email`.
     ///
     /// Used by the `invite_only` signup gate. A user invited to any org may
-    /// create their own org (RFC-0004 "open membership-by-invitation").
+    /// create their own org.
     ///
     /// # Errors
     ///

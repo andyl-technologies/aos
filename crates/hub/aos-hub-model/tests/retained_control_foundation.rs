@@ -20,7 +20,7 @@ fn retained_method_classifier_fixture_is_structurally_valid() {
     ))
     .unwrap();
     let descriptor: GeneratedApiDescriptorArtifact = serde_json::from_str(include_str!(
-        "../../../../docs/rfcs/0012-hub-surface-topology/hub-api-manifest-v1.json"
+        "../../aos-hub-api/contracts/hub-api-manifest-v1.json"
     ))
     .unwrap();
     let generated =

@@ -1,12 +1,12 @@
 //! The edge-local Workers Rate Limiting binding impl of the shared
 //! [`RateLimiter`] port (wasm32-only).
 //!
-//! RFC-0004 ch.14 (corrected): rate limiting must stay **off the request's
-//! network path**. Cloudflare's [Rate Limiting binding] is **edge-local** —
-//! `env.X.limit({key})` increments a counter cached on the executing machine
-//! with async background reconciliation, so "you are not waiting on a network
-//! request." This replaces the earlier Durable Object limiter, whose single
-//! global instance added a ~100 ms cross-region hop to every read.
+//! Rate limiting must stay **off the request's network path**. Cloudflare's
+//! [Rate Limiting binding] is **edge-local** — `env.X.limit({key})` increments
+//! a counter cached on the executing machine with async background
+//! reconciliation, so "you are not waiting on a network request." This replaces
+//! the earlier Durable Object limiter, whose single global instance added a
+//! ~100 ms cross-region hop to every read.
 //!
 //! The binding carries **one `limit`/`period` per binding**, but the service
 //! meters classes with three different burst budgets (5, 10, 120 per minute), so

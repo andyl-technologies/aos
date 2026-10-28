@@ -1,7 +1,7 @@
 //! Arguments for `aos hub` — the registry-hub control-plane client.
 //!
 //! These subcommands interact with a running `aos-hub` purely through
-//! its public ConnectRPC API (RFC-0004), never by touching the hub's database
+//! its public ConnectRPC API, never by touching the hub's database
 //! directly. `login` uses browser-approved device authorization by default.
 //! Public topology reads run anonymously; private inventory and all desired-state
 //! writes use an explicit bearer or the active stored Hub profile. Mutations use typed resource

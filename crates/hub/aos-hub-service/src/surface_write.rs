@@ -9,7 +9,7 @@
 //! references.
 //!
 //! - [`SurfaceWrite`] — atomically write or delete one surface path. This is
-//!   the RFC's "Blobs" port, write side: the loose-object and ref writes the
+//!   the blob port's write side: the loose-object and ref writes the
 //!   git-backed change-request flow performs go through it.
 //! - [`SurfaceWriteProvider`] — resolve the [`SurfaceWrite`] for a given
 //!   registry. The native hub returns a filesystem writer rooted at the

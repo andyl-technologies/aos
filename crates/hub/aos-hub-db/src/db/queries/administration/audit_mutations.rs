@@ -11,7 +11,7 @@ impl Database {
     /// SQL-backed write paths records exactly one row here. `change_id`
     /// ties the row to a configuration change-set when applicable;
     /// `result_commit`/`result_tag` cross-reference the cryptographic
-    /// history for surface-touching operations (RFC-0004 "Tenancy and IAM").
+    /// history for surface-touching operations.
     ///
     /// # Errors
     ///
@@ -65,8 +65,7 @@ impl Database {
     ///
     /// The indexer synthesizes one `external` audit entry per out-of-band
     /// (direct-publish) commit it observes; this check keeps that synthesis
-    /// idempotent across re-indexes, so the same commit is never audited twice
-    /// (RFC-0004 "Configuration management", cross-referencing).
+    /// idempotent across re-indexes, so the same commit is never audited twice.
     ///
     /// # Errors
     ///

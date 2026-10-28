@@ -8,10 +8,10 @@
 //!
 //! # Roles and permissions
 //!
-//! [`Role`] is the five-rung ladder from RFC-0004's role table — `owner`,
-//! `admin`, `maintainer`, `developer`, `viewer`. Each role expands to a
-//! fixed set of [`Permission`] verbs via [`role_grants`]; the expansion is
-//! the authoritative encoding of that table.
+//! [`Role`] is the five-rung role ladder — `owner`, `admin`, `maintainer`,
+//! `developer`, `viewer`. Each role expands to a fixed set of [`Permission`]
+//! verbs via [`role_grants`]; the expansion is the authoritative encoding of
+//! the role table.
 //!
 //! # Scope grammar
 //!
@@ -39,7 +39,7 @@
 //! with role `R` satisfies both `target.ancestors.contains(S)` and `role_grants(R)`
 //! includes `permission`.
 
-/// A role on the five-rung RFC-0004 ladder, grantable at any scope.
+/// A role on the five-rung ladder, grantable at any scope.
 ///
 /// Higher [`Role::rank`] means more authority; [`Role::Owner`] is highest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -107,7 +107,7 @@ impl Role {
 
 /// A permission verb — one capability a [`Role`] may grant.
 ///
-/// The verbs mirror RFC-0004's permission list; [`role_grants`] maps each
+/// The verbs form the Hub's permission list; [`role_grants`] maps each
 /// role to the exact set it confers.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
@@ -283,7 +283,7 @@ impl Permission {
 
 /// Returns the exact set of permission verbs a [`Role`] confers.
 ///
-/// This is the authoritative encoding of RFC-0004's role table:
+/// This is the authoritative encoding of the Hub's role table:
 ///
 /// - **Owner** — every verb, including [`Permission::IamAdmin`].
 /// - **Admin** — members, tokens (manage), registries/delivery/storage

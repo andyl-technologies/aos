@@ -1,18 +1,18 @@
 //! Rich, session-aware browse-page composition: data in, HTML documents out.
 //!
-//! RFC-0004 Phase 5 (console-dedup stage G) lifts the native hub's *rich* browse
-//! renderer — the instance home, the registry home, the searchable/sortable
-//! package index and the data-rich package detail, the channel partition grid
-//! and bucket calculator, the releases list, and the per-registry health page —
-//! out of `aos-hub` into shared core so the Cloudflare Worker serves
-//! the **identical** branded, searchable, session-aware browse the native hub
-//! does. The earlier (anonymous, public-only, proto-shaped) [`crate::web::render`]
-//! builders are superseded by these.
+//! This module holds the hub's *rich* browse renderer — the instance home, the
+//! registry home, the searchable/sortable package index and the data-rich
+//! package detail, the channel partition grid and bucket calculator, the
+//! releases list, and the per-registry health page — out of `aos-hub` into
+//! shared core so the Cloudflare Worker serves the **identical** branded,
+//! searchable, session-aware browse the native hub does. The earlier
+//! (anonymous, public-only, proto-shaped) [`crate::web::render`] builders are
+//! superseded by these.
 //!
 //! Every page here renders from index data alone (no live surface reads), works
 //! without JavaScript — search, the channel-bucket calculator, and pagination
-//! are plain GET forms and links — and carries the footer state line. URL space
-//! (RFC-0004 "Sitemap"): the registry home lives at `/{slug}/`, all other human
+//! are plain GET forms and links — and carries the footer state line. URL
+//! space: the registry home lives at `/{slug}/`, all other human
 //! pages (packages, images, channels, releases, health) under `/{slug}/-/…` — the
 //! reserved namespace that can never collide with machine paths.
 //!
@@ -1839,7 +1839,7 @@ pub fn cache_closure(
 ///
 /// The consumer [`channel_page`] uses the same glyph and color conventions as
 /// [`crate::web::console_render::channel_grid_pre`]. The grid is content,
-/// following RFC-0004's presentation rules.
+/// not decoration.
 #[must_use]
 pub fn channel_grid_pre(channel: &ChannelSummary) -> String {
     let (release_order, class_for) = release_glyphs(channel);

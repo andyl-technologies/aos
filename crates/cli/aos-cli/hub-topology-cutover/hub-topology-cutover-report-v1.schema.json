@@ -3,7 +3,7 @@
   "$id": "https://aos.andyl.org/schemas/hub-topology-cutover-report-v1.schema.json",
   "dialect": "aos-cutover-schema/v1",
   "title": "AOS Hub topology cutover report v1",
-  "description": "A closed, secret-free, canonical execution record for the one-shot RFC-0012 topology cutover.",
+  "description": "A closed, secret-free, canonical execution record for the one-shot Hub topology cutover.",
   "type": "object",
   "additionalProperties": false,
   "required": [

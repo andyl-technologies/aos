@@ -1,6 +1,6 @@
 //! Binary-cache retention, object-presence, and garbage-collection persistence.
 //!
-//! This module is the database boundary for RFC-0012's destructive cache
+//! This module is the database boundary for the destructive cache
 //! lifecycle. It deliberately separates four kinds of evidence:
 //!
 //! - logical cache objects and normalized closure edges;

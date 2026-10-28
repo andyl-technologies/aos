@@ -1,5 +1,5 @@
 //! Org backup/export: a portable JSON bundle of the SQL system of record
-//! plus copyable registry surfaces (RFC-0004 "Offboarding and export").
+//! plus copyable registry surfaces.
 //!
 //! Export is advertised as genuinely easy here: a registry *is* a portable git
 //! surface + bucket prefix, and the SQL system of record exports as JSON. This
@@ -445,7 +445,7 @@ fn copy_tree(src: &Path, dest: &Path) -> Result<usize> {
 
 /// Hard-delete every org whose offboarding grace window has elapsed by `now`.
 ///
-/// The purge job (RFC-0004 offboarding): each org past its `purge_after` is
+/// The offboarding purge job: each org past its `purge_after` is
 /// hard-deleted, cascading away its entire SQL system of record. Returns the
 /// slugs purged. **Bucket/LocalFs content removal is a separate, deliberately
 /// gated step** — this function only removes SQL rows; the surface bytes under

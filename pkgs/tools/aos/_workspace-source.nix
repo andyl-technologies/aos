@@ -68,17 +68,7 @@ in
         || pathString == "${repoRootString}/tests"
         || pathString == "${repoRootString}/tests/abilities"
         || pathString == "${repoRootString}/tests/abilities/fixtures"
-        || lib.hasPrefix "${repoRootString}/tests/abilities/fixtures/" pathString
-        || (
-          selectedCrates
-          == null
-          && (
-            pathString
-            == "${repoRootString}/docs"
-            || pathString == "${repoRootString}/docs/rfcs"
-            || lib.hasPrefix "${repoRootString}/docs/rfcs/0012-hub-surface-topology" pathString
-          )
-        );
+        || lib.hasPrefix "${repoRootString}/tests/abilities/fixtures/" pathString;
       # The aos integration-test package evaluates repository Nix modules and
       # must retain their exact source alongside the Cargo workspace.
       integrationInput =

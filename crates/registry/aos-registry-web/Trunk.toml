@@ -7,7 +7,7 @@
 # `static_upload.rs`).
 
 [build]
-# Name the wasm-bindgen artifacts `app-<hash>.*` to match RFC-0004's
+# Name the wasm-bindgen artifacts `app-<hash>.*` to match the web surface's
 # artifact shape (/web/app-<hash>_bg.wasm, /web/app-<hash>.js).
 filehash = true
 public_url = "/web/"

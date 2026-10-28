@@ -206,10 +206,10 @@ impl PublishLease for InMemoryLease {
 
 /// A [`PublishLease`] backed by the strongly-consistent [`Coordinator`] port.
 ///
-/// RFC-0004 chapter 14 routes the publish lease through a coordinator and
-/// onto the [`Coordinator`]'s generic lease primitive. On the Worker the
-/// coordinator is a Durable Object (`WorkerCoordinator`) — a single serialized
-/// instance provides cross-isolate exclusion; natively it is the in-process
+/// The publish lease is routed onto the [`Coordinator`]'s generic lease
+/// primitive. On the Worker the coordinator is a Durable Object
+/// (`WorkerCoordinator`) — a single serialized instance provides cross-isolate
+/// exclusion; natively it is the in-process
 /// [`InMemoryCoordinator`](crate::coordinator::InMemoryCoordinator). The lease
 /// key namespaces the registry id under `publish:` so it does not collide with
 /// other coordinator keys.

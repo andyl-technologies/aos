@@ -830,10 +830,10 @@ impl Database {
     /// at the instance-root scope (`"instance"`).
     ///
     /// Single source of truth for root bootstrap, shared by the native CLI
-    /// (`aos-hub init`/`worker install`) and the worker's seal-gated
-    /// `HubDb` bootstrap endpoint (RFC-0004 ch.14 Phase E), so both shells create
-    /// an identical root. Idempotent: re-running resets the password and
-    /// re-asserts the grant. Returns the normalized email and the user id.
+    /// (`aos-hub init`/`worker install`) and the worker's seal-gated `HubDb`
+    /// bootstrap endpoint, so both shells create an identical root. Idempotent:
+    /// re-running resets the password and re-asserts the grant. Returns the
+    /// normalized email and the user id.
     ///
     /// # Errors
     ///

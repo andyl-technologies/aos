@@ -3,7 +3,7 @@
   "$id": "https://aos.andyl.org/schemas/hub-topology-cutover-plan-v1.schema.json",
   "dialect": "aos-cutover-schema/v1",
   "title": "AOS Hub topology cutover plan v1",
-  "description": "A closed, secret-free plan for the one-shot RFC-0012 topology cutover. The final runtime does not consume this artifact.",
+  "description": "A closed, secret-free plan for the one-shot Hub topology cutover. The final runtime does not consume this artifact.",
   "type": "object",
   "additionalProperties": false,
   "required": [
