@@ -518,8 +518,8 @@ next: aos maintain diff 01K4D9HMR09Q6S37FX9PWGCM8A
       aos maintain accept 01K4D9HMR09Q6S37FX9PWGCM8A
 ```
 
-After acceptance, commit, and complete commit-bound final gates, the distinct
-receipt reflects the `ready-for-pr` state:
+After acceptance, commit, complete commit-bound final gates, and `prepare-pr`
+verification, the distinct receipt reflects the `ready-for-pr` state:
 
 ```text
 READY FOR PR · RUN ready-for-pr
@@ -529,7 +529,7 @@ Run       01K4D9HMR09Q6S37FX9PWGCM8A
 Head      7c91e42be523a0b1ef47c87c73da9e0caf829274
 Tree      sha256:0a7d259c85ded334f43fc3be65a7e796c073f492567a32e81a49ae00971dcc5b
 Gates     27 success · 0 failure · exact committed head
-Evidence  /home/maintainer/.local/state/aos/maintain/.../final-evidence.json
+Evidence  sha256:9e4c0d27f1b8a6352e90c4d1f7a28b3e6c51d09a8f2e47b6c3d18a5e0f9b7c42
 Elapsed   31m 08s
 
 next: aos maintain prepare-pr 01K4D9HMR09Q6S37FX9PWGCM8A
@@ -725,7 +725,7 @@ Command families apply them consistently:
 
 | Command class | Exit rule |
 | --- | --- |
-| `inventory`, `status`, `inspect`, `diff`, `report`, `evidence`, `prepare-pr` | Exit `0` when the requested local query/render succeeds, including an empty report or an object whose stored state is failed/quarantined. Object states remain in result data. Invalid input and unavailable required local tooling use `2`/`3`. |
+| `inventory`, `status`, `inspect`, `diff`, `report`, `prepare-pr` | Exit `0` when the requested local query/render succeeds, including an empty report or an object whose stored state is failed/quarantined. Object states remain in result data. Invalid input and unavailable required local tooling use `2`/`3`. |
 | `inventory --check` | Exit `0` for a valid complete inventory, `1` for a completed check with policy/schema findings, `2` for invalid invocation, and `3` when evaluation tooling is unavailable. |
 | `scan` | After invocation/tool errors, aggregate required unit results by precedence: any quarantine `13`; otherwise any required unknown/incomplete evidence `12`; otherwise no selectable changes `10`; otherwise `0`. The result always contains counts for every category, so a higher-precedence code does not hide mixed results. |
 | `plan` | Exit `0` when a plan is created, `10` for proven no-change, `12` for insufficient upstream evidence, `13` for quarantine, and `14` when the selected snapshot/base/policy is stale. |

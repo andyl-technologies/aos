@@ -2,12 +2,12 @@
 
 mod confinement;
 mod discovery;
-mod evidence;
 mod git;
 mod hash_refresh;
 mod inventory;
 mod materialize;
 mod mutation;
+mod readiness;
 mod remote;
 mod repair;
 mod state;
@@ -237,7 +237,6 @@ pub async fn run(cli: &Cli, args: &MaintainArgs, printer: &Printer) -> Result<Co
         Some(MaintainCommand::Commit(command)) => commit_command(args, command),
         Some(MaintainCommand::Test(command)) => test_command(args, command, printer),
         Some(MaintainCommand::Repair(command)) => repair_command(cli, args, command, printer).await,
-        Some(MaintainCommand::Evidence(command)) => evidence_command(args, command),
         Some(MaintainCommand::PreparePr(command)) => prepare_pr_command(args, command),
         Some(MaintainCommand::PublishPr(command)) => publish_pr_command(args, command).await,
         Some(MaintainCommand::ObservePr(command)) => observe_pr_command(args, command).await,
@@ -991,74 +990,59 @@ async fn repair_command(
     CommandCompletion::new(completion.result)
 }
 
-fn evidence_command(
+fn prepare_pr_command(
     args: &MaintainArgs,
     command: &crate::cli::MaintainRunIdentityArgs,
 ) -> Result<CommandCompletion> {
-    let (store, _) = current_store(args)?;
+    let (store, coordinates) = current_store(args)?;
     let mut run = resolve_run(&store, &command.run)?;
     let plan = store
         .read_plan(run.plan_id.as_str())?
         .ok_or_else(|| anyhow::anyhow!("run plan is unavailable"))?;
-    require_frozen_controller(&plan)?;
-    let _operation_lease = store.acquire_operation_lease(plan.plan_id.as_str())?;
-    let (evidence, digest) = match evidence::generate(&store, &plan, &mut run) {
-        Ok(result) => result,
+
+    // Only the final-gated -> ready-for-pr transition writes local state; it
+    // runs under the frozen controller and the plan's operation lease like
+    // every other controller transition.
+    let _operation_lease = if run.state == aos_package_maintenance::workflow::RunState::FinalGated {
+        require_frozen_controller(&plan)?;
+        Some(store.acquire_operation_lease(plan.plan_id.as_str())?)
+    } else {
+        None
+    };
+    let candidate = match readiness::mark_ready(&store, &plan, &mut run) {
+        Ok(candidate) => candidate,
         Err(error) => {
             return run_view_completion(
-                "evidence",
+                "prepare-pr",
                 &store,
                 run,
                 Some((CommandDisposition::ActionRequired, &format!("{error:#}"))),
             );
         }
     };
-    let mut completion = run_view_completion("evidence", &store, run, None)?;
-    completion.result.data.evidence = Some(evidence);
+
+    let draft = pull_request_draft(&coordinates, &plan, &run, &candidate)?;
+    let mut completion = run_view_completion("prepare-pr", &store, run, None)?;
+    completion.result.data.pull_request = Some(draft);
     completion.result.primary_values.push(PrimaryValue {
         name: "evidenceDigest".to_string(),
-        value: digest.to_string(),
+        value: candidate.evidence_digest.to_string(),
     });
     CommandCompletion::new(completion.result)
 }
 
-fn prepare_pr_command(
-    args: &MaintainArgs,
-    command: &crate::cli::MaintainRunIdentityArgs,
-) -> Result<CommandCompletion> {
-    let (store, coordinates) = current_store(args)?;
-    let run = resolve_run(&store, &command.run)?;
-    if run.state != aos_package_maintenance::workflow::RunState::ReadyForPr {
-        return run_view_completion(
-            "prepare-pr",
-            &store,
-            run,
-            Some((
-                CommandDisposition::ActionRequired,
-                "Final local evidence must be complete before PR preparation",
-            )),
-        );
-    }
-    let draft = pull_request_draft(&store, &coordinates, &run)?;
-    let mut completion = run_view_completion("prepare-pr", &store, run.clone(), None)?;
-    completion.result.data.pull_request = Some(draft);
-    CommandCompletion::new(completion.result)
-}
-
+/// Renders the exact pull-request text and identities for a verified candidate.
+///
+/// The draft depends only on the plan, run, verified check results, and the
+/// repository's default branch, so `prepare-pr` and `publish-pr` render
+/// identical drafts for one candidate.
 fn pull_request_draft(
-    store: &state::StateStore,
     coordinates: &inventory::RepositoryCoordinates,
+    plan: &aos_package_maintenance::plan::PackageUpdatePlanV1,
     run: &aos_package_maintenance::run::PackageUpdateRunV1,
+    candidate: &readiness::CompletedCandidate,
 ) -> Result<PullRequestDraft> {
-    let plan = store
-        .read_plan(run.plan_id.as_str())?
-        .ok_or_else(|| anyhow::anyhow!("run plan is unavailable"))?;
-    let evidence = store
-        .read_evidence(run.run_id.as_str())?
-        .ok_or_else(|| anyhow::anyhow!("run evidence is unavailable"))?;
-    let evidence_digest = run
-        .evidence_digest
-        .ok_or_else(|| anyhow::anyhow!("run evidence digest is unavailable"))?;
+    let evidence_digest = candidate.evidence_digest;
     let head = run
         .candidate_commit
         .as_ref()
@@ -1096,12 +1080,12 @@ fn pull_request_draft(
             .map(|unit| unit.component_targets.len())
             .sum::<usize>(),
         risk_name(plan.risk),
-        evidence.materialization.sources.len(),
+        candidate.materialization.sources.len(),
         run.attempt,
-        evidence.quick_gates.results.len(),
-        evidence.quick_gates.results.len(),
-        evidence.final_gates.results.len(),
-        evidence.final_gates.results.len(),
+        candidate.quick_gates.results.len(),
+        candidate.quick_gates.results.len(),
+        candidate.final_gates.results.len(),
+        candidate.final_gates.results.len(),
         head.value,
         evidence_digest,
     );
@@ -1157,7 +1141,8 @@ async fn publish_pr_command(
             )),
         );
     }
-    let draft = pull_request_draft(&store, &coordinates, &run)?;
+    let candidate = readiness::completed_candidate(&store, &plan.plan_id, &run)?;
+    let draft = pull_request_draft(&coordinates, &plan, &run, &candidate)?;
     if let Some(publication) = store.read_publication(run.run_id.as_str())? {
         if publication.head.value != draft.head
             || publication.branch != draft.branch
@@ -1273,7 +1258,7 @@ async fn publish_pr_command(
         }
     };
     if store.read_publication(run.run_id.as_str())?.is_none() {
-        store.write_publication(&publication)?;
+        store.write_publication(&publication, draft.evidence_digest)?;
     }
     advance_published_state(&store, &mut run)?;
     let mut completion = run_view_completion("publish-pr", &store, run, None)?;
@@ -2975,9 +2960,9 @@ fn next_actions_for_run(run: &aos_package_maintenance::run::PackageUpdateRunV1) 
             EffectClass::LocalMutation,
         ),
         RunState::FinalGated => (
-            "Generate the final local evidence",
-            vec!["evidence", run.run_id.as_str()],
-            "the dossier cross-checks the plan, journal, patch, commit, and gates",
+            "Verify the candidate and prepare the pull request offline",
+            vec!["prepare-pr", run.run_id.as_str()],
+            "preparation cross-checks the patch, commit, and gates, then marks the run ready",
             EffectClass::LocalMutation,
         ),
         RunState::ReadyForPr => (
@@ -3271,7 +3256,6 @@ fn command_name(args: &MaintainArgs) -> &'static str {
         Some(MaintainCommand::Commit(_)) => "commit",
         Some(MaintainCommand::Test(_)) => "test",
         Some(MaintainCommand::Repair(_)) => "repair",
-        Some(MaintainCommand::Evidence(_)) => "evidence",
         Some(MaintainCommand::PreparePr(_)) => "prepare-pr",
         Some(MaintainCommand::PublishPr(_)) => "publish-pr",
         Some(MaintainCommand::ObservePr(_)) => "observe-pr",
@@ -3302,7 +3286,6 @@ fn activity_label(args: &MaintainArgs) -> Option<&'static str> {
         | MaintainCommand::Clean(_)
         | MaintainCommand::Accept(_)
         | MaintainCommand::Commit(_)
-        | MaintainCommand::Evidence(_)
         | MaintainCommand::PreparePr(_)
         | MaintainCommand::Handoff(_) => None,
     }

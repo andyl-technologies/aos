@@ -70,7 +70,8 @@ validation.
 ## Candidate commit and final validation
 
 After a maintainer accepts and commits the candidate, final validation runs on
-that exact commit. `ready-for-pr` requires:
+that exact commit. `prepare-pr` records `ready-for-pr` only after it verifies
+the retained check results for that commit. `ready-for-pr` requires:
 
 1. canonical inventory, discovery, plan, journal, semantic diff, filesystem
    diff, and evidence validation;
@@ -170,8 +171,12 @@ plan.
 
 ## Evidence model
 
-Every attempt produces canonical `aos.package-update-evidence/v1`. The final
-dossier references all attempts and contains these sections.
+The run's retained records are its evidence: the journal, materialization,
+accepted repair attempts, and quick and final gate results. The tool does not
+assemble a separate dossier. `prepare-pr` cross-checks those records before it
+records `ready-for-pr`, and the PR draft and publication bind the canonical
+digest of the final gate results as the local evidence digest. The retained
+evidence covers these sections.
 
 ### Identity
 
@@ -225,10 +230,10 @@ remain mode `0600` under the run's retention policy.
 
 ## Evidence is not release provenance
 
-The dossier proves what the local maintainer tool observed and ran. It is not a
-release signature, publication receipt, or claim that the candidate is benign.
-RFC-0017 independently evaluates the merged protected commit and creates its
-own build, qualification, signing, and publication evidence.
+The retained evidence proves what the local maintainer tool observed and ran.
+It is not a release signature, publication receipt, or claim that the candidate
+is benign. RFC-0017 independently evaluates the merged protected commit and
+creates its own build, qualification, signing, and publication evidence.
 
 A future format can wrap trusted test results in an in-toto v1
 [Statement](https://github.com/in-toto/attestation/blob/main/spec/v1/statement.md)

@@ -52,6 +52,18 @@ pub(super) struct MaterializationPreimage {
 }
 
 impl StateStore {
+    /// Opens an isolated store rooted in a test directory.
+    #[cfg(test)]
+    pub(super) fn open_fixture(root: &Path) -> Result<Self> {
+        let repository = root.join("repository");
+        secure_directory(&repository)?;
+        secure_directory(&repository.join("runs"))?;
+        Ok(Self {
+            root: root.to_path_buf(),
+            repository,
+        })
+    }
+
     /// Opens the repository namespace and creates protected directories.
     pub(super) fn open(
         override_root: Option<&Path>,
@@ -774,21 +786,10 @@ impl StateStore {
         Ok(records)
     }
 
-    /// Stores the immutable final local evidence dossier.
-    pub(super) fn write_evidence(
-        &self,
-        evidence: &PackageUpdateEvidenceV1,
-    ) -> Result<Sha256Digest> {
-        evidence.validate()?;
-        let directory = self.run_directory(evidence.run_id.as_str())?;
-        write_immutable(&directory, "final-evidence.json", evidence)?;
-        Sha256Digest::of_canonical(
-            aos_package_maintenance::PACKAGE_UPDATE_EVIDENCE_V1,
-            evidence,
-        )
-    }
-
     /// Reads and validates a retained final local evidence dossier.
+    ///
+    /// Only runs readied by earlier controllers have a dossier; current
+    /// controllers bind the final gate set directly and never write one.
     pub(super) fn read_evidence(&self, run_id: &str) -> Result<Option<PackageUpdateEvidenceV1>> {
         let path = self.run_directory(run_id)?.join("final-evidence.json");
         let Some(evidence) = read_optional(&path, "package update evidence")? else {
@@ -803,13 +804,20 @@ impl StateStore {
     }
 
     /// Stores the immutable exact branch and pull-request publication result.
-    pub(super) fn write_publication(&self, publication: &PullRequestPublicationV1) -> Result<()> {
+    ///
+    /// `evidence_digest` is the local evidence identity of the verified ready
+    /// candidate; the publication must bind exactly that identity.
+    pub(super) fn write_publication(
+        &self,
+        publication: &PullRequestPublicationV1,
+        evidence_digest: Sha256Digest,
+    ) -> Result<()> {
         publication.validate()?;
         let run = self
             .read_run(publication.run_id.as_str())?
             .ok_or_else(|| anyhow::anyhow!("publication run is unavailable"))?;
         if run.candidate_commit.as_ref() != Some(&publication.head)
-            || run.evidence_digest != Some(publication.evidence_digest)
+            || publication.evidence_digest != evidence_digest
         {
             bail!("publication does not match the final-gated run");
         }
