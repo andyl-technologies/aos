@@ -359,7 +359,6 @@ pub(crate) fn release_fixture() -> anyhow::Result<ReleaseFixture> {
         None,
         Vec::new(),
     )?;
-    let evidence_report_digest = evidence_artifact.sha256;
     payloads.push((evidence_artifact, evidence_bytes));
     let mut artifacts = vec![ArtifactRecord {
         id: "control/release-plan".to_owned(),
@@ -379,8 +378,8 @@ pub(crate) fn release_fixture() -> anyhow::Result<ReleaseFixture> {
         relationships: Vec::new(),
     }];
     artifacts.extend(payloads.iter().map(|(record, _)| record.clone()));
-    let mut manifest = ReleaseManifestV1 {
-        schema_version: crate::RELEASE_MANIFEST_V1.to_owned(),
+    let manifest = ReleaseManifestV1 {
+        schema_version: crate::RELEASE_MANIFEST_V2.to_owned(),
         release_id: plan.release_id.clone(),
         version: plan.version.clone(),
         release_class: plan.release_class,
@@ -421,15 +420,7 @@ pub(crate) fn release_fixture() -> anyhow::Result<ReleaseFixture> {
                 .collect(),
         }],
         artifacts,
-        evidence: Vec::new(),
     };
-    manifest.evidence = observations(&plan, &manifest, None, QualificationPhase::Build)?
-        .into_iter()
-        .map(|mut record| {
-            record.report_digest = evidence_report_digest;
-            record
-        })
-        .collect();
     let manifest_digest = Sha256Digest::of_canonical(MANIFEST_DOMAIN, &manifest)?;
     let signing_key = SigningKey::from_bytes(&[7_u8; 32]);
     let request = SigningRequest {
@@ -952,12 +943,20 @@ fn complete_release_fixture_verifies() -> anyhow::Result<()> {
         &fixture.files,
         &[fixture.key],
     )?;
-    let (_, manifest) = qualification_fixture()?;
     // Both Linux image sets retain their native provider provenance contract.
     assert_eq!(summary.artifact_count, 35);
-    assert_eq!(summary.evidence_count, manifest.evidence.len());
-    assert!(summary.evidence_count > 0);
     assert_eq!(summary.signatures_verified, 1);
+    Ok(())
+}
+
+#[test]
+fn version_1_manifest_schema_is_rejected() -> anyhow::Result<()> {
+    let (plan, mut manifest) = qualification_fixture()?;
+    manifest.validate(&plan)?;
+
+    manifest.schema_version = "aos.release.manifest/v1".to_owned();
+
+    assert!(manifest.validate(&plan).is_err());
     Ok(())
 }
 

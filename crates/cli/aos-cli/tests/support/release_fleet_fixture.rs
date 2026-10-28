@@ -377,25 +377,10 @@ fn prepare(arguments: &[String]) -> Result<()> {
         &index_path,
         index_bytes,
     )?);
-    let gate_report = canonical::to_vec(&json!({
-        "schema_version": "aos.release.fleet-gate-report/v1",
-        "result": "passed"
-    }))?;
-    let gate_path = "releases/candidate/2026.9.0-rc.1/evidence/preflight.json";
-    write_new(output.join(gate_path), &gate_report)?;
-    let gate_record = record(
-        "evidence/fleet-preflight".into(),
-        ArtifactKind::Evidence,
-        None,
-        gate_path,
-        &gate_report,
-    )?;
-    let gate_report_digest = gate_record.sha256;
-    artifacts.push(gate_record);
     artifacts.sort_by(|left, right| left.id.cmp(&right.id));
 
     let mut manifest = ReleaseManifestV1 {
-        schema_version: aos_release_format::RELEASE_MANIFEST_V1.into(),
+        schema_version: aos_release_format::RELEASE_MANIFEST_V2.into(),
         release_id: RELEASE_ID.into(),
         version: RELEASE_VERSION.into(),
         release_class: ReleaseClass::Candidate,
@@ -434,31 +419,14 @@ fn prepare(arguments: &[String]) -> Result<()> {
                 .collect(),
         }],
         artifacts,
-        evidence: vec![EvidenceRecord {
-            qualification: None,
-            id: "fleet-preflight".into(),
-            policy_id: "fleet-release-gate-v1".into(),
-            policy_digest: digest("fleet-release-gate-policy"),
-            platform: None,
-            subjects: Platform::ALL.into_iter().map(package_id).collect(),
-            result: GateResult::Passed,
-            report_digest: gate_report_digest,
-            authority_id: "fleet-preflight-authority".into(),
-            nonce: Some("1".repeat(64)),
-            started_at: TIME.into(),
-            finished_at: TIME.into(),
-        }],
     };
-    let predecessor =
-        prepare_predecessor(output, predecessor, &plan, &manifest, gate_report_digest)?;
+    let predecessor = prepare_predecessor(output, predecessor, &plan, &manifest)?;
     plan.qualification_predecessor = Some(predecessor);
     plan.validate()?;
     plan_bytes = canonical::to_vec(&plan)?;
     fs::write(output.join("release-plan.json"), &plan_bytes)?;
     bind_plan_artifact(&mut manifest, &plan_bytes)?;
     manifest.plan_digest = Sha256Digest::of_bytes(&plan_bytes);
-
-    manifest.evidence = build_evidence(&plan, &manifest, gate_report_digest)?;
     manifest.validate(&plan)?;
     let envelope = signed_manifest(&plan_bytes, manifest)?;
     let manifest_digest = envelope.payload_digest;
@@ -474,40 +442,11 @@ fn prepare(arguments: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// Synthesizes passing build-phase observations for every planned destination.
-fn build_evidence(
-    plan: &ReleasePlan,
-    manifest: &ReleaseManifestV1,
-    gate_report_digest: Sha256Digest,
-) -> Result<Vec<EvidenceRecord>> {
-    // Whole seconds: coordinators admit observations against a
-    // seconds-precision `now`, so a sub-second finish could read as future.
-    let finished = humantime::format_rfc3339_seconds(SystemTime::now()).to_string();
-    aos_release_format::qualification_evidence::cases(
-        plan,
-        manifest,
-        None,
-        aos_release_format::qualification::QualificationPhase::Build,
-    )?
-    .iter()
-    .map(|case| {
-        fixture_evidence(
-            case,
-            gate_report_digest,
-            "fleet-preflight-authority",
-            None,
-            &finished,
-        )
-    })
-    .collect()
-}
-
 fn prepare_predecessor(
     source: &Path,
     output: &Path,
     release_plan: &ReleasePlan,
     release_manifest: &ReleaseManifestV1,
-    gate_report_digest: Sha256Digest,
 ) -> Result<aos_release_format::qualification_evidence::QualificationPredecessor> {
     let mut plan = release_plan.clone();
     plan.qualification_predecessor = None;
@@ -534,7 +473,6 @@ fn prepare_predecessor(
     manifest.release_id.clone_from(&plan.release_id);
     manifest.plan_digest = Sha256Digest::of_bytes(&plan_bytes);
     bind_plan_artifact(&mut manifest, &plan_bytes)?;
-    manifest.evidence = build_evidence(&plan, &manifest, gate_report_digest)?;
     manifest.validate(&plan)?;
 
     let envelope = signed_manifest(&plan_bytes, manifest)?;
@@ -974,7 +912,8 @@ async fn qualification_executor() -> Result<()> {
         "objects_verified": request.objects.len()
     });
     let case = &request.qualification_case;
-    // Whole seconds, as in `build_evidence`.
+    // Whole seconds: coordinators admit observations against a
+    // seconds-precision `now`, so a sub-second finish could read as future.
     let now = humantime::format_rfc3339_seconds(SystemTime::now()).to_string();
     let response = QualificationExecutorResponse {
         schema_version: QUALIFICATION_EXECUTOR_RESPONSE.into(),
