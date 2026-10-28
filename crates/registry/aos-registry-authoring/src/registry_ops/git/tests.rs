@@ -107,7 +107,7 @@ fn commit_registry_paths_allows_package_toml_without_versions() {
 }
 
 #[test]
-fn commit_registry_paths_allows_semantically_empty_rfc0001_tables_without_provenance() {
+fn commit_registry_paths_allows_semantically_empty_permission_tables_without_provenance() {
     let tmp = TempDir::new().unwrap();
     let repo = tmp.path().join("repo");
     fs::create_dir(&repo).unwrap();

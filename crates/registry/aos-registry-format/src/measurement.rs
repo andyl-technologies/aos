@@ -34,7 +34,7 @@ pub fn native_package_binding_digest(
     Ok(aos_core::Sha256Digest::of_bytes(&canonical).to_string())
 }
 
-/// Returns the RFC-0001 package measurement tuple digest.
+/// Returns the package measurement tuple digest extended into PCR 15.
 #[must_use]
 pub fn package_measurement_digest(
     name: &str,

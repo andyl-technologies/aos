@@ -1,7 +1,7 @@
 # tests/abilities/systemd-verity.nix — systemd dm-verity substrate check.
 #
-# Verifies the static userspace pieces RFC-0001 package RootImage= dm-verity
-# roots need before renderer/VM work depends on them.
+# Verifies the static userspace pieces that dm-verity roots, including
+# RootImage= with a signed root hash, depend on.
 {
   pkgs,
   lib,

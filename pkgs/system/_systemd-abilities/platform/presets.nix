@@ -1,7 +1,7 @@
 ##! pkgs/system/_systemd-abilities/platform/presets.nix — Systemd preset policy for package targets.
 ##!
-##! RFC-0001 package units ship inert: their files are present, but only the
-##! package target is enabled by preset policy. The image contributes the
+##! Package targets (`aos-pkg-<name>.target`) ship inert: their unit files are
+##! present, but only preset policy enables them. The image contributes the
 ##! default-deny preset file, while host-specific and runtime `apm` layers add
 ##! earlier `enable aos-pkg-<name>.target` rules.
 {

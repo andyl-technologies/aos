@@ -1,4 +1,4 @@
-##! tests/packages/preset.nix — RFC-0001 preset enablement VM check.
+##! tests/packages/preset.nix — package-target preset enablement VM check.
 {
   pkgs,
   mkSystem,
@@ -11,19 +11,19 @@
       {
         systemd.targets = {
           aos-pkg-preset-enabled = {
-            description = "RFC-0001 preset-enabled package target";
+            description = "Preset-enabled package target";
             wants = ["preset-enabled.service"];
             wantedBy = ["multi-user.target"];
           };
           aos-pkg-preset-disabled = {
-            description = "RFC-0001 preset-disabled package target";
+            description = "Preset-disabled package target";
             wants = ["preset-disabled.service"];
             wantedBy = ["multi-user.target"];
           };
         };
         systemd.services = {
           preset-enabled = {
-            description = "RFC-0001 preset-enabled package service";
+            description = "Preset-enabled package service";
             partOf = ["aos-pkg-preset-enabled.target"];
             serviceConfig = {
               Type = "oneshot";
@@ -32,7 +32,7 @@
             };
           };
           preset-disabled = {
-            description = "RFC-0001 preset-disabled package service";
+            description = "Preset-disabled package service";
             partOf = ["aos-pkg-preset-disabled.target"];
             serviceConfig = {
               Type = "oneshot";

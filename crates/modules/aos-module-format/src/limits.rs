@@ -29,7 +29,7 @@ pub struct LimitProfile {
     pub max_provider_search_visits: u32,
 }
 
-/// Supplies the admission ceilings fixed by the RFC-0022 version-1 profile.
+/// Supplies the admission ceilings fixed by the version-1 ability profile.
 pub const ABILITY_LIMITS_V1: LimitProfile = LimitProfile {
     max_document_bytes: 32 * 1024 * 1024,
     max_structural_depth: 64,

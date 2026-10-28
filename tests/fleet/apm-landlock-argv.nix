@@ -1,6 +1,6 @@
 # tests/fleet/apm-landlock-argv.nix - Landlock wrapper argv preservation.
 #
-# Regression coverage for RFC-0001 P8: generated Landlock/MAC wrapper prefixes
+# Regression coverage: generated Landlock/MAC wrapper prefixes
 # must not change package-authored systemd Exec* tokenization. The service
 # records its argv after the wrapper chain has exec'd it.
 {

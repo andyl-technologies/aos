@@ -8,7 +8,7 @@ use std::path::Path;
 /// Current registry package metadata format understood by this crate.
 pub const PACKAGE_META_FORMAT: u32 = 1;
 
-/// Registry feature flag for RFC-0001 package attestation metadata.
+/// Registry feature flag for package attestation metadata.
 pub const FEATURE_ATTESTATION_V1: &str = "attestation-v1";
 
 /// Registry feature flag for opaque provider-owned image artifact contracts.

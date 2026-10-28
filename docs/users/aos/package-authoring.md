@@ -358,8 +358,6 @@ bash ./aos-dev build check effects --no-out-link
 Use package-specific checks for program behavior, linking, protocols, and runtime
 health. The generic effects check verifies the infrastructure with a small
 fixture; it does not qualify every package or prove that a service is running.
-Publication and installed-package consumers still need the
-[native migration](../../rfcs/0022-abilities-and-effects/consumer-migration.md).
 
 ## Integrate the service into a release image
 

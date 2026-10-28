@@ -838,7 +838,7 @@ a passing gate. Environment-specific adapters and remote macOS transport must
 be provisioned before a campaign. All source regression groups are exposed at
 `checks.qualification.<requirement-id>` and `checks.qualification.all`.
 
-The RFC-0022 native ability gates are `ability-native-activation`,
+The native ability gates are `ability-native-activation`,
 `ability-native-kubernetes`, `ability-native-recovery`, and
 `ability-native-adapter-matrix`. They use release scope so each staging case
 binds the complete finalized non-control artifact set, including the exact
