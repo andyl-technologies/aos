@@ -264,7 +264,7 @@ in
       role = "public-package";
     };
     pname = "mariadb";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "MariaDB prints the two normalized command-line options in declaration order.";

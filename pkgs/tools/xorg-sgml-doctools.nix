@@ -55,7 +55,7 @@ in
       role = "public-package";
     };
     pname = "xorg-sgml-doctools";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "The installed X.Org stylesheet, CSS, and documentation databases.";
         operation = "Parse the XML resources and resolve the documented CSS parameter.";

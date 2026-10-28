@@ -23,7 +23,7 @@ in
       role = "public-package";
     };
     pname = "pciutils";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Lspci reports the exact bus address, class, device ID, and revision.";

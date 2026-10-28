@@ -47,7 +47,7 @@ in
       role = "public-package";
     };
     pname = "xmlto";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "A DocBook article containing one title and paragraph.";
         operation = "Transform the article to HTML with the installed xmlto frontend.";

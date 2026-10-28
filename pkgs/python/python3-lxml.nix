@@ -50,7 +50,7 @@ in
       role = "public-package";
     };
     pname = "python3-lxml";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The selected element contains the text 42.";

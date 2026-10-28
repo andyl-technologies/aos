@@ -21,7 +21,7 @@ in
       role = "public-package";
     };
     pname = "cargo-hakari";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Cargo-hakari returns success and lists workspace-hack operations.";

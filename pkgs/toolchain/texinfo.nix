@@ -46,7 +46,7 @@ in
       role = "public-package";
     };
     pname = "texinfo";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Makeinfo emits the expected heading and emphasized value.";

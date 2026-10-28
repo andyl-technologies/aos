@@ -18,7 +18,7 @@ in
       role = "public-package";
     };
     pname = "bison";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The generated parser accepts the input and prints its token count.";

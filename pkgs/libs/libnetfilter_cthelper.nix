@@ -17,7 +17,7 @@ in
       role = "public-package";
     };
     pname = "libnetfilter_cthelper";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The helper preserves the exact name and queue number.";

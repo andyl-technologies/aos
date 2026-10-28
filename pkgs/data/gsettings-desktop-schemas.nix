@@ -19,7 +19,7 @@ in
       role = "public-package";
     };
     pname = "gsettings-desktop-schemas";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The catalog contains org.gnome.desktop.interface with a typed color-scheme key.";

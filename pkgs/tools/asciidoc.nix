@@ -36,7 +36,7 @@ in
       role = "public-package";
     };
     pname = "asciidoc";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "A small AsciiDoc document with a heading and paragraph.";
         operation = "Render the document with the installed asciidoc command.";

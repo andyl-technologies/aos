@@ -45,7 +45,7 @@ in
       role = "public-package";
     };
     pname = "openldap";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The parsed descriptor preserves the host, DN, scope, and filter.";

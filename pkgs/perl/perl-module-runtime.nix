@@ -32,7 +32,7 @@ in
       role = "public-package";
     };
     pname = "perl-module-runtime";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Module::Runtime returns Qualification/Example.pm.";

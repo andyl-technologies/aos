@@ -16,7 +16,7 @@ in
       role = "public-package";
     };
     pname = "libbsd";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "strtonum returns 42 with no diagnostic.";

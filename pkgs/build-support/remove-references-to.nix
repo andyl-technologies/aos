@@ -70,7 +70,7 @@
     target = [];
     role = "public-package";
   };
-  qualification.packageProbe = let
+  smokeTest = let
     qualification = lib.qualification;
     text = qualification.text;
     inputHash = "0123456789abcdfghijklmnpqrsvwxyz";

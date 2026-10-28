@@ -49,7 +49,7 @@ in
       role = "public-package";
     };
     pname = "shared-mime-info";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "A MIME declaration for the .aosq file extension.";
         operation = "Compile the declaration into the shared MIME database.";

@@ -16,7 +16,7 @@ in
       role = "public-package";
     };
     pname = "lzip";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The decompressed bytes exactly equal the original text.";

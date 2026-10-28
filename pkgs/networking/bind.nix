@@ -57,7 +57,7 @@ in
       role = "public-package";
     };
     pname = "bind";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "BIND accepts the zone and its serial and record relationships.";

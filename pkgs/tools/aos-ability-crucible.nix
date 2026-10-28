@@ -73,7 +73,7 @@ in
       role = "public-package";
     };
     pname = "aos-ability-crucible";
-    qualification.packageProbe = lib.qualification.providerExecutableProbe {
+    smokeTest = lib.qualification.providerExecutableProbe {
       name = "aos-ability-crucible";
       entryPoint = "bin/aos-ability-crucible";
     };

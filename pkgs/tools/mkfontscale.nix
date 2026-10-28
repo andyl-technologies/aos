@@ -37,7 +37,7 @@ in
       role = "public-package";
     };
     pname = "mkfontscale";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "A one-glyph BDF font with an ISO-8859-11 XLFD name.";
         operation = "Generate its font directory index.";

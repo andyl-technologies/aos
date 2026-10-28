@@ -154,12 +154,29 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     inherit (resolvedBuildPackages) bash coreutils;
     system = stdenv.buildPlatform.system;
   };
+  # Package recipes declare their smoke test as `smokeTest`. The former
+  # `qualification.packageProbe` spelling is still accepted until the next
+  # release so recipes can move over independently; giving both is an error.
+  authoredSmokeTest = packageName: attrs:
+    if attrs ? smokeTest && attrs ? qualification
+    then throw "Package '${packageName}' sets both smokeTest and the former qualification.packageProbe; keep only smokeTest."
+    else if attrs ? smokeTest
+    then attrs.smokeTest
+    else if !(attrs ? qualification)
+    then null
+    else if !builtins.isAttrs attrs.qualification || builtins.attrNames attrs.qualification != ["packageProbe"]
+    then throw "Package '${packageName}' qualification must contain exactly packageProbe; prefer smokeTest."
+    else attrs.qualification.packageProbe;
+
+  # The companion document keeps its `aos.package.qualification` schema and
+  # `qualificationDocument`/`qualificationArtifact` names, which published
+  # packages already carry.
   qualificationArtifactsFor = package:
-    lib.optionalAttrs (package ? qualification) (let
+    lib.optionalAttrs (package ? smokeTest) (let
       packageName = package.catalogName or package.pname or package.name;
       projected = lib.qualification.projectPackageProbe {
         owner = packageName;
-        probe = package.qualification.packageProbe;
+        probe = package.smokeTest;
       };
       dependencies = builtins.genericClosure {
         startSet = [
@@ -193,7 +210,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         else if selector.package == packageName && item.key != builtins.toString package
         then knownOutputs
         else if knownOutputs ? ${key} && knownOutputs.${key} != path
-        then throw "Package '${packageName}' qualification selects conflicting artifacts for ${key}."
+        then throw "Package '${packageName}' smoke test selects conflicting artifacts for ${key}."
         else knownOutputs // {${key} = path;};
       outputs = builtins.foldl' (known: item:
         builtins.foldl' (retainOutput item) known (item.value.outputs or ["out"])) {}
@@ -203,7 +220,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
           key = builtins.toJSON selector;
         in {
           inherit selector;
-          path = outputs.${key} or (throw "Package '${packageName}' qualification selector ${key} is outside its declared dependency closure.");
+          path = outputs.${key} or (throw "Package '${packageName}' smoke test selector ${key} is outside its declared dependency closure.");
         })
         projected.selectors;
       document = {
@@ -282,7 +299,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         system = null;
         targetSystem = null;
         platformSupport = null;
-        qualification = null;
+        smokeTest = null;
         qualificationDocument = null;
         qualificationArtifact = null;
       }
@@ -351,13 +368,13 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       };
   in
     assert version == release.version;
-      if !(package ? qualification)
+      if authoredSmokeTest name package == null
       then annotated
       else
         withQualification {
           packageName = name;
           version = package.version;
-          packageProbe = package.qualification.packageProbe;
+          packageProbe = authoredSmokeTest name package;
         }
         annotated;
 
@@ -429,7 +446,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       // {
         catalogName = packageName;
         inherit (release) version versionRequirement;
-        qualification.packageProbe = normalized;
+        smokeTest = normalized;
       };
     result =
       authored
@@ -468,21 +485,20 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       source = args.module or null;
     };
     moduleDeps = args.moduleDeps or [];
-    checkedQualification =
-      if !(args ? qualification)
+    authoredProbe = authoredSmokeTest packageName args;
+    checkedSmokeTest =
+      if authoredProbe == null
       then null
-      else if !builtins.isAttrs args.qualification || builtins.attrNames args.qualification != ["packageProbe"]
-      then throw "Package '${packageName}' qualification must contain exactly packageProbe."
-      else {packageProbe = lib.qualification.normalizePackageProbe args.qualification.packageProbe;};
+      else lib.qualification.normalizePackageProbe authoredProbe;
     qualificationMetadata =
-      if checkedQualification == null
+      if checkedSmokeTest == null
       then {}
       else
         qualificationArtifactsFor (drv
           // {
             catalogName = packageName;
             version = release.version;
-            qualification = checkedQualification;
+            smokeTest = checkedSmokeTest;
             inherit moduleDeps;
             buildDeps = args.buildDeps or [];
             runtimeDeps = runtimeDependencySupport.inputs (args.runtimeDeps or []);
@@ -533,7 +549,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     lowerArgs =
       # Deployment modules are retained as source artifacts, never evaluated by
       # the payload builder or passed as low-level derivation attributes.
-      (builtins.removeAttrs args ["abilities" "module" "moduleDeps" "catalogName" "platformSupport" "qualification" "configModule" "sharedBuildCache" "cacheCCompilers" "accacheLlvmOptions" "outputPackages"])
+      (builtins.removeAttrs args ["abilities" "module" "moduleDeps" "catalogName" "platformSupport" "qualification" "smokeTest" "configModule" "sharedBuildCache" "cacheCCompilers" "accacheLlvmOptions" "outputPackages"])
       // lib.optionalAttrs (args ? version) {inherit (release) version;}
       // lib.optionalAttrs cacheCCompilers (builtins.removeAttrs cCompilerCacheEnvironment ["RUSTC_WRAPPER"])
       // {
@@ -572,8 +588,8 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       // lib.optionalAttrs (moduleArtifact != null) {
         module = moduleArtifact;
       }
-      // lib.optionalAttrs (checkedQualification != null) {
-        qualification = checkedQualification;
+      // lib.optionalAttrs (checkedSmokeTest != null) {
+        smokeTest = checkedSmokeTest;
         inherit (qualificationMetadata) qualificationDocument qualificationArtifact;
       };
     platformAttrs = lib.optionalAttrs (packagePlatformSupport != null) {
@@ -608,7 +624,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
   in
     if args ? versionRequirement || args ? moduleCompatibility
     then throw "Package compatibility is derived from version; versionRequirement and moduleCompatibility cannot be authored."
-    else builtins.deepSeq checkedQualification (addBuilderOverrides mkDerivation args result);
+    else builtins.deepSeq checkedSmokeTest (addBuilderOverrides mkDerivation args result);
 
   # The stdenv cc-wrapper provides gcc/g++/ld/ar/etc.
   bootstrapTools =
@@ -2005,7 +2021,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
 
       qemu-crucible = mkQemuPackage {
         pname = "qemu-crucible";
-        qualification.packageProbe = lib.qualification.commandProbe {
+        smokeTest = lib.qualification.commandProbe {
           "primary" = {
             "artifacts" = [];
             "expected" = "qemu-img reports the two images as identical.";
@@ -2070,7 +2086,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       };
       qemu-crucible-reference = mkQemuPackage {
         pname = "qemu-crucible-reference";
-        qualification.packageProbe = lib.qualification.commandProbe {
+        smokeTest = lib.qualification.commandProbe {
           "primary" = {
             "artifacts" = [];
             "expected" = "qemu-img reports the two images as identical.";

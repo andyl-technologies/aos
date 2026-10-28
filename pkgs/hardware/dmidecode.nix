@@ -15,7 +15,7 @@ in
       role = "public-package";
     };
     pname = "dmidecode";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Dmidecode reports version 3.7 without accessing host firmware tables.";

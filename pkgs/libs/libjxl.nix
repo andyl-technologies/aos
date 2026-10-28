@@ -60,7 +60,7 @@ in
       role = "public-package";
     };
     pname = "libjxl";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "A two-by-two RGB bitmap.";
         operation = "Encode it losslessly as JPEG XL and decode it back to PPM.";

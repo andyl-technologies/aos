@@ -32,7 +32,7 @@ in
       role = "public-package";
     };
     pname = "fribidi";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "A line containing left-to-right Latin and right-to-left Hebrew text.";
         operation = "Render the logical line in visual order with a left-to-right base direction.";

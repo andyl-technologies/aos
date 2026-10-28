@@ -78,7 +78,7 @@ in
       role = "public-package";
     };
     pname = "tla-plus";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "SANY completes parsing and semantic processing without errors.";

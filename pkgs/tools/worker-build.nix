@@ -49,7 +49,7 @@ in
       role = "public-package";
     };
     pname = "worker-build";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Worker-build documents its build mode, target, output-directory, and TypeScript controls.";

@@ -37,7 +37,7 @@ in
       role = "public-package";
     };
     pname = "libdeflate";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "A short text message passed through the installed compressor.";
         operation = "Compress with libdeflate-gzip and decompress with libdeflate-gunzip.";

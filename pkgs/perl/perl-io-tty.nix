@@ -38,7 +38,7 @@ in
       role = "public-package";
     };
     pname = "perl-io-tty";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "IO::Pty returns a master and a slave with a nonempty terminal path.";
