@@ -5,10 +5,10 @@
 //! async or platform bindings, so the same parser and validation policy can be
 //! compiled for native targets and `wasm32-unknown-unknown`.
 //!
-//! RFC-0019 deliberately distinguishes uploaded bytes from parsed records.
-//! Registry implementations retain and digest the exact bytes received; the
-//! types here are bounded projections used for admission, graph traversal, and
-//! AOS-generated canonical JSON. Generic OCI projections retain unknown
+//! The AOS OCI contract deliberately distinguishes uploaded bytes from parsed
+//! records. Registry implementations retain and digest the exact bytes
+//! received; the types here are bounded projections used for admission, graph
+//! traversal, and AOS-generated canonical JSON. Generic OCI projections retain unknown
 //! annotation keys in [`Annotations`] and may ignore unknown non-annotation
 //! fields, so they never replace the original uploaded body. The AOS-owned
 //! signed [`ContainerRelease`] schema is deliberately stricter and rejects
@@ -20,7 +20,7 @@
 //! - [`canonical`] emits deterministic compact JSON without floating point.
 //! - [`digest`] owns the v1 SHA-256-only content address.
 //! - [`distribution`] owns standard Distribution error payloads and codes.
-//! - [`limits`] freezes the RFC-0019 structural admission limits.
+//! - [`limits`] freezes the structural admission limits.
 //! - [`media_type`] freezes the accepted OCI, Docker schema 2, and AOS media
 //!   types.
 //! - [`model`] owns descriptors, platforms, manifests, indexes, and image

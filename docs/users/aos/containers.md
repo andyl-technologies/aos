@@ -105,5 +105,27 @@ Service readiness identifies the current PID-1 lifetime and exact selected init
 command. Selecting a different executable or arguments leaves startup effects
 pending until the selected init is running.
 
+## Credentials and publishing tools
+
+Images never contain registry credentials, signing keys, private trust anchors,
+or agent sockets, and consumer-side package installation needs none of them. To
+run `apr` or other producer commands in a container, provide inputs at run time
+with the narrowest permissions that work:
+
+- mount registry configuration and pinned public keys below
+  `/root/.config/apm`, read-only unless the command must update them;
+- mount extra public CA roots and set `SSL_CERT_FILE` and `NIX_SSL_CERT_FILE` to
+  that bundle;
+- mount signing-key files read-only and reference their path from the APR
+  configuration rather than copying key bytes into the image or environment;
+- forward an SSH agent socket and set `SSH_AUTH_SOCK` for SSH-backed registry
+  operations;
+- mount any program named by a key command or filter and put its directory on
+  `PATH`; the AOS command wrappers restore the caller's `PATH` for those
+  external commands.
+
+Package commands that need host boot or TPM facilities, such as system image
+operations and attestation quotes, fail in a container.
+
 The [runtime ability guide](runtime-abilities.md) describes native declarations,
 typed output dependencies, handler composition, and missing-handler errors.
