@@ -373,7 +373,7 @@ in {
               result = json.loads(stdout)
           except json.JSONDecodeError as error:
               raise AssertionError((arguments, status, stdout, stderr)) from error
-          assert result["schemaVersion"] == "aos.maintain.cli/v1", result
+          assert result["schemaVersion"] == "aos.maintain.cli/v2", result
           assert result["disposition"] == expected, (arguments, result, stderr)
           assert result["exitCode"] == status, (arguments, result, stderr)
           return result
@@ -471,13 +471,13 @@ in {
       assert final_inspection["data"]["run"]["attempt"] == 0, final_inspection
 
       prepared = invoke("prepare-pr " + shlex.quote(run_id))
-      evidence_digest = primary(prepared, "evidenceDigest")
+      gate_results_digest = primary(prepared, "gateResultsDigest")
       assert prepared["data"]["run"]["state"] == "ready-for-pr", prepared
-      assert "evidenceDigest" not in prepared["data"]["run"], prepared
+      assert "evidence" not in prepared["data"], prepared
       draft = prepared["data"]["pullRequest"]
       assert draft["baseBranch"] == "main", draft
       assert draft["head"], draft
-      assert draft["evidenceDigest"] == evidence_digest, draft
+      assert draft["gateResultsDigest"] == gate_results_digest, draft
       assert "maintain-fixture-1" in draft["title"], draft
 
       # Repeating preparation re-verifies the same records without a new

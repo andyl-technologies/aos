@@ -378,8 +378,8 @@ when every required result is affirmative.
 The generated PR body contains campaign and unit/component current/target
 identities, upstream evidence, source/artifact changes, impact/risk,
 deterministic and agent repair summary, exact final head, gates, warnings, and
-local evidence digest: the canonical digest of the final gate results, which
-binds the candidate commit. It does not claim that RFC-0017 publication has
+final gate-results digest: the canonical digest of the final gate results,
+which binds the candidate commit. It does not claim that RFC-0017 publication has
 occurred.
 
 ## Agent adapter

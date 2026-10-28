@@ -175,7 +175,7 @@ The run's retained records are its evidence: the journal, materialization,
 accepted repair attempts, and quick and final gate results. The tool does not
 assemble a separate dossier. `prepare-pr` cross-checks those records before it
 records `ready-for-pr`, and the PR draft and publication bind the canonical
-digest of the final gate results as the local evidence digest. The retained
+digest of the final gate results as `gateResultsDigest`. The retained
 evidence covers these sections.
 
 ### Identity
@@ -282,7 +282,7 @@ Repairs: one bounded patch refresh accepted by the maintainer
 Final head: <commit>
 Gates: 27 passed, 0 failed, 0 action-required
 Human gates: package/toolchain owner review
-Evidence digest: sha256:...
+Final gate results: sha256:...
 ```
 
 The displayed numbers come from structured evidence. The report does not embed

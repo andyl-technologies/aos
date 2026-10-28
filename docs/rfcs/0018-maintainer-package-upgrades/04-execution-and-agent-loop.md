@@ -330,7 +330,7 @@ The generated PR has stable sections:
 - deterministic and agent-assisted repair summary;
 - final Git head and complete gate results;
 - explicit human/specialist checks and unresolved warnings;
-- local evidence digest and reproduction commands.
+- final gate-results digest and reproduction commands.
 
 Commit messages and PR text contain no AI attribution, provider/model name,
 generated-by marker, or agent session link. They may accurately say that a

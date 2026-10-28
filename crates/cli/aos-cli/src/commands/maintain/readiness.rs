@@ -12,19 +12,14 @@
 //! Pull-request drafts and publications bind the canonical digest of the final
 //! gate set, which in turn binds the candidate commit. No separate dossier is
 //! written.
-//!
-//! Runs readied by earlier controllers also retain an
-//! `aos.package-update-evidence/v1` dossier whose digest is recorded in the run
-//! projection. Those runs keep binding that digest, so drafts, confirmation
-//! digests, and publications created before the change remain valid.
 
 use anyhow::{Result, anyhow, bail};
 use aos_core::Sha256Digest;
+use aos_package_maintenance::PACKAGE_UPDATE_GATE_RESULTS_V1;
 use aos_package_maintenance::identity::PlanId;
 use aos_package_maintenance::plan::PackageUpdatePlanV1;
 use aos_package_maintenance::run::{GateResultsV1, MaterializationRecordV1, PackageUpdateRunV1};
 use aos_package_maintenance::workflow::{ActorClass, RunState};
-use aos_package_maintenance::{PACKAGE_UPDATE_EVIDENCE_V1, PACKAGE_UPDATE_GATE_RESULTS_V1};
 
 use super::state::{self, StateStore};
 
@@ -36,8 +31,9 @@ pub(super) struct CompletedCandidate {
     pub(super) quick_gates: GateResultsV1,
     /// Successful final gates bound to the exact candidate commit.
     pub(super) final_gates: GateResultsV1,
-    /// Local evidence identity bound by pull-request drafts and publications.
-    pub(super) evidence_digest: Sha256Digest,
+    /// Canonical digest of `final_gates`, bound by pull-request drafts and
+    /// publications.
+    pub(super) gate_results_digest: Sha256Digest,
 }
 
 /// Verifies a final-gated candidate and records it as ready for a pull request.
@@ -128,44 +124,23 @@ pub(super) fn completed_candidate(
         bail!("retained check results do not form one completed candidate");
     }
 
-    let evidence_digest = bound_evidence_digest(store, run, &final_gates)?;
+    let gate_results_digest =
+        Sha256Digest::of_canonical(PACKAGE_UPDATE_GATE_RESULTS_V1, &final_gates)?;
     Ok(CompletedCandidate {
         materialization,
         quick_gates,
         final_gates,
-        evidence_digest,
+        gate_results_digest,
     })
-}
-
-/// Selects the local evidence identity that drafts and publications bind.
-fn bound_evidence_digest(
-    store: &StateStore,
-    run: &PackageUpdateRunV1,
-    final_gates: &GateResultsV1,
-) -> Result<Sha256Digest> {
-    let Some(recorded) = run.evidence_digest else {
-        return Sha256Digest::of_canonical(PACKAGE_UPDATE_GATE_RESULTS_V1, final_gates);
-    };
-
-    // A run readied by an earlier controller binds its stored dossier. Keep
-    // that identity, but only while the dossier still matches it.
-    let dossier = store
-        .read_evidence(run.run_id.as_str())?
-        .ok_or_else(|| anyhow!("run records an evidence digest without its dossier"))?;
-    if Sha256Digest::of_canonical(PACKAGE_UPDATE_EVIDENCE_V1, &dossier)? != recorded {
-        bail!("run projection disagrees with its retained evidence dossier");
-    }
-    Ok(recorded)
 }
 
 #[cfg(test)]
 mod tests {
     use std::fs;
 
-    use aos_core::json;
     use aos_package_maintenance::envelope::{GitObjectFormat, GitObjectId};
     use aos_package_maintenance::identity::RunId;
-    use aos_package_maintenance::run::{ConfinementEvidence, GateResult, PackageUpdateEvidenceV1};
+    use aos_package_maintenance::run::{ConfinementEvidence, GateResult};
     use aos_package_maintenance::workflow::GateOutcome;
     use aos_package_maintenance::{PACKAGE_UPDATE_MATERIALIZATION_V1, PACKAGE_UPDATE_RUN_V1};
 
@@ -247,7 +222,6 @@ mod tests {
                 algorithm: GitObjectFormat::Sha1,
                 value: COMMIT.to_string(),
             }),
-            evidence_digest: None,
             base_commit: GitObjectId {
                 algorithm: GitObjectFormat::Sha1,
                 value: "0".repeat(40),
@@ -301,7 +275,7 @@ mod tests {
         assert_eq!(candidate.quick_gates, fixture.quick_gates);
         assert_eq!(candidate.final_gates, fixture.final_gates);
         assert_eq!(
-            candidate.evidence_digest,
+            candidate.gate_results_digest,
             Sha256Digest::of_canonical(PACKAGE_UPDATE_GATE_RESULTS_V1, &fixture.final_gates)?
         );
         Ok(())
@@ -326,49 +300,6 @@ mod tests {
         failed.completed_at_unix = 11;
         write_gates(&fixture.store, &failed)?;
         assert!(completed_candidate(&fixture.store, &fixture.plan_id, &fixture.run).is_err());
-        Ok(())
-    }
-
-    #[test]
-    fn previously_readied_runs_keep_their_dossier_digest() -> Result<()> {
-        let fixture = fixture()?;
-        let dossier = PackageUpdateEvidenceV1 {
-            schema: PACKAGE_UPDATE_EVIDENCE_V1.to_string(),
-            run_id: fixture.run.run_id.clone(),
-            plan_id: fixture.plan_id.clone(),
-            attempt: 0,
-            plan_digest: fixture.run.plan_digest,
-            base_commit: fixture.run.base_commit.clone(),
-            candidate_commit: GitObjectId {
-                algorithm: GitObjectFormat::Sha1,
-                value: COMMIT.to_string(),
-            },
-            patch_digest: fixture.materialization.patch_digest,
-            materialization: fixture.materialization.clone(),
-            repair_attempts: Vec::new(),
-            quick_gates: fixture.quick_gates.clone(),
-            final_gates: fixture.final_gates.clone(),
-            journal_tip: Sha256Digest::of_bytes(b"journal"),
-            completed_at_unix: 20,
-        };
-        let dossier_digest = Sha256Digest::of_canonical(PACKAGE_UPDATE_EVIDENCE_V1, &dossier)?;
-        let mut legacy = fixture.run.clone();
-        legacy.state = RunState::ReadyForPr;
-        legacy.evidence_digest = Some(dossier_digest);
-
-        // A recorded digest without its dossier is not trusted.
-        assert!(completed_candidate(&fixture.store, &fixture.plan_id, &legacy).is_err());
-
-        let dossier_path = fixture
-            .store
-            .root()
-            .join("repository/runs/run-fixture/final-evidence.json");
-        fs::write(&dossier_path, json::to_vec(&dossier)?)?;
-        let candidate = completed_candidate(&fixture.store, &fixture.plan_id, &legacy)?;
-        assert_eq!(candidate.evidence_digest, dossier_digest);
-
-        legacy.evidence_digest = Some(Sha256Digest::of_bytes(b"other"));
-        assert!(completed_candidate(&fixture.store, &fixture.plan_id, &legacy).is_err());
         Ok(())
     }
 }

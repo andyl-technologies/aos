@@ -159,7 +159,7 @@ An illustrative final result is:
 
 ```json
 {
-  "schema_version": "aos.maintain.cli/v1",
+  "schema_version": "aos.maintain.cli/v2",
   "command": "run",
   "disposition": "action-required",
   "exit_code": 11,
@@ -529,7 +529,7 @@ Run       01K4D9HMR09Q6S37FX9PWGCM8A
 Head      7c91e42be523a0b1ef47c87c73da9e0caf829274
 Tree      sha256:0a7d259c85ded334f43fc3be65a7e796c073f492567a32e81a49ae00971dcc5b
 Gates     27 success · 0 failure · exact committed head
-Evidence  sha256:9e4c0d27f1b8a6352e90c4d1f7a28b3e6c51d09a8f2e47b6c3d18a5e0f9b7c42
+Gate set  sha256:9e4c0d27f1b8a6352e90c4d1f7a28b3e6c51d09a8f2e47b6c3d18a5e0f9b7c42
 Elapsed   31m 08s
 
 next: aos maintain prepare-pr 01K4D9HMR09Q6S37FX9PWGCM8A

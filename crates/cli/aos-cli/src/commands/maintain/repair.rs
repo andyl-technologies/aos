@@ -185,7 +185,6 @@ pub(super) fn accept(
     run.attempt = record.attempt;
     run.accepted_candidate = None;
     run.candidate_commit = None;
-    run.evidence_digest = None;
     run.updated_at_unix = state::now_unix()?;
     store.write_run(run)?;
     if run.state == RunState::Repairing {

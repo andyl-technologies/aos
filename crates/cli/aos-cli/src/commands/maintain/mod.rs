@@ -30,7 +30,7 @@ use aos_package_maintenance::presentation::{
     escape_terminal,
 };
 use aos_package_maintenance::workflow::{ActorClass, DiscoveryDecision, ProgressEvent, TaskStatus};
-use aos_package_maintenance::{MAINTENANCE_CLI_V1, MAINTENANCE_PROGRESS_EVENT_V1};
+use aos_package_maintenance::{MAINTENANCE_CLI_V2, MAINTENANCE_PROGRESS_EVENT_V1};
 use serde::Serialize;
 
 use crate::cli::{Cli, ColorChoice, MaintainArgs, MaintainCommand, ProgressChoice};
@@ -544,7 +544,6 @@ fn adopt_worktree(
     run.attempt = attempt;
     run.accepted_candidate = None;
     run.candidate_commit = None;
-    run.evidence_digest = None;
     run.updated_at_unix = state::now_unix()?;
     store.write_run(&run)?;
     store.transition(
@@ -1025,8 +1024,8 @@ fn prepare_pr_command(
     let mut completion = run_view_completion("prepare-pr", &store, run, None)?;
     completion.result.data.pull_request = Some(draft);
     completion.result.primary_values.push(PrimaryValue {
-        name: "evidenceDigest".to_string(),
-        value: candidate.evidence_digest.to_string(),
+        name: "gateResultsDigest".to_string(),
+        value: candidate.gate_results_digest.to_string(),
     });
     CommandCompletion::new(completion.result)
 }
@@ -1042,7 +1041,7 @@ fn pull_request_draft(
     run: &aos_package_maintenance::run::PackageUpdateRunV1,
     candidate: &readiness::CompletedCandidate,
 ) -> Result<PullRequestDraft> {
-    let evidence_digest = candidate.evidence_digest;
+    let gate_results_digest = candidate.gate_results_digest;
     let head = run
         .candidate_commit
         .as_ref()
@@ -1073,7 +1072,7 @@ fn pull_request_draft(
         )
     };
     let body = format!(
-        "## Package update\n\n{changes}\n\n- Units: {}\n- Components: {}\n- Risk: `{}`\n- Sources: {} resolved and hashed\n- Deterministic attempts: 1\n- Accepted repair attempts: {}\n- Quick gates: {}/{} passed\n- Final gates: {}/{} passed\n- Candidate commit: `{}`\n- Local evidence: `{}`\n\n## Review\n\n- [ ] Review the package and source changes\n- [ ] Confirm required package-owner or specialist review\n- [ ] Confirm remote contributor authorization and protected checks\n",
+        "## Package update\n\n{changes}\n\n- Units: {}\n- Components: {}\n- Risk: `{}`\n- Sources: {} resolved and hashed\n- Deterministic attempts: 1\n- Accepted repair attempts: {}\n- Quick gates: {}/{} passed\n- Final gates: {}/{} passed\n- Candidate commit: `{}`\n- Final gate results: `{}`\n\n## Review\n\n- [ ] Review the package and source changes\n- [ ] Confirm required package-owner or specialist review\n- [ ] Confirm remote contributor authorization and protected checks\n",
         plan.units.len(),
         plan.units
             .iter()
@@ -1087,7 +1086,7 @@ fn pull_request_draft(
         candidate.final_gates.results.len(),
         candidate.final_gates.results.len(),
         head.value,
-        evidence_digest,
+        gate_results_digest,
     );
     Ok(PullRequestDraft {
         branch: run.branch.clone(),
@@ -1095,7 +1094,7 @@ fn pull_request_draft(
         title,
         body,
         head: head.value.clone(),
-        evidence_digest,
+        gate_results_digest,
     })
 }
 
@@ -1137,7 +1136,7 @@ async fn publish_pr_command(
             run,
             Some((
                 CommandDisposition::ActionRequired,
-                "Only a final-evidenced candidate may be published",
+                "Only a candidate prepared with `prepare-pr` may be published",
             )),
         );
     }
@@ -1147,7 +1146,7 @@ async fn publish_pr_command(
         if publication.head.value != draft.head
             || publication.branch != draft.branch
             || publication.base_branch != draft.base_branch
-            || publication.evidence_digest != draft.evidence_digest
+            || publication.gate_results_digest != draft.gate_results_digest
         {
             anyhow::bail!("retained publication disagrees with the current exact candidate");
         }
@@ -1229,7 +1228,7 @@ async fn publish_pr_command(
         Ok(publication) => (
             aos_package_maintenance::workflow::GateOutcome::Success,
             Some(Sha256Digest::of_canonical(
-                aos_package_maintenance::PACKAGE_UPDATE_PR_PUBLICATION_V1,
+                aos_package_maintenance::PACKAGE_UPDATE_PR_PUBLICATION_V2,
                 publication,
             )?),
         ),
@@ -1258,7 +1257,7 @@ async fn publish_pr_command(
         }
     };
     if store.read_publication(run.run_id.as_str())?.is_none() {
-        store.write_publication(&publication, draft.evidence_digest)?;
+        store.write_publication(&publication, draft.gate_results_digest)?;
     }
     advance_published_state(&store, &mut run)?;
     let mut completion = run_view_completion("publish-pr", &store, run, None)?;
@@ -2700,7 +2699,7 @@ async fn run_command(
     let plan_digest =
         Sha256Digest::of_canonical(aos_package_maintenance::PACKAGE_UPDATE_PLAN_V1, &plan)?;
     let result = MaintainCommandResult {
-        schema_version: MAINTENANCE_CLI_V1.to_string(),
+        schema_version: MAINTENANCE_CLI_V2.to_string(),
         command: "run".to_string(),
         disposition: CommandDisposition::Success,
         exit_code: CommandDisposition::Success.exit_code(),
@@ -2748,7 +2747,7 @@ fn stopped_run_completion(
 ) -> Result<CommandCompletion> {
     let inspect_failure = code == "maintain.quick-gate-failed";
     CommandCompletion::new(MaintainCommandResult {
-        schema_version: MAINTENANCE_CLI_V1.to_string(),
+        schema_version: MAINTENANCE_CLI_V2.to_string(),
         command: command.to_string(),
         disposition,
         exit_code: disposition.exit_code(),
@@ -2879,7 +2878,6 @@ fn run_view_completion(
             gates.candidate_digest.to_string(),
         );
     }
-    let evidence = store.read_evidence(run.run_id.as_str())?;
     let publication = store.read_publication(run.run_id.as_str())?;
     let remote_observation = store.read_remote_observation(run.run_id.as_str())?;
     let (disposition, diagnostics) = stopped.map_or(
@@ -2896,7 +2894,7 @@ fn run_view_completion(
         },
     );
     CommandCompletion::new(MaintainCommandResult {
-        schema_version: MAINTENANCE_CLI_V1.to_string(),
+        schema_version: MAINTENANCE_CLI_V2.to_string(),
         command: command.to_string(),
         disposition,
         exit_code: disposition.exit_code(),
@@ -2905,7 +2903,6 @@ fn run_view_completion(
             values,
             plan: Some(plan),
             run: Some(run.clone()),
-            evidence,
             publication,
             remote_observation,
             ..CommandData::default()
@@ -3212,7 +3209,7 @@ fn completion(
     next_actions: Vec<NextAction>,
 ) -> Result<CommandCompletion> {
     CommandCompletion::new(MaintainCommandResult {
-        schema_version: MAINTENANCE_CLI_V1.to_string(),
+        schema_version: MAINTENANCE_CLI_V2.to_string(),
         command: command.to_string(),
         disposition,
         exit_code: disposition.exit_code(),
@@ -3710,21 +3707,6 @@ fn render_human(result: &MaintainCommandResult, screen_reader: bool, printer: &P
         printer.header("Accepted repair");
         printer.kv("Attempt", &attempt.attempt.to_string());
         printer.kv("Candidate", &attempt.candidate_digest.to_string());
-    }
-
-    if let Some(evidence) = &result.data.evidence {
-        printer.plain("");
-        printer.header("Evidence");
-        printer.kv("Candidate", &evidence.candidate_commit.value);
-        printer.kv("Patch", &evidence.patch_digest.to_string());
-        printer.kv(
-            "Quick gates",
-            &format!("{} passed", evidence.quick_gates.results.len()),
-        );
-        printer.kv(
-            "Final gates",
-            &format!("{} passed", evidence.final_gates.results.len()),
-        );
     }
 
     if let Some(draft) = &result.data.pull_request {
