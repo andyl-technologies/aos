@@ -274,7 +274,7 @@ against its deployment artifact and closure audit.
 | `mkMetadataLayer` | `{ directories ? []; files ? []; symlinks ? []; storeLayers ? []; pname ?; }` | Root-owned filesystem entries outside the store; `storeLayers` lists the `mkClosureLayer` layers that symlink targets resolve into. |
 | `mkRuntimeClosureAudit` | `{ name; roots; maxClosureMiB; maxDevelopmentPayloadMiB; }` | Fails the image when the closure of `roots` exceeds the size bounds or carries development payloads. |
 | `mkDeploymentArtifact` | `{ platform; packages; scope; pname ?; }` | Records the packages and `{ os; architecture; }` platform an image deploys. `scope` is a list of names that identify the artifact. |
-| `mkImageLayout` | `{ layers; runtimeAudit; deploymentArtifact; config ? {}; annotations ? {}; referenceName ? null; pname ?; }` | OCI image layout. `config` takes `entrypoint`, `cmd`, `env`, `workingDir`, `user`, `exposedPorts`, and `stopSignal`. |
+| `mkImageLayout` | `{ layers; runtimeAudit; deploymentArtifact; config ? {}; annotations ? {}; referenceName ? null; pname ?; }` | Directory holding the OCI archive `image.oci.tar` with its manifest and configuration as JSON. `config` takes `entrypoint`, `cmd`, `env`, `workingDir`, `user`, `exposedPorts`, and `stopSignal`. |
 | `mkMultiPlatformIndex` | `{ images; deploymentArtifact; annotations ? {}; referenceName ? null; pname ?; }` | OCI index over per-platform image layouts. |
 | `mkDockerArchive` | `{ image; references; pname ?; }` | `docker load` archive of a layout with at least one repository tag. |
 
@@ -306,6 +306,26 @@ The contract version has the form `<major>.<minor>` and is exported as
    removed it, and bump `apiVersion`.
 
 The documentation check fails when a removed name is still exported.
+
+## Verification
+
+Two checks guard this contract. Both run in `nix-build -A checks.eval` and
+as flake checks.
+
+- `checks.downstream.api-docs` reads the three marked tables on this page. It
+  fails when a row has the wrong format, an exported name is undocumented, a
+  documented name or package attribute is missing, a documented kind differs
+  from the export, a removed name is still exported, or the version at the top
+  of this page differs from `apiVersion`.
+- `tests/downstream/fixture/flake.nix` is a downstream flake that uses the C,
+  Rust, Go, trivial, phase, and OCI builders. Its `legacyPackages` input holds
+  only the documented package attributes, so using any other package fails
+  evaluation. `checks.downstream.fixture-eval` instantiates every fixture
+  output; `checks.downstream.fixture` builds the packages and runs the
+  fixture's own checks.
+
+When you add a name, add its row and bump the minor version here and in
+`apiVersion`; the fixture should exercise new builders.
 
 ## Removed names
 

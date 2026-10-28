@@ -1760,6 +1760,17 @@ in rec {
       ];
     };
     package-maintenance = import ./tests/packages/maintenance.nix {inherit pkgs lib;};
+    # The flake exports `downstreamLib` as `lib.<system>` and `pkgs` as
+    # `legacyPackages.<system>`; the checks receive the same values in that
+    # shape without evaluating the flake.
+    downstream = import ./tests/downstream {
+      inherit pkgs lib;
+      system = hostPlatform.system;
+      aos = {
+        lib.${hostPlatform.system} = downstreamLib;
+        legacyPackages.${hostPlatform.system} = pkgs;
+      };
+    };
     # The core remains a quick authoring gate. The public eval aggregate below
     # also reaches native policy, provider, stage and provenance coverage.
     eval-core = pkgs.mkDerivation {
@@ -1790,6 +1801,8 @@ in rec {
       abilities-system-packages = ability-suites.system-packages;
       effects = effects;
       baseline-policy = import ./tests/abilities/baseline-policy.nix {inherit pkgs lib;};
+      downstream-api = downstream.api-docs;
+      downstream-fixture = downstream.fixture-eval;
       config-provenance = configProvenanceChecks.suites;
       rendered-evaluation = builtins.removeAttrs renderedEvalSuites ["rendered-system"];
     };

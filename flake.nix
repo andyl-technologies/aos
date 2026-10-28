@@ -499,6 +499,7 @@
         }
         // flattenAttrs "eval" (builtins.removeAttrs aos.checks.eval-suites ["core"])
         // flattenAttrs "build" aos.checks.build
+        // flattenAttrs "downstream" aos.checks.downstream
         // flattenAttrs "container" aos.checks.container
         // flattenAttrs "qualification" (builtins.removeAttrs aos.checks.qualification ["inventory"])
         // {
