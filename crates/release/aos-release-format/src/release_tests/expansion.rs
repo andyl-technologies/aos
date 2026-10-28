@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Result, bail};
 
-use super::QualificationCase;
+use super::ReleaseTest;
 use super::selection::{requires_predecessor, select};
 use crate::artifact::{ArtifactKind, ArtifactRecord, ArtifactRelation};
 use crate::digest::Sha256Digest;
@@ -40,7 +40,7 @@ pub fn cases(
     manifest: &ReleaseManifestV1,
     destination: Option<&str>,
     phase: QualificationPhase,
-) -> Result<Vec<QualificationCase>> {
+) -> Result<Vec<ReleaseTest>> {
     expand(plan, manifest, destination, phase, None)
 }
 
@@ -51,7 +51,7 @@ pub(super) fn expand(
     destination: Option<&str>,
     phase: QualificationPhase,
     effective: Option<&EffectiveProfile>,
-) -> Result<Vec<QualificationCase>> {
+) -> Result<Vec<ReleaseTest>> {
     plan.validate()?;
     let selection = select(plan, destination, phase, effective)?;
     let contract = selection.contract;
@@ -187,7 +187,7 @@ pub(super) fn expand(
                 .collect::<Result<Vec<_>>>()?;
             let subjects_digest =
                 Sha256Digest::of_canonical("aos.release.qualification-subjects/v1", &artifacts)?;
-            result.push(QualificationCase {
+            result.push(ReleaseTest {
                 schema_version: super::QUALIFICATION_CASE.to_owned(),
                 claim: claim.clone(),
                 measurements: requirement.measurements.clone(),

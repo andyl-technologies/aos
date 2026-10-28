@@ -1,9 +1,10 @@
-//! Exact subject expansion and observations for shared release qualification.
+//! Release tests expanded from a frozen plan, and checks of their results.
 //!
-//! An observation names a canonical case digest. Cases bind the phase,
+//! A [`ReleaseTest`] is one required execution: it binds the phase,
 //! requirement, artifact population, target configuration, and predecessor.
-//! Reports for a fixture, another platform, or a different phase cannot satisfy
-//! a release case even when they reuse the same human-readable gate name.
+//! A result names the canonical digest of the test it answers, so a report
+//! for a fixture, another platform, or a different phase cannot satisfy a
+//! release test even when it reuses the same human-readable gate name.
 //!
 //! ```text
 //! destination -> profile + change scope + soak -> requirements + claims
@@ -45,7 +46,7 @@ pub const QUALIFICATION_CASE: &str = "aos.release.qualification-case/v2";
 mod k3s_tests;
 
 #[cfg(test)]
-#[path = "qualification_evidence/tests.rs"]
+#[path = "release_tests/tests.rs"]
 mod tests;
 
 /// A prior accepted snapshot selected before qualification begins.
@@ -60,10 +61,10 @@ pub struct QualificationPredecessor {
     pub manifest_digest: Sha256Digest,
 }
 
-/// One exact required execution, expanded from a frozen plan and manifest.
+/// One required test execution, expanded from a frozen plan and manifest.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct QualificationCase {
+pub struct ReleaseTest {
     /// Exact case schema identifier.
     pub schema_version: String,
     /// Scoped assurance obligation, when this case exercises a target claim.
@@ -106,7 +107,7 @@ pub struct QualificationCase {
     pub predecessor: Option<QualificationPredecessor>,
 }
 
-impl QualificationCase {
+impl ReleaseTest {
     /// Computes the identity that an observation must bind.
     ///
     /// # Errors
@@ -120,10 +121,10 @@ impl QualificationCase {
     }
 }
 
-/// An individual acceptance observation, retaining the explanation on failure.
+/// Result of one acceptance check, with its explanation.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct CheckObservation {
+pub struct CheckResult {
     /// Whether the acceptance condition held.
     pub passed: bool,
     /// Public diagnostic or reference into the retained report.
@@ -583,7 +584,7 @@ pub struct NativeAdapterCellObservation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cohort_subject: Option<serde_json::Value>,
     /// Exact postcondition results; their conjunction determines cell success.
-    pub postconditions: BTreeMap<String, CheckObservation>,
+    pub postconditions: BTreeMap<String, CheckResult>,
     /// Exact production probes for every passing postcondition.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub probes: BTreeMap<String, NativeAdapterPostconditionProbe>,
@@ -662,7 +663,7 @@ pub struct QualificationObservation {
     /// Digest of recorded actual hardware, firmware, runtime, and tool identities.
     pub environment_digest: Sha256Digest,
     /// Exact declared acceptance checks, with no omitted or unknown entries.
-    pub checks: BTreeMap<String, CheckObservation>,
+    pub checks: BTreeMap<String, CheckResult>,
     /// Duration measured by the executing environment.
     pub observed_seconds: u64,
     /// Workload operation denominators; durations alone do not prove workload execution.
@@ -685,7 +686,7 @@ pub struct QualificationObservation {
 /// and documented. Every passing postcondition must retain a distinct,
 /// subject-bound production probe with a valid canonical observation digest.
 pub fn validate_native_adapter_matrix_observation(
-    case: &QualificationCase,
+    case: &ReleaseTest,
     environment_digest: Sha256Digest,
     executor_digest: Sha256Digest,
     observation: &NativeAdapterMatrixObservation,
@@ -732,7 +733,7 @@ pub fn validate_native_adapter_matrix_observation(
 }
 
 fn validate_native_cohort_cells(
-    case: &QualificationCase,
+    case: &ReleaseTest,
     environment_digest: Sha256Digest,
     spec: &NativeAdapterMatrixSpec,
     cells: &[NativeAdapterCellObservation],
@@ -834,7 +835,7 @@ fn validate_native_cohort_cells(
 }
 
 fn validate_native_adapter_postcondition_probe(
-    case: &QualificationCase,
+    case: &ReleaseTest,
     cell: &NativeAdapterCellSpec,
     postcondition: &str,
     cohort_subject_digest: Sha256Digest,
@@ -915,7 +916,7 @@ pub fn native_adapter_expected_disposition(cell: &NativeAdapterCellSpec) -> Opti
 pub fn native_adapter_matrix_check(
     observation: &NativeAdapterMatrixObservation,
     passed: bool,
-) -> Result<CheckObservation> {
+) -> Result<CheckResult> {
     let passed_cells = observation
         .cohorts
         .iter()
@@ -930,7 +931,7 @@ pub fn native_adapter_matrix_check(
             count.checked_add(cell.postconditions.len())
         })
         .ok_or_else(|| anyhow::anyhow!("native adapter matrix postcondition count overflows"))?;
-    Ok(CheckObservation {
+    Ok(CheckResult {
         passed,
         detail: format!(
             "derived {passed_cells}/{} native adapter cells and {postcondition_count} exact postconditions",
@@ -953,7 +954,7 @@ pub fn native_adapter_matrix_check(
 /// Returns an error for inapplicable matrix evidence or when any specification,
 /// environment, cell, aggregate check, or operation denominator is inconsistent.
 pub fn validate_matrix_for_case(
-    case: &QualificationCase,
+    case: &ReleaseTest,
     observation: &QualificationObservation,
 ) -> Result<Option<bool>> {
     if case.requirement_id != NATIVE_ADAPTER_MATRIX_REQUIREMENT {
@@ -1023,9 +1024,7 @@ pub fn validate_matrix_for_case(
     Ok(Some(passed))
 }
 
-fn native_operation_spec_for_case(
-    case: &QualificationCase,
-) -> Result<&NativeOperationQualificationSpec> {
+fn native_operation_spec_for_case(case: &ReleaseTest) -> Result<&NativeOperationQualificationSpec> {
     if case.requirement_id != NATIVE_ADAPTER_MATRIX_REQUIREMENT {
         bail!("native adapter matrix case has the wrong requirement identity");
     }
@@ -1044,7 +1043,7 @@ fn native_operation_spec_for_case(
 }
 
 fn validate_native_adapter_matrix_environment(
-    case: &QualificationCase,
+    case: &ReleaseTest,
     executor_digest: Sha256Digest,
     observation: &NativeAdapterMatrixObservation,
 ) -> Result<()> {

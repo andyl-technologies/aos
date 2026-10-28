@@ -45,8 +45,8 @@ use aos_release_format::artifact::{
 use aos_release_format::canonical;
 use aos_release_format::digest::Sha256Digest;
 use aos_release_format::evidence::{
-    EvidenceRecord, GateResult, QUALIFICATION_EXECUTOR_RESPONSE, QualificationExecutorRequest,
-    QualificationExecutorResponse,
+    Outcome, QUALIFICATION_EXECUTOR_RESPONSE, QualificationExecutorRequest,
+    QualificationExecutorResponse, TestResult,
 };
 use aos_release_format::fitness::{
     FITNESS_REPORT, FitnessReport, LiveBindings, signer_roster_digest,
@@ -65,11 +65,11 @@ use aos_release_format::plan::{
 use aos_release_format::platform::{MatrixCell, Platform};
 use aos_release_format::qualification::ChangeScope;
 use aos_release_format::qualification_admission::{QUALIFICATION_REVIEW, QualificationReview};
-use aos_release_format::qualification_evidence::CheckObservation;
 use aos_release_format::receipt::{
     HubEnvironment, RECEIPT_SIGNATURE_DOMAIN, REGISTRY_BOOTSTRAP_INTENT, RegistryBootstrapIntent,
-    SIGNED_RECEIPT, SignedReceiptEnvelope,
+    SIGNED_RECEIPT, SignedEnvelope,
 };
+use aos_release_format::release_tests::CheckResult;
 use aos_release_format::signing::{
     SIGNING_REQUEST_DOMAIN, SignatureAlgorithm, SignatureResponse, SignerRequirement, SignerRole,
     SigningContext, SigningOperation, SigningRequest,
@@ -447,7 +447,7 @@ fn prepare_predecessor(
     output: &Path,
     release_plan: &ReleasePlan,
     release_manifest: &ReleaseManifestV1,
-) -> Result<aos_release_format::qualification_evidence::QualificationPredecessor> {
+) -> Result<aos_release_format::release_tests::QualificationPredecessor> {
     let mut plan = release_plan.clone();
     plan.qualification_predecessor = None;
     plan.release_id = format!(
@@ -482,7 +482,7 @@ fn prepare_predecessor(
         &canonical::to_vec(&envelope)?,
     )?;
     Ok(
-        aos_release_format::qualification_evidence::QualificationPredecessor {
+        aos_release_format::release_tests::QualificationPredecessor {
             registry: plan.registry,
             release_id: plan.release_id,
             manifest_digest,
@@ -556,7 +556,7 @@ fn release_plan(
         public_evidence_policy_digest: contract.digest()?,
         qualification: contract,
         qualification_predecessor: Some(
-            aos_release_format::qualification_evidence::QualificationPredecessor {
+            aos_release_format::release_tests::QualificationPredecessor {
                 registry: aos_release_format::registry::MAIN_REGISTRY.into(),
                 release_id: "fleet-predecessor".into(),
                 manifest_digest: digest("fleet-predecessor"),
@@ -822,7 +822,7 @@ fn write_journal(path: PathBuf, plan: Sha256Digest, manifest: Sha256Digest) -> R
             new_state: state,
             destination: None,
             operation_ids: vec![format!("fleet-{state:?}").to_ascii_lowercase()],
-            evidence: Vec::new(),
+            attachments: Vec::new(),
             recorded_at: TIME.into(),
         });
     }
@@ -933,13 +933,13 @@ async fn qualification_executor() -> Result<()> {
 
 /// Generates synthetic observations only for the isolated publication protocol fixture.
 fn fixture_evidence(
-    case: &aos_release_format::qualification_evidence::QualificationCase,
+    case: &aos_release_format::release_tests::ReleaseTest,
     report_digest: Sha256Digest,
     authority: &str,
     nonce: Option<String>,
     finish: &str,
-) -> Result<EvidenceRecord> {
-    use aos_release_format::qualification_evidence::{CheckObservation, QualificationObservation};
+) -> Result<TestResult> {
+    use aos_release_format::release_tests::{CheckResult, QualificationObservation};
 
     let seconds = if case.phase == aos_release_format::qualification::QualificationPhase::Complete {
         14 * 24 * 60 * 60
@@ -960,7 +960,7 @@ fn fixture_evidence(
         .map(|id| {
             (
                 id.clone(),
-                CheckObservation {
+                CheckResult {
                     passed: true,
                     detail: "Synthetic protocol fixture; no OS qualification claim".into(),
                 },
@@ -972,7 +972,7 @@ fn fixture_evidence(
     } else {
         std::collections::BTreeMap::from([("synthetic-requests".into(), 1)])
     };
-    Ok(EvidenceRecord {
+    Ok(TestResult {
         qualification: Some(QualificationObservation {
             environment,
             capabilities,
@@ -991,7 +991,7 @@ fn fixture_evidence(
         policy_digest: case.policy_digest,
         platform: case.platform,
         subjects: case.subjects.clone(),
-        result: GateResult::Passed,
+        result: Outcome::Passed,
         report_digest,
         authority_id: authority.into(),
         nonce,
@@ -1052,7 +1052,7 @@ fn fitness(arguments: &[String]) -> Result<()> {
                 .map(|check| {
                     (
                         check.clone(),
-                        CheckObservation {
+                        CheckResult {
                             passed: true,
                             detail: "Synthetic fleet exercise; no environment fitness claim".into(),
                         },
@@ -1130,7 +1130,7 @@ fn bootstrap_intent(arguments: &[String]) -> Result<()> {
 fn release_evidence_envelope(payload: &impl serde::Serialize) -> Result<Vec<u8>> {
     let signed = Sha256Digest::separated(RECEIPT_SIGNATURE_DOMAIN, canonical::to_vec(payload)?);
     let signature = SigningKey::from_bytes(&RELEASE_SEED).sign(signed.as_bytes());
-    canonical::to_vec(&SignedReceiptEnvelope {
+    canonical::to_vec(&SignedEnvelope {
         schema_version: SIGNED_RECEIPT.into(),
         key_id: RELEASE_KEY_ID.into(),
         payload: serde_json::to_value(payload)?,
@@ -1576,22 +1576,21 @@ mod tests {
         let (plan, manifest) = prepared_plan(&prepared)?;
 
         let cases = |phase| {
-            aos_release_format::qualification_evidence::cases(
+            aos_release_format::release_tests::cases(
                 &plan,
                 &manifest,
                 Some(PRODUCTION_DESTINATION),
                 phase,
             )
         };
-        let requirements =
-            |cases: &[aos_release_format::qualification_evidence::QualificationCase]| {
-                let mut ids: Vec<String> = cases
-                    .iter()
-                    .map(|case| case.requirement_id.clone())
-                    .collect();
-                ids.sort();
-                ids
-            };
+        let requirements = |cases: &[aos_release_format::release_tests::ReleaseTest]| {
+            let mut ids: Vec<String> = cases
+                .iter()
+                .map(|case| case.requirement_id.clone())
+                .collect();
+            ids.sort();
+            ids
+        };
 
         // Staging retains five native obligations, delivery, four package
         // cells, and four Linux disk/container claims. The native matrix and

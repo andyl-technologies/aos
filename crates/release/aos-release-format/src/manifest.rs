@@ -161,7 +161,7 @@ impl ReleaseManifestV1 {
 
         // Expanding staging cases also rejects absent required image/OCI
         // subjects before signing, without demanding future staging results.
-        crate::qualification_evidence::cases(
+        crate::release_tests::cases(
             plan,
             self,
             None,

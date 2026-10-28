@@ -43,7 +43,9 @@ pub mod placement_scan;
 pub mod ratelimit;
 pub mod registry_delete_controller;
 pub mod reindex;
-pub mod release_evidence;
+pub mod release_receipt_signer;
+/// Former path of [`release_receipt_signer`], kept for existing callers.
+pub use release_receipt_signer as release_evidence;
 pub mod robots;
 pub mod s3surface;
 pub mod service;

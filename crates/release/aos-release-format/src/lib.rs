@@ -16,13 +16,13 @@
 //!   before build effects begin.
 //! - [`artifact_profile`] binds baked client settings to the release registry.
 //! - [`manifest`] binds finalized artifacts to the frozen plan.
-//! - [`evidence`] records public gate and qualification results.
+//! - [`evidence`] records public test results and qualification reports.
 //! - [`qualification`] defines the shared contract: typed scopes, assurance
 //!   claims, destination profiles, change scope, and fixed admission limits.
-//! - [`qualification_evidence`] expands per-destination cases and derives
-//!   assurance from observations.
-//! - [`qualification_admission`] binds rollout and completion decisions and
-//!   independent reviews to one destination.
+//! - [`release_tests`] expands the tests each destination requires and
+//!   checks their results.
+//! - [`qualification_admission`] defines signed ring and completion approvals
+//!   and independent reviews for one destination.
 //! - [`fitness`] validates signed environment-exercise attestations.
 //! - [`profile_override`] validates threshold-signed soak and ring relaxations.
 //! - [`inventory`] validates the Nix-derived four-target package inventory.
@@ -74,10 +74,10 @@ pub mod profile_override;
 pub mod qualification;
 pub mod qualification_admission;
 pub mod qualification_document;
-pub mod qualification_evidence;
 pub mod receipt;
 pub mod record;
 pub mod registry;
+pub mod release_tests;
 pub mod sbom;
 pub mod signing;
 pub mod state;
