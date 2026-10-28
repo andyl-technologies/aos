@@ -20,7 +20,7 @@ Three version numbers are easy to confuse:
 An unpublished release stage records an exact candidate revision and upload
 inventory. It stays out of default catalogs and channels; directly addressed
 refs, digests, and cache URLs may still expose uploaded bytes. It is distinct
-from a staging deployment. See [Release stages](../../registry/release-stages.md).
+from a staging deployment. See [Release stages](../../engineering/registry/release-stages.md).
 
 Changing package metadata does not change consumers until a maintainer creates
 and publishes a registry release. Publishing a registry release does not move

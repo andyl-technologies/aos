@@ -1,0 +1,458 @@
+# Registry versioning and channels
+
+> **Audience:** users pinning a registry, implementers of the consumer
+> (`apm update` / `apm upgrade`) and producer (`apr`), architects, and engineers
+> operating a fleet.
+>
+> **Scope:** how AOS registries are *versioned* (**semver, no `v` prefix**), how a
+> channel is modeled (**a git branch whose head is the rollout *frontier***), how
+> rollout is driven (**256 signed partition tag objects per channel**), how a
+> consumer self-selects one of those partitions (**deterministic, persisted bucket
+> with probe-forward fallback**), and how downgrades are prevented
+> (**monotonic anti-rollback floor + fix-forward abort**).
+>
+> See [implementation.md](implementation.md) for the module map.
+
+Related reference docs:
+[README](README.md) ·
+[architecture](architecture.md) ·
+[implementation](implementation.md) ·
+[http-layout](http-layout.md) ·
+[packs-and-deltas](packs-and-deltas.md) ·
+[signing-and-trust](signing-and-trust.md) ·
+[publishing](publishing.md) ·
+[nix-cache](nix-cache.md) ·
+[apt-comparison](apt-comparison.md)
+
+
+Unpublished candidates follow the [release-stage contract](release-stages.md).
+Maintainer branches are authoring workspaces. Configured channel branch names
+reserve the published frontier, public `HEAD` names the default channel, and
+signed semver releases and the 256-partition schema retain their existing
+meaning. Default catalogs and channels omit drafts; a known ref, digest, cache
+URL, or CDN path may still expose candidate bytes.
+
+---
+
+## 1. Overview
+
+In this architecture the registry is a **bare git repository (sha256)
+served as static files over dumb HTTP** (see [architecture](architecture.md) and
+[http-layout](http-layout.md)). On top of that object store, three concepts give
+us versioning and fleet rollout:
+
+| Concept | Modeled as | Signed? | Consumed by |
+|---|---|---|---|
+| **Release** | semver git **tag** `refs/tags/<semver>` → commit | **yes** | stock git (`verify-tag`) + AOS |
+| **Channel (branch)** | `refs/heads/<channel>`, head = **frontier** | no (ref pointer) | stock git convenience |
+| **Channel (rollout)** | **256 signed partition tag objects** `/channels/<name>/00..ff` | **yes** | AOS rollout only |
+
+The release tag is the **immutable, signed unit of distribution**. The channel
+*branch* is an **unsigned convenience pointer** at the rollout *frontier* (the
+newest release any partition targets). The channel *partitions* are the **signed,
+bucketed rollout surface** the AOS client actually follows.
+
+```
+                       ┌─────────────────────────────────────────┐
+   release tags        │  refs/tags/1.0.0   refs/tags/1.1.0  ...  │  (signed → commit)
+                       └─────────────────────────────────────────┘
+                                  ▲                   ▲
+   channel branch head ───────────┼───────────────────┘   = FRONTIER
+   refs/heads/stable ─────────────┘  (unsigned; newest release any partition targets)
+
+   channel partitions (signed tag objects, name == "stable", → semver tag):
+     /channels/stable/00 ─► 1.1.0    ─┐
+     /channels/stable/01 ─► 1.1.0     │  publisher has advanced 4/256
+     /channels/stable/02 ─► 1.1.0     │  partitions to 1.1.0 ...
+     /channels/stable/03 ─► 1.1.0    ─┘
+     /channels/stable/04 ─► 1.0.0    ─┐
+     ...                             │  ... and left 252/256 on the prior
+     /channels/stable/ff ─► 1.0.0    ─┘  release 1.0.0
+```
+
+> **Design philosophy.** Rollout is an **AOS-fleet** concept, not a `git clone`
+> concept. A stock `git pull <channel>` always lands on the frontier (no rollout
+> protection); only AOS clients honor the 256-partition bucketing. This is an
+> accepted trade for staying a clean superset of stock dumb-HTTP git.
+
+---
+
+## 2. Semver versioning
+
+### 2.1 Version grammar
+
+Releases use **standard [semver](https://semver.org/), with no `v` prefix**:
+
+```
+1.1.2                          a normal patch release
+1.1.0-alpha.1                  a pre-release of the 1.1.0 minor base
+1.0.0-beta+exp.sha.5114f85     pre-release "beta" with build metadata
+```
+
+A release is a **signed git tag** `refs/tags/<semver>` pointing at a commit. There
+is no calendar component and no `v` prefix.
+
+### 2.2 Precedence & ordering
+
+Ordering follows semver precedence exactly. The relevant rules:
+
+1. Compare `major`, then `minor`, then `patch` numerically.
+2. A version **with** a pre-release has **lower** precedence than the associated
+   normal version: `1.0.0-alpha < 1.0.0`.
+3. Pre-release identifiers compare left-to-right: numeric identifiers compare
+   numerically, alphanumeric identifiers compare in ASCII sort order, numeric < alphanumeric,
+   and a larger set of identifiers (when all preceding are equal) has higher
+   precedence.
+4. **Build metadata** (`+…`) is **ignored** for precedence —
+   `1.0.0+a` and `1.0.0+b` have equal precedence.
+
+```
+1.0.0-alpha  <  1.0.0-alpha.1  <  1.0.0-alpha.beta  <  1.0.0-beta
+            <  1.0.0-beta.2   <  1.0.0-beta.11     <  1.0.0-rc.1
+            <  1.0.0
+```
+
+Crucially, ordering is *not* re-derived from a synthetic token: it comes from
+semver precedence **and** git ancestry (the commit a tag points at is a descendant
+of the prior release's commit). The two agree because the publisher only ever tags
+forward — see [packs-and-deltas](packs-and-deltas.md) for how this co-designs with
+the delta graph.
+
+### 2.3 Path encoding of a release
+
+A release's object store lives under
+`/releases/<major>/<minor>/<patch…>/`, where the **third segment is everything after
+`major.minor`** — including any `-prerelease` and `+build` suffix:
+
+| Semver | Release path |
+|---|---|
+| `1.1.2` | `/releases/1/1/2/` |
+| `1.1.0-alpha.1` | `/releases/1/1/0-alpha.1/` |
+| `1.0.0-beta+exp.sha.5114f85` | `/releases/1/0/0-beta+exp.sha.5114f85/` |
+
+Releases are **immutable** once published and may carry a long CDN TTL (see
+[http-layout](http-layout.md) §CDN policy).
+
+---
+
+## 3. Channels as branches; branch head = frontier
+
+A **channel** is a named release line — e.g. `stable`, `testing`. It is modeled two
+ways simultaneously:
+
+### 3.1 The branch (unsigned convenience pointer)
+
+`refs/heads/<channel>` is an ordinary git branch. Its head points at the commit of
+the **frontier**: the newest release *any* of the channel's 256 partitions targets
+(i.e. the current rollout target).
+
+- `HEAD` is a symref to `refs/heads/<default-channel>` (e.g. `stable`), so a bare
+  `git clone <url>` checks out the default channel's frontier.
+- Branch refs are **never part of the trust chain** (see
+  [signing-and-trust](signing-and-trust.md)). They are an unsigned convenience so
+  stock git users get a working clone. Those users can still
+  `git verify-tag <semver>` because the **release tags** are the signed objects.
+
+```
+HEAD ──symref──► refs/heads/stable ──► commit(1.1.0)   ← frontier
+                                            ▲
+                 newest release any /channels/stable/<00..ff> targets
+```
+
+> **Implication.** `git pull stable` always advances to the frontier — there is no
+> rollout gating for stock clients. Acceptable by design (§1): rollout is fleet
+> policy enforced by AOS, not by the git ref graph.
+
+### 3.2 The partitions (the rollout surface) — see §4.
+
+The frontier is a *derived* value: when the publisher advances even one partition
+to a newer release, the branch head moves to that newer release's commit. The
+branch head is therefore "the most ambitious thing the channel is currently rolling
+out," not "what the median host runs."
+
+---
+
+## 4. The 256 signed partition tag objects
+
+Each channel exposes **exactly 256** partition files:
+
+```
+/channels/<name>/00
+/channels/<name>/01
+   ...
+/channels/<name>/ff         (one byte (two hex digits, 00–ff) → 256 partitions)
+```
+
+Each file is an **independently signed annotated tag object** whose **tag name field
+equals the channel name** (`<name>`), pointing at a **semver release tag**. A signed
+partition tag is a **pure signed pointer**: standard git tag fields (object, type, the
+tag name, tagger) + the Ed25519 signature + an optional freeform human message. It
+carries **no structured payload** — no embedded cache list, no expiry. The full
+trust chain is therefore:
+
+```
+signed partition tag  ──►  signed semver tag  ──►  commit
+   (name == channel)          (name == semver)
+   under /channels/<name>/      under /releases/...
+```
+
+Verification checks **both** the Ed25519/SSH signature **and** the embedded
+tag-name field against the expected name — the channel name under `/channels/*`, the
+semver under `/releases/*`. This **name-binding** binds a tag object to its serving
+path and prevents cross-serving a tag from one path at another. See
+[signing-and-trust](signing-and-trust.md) for the signature format.
+
+> **Invariant: there must always be 256.** A complete channel has all of `00..ff`
+> present and signed. If a partition file is temporarily missing or fails
+> verification, a client **MAY** fall back to another partition via deterministic
+> **probe-forward** (§5.3) — it does **not** treat a single missing partition as a
+> channel-wide failure.
+
+These 256 tag objects live **outside** the git ref namespace (under `/channels/*`, not
+`refs/`). They are **AOS-only**; stock dumb-HTTP git never sees them and is
+unaffected.
+
+---
+
+## 5. Consumer bucket selection
+
+### 5.1 Deterministic, persisted bucket
+
+A consumer self-selects **one** of the 256 partitions, deterministically and
+**persisted once**, so a host does not flap between buckets across `apm update`
+runs:
+
+```
+bucket = the low byte of sha256(registry_name || "\0" || registry_local_salt)
+```
+
+- `registry_local_salt` is fresh random material generated on first channel sync.
+  It deliberately does **not** come from `/etc/machine-id`, so cloned images do
+  not inherit the same rollout bucket.
+- The resulting bucket index (`00..ff`) is **written once** and reused
+  thereafter, so the host's partition assignment is stable for that registry and
+  survives future changes to the seed construction.
+
+### 5.2 Resolution path
+
+On `apm update`, an AOS client resolves its target release like this:
+
+```
+1. bucket  ← persisted bucket index, or first-sync registry-local salt hash (§5.1)
+2. fetch   /channels/<name>/<bucket>                          (signed partition tag)
+3. verify  signature + tag-name field == <name>             (name-binding, §4)
+4. follow  partition tag → semver tag; verify sig + name == <semver>
+5. target  ← that semver release; resolve objects via packs/deltas/loose
+            (see packs-and-deltas.md), subject to the anti-rollback floor (§7)
+```
+
+The bucket selects *which* release this host adopts *now*; the partition the
+publisher has (or has not) advanced is what determines whether this host is in the
+already-rolled-out cohort or still holding on the prior release.
+
+### 5.3 Probe-forward fallback
+
+If the host's assigned partition file is missing or fails verification, the client
+probes forward deterministically:
+
+```
+b ← bucket
+repeat up to 256 times:
+    try /channels/<name>/<hex(b)>
+    if present AND verifies → use it
+    else b ← (b + 1) mod 256
+if none usable → channel is unavailable → fail closed (do not invent a target)
+```
+
+Probe-forward is **deterministic** (same starting bucket → same probe order), so the
+fallback choice is itself reproducible and does not reshuffle the host between runs.
+
+---
+
+## 6. Publisher-controlled rollout
+
+Rollout is driven entirely by **how many of the 256 partitions point at the new
+release**. To roll a new release to N/256 of the fleet:
+
+```
+point N partitions at the new semver tag;
+leave (256 − N) partitions on the prior release.
+```
+
+A host adopts the new release iff its persisted bucket maps to a partition that has
+been advanced. Because buckets are stable, **the same hosts adopt first** as the
+publisher ramps `1/256 → 16/256 → 128/256 → 256/256`; the cohort is monotone, never
+reshuffled.
+
+```
+ step 0   advance 1/256     /channels/stable/00 → 1.1.0       canary (one bucket, ~0.4%)
+ step 1   advance 16/256    /channels/stable/00..0f → 1.1.0   widen if healthy (~6%)
+ step 2   advance 128/256   /channels/stable/00..7f → 1.1.0   half the fleet (50%)
+ step 3   advance 256/256   /channels/stable/00..ff → 1.1.0   complete (100%)
+```
+
+Key properties:
+
+- **"Where does the rest of the fleet go?" is answered explicitly.** The
+  un-advanced partitions still *name the prior release* — there is no separate
+  `previous_tag`/baseline concept. A held host resolves its (un-advanced) partition
+  and lands on the prior release, a no-op relative to where it already is.
+- **Completion = all 256 point at the new release.** At that point every bucket maps
+  to the new release and the rollout is done.
+- **The branch head tracks the frontier** (§3.1): as soon as the first partition is
+  advanced to `1.1.0`, `refs/heads/stable` points at `commit(1.1.0)`.
+- **The granularity is ~0.39% (1/256).** Fixed 256-way partitioning is coarser than
+  an arbitrary percentage, but it needs **no central host registry** and no per-host
+  reporting: the deterministic bucket *is* the cohort assignment.
+
+---
+
+## 7. Anti-rollback: monotonic floor + fix-forward
+
+### 7.1 Monotonic floor
+
+A consumer keeps a **monotonic floor**: it **never moves to a release older than its
+current one** (by semver precedence + git ancestry). If a resolved partition would
+take the host *backward* — for example, because a partition was repointed at an
+older release, or a mirror is stale — the client **rejects** the move and stays put.
+
+```
+target ← release the bucket resolves to
+if precedence(target) < floor  OR  not is-ancestor(floor.commit, target.commit):
+    reject (do not downgrade); keep running floor
+else:
+    adopt target; floor ← target
+```
+
+The current consumer persists this floor in `[registry.state]` and applies it
+when channel partitions resolve to a signed semver release. See
+[signing-and-trust](signing-and-trust.md) for how the signed tag chain feeds
+this.
+
+### 7.2 Aborting a bad rollout is fix-forward
+
+A publisher does **not** abort a bad rollout by **decrementing** partitions back to
+the prior release. That would be a downgrade — and the consumers' monotonic floor
+(§7.1) would block it anyway. Instead, abort is **fix-forward**:
+
+```
+1. publish a NEWER release that fixes (or reverts the content of) the regression;
+2. point the affected partitions at that newer release.
+```
+
+Because the new release is *newer* by precedence and a descendant commit, it passes
+the floor check and rolls out normally. The semantics: "roll back" means "roll
+*forward* to a corrected build," never "move the fleet to an older tag."
+
+| Action | Mechanism | Allowed? |
+|---|---|---|
+| Roll out N/256 | advance N partitions to a newer release | yes |
+| Widen rollout | advance more partitions to the same newer release | yes |
+| Abort / "rollback" | publish a newer fixed release, advance partitions to it | yes (fix-forward) |
+| Decrement partitions to an older release | point partitions back at a prior semver | rejected by consumer floor |
+
+---
+
+## 8. Current implementation status
+
+A host subscribes via `~/.config/apm/registries.d/{name}.toml`; the resolved mode
+is `TrackingMode`:
+
+```rust
+// types.rs
+pub enum TrackingMode {
+    Commit(String),                  // frozen to an exact commit hash
+    Branch(String),                  // track HEAD of a named branch
+    Channel(String),                 // bucketed signed partition resolution
+    Tag(String),                     // pinned to an exact tag
+    Version(semver::VersionReq),     // semver constraint on tags
+    Default,                         // no field set -> default branch HEAD
+}
+```
+
+The `Channel` variant and `channel = "stable"` config field are active. Producer
+commands can write the 256 signed partition overlay, and the consumer resolves
+its persisted bucket through that overlay before applying the floor check. The
+natural mapping is:
+
+| Intent | Mechanism |
+|---|---|
+| `branch = "stable"` (track a line) | `channel = "stable"` → bucketed partitions (§4–§6) |
+| `tag = "1.1.0"` (pin a release) | unchanged — signed semver tag `refs/tags/1.1.0` (§2) |
+| `commit = "<sha>"` (freeze) | unchanged — exact commit |
+| `version = "~1.1"` (constraint) | unchanged — semver `VersionReq` over signed tags |
+
+---
+
+## 9. Worked examples
+
+### 9.1 a 4/256 rollout, two different hosts
+
+Publisher advances 4 of 256 `stable` partitions to `1.1.0`; partitions `04..ff` still
+name `1.0.0`. Two hosts, both on `channel = "stable"`, both currently at floor
+`1.0.0`:
+
+```
+Host A:  persisted bucket = 02
+         /channels/stable/02 → 1.1.0  (advanced)  → adopt 1.1.0; floor ← 1.1.0
+Host B:  persisted bucket = 0xb7
+         /channels/stable/b7 → 1.0.0  (held)       → no-op; stays at 1.0.0
+```
+
+When the publisher later advances to `8/256`, Host A is unaffected (already at
+`1.1.0`); a host whose bucket is `05` flips from held to adopted. Host B (bucket
+`b7`) keeps holding until partition `b7` is advanced.
+
+### 9.2 frontier vs. median
+
+With the 4/256 rollout above:
+
+```
+refs/heads/stable  → commit(1.1.0)     ← frontier (newest release any partition targets)
+git clone <url>    → checks out 1.1.0  ← stock git gets the frontier, no gating
+AOS fleet median   → still 1.0.0       ← 252/256 buckets are held
+```
+
+### 9.3 fix-forward abort
+
+`1.1.0` (rolled to 8/256) is found bad. The publisher does **not** repoint partitions
+back to `1.0.0` (consumers' floor would reject it). Instead:
+
+```
+1. publish 1.1.1 (signed tag → fixed commit, descendant of 1.1.0)
+2. advance the affected partitions: /channels/stable/00..07 → 1.1.1
+3. hosts at floor 1.1.0 see a NEWER release → adopt 1.1.1 (passes the floor)
+   hosts at floor 1.0.0 (held buckets) see 1.0.0 still on their partition → unchanged
+```
+
+### 9.4 probe-forward fallback
+
+Host bucket = `7f`, but `/channels/stable/7f` 404s (CDN propagation gap):
+
+```
+try /channels/stable/7f  → 404
+try /channels/stable/80  → present + verifies  → use it
+```
+
+The host transiently follows partition `80`'s release for this run; once partition
+`7f` is restored, the host returns to its assigned bucket on the next update.
+
+---
+
+## 10. Cross-references
+
+- **HTTP/object layout** of `/channels/*`, `/releases/*`, `refs`, `HEAD`,
+  `info/alternates`, and CDN TTLs: [http-layout](http-layout.md).
+- **The three ref layers, name-binding, and the `tag → tag → commit` trust chain:**
+  [signing-and-trust](signing-and-trust.md).
+- **How a resolved release is fetched** (full packs, thin deltas, retention, loose
+  fallback): [packs-and-deltas](packs-and-deltas.md).
+- **The producer pipeline** that tags/signs, packs, runs `update-server-info`, and
+  **advances partitions**: [publishing](publishing.md).
+- **As-built grounding** for tracking modes, state, and channel resolution:
+  [implementation](implementation.md).
+- **The Nix binary-cache superset** (`nix-cache-info`/`.narinfo`/`nar`), configured
+  client-side or served by the origin — never advertised in signed tags:
+  [nix-cache](nix-cache.md).
+- **APT precedent** (signed flat-file lineage, `pool`, phased rollout → 256
+  partitions): [apt-comparison](apt-comparison.md).

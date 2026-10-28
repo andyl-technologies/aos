@@ -58,8 +58,8 @@ Every operation is fail-closed. A surface may be an AOS Hub deployment or a
 [static origin](#static-surfaces); no command requires a Hub unless the plan
 names one.
 
-Supported publication to `andyl/main` remains forbidden until the remaining
-RFC-0017 launch gates are complete. The experimental `andyl/experimental` registry
+Supported publication to `andyl/main` remains forbidden until its remaining
+launch gates are complete. The experimental `andyl/experimental` registry
 may be published to its production surface only under
 [`registry-experimental.md`](registry-experimental.md); that does not satisfy or bypass
 any main-registry launch gate.
@@ -108,7 +108,7 @@ requires the exact staged bytes and the planned qualification evidence. Shared
 registry libraries drive both this AOS-specific orchestrator and the stable
 `apr release <version>` command. The previous `aos release` command is removed
 without a compatibility alias. See
-[registry release stages](../registry/release-stages.md) for discovery,
+[registry release stages](../engineering/registry/release-stages.md) for discovery,
 concurrency, and retention boundaries.
 
 ## Configure the designated maintainer machine
@@ -2100,5 +2100,5 @@ remaining launch gates are complete and its fitness attestations are current. A
 experimental publication on a production surface remains explicitly experimental
 and cannot be moved across registries.
 
-The normative design and rollout requirements are in
-[RFC-0017](../rfcs/0017-canonical-hub-publishing/README.md).
+The release model, signer roles, and enforcement code are described in
+[canonical release publishing](../engineering/release-publishing/README.md).

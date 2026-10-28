@@ -322,5 +322,5 @@ of distribution TUF signatures against pinned roots are distinct checks. Hub
 admission does not infer root trust from a candidate-supplied root.
 
 See [the console workflow](web.md#review-unpublished-release-candidates) and
-[the common stage contract](../../registry/release-stages.md) for candidate
+[the common stage contract](../../engineering/registry/release-stages.md) for candidate
 inspection, resume, and the distinction between staged bytes and publication.

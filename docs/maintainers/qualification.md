@@ -28,7 +28,7 @@ documents command arguments.
 
 An unpublished **release stage** is an exact candidate id, revision, and
 artifact inventory; it is independent of the deployment named staging. See
-[release stages](../registry/release-stages.md).
+[release stages](../engineering/registry/release-stages.md).
 
 A **surface** is one publication endpoint with the role `staging` or
 `production`. It is either an AOS Hub deployment or a
