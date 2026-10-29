@@ -580,8 +580,9 @@ The comparison reports `AdversarialMismatch` for any profile-dependent log or
 fingerprint and rejects empty evidence. The canonical
 `checks.crucible.phase3.gates.adversarialDeterminism` gate drives the real
 `SingleScheduler` through this matrix (engine target
-`gate_adversarial_determinism`). It remains the fast diagnostic layer for isolating scheduler drift,
-while the native profiles run inside `gate:e2e-determinism`.
+`gate_adversarial_determinism`). It remains the fast diagnostic layer for
+isolating scheduler drift, while the native profiles run inside
+`gate:e2e-determinism`.
 
 ## End-to-end determinism
 

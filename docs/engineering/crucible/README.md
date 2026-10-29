@@ -69,6 +69,7 @@ Semantics:
 
 - [Conditions and triggers](conditions-and-triggers.md): the event graph and
   fault injection.
+- [Fault model](fault-model/README.md): the signal-driven fault model.
 - [Assertions](assertions.md): properties and their evaluation.
 - [Event log](event-log.md): the canonical observable record of a run.
 
@@ -84,6 +85,8 @@ Exploration and debugging:
 - [Failure triage](failure-triage.md): signatures, clustering, minimization.
 - [Distributed exploration](distributed-exploration.md): the shared store and
   fleet execution.
+- [Campaigns](campaigns/README.md): persistent, multi-run exploration
+  campaigns.
 - [Time-travel debugging](time-travel-debugging.md): gdb attach and reverse
   execution.
 
