@@ -1317,6 +1317,11 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     outputName = "out";
     outPath = self.${name}.outPath;
     drvPath = self.${name}.drvPath;
+    # Recipes may read the target tool's source as a test fixture. The
+    # source does not depend on the platform, and staying lazy keeps the
+    # proxy from forcing the target package while arguments are resolved.
+    src = self.${name}.src;
+    deploymentArtifact = self.${name}.deploymentArtifact;
     meta = {};
     __toString = _: builtins.toString self.${name};
   };
