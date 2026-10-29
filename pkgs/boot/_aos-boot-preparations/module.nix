@@ -207,14 +207,18 @@
   ];
   installerMedia = config.aos.boot.installerMedia or false;
   # Installer media has no ESP journal and never hands off to a host, so its
-  # one transaction journals in memory and needs only settled devices.
+  # one transaction journals in memory and needs only settled devices. The
+  # initrd-fs edges satisfy the image builder's handoff contract; the
+  # installer target never pulls initrd-fs.target in.
   initrdControllerDependencies =
     if installerMedia
     then
       emptyDependencies
       // {
         after = [deviceSettleReadiness];
+        before = [initrdFilesystemsReadiness];
         requires = [deviceSettleReadiness];
+        required_by = [initrdFilesystemsReadiness];
         implicit_dependencies = false;
       }
     else
