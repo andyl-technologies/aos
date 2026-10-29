@@ -153,6 +153,10 @@ in
             mkdir -p "$HOME"
             "$out/bin/ansible" --version | grep -q '^ansible \[core ${version}\]'
 
+            # The local connection runs task commands through /bin/sh by
+            # default, which a build sandbox need not provide.
+            export ANSIBLE_EXECUTABLE=${buildPackages.bash}/bin/sh
+
             # Run a local play to exercise templating, the YAML loader,
             # module packaging, and a module executed by the source-built
             # interpreter.
