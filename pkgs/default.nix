@@ -154,19 +154,11 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     inherit (resolvedBuildPackages) bash coreutils;
     system = stdenv.buildPlatform.system;
   };
-  # Package recipes declare their smoke test as `smokeTest`. The former
-  # `qualification.packageProbe` spelling is still accepted until the next
-  # release so recipes can move over independently; giving both is an error.
+  # Package recipes declare their smoke test as `smokeTest`.
   authoredSmokeTest = packageName: attrs:
-    if attrs ? smokeTest && attrs ? qualification
-    then throw "Package '${packageName}' sets both smokeTest and the former qualification.packageProbe; keep only smokeTest."
-    else if attrs ? smokeTest
-    then attrs.smokeTest
-    else if !(attrs ? qualification)
-    then null
-    else if !builtins.isAttrs attrs.qualification || builtins.attrNames attrs.qualification != ["packageProbe"]
-    then throw "Package '${packageName}' qualification must contain exactly packageProbe; prefer smokeTest."
-    else attrs.qualification.packageProbe;
+    if attrs ? qualification
+    then throw "Package '${packageName}' sets qualification; declare its smoke test as smokeTest."
+    else attrs.smokeTest or null;
 
   # The companion document keeps its `aos.package.qualification` schema and
   # `qualificationDocument`/`qualificationArtifact` names, which published
@@ -549,7 +541,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     lowerArgs =
       # Deployment modules are retained as source artifacts, never evaluated by
       # the payload builder or passed as low-level derivation attributes.
-      (builtins.removeAttrs args ["abilities" "module" "moduleDeps" "catalogName" "platformSupport" "qualification" "smokeTest" "configModule" "sharedBuildCache" "cacheCCompilers" "accacheLlvmOptions" "outputPackages"])
+      (builtins.removeAttrs args ["abilities" "module" "moduleDeps" "catalogName" "platformSupport" "smokeTest" "configModule" "sharedBuildCache" "cacheCCompilers" "accacheLlvmOptions" "outputPackages"])
       // lib.optionalAttrs (args ? version) {inherit (release) version;}
       // lib.optionalAttrs cacheCCompilers (builtins.removeAttrs cCompilerCacheEnvironment ["RUSTC_WRAPPER"])
       // {

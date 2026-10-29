@@ -178,35 +178,15 @@
         smokeTest = commandProbe;
       }).qualificationDocument
       true)).success;
-  # The former argument name stays accepted until the next release and must
-  # produce the same companion document as smokeTest.
-  legacyPackage = pkgs.mkDerivation {
-    pname = "package-qualification-carrier-probe";
-    version = "1";
-    src = null;
-    phases = [];
-    qualification.packageProbe = probe;
-  };
-  rejectsBothSmokeTestNames =
+  # The removed `qualification` argument fails evaluation instead of being
+  # passed through to the derivation environment.
+  rejectsQualificationArgument =
     !(builtins.tryEval (builtins.deepSeq (pkgs.mkDerivation {
-        pname = "package-qualification-carrier-probe";
+        pname = "invalid-qualification-argument";
         version = "1";
         src = null;
         phases = [];
-        smokeTest = probe;
         qualification.packageProbe = probe;
-      })
-      true)).success;
-  rejectsUnknownQualification =
-    !(builtins.tryEval (builtins.deepSeq (pkgs.mkDerivation {
-        pname = "invalid-qualification-field";
-        version = "1";
-        src = null;
-        phases = [];
-        qualification = {
-          packageProbe = probe;
-          unchecked = true;
-        };
       })
       true)).success;
 in
@@ -279,11 +259,7 @@ in
   ];
   assert rejectsOpenProbe;
   assert rejectsMissingOutput;
-  assert rejectsUnknownQualification;
-  assert rejectsBothSmokeTestNames;
-  assert legacyPackage.qualificationDocument == package.qualificationDocument;
-  assert legacyPackage.smokeTest == package.smokeTest;
-  assert !(legacyPackage ? qualification);
+  assert rejectsQualificationArgument;
   assert (builtins.head (builtins.filter (artifact: artifact.selector.package == "qualification-tool") declaredTool.qualificationDocument.artifacts)).path == builtins.toString firstTool;
   assert rejectsConflictingTools;
   assert rejectsUndeclaredTool; true
