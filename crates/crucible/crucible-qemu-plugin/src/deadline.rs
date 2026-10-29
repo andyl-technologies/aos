@@ -43,7 +43,7 @@ impl ExactDeadlineReader {
     ///
     /// Returns [`ExactDeadlineError::CapabilityUnavailable`] when the
     /// `qemu_plugin_clock_deadline_ps` export was not resolved. This is the
-    /// fail-closed registration path for [PLUG-15].
+    /// fail-closed registration path for exact deadlines.
     pub fn require(
         clock_deadline_ps: Option<QemuClockDeadlineFn>,
     ) -> Result<Self, ExactDeadlineError> {
