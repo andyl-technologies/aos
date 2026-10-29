@@ -1,0 +1,5 @@
+sat
+((x 6)
+ (y 4)
+ (b #x0f))
+unsat
