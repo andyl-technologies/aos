@@ -2,19 +2,23 @@
 __pycache__/
 *.pyc
 
-# Built images and QEMU artifacts
-output/
+# Built images and QEMU artifacts at the checkout root
+/output/
 
-# Cached source tarballs
-mirror/
+# Cached source tarballs at the checkout root
+/mirror/
 
 # Rust build artifacts
 cli/target/
 crates/target/
 
-# Nix build results
+# Nix build output links. Git treats a link as a file, so the patterns below
+# match links in any directory while the negations keep real directories,
+# such as Rust modules named `result`, visible as source.
 result
 result-*
+!result/
+!result-*/
 
 # Direnv
 .direnv/
