@@ -543,6 +543,14 @@ not separate one user's data from root or from other users on the running
 host. A factory reset or reimage that recreates `/var` removes every home
 directory, so back them up like any other host state.
 
+## Install from USB media
+
+`aos.provisioning.install` matters only to [USB installer
+media](installation.md#install-from-a-usb-stick). The installer evaluates the
+same `host.nix` as first boot and erases `targetDevice` only when `mode` is
+`"unattended"`. The target must be a `/dev/disk/by-id` path naming a whole
+disk; it becomes the root disk. A normal first boot ignores the setting.
+
 ## Know when the plan becomes immutable
 
 On a fresh disk, AOS creates a provenance marker only after it has authorized,
