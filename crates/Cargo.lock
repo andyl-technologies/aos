@@ -330,12 +330,17 @@ name = "aos-boot-identity"
 version = "0.1.0"
 
 [[package]]
+name = "aos-boot-media"
+version = "0.1.0"
+
+[[package]]
 name = "aos-boot-runtime"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "aos-activation",
  "aos-boot-identity",
+ "aos-boot-media",
  "aos-core",
  "aos-nix",
  "aos-release-format",
@@ -1129,6 +1134,7 @@ name = "aos-recovery"
 version = "0.1.0"
 dependencies = [
  "aos-boot-identity",
+ "aos-boot-media",
 ]
 
 [[package]]

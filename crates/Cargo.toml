@@ -23,6 +23,7 @@ members = [
     "bindings/libssh2-sys",
 
     "boot/aos-boot-identity",
+    "boot/aos-boot-media",
     "boot/aos-boot-runtime",
     "boot/aos-configuration-image",
     "boot/aos-platform-metadata",
@@ -266,6 +267,7 @@ aos-core = { path = "core/aos-core" }
 aos-oci-types = { path = "artifacts/aos-oci-types" }
 aos-oci = { path = "artifacts/aos-oci" }
 aos-boot-identity = { path = "boot/aos-boot-identity" }
+aos-boot-media = { path = "boot/aos-boot-media" }
 aos-transfer = { path = "transfer/aos-transfer", default-features = false }
 aos-build-api = { path = "packages/aos-build-api" }
 aos-hub-api = { path = "hub/aos-hub-api" }

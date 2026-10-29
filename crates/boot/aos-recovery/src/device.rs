@@ -8,11 +8,11 @@
 
 use std::error::Error;
 use std::fmt;
-use std::fs;
 use std::io;
-use std::os::unix::fs::FileTypeExt;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::PathBuf;
+
+use aos_boot_media::device::{self, InstalledLayout};
+use aos_boot_media::{MediaError, Tools};
 
 /// Reports an ambiguous, incomplete, or unsafe block-device topology.
 #[derive(Debug)]
@@ -47,23 +47,17 @@ impl From<io::Error> for DeviceError {
     }
 }
 
-/// Holds canonical device nodes for the one accepted installed disk.
-#[derive(Clone, Debug)]
-pub struct HostLayout {
-    /// EFI System Partition.
-    pub esp: PathBuf,
-    /// Immutable slot-A data partition.
-    pub root_a: PathBuf,
-    /// Immutable slot-A verity partition.
-    pub root_a_hash: PathBuf,
-    /// Immutable slot-B data partition.
-    pub root_b: PathBuf,
-    /// Immutable slot-B verity partition.
-    pub root_b_hash: PathBuf,
-    /// Encrypted persistent-state partition.
-    pub var: PathBuf,
-    parent: PathBuf,
+impl From<MediaError> for DeviceError {
+    fn from(error: MediaError) -> Self {
+        match error {
+            MediaError::Io(error) => Self::Io(error),
+            other => Self::Topology(other.to_string()),
+        }
+    }
 }
+
+/// Holds canonical device nodes for the one accepted installed disk.
+pub type HostLayout = InstalledLayout;
 
 /// Resolves and validates the complete installed-disk partition set.
 ///
@@ -71,49 +65,23 @@ pub struct HostLayout {
 ///
 /// Returns [`DeviceError`] when a required PARTLABEL is missing or duplicated,
 /// a result is not a block partition, the partitions have different parents,
-/// or the installed parent reports itself as removable.
+/// the installed parent reports itself as removable, or the `var` partition is
+/// an MD array member.
 pub fn discover_host_layout() -> Result<HostLayout, DeviceError> {
-    let esp = unique_blkid("PARTLABEL", "ESP")?;
-    let root_a = unique_blkid("PARTLABEL", "root-a")?;
-    let root_a_hash = unique_blkid("PARTLABEL", "root-a-hash")?;
-    let root_b = unique_blkid("PARTLABEL", "root-b")?;
-    let root_b_hash = unique_blkid("PARTLABEL", "root-b-hash")?;
-    let var = unique_blkid("PARTLABEL", "var")?;
+    let tools = Tools::initrd();
+    let layout = InstalledLayout::discover(&tools.blkid)?;
     // A host that mirrors its system state declares a `var` MD array in
     // host.nix; the partition then only carries an MD superblock. Recovery
     // maintenance authenticates and mounts the root-disk partition directly,
     // so it must refuse rather than treat the member as the volume.
-    if probe_type(&var)?.as_deref() == Some("linux_raid_member") {
+    if device::probe_type(&tools.blkid, &layout.var)?.as_deref() == Some("linux_raid_member") {
         return Err(DeviceError::Topology(
             "the var partition is an MD array member; recovery maintenance supports only \
              a system-state volume carried directly by the root-disk partition"
                 .into(),
         ));
     }
-    let devices = [&esp, &root_a, &root_a_hash, &root_b, &root_b_hash, &var];
-    let parent = partition_parent(&esp)?;
-    for device in devices.iter().skip(1) {
-        if partition_parent(device)? != parent {
-            return Err(DeviceError::Topology(
-                "installed partitions do not share one parent disk".into(),
-            ));
-        }
-    }
-    let removable = fs::read_to_string(parent.join("removable"))?;
-    if removable.trim() != "0" {
-        return Err(DeviceError::Topology(
-            "installed parent disk is removable".into(),
-        ));
-    }
-    Ok(HostLayout {
-        esp,
-        root_a,
-        root_a_hash,
-        root_b,
-        root_b_hash,
-        var,
-        parent,
-    })
+    Ok(layout)
 }
 
 /// Resolves the unique removable bundle device outside the installed disk.
@@ -123,96 +91,17 @@ pub fn discover_host_layout() -> Result<HostLayout, DeviceError> {
 /// Returns [`DeviceError`] unless exactly one filesystem has the fixed label
 /// and its kernel parent differs from the installed parent disk.
 pub fn discover_recovery_media(host: &HostLayout) -> Result<PathBuf, DeviceError> {
-    let media = unique_blkid("LABEL", "AOS-RECOVERY")?;
-    let parent = media_parent(&media)?;
+    let media = device::unique_device(&Tools::initrd().blkid, "LABEL", "AOS-RECOVERY")?;
+    let parent = device::disk_of(&media)?;
     if parent == host.parent {
         return Err(DeviceError::Topology(
             "recovery media is a partition on the installed disk".into(),
         ));
     }
-    let removable = fs::read_to_string(parent.join("removable"))?;
-    if removable.trim() != "1" {
+    if !device::is_removable(&parent)? {
         return Err(DeviceError::Topology(
             "recovery media parent is not removable".into(),
         ));
     }
     Ok(media)
-}
-
-fn media_parent(device: &Path) -> Result<PathBuf, DeviceError> {
-    let name = device
-        .file_name()
-        .ok_or_else(|| DeviceError::Topology("media device has no kernel name".into()))?;
-    let sys = fs::canonicalize(Path::new("/sys/class/block").join(name))?;
-    if sys.join("partition").is_file() {
-        return sys.parent().map(Path::to_path_buf).ok_or_else(|| {
-            DeviceError::Topology("recovery-media partition has no parent device".into())
-        });
-    }
-    Ok(sys)
-}
-
-/// Probes the on-disk signature type of a device, ignoring the blkid cache.
-fn probe_type(device: &Path) -> Result<Option<String>, DeviceError> {
-    let output = Command::new("/bin/blkid")
-        .args(["-c", "/dev/null", "-p", "-s", "TYPE", "-o", "value"])
-        .arg(device)
-        .output()?;
-    // blkid exits 2 for a device without any recognized signature.
-    if !output.status.success() {
-        return Ok(None);
-    }
-    let value = String::from_utf8(output.stdout)
-        .map_err(|error| DeviceError::Topology(error.to_string()))?;
-    let value = value.trim();
-    Ok((!value.is_empty()).then(|| value.to_owned()))
-}
-
-fn unique_blkid(field: &str, value: &str) -> Result<PathBuf, DeviceError> {
-    let output = Command::new("/bin/blkid")
-        .args(["-c", "/dev/null", "-o", "device", "-t"])
-        .arg(format!("{field}={value}"))
-        .output()?;
-    if !output.status.success() {
-        return Err(DeviceError::Topology(format!(
-            "blkid could not resolve {field}={value}: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
-    }
-    let stdout = String::from_utf8(output.stdout)
-        .map_err(|error| DeviceError::Topology(error.to_string()))?;
-    let matches = stdout
-        .lines()
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>();
-    if matches.len() != 1 {
-        return Err(DeviceError::Topology(format!(
-            "expected one {field}={value} device, found {}",
-            matches.len()
-        )));
-    }
-    let device = fs::canonicalize(matches[0])?;
-    if !fs::metadata(&device)?.file_type().is_block_device() {
-        return Err(DeviceError::Topology(format!(
-            "{} is not a block device",
-            device.display()
-        )));
-    }
-    Ok(device)
-}
-
-fn partition_parent(device: &Path) -> Result<PathBuf, DeviceError> {
-    let name = device
-        .file_name()
-        .ok_or_else(|| DeviceError::Topology("device has no kernel name".into()))?;
-    let sys = fs::canonicalize(Path::new("/sys/class/block").join(name))?;
-    if !sys.join("partition").is_file() {
-        return Err(DeviceError::Topology(format!(
-            "{} is not a partition",
-            device.display()
-        )));
-    }
-    sys.parent()
-        .map(Path::to_path_buf)
-        .ok_or_else(|| DeviceError::Topology("partition has no parent device".into()))
 }

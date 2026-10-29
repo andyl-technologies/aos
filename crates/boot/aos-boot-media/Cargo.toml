@@ -1,0 +1,12 @@
+[package]
+name = "aos-boot-media"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Dependency-free block-device, digest, and db-trust primitives for boot-time media handling"
+
+[lib]
+path = "src/lib.rs"
+
+[lints]
+workspace = true

@@ -4,7 +4,6 @@
 //! metadata. Storage is read-back verified before durable profile publication;
 //! staging never exposes a discoverable normal boot entry or selects a boot.
 
-use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
@@ -12,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, ensure};
+use aos_boot_media::device::{InstalledLayout, ensure_unused};
 use aos_boot_identity::{BootSlot, NormalBootIdentity, parse_normal, pe::read_uki_text};
 use aos_release_format::artifact::BundlePath;
 use serde::Deserialize;
@@ -330,14 +330,17 @@ fn stage(request: &Request, tools: &Tools) -> Result<Value> {
         )?;
     }
 
-    let devices = discover_devices(&tools.blkid)?;
-    let destination = &devices[&format!("root-{target}")];
-    let hash_destination = &devices[&format!("root-{target}-hash")];
-    check_device_unused(destination)?;
-    check_device_unused(hash_destination)?;
+    let devices = InstalledLayout::discover(&tools.blkid)?;
+    let (destination, hash_destination) = if target == "a" {
+        (&devices.root_a, &devices.root_a_hash)
+    } else {
+        (&devices.root_b, &devices.root_b_hash)
+    };
+    ensure_unused(destination)?;
+    ensure_unused(hash_destination)?;
     validate_block_capacity(destination, root_size)?;
     validate_block_capacity(hash_destination, hash_size)?;
-    validate_esp_mount(&devices["ESP"])?;
+    validate_esp_mount(&devices.esp)?;
     validate_candidate_root(&root_path, request, tools, scratch.path())?;
     if request.action == StageAction::Preflight {
         return Ok(json!({
@@ -582,85 +585,6 @@ fn validate_candidate_metadata(mounted: &Path, candidate: &Value) -> Result<()> 
         candidate.get("module_library") == Some(&library),
         "candidate root module library differs"
     );
-    Ok(())
-}
-
-fn discover_devices(blkid: &Path) -> Result<BTreeMap<String, PathBuf>> {
-    let mut devices = BTreeMap::new();
-    let mut parent = None;
-    for label in [
-        "ESP",
-        "root-a",
-        "root-a-hash",
-        "root-b",
-        "root-b-hash",
-        "var",
-    ] {
-        let output = Command::new(blkid)
-            .args(["-c", "/dev/null", "-o", "device", "-t"])
-            .arg(format!("PARTLABEL={label}"))
-            .output()?;
-        ensure!(
-            output.status.success(),
-            "cannot discover installed partition {label}"
-        );
-        let text = std::str::from_utf8(&output.stdout)?;
-        let matches = text
-            .lines()
-            .filter(|line| !line.is_empty())
-            .collect::<Vec<_>>();
-        ensure!(
-            matches.len() == 1,
-            "installed partition {label} is missing or ambiguous"
-        );
-        let path = fs::canonicalize(matches[0])?;
-        ensure!(
-            path.starts_with("/dev") && fs::metadata(&path)?.file_type().is_block_device(),
-            "installed partition is not a device"
-        );
-        let sys = fs::canonicalize(
-            Path::new("/sys/class/block").join(path.file_name().context("block node has no name")?),
-        )?;
-        ensure!(
-            sys.join("partition").is_file(),
-            "installed node is not a partition"
-        );
-        let disk = sys
-            .parent()
-            .context("partition has no parent")?
-            .to_path_buf();
-        ensure!(
-            fs::read_to_string(disk.join("removable"))?.trim() == "0",
-            "installed disk is removable"
-        );
-        if let Some(expected) = &parent {
-            ensure!(
-                expected == &disk,
-                "installed partitions belong to different disks"
-            );
-        } else {
-            parent = Some(disk);
-        }
-        devices.insert(label.into(), path);
-    }
-    Ok(devices)
-}
-
-fn check_device_unused(device: &Path) -> Result<()> {
-    let name = device.file_name().context("block node has no name")?;
-    ensure!(
-        fs::read_dir(Path::new("/sys/class/block").join(name).join("holders"))?
-            .next()
-            .is_none(),
-        "inactive partition has an active device-mapper holder"
-    );
-    let device_id = fs::read_to_string(Path::new("/sys/class/block").join(name).join("dev"))?;
-    for line in fs::read_to_string("/proc/self/mountinfo")?.lines() {
-        ensure!(
-            line.split_ascii_whitespace().nth(2) != Some(device_id.trim()),
-            "inactive partition is mounted"
-        );
-    }
     Ok(())
 }
 
