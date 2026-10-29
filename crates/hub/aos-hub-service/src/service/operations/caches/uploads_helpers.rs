@@ -101,6 +101,11 @@ impl RpcService {
         registry: &aos_hub_db::db::RegistryRecord,
         object: &aos_hub_db::db::RegistryPublicationUploadObjectRecord,
     ) -> Result<(), RpcError> {
+        self.db
+            .verified_registry_object_accounting_eligibility(object.surface_object_id)
+            .await
+            .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
+
         if let Some(state) = self
             .db
             .staged_publication_state(&publication.publication_id)
@@ -346,9 +351,9 @@ impl RpcService {
                 .await
                 .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?
             {
-                crate::surface_write::MultipartAbortOutcome::Aborted
-                | crate::surface_write::MultipartAbortOutcome::Absent => {}
-                crate::surface_write::MultipartAbortOutcome::PossiblyCompleted => {
+                aos_hub_model::storage::MultipartAbortOutcome::Aborted
+                | aos_hub_model::storage::MultipartAbortOutcome::Absent => {}
+                aos_hub_model::storage::MultipartAbortOutcome::PossiblyCompleted => {
                     return Err(RpcError::FailedPrecondition(
                         "multipart abort could not exclude a completed object".into(),
                     ));
@@ -695,8 +700,8 @@ impl RpcService {
                 {
                     if matches!(
                         abort,
-                        Ok(crate::surface_write::MultipartAbortOutcome::Aborted)
-                            | Ok(crate::surface_write::MultipartAbortOutcome::Absent)
+                        Ok(aos_hub_model::storage::MultipartAbortOutcome::Aborted)
+                            | Ok(aos_hub_model::storage::MultipartAbortOutcome::Absent)
                     ) {
                         return Ok(current.ticket_id);
                     }
@@ -706,8 +711,8 @@ impl RpcService {
                 }
                 match abort {
                     Ok(
-                        crate::surface_write::MultipartAbortOutcome::Aborted
-                        | crate::surface_write::MultipartAbortOutcome::Absent,
+                        aos_hub_model::storage::MultipartAbortOutcome::Aborted
+                        | aos_hub_model::storage::MultipartAbortOutcome::Absent,
                     ) => {
                         let _ = self
                             .db
@@ -719,7 +724,8 @@ impl RpcService {
                             )
                             .await;
                     }
-                    Ok(crate::surface_write::MultipartAbortOutcome::PossiblyCompleted) | Err(_) => {
+                    Ok(aos_hub_model::storage::MultipartAbortOutcome::PossiblyCompleted)
+                    | Err(_) => {
                         let _ = self
                             .db
                             .mark_cache_write_ticket_uncertain(

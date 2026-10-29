@@ -11,7 +11,9 @@ use anyhow::{bail, Context, Result};
 
 use super::{OciGcDeleteOutcome, OciUntrackedRepairPlanRecord};
 use crate::backend::Statement;
-use crate::db::{sanitize_log_text, validate_key_bytes, Database};
+use crate::db::sanitize_log_text;
+use crate::db::validate_key_bytes;
+use crate::db::Database;
 
 /// Exact reviewed untracked-object repair claimed by one provider worker.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,7 +144,7 @@ impl Database {
                        AND binding.resource_version = repair.binding_resource_version
                        AND ((repair.delete_credential_purpose IS NULL
                              AND repair.delete_credential_generation IS NULL
-                             AND binding.kind IN('local_fs', 'deployment_r2'))
+                             AND binding.kind IN ('local_fs', 'deployment_r2'))
                          OR (credential.validation_state = 'valid'
                            AND EXISTS (SELECT 1
                              FROM oci_untracked_repair_credential_holds hold
@@ -223,7 +225,7 @@ impl Database {
                              oci_untracked_repair_plans.binding_resource_version
                            AND ((oci_untracked_repair_plans.delete_credential_purpose IS NULL
                                  AND oci_untracked_repair_plans.delete_credential_generation IS NULL
-                                 AND binding.kind IN('local_fs', 'deployment_r2'))
+                                 AND binding.kind IN ('local_fs', 'deployment_r2'))
                              OR (credential.validation_state = 'valid'
                                AND EXISTS (SELECT 1
                                  FROM oci_untracked_repair_credential_holds hold

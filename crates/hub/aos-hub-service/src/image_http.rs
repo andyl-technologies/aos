@@ -9,18 +9,24 @@ use std::collections::BTreeMap;
 use anyhow::{bail, Result};
 use base64::Engine as _;
 
-use aos_hub_model::delivery_http::{
-    evaluate_verified_representation, ContentMutability, DeliveryMethod, EntityTag,
-    EntityTagCondition, HttpTimestamp, IfRangeCondition, RequestDecision, RequestPreconditions,
-    SingleByteRange, VerifiedRepresentation,
-};
+use aos_hub_model::delivery_http::evaluate_verified_representation;
+use aos_hub_model::delivery_http::ContentMutability;
+use aos_hub_model::delivery_http::DeliveryMethod;
+use aos_hub_model::delivery_http::EntityTag;
+use aos_hub_model::delivery_http::EntityTagCondition;
+use aos_hub_model::delivery_http::HttpTimestamp;
+use aos_hub_model::delivery_http::IfRangeCondition;
+use aos_hub_model::delivery_http::RequestDecision;
+use aos_hub_model::delivery_http::RequestPreconditions;
+use aos_hub_model::delivery_http::SingleByteRange;
+use aos_hub_model::delivery_http::VerifiedRepresentation;
 
 /// Authorization visibility of the resolved registry image.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImageAccess {
     /// Anonymous delivery may be stored by shared caches and CDNs.
     Public,
-    /// Delivery required authorization and must remain in private caches.
+    /// Delivery used credentials or required authorization and must avoid shared caches.
     Private,
 }
 

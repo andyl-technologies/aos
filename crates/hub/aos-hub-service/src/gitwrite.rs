@@ -46,9 +46,11 @@ use anyhow::{bail, Context, Result};
 
 use crate::config::ChangeId;
 use crate::fetch::SurfaceFetch;
-use crate::git::{ObjectReader, CHANGE_ID_TRAILER};
+use crate::git::ObjectReader;
+use crate::git::CHANGE_ID_TRAILER;
 use crate::surface_write::SurfaceWrite;
-use aos_hub_db::db::{Database, RegistryRecord};
+use aos_hub_db::db::Database;
+use aos_hub_db::db::RegistryRecord;
 use aos_hub_model::auth::seal::SecretSealer;
 
 use aos_registry_format::object::{

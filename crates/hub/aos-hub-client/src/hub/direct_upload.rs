@@ -1,0 +1,396 @@
+//! Bounded authenticated direct-upload control, separate from provider bodies.
+//!
+//! The authenticated Hub receives closed controls only. Its response bytes are
+//! bounded before decoding and errors never expose raw provider capability URLs
+//! or envelope messages. Legacy transport is selected only by valid discovery.
+
+#[cfg(unix)]
+mod authentication;
+#[cfg(unix)]
+pub use authentication::DirectProvisioningAuthentication;
+
+#[cfg(unix)]
+mod coordinator;
+#[cfg(unix)]
+mod local;
+#[cfg(unix)]
+mod publication;
+#[cfg(unix)]
+mod publication_identity;
+#[cfg(unix)]
+pub use publication::{
+    PreparedDirectPublication, commit_direct_publication, prepare_direct_publication,
+    publication_inventory_digest,
+};
+#[cfg(unix)]
+pub use publication_identity::{
+    PinnedLegacyBearer, PublicationTransferDiscovery, discover_publication_transport,
+};
+#[cfg(unix)]
+mod options;
+#[cfg(unix)]
+mod refresh;
+#[cfg(unix)]
+pub use coordinator::{DirectStageFile, DirectUploadCoordinator, checkpoint_namespace};
+#[cfg(unix)]
+pub use local::DirectStagePath;
+#[cfg(unix)]
+pub use options::DirectUploadOptions;
+#[cfg(unix)]
+pub use refresh::DirectHubAuthentication;
+
+use std::fmt;
+use std::time::Duration;
+
+use aos_hub_api::direct_upload::*;
+use aos_hub_api::{CONNECT_PROTOCOL_VERSION, CONNECT_PROTOCOL_VERSION_HEADER};
+use aos_transfer::direct_upload::{DirectClientError, DirectUploadControl};
+use async_trait::async_trait;
+use serde::{Serialize, de::DeserializeOwned};
+
+use super::HubClient;
+
+const CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
+// Complete performs authorization, destination copies, and Native commit in
+// separate bounded phases. Its HTTP deadline must cover that whole operation;
+// the server still checks every phase's original authority and expiry.
+const COMPLETE_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Preserves a transport category without exposing its credential-bearing URL.
+fn control_transport_failure(
+    kind: aos_transfer::direct_upload::DirectControlKind,
+    phase: &str,
+    started: std::time::Instant,
+    error: &reqwest::Error,
+) -> DirectClientError {
+    let reason = if error.is_timeout() {
+        "timeout"
+    } else if error.is_connect() {
+        "connect"
+    } else {
+        "transport"
+    };
+    // Neither the error's Display implementation nor its source chain is safe:
+    // both can include upstream URLs or response material. Keep only enums,
+    // source-owned phase labels and elapsed time in this diagnostic.
+    eprintln!(
+        "Direct upload control failed: kind={kind:?} phase={phase} reason={reason} elapsed_ms={}",
+        started.elapsed().as_millis()
+    );
+    DirectClientError::ControlUnavailable
+}
+
+/// Authenticated bounded Hub controls that never send application file bytes.
+#[derive(Clone)]
+pub struct DirectHubControl {
+    http: reqwest::Client,
+    base: String,
+    token: Option<String>,
+    maximum_control_bytes: usize,
+    metrics: std::sync::Arc<aos_transfer::direct_upload::DirectTransferMetrics>,
+}
+
+impl fmt::Debug for DirectHubControl {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DirectHubControl")
+            .field("authenticated", &self.token.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl DirectHubControl {
+    /// Admits historical body transport through authenticated server policy.
+    ///
+    /// Platforms without private-journal custody use this metadata-only check
+    /// before sending a positively identified Hub any legacy upload body.
+    /// Successful old empty replies retain standalone compatibility. Direct
+    /// policy requires a supported direct adapter even when providers are unready.
+    ///
+    /// # Errors
+    /// Refuses direct-required, unknown or failed policy discovery without
+    /// exposing the response or credential.
+    pub async fn require_legacy_transport(&self) -> Result<(), DirectClientError> {
+        let reply: aos_hub_api::WhoAmIResponse = self
+            .publication_call(
+                super::HubTopologyMethod::WhoAmI,
+                &aos_hub_api::WhoAmIRequest {},
+                MAX_DIRECT_CONTROL_BYTES,
+            )
+            .await?;
+        match reply.transfer_mode.as_str() {
+            "" | "legacy" => Ok(()),
+            _ => Err(DirectClientError::Invalid),
+        }
+    }
+
+    /// Builds a credential-confined control pool from an existing Hub client.
+    ///
+    /// Hub credentials remain on its configured origin; provider grants use a
+    /// different transport. Environment proxies and HTTP redirects are disabled.
+    /// The configured Hub may use HTTP for existing explicit local deployments;
+    /// this never authorizes an HTTP provider URL.
+    ///
+    /// # Errors
+    /// Returns a value-free failure if the pool cannot be initialized.
+    pub fn new(hub: &HubClient) -> Result<Self, DirectClientError> {
+        let base = url::Url::parse(&hub.base).map_err(|_| DirectClientError::Invalid)?;
+        if !base.username().is_empty()
+            || base.password().is_some()
+            || base.query().is_some()
+            || base.fragment().is_some()
+        {
+            return Err(DirectClientError::Invalid);
+        }
+        let http = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(CONTROL_TIMEOUT)
+            .build()
+            .map_err(|_| DirectClientError::ControlUnavailable)?;
+        Ok(Self {
+            http,
+            base: hub.base.clone(),
+            token: hub.token.clone(),
+            maximum_control_bytes: MAX_DIRECT_CONTROL_BYTES,
+            metrics: std::sync::Arc::new(
+                aos_transfer::direct_upload::DirectTransferMetrics::default(),
+            ),
+        })
+    }
+
+    /// Shares value-free attempted-call counters across owned bearer renewal.
+    pub fn with_metrics(
+        mut self,
+        metrics: std::sync::Arc<aos_transfer::direct_upload::DirectTransferMetrics>,
+    ) -> Self {
+        self.metrics = metrics;
+        self
+    }
+
+    /// Applies a smaller independently authenticated whole-control byte limit.
+    ///
+    /// # Errors
+    /// Refuses zero or a limit above the fixed protocol maximum.
+    pub fn with_control_limit(&self, maximum: usize) -> Result<Self, DirectClientError> {
+        if maximum == 0 || maximum > MAX_DIRECT_CONTROL_BYTES {
+            return Err(DirectClientError::Invalid);
+        }
+        let mut result = self.clone();
+        result.maximum_control_bytes = maximum;
+        Ok(result)
+    }
+
+    /// Resolves explicit transport policy for the exact authenticated owner.
+    ///
+    /// Only a valid `Legacy` response permits a standalone old-API adapter. An
+    /// unavailable, unknown or malformed reply is an error, never fallback.
+    ///
+    /// # Errors
+    /// Returns a value-free authorization, transport or closed protocol failure.
+    pub async fn capabilities(
+        &self,
+        target: &DirectCapabilitiesTarget,
+    ) -> Result<DirectUploadCapabilities, DirectClientError> {
+        target.validate().map_err(|_| DirectClientError::Invalid)?;
+        let request = DirectGetCapabilities {
+            target: target.clone(),
+        };
+        // Discovery is a read-only query. All attempts retain the same target
+        // and bearer and share the original control deadline.
+        let response: DirectUploadCapabilities = tokio::time::timeout(CONTROL_TIMEOUT, async {
+            let mut retries = 0;
+            loop {
+                let result = self.call("GetCapabilities", &request).await;
+                match result {
+                    Err(DirectClientError::ControlUnavailable) if retries < 2 => {
+                        retries += 1;
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                    result => return result,
+                }
+            }
+        })
+        .await
+        .map_err(|_| DirectClientError::ControlUnavailable)??;
+        response
+            .validate_for(target)
+            .map_err(|_| DirectClientError::Invalid)?;
+        Ok(response)
+    }
+
+    async fn call<T: Serialize, R: DeserializeOwned>(
+        &self,
+        method: &str,
+        request: &T,
+    ) -> Result<R, DirectClientError> {
+        let bytes = self
+            .post_bytes(
+                &format!("aos.hub.v1.DirectUploadService/{method}"),
+                request,
+                self.maximum_control_bytes,
+            )
+            .await?;
+        decode_direct_control(&bytes).map_err(|_| DirectClientError::Invalid)
+    }
+
+    pub(super) async fn publication_call<T: Serialize, R: DeserializeOwned>(
+        &self,
+        method: super::HubTopologyMethod,
+        request: &T,
+        maximum_reply: usize,
+    ) -> Result<R, DirectClientError> {
+        use super::HubTopologyMethod::*;
+        if !matches!(
+            method,
+            GetRegistry
+                | ListRegistryPublications
+                | GetRegistryPublication
+                | BeginRegistryPublicationManifest
+                | AppendRegistryPublicationManifest
+                | SealRegistryPublicationManifest
+                | CommitRegistryPublication
+                | WhoAmI
+        ) {
+            return Err(DirectClientError::Invalid);
+        }
+        let bytes = self
+            .post_bytes(method.path(), request, maximum_reply)
+            .await?;
+        serde_json::from_slice(&bytes).map_err(|_| DirectClientError::Invalid)
+    }
+
+    async fn post_bytes<T: Serialize>(
+        &self,
+        path: &str,
+        request: &T,
+        maximum_reply: usize,
+    ) -> Result<Vec<u8>, DirectClientError> {
+        if maximum_reply == 0 || maximum_reply > 64 * 1024 * 1024 {
+            return Err(DirectClientError::Invalid);
+        }
+        let body = encode_direct_control(request).map_err(|_| DirectClientError::Invalid)?;
+        if body.len() > self.maximum_control_bytes {
+            return Err(DirectClientError::Invalid);
+        }
+        let mut request = self
+            .http
+            .post(format!("{}{path}", self.base))
+            .header(CONNECT_PROTOCOL_VERSION_HEADER, CONNECT_PROTOCOL_VERSION)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(body);
+        if let Some(token) = &self.token {
+            request = request.bearer_auth(token);
+        }
+        use aos_transfer::direct_upload::DirectControlKind as Kind;
+        let kind = match path.rsplit('/').next() {
+            Some("GetCapabilities") => Kind::Capabilities,
+            Some("BeginBatch") => Kind::Begin,
+            Some("StatusBatch") => Kind::Status,
+            Some("GrantPartsBatch") => Kind::Grant,
+            Some("ReportPartsBatch") => Kind::Report,
+            Some("CompleteBatch") => Kind::Complete,
+            Some("Abort") => Kind::Abort,
+            Some("WhoAmI") => Kind::Identity,
+            Some("BeginRegistryPublicationManifest") => Kind::ManifestBegin,
+            Some("AppendRegistryPublicationManifest") => Kind::ManifestAppend,
+            Some("SealRegistryPublicationManifest") => Kind::ManifestSeal,
+            Some("CommitRegistryPublication") => Kind::PublicationCommit,
+            _ => Kind::MetadataRead,
+        };
+        if matches!(kind, Kind::Complete) {
+            request = request.timeout(COMPLETE_TIMEOUT);
+        }
+
+        self.metrics.record_control_attempt(kind);
+        let started = std::time::Instant::now();
+        let mut response = request
+            .send()
+            .await
+            .map_err(|error| control_transport_failure(kind, "response", started, &error))?;
+        // Error envelopes may contain upstream URLs or provider bodies. Do not
+        // parse, log or attach their text to a public error chain.
+        match response.status().as_u16() {
+            200 => {}
+            401 | 403 => return Err(DirectClientError::Denied),
+            409 | 412 => return Err(DirectClientError::Blocked),
+            status @ (429 | 500..=599) => {
+                eprintln!(
+                    "Direct upload control failed: kind={kind:?} phase=response reason=http status={status} elapsed_ms={}",
+                    started.elapsed().as_millis()
+                );
+                return Err(DirectClientError::ControlUnavailable);
+            }
+            _ => return Err(DirectClientError::Invalid),
+        }
+        if response
+            .content_length()
+            .is_some_and(|length| length > maximum_reply as u64)
+        {
+            return Err(DirectClientError::Invalid);
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|error| control_transport_failure(kind, "body", started, &error))?
+        {
+            if bytes
+                .len()
+                .checked_add(chunk.len())
+                .is_none_or(|length| length > maximum_reply)
+            {
+                return Err(DirectClientError::Invalid);
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        Ok(bytes)
+    }
+}
+
+#[cfg(test)]
+mod tests;
+
+#[cfg(test)]
+mod deadline_tests;
+
+#[async_trait]
+impl DirectUploadControl for DirectHubControl {
+    async fn execute(
+        &self,
+        request: &DirectUploadRequest,
+    ) -> Result<DirectUploadResponse, DirectClientError> {
+        request.validate().map_err(|_| DirectClientError::Invalid)?;
+        let (response, expected_operation): (DirectUploadResponse, &str) = match request {
+            DirectUploadRequest::BeginBatch(batch) => {
+                (self.call("BeginBatch", batch).await?, &batch.operation_id)
+            }
+            DirectUploadRequest::StatusBatch(batch) => {
+                (self.call("StatusBatch", batch).await?, &batch.operation_id)
+            }
+            DirectUploadRequest::GrantPartsBatch(batch) => (
+                self.call("GrantPartsBatch", batch).await?,
+                &batch.operation_id,
+            ),
+            DirectUploadRequest::ReportPartsBatch(batch) => (
+                self.call("ReportPartsBatch", batch).await?,
+                &batch.operation_id,
+            ),
+            DirectUploadRequest::CompleteBatch(batch) => (
+                self.call("CompleteBatch", batch).await?,
+                &batch.operation_id,
+            ),
+            DirectUploadRequest::Abort(batch) => {
+                (self.call("Abort", batch).await?, &batch.operation_id)
+            }
+        };
+        response
+            .validate()
+            .map_err(|_| DirectClientError::Invalid)?;
+        if response.operation_id != expected_operation {
+            return Err(DirectClientError::Invalid);
+        }
+        Ok(response)
+    }
+}

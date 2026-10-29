@@ -25,8 +25,12 @@ use aos_hub_model::clock::Instant;
 use std::fmt::Write as _;
 use std::sync::{OnceLock, RwLock};
 
-use crate::web::render::{authenticated_navigation, escape, masthead, table as render_table};
-use aos_hub_db::db::{ChannelSummary, WebauthnCredentialRecord};
+use crate::web::render::authenticated_navigation;
+use crate::web::render::escape;
+use crate::web::render::masthead;
+use crate::web::render::table as render_table;
+use aos_hub_db::db::ChannelSummary;
+use aos_hub_db::db::WebauthnCredentialRecord;
 use aos_hub_model::domain::Permission;
 
 /// Items per page for the console's paginated lists (orgs, members, tokens,

@@ -13,10 +13,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use aos_hub_api as pb;
-use aos_hub_db::db::{
-    oci_blob_object_key, ClaimOciUpload, IndexOciRepositoryCatalog, OciBlobClaimOutcome,
-    OciCatalogObject, OciCatalogProjection, OciImageConfigProjection, OciLayerProjection,
-};
+use aos_hub_db::db::oci_blob_object_key;
+use aos_hub_db::db::ClaimOciUpload;
+use aos_hub_db::db::IndexOciRepositoryCatalog;
+use aos_hub_db::db::OciBlobClaimOutcome;
+use aos_hub_db::db::OciCatalogObject;
+use aos_hub_db::db::OciCatalogProjection;
+use aos_hub_db::db::OciImageConfigProjection;
+use aos_hub_db::db::OciLayerProjection;
 use aos_hub_native::auth::extract::AuthState;
 use aos_hub_native::auth::jwt::{
     JwtKeys, OciClaims, OciRepositoryGrant, OciTokenGrant, OCI_AUTHORIZATION_CLAIMS_VERSION,
@@ -24,7 +28,7 @@ use aos_hub_native::auth::jwt::{
 use aos_hub_native::db::{
     Database, EndpointHostInput, EndpointRevisionSpec, NewTopologyOperation,
     NewTopologyOperationTarget, NewTopologyOperationTargetRef, RouteSpec, SetSurfaceObject,
-    SurfaceTarget, TokenAuth,
+    SurfaceTarget,
 };
 use aos_hub_native::domain::{Permission, Principal, Scope};
 use aos_hub_native::server::{router, AppState};
@@ -784,18 +788,8 @@ async fn spawn_registry_with_options(
         .await
         .unwrap();
     let hub_bearer = Some(
-        keys.mint_browser_session(
-            &TokenAuth {
-                token_id: "native-oci-hub-token".to_string(),
-                owner: Principal::user(user_id),
-                scope: Scope::parse(&scope),
-                permissions: vec![
-                    Permission::Read,
-                    Permission::Publish,
-                    Permission::RegistryConfigure,
-                ],
-                expires_at: None,
-            },
+        keys.mint(
+            &db.validate_token(&docker_password).await.unwrap().unwrap(),
             900,
         )
         .unwrap(),
@@ -1164,6 +1158,8 @@ fn forged_action_token(registry: &RunningRegistry, repository: &str, action: &st
         .unwrap()
         .as_secs() as i64;
     let claims = OciClaims {
+        owner_kind: None,
+        owner_incarnation: None,
         oci_version: OCI_AUTHORIZATION_CLAIMS_VERSION.to_string(),
         sub: "test:wrong-action".to_string(),
         aud: registry.authority.clone(),
@@ -2578,6 +2574,8 @@ async fn cancelled_upload_retries_preserve_owner_and_repository_scope() {
         .mint_oci(
             &OciTokenGrant {
                 subject: "test:foreign-upload-owner".to_string(),
+                owner_kind: None,
+                owner_incarnation: None,
                 authority: registry.authority.clone(),
                 registry_stable_id: registry.registry_stable_id.clone(),
                 grants: vec![OciRepositoryGrant {
@@ -2653,6 +2651,32 @@ async fn public_native_distribution_serves_exact_objects_and_the_real_client_pul
         manifest.bytes().await.unwrap().as_ref(),
         registry.image.objects[0].bytes.as_slice()
     );
+
+    let token_response = registry
+        .http
+        .get(format!("{}v2/token", registry.origin))
+        .query(&[
+            ("service", registry.authority.as_str()),
+            ("scope", "repository:aos:pull"),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(token_response.status(), StatusCode::OK);
+    let token: serde_json::Value = token_response.json().await.unwrap();
+    let credentialed_manifest = registry
+        .http
+        .get(&manifest_url)
+        .bearer_auth(token["token"].as_str().unwrap())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(credentialed_manifest.status(), StatusCode::OK);
+    assert_eq!(
+        credentialed_manifest.headers()[CACHE_CONTROL],
+        "private, no-store"
+    );
+    assert_eq!(credentialed_manifest.headers()[VARY], "Authorization");
 
     let head = registry.http.head(&manifest_url).send().await.unwrap();
     assert_eq!(head.status(), StatusCode::OK);
@@ -2886,6 +2910,8 @@ async fn private_native_distribution_binds_tokens_and_authenticates_before_looku
             .mint_oci(
                 &OciTokenGrant {
                     subject: "test:wrong-audience".to_string(),
+                    owner_kind: None,
+                    owner_incarnation: None,
                     authority: "127.0.0.1:1".to_string(),
                     registry_stable_id: registry.registry_stable_id.clone(),
                     grants: vec![OciRepositoryGrant {
@@ -2901,6 +2927,8 @@ async fn private_native_distribution_binds_tokens_and_authenticates_before_looku
             .mint_oci(
                 &OciTokenGrant {
                     subject: "test:wrong-repository".to_string(),
+                    owner_kind: None,
+                    owner_incarnation: None,
                     authority: registry.authority.clone(),
                     registry_stable_id: registry.registry_stable_id.clone(),
                     grants: vec![OciRepositoryGrant {
@@ -2946,6 +2974,8 @@ async fn private_native_distribution_binds_tokens_and_authenticates_before_looku
         .mint_oci(
             &OciTokenGrant {
                 subject: "test:unknown-repository".to_string(),
+                owner_kind: None,
+                owner_incarnation: None,
                 authority: registry.authority.clone(),
                 registry_stable_id: registry.registry_stable_id.clone(),
                 grants: vec![OciRepositoryGrant {

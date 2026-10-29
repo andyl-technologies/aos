@@ -29,6 +29,7 @@ impl RpcService {
         warnings: Vec<String>,
         confirmation_hash: Option<String>,
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
+        self.current_principal(claims).await?;
         if idempotency_key.is_empty() {
             return Err(RpcError::invalid("idempotency_key is required"));
         }
@@ -41,6 +42,7 @@ impl RpcService {
                 plan_kind: plan_kind.to_string(),
                 actor_kind: claims.owner_kind.clone(),
                 actor_id: Some(claims.owner_id),
+                actor_incarnation: claims.owner_incarnation.clone(),
                 actor_label: claims.sub.clone(),
                 scope: scope.to_string(),
                 input_versions_json: serde_json::to_string(input).map_err(RpcError::internal)?,
@@ -61,6 +63,7 @@ impl RpcService {
         plan_kind: &str,
         idempotency_key: &str,
     ) -> Result<Option<(aos_hub_db::db::TopologyPlanRecord, T)>, RpcError> {
+        self.current_principal(claims).await?;
         if idempotency_key.is_empty() {
             return Err(RpcError::invalid("idempotency_key is required"));
         }
@@ -77,6 +80,11 @@ impl RpcService {
         else {
             return Ok(None);
         };
+        if !Self::plan_actor_matches(&plan, claims) {
+            return Err(RpcError::FailedPrecondition(
+                "plan belongs to another account incarnation or requires replanning".into(),
+            ));
+        }
         let input = serde_json::from_str(&plan.input_versions_json).map_err(RpcError::internal)?;
         Ok(Some((plan, input)))
     }
@@ -115,6 +123,7 @@ impl RpcService {
         confirmation_hash: Option<&str>,
     ) -> Result<(aos_hub_db::db::TopologyPlanRecord, T), RpcError> {
         let claims = self.require_claims(auth)?;
+        self.current_principal(&claims).await?;
         let plan = self
             .db
             .topology_plan(plan_id)
@@ -122,8 +131,7 @@ impl RpcService {
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("topology plan"))?;
         if plan.plan_kind != plan_kind
-            || plan.actor_kind != claims.owner_kind
-            || plan.actor_id != Some(claims.owner_id)
+            || !Self::plan_actor_matches(&plan, &claims)
             || plan.applied_at.is_some()
             || (plan.expires_at < clock::now_unix_secs() && plan.apply_idempotency_key.is_none())
         {
@@ -154,6 +162,7 @@ impl RpcService {
             return Err(RpcError::invalid("idempotency_key is required"));
         }
         let claims = self.require_claims(auth)?;
+        self.current_principal(&claims).await?;
         let plan = self
             .db
             .topology_plan(plan_id)
@@ -161,8 +170,7 @@ impl RpcService {
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("topology plan"))?;
         if plan.plan_kind != plan_kind
-            || plan.actor_kind != claims.owner_kind
-            || plan.actor_id != Some(claims.owner_id)
+            || !Self::plan_actor_matches(&plan, &claims)
             || plan.applied_at.is_some()
         {
             return Err(RpcError::FailedPrecondition(

@@ -16,6 +16,11 @@ impl RpcService {
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("topology plan"))?;
+        if !Self::plan_actor_matches(&plan, &claims) {
+            return Err(RpcError::FailedPrecondition(
+                "plan belongs to another account incarnation or requires replanning".into(),
+            ));
+        }
         self.require_permission(&claims, permission, &Scope::parse(&plan.scope))
             .await?;
         Ok(claims)
@@ -148,12 +153,14 @@ impl RpcService {
         if !token_allows(claims, perm, &context) {
             return false;
         }
-        let Some(principal) = claims_principal(claims) else {
+        let Ok(principal) = self.current_principal(claims).await else {
             return false;
         };
         match self.db.effective_scopes(principal).await {
-            Ok(grants) => iam::allow(&grants, perm, &context),
-            Err(_) => false,
+            Ok(grants) if iam::allow(&grants, perm, &context) => {
+                self.current_principal(claims).await.is_ok()
+            }
+            _ => false,
         }
     }
 
@@ -179,6 +186,16 @@ impl RpcService {
                     }
                 }
                 if registry.visibility == "public" || registry.org_id.is_none() {
+                    aos_hub_db::hybrid_ingress::observation::record_existing_check(
+                        "registry_public_read_policy",
+                        &(
+                            registry.id,
+                            &registry.stable_id,
+                            &registry.scope_key,
+                            registry.org_id,
+                            &registry.visibility,
+                        ),
+                    );
                     return Ok(());
                 }
                 let session = self
@@ -199,6 +216,16 @@ impl RpcService {
                     .map_err(RpcError::internal)?
                     .ok_or_else(|| RpcError::not_found("registry scope"))?;
                 if iam::allow(&grants, Permission::Read, &context) {
+                    aos_hub_db::hybrid_ingress::observation::record_existing_check(
+                        "registry_session_read",
+                        &(
+                            session.auth.user_id,
+                            &session.auth.owner_incarnation,
+                            &session.auth.session_id_hash,
+                            scope.as_str(),
+                            aos_hub_db::hybrid_ingress::observation::grant_projection(&grants),
+                        ),
+                    );
                     Ok(())
                 } else {
                     Err(RpcError::PermissionDenied(
@@ -282,6 +309,16 @@ impl RpcService {
             }
         }
         if registry.visibility == "public" || registry.org_id.is_none() {
+            aos_hub_db::hybrid_ingress::observation::record_existing_check(
+                "registry_public_read_policy",
+                &(
+                    registry.id,
+                    &registry.stable_id,
+                    &registry.scope_key,
+                    registry.org_id,
+                    &registry.visibility,
+                ),
+            );
             return Ok(());
         }
         let claims = self.require_claims(auth)?;

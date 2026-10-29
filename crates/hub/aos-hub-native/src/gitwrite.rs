@@ -11,12 +11,19 @@
 //! [`SurfaceWrite`]: aos_hub_service::surface_write::SurfaceWrite
 
 // The git-backed change-request write flow (relocated to core over the ports).
-pub use aos_hub_service::gitwrite::{propose_config_change, ProposeMeta, ProposedChange};
+pub use aos_hub_service::gitwrite::propose_config_change;
+pub use aos_hub_service::gitwrite::ProposeMeta;
+pub use aos_hub_service::gitwrite::ProposedChange;
 
 // The read side of the git-backed config/change-request flow (relocated to
 // core's `git` module); re-exported so `crate::gitwrite::…` call sites in the
 // console, indexer, and validation paths resolve unchanged.
-pub use aos_hub_service::git::{
-    commit_log, diff_config_files, extract_change_id_trailer, load_committed_file, merge_command,
-    unified_diff, LoggedCommit, CHANGE_ID_TRAILER, DIFFED_FILES,
-};
+pub use aos_hub_service::git::commit_log;
+pub use aos_hub_service::git::diff_config_files;
+pub use aos_hub_service::git::extract_change_id_trailer;
+pub use aos_hub_service::git::load_committed_file;
+pub use aos_hub_service::git::merge_command;
+pub use aos_hub_service::git::unified_diff;
+pub use aos_hub_service::git::LoggedCommit;
+pub use aos_hub_service::git::CHANGE_ID_TRAILER;
+pub use aos_hub_service::git::DIFFED_FILES;

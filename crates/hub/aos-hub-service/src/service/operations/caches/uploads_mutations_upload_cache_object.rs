@@ -446,6 +446,10 @@ impl RpcService {
         let (upload, object, backends) = self
             .registry_publication_multipart_context(auth, upload_id)
             .await?;
+        self.db
+            .verified_registry_object_accounting_eligibility(object.surface_object_id)
+            .await
+            .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
         if upload.state != "active" {
             return Err(RpcError::FailedPrecondition(
                 "publication multipart upload no longer accepts parts".into(),
@@ -733,7 +737,7 @@ impl RpcService {
                     .inventory_strong_etag(&object.object_key)
                     .await
                     .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?
-                    .map(|etag| crate::surface_write::strong_if_match_etag(&etag))
+                    .map(|etag| aos_hub_model::delivery_http::strong_if_match_etag(&etag))
                     .transpose()
                     .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?;
                 observed_size == Some(object.expected_size)
@@ -755,7 +759,7 @@ impl RpcService {
                 if exact {
                     completion_etag = evidence
                         .and_then(|evidence| evidence.strong_etag)
-                        .map(|etag| crate::surface_write::strong_if_match_etag(&etag))
+                        .map(|etag| aos_hub_model::delivery_http::strong_if_match_etag(&etag))
                         .transpose()
                         .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?;
                     if let Some(etag) = &completion_etag {
@@ -780,7 +784,7 @@ impl RpcService {
                     )
                     .await
                 {
-                    Ok(etag) => crate::surface_write::strong_if_match_etag(&etag)
+                    Ok(etag) => aos_hub_model::delivery_http::strong_if_match_etag(&etag)
                         .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?,
                     Err(error) => {
                         let recovered = fetch
@@ -804,9 +808,9 @@ impl RpcService {
                                 "multipart completion failed without recoverable strong identity: {error:#}"
                             ))
                         })?;
-                        crate::surface_write::strong_if_match_etag(&etag).map_err(|etag_error| {
-                            RpcError::Unavailable(format!("{etag_error:#}"))
-                        })?
+                        aos_hub_model::delivery_http::strong_if_match_etag(&etag).map_err(
+                            |etag_error| RpcError::Unavailable(format!("{etag_error:#}")),
+                        )?
                     }
                 };
                 if completion_etag
@@ -846,7 +850,7 @@ impl RpcService {
                 .inventory_strong_etag(&object.object_key)
                 .await
                 .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?
-                .map(|etag| crate::surface_write::strong_if_match_etag(&etag))
+                .map(|etag| aos_hub_model::delivery_http::strong_if_match_etag(&etag))
                 .transpose()
                 .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?;
             if observed_etag.as_deref() != Some(completion_etag.as_str()) {
@@ -981,45 +985,43 @@ impl RpcService {
         };
         verify_publication_bytes(&object, &bytes)?;
         if keymap::is_git_pack_index_path(&object.object_key) {
-            let companion =
-                aos_registry_format::pack_index::companion_pack_path(&object.object_key)
-                    .ok_or_else(|| RpcError::invalid("Git pack index path is invalid"))?;
             for upload in &mut uploads {
                 let fetch = self
                     .surface
                     .placement_fetcher(&upload.placement)
                     .await
                     .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?;
-                let read = fetch.fetch_bounded(
-                    &companion,
-                    aos_registry_format::pack_index::MAX_PUBLISHED_PACK_BYTES as usize,
-                );
+                let read = fetch.verify_git_pack_index(&object.object_key, &bytes, None);
                 let timeout = clock::sleep(std::time::Duration::from_secs(
                     REGISTRY_PUBLICATION_GIT_PACK_OPERATION_TIMEOUT_SECS,
                 ));
                 futures_util::pin_mut!(read, timeout);
-                let pack = match futures_util::future::select(read, timeout).await {
-                    futures_util::future::Either::Left((result, _)) => result
-                        .map_err(|error| RpcError::Unavailable(format!("{error:#}")))?
-                        .ok_or_else(|| {
-                            RpcError::FailedPrecondition(
-                                "pack index companion is absent from a required placement".into(),
-                            )
-                        })?,
+                match futures_util::future::select(read, timeout).await {
+                    futures_util::future::Either::Left((result, _)) => {
+                        result.map_err(|error| match error
+                            .downcast_ref::<crate::fetch::GitPackIndexVerificationError>(
+                        ) {
+                            Some(crate::fetch::GitPackIndexVerificationError::MissingCompanion) => {
+                                RpcError::FailedPrecondition(
+                                    "pack index companion is absent from a required placement"
+                                        .into(),
+                                )
+                            }
+                            Some(
+                                crate::fetch::GitPackIndexVerificationError::InvalidIndex
+                                | crate::fetch::GitPackIndexVerificationError::CompanionChanged,
+                            ) => {
+                                RpcError::invalid("pack index does not describe its companion pack")
+                            }
+                            None => RpcError::Unavailable(format!("{error:#}")),
+                        })?;
+                    }
                     futures_util::future::Either::Right(((), _)) => {
                         return Err(RpcError::Unavailable(
-                            "Git pack companion read timed out".into(),
+                            "Git pack companion verification timed out".into(),
                         ));
                     }
-                };
-                aos_registry_format::pack_index::validate_against_pack(
-                    &object.object_key,
-                    &bytes,
-                    &pack,
-                )
-                .map_err(|_| {
-                    RpcError::invalid("pack index does not describe its companion pack")
-                })?;
+                }
             }
         }
         for upload in &mut uploads {
@@ -1377,7 +1379,7 @@ impl RpcService {
         upload_id: &str,
         part_number: u32,
         body: &[u8],
-    ) -> Result<crate::surface_write::PartTag, SurfaceWriteOutcome> {
+    ) -> Result<aos_hub_model::storage::PartTag, SurfaceWriteOutcome> {
         if body.len() > self.effective_max_upload_bytes().await {
             return Err(SurfaceWriteOutcome::TooLarge);
         }
@@ -1416,7 +1418,7 @@ impl RpcService {
                         "multipart completion part has no durable provider identity",
                     ),
                 )?;
-                return Ok(crate::surface_write::PartTag { part_number, etag });
+                return Ok(aos_hub_model::storage::PartTag { part_number, etag });
             }
             let admitted = self
                 .db
@@ -1438,7 +1440,7 @@ impl RpcService {
                     internal_write(anyhow::anyhow!("admitted cache part disappeared"))
                 })?;
             if durable_part.state == "confirmed" {
-                return Ok(crate::surface_write::PartTag {
+                return Ok(aos_hub_model::storage::PartTag {
                     part_number,
                     etag: durable_part.etag.unwrap_or_default(),
                 });

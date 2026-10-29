@@ -345,7 +345,7 @@ impl RepairAttemptV1 {
 /// Records one exact planned gate invocation and bounded result identity.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct GateResult {
+pub struct Outcome {
     /// Planned gate identity.
     pub gate_id: String,
     /// Exact argument vector executed without shell interpolation.
@@ -431,7 +431,7 @@ pub struct GateResultsV1 {
     /// Verified local confinement boundary shared by every gate in this set.
     pub confinement: ConfinementEvidence,
     /// Complete planned results in plan order.
-    pub results: Vec<GateResult>,
+    pub results: Vec<Outcome>,
     /// Observation time in Unix seconds.
     pub completed_at_unix: u64,
 }

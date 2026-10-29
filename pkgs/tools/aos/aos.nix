@@ -424,7 +424,8 @@
       ++ apmRuntimeTools
       ++ lib.optionals (!isDarwinCross) linuxRuntimeDeps;
 
-    # APM needs this runtime source before a host has a retained descriptor.
+    # Profile evaluation imports this retained source tree at runtime. Keep
+    # its identity intact when the installed wrappers are reference-scrubbed.
     nukeRefsKeep = [lib.packageModuleLibrary];
 
     # mkDerivation normally constructs one RPATH from every runtimeDep. That
@@ -599,7 +600,7 @@
     # `http://127.0.0.1` mirror/frontend/webhook URLs, which only resolve past
     # the SSRF guard when the `AOS_HUB_ALLOW_LOCAL_REMOTES` escape hatch is
     # honored — and that hatch is compiled out of release entirely by design
-    # (`aos-hub-core::url_guard::allow_local_remotes` is gated on
+    # (`aos-hub-model::url_guard::allow_local_remotes` is gated on
     # `debug_assertions`, so a production binary never relaxes the guard). The
     # tests are therefore inherently debug-only; running the check phase in debug
     # exercises them exactly as the dev `cargo test` / `aos test` path does,

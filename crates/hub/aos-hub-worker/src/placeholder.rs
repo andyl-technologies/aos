@@ -104,7 +104,8 @@ pub fn numbered_to_positional(sql: &str, params: &[Value]) -> (String, Vec<Value
 #[cfg(test)]
 mod tests {
     use super::numbered_to_positional;
-    use aos_hub_db::backend::{prepare, split_statements};
+    use aos_hub_db::backend::prepare;
+    use aos_hub_db::backend::split_statements;
     use aos_hub_db::db::MIGRATIONS;
     use aos_hub_db::dialect::Dialect;
     use aos_hub_db::value::Value;

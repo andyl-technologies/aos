@@ -8,8 +8,9 @@ license.workspace = true
 aos-nar.workspace = true
 aos-nix.workspace = true
 aos-cli-ui.workspace = true
-aos-transfer = { workspace = true, features = ["transfer"] }
-aos-hub-api = { workspace = true }
+aos-transfer = { workspace = true, features = ["direct-upload"] }
+aos-hub-api.workspace = true
+aos-hub-client.workspace = true
 anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

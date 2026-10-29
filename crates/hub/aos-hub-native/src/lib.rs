@@ -75,6 +75,8 @@
 compile_error!("the aos-hub test-support feature must never be enabled in a release build");
 
 pub mod auth;
+pub mod authority_journal;
+pub mod authority_server;
 pub mod cloudflare;
 /// The crawl-policy value type, re-exported from [`aos_hub_model::crawl`]; keeps
 /// `crate::crawl::…` stable for the CLI.
@@ -87,7 +89,15 @@ pub use aos_hub_service::config;
 /// [`aos_hub_service::fetch::SurfaceProvider`]); RFC-0004 Phase 5.
 pub mod coreports;
 pub mod db;
+/// Bounded signed Native logical direct-upload transport.
+pub mod direct_upload;
+/// Independent measured direct-upload review preparation and explicit signing.
+pub mod direct_upload_review;
 pub mod egress_gateway;
+pub mod external_mirror_review;
+pub mod oci_sdk_review;
+/// Default-off remote-storage dispatch inventory without body images.
+pub mod outbound_inventory;
 /// The tenancy/IAM domain model, re-exported from [`aos_hub_model::domain`]
 /// (RFC-0004 Phase 5) so the Worker shares it; keeps `crate::domain::…` stable.
 pub use aos_hub_model::domain;
@@ -104,11 +114,16 @@ pub mod mirror;
 pub mod nar_verification;
 pub mod narlist;
 pub mod native_tls;
+pub mod provider_conformance;
 pub mod ratelimit;
 pub mod seed;
 pub mod server;
 pub mod signing;
-/// The cache-stack node model, re-exported from [`aos_hub_service::stack`]
+
+pub mod oci_sdk_emulation;
+pub mod snapshot;
+pub mod storage_work;
+/// The cache-stack node model, re-exported from [`aos_registry_format::stack`]
 /// (RFC-0004 Phase 5) so the Worker shares it; keeps `crate::stack::…` stable.
 pub use aos_hub_service::stack;
 pub mod surface;

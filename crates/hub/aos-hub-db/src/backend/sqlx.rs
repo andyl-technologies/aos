@@ -35,8 +35,17 @@
 //! `sqlite::memory:` databases are private to a single connection: a pool with
 //! more than one connection would hand out *separate* empty databases. The
 //! sqlite constructor therefore pins an in-memory pool to `max_connections(1)`
-//! (file-backed pools keep the default size). Every sqlite pool enables WAL and
-//! `foreign_keys = ON` to match the rusqlite backend the hub grew from.
+//! and disables acquisition health checks that can discard that connection
+//! when a request is cancelled. File-backed pools retain the default acquisition
+//! checks and enable WAL. Every pool enforces foreign keys.
+
+mod schema_migration;
+
+#[cfg(feature = "postgres")]
+mod postgres_locks;
+
+#[cfg(feature = "postgres")]
+mod postgres_pool;
 
 use std::time::Duration;
 
@@ -44,7 +53,7 @@ use anyhow::{Context, Result};
 
 use super::super::dialect::Dialect;
 use super::super::value::{Row, Value};
-use super::{CheckedStatement, Statement};
+use super::{CheckedStatement, PoolStats, Statement};
 // Multi-statement migration splitting is only needed by the postgres/mysql
 // drivers (sqlite runs the whole script in one call via `raw_sql`).
 #[cfg(any(feature = "postgres", feature = "mysql"))]
@@ -79,6 +88,25 @@ fn sqlite_lock_error(error: &sqlx::Error) -> bool {
             .as_deref(),
         Some("5" | "6")
     )
+}
+
+/// Retries the writer lock before any transaction statement takes effect.
+async fn begin_sqlite_write(
+    pool: &sqlx::SqlitePool,
+) -> Result<sqlx::Transaction<'_, sqlx::Sqlite>> {
+    let retry_deadline = tokio::time::Instant::now() + SQLITE_LOCK_RETRY_LIMIT;
+
+    loop {
+        match pool.begin_with("BEGIN IMMEDIATE").await {
+            Ok(transaction) => return Ok(transaction),
+            Err(error)
+                if sqlite_lock_error(&error) && tokio::time::Instant::now() < retry_deadline =>
+            {
+                tokio::time::sleep(SQLITE_LOCK_RETRY_INTERVAL).await;
+            }
+            Err(error) => return Err(error).context("acquiring sqlite writer lock"),
+        }
+    }
 }
 
 impl SqlxBackend {
@@ -142,6 +170,33 @@ impl SqlxBackend {
         Ok(Self::Sqlite(pool))
     }
 
+    /// Opens an existing SQLite file without schema or journal-mode changes.
+    ///
+    /// Missing files are rejected. This read-only adapter is intended for
+    /// operator metadata readers; callers must independently validate schema
+    /// identity and must not invoke the migrating database initializer.
+    ///
+    /// # Errors
+    /// Returns an error when the existing file cannot be opened read-only.
+    pub async fn connect_sqlite_read_only(path: &str) -> Result<Self> {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+        anyhow::ensure!(
+            !path.is_empty() && path != ":memory:",
+            "existing SQLite file is required"
+        );
+        let options = SqliteConnectOptions::new()
+            .filename(path)
+            .create_if_missing(false)
+            .read_only(true)
+            .foreign_keys(true);
+        let pool = SqlitePoolOptions::new()
+            .connect_with(options)
+            .await
+            .context("opening existing SQLite metadata read-only")?;
+        Ok(Self::Sqlite(pool))
+    }
+
     /// Connects to a postgres server at `url` (e.g.
     /// `postgresql://user:pass@host:port/db`).
     ///
@@ -152,7 +207,8 @@ impl SqlxBackend {
     #[cfg(feature = "postgres")]
     pub async fn connect_postgres(url: &str) -> Result<Self> {
         let redacted = super::redact_db_url(url);
-        let pool = sqlx::PgPool::connect(url)
+        let pool = postgres_pool::options()
+            .connect(url)
             .await
             .with_context(|| format!("connecting to postgres {redacted}"))?;
         Ok(Self::Postgres(pool))
@@ -185,6 +241,38 @@ impl super::Backend for SqlxBackend {
             #[cfg(feature = "mysql")]
             Self::Mysql(_) => Dialect::Mysql,
         }
+    }
+
+    async fn migrate_schema(&self) -> Result<()> {
+        schema_migration::migrate(self).await
+    }
+
+    fn pool_stats(&self) -> Option<PoolStats> {
+        let (open, idle, maximum) = match self {
+            Self::Sqlite(pool) => (
+                pool.size(),
+                pool.num_idle(),
+                pool.options().get_max_connections(),
+            ),
+            #[cfg(feature = "postgres")]
+            Self::Postgres(pool) => (
+                pool.size(),
+                pool.num_idle(),
+                pool.options().get_max_connections(),
+            ),
+            #[cfg(feature = "mysql")]
+            Self::Mysql(pool) => (
+                pool.size(),
+                pool.num_idle(),
+                pool.options().get_max_connections(),
+            ),
+        };
+        Some(PoolStats {
+            open,
+            // Pool counters are sampled separately and may race a connection close.
+            idle: idle.min(open as usize),
+            maximum,
+        })
     }
 
     async fn execute(&self, sql: &str, params: &[Value]) -> Result<u64> {
@@ -308,7 +396,7 @@ mod sqlite {
     use super::super::super::dialect::Dialect;
     use super::super::super::value::{Row, Value};
     use super::super::{prepare, CheckedStatement, Statement};
-    use super::{sqlite_lock_error, SQLITE_LOCK_RETRY_INTERVAL, SQLITE_LOCK_RETRY_LIMIT};
+    use super::begin_sqlite_write;
 
     /// Binds `params` onto a sqlite query, encoding each [`Value`] in its
     /// native type.
@@ -409,19 +497,7 @@ mod sqlite {
         // Take the writer lock before reading the ledger. Concurrent starters
         // can hold it beyond SQLite's per-statement busy timeout; retry only
         // acquisition, before any migration statement can have taken effect.
-        let retry_deadline = tokio::time::Instant::now() + SQLITE_LOCK_RETRY_LIMIT;
-        let mut tx = loop {
-            match pool.begin_with("BEGIN IMMEDIATE").await {
-                Ok(tx) => break tx,
-                Err(error)
-                    if sqlite_lock_error(&error)
-                        && tokio::time::Instant::now() < retry_deadline =>
-                {
-                    tokio::time::sleep(SQLITE_LOCK_RETRY_INTERVAL).await;
-                }
-                Err(error) => return Err(error).context("locking sqlite schema version"),
-            }
-        };
+        let mut tx = begin_sqlite_write(pool).await?;
         let versions = sqlx::query_scalar::<_, i64>("SELECT version FROM schema_version")
             .fetch_all(&mut *tx)
             .await
@@ -454,7 +530,10 @@ mod sqlite {
 
     /// Runs a checked sqlite transaction, rolling back on a row-count mismatch.
     pub(super) async fn checked_batch(pool: &SqlitePool, stmts: &[CheckedStatement]) -> Result<()> {
-        let mut tx = pool.begin().await.context("beginning sqlite transaction")?;
+        // Parallel upload completions contend for SQLite's single writer.
+        // Retry acquisition before any effect, without replaying checked
+        // mutations or holding a transaction while waiting for another writer.
+        let mut tx = begin_sqlite_write(pool).await?;
         for checked in stmts {
             let (sql, params) = prepare(
                 Dialect::Sqlite,
@@ -493,27 +572,45 @@ mod postgres {
     use super::super::{prepare, with_returning_id, CheckedStatement, Statement};
     use super::SqlxBackend;
 
-    /// PostgreSQL null whose type is inferred from the statement context.
+    /// PostgreSQL null with the type advertised to the Parse message.
     ///
-    /// Binding `Option::<i64>::None` advertises INT8 even though a hub
-    /// [`Value::Null`] may target text, bytea, or another nullable column. OID
-    /// 705 is PostgreSQL's unknown pseudo-type; the server resolves it from the
-    /// target column or comparison before executing the prepared statement.
-    struct UntypedNull;
+    /// An untyped null uses OID 705 so PostgreSQL can infer its column type.
+    /// `IS NULL` gives no type context, so statements with an explicit cast
+    /// advertise that cast's type for the parameter instead.
+    struct PostgresNull {
+        oid: sqlx::postgres::types::Oid,
+    }
 
-    impl sqlx::Type<Postgres> for UntypedNull {
+    impl sqlx::Type<Postgres> for PostgresNull {
         fn type_info() -> sqlx::postgres::PgTypeInfo {
             sqlx::postgres::PgTypeInfo::with_oid(sqlx::postgres::types::Oid(705))
         }
     }
 
-    impl sqlx::Encode<'_, Postgres> for UntypedNull {
+    impl sqlx::Encode<'_, Postgres> for PostgresNull {
         fn encode_by_ref(
             &self,
             _buf: &mut sqlx::postgres::PgArgumentBuffer,
         ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
             Ok(sqlx::encode::IsNull::Yes)
         }
+
+        fn produces(&self) -> Option<sqlx::postgres::PgTypeInfo> {
+            Some(sqlx::postgres::PgTypeInfo::with_oid(self.oid))
+        }
+    }
+
+    fn null_type_oid(sql: &str, parameter_number: usize) -> sqlx::postgres::types::Oid {
+        use sqlx::postgres::types::Oid;
+
+        for (name, oid) in [("BIGINT", 20), ("VARCHAR", 1043), ("TEXT", 25)] {
+            let cast = format!("CAST(${parameter_number} AS {name})");
+            if sql.contains(&cast) {
+                return Oid(oid);
+            }
+        }
+
+        Oid(705)
     }
 
     /// Decodes PostgreSQL's base-10000 binary NUMERIC form when it is an i64.
@@ -583,10 +680,13 @@ mod postgres {
     fn bind<'q>(
         mut query: sqlx::query::Query<'q, Postgres, sqlx::postgres::PgArguments>,
         params: &'q [Value],
+        sql: &str,
     ) -> sqlx::query::Query<'q, Postgres, sqlx::postgres::PgArguments> {
-        for value in params {
+        for (index, value) in params.iter().enumerate() {
             query = match value {
-                Value::Null => query.bind(UntypedNull),
+                Value::Null => query.bind(PostgresNull {
+                    oid: null_type_oid(sql, index + 1),
+                }),
                 Value::Int(n) => query.bind(*n),
                 Value::Real(f) => query.bind(*f),
                 Value::Text(s) => query.bind(s.as_str()),
@@ -641,7 +741,7 @@ mod postgres {
     /// Runs a non-`SELECT` statement, returning rows affected.
     pub(super) async fn execute(pool: &PgPool, sql: &str, params: &[Value]) -> Result<u64> {
         let (sql, params) = prepare(Dialect::Postgres, sql, params)?;
-        let result = bind(sqlx::query(&sql), &params)
+        let result = bind(sqlx::query(&sql), &params, &sql)
             .execute(pool)
             .await
             .with_context(|| format!("executing {sql}"))?;
@@ -667,7 +767,7 @@ mod postgres {
     /// Runs a `SELECT`/`RETURNING` statement, returning all rows.
     pub(super) async fn query(pool: &PgPool, sql: &str, params: &[Value]) -> Result<Vec<Row>> {
         let (sql, params) = prepare(Dialect::Postgres, sql, params)?;
-        let rows = bind(sqlx::query(&sql), &params)
+        let rows = bind(sqlx::query(&sql), &params, &sql)
             .fetch_all(pool)
             .await
             .with_context(|| format!("querying {sql}"))?;
@@ -682,7 +782,7 @@ mod postgres {
             .context("beginning postgres transaction")?;
         for stmt in stmts {
             let (sql, params) = prepare(Dialect::Postgres, &stmt.sql, &stmt.params)?;
-            bind(sqlx::query(&sql), &params)
+            bind(sqlx::query(&sql), &params, &sql)
                 .execute(&mut *tx)
                 .await
                 .with_context(|| format!("executing {sql}"))?;
@@ -722,7 +822,7 @@ mod postgres {
         );
         for stmt in stmts {
             let (sql, params) = prepare(Dialect::Postgres, &stmt.sql, &stmt.params)?;
-            bind(sqlx::query(&sql), &params)
+            bind(sqlx::query(&sql), &params, &sql)
                 .execute(&mut *tx)
                 .await
                 .with_context(|| format!("executing {sql}"))?;
@@ -731,34 +831,406 @@ mod postgres {
         Ok(())
     }
 
-    /// Runs a checked postgres transaction, rolling back on a row-count mismatch.
+    /// Runs a checked PostgreSQL transaction with bounded deadlock recovery.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for failed statements, row-count assertions, rollback,
+    /// commit, or exhausted deadlock recovery.
     pub(super) async fn checked_batch(pool: &PgPool, stmts: &[CheckedStatement]) -> Result<()> {
-        let mut tx = pool
-            .begin()
-            .await
-            .context("beginning postgres transaction")?;
-        for checked in stmts {
-            let (sql, params) = prepare(
-                Dialect::Postgres,
-                &checked.statement.sql,
-                &checked.statement.params,
-            )?;
-            let result = bind(sqlx::query(&sql), &params)
-                .execute(&mut *tx)
+        const MAX_DEADLOCK_RETRIES: u8 = 2;
+        let mut retries = 0_u8;
+
+        loop {
+            let mut tx = pool
+                .begin()
                 .await
-                .with_context(|| format!("executing {sql}"))?;
-            if let Some(expected) = checked.expected_rows {
-                anyhow::ensure!(
-                    result.rows_affected() == expected,
-                    "checked batch expected {expected} affected rows, got {} for {sql}",
-                    result.rows_affected()
-                );
+                .context("beginning postgres transaction")?;
+            match checked_statements(&mut tx, stmts).await {
+                Ok(()) => {
+                    return tx.commit().await.context("committing postgres transaction");
+                }
+                Err(error) => {
+                    let deadlock = error.chain().any(|cause| {
+                        cause.downcast_ref::<sqlx::Error>().is_some_and(|error| {
+                            error
+                                .as_database_error()
+                                .and_then(sqlx::error::DatabaseError::code)
+                                .as_deref()
+                                == Some("40P01")
+                        })
+                    });
+
+                    // Only a server-confirmed deadlock and acknowledged rollback
+                    // allow the original statement list to run again. Every
+                    // affected-row fence remains in place on the next attempt.
+                    tx.rollback()
+                        .await
+                        .context("rolling back postgres checked transaction")?;
+                    if !deadlock || retries == MAX_DEADLOCK_RETRIES {
+                        return Err(error);
+                    }
+
+                    retries += 1;
+                    tracing::warn!(retries, "retrying rolled-back postgres deadlock");
+                    tokio::time::sleep(std::time::Duration::from_millis(5 * u64::from(retries)))
+                        .await;
+                }
             }
         }
-        tx.commit()
-            .await
-            .context("committing postgres transaction")?;
+    }
+
+    async fn checked_statements(
+        tx: &mut sqlx::Transaction<'_, Postgres>,
+        stmts: &[CheckedStatement],
+    ) -> Result<()> {
+        use std::borrow::Cow;
+
+        use futures_util::TryStreamExt as _;
+
+        let mut remaining = stmts;
+        while let Some((checked, tail)) = remaining.split_first() {
+            if let Some(group) = super::postgres_locks::compile(remaining)? {
+                let row = bind(sqlx::query(&group.sql), &group.parameters, &group.sql)
+                    .fetch_one(&mut **tx)
+                    .await
+                    .context("acquiring ordered PostgreSQL row locks")?;
+                for (index, expected) in group.expected.iter().enumerate() {
+                    let actual: i64 = row.try_get(index)?;
+                    anyhow::ensure!(
+                        u64::try_from(actual)? == *expected,
+                        "checked lock group expected {expected} rows at position {index}, got {actual}"
+                    );
+                }
+                remaining = &remaining[group.expected.len()..];
+                continue;
+            }
+
+            let (sql, params) = if let Some(lock) = &checked.postgres_lock_sql {
+                (
+                    Cow::Borrowed(lock.translated_sql()?),
+                    Cow::Borrowed(checked.statement.params.as_slice()),
+                )
+            } else {
+                let (sql, params) = prepare(
+                    Dialect::Postgres,
+                    &checked.statement.sql,
+                    &checked.statement.params,
+                )?;
+                (Cow::Owned(sql), Cow::Owned(params))
+            };
+            let affected = if checked.postgres_lock_sql.is_some() {
+                let mut rows = bind(sqlx::query(&sql), &params, &sql).fetch(&mut **tx);
+                let mut count = 0_u64;
+                while rows
+                    .try_next()
+                    .await
+                    .with_context(|| format!("locking rows for {sql}"))?
+                    .is_some()
+                {
+                    count += 1;
+                }
+                count
+            } else {
+                bind(sqlx::query(&sql), &params, &sql)
+                    .execute(&mut **tx)
+                    .await
+                    .with_context(|| format!("executing {sql}"))?
+                    .rows_affected()
+            };
+            if let Some(expected) = checked.expected_rows {
+                anyhow::ensure!(
+                    affected == expected,
+                    "checked batch expected {expected} affected rows, got {affected} for {sql}"
+                );
+            }
+            remaining = tail;
+        }
         Ok(())
+    }
+
+    #[cfg(test)]
+    mod transaction_tests {
+        //! Real PostgreSQL checks for deadlock recovery and retained row-count fences.
+        //!
+        //! The ignored test uses an isolated local server selected with
+        //! `AOS_TEST_POSTGRES_SOCKET`. Its private schema is removed after the check.
+
+        use std::time::Duration;
+
+        use anyhow::{Context, Result};
+        use sqlx::postgres::{PgConnectOptions, PgPoolOptions, PgSslMode};
+
+        use super::checked_batch;
+        use crate::backend::CheckedStatement;
+        use crate::backend::Statement;
+        use crate::value::Value;
+
+        #[tokio::test]
+        #[ignore = "requires an isolated PostgreSQL server via AOS_TEST_POSTGRES_SOCKET"]
+        async fn row_locks_preserve_tuples_block_writers_and_roll_back_count_mismatches(
+        ) -> Result<()> {
+            let socket = std::env::var("AOS_TEST_POSTGRES_SOCKET")?;
+            anyhow::ensure!(socket.starts_with('/'), "a local Unix socket is required");
+            let pool = PgPoolOptions::new()
+                .max_connections(3)
+                .connect_with(
+                    PgConnectOptions::new()
+                        .host(&socket)
+                        .username("postgres")
+                        .database("postgres")
+                        .ssl_mode(PgSslMode::Disable),
+                )
+                .await?;
+            let schema = format!("row_lock_{}", uuid::Uuid::new_v4().simple());
+            sqlx::raw_sql(&format!(
+                "CREATE SCHEMA {schema};
+                 CREATE TABLE {schema}.counters (id BIGINT PRIMARY KEY, value BIGINT NOT NULL);
+                 INSERT INTO {schema}.counters VALUES (1, 0), (2, 0);"
+            ))
+            .execute(&pool)
+            .await?;
+
+            let result = check_row_locks(&pool, &schema).await;
+            let cleanup = sqlx::raw_sql(&format!("DROP SCHEMA {schema} CASCADE"))
+                .execute(&pool)
+                .await;
+            pool.close().await;
+            result?;
+            cleanup?;
+            Ok(())
+        }
+
+        async fn check_row_locks(pool: &sqlx::PgPool, schema: &str) -> Result<()> {
+            let table = format!("{schema}.counters");
+            let lock = CheckedStatement::row_lock(
+                &table,
+                "value",
+                "id = ?1 AND value = ?2",
+                vec![Value::Int(1), Value::Int(0)],
+                1,
+            );
+            let version_sql = format!("SELECT xmin::text FROM {table} WHERE id = 1");
+            let original: String = sqlx::query_scalar(&version_sql).fetch_one(pool).await?;
+
+            let mut owner = pool.begin().await?;
+            super::checked_statements(&mut owner, &[lock.clone()]).await?;
+            let mut writer = pool.begin().await?;
+            sqlx::query("SET LOCAL lock_timeout = '100ms'")
+                .execute(&mut *writer)
+                .await?;
+            let blocked = sqlx::query(&format!("UPDATE {table} SET value = 1 WHERE id = 1"))
+                .execute(&mut *writer)
+                .await
+                .expect_err("a checked row lock must block a concurrent writer");
+            assert_eq!(
+                blocked
+                    .as_database_error()
+                    .and_then(sqlx::error::DatabaseError::code)
+                    .as_deref(),
+                Some("55P03")
+            );
+            writer.rollback().await?;
+            owner.commit().await?;
+
+            let retained: String = sqlx::query_scalar(&version_sql).fetch_one(pool).await?;
+            assert_eq!(
+                original, retained,
+                "locking must not create a new tuple version"
+            );
+
+            let mut wrong_count = lock;
+            wrong_count.expected_rows = Some(2);
+            let rejected = checked_batch(
+                pool,
+                &[
+                    CheckedStatement::exact(
+                        format!("UPDATE {table} SET value = 1 WHERE id = 2"),
+                        Vec::new(),
+                        1,
+                    ),
+                    wrong_count,
+                ],
+            )
+            .await;
+            assert!(rejected.is_err());
+            let unchanged: i64 =
+                sqlx::query_scalar(&format!("SELECT value FROM {table} WHERE id = 2"))
+                    .fetch_one(pool)
+                    .await?;
+            assert_eq!(unchanged, 0, "count mismatch must roll back earlier writes");
+            Ok(())
+        }
+
+        #[tokio::test]
+        #[ignore = "requires an isolated PostgreSQL server via AOS_TEST_POSTGRES_SOCKET"]
+        async fn deadlocks_retry_after_rollback_and_row_count_failures_remain_terminal(
+        ) -> Result<()> {
+            let socket = std::env::var("AOS_TEST_POSTGRES_SOCKET")
+                .context("AOS_TEST_POSTGRES_SOCKET is required")?;
+            anyhow::ensure!(socket.starts_with('/'), "a local Unix socket is required");
+
+            let options = PgConnectOptions::new()
+                .host(&socket)
+                .username("postgres")
+                .database("postgres")
+                .ssl_mode(PgSslMode::Disable);
+            let pool = PgPoolOptions::new()
+                .max_connections(6)
+                .acquire_timeout(Duration::from_secs(5))
+                .connect_with(options)
+                .await?;
+            let schema = format!("checked_batch_{}", uuid::Uuid::new_v4().simple());
+            sqlx::raw_sql(&format!(
+                "CREATE SCHEMA {schema};
+                 CREATE TABLE {schema}.counters (id BIGINT PRIMARY KEY, value BIGINT NOT NULL);
+                 INSERT INTO {schema}.counters VALUES (1, 0), (2, 0);
+                 CREATE SEQUENCE {schema}.attempts;"
+            ))
+            .execute(&pool)
+            .await?;
+
+            let result = check_transaction_recovery(&pool, &schema).await;
+            let cleanup = sqlx::raw_sql(&format!("DROP SCHEMA {schema} CASCADE"))
+                .execute(&pool)
+                .await;
+            pool.close().await;
+
+            result?;
+            cleanup?;
+            Ok(())
+        }
+
+        async fn check_transaction_recovery(pool: &sqlx::PgPool, schema: &str) -> Result<()> {
+            let advisory_key = (uuid::Uuid::new_v4().as_u128() & 0x7fff_ffff) as i64;
+            let mut coordinator = pool.acquire().await?;
+            sqlx::query("SELECT pg_advisory_lock($1)")
+                .bind(advisory_key)
+                .execute(&mut *coordinator)
+                .await?;
+
+            let first_pool = pool.clone();
+            let first_statements = opposing_updates(schema, advisory_key, 1, 2);
+            let first =
+                tokio::spawn(async move { checked_batch(&first_pool, &first_statements).await });
+
+            let second_pool = pool.clone();
+            let second_statements = opposing_updates(schema, advisory_key, 2, 1);
+            let second =
+                tokio::spawn(async move { checked_batch(&second_pool, &second_statements).await });
+
+            // Both transactions hold their first row before the coordinator releases
+            // the shared gate. Taking the second row then creates a real deadlock.
+            let both_waiting = tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let waiting: i64 = sqlx::query_scalar(
+                        "SELECT COUNT(*) FROM pg_locks
+                         WHERE locktype = 'advisory' AND NOT granted
+                           AND classid = 0 AND objid::bigint = $1",
+                    )
+                    .bind(advisory_key)
+                    .fetch_one(pool)
+                    .await?;
+                    if waiting == 2 {
+                        return Ok::<(), sqlx::Error>(());
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await;
+
+            sqlx::query("SELECT pg_advisory_unlock($1)")
+                .bind(advisory_key)
+                .execute(&mut *coordinator)
+                .await?;
+            drop(coordinator);
+
+            let completed = tokio::time::timeout(Duration::from_secs(10), async {
+                first.await??;
+                second.await??;
+                Ok::<(), anyhow::Error>(())
+            })
+            .await;
+            both_waiting??;
+            completed??;
+
+            let values: Vec<i64> =
+                sqlx::query_scalar(&format!("SELECT value FROM {schema}.counters ORDER BY id"))
+                    .fetch_all(pool)
+                    .await?;
+            assert_eq!(
+                values,
+                vec![2, 2],
+                "an aborted attempt must not count twice"
+            );
+
+            // Sequences intentionally survive transaction rollback, making the number
+            // of attempts observable even though the checked writes are rolled back.
+            let refused = checked_batch(
+                pool,
+                &[
+                    Statement::new(format!("SELECT nextval('{schema}.attempts')"), Vec::new())
+                        .unchecked(),
+                    Statement::new(
+                        format!("UPDATE {schema}.counters SET value = value + 1 WHERE id = 1"),
+                        Vec::new(),
+                    )
+                    .expecting(1),
+                    Statement::new(
+                        format!("UPDATE {schema}.counters SET value = value + 1 WHERE id = 999"),
+                        Vec::new(),
+                    )
+                    .expecting(1),
+                ],
+            )
+            .await;
+            assert!(
+                refused.is_err(),
+                "a failed row-count fence must remain refused"
+            );
+
+            let attempts: i64 =
+                sqlx::query_scalar(&format!("SELECT last_value FROM {schema}.attempts"))
+                    .fetch_one(pool)
+                    .await?;
+            assert_eq!(attempts, 1, "a row-count refusal must not retry");
+
+            let values: Vec<i64> =
+                sqlx::query_scalar(&format!("SELECT value FROM {schema}.counters ORDER BY id"))
+                    .fetch_all(pool)
+                    .await?;
+            assert_eq!(
+                values,
+                vec![2, 2],
+                "a row-count refusal rolls back all writes"
+            );
+            Ok(())
+        }
+
+        fn opposing_updates(
+            schema: &str,
+            advisory_key: i64,
+            first: i64,
+            second: i64,
+        ) -> Vec<CheckedStatement> {
+            vec![
+                Statement::new(
+                    format!("UPDATE {schema}.counters SET value = value + 1 WHERE id = ?1"),
+                    vec![Value::Int(first)],
+                )
+                .expecting(1),
+                Statement::new(
+                    "SELECT pg_advisory_xact_lock(?1)",
+                    vec![Value::Int(advisory_key)],
+                )
+                .unchecked(),
+                Statement::new(
+                    format!("UPDATE {schema}.counters SET value = value + 1 WHERE id = ?1"),
+                    vec![Value::Int(second)],
+                )
+                .expecting(1),
+            ]
+        }
     }
 
     /// References `Column` so the import is not flagged unused.
@@ -974,6 +1446,59 @@ mod mysql {
             assert!(decode_decimal_i64("1.0").is_err());
             assert!(decode_decimal_i64("9223372036854775808").is_err());
             assert!(decode_decimal_i64("not-a-number").is_err());
+        }
+    }
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::{Row, SqlxBackend, Value};
+    use crate::backend::Backend as _;
+
+    #[tokio::test]
+    async fn cancelled_acquisition_preserves_in_memory_sqlite_rows() {
+        for path in ["", ":memory:"] {
+            let backend = SqlxBackend::connect_sqlite(path).await.unwrap();
+            backend
+                .execute(
+                    "CREATE TABLE cancellation_probe (value INTEGER NOT NULL)",
+                    &[],
+                )
+                .await
+                .unwrap();
+            backend
+                .execute("INSERT INTO cancellation_probe VALUES (73)", &[])
+                .await
+                .unwrap();
+            let pool = match &backend {
+                SqlxBackend::Sqlite(pool) => pool,
+                #[cfg(any(feature = "postgres", feature = "mysql"))]
+                _ => panic!("expected SQLite"),
+            };
+
+            for _ in 0..32 {
+                // Poll an idle acquisition once, then cancel it at any async
+                // boundary. SQLx's default health probe can drop the sole
+                // connection here, leaving the next query with an empty DB.
+                tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                    while pool.num_idle() == 0 {
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .unwrap();
+                let mut acquisition = Box::pin(pool.acquire());
+                if let std::task::Poll::Ready(connection) = futures_util::poll!(&mut acquisition) {
+                    drop(connection.unwrap());
+                }
+                drop(acquisition);
+
+                let rows = backend
+                    .query("SELECT value FROM cancellation_probe", &[])
+                    .await
+                    .unwrap();
+                assert_eq!(rows, vec![Row::new(vec![Value::Int(73)])]);
+            }
         }
     }
 }

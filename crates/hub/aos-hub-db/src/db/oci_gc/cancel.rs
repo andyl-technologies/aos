@@ -25,7 +25,8 @@ use anyhow::{bail, Context, Result};
 
 use super::OciGcGenerationRecord;
 use crate::backend::Statement;
-use crate::db::{validate_key_bytes, Database};
+use crate::db::validate_key_bytes;
+use crate::db::Database;
 
 /// Durable failure detail recorded on a run an operator cancelled before apply.
 pub const OCI_GC_CANCELLED_REASON: &str = "cancelled by operator before apply";

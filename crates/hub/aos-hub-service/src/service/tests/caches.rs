@@ -1,6 +1,7 @@
 //! Caches regression cases and contract checks.
 
 use super::*;
+use aos_hub_db::hybrid_ingress::HybridCacheUploadAdmissionRequest;
 
 #[tokio::test]
 async fn release_ability_graph_authorizes_before_lookup() {
@@ -106,26 +107,51 @@ async fn commit_advances_a_fully_reused_publication_without_uploads() {
         ("nar/reused.nar.zst", "immutable", "d".repeat(64), 7),
         ("info/refs", "mutable_pointer", "e".repeat(64), 9),
     ] {
-        let object = db
-            .create_surface_object(&SetSurfaceObject {
-                surface: SurfaceTarget::Registry(registry_id),
+        db.admit_registry_publication_manifest_objects(
+            registry_id,
+            publication_id,
+            &[aos_hub_db::db::RegistryPublicationManifestObject {
                 object_key: path.into(),
-                content_hash: Some(hash.clone()),
-                size: Some(size),
+                expected_hash: hash.clone(),
+                expected_size: size,
                 object_kind: kind.into(),
-                mutable_publication_id: (kind == "mutable_pointer").then(|| publication_id.into()),
-            })
-            .await
-            .unwrap();
-        db.set_registry_publication_object(&SetRegistryPublicationObject {
-            publication_id: publication_id.into(),
-            surface_object_id: object.id,
-            object_kind: kind.into(),
-            expected_hash: hash.clone(),
-            expected_size: size,
-        })
+            }],
+        )
         .await
         .unwrap();
+        if path == "nar/reused.nar.zst" {
+            let request = pb::CommitRegistryPublicationRequest {
+                publication_id: publication_id.into(),
+            };
+            let (refused, sql, summary) =
+                aos_hub_db::application_body_observation::observe_with_publication_phases(
+                    service.commit_registry_publication(Some(&auth), request.clone()),
+                )
+                .await;
+            assert!(matches!(refused, Err(RpcError::FailedPrecondition(_))));
+            assert!(sql.is_none());
+            let summary = summary.unwrap();
+            summary.validate_original(&request).unwrap();
+            assert_eq!(summary.terminal_outcome(),
+                    aos_hub_db::application_body_observation::publication::TerminalOutcome::ReturnedError);
+            let encoded = serde_json::to_value(summary).unwrap();
+            assert_eq!(encoded["phases"].as_array().unwrap().len(), 1);
+            assert_eq!(encoded["phases"][0]["phase"], "authorized");
+            assert!(
+                db.registry_publication(publication_id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .state
+                    == "preparing"
+            );
+        }
+
+        let object = db
+            .surface_object_named(SurfaceTarget::Registry(registry_id), path)
+            .await
+            .unwrap()
+            .unwrap();
         db.record_registry_publication_object_presence(
             publication_id,
             object.id,
@@ -168,15 +194,33 @@ async fn commit_advances_a_fully_reused_publication_without_uploads() {
 
     service.lease = lease;
 
-    let committed = service
-        .commit_registry_publication(
-            Some(&auth),
-            pb::CommitRegistryPublicationRequest {
-                publication_id: publication_id.into(),
-            },
+    let request = pb::CommitRegistryPublicationRequest {
+        publication_id: publication_id.into(),
+    };
+    let (committed, sql, summary) =
+        aos_hub_db::application_body_observation::observe_with_publication_phases(
+            service.commit_registry_publication(Some(&auth), request.clone()),
         )
-        .await
-        .unwrap();
+        .await;
+    let committed = committed.unwrap();
+    assert!(sql.is_none());
+    let summary = summary.unwrap();
+    summary.validate_original(&request).unwrap();
+    assert_eq!(
+        summary.terminal_outcome(),
+        aos_hub_db::application_body_observation::publication::TerminalOutcome::ReturnedSuccess
+    );
+    let encoded = serde_json::to_value(summary).unwrap();
+    let phases = encoded["phases"].as_array().unwrap();
+    assert!(phases.iter().any(
+        |phase| phase["phase"] == "mutable_objects_promoted" && phase["completedItems"] == "1"
+    ));
+    assert!(phases
+        .iter()
+        .any(|phase| phase["phase"] == "response_materialized"));
+
+    let usage = db.org_usage(org_id).await.unwrap();
+    assert_eq!((usage.used_bytes, usage.object_count), (16, 2));
 
     assert_eq!(committed.state, "ready");
     assert_eq!(committed.placements[0].state, "ready");
@@ -197,15 +241,46 @@ async fn commit_advances_a_fully_reused_publication_without_uploads() {
     assert_eq!(listed.publications.len(), 1);
     assert!(listed.publications[0].objects.is_empty());
 
-    let shown = service
-        .get_registry_publication(
-            Some(&auth),
-            pb::GetRegistryPublicationRequest {
-                publication_id: publication_id.into(),
-            },
-        )
-        .await
-        .unwrap();
+    let request = pb::GetRegistryPublicationRequest {
+        publication_id: publication_id.into(),
+    };
+    let raw = serde_json::to_vec(&request).unwrap();
+    let (shown, projection) =
+        aos_hub_db::application_body_observation::observe_with_sql_projection(async {
+            let encoder = aos_hub_db::application_body_observation::rpc::request::<
+                pb::GetRegistryPublicationRequest,
+                pb::RegistryPublication,
+            >(&request, &raw);
+            let shown = service
+                .get_registry_publication(Some(&auth), request.clone())
+                .await
+                .unwrap();
+            let evidence =
+                aos_hub_db::application_body_observation::rpc::reply(encoder, &shown).unwrap();
+            assert_eq!(evidence.constructor, "publication_get");
+            shown
+        })
+        .await;
+    let projection = serde_json::to_value(projection.unwrap()).unwrap();
+    let checkpoints = projection["checkpoints"].as_array().unwrap();
+    assert_eq!(checkpoints.len(), 1);
+    let observed = &checkpoints[0]["observation"];
+    assert_eq!(observed["operation"], "publication_get");
+    assert_eq!(observed["publicationId"], publication_id);
+    assert_eq!(observed["state"], "ready");
+    assert_eq!(
+        observed["reply"]["sha256"],
+        aos_hub_db::application_body_observation::image(&serde_json::to_vec(&shown).unwrap())
+            .sha256
+    );
+
+    let (refused, refused_projection) =
+        aos_hub_db::application_body_observation::observe_with_sql_projection(async {
+            service.get_registry_publication(None, request).await
+        })
+        .await;
+    assert!(refused.is_err());
+    assert!(refused_projection.is_none());
     assert_eq!(shown.objects.len(), 2);
     assert_eq!(
         db.registry_publication_state(registry_id)
@@ -407,4 +482,244 @@ fn retention_selector_storage_json_is_canonical_object_order() {
 
     assert!(reparsed.is_object());
     assert_eq!(serde_json::to_string(&reparsed).unwrap(), stored);
+}
+
+#[tokio::test]
+async fn authenticated_public_cache_info_disables_shared_caching() {
+    use crate::service::ReadAuthorization;
+
+    let (service, db, _lease, _auth) = injected_service(vec![], vec![]).await;
+    let org_id = db.create_org("public-info", "Public info").await.unwrap();
+    let cache_id = db
+        .create_binary_cache(
+            Some(org_id),
+            "public-info/cache",
+            "Public cache",
+            "public",
+            40,
+            "zstd",
+            true,
+        )
+        .await
+        .unwrap();
+    let cache = db.binary_cache_by_id(cache_id).await.unwrap().unwrap();
+
+    let anonymous = service
+        .cache_serve(
+            ReadAuthorization::AuthorizationHeader(None),
+            &cache,
+            "nix-cache-info",
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let authenticated = service
+        .cache_serve(
+            ReadAuthorization::PreauthorizedSession,
+            &cache,
+            "nix-cache-info",
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_ne!(
+        anonymous.headers()[axum::http::header::CACHE_CONTROL],
+        "private, no-store"
+    );
+    assert_eq!(
+        authenticated.headers()[axum::http::header::CACHE_CONTROL],
+        "private, no-store"
+    );
+}
+
+#[tokio::test]
+async fn hybrid_cache_upload_refuses_an_external_binding_before_put() {
+    let (service, db, _lease, auth) = injected_service(vec![], vec![]).await;
+    let cache = db
+        .binary_cache_by_slug("failure/cache")
+        .await
+        .unwrap()
+        .unwrap();
+    let path = "nar/hybrid-example.nar";
+    let body = b"cache bytes";
+    let upload = service
+        .create_cache_object_uploads(
+            Some(&auth),
+            pb::CreateCacheObjectUploadsRequest {
+                cache_id: cache.stable_id.clone(),
+                path: path.into(),
+                size: body.len() as u64,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let encoded_path = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(path);
+
+    let error = service
+        .admit_hybrid_cache_upload(
+            Some(&auth),
+            &cache.stable_id,
+            &upload.upload_ticket_id,
+            &encoded_path,
+            HybridCacheUploadAdmissionRequest {
+                size: body.len() as u64,
+                sha256: hex::encode(Sha256::digest(body)),
+                projection: None,
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(error, RpcError::FailedPrecondition(_)));
+}
+
+#[tokio::test]
+async fn hybrid_cache_preflight_authorizes_the_exact_ticket_before_body_read() {
+    let (service, db, _lease, auth) = injected_service(vec![], vec![]).await;
+    let cache = db
+        .binary_cache_by_slug("failure/cache")
+        .await
+        .unwrap()
+        .unwrap();
+    let path = "nar/preflight.nar";
+    let upload = service
+        .create_cache_object_uploads(
+            Some(&auth),
+            pb::CreateCacheObjectUploadsRequest {
+                cache_id: cache.stable_id.clone(),
+                path: path.into(),
+                size: 11,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let encoded_path = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(path);
+
+    assert!(matches!(
+        service
+            .preflight_hybrid_cache_upload(
+                None,
+                &cache.stable_id,
+                &upload.upload_ticket_id,
+                &encoded_path,
+            )
+            .await,
+        Err(RpcError::Unauthenticated(_))
+    ));
+    assert!(matches!(
+        service
+            .preflight_hybrid_cache_upload(
+                Some(&auth),
+                &cache.stable_id,
+                "wrong-ticket",
+                &encoded_path,
+            )
+            .await,
+        Err(RpcError::NotFound(_))
+    ));
+    assert!(matches!(
+        service
+            .preflight_hybrid_cache_upload(
+                Some(&auth),
+                &cache.stable_id,
+                &upload.upload_ticket_id,
+                &encoded_path,
+            )
+            .await,
+        Err(RpcError::FailedPrecondition(_))
+    ));
+}
+
+#[tokio::test]
+async fn completed_cache_ticket_admits_identical_hybrid_retry_without_put() {
+    let body = b"cache bytes";
+    let (service, db, _lease, auth) = injected_service(
+        vec![
+            FetchBehavior::Missing,
+            FetchBehavior::Missing,
+            FetchBehavior::Evidence {
+                bytes: body.to_vec(),
+                strong_etag: "\"stored\"".into(),
+            },
+        ],
+        vec![WriteBehavior::Success],
+    )
+    .await;
+    let cache = db
+        .binary_cache_by_slug("failure/cache")
+        .await
+        .unwrap()
+        .unwrap();
+    let path = "nar/hybrid-retry.nar";
+    let upload = service
+        .create_cache_object_uploads(
+            Some(&auth),
+            pb::CreateCacheObjectUploadsRequest {
+                cache_id: cache.stable_id.clone(),
+                path: path.into(),
+                size: body.len() as u64,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let encoded_path = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(path);
+    service
+        .upload_cache_object(
+            Some(&auth),
+            &cache.stable_id,
+            &upload.upload_ticket_id,
+            &encoded_path,
+            body,
+        )
+        .await
+        .unwrap();
+
+    let admission = service
+        .admit_hybrid_cache_upload(
+            Some(&auth),
+            &cache.stable_id,
+            &upload.upload_ticket_id,
+            &encoded_path,
+            HybridCacheUploadAdmissionRequest {
+                size: body.len() as u64,
+                sha256: hex::encode(Sha256::digest(body)),
+                projection: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(admission.completed);
+    assert!(admission.object_key.is_none());
+}
+
+#[tokio::test]
+async fn narinfo_batch_rejects_uninspectable_hash_before_writing() {
+    let (service, db, _lease, _auth) = injected_service(vec![], vec![]).await;
+    let cache = db
+        .binary_cache_by_slug("failure/cache")
+        .await
+        .unwrap()
+        .unwrap();
+    let narinfo = pb::CacheNarinfo {
+        store_hash: "fleetgc".into(),
+        narinfo: "StorePath: /nix/store/fleetgc-payload\nURL: nar/payload.nar\n".into(),
+        nar_upload_ticket_id: String::new(),
+    };
+
+    let error = service
+        .register_cache_narinfos_authorized(&cache, &[narinfo])
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, RpcError::InvalidArgument(_)));
+    assert!(db
+        .surface_object_named(SurfaceTarget::BinaryCache(cache.id), "fleetgc.narinfo")
+        .await
+        .unwrap()
+        .is_none());
 }

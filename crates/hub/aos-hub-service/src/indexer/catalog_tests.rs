@@ -10,7 +10,8 @@ use ed25519_dalek::SigningKey;
 
 use super::index_registry;
 use crate::fetch::SurfaceFetch;
-use aos_hub_db::db::{Database, RegistryRecord};
+use aos_hub_db::db::Database;
+use aos_hub_db::db::RegistryRecord;
 
 #[derive(Default)]
 struct CatalogSurface {

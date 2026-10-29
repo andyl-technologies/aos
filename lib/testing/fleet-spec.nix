@@ -209,6 +209,18 @@
         '';
       };
 
+      filterUnicast = mkOption {
+        type = types.bool;
+        default = false;
+        description = ''
+          Filter Ethernet unicast for other MAC addresses before it enters this
+          QEMU guest's host multicast receive queue. Broadcast and multicast
+          remain available. Requires Linux and access to the owned QEMU socket;
+          leave disabled for guests that need promiscuous reception. Applies to
+          the Python test driver.
+        '';
+      };
+
       hostStoreMount = mkOption {
         type = types.bool;
         default = false;
@@ -247,6 +259,16 @@
           machines where host RAM is the constraint and many VMs run at
           once. Both the sandboxed driver and the interactive launcher
           honor this value.
+        '';
+      };
+
+      vcpuCount = mkOption {
+        type = positiveInt;
+        default = 2;
+        description = ''
+          Number of virtual CPUs handed to this machine's QEMU. Increase it
+          when the guest runs several independently scheduled services, such
+          as a Worker runner and a local object-store emulator.
         '';
       };
 

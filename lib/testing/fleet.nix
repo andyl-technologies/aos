@@ -95,12 +95,14 @@
       extraModules = m.extraModules or [];
       extraClosures = m.extraClosures or [];
       hostStoreMount = m.hostStoreMount or false;
+      filterUnicast = m.filterUnicast or false;
       metadata = m.metadata or {};
       varSizeMiB = m.varSizeMiB or 256;
       imageDiskMiB = m.imageDiskMiB or 40960;
       extraDisks = m.extraDisks or [];
       expectAgent = m.expectAgent or true;
       memoryMiB = m.memoryMiB or 2048;
+      vcpuCount = m.vcpuCount or 2;
       tpm = m.tpm or false;
       hostAliases = m.hostAliases or [];
       name = mname;
@@ -220,7 +222,23 @@
         # Every machine bakes per-VM identity into its image /etc. A test may
         # independently attach provisioning input through the metadata channel.
         effectiveSystem = mkEffectiveSystem {inherit m hostsEntries sshAuthorizedKey;};
-        compressedImage = effectiveSystem.config.system.build.image.raw;
+        # Fleet guests immediately decode these disks. Maximum compression
+        # adds minutes per machine without helping their boot or assertions.
+        compressedImage = effectiveSystem.config.system.build.image.raw.overrideAttrs (previous: {
+          phases = map (phase:
+            if phase.name == "install"
+            then let
+              deliveryCompression = "zstd --ultra -22 --long=27 -T1 --no-progress";
+              fleetCompression = "zstd --ultra -1 --long=27 -T1 --no-progress";
+            in
+              assert builtins.length (lib.splitString deliveryCompression phase.script) == 2;
+                phase
+                // {
+                  script = builtins.replaceStrings [deliveryCompression] [fleetCompression] phase.script;
+                }
+            else phase)
+          previous.phases;
+        });
         compressedImageName = "aos-${effectiveSystem.config.aos.system.name}.img.zst";
         imageDisk =
           pkgs.runCommand "aos-fleet-${m.name}-image-disk" {
@@ -285,7 +303,7 @@
           m.extraDisks;
       in
         {
-          inherit (m) name ip mac debugMac index packages bootMode tpm varProvisioning varSizeMiB memoryMiB expectAgent hostStoreMount;
+          inherit (m) name ip mac debugMac index packages bootMode tpm varProvisioning varSizeMiB memoryMiB vcpuCount expectAgent hostStoreMount filterUnicast;
           extraDisks = resolvedExtraDisks;
           inherit metadataISO;
           system = effectiveSystem;
@@ -335,8 +353,8 @@
     # qemu. The driver consumes this JSON and starts each VM in order,
     # then exposes each machine to the testScript as a Python global
     # named after `mb.name` (e.g. controlplane, worker). Per-machine RAM
-    # comes from the spec's `memoryMiB` (default 2 GiB); vCPU count is a
-    # uniform 2 per machine.
+    # comes from the spec's `memoryMiB` (default 2 GiB), and CPU count from
+    # `vcpuCount` (default 2).
     manifest =
       {
         inherit name timeout;
@@ -353,13 +371,14 @@
                 inherit (mb) name mac ip;
                 transport = "qemu";
                 memory_mib = mb.memoryMiB;
-                vcpu_count = 2;
+                vcpu_count = mb.vcpuCount;
                 # vTPM (RFC-0006 phase 3): when set, the driver launches a
                 # per-machine swtpm and wires QEMU's tpm-tis to it.
                 tpm = mb.tpm;
                 expect_agent = mb.expectAgent;
                 extra_disks = mb.extraDisks;
                 host_store_mount = mb.hostStoreMount;
+                filter_unicast = mb.filterUnicast;
                 swtpm_bin = "${pkgs.swtpm}/bin/swtpm";
               }
               // (
@@ -590,7 +609,7 @@
               -machine q35,accel=kvm \
               -cpu host \
               -m ${toString mb.memoryMiB} \
-              -smp 2 \
+              -smp ${toString mb.vcpuCount} \
               -nographic \
               -kernel "''${VMLINUZ_${mb.name}}" \
               -initrd "''${INITRD_${mb.name}}" \

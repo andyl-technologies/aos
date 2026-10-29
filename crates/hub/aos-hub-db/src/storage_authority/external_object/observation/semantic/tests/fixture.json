@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "domain": "aos.external-observation-plan.v1",
+  "operation_id": "observation-original",
+  "binding_write_revision": "4",
+  "plan": {
+    "version": 1,
+    "plan_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "deployment_id": "observation-native-fixture",
+    "issued_at": 100,
+    "expires_at": 130,
+    "placement_id": 9,
+    "placement_resource_version": 6,
+    "binding_id": 7,
+    "binding_resource_version": 3,
+    "binding_kind": "s3",
+    "binding_snapshot_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "credential_references": [
+      {
+        "purpose": "read",
+        "generation": 2
+      }
+    ],
+    "placement_prefix": "registry",
+    "operation": {
+      "kind": "head",
+      "path": "object"
+    }
+  },
+  "expected_guard_stamp": {
+    "physical_authority_id": "00000000-0000-4000-8000-000000000001",
+    "incarnation": "2"
+  },
+  "profile_selector": {
+    "physicalAuthorityId": "00000000-0000-4000-8000-000000000001",
+    "association": {
+      "association_id": "association-one",
+      "alias_id": "alias-one",
+      "binding_id": "7",
+      "binding_stable_id": "binding-seven",
+      "binding_resource_version": "3",
+      "binding_write_revision": "4",
+      "binding_prefix": "managed/binding"
+    },
+    "writeCredential": {
+      "purpose": "write",
+      "credentialId": "protected-write",
+      "generation": "2",
+      "secretVersionRef": "worker-profile:write:2",
+      "credentialFingerprint": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    },
+    "readCredential": {
+      "purpose": "read",
+      "credentialId": "protected-read",
+      "generation": "2",
+      "secretVersionRef": "worker-profile:read:2",
+      "credentialFingerprint": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    },
+    "presignCredential": {
+      "purpose": "presign",
+      "credentialId": "protected-presign",
+      "generation": "2",
+      "secretVersionRef": "worker-profile:presign:2",
+      "credentialFingerprint": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    }
+  },
+  "expected_profile_fingerprint": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+}

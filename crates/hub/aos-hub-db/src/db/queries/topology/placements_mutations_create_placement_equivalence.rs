@@ -131,30 +131,8 @@ impl Database {
         now: i64,
         limit: usize,
     ) -> Result<Vec<TopologyOperationRecord>> {
-        if limit == 0 {
-            return Ok(Vec::new());
-        }
-        self.backend
-            .query(
-                &format!(
-                    "SELECT {OPERATION_COLUMNS} FROM topology_operations operation
-                     WHERE operation.operation_kind IN
-                       ('scan_placement', 'replicate_placement', 'repair_placement')
-                       AND (operation.state = 'pending'
-                         OR (operation.state = 'running' AND (
-                           NOT EXISTS (SELECT 1 FROM placement_scan_claims claim
-                             WHERE claim.operation_id = operation.operation_id)
-                           OR EXISTS (SELECT 1 FROM placement_scan_claims claim
-                             WHERE claim.operation_id = operation.operation_id
-                               AND claim.lease_expires_at <= ?1))))
-                     ORDER BY operation.created_at, operation.operation_id LIMIT ?2"
-                ),
-                &vals![now, i64::try_from(limit)?],
-            )
-            .await?
-            .iter()
-            .map(row_to_topology_operation)
-            .collect()
+        self.due_physical_placement_operations(now, limit, true)
+            .await
     }
 
     /// Claims one pending or stale-running physical placement operation under CAS.
@@ -455,5 +433,21 @@ impl Database {
                 })
             })
             .transpose()
+    }
+}
+
+impl Database {
+    /// Lists only read-only placement scans for runtimes without copy writes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn due_surface_placement_scan_only_operations(
+        &self,
+        now: i64,
+        limit: usize,
+    ) -> Result<Vec<TopologyOperationRecord>> {
+        self.due_physical_placement_operations(now, limit, false)
+            .await
     }
 }

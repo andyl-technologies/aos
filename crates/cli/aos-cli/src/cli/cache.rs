@@ -181,6 +181,16 @@ pub enum CacheCmd {
 /// Shared authentication flags across all cache subcommands.
 #[derive(Args)]
 pub struct CacheAuthArgs {
+    /// Read an explicit direct-provider origin/CIDR/public-CA policy
+    #[arg(long, value_name = "FILE")]
+    pub direct_provider_policy: Option<std::path::PathBuf>,
+    /// Resume or create this owner-private direct upload journal
+    #[arg(long, value_name = "FILE")]
+    pub direct_upload_journal: Option<std::path::PathBuf>,
+    /// Use a new direct upload run while preserving prior journals
+    #[arg(long)]
+    pub new_direct_upload_run: bool,
+
     // --- HTTP ---
     /// AOS provisioning token (AOS_TOKEN env)
     #[arg(long, env = "AOS_TOKEN")]

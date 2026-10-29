@@ -11,12 +11,17 @@ use aos_oci_types::{
 };
 
 use super::{clock, Permission, RpcError, RpcService};
-use aos_hub_db::db::{
-    oci_blob_object_key, oci_catalog_declaration_digest, oci_publication_confirmation_hash,
-    AddOciPublicationObject, BeginOciPublication, ContainerReleaseDescriptorRole, OciCatalogObject,
-    OciCatalogProjection, OciPublicationRecord, OciPublicationRequiredPlacement,
-    OCI_MAX_SESSION_SECONDS,
-};
+use aos_hub_db::db::oci_blob_object_key;
+use aos_hub_db::db::oci_catalog_declaration_digest;
+use aos_hub_db::db::oci_publication_confirmation_hash;
+use aos_hub_db::db::AddOciPublicationObject;
+use aos_hub_db::db::BeginOciPublication;
+use aos_hub_db::db::ContainerReleaseDescriptorRole;
+use aos_hub_db::db::OciCatalogObject;
+use aos_hub_db::db::OciCatalogProjection;
+use aos_hub_db::db::OciPublicationRecord;
+use aos_hub_db::db::OciPublicationRequiredPlacement;
+use aos_hub_db::db::OCI_MAX_SESSION_SECONDS;
 
 impl RpcService {
     /// Verifies staged OCI membership and every required placement without tags.
@@ -640,16 +645,20 @@ fn validate_initial_release(release: &ContainerRelease) -> Result<(), RpcError> 
 }
 
 fn release_roots(release: &ContainerRelease) -> Vec<Descriptor> {
-    vec![
+    let mut descriptors = vec![
         release.oci.index.clone(),
         release.nix.closure.clone(),
-        release.evidence.abilities.clone(),
         release.evidence.sbom.clone(),
         release.evidence.source.clone(),
         release.evidence.license.clone(),
         release.evidence.provenance.clone(),
         release.evidence.signature.clone(),
-    ]
+    ];
+    descriptors.extend(release.evidence.abilities.clone());
+    if let Some(deployment) = &release.evidence.deployment {
+        descriptors.push(deployment.clone());
+    }
+    descriptors
 }
 
 fn validate_release_graph(
@@ -726,7 +735,12 @@ fn descriptor_role(
         ContainerReleaseDescriptorRole::PlatformManifest
     } else if descriptor.digest == release.nix.closure.digest {
         ContainerReleaseDescriptorRole::NixClosure
-    } else if descriptor.digest == release.evidence.abilities.digest {
+    } else if release
+        .evidence
+        .abilities
+        .as_ref()
+        .is_some_and(|abilities| descriptor.digest == abilities.digest)
+    {
         ContainerReleaseDescriptorRole::Abilities
     } else if descriptor.digest == release.evidence.sbom.digest {
         ContainerReleaseDescriptorRole::Sbom
@@ -736,6 +750,13 @@ fn descriptor_role(
         ContainerReleaseDescriptorRole::License
     } else if descriptor.digest == release.evidence.provenance.digest {
         ContainerReleaseDescriptorRole::Provenance
+    } else if release
+        .evidence
+        .deployment
+        .as_ref()
+        .is_some_and(|deployment| deployment.digest == descriptor.digest)
+    {
+        ContainerReleaseDescriptorRole::Deployment
     } else if descriptor.digest == release.evidence.signature.digest {
         ContainerReleaseDescriptorRole::Signature
     } else {
@@ -862,7 +883,11 @@ mod staging_tests {
                 closure: evidence_descriptor(MediaType::AosNixClosure, "closure"),
             },
             evidence: ContainerReferrers {
-                abilities: evidence_descriptor(MediaType::AosContainerStaticAbilities, "abilities"),
+                deployment: None,
+                abilities: Some(evidence_descriptor(
+                    MediaType::AosContainerStaticAbilities,
+                    "abilities",
+                )),
                 sbom: evidence_descriptor(MediaType::SpdxJson, "sbom"),
                 source: evidence_descriptor(MediaType::AosSourceClosure, "source"),
                 license: evidence_descriptor(MediaType::AosLicenseReport, "license"),

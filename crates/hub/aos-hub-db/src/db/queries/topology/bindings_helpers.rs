@@ -4,7 +4,7 @@ use super::*;
 
 impl Database {
     /// Ensures the binding has a nullable, versioned write-state singleton.
-    pub(in crate::db) async fn ensure_binding_write_state(&self, binding_id: i64) -> Result<()> {
+    pub async fn ensure_binding_write_state(&self, binding_id: i64) -> Result<()> {
         if self
             .backend
             .query_opt(

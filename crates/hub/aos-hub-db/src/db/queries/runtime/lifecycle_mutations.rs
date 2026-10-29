@@ -127,7 +127,7 @@ impl Database {
     }
 
     pub async fn with_backend(backend: Box<dyn Backend>) -> Result<Self> {
-        let db = Self { backend };
+        let db = Self::attach(backend);
         db.migrate().await?;
         Ok(db)
     }
@@ -143,6 +143,18 @@ impl Database {
     /// should migrate it.
     #[must_use]
     pub fn attach(backend: Box<dyn Backend>) -> Self {
-        Self { backend }
+        Self {
+            backend,
+            #[cfg(not(target_arch = "wasm32"))]
+            direct_dependency_plans: Default::default(),
+        }
+    }
+}
+
+impl Database {
+    /// Reports the current native SQL connection-pool occupancy, when available.
+    #[must_use]
+    pub fn pool_stats(&self) -> Option<crate::backend::PoolStats> {
+        self.backend.pool_stats()
     }
 }

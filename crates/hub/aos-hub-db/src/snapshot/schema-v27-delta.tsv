@@ -1,0 +1,5 @@
+# Generation-twenty-seven retired binding ids. OCI deletion rows drop their derived digests.
+binding_id_tombstones	retain	id	integer	no	1	retain
+binding_id_tombstones	retain	stable_id	text	no	0	retain
+binding_id_tombstones	retain	owner_scope_key	text	no	0	retain
+binding_id_tombstones	retain	deleted_at	integer	no	0	retain

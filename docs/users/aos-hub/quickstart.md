@@ -33,7 +33,7 @@ a signed `1.0.0` release and a `stable` channel.
 The health endpoint should report a healthy database:
 
 ```sh
-curl -fsS http://127.0.0.1:8420/healthz
+curl -fsS http://127.0.0.1:8420/-/health
 ```
 
 Read the registry through the unary JSON API:

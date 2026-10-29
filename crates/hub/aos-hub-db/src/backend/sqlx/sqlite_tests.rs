@@ -4,7 +4,8 @@ use std::task::Poll;
 use std::time::Duration;
 
 use super::SqlxBackend;
-use crate::backend::{Backend as _, Statement};
+use crate::backend::Backend as _;
+use crate::backend::Statement;
 
 #[tokio::test]
 async fn cancelled_acquisitions_preserve_the_in_memory_database() {

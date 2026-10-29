@@ -6,7 +6,8 @@ use anyhow::{Context as _, Result};
 
 use aos_hub_db::backend::BackendBounds;
 use aos_hub_db::db::Database;
-use aos_hub_model::secret_version::{verify_secret_fingerprint, SecretVersionResolver};
+use aos_hub_model::secret_version::verify_secret_fingerprint;
+use aos_hub_model::secret_version::SecretVersionResolver;
 
 /// Plaintext credential material confined to a runtime adapter.
 pub struct ResolvedStorageCredential {

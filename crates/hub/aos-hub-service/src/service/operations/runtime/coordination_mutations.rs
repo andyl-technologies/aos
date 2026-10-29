@@ -20,18 +20,7 @@ impl RpcService {
         _req: pb::WhoAmIRequest,
     ) -> Result<pb::WhoAmIResponse, RpcError> {
         let claims = self.require_claims(auth)?;
-        let principal = claims_principal(&claims)
-            .ok_or_else(|| RpcError::PermissionDenied("active principal required".into()))?;
-        if !self
-            .db
-            .principal_is_live(principal.kind.as_str(), principal.id)
-            .await
-            .map_err(RpcError::internal)?
-        {
-            return Err(RpcError::PermissionDenied(
-                "active principal required".into(),
-            ));
-        }
+        let principal = self.current_principal(&claims).await?;
 
         let (principal_ref, email) = match principal.kind {
             PrincipalKind::User => {
@@ -69,7 +58,37 @@ impl RpcService {
             })
             .collect();
 
+        // Response data reads can await account/token changes. The continuity
+        // proof uses a final live owner resolution, never a decoded claim alone.
+        let actor = self
+            .db
+            .current_authenticated_actor(&claims)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::PermissionDenied("active principal required".into()))?;
+        let (deployment_id, principal_id) = match self.deployment_id.as_deref() {
+            Some(deployment) => (
+                deployment.to_owned(),
+                actor.principal_id(deployment).map_err(RpcError::internal)?,
+            ),
+            None => (String::new(), String::new()),
+        };
+        if self.hybrid_delivery && deployment_id.is_empty() {
+            return Err(RpcError::FailedPrecondition(
+                "direct upload identity configuration is unavailable".into(),
+            ));
+        }
+
         Ok(pb::WhoAmIResponse {
+            deployment_id,
+            principal_id,
+            transfer_mode: if self.hybrid_delivery
+                && self.hybrid_upload_mode == aos_hub_db::hybrid_upload::HybridUploadMode::Direct
+            {
+                "direct_required".into()
+            } else {
+                "legacy".into()
+            },
             principal_kind: principal.kind.as_str().to_string(),
             principal_ref,
             email,

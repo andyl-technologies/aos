@@ -262,7 +262,7 @@ fn validate_request(evidence: &SignedRequestParts<'_>) -> Result<()> {
         if evidence.method != "POST" || evidence.content_type != Some("application/json") {
             bail!("hardened-egress webhook headers require a JSON POST");
         }
-        if !crate::webhook::is_safe_event_header_value(event) {
+        if !aos_hub_model::webhook::is_safe_event_header_value(event) {
             bail!("hardened-egress webhook event is invalid");
         }
         let digest = signature.strip_prefix("sha256=").unwrap_or_default();

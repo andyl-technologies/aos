@@ -24,7 +24,7 @@ use aos_hub_native::db::{
     IndexSnapshot, NewBindingWriteRevision, NewSurfacePlacementSpec, ReleaseArtifactSnapshot,
     ReleaseRow, ReleaseSnapshotArtifact, RouteSpec, SurfaceTarget, TokenAuth,
 };
-use aos_hub_native::domain::{Permission, Principal, Scope};
+use aos_hub_native::domain::{Permission, Principal};
 use aos_hub_native::server::{router, AppState};
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
@@ -67,19 +67,15 @@ async fn app_state(db: Arc<Database>) -> Arc<AppState> {
 }
 
 /// Mint a bearer JWT for `principal` scoped to `scope` with `perms`.
-fn bearer(principal: Principal, scope: &str, perms: &[Permission]) -> String {
-    JwtKeys::from_secret(TEST_JWT_SECRET)
-        .mint_browser_session(
-            &TokenAuth {
-                token_id: "test-token".into(),
-                owner: principal,
-                scope: Scope::parse(scope),
-                permissions: perms.to_vec(),
-                expires_at: None,
-            },
-            900,
-        )
-        .unwrap()
+async fn bearer(db: &Database, principal: Principal, scope: &str, perms: &[Permission]) -> String {
+    common::current_bearer(
+        db,
+        &JwtKeys::from_secret(TEST_JWT_SECRET),
+        principal,
+        scope,
+        perms,
+    )
+    .await
 }
 
 /// POST a Connect-JSON RPC body, returning `(status, body)`.
@@ -321,10 +317,12 @@ async fn private_registry_inventory_is_denied_to_anonymous() {
         .await
         .unwrap();
     let member = bearer(
+        &db,
         Principal::user(member_id),
         &victim_scope,
         &[Permission::Read],
-    );
+    )
+    .await;
     let (status, resp) = rpc(
         &app,
         "PackageService/ListPackages",
@@ -472,10 +470,12 @@ async fn topology_placements_use_typed_camel_case_refs_and_surface_read_auth() {
         .await
         .unwrap();
     let member = bearer(
+        &db,
         Principal::user(member_id),
         &topology_scope,
         &[Permission::Read],
-    );
+    )
+    .await;
     let (status, resp) = rpc(
         &app,
         "TopologyService/GetPlacement",
@@ -553,10 +553,12 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
         .await
         .unwrap();
     let owner_admin = bearer(
+        &db,
         Principal::user(owner_admin_id),
         &owner_scope,
         &[Permission::Read, Permission::StorageManage],
-    );
+    )
+    .await;
     let wrong_org_id = db
         .create_user("admin@other-placement.test", None)
         .await
@@ -565,19 +567,23 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
         .await
         .unwrap();
     let wrong_org = bearer(
+        &db,
         Principal::user(wrong_org_id),
         &other_scope,
         &[Permission::StorageManage],
-    );
+    )
+    .await;
     let viewer_id = db.create_user("viewer@placement.test", None).await.unwrap();
     db.grant_membership("user", viewer_id, &owner_scope, "viewer")
         .await
         .unwrap();
     let viewer = bearer(
+        &db,
         Principal::user(viewer_id),
         &owner_scope,
         &[Permission::Read],
-    );
+    )
+    .await;
     let controller_id = db
         .create_service_account(org, "topology-controller")
         .await
@@ -586,10 +592,12 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
         .await
         .unwrap();
     let controller = bearer(
+        &db,
         Principal::service_account(controller_id),
         &owner_scope,
         &[Permission::StorageManage, Permission::TopologyReconcile],
-    );
+    )
+    .await;
     let write_generation =
         common::create_valid_write_credential(&db, binding, "secret://placement-owner/origin/v1")
             .await;
@@ -1571,10 +1579,12 @@ async fn topology_cache_placements_enforce_visibility_and_org_tenancy() {
         .await
         .unwrap();
     let owner_member = bearer(
+        &db,
         Principal::user(owner_member_id),
         &owner_scope,
         &[Permission::Read],
-    );
+    )
+    .await;
     let (status, resp) = rpc(
         &app,
         "TopologyService/GetPlacement",
@@ -1594,10 +1604,12 @@ async fn topology_cache_placements_enforce_visibility_and_org_tenancy() {
         .await
         .unwrap();
     let other_member = bearer(
+        &db,
         Principal::user(other_member_id),
         &other_scope,
         &[Permission::Read],
-    );
+    )
+    .await;
     let (status, _) = rpc(
         &app,
         "TopologyService/GetPlacement",
@@ -1654,7 +1666,13 @@ async fn list_registries_filters_private_and_soft_deleted() {
     db.grant_membership("user", member_id, &org_scope, "viewer")
         .await
         .unwrap();
-    let member = bearer(Principal::user(member_id), &org_scope, &[Permission::Read]);
+    let member = bearer(
+        &db,
+        Principal::user(member_id),
+        &org_scope,
+        &[Permission::Read],
+    )
+    .await;
     let (status, resp) = rpc(
         &app,
         "RegistryService/ListRegistries",
@@ -1706,7 +1724,13 @@ async fn list_orgs_requires_membership_and_filters() {
     db.grant_membership("user", member_id, &org_scope, "viewer")
         .await
         .unwrap();
-    let member = bearer(Principal::user(member_id), &org_scope, &[Permission::Read]);
+    let member = bearer(
+        &db,
+        Principal::user(member_id),
+        &org_scope,
+        &[Permission::Read],
+    )
+    .await;
     let (status, resp) = rpc(
         &app,
         "OrganizationService/ListOrganizations",
@@ -1754,7 +1778,13 @@ async fn list_projects_requires_membership() {
     db.grant_membership("user", member_id, &org_scope, "viewer")
         .await
         .unwrap();
-    let member = bearer(Principal::user(member_id), &org_scope, &[Permission::Read]);
+    let member = bearer(
+        &db,
+        Principal::user(member_id),
+        &org_scope,
+        &[Permission::Read],
+    )
+    .await;
     let (status, resp) = rpc(
         &app,
         "ProjectService/ListProjects",
@@ -1796,7 +1826,13 @@ async fn list_bindings_requires_storage_management_authority() {
     db.grant_membership("user", member_id, &org_scope, "viewer")
         .await
         .unwrap();
-    let member = bearer(Principal::user(member_id), &org_scope, &[Permission::Read]);
+    let member = bearer(
+        &db,
+        Principal::user(member_id),
+        &org_scope,
+        &[Permission::Read],
+    )
+    .await;
     let (status, resp) = rpc(
         &app,
         "BindingService/ListBindings",
@@ -1816,10 +1852,12 @@ async fn list_bindings_requires_storage_management_authority() {
         .await
         .unwrap();
     let admin = bearer(
+        &db,
         Principal::user(admin_id),
         &org_scope,
         &[Permission::BindingRead, Permission::StorageManage],
-    );
+    )
+    .await;
     let (status, resp) = rpc(
         &app,
         "BindingService/ListBindings",
@@ -1857,7 +1895,7 @@ async fn documentation_api_preserves_private_registry_bearer_authorization() {
         db.grant_membership("user", user, &scope, "viewer")
             .await
             .unwrap();
-        tokens.push(bearer(Principal::user(user), &scope, &[Permission::Read]));
+        tokens.push(bearer(&db, Principal::user(user), &scope, &[Permission::Read]).await);
     }
     let app = router(app_state(db).await).await;
 

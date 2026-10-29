@@ -165,6 +165,18 @@ aos_dev_cargo() {
       -c cargo "$@"
 }
 
+aos_dev_test() {
+  [[ ${1:-} == hub-direct ]] || aos_dev_error 'test requires hub-direct [all|unit|runtime|paired|queue|stress]'
+  shift
+
+  # Select only this small shell with a persistent Cargo output directory.
+  # No fleet images or packaged CLI.
+  export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/aos-dev/hub-direct-target}"
+  AOS_DEV_ROOT="$aos_dev_root" nix develop --accept-flake-config \
+    --file "$aos_dev_root/tools/dev/hub-direct-shell.nix" \
+    -c python3 "$aos_dev_root/tools/dev/hub-direct.py" "$@"
+}
+
 aos_dev_fmt() {
   aos_dev_configure_nix
 
@@ -207,7 +219,11 @@ aos_dev_completion() {
 _aos_dev_complete() {
   local current=${COMP_WORDS[COMP_CWORD]}
   if (( COMP_CWORD == 1 )); then
-    COMPREPLY=( $(compgen -W 'list build run all fmt release cache completion help --image-cache --no-image-cache --release --no-cache --cache --cache-dir --go-cache --no-go-cache --bazel-cache --no-bazel-cache --rust-target-cache --no-rust-target-cache --rust-incremental --no-rust-incremental --accache --no-accache' -- "$current") )
+    COMPREPLY=( $(compgen -W 'list build run test all fmt release cache completion help --image-cache --no-image-cache --release --no-cache --cache --cache-dir --go-cache --no-go-cache --bazel-cache --no-bazel-cache --rust-target-cache --no-rust-target-cache --rust-incremental --no-rust-incremental --accache --no-accache' -- "$current") )
+  elif (( COMP_CWORD == 2 )) && [[ ${COMP_WORDS[1]} == test ]]; then
+    COMPREPLY=( $(compgen -W 'hub-direct' -- "$current") )
+  elif (( COMP_CWORD == 3 )) && [[ ${COMP_WORDS[1]} == test && ${COMP_WORDS[2]} == hub-direct ]]; then
+    COMPREPLY=( $(compgen -W 'all unit runtime paired queue stress' -- "$current") )
   elif (( COMP_CWORD == 2 )); then
     COMPREPLY=( $(compgen -W 'aos apm apr package image container check build eval packages images containers checks builds evals ci format nix rust go bazel all init doctor verify-mount status usage entries intermediates builds prune compact clear' -- "$current") )
   elif (( COMP_CWORD == 3 )) && [[ ${COMP_WORDS[1]} == build || ${COMP_WORDS[1]} == run ]]; then
@@ -271,6 +287,7 @@ aos_dev_main() {
     build) aos_dev_build "$@" ;;
     run) aos_dev_run "$@" ;;
     cargo) aos_dev_cargo "$@" ;;
+    test) aos_dev_test "$@" ;;
     all) aos_dev_all "$@" ;;
     fmt) aos_dev_fmt "$@" ;;
     release) aos_dev_release "$@" ;;

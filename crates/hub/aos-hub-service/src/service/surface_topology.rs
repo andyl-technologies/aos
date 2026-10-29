@@ -230,8 +230,8 @@ impl RpcService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aos_hub_db::db::fixtures::{count_queries, topology_fixture};
-    use aos_hub_db::db::TokenAuth;
+    use aos_hub_db::db::fixtures::count_queries;
+    use aos_hub_db::db::fixtures::topology_fixture;
     use std::sync::atomic::Ordering;
 
     impl RpcService {
@@ -379,14 +379,14 @@ mod tests {
             .unwrap();
         let token = service
             .jwt_keys
-            .mint_browser_session(
-                &TokenAuth {
-                    token_id: "projection-test".into(),
-                    owner: Principal::user(user),
-                    scope: Scope::try_parse(&org.stable_id).unwrap(),
-                    permissions: vec![Permission::Read, Permission::RouteRead],
-                    expires_at: None,
-                },
+            .mint(
+                &crate::service::authentication::provisioned_test_auth(
+                    &service.db,
+                    Principal::user(user),
+                    Scope::try_parse(&org.stable_id).unwrap(),
+                    &vec![Permission::Read, Permission::RouteRead],
+                )
+                .await,
                 3600,
             )
             .unwrap();

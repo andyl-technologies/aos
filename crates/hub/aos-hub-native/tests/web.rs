@@ -95,7 +95,8 @@ async fn fresh_container_browser_is_enabled_and_renders_an_empty_catalog() {
 
 #[tokio::test]
 async fn unavailable_browser_data_is_a_page_and_not_an_empty_catalog() {
-    use aos_hub_db::backend::{Backend as _, SqlxBackend};
+    use aos_hub_db::backend::Backend as _;
+    use aos_hub_db::backend::SqlxBackend;
 
     let backend = SqlxBackend::connect_sqlite(":memory:").await.unwrap();
     let SqlxBackend::Sqlite(pool) = &backend else {
@@ -523,12 +524,9 @@ async fn registry_home_carries_setup_snippets_and_fingerprints() {
         body.contains("substituters = http://127.0.0.1:8420/demo"),
         "{body}"
     );
-    // This fixture has registry anchors but no cache-specific signing keys.
-    // Stock Nix must not be instructed to trust registry keys as cache keys.
-    assert!(
-        !body.contains("trusted-public-keys ="),
-        "registry anchors must not be advertised as Nix cache keys"
-    );
+    // Registry SSH trust anchors are not Nix narinfo public keys. This fixture
+    // has no configured cache signer, so setup must not invent a Nix key.
+    assert!(!body.contains("trusted-public-keys ="), "{body}");
     // The pinned anchor appears in full and as a SHA256: fingerprint.
     assert!(body.contains(&fixture.trust_key), "{body}");
     assert!(body.contains("SHA256:"), "{body}");

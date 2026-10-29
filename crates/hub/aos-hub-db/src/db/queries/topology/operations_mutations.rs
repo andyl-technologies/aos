@@ -24,6 +24,23 @@ impl Database {
         ) {
             bail!("invalid topology plan actor kind '{}'", input.actor_kind);
         }
+        if let Some(incarnation) = &input.actor_incarnation {
+            let kind = aos_hub_model::domain::PrincipalKind::parse(&input.actor_kind)
+                .context("pinned topology plan actor kind is invalid")?;
+            let principal = aos_hub_model::domain::Principal {
+                kind,
+                id: input
+                    .actor_id
+                    .context("pinned topology plan actor is missing")?,
+            };
+            direct_identity::validate_actor_incarnation(principal, incarnation)?;
+            anyhow::ensure!(
+                self.principal_incarnation(principal).await?.as_ref() == Some(incarnation),
+                "topology plan actor incarnation is unavailable"
+            );
+        }
+        // None remains available to historical trusted DB fixtures. Public
+        // control services require a validated UUID and reject unpinned replay.
         validate_key_bytes(&input.scope, "topology plan scope", 255)?;
         if let Some(hash) = input.confirmation_hash.as_deref() {
             validate_key_bytes(hash, "confirmation hash", 128)?;
@@ -53,6 +70,9 @@ impl Database {
                 )
                 .await?;
             if let Some(existing) = rows.first().map(row_to_topology_plan).transpose()? {
+                if existing.actor_incarnation != input.actor_incarnation {
+                    bail!("plan idempotency key belongs to another actor incarnation");
+                }
                 if existing.request_digest.as_deref() != Some(request_digest.as_str()) {
                     bail!("plan idempotency key was already used for different input");
                 }
@@ -65,8 +85,14 @@ impl Database {
                 "INSERT INTO topology_plans (plan_id, plan_kind, actor_kind, actor_id,
                 actor_label, scope, input_versions_json, effects_json, warnings_json,
                 confirmation_hash, request_idempotency_key, request_digest,
-                created_at, expires_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                created_at, expires_at, actor_incarnation)
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15
+             WHERE ?15 IS NULL
+               OR (?3 = 'user' AND EXISTS (SELECT 1 FROM users u
+                   WHERE u.id = ?4 AND u.deleted_at IS NULL AND u.principal_incarnation = ?15))
+               OR (?3 = 'service_account' AND EXISTS (SELECT 1 FROM service_accounts s
+                   JOIN orgs o ON o.id = s.org_id WHERE s.id = ?4
+                     AND o.deleted_at IS NULL AND s.principal_incarnation = ?15))",
                 &vals![
                     input.plan_id,
                     input.plan_kind,
@@ -81,7 +107,8 @@ impl Database {
                     input.request_idempotency_key,
                     request_digest,
                     now,
-                    input.expires_at
+                    input.expires_at,
+                    input.actor_incarnation
                 ],
             )
             .await;
@@ -99,7 +126,9 @@ impl Database {
                     )
                     .await?;
                 if let Some(existing) = rows.first().map(row_to_topology_plan).transpose()? {
-                    if existing.request_digest.as_deref() == Some(request_digest.as_str()) {
+                    if existing.actor_incarnation == input.actor_incarnation
+                        && existing.request_digest.as_deref() == Some(request_digest.as_str())
+                    {
                         return Ok(existing);
                     }
                     bail!("plan idempotency key was concurrently used for different input");
@@ -684,6 +713,9 @@ impl Database {
         {
             bail!("operation finish time cannot precede its start time");
         }
+
+        // A claimed controller may checkpoint evidence while staying running;
+        // the version and monotonic-progress predicates still fence stale writers.
         let affected = self
             .backend
             .execute(
@@ -693,11 +725,11 @@ impl Database {
                 resource_version = resource_version + 1
              WHERE operation_id = ?1 AND resource_version = ?2
                AND progress_current <= ?4
-               AND (progress_total IS NULL OR ?5 IS NULL OR progress_total = ?5)
+               AND (progress_total IS NULL OR CAST(?5 AS BIGINT) IS NULL OR progress_total = ?5)
                AND (?3 <> 'succeeded' OR COALESCE(?5, progress_total) IS NULL
                     OR ?4 = COALESCE(?5, progress_total))
                AND ((state = 'pending' AND ?3 IN ('running', 'cancelled'))
-                 OR (state = 'running' AND ?3 IN ('succeeded', 'failed', 'cancelled'))) ",
+                 OR (state = 'running' AND ?3 IN ('running', 'succeeded', 'failed', 'cancelled'))) ",
                 &vals![
                     operation_id,
                     expected_version,
@@ -956,21 +988,21 @@ impl Database {
                        WHERE scope.scope_key = ?3 AND scope.retired_at IS NULL
                          AND {scope_identity_guard}
                          AND (scope.org_id IS NULL OR org.deleted_at IS NULL))
-                   AND (?4 IS NULL OR EXISTS (
+                   AND (CAST(?4 AS BIGINT) IS NULL OR EXISTS (
                      SELECT 1 FROM binding_consumer_scopes grant_row
                       WHERE grant_row.binding_id = ?4
                         AND grant_row.consumer_scope_key = ?3
                         AND grant_row.state = 'active'))
-                   AND (?5 IS NULL OR EXISTS (
+                   AND (CAST(?5 AS BIGINT) IS NULL OR EXISTS (
                      SELECT 1 FROM domains domain
                       WHERE domain.id = ?5 AND domain.owner_scope_key = ?3))
-                   AND (?6 IS NULL OR EXISTS (
+                   AND (CAST(?6 AS BIGINT) IS NULL OR EXISTS (
                      SELECT 1 FROM endpoint_route_scopes grant_row
                       WHERE grant_row.endpoint_id = ?6
                         AND grant_row.endpoint_generation = ?7
                         AND grant_row.consumer_scope_key = ?3
                         AND grant_row.state = 'active'))
-                   AND (?8 IS NULL OR EXISTS (
+                   AND (CAST(?8 AS BIGINT) IS NULL OR EXISTS (
                      SELECT 1 FROM gateway_revision_route_scopes grant_row
                       WHERE grant_row.gateway_id = ?8 AND grant_row.generation = ?9
                         AND grant_row.consumer_scope_key = ?3

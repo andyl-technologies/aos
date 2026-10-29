@@ -14,8 +14,8 @@ fn generated_relational_ids_are_positive_and_worker_exact() {
 fn fresh_schema_is_final_and_foreign_key_clean() {
     assert_eq!(
         MIGRATIONS.len(),
-        19,
-        "released migrations drop the derived OCI deletion digests"
+        27,
+        "immutable Hybrid history plus Native projections and current identity migrations"
     );
     let connection = Connection::open_in_memory().unwrap();
     connection
@@ -30,7 +30,9 @@ fn fresh_schema_is_final_and_foreign_key_clean() {
             row.get(0)
         })
         .unwrap();
-    assert_eq!(identity, SCHEMA_IDENTITY);
+    // Immutable scripts keep their historical marker. Only the checked
+    // serving initializer stamps the new identity after all eight settle.
+    assert_eq!(identity, HISTORICAL_SCHEMA_IDENTITY);
 
     let violations: i64 = connection
         .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
@@ -145,7 +147,11 @@ fn mailbox_migration_preserves_only_established_owners() {
     connection
         .execute_batch("PRAGMA foreign_keys = ON;")
         .unwrap();
-    for migration in &MIGRATIONS[..9] {
+    let mailbox_migration = MIGRATIONS
+        .iter()
+        .position(|script| *script == include_str!("../migration-0010-user-mailboxes.sql"))
+        .unwrap();
+    for migration in &MIGRATIONS[..mailbox_migration] {
         connection.execute_batch(migration).unwrap();
     }
 
@@ -164,7 +170,9 @@ fn mailbox_migration_preserves_only_established_owners() {
         )
         .unwrap();
 
-    connection.execute_batch(MIGRATIONS[9]).unwrap();
+    connection
+        .execute_batch(MIGRATIONS[mailbox_migration])
+        .unwrap();
 
     let owners = connection
         .prepare("SELECT email, user_id FROM user_mailboxes ORDER BY user_id")
@@ -376,6 +384,38 @@ async fn migrate_register_and_reopen() {
 
 #[tokio::test]
 async fn migrate_refuses_pre_cutover_version_collision() {
+    fn fingerprint(connection: &Connection) -> String {
+        let mut schema_statement = connection
+            .prepare("SELECT type,name,tbl_name,sql FROM sqlite_schema ORDER BY type,name")
+            .unwrap();
+        let schema = schema_statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            })
+            .unwrap()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+        let marker: i64 = connection
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .unwrap();
+        let mut rows_statement = connection
+            .prepare("SELECT id,slug FROM registries ORDER BY id")
+            .unwrap();
+        let rows = rows_statement
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })
+            .unwrap()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+        serde_json::to_string(&(schema, marker, rows)).unwrap()
+    }
+
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("legacy.db");
     let connection = Connection::open(&path).unwrap();
@@ -383,10 +423,11 @@ async fn migrate_refuses_pre_cutover_version_collision() {
         .execute_batch(
             "CREATE TABLE schema_version(version INTEGER NOT NULL);
                  INSERT INTO schema_version(version) VALUES (1);
-                 CREATE TABLE registries(id INTEGER PRIMARY KEY, slug TEXT NOT NULL);",
+                 CREATE TABLE registries(id INTEGER PRIMARY KEY, slug TEXT NOT NULL);
+                 INSERT INTO registries(id,slug) VALUES (7,'retained');",
         )
         .unwrap();
-    drop(connection);
+    let before = fingerprint(&connection);
 
     let error = match Database::open(&path).await {
         Ok(_) => panic!("pre-cutover schema must be refused"),
@@ -394,9 +435,10 @@ async fn migrate_refuses_pre_cutover_version_collision() {
     };
     let message = format!("{error:#}");
     assert!(
-        message.contains("predates the first stable production baseline"),
+        message.contains(crate::backend::schema_lineage::RESET_REQUIRED),
         "{message}"
     );
+    assert_eq!(fingerprint(&connection), before);
 }
 
 #[tokio::test]
@@ -736,7 +778,10 @@ async fn change_comments_and_reviews_record_and_list_in_order() {
 
 #[tokio::test]
 async fn device_flow_full_path_with_scope_clamping() {
-    use aos_hub_model::domain::{Permission, Principal, Role, Scope};
+    use aos_hub_model::domain::Permission;
+    use aos_hub_model::domain::Principal;
+    use aos_hub_model::domain::Role;
+    use aos_hub_model::domain::Scope;
     let db = Database::open_in_memory().await.unwrap();
     let approver = db.create_user("admin@acme.com", None).await.unwrap();
     // The approver is a maintainer at the instance: read+publish, but NOT
@@ -864,7 +909,10 @@ async fn device_flow_expiry_blocks_approval() {
 
 #[tokio::test]
 async fn approve_device_after_deny_mints_nothing() {
-    use aos_hub_model::domain::{Permission, Principal, Role, Scope};
+    use aos_hub_model::domain::Permission;
+    use aos_hub_model::domain::Principal;
+    use aos_hub_model::domain::Role;
+    use aos_hub_model::domain::Scope;
     let db = Database::open_in_memory().await.unwrap();
     let approver = db.create_user("admin@acme.com", None).await.unwrap();
     let principal = Principal::user(approver);
@@ -1295,4 +1343,82 @@ async fn whole_surface_reads_prefer_the_reconciled_writer() {
             .is_err(),
         "the commit guard must reject authority changes after preflight"
     );
+}
+
+#[test]
+fn r2_incarnation_migration_preserves_legacy_rows_as_nullable() {
+    let connection = Connection::open_in_memory().unwrap();
+    connection.execute_batch(MIGRATIONS[0]).unwrap();
+    connection
+        .execute_batch(
+            "INSERT INTO oci_provider_inventory_entries
+                   (generation_id, registry_id, placement_id, object_key,
+                    object_digest, observed_hash, byte_size, strong_etag, classification)
+                 VALUES('legacy', 1, 1, 'key', 'digest', 'digest', 4, 'etag', 'untracked');
+                 INSERT INTO oci_gc_placement_actions
+                   (id, run_id, registry_id, digest, placement_id, object_key,
+                    expected_hash, expected_size, expected_strong_etag,
+                    inventory_generation_id, inventory_entry_present, state,
+                    next_attempt_at, confirmed_at)
+                 VALUES('action', 'run', 1, 'digest', 1, 'key', 'digest', 4,
+                        'etag', 'legacy', 1, 'confirmed_absent', 0, 1);",
+        )
+        .unwrap();
+    connection
+        .execute_batch(include_str!("../002-r2-gc-incarnation.sql"))
+        .unwrap();
+
+    let inventory_version: Option<String> = connection
+        .query_row(
+            "SELECT provider_version FROM oci_provider_inventory_entries
+                 WHERE generation_id = 'legacy'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let action_version: Option<String> = connection
+        .query_row(
+            "SELECT expected_provider_version FROM oci_gc_placement_actions WHERE id='action'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(inventory_version, None);
+    assert_eq!(action_version, None);
+}
+
+#[tokio::test]
+async fn native_reference_schema_refuses_noncanonical_released_prefixes_without_writes() {
+    use sha2::Digest as _;
+
+    // Earlier feature prefixes do not identify this branch's canonical
+    // serving schema. Preserve them for an explicit reset or manual import.
+    for baseline_version in [1, 2, 3, 4, 5] {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("hub.db");
+        let connection = Connection::open(&path).unwrap();
+        // Released Hub databases already use WAL. Avoid mistaking the
+        // driver's journal-mode configuration for a migration write.
+        connection
+            .pragma_update(None, "journal_mode", "WAL")
+            .unwrap();
+        connection
+            .execute_batch("CREATE TABLE schema_version (version INTEGER NOT NULL);")
+            .unwrap();
+        for migration in &MIGRATIONS[..baseline_version] {
+            connection.execute_batch(migration).unwrap();
+        }
+        connection
+            .execute(
+                "INSERT INTO schema_version VALUES (?1)",
+                [baseline_version as i64],
+            )
+            .unwrap();
+        drop(connection);
+        let before = sha2::Sha256::digest(std::fs::read(&path).unwrap());
+
+        assert!(Database::open(&path).await.is_err());
+
+        assert_eq!(sha2::Sha256::digest(std::fs::read(&path).unwrap()), before);
+    }
 }

@@ -107,19 +107,19 @@ impl Database {
             .execute(
                 "UPDATE domains SET observed_dns_state = CASE
                       WHEN desired_dns_provider = ?3 OR
-                        (desired_dns_provider IS NULL AND ?3 IS NULL)
+                        (desired_dns_provider IS NULL AND CAST(?3 AS TEXT) IS NULL)
                       THEN observed_dns_state
-                      WHEN ?3 IS NULL THEN 'unconfigured' ELSE 'pending' END,
+                      WHEN CAST(?3 AS TEXT) IS NULL THEN 'unconfigured' ELSE 'pending' END,
                     observed_tls_state = CASE
                       WHEN desired_tls_provider = ?4 OR
-                        (desired_tls_provider IS NULL AND ?4 IS NULL)
+                        (desired_tls_provider IS NULL AND CAST(?4 AS TEXT) IS NULL)
                       THEN observed_tls_state
-                      WHEN ?4 IS NULL THEN 'unconfigured' ELSE 'pending' END,
+                      WHEN CAST(?4 AS TEXT) IS NULL THEN 'unconfigured' ELSE 'pending' END,
                     verified_at = CASE WHEN
                       (desired_dns_provider = ?3 OR
-                        (desired_dns_provider IS NULL AND ?3 IS NULL)) AND
+                        (desired_dns_provider IS NULL AND CAST(?3 AS TEXT) IS NULL)) AND
                       (desired_tls_provider = ?4 OR
-                        (desired_tls_provider IS NULL AND ?4 IS NULL))
+                        (desired_tls_provider IS NULL AND CAST(?4 AS TEXT) IS NULL))
                       THEN verified_at ELSE NULL END,
                     desired_dns_provider = ?3, desired_tls_provider = ?4,
                     access_provider_json = ?5,
@@ -482,7 +482,7 @@ impl Database {
                         incarnation_id = ?4, mutation_plan_id = ?5
                   WHERE domain = ?1 AND org_id = ?2 AND resource_version = ?6
                     AND (incarnation_id = ?7
-                         OR (incarnation_id IS NULL AND ?7 IS NULL))",
+                         OR (incarnation_id IS NULL AND CAST(?7 AS VARCHAR) IS NULL))",
                 vals![
                     record.domain,
                     record.org_id,
@@ -552,7 +552,7 @@ impl Database {
               WHERE domain = ?1 AND org_id = ?2 AND txt_challenge = ?3
                 AND resource_version = ?7 AND verified_at IS NULL
                 AND (incarnation_id = ?8
-                     OR (incarnation_id IS NULL AND ?8 IS NULL))",
+                     OR (incarnation_id IS NULL AND CAST(?8 AS VARCHAR) IS NULL))",
             vals![
                 record.domain,
                 record.org_id,

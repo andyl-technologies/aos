@@ -1391,7 +1391,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     src = aosWorkspaceVendorSource;
     name = "aos-workspace-vendor";
     sourceRoot = "source";
-    hash = "sha256-TldLqPJKnrGoLaRfT8EmHV/6kWidGl9tGn06uteb1A0=";
+    hash = "sha256-Md42GwuqWhUcE/s1VyEGqVXvaPAfi0N3WMl4u2kZtA4=";
   };
 
   # Auto-discover packages from subdirectories.
@@ -1661,9 +1661,11 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     "aos-ebpf-lsm-policy"
     "aos-ebpf-net-policy"
     "aos-hub"
+    "aos-hub-authority"
     "aos-hub-cloudflare"
     "aos-hub-console-dist"
     "aos-hub-dialect-tests"
+    "aos-hub-direct-guard-e2e"
     "aos-hub-e2e"
     "aos-hub-worker-dist"
     "aos-hub-worker-do-e2e"

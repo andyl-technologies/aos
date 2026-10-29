@@ -37,8 +37,11 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use anyhow::Result;
+
 use crate::coordinator::Coordinator;
 use aos_hub_db::backend::BackendBounds;
+use aos_hub_db::db::Database;
 
 /// Explains why a publish lease could not be acquired.
 #[derive(Debug)]
@@ -80,7 +83,7 @@ impl std::error::Error for LeaseAcquireError {
 /// A publish pipeline holds the lease only as long as it is actively writing
 /// pointers; this bounds how long a crashed or abandoned publisher can block
 /// another from flipping the same registry's pointers.
-pub const LEASE_TTL_SECS: i64 = 300;
+pub use aos_hub_model::storage::LEASE_TTL_SECS;
 
 /// Serializes a registry's mutable-pointer flips across concurrent publishers.
 ///
@@ -200,6 +203,50 @@ impl PublishLease for InMemoryLease {
             .is_some_and(|lease| lease.holder_token_id == token_id)
         {
             leases.remove(&registry_id);
+        }
+    }
+}
+
+/// A [`PublishLease`] persisted in the Hub database for Native replicas.
+///
+/// The existing `publish_leases` table serializes admission across SQL
+/// connections. Every acquisition reports database failure separately from
+/// a live holder conflict, so a disconnected replica fails closed.
+pub struct DatabasePublishLease {
+    db: Arc<Database>,
+}
+
+impl DatabasePublishLease {
+    /// Creates a shared publication lease over the Hub's SQL authority.
+    #[must_use]
+    pub fn new(db: Arc<Database>) -> Self {
+        Self { db }
+    }
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl PublishLease for DatabasePublishLease {
+    async fn acquire(
+        &self,
+        registry_id: i64,
+        token_id: &str,
+        now: i64,
+    ) -> Result<(), LeaseAcquireError> {
+        match self
+            .db
+            .acquire_publish_lease(registry_id, token_id, now)
+            .await
+        {
+            Ok(None) => Ok(()),
+            Ok(Some(holder)) => Err(LeaseAcquireError::Conflict(holder)),
+            Err(error) => Err(LeaseAcquireError::Unavailable(error)),
+        }
+    }
+
+    async fn release(&self, registry_id: i64, token_id: &str) {
+        if let Err(error) = self.db.release_publish_lease(registry_id, token_id).await {
+            tracing::warn!(error = %error, "releasing database publication lease failed");
         }
     }
 }

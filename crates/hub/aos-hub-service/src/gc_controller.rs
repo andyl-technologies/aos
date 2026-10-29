@@ -11,10 +11,13 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use sha2::{Digest as _, Sha256};
 
-use crate::surface_write::{SurfaceDeleteOutcome, SurfaceDeletePrecondition, SurfaceWriteProvider};
-use aos_hub_db::db::{
-    Database, DeletionAttempt, ObjectDeletionJobRecord, RecordObjectDeletionAttemptResponse,
-};
+use crate::surface_write::SurfaceDeleteOutcome;
+use crate::surface_write::SurfaceDeletePrecondition;
+use crate::surface_write::SurfaceWriteProvider;
+use aos_hub_db::db::Database;
+use aos_hub_db::db::DeletionAttempt;
+use aos_hub_db::db::ObjectDeletionJobRecord;
+use aos_hub_db::db::RecordObjectDeletionAttemptResponse;
 
 /// Aggregate result of one bounded controller pass.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -196,12 +199,13 @@ impl CacheGcDeletionController {
             Err(error) => return backend_failure("unsupported_backend", &format!("{error:#}")),
         };
         let expected = SurfaceDeletePrecondition {
+            expected_provider_version: receipt.expected_provider_version.clone(),
             etag: receipt.expected_etag.clone(),
             content_hash: receipt.expected_hash.clone(),
             size: receipt.expected_size,
         };
         match deleter
-            .delete_if_matches(&receipt.object_key, &expected)
+            .delete_if_matches_claimed(&receipt.object_key, &expected, &receipt.request_id)
             .await
         {
             Ok(outcome @ SurfaceDeleteOutcome::Deleted { .. })
@@ -257,7 +261,7 @@ fn verified_delete_response(
             if expected
                 .etag
                 .as_deref()
-                .and_then(|value| crate::surface_write::strong_if_match_etag(value).ok())
+                .and_then(|value| aos_hub_model::delivery_http::strong_if_match_etag(value).ok())
                 .as_deref()
                 == Some(etag.as_str())
                 && expected.content_hash.is_some()
@@ -330,6 +334,7 @@ mod tests {
     #[test]
     fn cache_delete_distinguishes_observed_identity_from_s3_acknowledgment() {
         let expected = SurfaceDeletePrecondition {
+            expected_provider_version: None,
             etag: Some("\"etag-1\"".into()),
             content_hash: Some("sha256:object".into()),
             size: Some(12),
@@ -369,3 +374,7 @@ mod tests {
         assert_eq!(mismatch.4.as_deref(), Some("identity_mismatch"));
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "gc_controller/provider_version_tests.rs"]
+mod provider_version_tests;

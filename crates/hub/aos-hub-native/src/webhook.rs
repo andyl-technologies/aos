@@ -36,11 +36,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::db::{Database, DueDelivery};
-use aos_hub_model::secret_version::{verify_secret_fingerprint, SecretVersionResolver};
+use aos_hub_model::secret_version::verify_secret_fingerprint;
+use aos_hub_model::secret_version::SecretVersionResolver;
 
-pub use aos_hub_service::webhook::{
-    backoff_secs, dispatch, sign_body, sign_body_bytes, WebhookEvent, MAX_ATTEMPTS,
-};
+pub use aos_hub_model::webhook::backoff_secs;
+pub use aos_hub_model::webhook::sign_body;
+pub use aos_hub_model::webhook::sign_body_bytes;
+pub use aos_hub_model::webhook::WebhookEvent;
+pub use aos_hub_model::webhook::MAX_ATTEMPTS;
+pub use aos_hub_service::webhook::dispatch;
 
 /// Per-request timeout for a delivery `POST`.
 const DELIVERY_TIMEOUT_SECS: u64 = 15;

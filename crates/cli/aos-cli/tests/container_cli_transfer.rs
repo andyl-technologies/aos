@@ -829,6 +829,8 @@ fn manifest_response(
         return Response::builder()
             .status(StatusCode::OK)
             .header(CONTENT_TYPE, media_type)
+            // Registries report the manifest length on HEAD as well as GET.
+            .header(CONTENT_LENGTH, bytes.len())
             .header(
                 "docker-content-digest",
                 Sha256Digest::digest(bytes).to_string(),

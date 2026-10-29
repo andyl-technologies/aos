@@ -4,7 +4,8 @@ use aos_hub_api as pb;
 use aos_oci_types::ManifestReference;
 
 use super::*;
-use aos_hub_db::db::{OciRepositoryListFilter, OciTagListFilter};
+use aos_hub_db::db::OciRepositoryListFilter;
+use aos_hub_db::db::OciTagListFilter;
 
 impl RpcService {
     /// Lists container repositories visible through one registry.

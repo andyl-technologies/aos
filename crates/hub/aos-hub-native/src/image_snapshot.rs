@@ -653,7 +653,9 @@ mod tests {
 
     #[tokio::test]
     async fn empty_index_transition_never_deletes_placement_bytes() {
-        use aos_hub_db::db::{IndexSnapshot, NewSurfacePlacementSpec, SurfaceTarget};
+        use aos_hub_db::db::IndexSnapshot;
+        use aos_hub_db::db::NewSurfacePlacementSpec;
+        use aos_hub_db::db::SurfaceTarget;
 
         let root = tempfile::tempdir().unwrap();
         let primary_root = root.path().join("primary");

@@ -13,7 +13,8 @@ use uuid::Uuid;
 
 use super::{OciRegistryPurgeBlockers, OciRegistryPurgeFenceRecord};
 use crate::backend::Statement;
-use crate::db::{validate_key_bytes, Database};
+use crate::db::validate_key_bytes;
+use crate::db::Database;
 
 /// Reviewed registry purge-fence transition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

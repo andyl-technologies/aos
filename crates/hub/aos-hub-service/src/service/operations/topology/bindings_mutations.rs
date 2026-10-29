@@ -181,14 +181,6 @@ impl RpcService {
         {
             return Ok(response);
         }
-        self.begin_control_plan_apply(
-            auth,
-            &req.plan_id,
-            "delete_binding",
-            &req.idempotency_key,
-            Some(&req.confirmation_hash),
-        )
-        .await?;
         let (plan, input): (_, BindingDeletePlanInput) = self
             .load_control_plan(
                 auth,
@@ -206,6 +198,32 @@ impl RpcService {
                 "binding deletion plan target changed".to_string(),
             ));
         }
+        let original_reservation = input.reservation_id.as_deref().ok_or_else(|| {
+            RpcError::FailedPrecondition(
+                "binding deletion plan predates lifetime reservations; create a new plan".into(),
+            )
+        })?;
+        let reservation = self
+            .db
+            .binding_identity_reservation(&input.stable_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| {
+                RpcError::FailedPrecondition("binding identity reservation is absent".into())
+            })?;
+        if reservation.reservation_id != original_reservation {
+            return Err(RpcError::FailedPrecondition(
+                "binding lifetime changed after deletion planning".into(),
+            ));
+        }
+        self.begin_control_plan_apply(
+            auth,
+            &req.plan_id,
+            "delete_binding",
+            &req.idempotency_key,
+            Some(&req.confirmation_hash),
+        )
+        .await?;
         let Some(binding) = self
             .db
             .binding_by_stable_id(&input.stable_id)
@@ -218,6 +236,7 @@ impl RpcService {
             return Ok(response);
         };
         if binding.id != input.binding_db_id
+            || binding.owner_scope_key != input.owner_scope_key
             || binding.resource_version != input.baseline_resource_version
         {
             return Err(RpcError::FailedPrecondition(
@@ -237,10 +256,9 @@ impl RpcService {
         }
         if !self
             .db
-            .delete_topology_binding(
-                binding.id,
-                &input.stable_id,
-                &input.owner_scope_key,
+            .delete_topology_binding_checked(
+                &binding,
+                original_reservation,
                 input.baseline_resource_version,
             )
             .await

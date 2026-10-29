@@ -276,11 +276,7 @@ impl HttpProtocol {
         auth: Option<&Credential>,
     ) -> Result<(TransferResult, ByteStream)> {
         let mut builder = self.client.get(&request.url);
-        builder = self.apply_auth(builder, auth);
-
-        for (name, value) in &request.headers {
-            builder = builder.header(name.as_str(), value.as_str());
-        }
+        builder = self.apply_headers_and_auth(builder, request, auth);
 
         // Handle resume.
         let mut resume_offset: u64 = 0;
@@ -358,12 +354,7 @@ impl HttpProtocol {
         auth: Option<&Credential>,
     ) -> Result<TransferResult> {
         let mut builder = self.client.get(&request.url);
-        builder = self.apply_auth(builder, auth);
-
-        // Add custom headers.
-        for (name, value) in &request.headers {
-            builder = builder.header(name.as_str(), value.as_str());
-        }
+        builder = self.apply_headers_and_auth(builder, request, auth);
 
         // Handle resume: check existing file size and add Range header.
         let mut resume_offset: u64 = 0;
@@ -652,11 +643,7 @@ impl HttpProtocol {
         auth: Option<&Credential>,
     ) -> Result<TransferResult> {
         let mut builder = self.client.head(&request.url);
-        builder = self.apply_auth(builder, auth);
-
-        for (name, value) in &request.headers {
-            builder = builder.header(name.as_str(), value.as_str());
-        }
+        builder = self.apply_headers_and_auth(builder, request, auth);
 
         let response = builder
             .send()
@@ -685,11 +672,7 @@ impl HttpProtocol {
         auth: Option<&Credential>,
     ) -> Result<TransferResult> {
         let mut builder = self.client.delete(&request.url);
-        builder = self.apply_auth(builder, auth);
-
-        for (name, value) in &request.headers {
-            builder = builder.header(name.as_str(), value.as_str());
-        }
+        builder = self.apply_headers_and_auth(builder, request, auth);
 
         let response = builder
             .send()

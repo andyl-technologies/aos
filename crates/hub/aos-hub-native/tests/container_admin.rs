@@ -7,7 +7,7 @@ use aos_hub_api as pb;
 use aos_hub_native::auth::extract::AuthState;
 use aos_hub_native::auth::jwt::JwtKeys;
 use aos_hub_native::db::{
-    Database, OciRegistryPurgeFenceAction, PlanOciGc, PlanOciRegistryPurgeFence, TokenAuth,
+    Database, OciRegistryPurgeFenceAction, PlanOciGc, PlanOciRegistryPurgeFence,
 };
 use aos_hub_native::domain::{Permission, Principal, Scope};
 use aos_hub_native::server::{router, AppState};
@@ -64,18 +64,19 @@ impl RunningHub {
             .registry_authorization_scope(registry_id)
             .await
             .unwrap();
-        self.keys
-            .mint_browser_session(
-                &TokenAuth {
-                    token_id: token_id.to_string(),
-                    owner: Principal::user(user_id),
-                    scope: Scope::parse(&scope),
-                    permissions,
-                    expires_at: None,
-                },
-                900,
+        let (_, secret) = self
+            .db
+            .create_token(
+                Principal::user(user_id),
+                &scope,
+                &permissions,
+                Some(token_id),
+                None,
             )
-            .unwrap()
+            .await
+            .unwrap();
+        let auth = self.db.validate_token(&secret).await.unwrap().unwrap();
+        self.keys.mint(&auth, 900).unwrap()
     }
 
     async fn response<Req>(

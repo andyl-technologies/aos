@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AOS Hub</title>
+<meta name="aos-session-csrf" content="a-test-csrf">
+<meta name="aos-site-brand" content="">
+<meta name="aos-site-tagline" content="">
+<meta name="aos-site-announcement" content="">
+<meta name="aos-site-tos-url" content="">
+<meta name="aos-site-privacy-url" content="">
+<meta name="aos-site-support-url" content="">
+<meta name="aos-app-version" content="aos-hub 0.1.0">
+<meta name="aos-container-gc-enabled" content="false">
+<script src="/_assets/theme.js?v=6cb1f665"></script>
+<link rel="stylesheet" href="/_assets/style.css?v=6cb1f665">
+<link rel="stylesheet" href="/_assets/hub-console-6cb1f665.css">
+<script src="/_assets/app.js?v=6cb1f665" defer></script>
+<script type="module" src="/_assets/hub-console-bootstrap-6cb1f665.js"></script>
+</head>
+<body>
+<noscript>The AOS Hub management console requires JavaScript.</noscript>
+</body>
+</html>

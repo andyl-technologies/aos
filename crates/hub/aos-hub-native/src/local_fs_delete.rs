@@ -14,7 +14,9 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 use anyhow::{bail, Context as _, Result};
 use sha2::{Digest as _, Sha256};
 
-use aos_hub_service::surface_write::{self, SurfaceDeleteOutcome, SurfaceDeletePrecondition};
+use aos_hub_service::surface_write;
+use aos_hub_service::surface_write::SurfaceDeleteOutcome;
+use aos_hub_service::surface_write::SurfaceDeletePrecondition;
 
 type ObjectLock = tokio::sync::Mutex<()>;
 
@@ -342,6 +344,7 @@ mod tests {
         metadata: &std::fs::Metadata,
     ) -> SurfaceDeletePrecondition {
         SurfaceDeletePrecondition {
+            expected_provider_version: None,
             etag: Some(delete_etag(path, metadata)),
             content_hash: Some(format!("sha256:{}", hex::encode(Sha256::digest(bytes)))),
             size: Some(bytes.len() as i64),
@@ -474,6 +477,7 @@ mod tests {
             .unwrap();
         tokio::fs::write(&target, bytes).await.unwrap();
         let expected = SurfaceDeletePrecondition {
+            expected_provider_version: None,
             etag: Some(format!("\"snapshot-sha256-{digest}\"")),
             content_hash: Some(format!("sha256:{digest}")),
             size: Some(bytes.len() as i64),

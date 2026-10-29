@@ -22,97 +22,17 @@ impl Database {
         etag: Option<&str>,
         observed_at: i64,
     ) -> Result<()> {
-        validate_key_bytes(publication_id, "publication id", 64)?;
-        validate_key_bytes(observed_hash, "observed object hash", 128)?;
-        if observed_size < 0 {
-            bail!("observed object size cannot be negative");
-        }
-        self.backend
-            .checked_batch(&[
-                Statement::new(
-                    "DELETE FROM object_placements
-                     WHERE surface_object_id = ?2 AND placement_id = ?3
-                       AND registry_id = (SELECT registry_id
-                         FROM registry_publications WHERE publication_id = ?1)",
-                    vals![publication_id, surface_object_id, placement_id],
-                )
-                .unchecked(),
-                Statement::new(
-                    "INSERT INTO object_placements
-                     (surface_object_id, cache_id, registry_id, placement_id,
-                      state, observed_hash, observed_size, etag,
-                      observed_inventory_generation, observed_at,
-                      catalog_object_resource_version)
-                     SELECT object.id, NULL, pub.registry_id, placement.id,
-                            'present', ?4, ?5, ?6, pub.ordinal, ?7,
-                            object.resource_version
-                     FROM registry_publications pub
-                     JOIN registry_publication_objects declared
-                       ON declared.publication_id = pub.publication_id
-                     JOIN surface_objects object
-                       ON object.id = declared.surface_object_id
-                      AND object.registry_id = pub.registry_id
-                     JOIN registry_publication_placements progress
-                       ON progress.publication_id = pub.publication_id
-                     JOIN surface_placements placement
-                       ON placement.id = progress.placement_id
-                      AND placement.registry_id = pub.registry_id
-                     WHERE pub.publication_id = ?1 AND object.id = ?2
-                       AND placement.id = ?3
-                       AND pub.state IN ('preparing', 'writing_pointers')
-                       AND declared.expected_hash = ?4
-                       AND declared.expected_size = ?5",
-                    vals![
-                        publication_id,
-                        surface_object_id,
-                        placement_id,
-                        observed_hash,
-                        observed_size,
-                        etag,
-                        observed_at
-                    ],
-                )
-                .expecting(1),
-                Statement::new(
-                    "INSERT INTO registry_publication_object_evidence
-                     (publication_id, surface_object_id, placement_id,
-                      observed_hash, observed_size, strong_etag, observed_at)
-                     SELECT pub.publication_id, object.id, placement.id,
-                            ?4, ?5, ?6, ?7
-                     FROM registry_publications pub
-                     JOIN registry_publication_objects declared
-                       ON declared.publication_id = pub.publication_id
-                     JOIN surface_objects object
-                       ON object.id = declared.surface_object_id
-                      AND object.registry_id = pub.registry_id
-                     JOIN registry_publication_placements progress
-                       ON progress.publication_id = pub.publication_id
-                     JOIN surface_placements placement
-                       ON placement.id = progress.placement_id
-                      AND placement.registry_id = pub.registry_id
-                     WHERE pub.publication_id = ?1 AND object.id = ?2
-                       AND placement.id = ?3
-                       AND pub.state IN ('preparing', 'writing_pointers')
-                       AND declared.expected_hash = ?4
-                       AND declared.expected_size = ?5
-                     ON CONFLICT(publication_id, surface_object_id, placement_id)
-                     DO UPDATE SET observed_hash = excluded.observed_hash,
-                       observed_size = excluded.observed_size,
-                       strong_etag = excluded.strong_etag,
-                       observed_at = excluded.observed_at",
-                    vals![
-                        publication_id,
-                        surface_object_id,
-                        placement_id,
-                        observed_hash,
-                        observed_size,
-                        etag,
-                        observed_at
-                    ],
-                )
-                .expecting(1),
-            ])
-            .await
+        self.record_registry_publication_object_presence_with_fence(
+            publication_id,
+            surface_object_id,
+            placement_id,
+            observed_hash,
+            observed_size,
+            etag,
+            observed_at,
+            None,
+        )
+        .await
     }
 
     /// Refreshes exact placement evidence for an object in the current ready publication.
@@ -462,24 +382,20 @@ impl Database {
     }
 
     /// Deletes mirror configuration under an exact resource version.
+    /// Advances the registry generation so recreating a source cannot revive
+    /// authority held by an older mirror original.
     ///
     /// # Errors
     ///
-    /// Returns an error on database failure.
+    /// Returns an error while a mirror original is retained, for a concurrent
+    /// configuration change, or on database failure.
     pub async fn delete_registry_mirror_at_version(
         &self,
         registry_id: i64,
         expected_resource_version: i64,
     ) -> Result<bool> {
-        Ok(self
-            .backend
-            .execute(
-                "DELETE FROM mirror_sources WHERE registry_id = ?1
-                 AND resource_version = ?2",
-                &vals![registry_id, expected_resource_version],
-            )
-            .await?
-            == 1)
+        self.delete_mirror_configuration(registry_id, Some(expected_resource_version))
+            .await
     }
 
     /// Begins a mutable-pointer advance by first clearing the placement watermark.
@@ -1243,7 +1159,7 @@ impl Database {
                      WHERE state.registry_id = ?2
                        AND (registry.org_id IS NULL OR org.deleted_at IS NULL)
                        AND (state.current_publication_id = ?7 OR
-                            (state.current_publication_id IS NULL AND ?7 IS NULL))",
+                            (state.current_publication_id IS NULL AND CAST(?7 AS VARCHAR) IS NULL))",
                     vals![
                         input.publication_id,
                         input.registry_id,
@@ -1523,5 +1439,192 @@ impl Database {
             )
             .await?;
         Ok(())
+    }
+}
+
+impl Database {
+    /// Records publication evidence only while the observed placement and binding
+    /// still have the resource versions admitted for a hybrid R2 upload.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when either resource version changed, the publication
+    /// no longer admits the object, or the database operation fails.
+    pub async fn record_registry_publication_object_presence_fenced(
+        &self,
+        publication_id: &str,
+        surface_object_id: i64,
+        placement_id: i64,
+        observed_hash: &str,
+        observed_size: i64,
+        etag: Option<&str>,
+        observed_at: i64,
+        placement_resource_version: i64,
+        binding_resource_version: i64,
+    ) -> Result<()> {
+        self.record_registry_publication_object_presence_with_fence(
+            publication_id,
+            surface_object_id,
+            placement_id,
+            observed_hash,
+            observed_size,
+            etag,
+            observed_at,
+            Some((placement_resource_version, binding_resource_version)),
+        )
+        .await
+    }
+}
+
+impl Database {
+    pub(in crate::db) async fn record_registry_publication_object_presence_with_fence(
+        &self,
+        publication_id: &str,
+        surface_object_id: i64,
+        placement_id: i64,
+        observed_hash: &str,
+        observed_size: i64,
+        etag: Option<&str>,
+        observed_at: i64,
+        fence: Option<(i64, i64)>,
+    ) -> Result<()> {
+        self.backend
+            .checked_batch(
+                &self
+                    .verified_registry_publication_presence_statements(
+                        publication_id,
+                        surface_object_id,
+                        placement_id,
+                        observed_hash,
+                        observed_size,
+                        etag,
+                        observed_at,
+                        fence,
+                    )
+                    .await?,
+            )
+            .await
+    }
+}
+
+impl Database {
+    /// Builds publication presence and immutable receipt evidence atomically.
+    ///
+    /// # Errors
+    /// Returns an error for malformed publication or observed object identity.
+    #[allow(clippy::too_many_arguments)]
+    pub fn registry_publication_object_presence_statements(
+        publication_id: &str,
+        surface_object_id: i64,
+        placement_id: i64,
+        observed_hash: &str,
+        observed_size: i64,
+        etag: Option<&str>,
+        observed_at: i64,
+        fence: Option<(i64, i64)>,
+    ) -> Result<Vec<CheckedStatement>> {
+        validate_key_bytes(publication_id, "publication id", 64)?;
+        validate_key_bytes(observed_hash, "observed object hash", 128)?;
+        if observed_size < 0 {
+            bail!("observed object size cannot be negative");
+        }
+        Ok(vec![
+            Statement::new(
+                "DELETE FROM object_placements
+                     WHERE surface_object_id = ?2 AND placement_id = ?3
+                       AND registry_id = (SELECT registry_id
+                         FROM registry_publications WHERE publication_id = ?1)",
+                vals![publication_id, surface_object_id, placement_id],
+            )
+            .unchecked(),
+            Statement::new(
+                "INSERT INTO object_placements
+                     (surface_object_id, cache_id, registry_id, placement_id,
+                      state, observed_hash, observed_size, etag,
+                      observed_inventory_generation, observed_at,
+                      catalog_object_resource_version)
+                     SELECT object.id, NULL, pub.registry_id, placement.id,
+                            'present', ?4, ?5, ?6, pub.ordinal, ?7,
+                            object.resource_version
+                     FROM registry_publications pub
+                     JOIN registry_publication_objects declared
+                       ON declared.publication_id = pub.publication_id
+                     JOIN surface_objects object
+                       ON object.id = declared.surface_object_id
+                      AND object.registry_id = pub.registry_id
+                     JOIN registry_publication_placements progress
+                       ON progress.publication_id = pub.publication_id
+                     JOIN surface_placements placement
+                       ON placement.id = progress.placement_id
+                      AND placement.registry_id = pub.registry_id
+                     WHERE pub.publication_id = ?1 AND object.id = ?2
+                       AND placement.id = ?3
+                       AND (CAST(?8 AS BIGINT) IS NULL OR (
+                         placement.resource_version = ?8
+                         AND EXISTS (SELECT 1 FROM bindings binding
+                           WHERE binding.id = placement.binding_id
+                             AND binding.resource_version = ?9)))
+                       AND pub.state IN ('preparing', 'writing_pointers')
+                       AND declared.expected_hash = ?4
+                       AND declared.expected_size = ?5",
+                vals![
+                    publication_id,
+                    surface_object_id,
+                    placement_id,
+                    observed_hash,
+                    observed_size,
+                    etag,
+                    observed_at,
+                    fence.map(|(placement_version, _)| placement_version),
+                    fence.map(|(_, binding_version)| binding_version)
+                ],
+            )
+            .expecting(1),
+            Statement::new(
+                "INSERT INTO registry_publication_object_evidence
+                     (publication_id, surface_object_id, placement_id,
+                      observed_hash, observed_size, strong_etag, observed_at)
+                     SELECT pub.publication_id, object.id, placement.id,
+                            ?4, ?5, ?6, ?7
+                     FROM registry_publications pub
+                     JOIN registry_publication_objects declared
+                       ON declared.publication_id = pub.publication_id
+                     JOIN surface_objects object
+                       ON object.id = declared.surface_object_id
+                      AND object.registry_id = pub.registry_id
+                     JOIN registry_publication_placements progress
+                       ON progress.publication_id = pub.publication_id
+                     JOIN surface_placements placement
+                       ON placement.id = progress.placement_id
+                      AND placement.registry_id = pub.registry_id
+                     WHERE pub.publication_id = ?1 AND object.id = ?2
+                       AND placement.id = ?3
+                       AND (CAST(?8 AS BIGINT) IS NULL OR (
+                         placement.resource_version = ?8
+                         AND EXISTS (SELECT 1 FROM bindings binding
+                           WHERE binding.id = placement.binding_id
+                             AND binding.resource_version = ?9)))
+                       AND pub.state IN ('preparing', 'writing_pointers')
+                       AND declared.expected_hash = ?4
+                       AND declared.expected_size = ?5
+                     ON CONFLICT(publication_id, surface_object_id, placement_id)
+                     DO UPDATE SET observed_hash = excluded.observed_hash,
+                       observed_size = excluded.observed_size,
+                       strong_etag = excluded.strong_etag,
+                       observed_at = excluded.observed_at",
+                vals![
+                    publication_id,
+                    surface_object_id,
+                    placement_id,
+                    observed_hash,
+                    observed_size,
+                    etag,
+                    observed_at,
+                    fence.map(|(placement_version, _)| placement_version),
+                    fence.map(|(_, binding_version)| binding_version)
+                ],
+            )
+            .expecting(1),
+        ])
     }
 }

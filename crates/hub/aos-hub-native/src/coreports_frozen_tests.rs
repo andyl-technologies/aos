@@ -3,13 +3,16 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use aos_hub_db::db::{
-    Database, NewBindingWriteRevision, NewSurfacePlacementSpec,
-    RecordOciConditionalDeleteCapability, SurfaceTarget,
-};
-use aos_hub_model::secret_version::{ResolvedSecretVersion, SecretVersionResolver};
+use aos_hub_db::db::Database;
+use aos_hub_db::db::NewBindingWriteRevision;
+use aos_hub_db::db::NewSurfacePlacementSpec;
+use aos_hub_db::db::RecordOciConditionalDeleteCapability;
+use aos_hub_db::db::SurfaceTarget;
+use aos_hub_model::secret_version::ResolvedSecretVersion;
+use aos_hub_model::secret_version::SecretVersionResolver;
 use aos_hub_service::fetch::SurfaceProvider as _;
-use aos_hub_service::surface_write::{self as core_sw, SurfaceWriteProvider as _};
+use aos_hub_service::surface_write as core_sw;
+use aos_hub_service::surface_write::SurfaceWriteProvider as _;
 use sha2::{Digest as _, Sha256};
 
 use super::{HubSurfaceProvider, HubSurfaceWriteProvider};
@@ -114,7 +117,7 @@ async fn frozen_local_access_never_reselects_a_current_placement_address() {
         })
         .await
         .unwrap();
-    let access = core_sw::FrozenSurfaceAccess {
+    let access = aos_hub_model::storage::FrozenSurfaceAccess {
         registry_id,
         placement_id: placement.id,
         placement_name: placement.name.clone(),
@@ -181,6 +184,7 @@ async fn frozen_local_access_never_reselects_a_current_placement_address() {
             .delete_if_matches(
                 &object_key,
                 &core_sw::SurfaceDeletePrecondition {
+                    expected_provider_version: None,
                     etag: Some(format!("\"snapshot-sha256-{digest}\"")),
                     content_hash: Some(format!("sha256:{digest}")),
                     size: Some(bytes.len() as i64),
@@ -212,7 +216,7 @@ async fn frozen_local_access_rejects_binding_drift_before_io() {
         .unwrap()
         .current_write_revision
         .unwrap();
-    let access = core_sw::FrozenSurfaceAccess {
+    let access = aos_hub_model::storage::FrozenSurfaceAccess {
         registry_id: 1,
         placement_id: 1,
         placement_name: "stale".into(),
@@ -307,7 +311,7 @@ async fn frozen_external_access_retains_gen_one_after_current_capability_moves_t
         })
         .await
         .unwrap();
-    let access = core_sw::FrozenSurfaceAccess {
+    let access = aos_hub_model::storage::FrozenSurfaceAccess {
         registry_id: 1,
         placement_id: 1,
         placement_name: "frozen".into(),

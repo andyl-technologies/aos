@@ -864,7 +864,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
   # ---------------------------------------------------------------------------
   apmTests = import ./tests/vm/apm {inherit testing pkgs;};
   hubNativeOperationsTest = import ./tests/vm/hub-native-operations.nix {
-    inherit testing pkgs;
+    inherit lib testing pkgs;
   };
   hubSettingsTest = import ./tests/vm/hub-settings.nix {
     inherit testing pkgs;
@@ -1845,6 +1845,9 @@ in rec {
       linux-workerd = import ./tests/build/linux-workerd.nix {
         pkgs = buildPackages;
       };
+      hub-authority-issuer = import ./tests/build/hub-authority-issuer.nix {
+        pkgs = buildPackages;
+      };
       package-platform-support = import ./tests/build/package-platform-support.nix {
         pkgs = buildPackages;
       };
@@ -1952,6 +1955,7 @@ in rec {
         rendered-evaluation = builtins.removeAttrs renderedEvalSuites ["rendered-system"];
         rendered-system = renderedEvalSuites.rendered-system;
         system-structure = system-structure-variants;
+        inherit hub-authority-issuer;
         # Single target that pulls in the whole build-check group.
         all = pkgs.mkDerivation {
           pname = "aos-build-checks-all";
@@ -1966,6 +1970,7 @@ in rec {
             ++ lib.optional (artifact-consumption != null) artifact-consumption
             ++ [vm-artifacts toolchain-boundaries.all native-sandbox-boundary aos-dev-cli aos-cloud-vm aos-dev-cache-identity accache python-bytecode native-module-roots critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell esp-population initrd-module-hardlinks initrd-stage-contract native-stage-replay native-profile-replay kernel-config rootfs-kernel-modules linux-hosted-toolchain linux-workerd package-platform-declarations package-platform-support propagated-dependency-closure release-inventory-boundary runtime-python-outputs structured-attrs-export systemd-verity config-eval config-materialize boot-configuration native-projection-input image-metadata darling-harness config-manifest configProvenanceChecks.all renderedEvalSuites.rendered-system]
             ++ builtins.attrValues (builtins.removeAttrs renderedEvalSuites ["rendered-system"])
+            ++ [hub-authority-issuer]
             ++ builtins.attrValues hardening-probe
             ++ builtins.attrValues linux-hosted-llvm
             ++ builtins.attrValues linux-hosted-rust

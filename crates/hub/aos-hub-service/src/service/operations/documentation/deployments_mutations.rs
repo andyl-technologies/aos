@@ -137,18 +137,8 @@ impl RpcService {
         req: pb::ReportPackageAbilityDeploymentRequest,
     ) -> Result<pb::PackageAbilityDeploymentResponse, RpcError> {
         let claims = self.require_claims(auth)?;
-        let principal = claims_principal(&claims)
-            .ok_or_else(|| RpcError::PermissionDenied("active principal required".into()))?;
-        if !self
-            .db
-            .principal_is_live(principal.kind.as_str(), principal.id)
-            .await
-            .map_err(RpcError::internal)?
-        {
-            return Err(RpcError::PermissionDenied(
-                "active principal required".into(),
-            ));
-        }
+        let principal = self.current_principal(&claims).await?;
+
         let registry = self.registry_or_not_found(&req.registry).await?;
         let reporter = self
             .db

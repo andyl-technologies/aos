@@ -1001,6 +1001,31 @@ pub async fn download_nars(
     parallel: u32,
     printer: &Printer,
 ) -> Result<Vec<DownloadResult>> {
+    download_nars_with_engine(
+        Arc::new(default_engine()),
+        resolved,
+        cache_dir,
+        parallel,
+        printer,
+    )
+    .await
+}
+
+/// Downloads NARs using the caller's credentials, redirect policy, and pool.
+///
+/// Shares a transfer engine with narinfo discovery so authenticated caches
+/// retain the same security policy for both metadata and bulk bytes.
+///
+/// # Errors
+///
+/// Returns cache-directory, transfer, integrity, write, or task-join errors.
+pub async fn download_nars_with_engine(
+    engine: Arc<TransferEngine>,
+    resolved: &[ResolvedDownload],
+    cache_dir: &Path,
+    parallel: u32,
+    printer: &Printer,
+) -> Result<Vec<DownloadResult>> {
     if resolved.is_empty() {
         return Ok(Vec::new());
     }
@@ -1016,7 +1041,6 @@ pub async fn download_nars(
     ));
 
     let semaphore = Arc::new(Semaphore::new(parallel as usize));
-    let engine = Arc::new(default_engine());
     let mut handles = Vec::with_capacity(resolved.len());
 
     for r in resolved {

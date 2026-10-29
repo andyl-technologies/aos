@@ -865,6 +865,8 @@ mod tests {
             sub: "service-token".to_string(),
             owner_kind: "service_account".to_string(),
             owner_id: 7,
+            owner_incarnation: None,
+            browser_session_id_hash: None,
             scope: scope.to_string(),
             perms: vec![Permission::CacheLeaseSelf.as_str().to_string()],
             provenance: crate::auth::jwt::BearerProvenance::AccessToken,

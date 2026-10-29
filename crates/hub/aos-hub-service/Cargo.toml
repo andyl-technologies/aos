@@ -6,6 +6,7 @@ license.workspace = true
 description = "Runtime-neutral Hub application services, authorization, and transport adapters"
 
 [dependencies]
+serde_urlencoded.workspace = true
 aos-core.workspace = true
 aos-hub-model = { workspace = true }
 aos-hub-db = { workspace = true }
@@ -106,6 +107,7 @@ tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+sqlx.workspace = true
 # The staged-release contract test exercises the actual maintainer client
 # against the shared Connect router with an ephemeral native HTTP listener.
 axum = { version = "0.8", default-features = false, features = ["tokio", "http1"] }

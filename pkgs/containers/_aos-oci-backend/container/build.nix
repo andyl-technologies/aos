@@ -86,6 +86,7 @@
   };
   configuredDirectoryPaths = map (directory: directory.path) container.filesystem.directories;
   configuredFilePaths = map (file: file.path) container.filesystem.files;
+  needsStoreInit = container.packageManagement.enable || container.packageManagement.bakedGcRoots;
   standardDirectories =
     builtins.filter
     (directory: !builtins.elem directory.path configuredDirectoryPaths)
@@ -270,6 +271,8 @@
     scope = ["profile" "/var/lib/profiles/per-user/root"];
     platform = {inherit (container.platform) os architecture;};
     runtimeRoots = auditRoots;
+    knownPackageCatalog = payloadEvidence.catalog;
+    backendConfigurationInputs = lib.optional container.filesystem.shell shellInitConfiguration;
   };
   osRelease = ''
     NAME="${systemIdentity.name}"
@@ -302,6 +305,15 @@
     # runtime path without one unique package and source identity.
     packageNames = pkgs.platformSupport.publicationEligibleNames container.platform.aosSystem pkgs.allPackageNames;
     overrides = container.publication.evidenceOverrides;
+    # Retained replay scripts use the library's bootstrap Bash, whose output
+    # can differ from the public target Bash. Attribute its exact derivation.
+    additionalPackages = [
+      (pkgs.stdenv.bash
+        // {
+          pname = "bash";
+          version = (builtins.parseDrvName pkgs.stdenv.bash.name).version;
+        })
+    ];
   };
 
   packageEvidence = {
@@ -335,13 +347,15 @@
       expectedCollisions = container.filesystem.allowedFacadeCollisions;
       pname = "aos-container-${container.name}-baked-facade${suffixPart}";
     };
-    standardFiles = [
-      {
-        path = "/etc/group";
-        mode = "0644";
-        text = "root:x:0:\n";
-      }
-      {
+    standardFiles =
+      [
+        {
+          path = "/etc/group";
+          mode = "0644";
+          text = "root:x:0:\n";
+        }
+      ]
+      ++ lib.optional needsStoreInit {
         path = "/etc/nix/nix.conf";
         mode = "0644";
         text = ''
@@ -351,57 +365,62 @@
           substituters =
         '';
       }
-      {
-        path = "/etc/os-release";
-        mode = "0644";
-        text = osRelease;
-      }
-      {
-        path = "/usr/lib/aos/toplevel/os-release";
-        mode = "0444";
-        text = osRelease;
-      }
-      {
-        path = "/etc/passwd";
-        mode = "0644";
-        text = "root:x:0:0:root:/root:/usr/bin/sh\n";
-      }
-      {
-        path = "/etc/shadow";
-        mode = "0600";
-        text = "root:!:1::::::\n";
-      }
-      {
-        path = "/usr/lib/aos/nix-registration";
-        mode = "0444";
-        source = "${referenceGraph}/registration";
-      }
-      {
-        path = "/nix/var/nix/.aos-container-init.lock";
-        mode = "0600";
-        text = "";
-      }
-      {
-        path = "/usr/lib/aos-container/baked-roots";
-        mode = "0444";
-        source = "${bakedRootInventory}/baked-roots";
-      }
-      {
-        path = "/usr/lib/aos-container/deployment.json";
-        mode = "0444";
-        source = "${deploymentArtifact.artifact}/deployment.json";
-      }
-      {
-        path = "/usr/lib/aos-container/store-paths";
-        mode = "0444";
-        source = "${referenceGraph}/store-paths";
-      }
-      {
-        path = "/usr/bin/aos-container-init";
-        mode = "0555";
-        source = "${initSource}/init";
-      }
-    ];
+      ++ [
+        {
+          path = "/etc/os-release";
+          mode = "0644";
+          text = osRelease;
+        }
+        {
+          path = "/etc/passwd";
+          mode = "0644";
+          text = "root:x:0:0:root:/root:/usr/bin/sh\n";
+        }
+        {
+          path = "/etc/shadow";
+          mode = "0600";
+          text = "root:!:1::::::\n";
+        }
+        {
+          path = "/usr/lib/aos/toplevel/os-release";
+          mode = "0444";
+          text = osRelease;
+        }
+        {
+          path = "/usr/lib/aos-container/deployment.json";
+          mode = "0444";
+          source = "${deploymentArtifact.artifact}/deployment.json";
+        }
+      ]
+      # Service images exec their workload directly and do not carry the Nix
+      # initialization script or references to its unrelated runtime tools.
+      ++ lib.optionals needsStoreInit [
+        {
+          path = "/usr/lib/aos/nix-registration";
+          mode = "0444";
+          source = "${referenceGraph}/registration";
+        }
+        {
+          path = "/nix/var/nix/.aos-container-init.lock";
+          mode = "0600";
+          text = "";
+        }
+        {
+          path = "/usr/lib/aos-container/baked-roots";
+          mode = "0444";
+          source = "${bakedRootInventory}/baked-roots";
+        }
+        {
+          path = "/usr/lib/aos-container/store-paths";
+          mode = "0444";
+          source = "${referenceGraph}/store-paths";
+        }
+        {
+          path = "/usr/bin/aos-container-init";
+          mode = "0555";
+          source = "${initSource}/init";
+        }
+      ];
     reservedFilePaths = map (file: file.path) standardFiles;
     filePathCollisions = builtins.filter (path: builtins.elem path reservedFilePaths) configuredFilePaths;
     metadataFiles =

@@ -7,7 +7,10 @@
 //! byte-faithful serving contract cannot drift between deployments. This module
 //! is now a thin re-export to keep the worker's `crate::keymap::…` paths stable.
 
-pub use aos_hub_model::keymap::{
-    cache_control, content_type, is_machine_path, r2_key, relative_key, IMMUTABLE_CACHE_CONTROL,
-    MUTABLE_CACHE_CONTROL,
-};
+pub use aos_hub_model::keymap::cache_control;
+pub use aos_hub_model::keymap::content_type;
+pub use aos_hub_model::keymap::is_machine_path;
+pub use aos_hub_model::keymap::r2_key;
+pub use aos_hub_model::keymap::relative_key;
+pub use aos_hub_model::keymap::IMMUTABLE_CACHE_CONTROL;
+pub use aos_hub_model::keymap::MUTABLE_CACHE_CONTROL;

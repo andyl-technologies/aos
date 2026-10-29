@@ -98,13 +98,9 @@ async fn bearer_permissions_follow_parent_lifecycle_and_provenance() {
             .await
     );
 
-    let session_auth = TokenAuth {
-        token_id: format!("browser-session-{owner_id}"),
-        owner,
-        scope: Scope::root(),
-        permissions: vec![Permission::Read],
-        expires_at: None,
-    };
+    let session_auth =
+        crate::service::authentication::browser_test_auth(&db, owner_id, vec![Permission::Read])
+            .await;
     let session_bearer = service
         .jwt_keys
         .mint_browser_session(&session_auth, 300)
@@ -345,23 +341,19 @@ async fn access_tokens_use_native_permissions_and_stable_scopes() {
         .unwrap()
         .unwrap();
     let jwt_keys = JwtKeys::from_secret(b"injected-write-flow-test-key");
-    let token = jwt_keys
-        .mint(
-            &TokenAuth {
-                token_id: "self-service-token".into(),
-                owner: Principal::user(owner_id),
-                scope: Scope::root(),
-                permissions: vec![
-                    Permission::Read,
-                    Permission::Publish,
-                    Permission::TokensManage,
-                    Permission::TokensSelf,
-                ],
-                expires_at: None,
-            },
-            3600,
-        )
-        .unwrap();
+    let token_authority = crate::service::authentication::provisioned_test_auth(
+        &db,
+        Principal::user(owner_id),
+        Scope::root(),
+        &[
+            Permission::Read,
+            Permission::Publish,
+            Permission::TokensManage,
+            Permission::TokensSelf,
+        ],
+    )
+    .await;
+    let token = jwt_keys.mint(&token_authority, 3600).unwrap();
     let auth = format!("Bearer {token}");
     let plan = service
         .plan_issue_access_token(
@@ -435,18 +427,14 @@ async fn human_access_tokens_are_limited_to_the_authenticated_owner() {
         .unwrap();
 
     let jwt_keys = JwtKeys::from_secret(b"injected-write-flow-test-key");
-    let token = jwt_keys
-        .mint(
-            &TokenAuth {
-                token_id: "token-admin".into(),
-                owner: Principal::user(administrator_id),
-                scope: Scope::root(),
-                permissions: vec![Permission::TokensManage, Permission::MembersManage],
-                expires_at: None,
-            },
-            3600,
-        )
-        .unwrap();
+    let token_authority = crate::service::authentication::provisioned_test_auth(
+        &db,
+        Principal::user(administrator_id),
+        Scope::root(),
+        &[Permission::TokensManage, Permission::MembersManage],
+    )
+    .await;
+    let token = jwt_keys.mint(&token_authority, 3600).unwrap();
     let auth = format!("Bearer {token}");
 
     let result = service
@@ -465,12 +453,11 @@ async fn human_access_tokens_are_limited_to_the_authenticated_owner() {
         .await;
 
     assert!(matches!(result, Err(RpcError::PermissionDenied(_))));
-    assert!(
-        db.list_tokens_for(Principal::user(owner_id))
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    assert!(db
+        .list_tokens_for(Principal::user(owner_id))
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 #[tokio::test]
@@ -501,18 +488,14 @@ async fn service_account_token_delegation_is_bounded_and_rechecked() {
     .unwrap();
 
     let jwt_keys = JwtKeys::from_secret(b"injected-write-flow-test-key");
-    let token = jwt_keys
-        .mint(
-            &TokenAuth {
-                token_id: "service-token-admin".into(),
-                owner: Principal::user(administrator_id),
-                scope: Scope::root(),
-                permissions: vec![Permission::Read, Permission::TokensManage],
-                expires_at: None,
-            },
-            3600,
-        )
-        .unwrap();
+    let token_authority = crate::service::authentication::provisioned_test_auth(
+        &db,
+        Principal::user(administrator_id),
+        Scope::root(),
+        &[Permission::Read, Permission::TokensManage],
+    )
+    .await;
+    let token = jwt_keys.mint(&token_authority, 3600).unwrap();
     let auth = format!("Bearer {token}");
     let request = |permission: &str, idempotency_key: &str| pb::PlanIssueAccessTokenRequest {
         owner: "service_account:token-delegation/publisher".into(),
@@ -575,7 +558,7 @@ async fn service_account_token_delegation_is_bounded_and_rechecked() {
             },
         )
         .await;
-    assert!(matches!(stale, Err(RpcError::FailedPrecondition(_))));
+    assert!(matches!(stale, Err(RpcError::Unauthenticated(_))));
 }
 
 #[tokio::test]
@@ -1173,13 +1156,7 @@ async fn invitation_acceptance_atomically_creates_membership_for_matching_user()
     let token = service
         .jwt_keys
         .mint_browser_session(
-            &TokenAuth {
-                token_id: "invitee-session".into(),
-                owner: Principal::user(invitee),
-                scope: Scope::root(),
-                permissions: Vec::new(),
-                expires_at: None,
-            },
+            &crate::service::authentication::browser_test_auth(&db, invitee, Vec::new()).await,
             3600,
         )
         .unwrap();

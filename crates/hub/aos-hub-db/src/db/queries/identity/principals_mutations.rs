@@ -103,7 +103,7 @@ impl Database {
                     incarnation_id = ?14, mutation_plan_id = ?15, updated_at = ?16
                   WHERE org_id = ?1 AND resource_version = ?17
                     AND (incarnation_id = ?18
-                         OR (incarnation_id IS NULL AND ?18 IS NULL))",
+                         OR (incarnation_id IS NULL AND CAST(?18 AS VARCHAR) IS NULL))",
                 vals![
                     config.org_id,
                     config.issuer,
@@ -215,7 +215,7 @@ impl Database {
                     "DELETE FROM org_idp_configs
                       WHERE org_id = ?1 AND resource_version = ?2
                         AND (incarnation_id = ?3
-                             OR (incarnation_id IS NULL AND ?3 IS NULL))",
+                             OR (incarnation_id IS NULL AND CAST(?3 AS VARCHAR) IS NULL))",
                     vals![org_id, expected_resource_version, expected_incarnation_id],
                 )
                 .expecting(1),
@@ -389,9 +389,15 @@ impl Database {
         self.backend
             .checked_batch(&[
                 Statement::new(
-                    "INSERT INTO users (id, email, display_name, created_at)
-                     VALUES (?1, ?2, ?3, ?4)",
-                    vals![user_id, email, display_name, now],
+                    "INSERT INTO users (id, email, display_name, created_at, principal_incarnation)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    vals![
+                        user_id,
+                        email,
+                        display_name,
+                        now,
+                        uuid::Uuid::new_v4().to_string()
+                    ],
                 )
                 .expecting(1),
                 Statement::new(

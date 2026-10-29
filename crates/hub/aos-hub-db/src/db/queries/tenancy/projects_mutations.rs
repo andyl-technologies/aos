@@ -287,8 +287,8 @@ impl Database {
     pub async fn create_service_account(&self, org_id: i64, name: &str) -> Result<i64> {
         self.backend
             .execute_insert(
-                "INSERT INTO service_accounts (org_id, name, created_at) VALUES (?1, ?2, ?3)",
-                &vals![org_id, name, unix_now()],
+                "INSERT INTO service_accounts (org_id, name, created_at, principal_incarnation) VALUES (?1, ?2, ?3, ?4)",
+                &vals![org_id, name, unix_now(), uuid::Uuid::new_v4().to_string()],
             )
             .await
     }

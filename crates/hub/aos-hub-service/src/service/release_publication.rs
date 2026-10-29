@@ -21,11 +21,13 @@ use aos_release_format::receipt::{
     PUBLICATION_RECEIPT,
 };
 
-use aos_hub_db::db::{
-    is_release_channel_name, NewReleaseBundle, NewReleaseBundlePublication,
-    NewReleaseChannelOperation, NewReleasePromotion, NewReleaseQualification,
-    NewReleaseTimestampPublication,
-};
+use aos_hub_db::db::is_release_channel_name;
+use aos_hub_db::db::NewReleaseBundle;
+use aos_hub_db::db::NewReleaseBundlePublication;
+use aos_hub_db::db::NewReleaseChannelOperation;
+use aos_hub_db::db::NewReleasePromotion;
+use aos_hub_db::db::NewReleaseQualification;
+use aos_hub_db::db::NewReleaseTimestampPublication;
 use aos_hub_model::domain::Permission;
 
 use super::{RpcError, RpcService};

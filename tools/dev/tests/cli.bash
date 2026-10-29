@@ -10,6 +10,11 @@ if [[ $1 == config && $2 == show ]]; then
   printf 'trusted-users = root %s\n' "$(id -un)"
   exit 0
 fi
+if [[ $1 == develop && $* == *hub-direct-shell.nix* ]]; then
+  printf '%s\n' "$@" > "$AOS_DEV_TEST_DIRECT_ARGS"
+  printf '%s\n' "$AOS_DEV_ROOT" > "$AOS_DEV_TEST_DIRECT_ROOT"
+  exit 0
+fi
 case " $* " in
   *'nix-config.nix text '*)
     printf '%s\n' \
@@ -22,7 +27,11 @@ case " $* " in
   *' category checks '*' scope build.aos-dev-cli '*) printf 'build.aos-dev-cli' ;;
   *' category checks '*' scope build.aos-dev '*) : ;;
   *' category checks '*' scope build '*) printf 'build.aos-dev-cli\nbuild.aos-dev-cache-identity' ;;
-  *' category checks '*) printf 'eval\nbuild' ;;
+  *' category checks '*' scope fleet.hub-hybrid-postgres '*) printf 'fleet.hub-hybrid-postgres' ;;
+  *' category checks '*)
+    [[ ${AOS_DEV_TEST_SCOPED_CHECK_ONLY:-0} != 1 ]] || exit 1
+    printf 'eval\nbuild'
+    ;;
   *' category images '*) printf 'server:qcow2' ;;
   *' category containers '*) printf 'aos:oci' ;;
   *' category builds '*)
@@ -102,12 +111,30 @@ export AOS_DEV_TEST_NIX_CONFIG_LOG="$scratch/nix-config.log"
 bash -n "$root/tools/dev/aos-dev" "$root"/tools/dev/lib/*.bash
 bash "$root/tools/dev/aos-dev" help | grep -Fq 'Usage: aos-dev'
 bash "$root/tools/dev/aos-dev" completion bash | grep -Fq '_aos_dev_complete()'
+
+# The focused loop enters its small shell directly and preserves parser args.
+export AOS_DEV_TEST_DIRECT_ARGS="$scratch/direct-args"
+export AOS_DEV_TEST_DIRECT_ROOT="$scratch/direct-root"
+CARGO_TARGET_DIR="$scratch/cargo-target" bash "$root/tools/dev/aos-dev" \
+  test hub-direct unit --timeout 9
+grep -Fxq -- "$root/tools/dev/hub-direct-shell.nix" "$AOS_DEV_TEST_DIRECT_ARGS"
+grep -Fxq -- "$root/tools/dev/hub-direct.py" "$AOS_DEV_TEST_DIRECT_ARGS"
+grep -Fxq -- unit "$AOS_DEV_TEST_DIRECT_ARGS"
+grep -Fxq -- --timeout "$AOS_DEV_TEST_DIRECT_ARGS"
+grep -Fxq -- 9 "$AOS_DEV_TEST_DIRECT_ARGS"
+grep -Fxq -- "$root" "$AOS_DEV_TEST_DIRECT_ROOT"
+if bash "$root/tools/dev/aos-dev" test unknown > "$scratch/direct-invalid.log" 2>&1; then
+  exit 1
+fi
 test "$(bash "$root/tools/dev/aos-dev" list packages)" = $'alpha\nbeta'
 test "$(bash "$root/tools/dev/aos-dev" list check)" = $'eval\nbuild'
 test "$(bash "$root/tools/dev/aos-dev" list check build)" = 'build'
 test "$(bash "$root/tools/dev/aos-dev" list check build.)" = $'build.aos-dev-cli\nbuild.aos-dev-cache-identity'
 test "$(bash "$root/tools/dev/aos-dev" list check build.aos-dev)" = $'build.aos-dev-cli\nbuild.aos-dev-cache-identity'
 test "$(bash "$root/tools/dev/aos-dev" list check build.aos-dev-cli)" = 'build.aos-dev-cli'
+test "$(AOS_DEV_TEST_SCOPED_CHECK_ONLY=1 bash "$root/tools/dev/aos-dev" \
+  --release build check fleet.hub-hybrid-postgres --no-out-link)" = /tmp/aos-dev-test-output
+grep -Fq -- '-A checks.fleet.hub-hybrid-postgres --no-out-link' "$AOS_DEV_TEST_LOG"
 test "$(bash "$root/tools/dev/aos-dev" --release build check build.aos-dev-cli --no-out-link)" = /tmp/aos-dev-test-output
 grep -Fq -- '-A checks.build.aos-dev-cli --no-out-link' "$AOS_DEV_TEST_LOG"
 test "$(bash "$root/tools/dev/aos-dev" --release build check package-documentation --no-out-link)" = /tmp/aos-dev-test-output

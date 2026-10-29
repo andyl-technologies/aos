@@ -15,9 +15,12 @@ use async_trait::async_trait;
 use wasm_bindgen::JsValue;
 use worker::{Env, Method, Request, RequestInit};
 
-use aos_hub_db::backend::{Backend, CheckedStatement, Statement};
+use aos_hub_db::backend::Backend;
+use aos_hub_db::backend::CheckedStatement;
+use aos_hub_db::backend::Statement;
 use aos_hub_db::dialect::Dialect;
-use aos_hub_db::value::{Row, Value};
+use aos_hub_db::value::Row;
+use aos_hub_db::value::Value;
 
 use crate::handlers::bindings::HUB_DB;
 use crate::remoteprotocol::{RemoteSqlRequest, RemoteSqlResponse, RemoteStatement};
@@ -274,6 +277,7 @@ pub(crate) async fn execute_remote_sql(
                         params: statement.params,
                     },
                     expected_rows: statement.expected_rows,
+                    postgres_lock_sql: None,
                 })
                 .collect::<Vec<_>>();
             backend.checked_batch_owned(checked).await?;

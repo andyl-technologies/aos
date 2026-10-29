@@ -213,6 +213,57 @@ impl Database {
         credential_fingerprint: &str,
         actor: &str,
     ) -> Result<BindingCredentialRevisionRecord> {
+        self.set_binding_credential_revision_inner(
+            binding_id,
+            purpose,
+            secret_version_ref,
+            expected_current_generation,
+            credential_fingerprint,
+            actor,
+            None,
+        )
+        .await
+    }
+
+    /// Records controller validation under the credential-head version CAS.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid state, stale version, a non-current
+    /// generation, or database failure.
+    pub async fn validate_binding_credential_revision(
+        &self,
+        binding_id: i64,
+        purpose: &str,
+        generation: i64,
+        state: &str,
+        validation_error: Option<&str>,
+        expected_resource_version: i64,
+    ) -> Result<BindingCredentialRevisionRecord> {
+        self.validate_binding_credential_with_fence(
+            binding_id,
+            purpose,
+            generation,
+            state,
+            validation_error,
+            expected_resource_version,
+            Vec::new(),
+        )
+        .await
+    }
+}
+
+impl Database {
+    pub(in crate::db) async fn set_binding_credential_revision_inner(
+        &self,
+        binding_id: i64,
+        purpose: &str,
+        secret_version_ref: &str,
+        expected_current_generation: i64,
+        credential_fingerprint: &str,
+        actor: &str,
+        binding: Option<&BindingRecord>,
+    ) -> Result<BindingCredentialRevisionRecord> {
         if !matches!(purpose, "read" | "write" | "delete" | "list" | "presign") {
             bail!("invalid storage credential purpose '{purpose}'");
         }
@@ -243,6 +294,22 @@ impl Database {
                 && current.as_ref().map(|head| head.generation) == Some(existing.generation)
                 && existing.generation == expected_current_generation + 1
             {
+                if let Some(binding) = binding {
+                    self.backend.checked_batch(&[
+                        credential_registration::binding_fence(binding),
+                        Statement::new(
+                            "UPDATE binding_credential_heads SET updated_at = updated_at
+                             WHERE binding_id = ?1 AND purpose = ?2 AND current_generation = ?3
+                               AND resource_version = ?4
+                               AND EXISTS (SELECT 1 FROM binding_credential_revisions r
+                                 WHERE r.binding_id = ?1 AND r.purpose = ?2 AND r.generation = ?3
+                                   AND r.secret_version_ref = ?5 AND r.credential_fingerprint = ?6)",
+                            vals![binding_id, purpose, existing.generation,
+                                existing.head_resource_version, secret_version_ref,
+                                credential_fingerprint].to_vec(),
+                        ).expecting(1),
+                    ]).await?;
+                }
                 return Ok(existing);
             }
             if existing.credential_fingerprint == credential_fingerprint {
@@ -299,7 +366,11 @@ impl Database {
             ]
             .to_vec()
         };
-        let mut statements = vec![Statement::new(insert_sql, insert_values).expecting(1)];
+        let mut statements = Vec::new();
+        if let Some(binding) = binding {
+            statements.push(credential_registration::binding_fence(binding));
+        }
+        statements.push(Statement::new(insert_sql, insert_values).expecting(1));
         if current_generation == 0 {
             statements.push(
                 Statement::new(
@@ -341,14 +412,11 @@ impl Database {
             .await?
             .context("created credential revision disappeared")
     }
+}
 
-    /// Records controller validation under the credential-head version CAS.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for invalid state, stale version, a non-current
-    /// generation, or database failure.
-    pub async fn validate_binding_credential_revision(
+impl Database {
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::db) async fn validate_binding_credential_with_fence(
         &self,
         binding_id: i64,
         purpose: &str,
@@ -356,6 +424,7 @@ impl Database {
         state: &str,
         validation_error: Option<&str>,
         expected_resource_version: i64,
+        mut fences: Vec<crate::backend::CheckedStatement>,
     ) -> Result<BindingCredentialRevisionRecord> {
         if !matches!(state, "valid" | "invalid") || (state == "valid") != validation_error.is_none()
         {
@@ -380,57 +449,56 @@ impl Database {
             "generation": generation,
             "result": state,
         }))?;
-        self.backend
-            .checked_batch(&[
-                Statement::new(
-                    "UPDATE binding_credential_revisions
+        fences.extend([
+            Statement::new(
+                "UPDATE binding_credential_revisions
                      SET validation_state = ?4, validated_at = ?5, validation_error = ?6
                      WHERE binding_id = ?1 AND purpose = ?2 AND generation = ?3
                        AND EXISTS (SELECT 1 FROM binding_credential_heads h
                          WHERE h.binding_id = ?1 AND h.purpose = ?2
                            AND h.current_generation = ?3 AND h.resource_version = ?7)",
-                    vals![
-                        binding_id,
-                        purpose,
-                        generation,
-                        state,
-                        now,
-                        validation_error,
-                        expected_resource_version
-                    ]
-                    .to_vec(),
-                )
-                .expecting(1),
-                Statement::new(
-                    "UPDATE binding_credential_heads
+                vals![
+                    binding_id,
+                    purpose,
+                    generation,
+                    state,
+                    now,
+                    validation_error,
+                    expected_resource_version
+                ]
+                .to_vec(),
+            )
+            .expecting(1),
+            Statement::new(
+                "UPDATE binding_credential_heads
                      SET resource_version = resource_version + 1, updated_at = ?4
                      WHERE binding_id = ?1 AND purpose = ?2
                        AND current_generation = ?3 AND resource_version = ?5",
-                    vals![
-                        binding_id,
-                        purpose,
-                        generation,
-                        now,
-                        expected_resource_version
-                    ]
-                    .to_vec(),
-                )
-                .expecting(1),
-                Database::topology_event_statement(&NewTopologyEvent {
-                    event_id: &event_id,
-                    event_name,
-                    owner_scope_key: &binding.owner_scope_key,
-                    resource_kind: "binding_credential",
-                    resource_stable_id: &binding.stable_id,
-                    resource_generation_key: generation,
-                    actor_kind: "system",
-                    actor_id: None,
-                    actor_label: "storage-credential-controller",
-                    payload_json: &payload_json,
-                    occurred_at: now,
-                }),
-            ])
-            .await?;
+                vals![
+                    binding_id,
+                    purpose,
+                    generation,
+                    now,
+                    expected_resource_version
+                ]
+                .to_vec(),
+            )
+            .expecting(1),
+            Database::topology_event_statement(&NewTopologyEvent {
+                event_id: &event_id,
+                event_name,
+                owner_scope_key: &binding.owner_scope_key,
+                resource_kind: "binding_credential",
+                resource_stable_id: &binding.stable_id,
+                resource_generation_key: generation,
+                actor_kind: "system",
+                actor_id: None,
+                actor_label: "storage-credential-controller",
+                payload_json: &payload_json,
+                occurred_at: now,
+            }),
+        ]);
+        self.backend.checked_batch(&fences).await?;
         let record = self
             .binding_credential_revision(binding_id, purpose, generation)
             .await?

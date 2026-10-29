@@ -91,7 +91,8 @@ pub async fn invalidate(kv: &dyn KvStore, key: &str) {
 #[cfg(test)]
 mod tests {
     use super::{invalidate, read_through, HOT_TTL_SECS};
-    use crate::kv::{InMemoryKv, KvStore};
+    use crate::kv::InMemoryKv;
+    use crate::kv::KvStore;
     use std::cell::Cell;
 
     #[tokio::test]

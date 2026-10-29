@@ -10,7 +10,7 @@ use anyhow::{Context as _, Result, bail};
 use aos_cli_ui::output::Printer;
 use aos_package_maintenance::PACKAGE_UPDATE_GATE_RESULTS_V1;
 use aos_package_maintenance::plan::{GateSpec, PackageUpdatePlanV1};
-use aos_package_maintenance::run::{GateResult, GateResultsV1, PackageUpdateRunV1};
+use aos_package_maintenance::run::{Outcome, GateResultsV1, PackageUpdateRunV1};
 use aos_package_maintenance::workflow::{ActorClass, GateOutcome, RunState};
 use tokio::time::Instant;
 
@@ -20,7 +20,7 @@ use super::state::{self, StateStore};
 const MAX_GATE_LOG_BYTES: usize = 8 * 1024 * 1024;
 
 struct ExecutedGatePlan {
-    results: Vec<GateResult>,
+    results: Vec<Outcome>,
     logs: Vec<(String, Vec<u8>)>,
     confinement: aos_package_maintenance::run::ConfinementEvidence,
 }
@@ -240,7 +240,7 @@ fn execute_gate(
     backend: &Backend,
     gate: &GateSpec,
 ) -> Result<(
-    GateResult,
+    Outcome,
     Vec<u8>,
     aos_package_maintenance::run::ConfinementEvidence,
 )> {
@@ -328,7 +328,7 @@ fn execute_gate(
         );
     }
     let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-    let result = GateResult {
+    let result = Outcome {
         gate_id: gate.id.clone(),
         argv: gate.argv.clone(),
         outcome: if status.success() {

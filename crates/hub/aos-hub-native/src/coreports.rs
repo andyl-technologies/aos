@@ -29,18 +29,20 @@ use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use sha2::{Digest as _, Sha256};
 
-use aos_hub_db::db::{Database, RegistryRecord, SurfacePlacementRecord};
+use aos_hub_db::db::Database;
+use aos_hub_db::db::RegistryRecord;
+use aos_hub_db::db::SurfacePlacementRecord;
 use aos_hub_model::binding::BindingKind;
-use aos_hub_model::secret_version::{
-    validate_secret_version_ref, ResolvedSecretVersion, SecretVersionResolver,
-};
+use aos_hub_model::secret_version::validate_secret_version_ref;
+use aos_hub_model::secret_version::ResolvedSecretVersion;
+use aos_hub_model::secret_version::SecretVersionResolver;
 use aos_hub_service::fetch as core_fetch;
 use aos_hub_service::ratelimit as core_rl;
 use aos_hub_service::reindex as core_reindex;
-use aos_hub_service::s3surface::{Method as S3Method, S3Surface};
-use aos_hub_service::storage_credential::{
-    DatabaseStorageCredentialResolver, StorageCredentialResolver,
-};
+use aos_hub_service::s3surface::Method as S3Method;
+use aos_hub_service::s3surface::S3Surface;
+use aos_hub_service::storage_credential::DatabaseStorageCredentialResolver;
+use aos_hub_service::storage_credential::StorageCredentialResolver;
 use aos_hub_service::surface_write as core_sw;
 use aos_hub_service::web::console::ports as console_ports;
 
@@ -123,8 +125,9 @@ impl aos_hub_service::topology_probe::StorageCredentialProbeProvider
         &self,
         binding: &aos_hub_db::db::BindingRecord,
         credential: &aos_hub_db::db::BindingCredentialRevisionRecord,
+        _operation_id: &str,
         probe_token: &str,
-    ) -> Result<aos_hub_service::topology_probe::StorageCredentialProbeResult> {
+    ) -> Result<aos_hub_model::storage::StorageCredentialProbeResult> {
         anyhow::ensure!(
             credential.binding_id == binding.id,
             "credential probe binding identity is inconsistent"
@@ -248,14 +251,12 @@ impl aos_hub_service::topology_probe::StorageCredentialProbeProvider
                 credential.purpose
             )
         });
-        Ok(
-            aos_hub_service::topology_probe::StorageCredentialProbeResult {
-                valid,
-                conditional_writes_supported,
-                error,
-                evidence: serde_json::Value::Object(statuses),
-            },
-        )
+        Ok(aos_hub_model::storage::StorageCredentialProbeResult {
+            valid,
+            conditional_writes_supported,
+            error,
+            evidence: serde_json::Value::Object(statuses),
+        })
     }
 }
 
@@ -454,6 +455,9 @@ impl core_fetch::SurfaceFetch for crate::fetch::LocalFsFetch {
         } else {
             root.join(prefix_directory)
         };
+        crate::fetch::ensure_within_root(&root, &walk_root)
+            .await
+            .map_err(native_placement_read_error)?;
         let mut pending = vec![walk_root];
         let mut paths = std::collections::BTreeSet::new();
         let mut has_more = false;
@@ -847,7 +851,7 @@ impl core_fetch::SurfaceProvider for HubSurfaceProvider {
 
     async fn frozen_placement_fetcher(
         &self,
-        access: &core_sw::FrozenSurfaceAccess,
+        access: &aos_hub_model::storage::FrozenSurfaceAccess,
     ) -> Result<Box<dyn core_fetch::SurfaceFetch>> {
         let binding = frozen_access_binding(&self.db, access).await?;
         match BindingKind::parse(&binding.kind) {
@@ -1074,7 +1078,7 @@ impl core_sw::SurfaceWriteProvider for HubSurfaceWriteProvider {
 
     async fn frozen_placement_deleter(
         &self,
-        access: &core_sw::FrozenSurfaceAccess,
+        access: &aos_hub_model::storage::FrozenSurfaceAccess,
     ) -> Result<Box<dyn core_sw::SurfaceWrite>> {
         let binding = frozen_access_binding(&self.db, access).await?;
         match BindingKind::parse(&binding.kind) {
@@ -1120,7 +1124,7 @@ impl core_sw::SurfaceWriteProvider for HubSurfaceWriteProvider {
 
 async fn frozen_access_binding(
     db: &Database,
-    access: &core_sw::FrozenSurfaceAccess,
+    access: &aos_hub_model::storage::FrozenSurfaceAccess,
 ) -> Result<aos_hub_db::db::BindingRecord> {
     access.validate()?;
     let binding = db
@@ -1139,7 +1143,7 @@ async fn frozen_access_binding(
 
 async fn frozen_delete_credential(
     resolver: Option<&dyn StorageCredentialResolver>,
-    access: &core_sw::FrozenSurfaceAccess,
+    access: &aos_hub_model::storage::FrozenSurfaceAccess,
     operation: &str,
 ) -> Result<Option<aos_hub_service::storage_credential::ResolvedStorageCredential>> {
     match (
@@ -1255,14 +1259,14 @@ impl core_sw::SurfaceWrite for LocalFsWrite {
         upload_id: &str,
         part_number: u32,
         bytes: &[u8],
-    ) -> Result<core_sw::PartTag> {
+    ) -> Result<aos_hub_model::storage::PartTag> {
         let dir = self.parts_dir(&validate_upload_id(upload_id)?);
         if !tokio::fs::try_exists(&dir).await.unwrap_or(false) {
             bail!("unknown multipart upload id");
         }
         // Each part is its own staged file; peak memory is a single part.
         write_atomic(&dir.join(format!("part-{part_number:08}")), bytes).await?;
-        Ok(core_sw::PartTag {
+        Ok(aos_hub_model::storage::PartTag {
             part_number,
             etag: hex::encode(Sha256::digest(bytes)),
         })
@@ -1272,7 +1276,7 @@ impl core_sw::SurfaceWrite for LocalFsWrite {
         &self,
         path: &str,
         upload_id: &str,
-        parts: &[core_sw::PartTag],
+        parts: &[aos_hub_model::storage::PartTag],
     ) -> Result<String> {
         let upload_id = validate_upload_id(upload_id)?;
         let dir = self.parts_dir(&upload_id);
@@ -1291,7 +1295,7 @@ impl core_sw::SurfaceWrite for LocalFsWrite {
         // Concatenate the staged parts in `part_number` order into a temp file,
         // then atomic-rename into place: a reader never sees a partial object,
         // and memory stays bounded to the copy buffer (no part is held whole).
-        let mut ordered: Vec<&core_sw::PartTag> = parts.iter().collect();
+        let mut ordered: Vec<&aos_hub_model::storage::PartTag> = parts.iter().collect();
         ordered.sort_by_key(|part| part.part_number);
         let tmp = contained.with_extension(format!("tmp-{}", uuid::Uuid::new_v4()));
         {
@@ -1353,22 +1357,22 @@ impl core_sw::SurfaceWrite for LocalFsWrite {
         &self,
         _path: &str,
         upload_id: &str,
-    ) -> Result<core_sw::MultipartAbortOutcome> {
+    ) -> Result<aos_hub_model::storage::MultipartAbortOutcome> {
         let upload_id = validate_upload_id(upload_id)?;
         if tokio::fs::try_exists(self.multipart_terminal_marker(&upload_id))
             .await
             .unwrap_or(false)
         {
-            return Ok(core_sw::MultipartAbortOutcome::PossiblyCompleted);
+            return Ok(aos_hub_model::storage::MultipartAbortOutcome::PossiblyCompleted);
         }
         let directory = self.parts_dir(&upload_id);
         match tokio::fs::remove_dir_all(&directory).await {
             Ok(()) => {
                 sync_parent_directory(&directory).await?;
-                Ok(core_sw::MultipartAbortOutcome::Aborted)
+                Ok(aos_hub_model::storage::MultipartAbortOutcome::Aborted)
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                Ok(core_sw::MultipartAbortOutcome::Absent)
+                Ok(aos_hub_model::storage::MultipartAbortOutcome::Absent)
             }
             Err(error) => Err(error).context("aborting local multipart upload"),
         }
@@ -2048,7 +2052,7 @@ impl core_fetch::SurfaceFetch for S3Fetch {
             .and_then(|value| value.to_str().ok())
             .map(str::trim)
             .map(str::to_string)
-            .filter(|value| aos_hub_service::surface_write::strong_if_match_etag(value).is_ok());
+            .filter(|value| aos_hub_model::delivery_http::strong_if_match_etag(value).is_ok());
         Ok(Some(core_fetch::StreamedRead {
             body: axum::body::Body::from_stream(resp.bytes_stream()),
             total,
@@ -2116,6 +2120,10 @@ impl core_fetch::SurfaceFetch for S3Fetch {
         for key in keys {
             if let Some(relative) = self.surface.relative_from_key(&key) {
                 if !relative.is_empty() {
+                    anyhow::ensure!(
+                        relative.starts_with(prefix),
+                        "S3 listing returned an object outside the requested prefix"
+                    );
                     paths.push(relative);
                     anyhow::ensure!(
                         paths.len() <= limit,
@@ -2160,11 +2168,7 @@ impl core_fetch::SurfaceFetch for S3Fetch {
             .and_then(|value| value.to_str().ok())
             .map(str::trim)
             .map(str::to_string);
-        Ok(
-            etag.filter(|value| {
-                aos_hub_service::surface_write::strong_if_match_etag(value).is_ok()
-            }),
-        )
+        Ok(etag.filter(|value| aos_hub_model::delivery_http::strong_if_match_etag(value).is_ok()))
     }
 
     fn describe(&self) -> String {
@@ -2296,7 +2300,7 @@ impl core_sw::SurfaceWrite for S3Write {
         upload_id: &str,
         part_number: u32,
         bytes: &[u8],
-    ) -> Result<core_sw::PartTag> {
+    ) -> Result<aos_hub_model::storage::PartTag> {
         let url = self.surface.multipart_url(
             "part",
             path,
@@ -2326,14 +2330,14 @@ impl core_sw::SurfaceWrite for S3Write {
             .to_str()
             .context("S3 upload-part ETag is not text")?
             .to_string();
-        Ok(core_sw::PartTag { part_number, etag })
+        Ok(aos_hub_model::storage::PartTag { part_number, etag })
     }
 
     async fn complete_multipart(
         &self,
         path: &str,
         upload_id: &str,
-        parts: &[core_sw::PartTag],
+        parts: &[aos_hub_model::storage::PartTag],
     ) -> Result<String> {
         let url = self.surface.multipart_url(
             "complete",
@@ -2368,7 +2372,7 @@ impl core_sw::SurfaceWrite for S3Write {
         &self,
         path: &str,
         upload_id: &str,
-    ) -> Result<core_sw::MultipartAbortOutcome> {
+    ) -> Result<aos_hub_model::storage::MultipartAbortOutcome> {
         let url = self.surface.multipart_url(
             "abort",
             path,
@@ -2380,14 +2384,14 @@ impl core_sw::SurfaceWrite for S3Write {
             .await
             .with_context(|| format!("s3 abort multipart {path}"))?;
         if response.status() == reqwest::StatusCode::NOT_FOUND {
-            return Ok(core_sw::MultipartAbortOutcome::Absent);
+            return Ok(aos_hub_model::storage::MultipartAbortOutcome::Absent);
         }
         anyhow::ensure!(
             response.status().is_success(),
             "s3 abort multipart failed: {}",
             response.status()
         );
-        Ok(core_sw::MultipartAbortOutcome::Aborted)
+        Ok(aos_hub_model::storage::MultipartAbortOutcome::Aborted)
     }
 }
 
@@ -2484,7 +2488,8 @@ mod multipart_tests {
 
     #[test]
     fn native_placement_io_retries_only_known_transient_kinds() {
-        use aos_hub_service::placement_read::{classify_read_error, ReadFailureClass};
+        use aos_hub_service::placement_read::classify_read_error;
+        use aos_hub_service::placement_read::ReadFailureClass;
 
         for kind in [
             std::io::ErrorKind::Interrupted,
@@ -2549,12 +2554,12 @@ mod multipart_tests {
         assert!(!dir.path().join(".uploads").join(&upload_id).exists());
         assert_eq!(
             w.abort_multipart(path, &upload_id).await.unwrap(),
-            core_sw::MultipartAbortOutcome::PossiblyCompleted
+            aos_hub_model::storage::MultipartAbortOutcome::PossiblyCompleted
         );
         w.settle_multipart(path, &upload_id).await.unwrap();
         assert_eq!(
             w.abort_multipart(path, &upload_id).await.unwrap(),
-            core_sw::MultipartAbortOutcome::Absent
+            aos_hub_model::storage::MultipartAbortOutcome::Absent
         );
     }
 
@@ -2574,11 +2579,11 @@ mod multipart_tests {
         let upload_id = w.create_multipart("nar/x").await.unwrap();
         assert_eq!(
             w.abort_multipart("nar/x", &upload_id).await.unwrap(),
-            core_sw::MultipartAbortOutcome::Aborted
+            aos_hub_model::storage::MultipartAbortOutcome::Aborted
         );
         assert_eq!(
             w.abort_multipart("nar/x", &upload_id).await.unwrap(),
-            core_sw::MultipartAbortOutcome::Absent
+            aos_hub_model::storage::MultipartAbortOutcome::Absent
         );
     }
 
@@ -2602,7 +2607,7 @@ mod multipart_tests {
         assert!(w.multipart_terminal_marker(&upload_id).exists());
         assert_eq!(
             w.abort_multipart(path, &upload_id).await.unwrap(),
-            core_sw::MultipartAbortOutcome::PossiblyCompleted
+            aos_hub_model::storage::MultipartAbortOutcome::PossiblyCompleted
         );
     }
 

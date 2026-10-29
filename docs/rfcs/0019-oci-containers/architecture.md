@@ -382,6 +382,7 @@ The first-release media-type allowlist is:
   `{}` and which is used as an artifact manifest config;
 - `application/vnd.aos.container-release.v1+json`;
 - `application/vnd.aos.container.static-abilities.v1+json`;
+- `application/vnd.aos.artifact.deployment.v1+json`;
 - `application/vnd.aos.nix-closure.v1+json`;
 - `application/vnd.aos.source-closure.v1+json`;
 - `application/vnd.aos.source-closure.v1.tar+gzip`;
@@ -495,7 +496,7 @@ binds:
 - logical container name, initially only `aos`;
 - OCI index and per-platform manifest descriptors;
 - Nix definition and output provenance;
-- required static ability and launch-obligation evidence;
+- native deployment or static ability and launch-obligation evidence;
 - closure manifest and SBOM descriptors;
 - source, license, signature, and attestation referrers.
 
@@ -503,10 +504,20 @@ The build fails unless every runtime closure path maps to one package with
 retained corresponding source and license metadata, so a sidecar exists only
 for a complete closure and carries no completeness field. The sidecar is
 schema version 2 and the signature input is `aos.container.signature-input/v2`;
-the DSSE payload type and static ability evidence use their `/v1` contracts. The static ability
-descriptor is required in both the signature input and the final release, so
-every parser, verifier, Hub indexer, and graph traversal sees the same signed
-evidence set.
+the DSSE payload type and static ability evidence use their `/v1` contracts.
+A release requires a native deployment descriptor, a legacy static ability
+descriptor, or both. Every supplied descriptor must appear unchanged in the
+signature input and final release, so every parser, verifier, Hub indexer, and
+graph traversal sees the same signed deployment contract. Omitting both
+descriptors is invalid.
+
+Images that retain a native deployment document also include its OCI referrer
+descriptor as `evidence.deployment` in the signature input and final release.
+Older bundles may omit this field. When present, the descriptor is a distinct
+signed root: signing, transfer, placement validation, indexing, and graph
+retention must preserve the exact descriptor and its typed payload. Dropping
+or replacing it after signing invalidates the release. The document describes
+deployment inputs; publishing it grants no runtime permissions.
 
 The Hub indexer verifies this sidecar before creating a signed release root.
 Generic clients may pull an unverified manual tag, but only AOS-aware

@@ -22,6 +22,7 @@
   buildCc = buildPackages.cc;
   buildBash = buildPackages.bash;
   buildCoreutils = buildPackages.coreutils;
+  buildNukeReferences = buildPackages.nuke-references;
   buildRust = buildPackages.rust;
   nativeRustTarget = stdenv.buildPlatform.config;
   nativeRustCargoPrefix = lib.toUpper (builtins.replaceStrings ["-"] ["_"] nativeRustTarget);
@@ -182,7 +183,7 @@ in
 
     inherit version src;
 
-    buildDeps = [buildRust wasm-bindgen-cli buildProtobuf buildCc buildBash buildCoreutils];
+    buildDeps = [buildRust wasm-bindgen-cli buildProtobuf buildCc buildBash buildCoreutils buildNukeReferences];
     inherit cargoDeps;
 
     phases = [
@@ -215,13 +216,14 @@ in
           export CARGO_HOME="$TMPDIR/cargo"
           export PROTOC="${buildProtobuf}/bin/protoc"
 
-          # rust-lld may leave a zero-filled output on the build filesystem.
-          # Link on tmpfs, then copy the completed wasm into Cargo's target dir.
+          # Stage the linker output in the builder's temporary directory before
+          # copying it into Cargo's target directory. Large Wasm artifacts must
+          # use disk-backed build storage rather than shared host tmpfs.
           cat > "$TMPDIR/aos-wasm-linker" <<'LINKER'
           #!${buildBash}/bin/bash
           set -euo pipefail
 
-          stage_dir=$(${buildCoreutils}/bin/mktemp -d /dev/shm/aos-wasm-link.XXXXXXXX)
+          stage_dir=$(${buildCoreutils}/bin/mktemp -d "$TMPDIR/aos-wasm-link.XXXXXXXX")
           trap '${buildCoreutils}/bin/rm -rf "$stage_dir"' EXIT
 
           output=
@@ -268,6 +270,12 @@ in
           cp generated/hub-console.js "$out/hub-console.js"
           cp generated/hub-console_bg.wasm "$out/hub-console_bg.wasm"
           cp hub/aos-hub-console/assets/app.css "$out/hub-console.css"
+          # Native ELF scrubbing also visits its embedded browser Wasm, whereas
+          # standalone Worker assets are not ELF files. Normalize diagnostic
+          # store references before consumers hash or embed the public bundle,
+          # so Native scrubbing cannot change the edge's immutable identity.
+          ${buildNukeReferences}/bin/nuke-refs \
+            "$out/hub-console.js" "$out/hub-console_bg.wasm" "$out/hub-console.css"
           test -s "$out/hub-console.js"
           test -s "$out/hub-console_bg.wasm"
           test -s "$out/hub-console.css"

@@ -91,6 +91,13 @@ impl NativeTlsListener {
     }
 
     fn start_handshake(&mut self, stream: tokio::net::TcpStream, peer: SocketAddr) {
+        // A small response must not wait for acknowledgement of TLS handshake
+        // records. This matters for control callers opening a fresh connection.
+        if let Err(error) = stream.set_nodelay(true) {
+            tracing::warn!(%peer, %error, "native TLS failed to disable TCP coalescing");
+            return;
+        }
+
         let acceptor = self.acceptor.clone();
         let expected_server_name = Arc::clone(&self.expected_server_name);
         let handshake_timeout = self.handshake_timeout;

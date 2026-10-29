@@ -14,7 +14,8 @@ use axum::response::{IntoResponse, Response};
 use tower::ServiceExt;
 
 use aos_hub_service::service::RpcService;
-use aos_hub_service::web::console::{dispatch_nested, ConsoleDeps};
+use aos_hub_service::web::console::dispatch_nested;
+use aos_hub_service::web::console::ConsoleDeps;
 
 /// Classifies a potentially streaming upload without reading its body.
 ///
@@ -180,9 +181,10 @@ mod tests {
     use aos_hub_service::reindex::Reindexer;
     use aos_hub_service::surface_write::SurfaceWriteProvider;
     use aos_hub_service::topology_probe::DatabaseTopologyProbeScheduler;
-    use aos_hub_service::web::console::{
-        console_router, route_manifest, ConsoleRouteMatched, RouteMethods,
-    };
+    use aos_hub_service::web::console::console_router;
+    use aos_hub_service::web::console::route_manifest;
+    use aos_hub_service::web::console::ConsoleRouteMatched;
+    use aos_hub_service::web::console::RouteMethods;
     use axum::http::StatusCode;
     use tokio::sync::Mutex;
 
@@ -232,8 +234,11 @@ mod tests {
     async fn worker_bridge_service_enforces_every_disabled_container_capability() {
         use aos_hub_api as pb;
         use aos_hub_db::db::TokenAuth;
-        use aos_hub_model::domain::{Permission, Principal, Scope};
-        use aos_hub_service::oci::{OciRequest, ResolvedOciRoute};
+        use aos_hub_model::domain::Permission;
+        use aos_hub_model::domain::Principal;
+        use aos_hub_model::domain::Scope;
+        use aos_hub_service::oci::OciRequest;
+        use aos_hub_service::oci::ResolvedOciRoute;
         use aos_oci_types::{RepositoryName, Sha256Digest};
 
         let _presentation = SITE_PRESENTATION.lock().await;
@@ -270,24 +275,23 @@ mod tests {
             .registry_authorization_scope(registry_id)
             .await
             .unwrap();
-        let token = state
-            .auth
-            .jwt_keys
-            .mint_browser_session(
-                &TokenAuth {
-                    token_id: "worker-rollout".to_string(),
-                    owner: Principal::user(user_id),
-                    scope: Scope::parse(&scope),
-                    permissions: vec![
-                        Permission::Read,
-                        Permission::Publish,
-                        Permission::RegistryConfigure,
-                    ],
-                    expires_at: None,
-                },
-                900,
+        let (_, secret) = state
+            .db
+            .create_token(
+                Principal::user(user_id),
+                (Scope::parse(&scope)).as_str(),
+                &vec![
+                    Permission::Read,
+                    Permission::Publish,
+                    Permission::RegistryConfigure,
+                ],
+                Some("current fixture bearer"),
+                None,
             )
+            .await
             .unwrap();
+        let token_authority = state.db.validate_token(&secret).await.unwrap().unwrap();
+        let token = state.auth.jwt_keys.mint(&token_authority, 900).unwrap();
         let bearer = format!("Bearer {token}");
         let service = Arc::new(worker_rpc_service(&state));
 
@@ -524,7 +528,8 @@ mod tests {
 
     #[tokio::test]
     async fn unreadable_settings_render_browser_pages_without_masking_api_failures() {
-        use aos_hub_db::backend::{Backend as _, SqlxBackend};
+        use aos_hub_db::backend::Backend as _;
+        use aos_hub_db::backend::SqlxBackend;
 
         let _presentation = SITE_PRESENTATION.lock().await;
 
@@ -584,7 +589,9 @@ mod tests {
     async fn branding_apply_and_warm_worker_reads_use_current_settings() {
         use aos_hub_api as pb;
         use aos_hub_db::db::TokenAuth;
-        use aos_hub_model::domain::{Permission, Principal, Scope};
+        use aos_hub_model::domain::Permission;
+        use aos_hub_model::domain::Principal;
+        use aos_hub_model::domain::Scope;
 
         let _presentation = SITE_PRESENTATION.lock().await;
 
@@ -601,20 +608,19 @@ mod tests {
             .await,
         );
         let svc = worker_rpc_service(&state);
-        let token = state
-            .auth
-            .jwt_keys
-            .mint_browser_session(
-                &TokenAuth {
-                    token_id: "branding-test".into(),
-                    owner: Principal::user(user_id),
-                    scope: Scope::root(),
-                    permissions: vec![Permission::IamAdmin],
-                    expires_at: None,
-                },
-                900,
+        let (_, secret) = state
+            .db
+            .create_token(
+                Principal::user(user_id),
+                (Scope::root()).as_str(),
+                &vec![Permission::IamAdmin],
+                Some("current fixture bearer"),
+                None,
             )
+            .await
             .unwrap();
+        let token_authority = state.db.validate_token(&secret).await.unwrap().unwrap();
+        let token = state.auth.jwt_keys.mint(&token_authority, 900).unwrap();
         let bearer = format!("Bearer {token}");
         let deps = aos_hub_native::server::console_deps_for_worker_test(&state);
         let router = console_router(deps.clone());
@@ -934,10 +940,12 @@ mod tests {
         oci_route_enabled: bool,
         external_url: &str,
     ) -> Arc<aos_hub_native::server::AppState> {
-        use aos_hub_db::db::{
-            EndpointHostInput, EndpointRevisionSpec, GrantResource, NewSurfacePlacementSpec,
-            RouteSpec, SurfaceTarget,
-        };
+        use aos_hub_db::db::EndpointHostInput;
+        use aos_hub_db::db::EndpointRevisionSpec;
+        use aos_hub_db::db::GrantResource;
+        use aos_hub_db::db::NewSurfacePlacementSpec;
+        use aos_hub_db::db::RouteSpec;
+        use aos_hub_db::db::SurfaceTarget;
         use sha2::{Digest as _, Sha256};
 
         let db = Arc::new(aos_hub_db::db::Database::open_in_memory().await.unwrap());

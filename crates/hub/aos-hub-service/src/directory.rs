@@ -25,7 +25,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 use crate::kv::KvStore;
-use aos_hub_db::db::{Database, IndexStatus, RegistryRecord};
+use aos_hub_db::db::Database;
+use aos_hub_db::db::IndexStatus;
+use aos_hub_db::db::RegistryRecord;
 
 /// The KV key the directory projection is stored under.
 pub const DIRECTORY_KEY: &str = "dir:registries";

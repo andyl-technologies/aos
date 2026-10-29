@@ -1484,7 +1484,7 @@ mod tests {
 
     use aos_package_maintenance::envelope::{GitObjectFormat, GitObjectId};
     use aos_package_maintenance::identity::{PlanId, RunId};
-    use aos_package_maintenance::run::{ConfinementEvidence, GateResult};
+    use aos_package_maintenance::run::{ConfinementEvidence, Outcome};
     use aos_package_maintenance::workflow::GateOutcome;
 
     use super::*;
@@ -1668,7 +1668,7 @@ mod tests {
                 resource_limited: true,
                 nix_sandbox_verified: true,
             },
-            results: vec![GateResult {
+            results: vec![Outcome {
                 gate_id: "fmt".to_string(),
                 argv: vec!["aos".to_string(), "fmt".to_string()],
                 outcome,

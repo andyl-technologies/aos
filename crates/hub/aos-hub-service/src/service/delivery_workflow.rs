@@ -19,9 +19,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::{clock, pb, Permission, RpcError, RpcService};
-use aos_hub_db::db::{
-    DeliveryActivationRoute, DeliveryAudienceBaseline, DeliveryWorkflowRecord, GrantResource,
-};
+use aos_hub_db::db::DeliveryActivationRoute;
+use aos_hub_db::db::DeliveryAudienceBaseline;
+use aos_hub_db::db::DeliveryWorkflowRecord;
+use aos_hub_db::db::GrantResource;
 
 const CREATE_KIND: &str = "delivery_destination";
 const ACTIVATE_KIND: &str = "activate_delivery_destination";

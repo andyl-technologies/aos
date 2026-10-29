@@ -36,12 +36,27 @@
 //! helpers every driver reuses. The concrete drivers live in the deployment
 //! crates (`SqlxBackend` in the native hub, the `HubDb` bridge in the Worker).
 
+pub mod schema_lineage;
+
 use anyhow::{Context, Result};
 
-use crate::dialect::{order_params, Dialect};
-use crate::value::{Row, Value};
+use crate::dialect::order_params;
+use crate::dialect::Dialect;
+use crate::value::Row;
+use crate::value::Value;
 
 pub use aos_hub_model::runtime::RuntimeBounds as BackendBounds;
+
+/// One instantaneous connection-pool snapshot from a native SQL backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PoolStats {
+    /// Open connections, including idle connections.
+    pub open: u32,
+    /// Open connections currently idle.
+    pub idle: usize,
+    /// Configured maximum open connections.
+    pub maximum: u32,
+}
 
 /// One statement in a [`Backend::batch`]: source SQL and its bound parameters.
 ///
@@ -83,6 +98,7 @@ impl Statement {
         CheckedStatement {
             statement: self,
             expected_rows: Some(expected_rows),
+            postgres_lock_sql: None,
         }
     }
 
@@ -92,11 +108,12 @@ impl Statement {
         CheckedStatement {
             statement: self,
             expected_rows: None,
+            postgres_lock_sql: None,
         }
     }
 }
 
-/// One atomic batch statement with an optional affected-row assertion.
+/// One atomic batch statement with an optional exact row-count assertion.
 ///
 /// A mismatch is a transaction error, not a post-commit diagnostic. Native
 /// backends roll the transaction back and the Worker propagates the error from
@@ -106,11 +123,153 @@ impl Statement {
 pub struct CheckedStatement {
     /// Statement to execute.
     pub statement: Statement,
-    /// Required affected-row count, or `None` when the statement is auxiliary.
+    /// Required affected or locked-row count, or `None` for an auxiliary statement.
     pub expected_rows: Option<u64>,
+    /// Equivalent PostgreSQL row-lock query for a checked no-op update.
+    ///
+    /// Other engines execute `statement`. PostgreSQL can retain the same exact
+    /// predicate and exclusive row locks without creating new tuple versions.
+    pub postgres_lock_sql: Option<PostgresLockSql>,
+}
+
+/// A PostgreSQL row-lock query with shared, lazily translated SQL.
+///
+/// Cloned dependency plans retain one translation of each immutable query. Bound
+/// values, transaction execution and exact row-count checks remain per invocation.
+#[derive(Debug, Clone)]
+pub struct PostgresLockSql {
+    inner: std::sync::Arc<PostgresLockSqlInner>,
+    groupable_point: bool,
+    shared_read: bool,
+}
+
+#[derive(Debug)]
+struct PostgresLockSqlInner {
+    source: String,
+    #[cfg(not(target_arch = "wasm32"))]
+    translated: std::sync::OnceLock<String>,
+    #[cfg(not(target_arch = "wasm32"))]
+    shared_translated: std::sync::OnceLock<String>,
+}
+
+impl PartialEq for PostgresLockSql {
+    fn eq(&self, other: &Self) -> bool {
+        self.inner.source == other.inner.source
+            && self.groupable_point == other.groupable_point
+            && self.shared_read == other.shared_read
+    }
+}
+
+impl Eq for PostgresLockSql {}
+
+impl PostgresLockSql {
+    /// Builds a row-lock query from trusted source SQL with numbered parameters.
+    #[must_use]
+    pub fn new(source: impl Into<String>) -> Self {
+        Self {
+            inner: std::sync::Arc::new(PostgresLockSqlInner {
+                source: source.into(),
+                #[cfg(not(target_arch = "wasm32"))]
+                translated: std::sync::OnceLock::new(),
+                #[cfg(not(target_arch = "wasm32"))]
+                shared_translated: std::sync::OnceLock::new(),
+            }),
+            groupable_point: false,
+            shared_read: false,
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn translated_sql(&self) -> Result<&str> {
+        let slot = if self.shared_read {
+            &self.inner.shared_translated
+        } else {
+            &self.inner.translated
+        };
+        if slot.get().is_none() {
+            let source = if self.shared_read {
+                let (query, target) = self
+                    .inner
+                    .source
+                    .rsplit_once(" FOR UPDATE")
+                    .context("shared PostgreSQL authority query has no row-lock clause")?;
+                anyhow::ensure!(
+                    target.is_empty() || target.starts_with(" OF "),
+                    "shared PostgreSQL authority query has an unsupported lock clause"
+                );
+                format!("{query} FOR SHARE{target}")
+            } else {
+                self.inner.source.clone()
+            };
+            let translated = Dialect::Postgres.translate(&source)?.sql;
+            // Concurrent first users derive SQL only. Parameters, authorization
+            // and transaction results are never cached.
+            let _ = slot.set(translated);
+        }
+        slot.get()
+            .map(String::as_str)
+            .context("translated PostgreSQL row-lock query absent")
+    }
 }
 
 impl CheckedStatement {
+    /// Locks one row selected by its complete unique key and optional tuple pins.
+    ///
+    /// The predicate must contain no cross-row eligibility reads. PostgreSQL may
+    /// group these locks in one statement: waiting rechecks the selected tuple,
+    /// while a missing tuple always fails the required one-row count. Set locks
+    /// and eligibility predicates retain separate statement snapshots.
+    pub(crate) fn point_lock(
+        table: &str,
+        column: &str,
+        predicate: &str,
+        params: Vec<Value>,
+    ) -> Self {
+        let mut checked = Self::row_lock(table, column, predicate, params, 1);
+        if let Some(lock) = &mut checked.postgres_lock_sql {
+            lock.groupable_point = true;
+        }
+        checked
+    }
+
+    /// Locks exactly the rows matching a trusted SQL predicate.
+    ///
+    /// PostgreSQL uses `SELECT FOR UPDATE`; other engines use a checked no-op
+    /// update. Both forms retain exclusive locks until the surrounding batch
+    /// ends and assert the same row count. Table and column names are source
+    /// constants; values belong in `params`.
+    #[must_use]
+    pub fn row_lock(
+        table: &str,
+        column: &str,
+        predicate: impl Into<String>,
+        params: Vec<Value>,
+        expected_rows: u64,
+    ) -> Self {
+        let predicate = predicate.into();
+        let mut checked = Self::exact(
+            format!("UPDATE {table} SET {column} = {column} WHERE {predicate}"),
+            params,
+            expected_rows,
+        );
+        checked.postgres_lock_sql = Some(PostgresLockSql::new(format!(
+            "SELECT 1 FROM {table} WHERE {predicate} FOR UPDATE"
+        )));
+        checked
+    }
+
+    /// Shares an authority read without allowing concurrent updates or deletion.
+    ///
+    /// Only session-progress transactions may use this mode: they must not
+    /// mutate any of these authority rows or upgrade their locks. Target and
+    /// accounting commits acquire exclusive locks from the outset. Other SQL
+    /// engines retain the original checked no-op update.
+    pub(crate) fn share_postgres_authority(&mut self) {
+        if let Some(lock) = &mut self.postgres_lock_sql {
+            lock.shared_read = true;
+        }
+    }
+
     /// Builds a statement that must affect exactly `expected_rows`.
     #[must_use]
     pub fn exact(sql: impl Into<String>, params: Vec<Value>, expected_rows: u64) -> Self {
@@ -138,6 +297,24 @@ impl CheckedStatement {
 pub trait Backend: BackendBounds {
     /// The SQL dialect this backend speaks.
     fn dialect(&self) -> Dialect;
+
+    /// Reports a native connection pool snapshot when this backend has one.
+    fn pool_stats(&self) -> Option<PoolStats> {
+        None
+    }
+
+    /// Initializes an empty schema or reopens the current serving singleton.
+    ///
+    /// Implementors hold one dialect migration lock and the same connection
+    /// through read-only lineage inspection, all bookkeeping writes, and final
+    /// serving identity validation. An unsupported backend refuses before DDL.
+    ///
+    /// # Errors
+    /// Returns reset/import guidance for unsupported source lineage, or a
+    /// driver error when its lock, inspection, transaction or migration fails.
+    async fn migrate_schema(&self) -> Result<()> {
+        anyhow::bail!(schema_lineage::RESET_REQUIRED)
+    }
 
     /// Runs a non-`SELECT` statement, returning the number of rows affected.
     ///
@@ -363,6 +540,12 @@ mod sqlx;
 #[cfg(not(target_arch = "wasm32"))]
 pub use sqlx::SqlxBackend;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub mod sqlite_snapshot;
+
+#[cfg(all(feature = "postgres", not(target_arch = "wasm32")))]
+pub mod postgres_snapshot;
+
 // Per-statement query timing (RFC-0004 ch.14 Phase A): a `Backend` decorator
 // that records each statement's wall-clock duration for a `Server-Timing`
 // header, so the per-request Worker database cost is measurable at the call site.
@@ -497,6 +680,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn checked_batch_waits_for_a_busy_writer_before_mutating() {
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("concurrent.sqlite");
+        let original = SqlxBackend::connect_sqlite(path.to_str().unwrap())
+            .await
+            .unwrap();
+        original
+            .execute_batch("CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER NOT NULL);")
+            .await
+            .unwrap();
+
+        let SqlxBackend::Sqlite(pool) = original else {
+            panic!("fixture must use SQLite");
+        };
+        let options = pool
+            .connect_options()
+            .as_ref()
+            .clone()
+            .busy_timeout(Duration::from_millis(30));
+        let competing_pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(2)
+            .connect_with(options)
+            .await
+            .unwrap();
+        let backend = Arc::new(SqlxBackend::Sqlite(competing_pool));
+        let blocker = pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
+        let writer = Arc::clone(&backend);
+        let (started, waiting) = tokio::sync::oneshot::channel();
+        let pending = tokio::spawn(async move {
+            started.send(()).unwrap();
+            writer
+                .checked_batch(&[CheckedStatement::exact(
+                    "INSERT INTO t (id, v) VALUES (1, 1)",
+                    vec![],
+                    1,
+                )])
+                .await
+        });
+
+        waiting.await.unwrap();
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert!(!pending.is_finished(), "writer contention must be retried");
+        assert!(backend
+            .query("SELECT id FROM t", &[])
+            .await
+            .unwrap()
+            .is_empty());
+        blocker.commit().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(2), pending)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+
+        let rows = backend.query("SELECT v FROM t", &[]).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get::<i64>(0).unwrap(), 1);
+    }
+
+    #[tokio::test]
     async fn checked_batch_rolls_back_on_an_affected_row_mismatch() {
         let backend = batch_fixture().await;
         let error = backend
@@ -576,5 +822,25 @@ mod tests {
         assert!(redacted.contains("host"));
         // A non-URL string is returned verbatim (no credential shape).
         assert_eq!(redact_db_url("not a url"), "not a url");
+    }
+}
+
+/// Identifies a temporary native connection-pool timeout without exposing SQL.
+///
+/// Worker backends have no native connection pool and always return false.
+pub fn is_temporary_connection_error(error: &anyhow::Error) -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        error.chain().any(|cause| {
+            matches!(
+                cause.downcast_ref::<::sqlx::Error>(),
+                Some(::sqlx::Error::PoolTimedOut)
+            )
+        })
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = error;
+        false
     }
 }

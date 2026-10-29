@@ -221,7 +221,8 @@ pub(crate) mod tests {
     use super::*;
     use std::sync::atomic::Ordering;
 
-    use crate::db::fixtures::{count_queries, topology_fixture};
+    use crate::db::fixtures::count_queries;
+    use crate::db::fixtures::topology_fixture;
     #[tokio::test]
     async fn endpoint_grant_pin_batch_preserves_consumer_and_generation_boundaries() {
         let (db, _) = topology_fixture().await;

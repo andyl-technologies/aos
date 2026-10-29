@@ -12,9 +12,24 @@ use crate::mutation::{
 };
 use crate::transport::ApiClient;
 
-/// Loads the indexed metadata independently of operational registry settings.
+/// Loads published metadata or explains the first-publication prerequisite.
 #[component]
-pub(super) fn RegistryMetadata(client: ApiClient, slug: String) -> impl IntoView {
+pub(super) fn RegistryMetadata(
+    client: ApiClient,
+    slug: String,
+    has_indexed_publication: bool,
+) -> impl IntoView {
+    // The registry summary supplies this prerequisite before any object read.
+    // An empty registry has no committed metadata and is a normal initial state.
+    if !has_indexed_publication {
+        return view! {
+            <section class="panel editor-panel">
+                <div class="section-heading"><div><h2>"Registry details"</h2></div></div>
+                <p class="field-note">"Publish and index the first release to edit the registry's committed metadata."</p>
+            </section>
+        }.into_any();
+    }
+
     let read_client = client.clone();
     let read_slug = slug.clone();
     let resource = LocalResource::new(move || {
@@ -57,7 +72,7 @@ pub(super) fn RegistryMetadata(client: ApiClient, slug: String) -> impl IntoView
                 }}
             </Suspense>
         </section>
-    }
+    }.into_any()
 }
 
 #[component]

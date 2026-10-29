@@ -500,7 +500,14 @@ impl Database {
             .context("binding id allocator returned no row")?
             .get(0)?;
         let default_key = is_instance_default.then_some("singleton");
+        let reservation_id = uuid::Uuid::new_v4().to_string();
         let statements = [
+            Statement::new(
+                "INSERT INTO binding_identity_reservations(stable_id, reservation_id, reserved_at)
+                 VALUES (?1, ?2, ?3)",
+                vals![stable_id, reservation_id, now],
+            )
+            .expecting(1),
             Statement::new(
                 "INSERT INTO bindings
                  (id, org_id, name, kind, is_instance_default, instance_default_key, created_at,
@@ -717,6 +724,39 @@ impl Database {
     ) -> Result<bool> {
         validate_key_bytes(stable_id, "binding stable id", 64)?;
         validate_key_bytes(owner_scope_key, "binding owner scope", 64)?;
+        let Some(binding) = self.binding(id).await? else {
+            return Ok(false);
+        };
+        if binding.stable_id != stable_id || binding.owner_scope_key != owner_scope_key {
+            return Ok(false);
+        }
+        let reservation = self
+            .binding_identity_reservation(&binding.stable_id)
+            .await?
+            .context("binding lacks its permanent identity reservation")?;
+        self.delete_topology_binding_inner(
+            &binding,
+            &reservation.reservation_id,
+            expected_resource_version,
+        )
+        .await
+    }
+}
+
+impl Database {
+    /// Deletes the reviewed binding identity and records its id tombstone.
+    ///
+    /// The permanent identity reservation must still match, so a binding
+    /// recreated under the same stable id cannot satisfy an older plan.
+    pub(in crate::db) async fn delete_topology_binding_inner(
+        &self,
+        binding: &BindingRecord,
+        reservation_id: &str,
+        expected_resource_version: i64,
+    ) -> Result<bool> {
+        let id = binding.id;
+        let stable_id = binding.stable_id.as_str();
+        let owner_scope_key = binding.owner_scope_key.as_str();
         let exists = self
             .backend
             .query_opt(
@@ -741,12 +781,20 @@ impl Database {
                     "UPDATE bindings SET resource_version = resource_version
                      WHERE id = ?1 AND stable_id = ?2 AND owner_scope_key = ?3
                        AND resource_version = ?4 AND is_instance_default = 0
+                       AND EXISTS (SELECT 1 FROM binding_identity_reservations identity
+                         WHERE identity.stable_id = ?2 AND identity.reservation_id = ?5)
                        AND NOT EXISTS (SELECT 1 FROM surface_placements WHERE binding_id = ?1)
                        AND NOT EXISTS (SELECT 1 FROM gateway_revisions WHERE binding_id = ?1)
                        AND NOT EXISTS (SELECT 1 FROM topology_defaults WHERE binding_id = ?1)
                        AND NOT EXISTS (SELECT 1 FROM binding_consumer_scopes
                          WHERE binding_id = ?1 AND state = 'active' AND grant_kind <> 'owner')",
-                    vals![id, stable_id, owner_scope_key, expected_resource_version],
+                    vals![
+                        id,
+                        stable_id,
+                        owner_scope_key,
+                        expected_resource_version,
+                        reservation_id
+                    ],
                 )
                 .expecting(1),
                 Statement::new(

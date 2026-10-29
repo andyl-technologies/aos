@@ -45,17 +45,18 @@ async fn deployment_reports_require_the_exact_live_enrollment() {
         .create_user("other-reporter@example.test", None)
         .await
         .unwrap();
+    db.grant_membership("user", other_user, "instance", Role::Owner.as_str())
+        .await
+        .unwrap();
+    let other_authority = crate::service::authentication::provisioned_test_auth(
+        &db,
+        Principal::user(other_user),
+        Scope::root(),
+        &[Permission::Read],
+    )
+    .await;
     let other_token = JwtKeys::from_secret(b"injected-write-flow-test-key")
-        .mint_browser_session(
-            &TokenAuth {
-                token_id: "other-reporter".into(),
-                owner: Principal::user(other_user),
-                scope: Scope::root(),
-                permissions: Vec::new(),
-                expires_at: None,
-            },
-            3600,
-        )
+        .mint(&other_authority, 3600)
         .unwrap();
     let other_auth = format!("Bearer {other_token}");
     let report = pb::ReportPackageAbilityDeploymentRequest {
@@ -76,6 +77,41 @@ async fn deployment_reports_require_the_exact_live_enrollment() {
             .report_package_ability_deployment(Some(&reporter_auth), report.clone())
             .await,
         Err(RpcError::InvalidArgument(_))
+    ));
+
+    let reporter_user = db
+        .user_by_email("writer@example.test")
+        .await
+        .unwrap()
+        .unwrap();
+    let report_authority = crate::service::authentication::provisioned_test_auth(
+        &db,
+        Principal::user(reporter_user),
+        Scope::root(),
+        &[Permission::Read],
+    )
+    .await;
+    let report_token = JwtKeys::from_secret(b"injected-write-flow-test-key")
+        .mint(&report_authority, 3600)
+        .unwrap();
+    let report_auth = format!("Bearer {report_token}");
+
+    assert!(matches!(
+        service
+            .report_package_ability_deployment(Some(&report_auth), report.clone())
+            .await,
+        Err(RpcError::InvalidArgument(_))
+    ));
+
+    db.revoke_token(&report_authority.token_id).await.unwrap();
+
+    // A revoked token must fail before parsing, even while its owner's
+    // enrollment and account remain active.
+    assert!(matches!(
+        service
+            .report_package_ability_deployment(Some(&report_auth), report.clone())
+            .await,
+        Err(RpcError::PermissionDenied(_))
     ));
 
     let revoke_plan = service
@@ -115,7 +151,8 @@ async fn deployment_reports_require_the_exact_live_enrollment() {
 
 #[tokio::test]
 async fn image_head_unsatisfied_range_and_auth_gate_never_fetch_storage_bytes() {
-    use crate::service::{ReadAuthorization, RegistryServeOutcome};
+    use crate::service::ReadAuthorization;
+    use crate::service::RegistryServeOutcome;
     use aos_hub_model::delivery_http::DeliveryMethod;
     use axum::http::StatusCode;
 
@@ -381,18 +418,14 @@ async fn signing_usage_enforces_authz_cas_and_apply_replay() {
         .await
         .unwrap()
         .unwrap();
-    let token = jwt_keys
-        .mint_browser_session(
-            &TokenAuth {
-                token_id: "keys-manager".into(),
-                owner: Principal::user(user_id),
-                scope: Scope::root(),
-                permissions: vec![Permission::KeysManage],
-                expires_at: None,
-            },
-            3600,
-        )
-        .unwrap();
+    let token_authority = crate::service::authentication::provisioned_test_auth(
+        &db,
+        Principal::user(user_id),
+        Scope::root(),
+        &[Permission::KeysManage],
+    )
+    .await;
+    let token = jwt_keys.mint(&token_authority, 3600).unwrap();
     let auth = format!("Bearer {token}");
     assert!(matches!(
         service

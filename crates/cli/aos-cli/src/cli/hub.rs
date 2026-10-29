@@ -28,6 +28,15 @@ pub struct HubAccessArgs {
     /// Hub access JWT; defaults to AOS_TOKEN or the matching active profile
     #[arg(long, env = "AOS_TOKEN")]
     pub token: Option<String>,
+    /// Read an explicit direct-provider origin/CIDR/public-CA policy
+    #[arg(long, value_name = "FILE")]
+    pub direct_provider_policy: Option<PathBuf>,
+    /// Resume or create this owner-private direct upload journal
+    #[arg(long, value_name = "FILE")]
+    pub direct_upload_journal: Option<PathBuf>,
+    /// Use a new direct upload run while preserving prior journals
+    #[arg(long)]
+    pub new_direct_upload_run: bool,
 }
 
 #[derive(Args, Debug, Clone, Default)]

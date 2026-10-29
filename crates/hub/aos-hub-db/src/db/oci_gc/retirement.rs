@@ -17,7 +17,8 @@
 //!   whose retiring run is applying or complete, so a re-index cannot resurrect
 //!   signed-release roots underneath the collector.
 
-use crate::backend::{CheckedStatement, Statement};
+use crate::backend::CheckedStatement;
+use crate::backend::Statement;
 use crate::db::OCI_NAMESPACE_EXPOSURE_PREDICATE;
 
 /// SQL predicate selecting enabled routes that serve registry `?1`'s OCI

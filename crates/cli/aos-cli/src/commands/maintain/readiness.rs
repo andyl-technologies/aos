@@ -140,7 +140,7 @@ mod tests {
 
     use aos_package_maintenance::envelope::{GitObjectFormat, GitObjectId};
     use aos_package_maintenance::identity::RunId;
-    use aos_package_maintenance::run::{ConfinementEvidence, GateResult};
+    use aos_package_maintenance::run::{ConfinementEvidence, Outcome};
     use aos_package_maintenance::workflow::GateOutcome;
     use aos_package_maintenance::{PACKAGE_UPDATE_MATERIALIZATION_V1, PACKAGE_UPDATE_RUN_V1};
 
@@ -184,7 +184,7 @@ mod tests {
             phase: phase.to_string(),
             candidate_digest: candidate,
             confinement: confinement(),
-            results: vec![GateResult {
+            results: vec![Outcome {
                 gate_id: "fmt".to_string(),
                 argv: vec!["aos".to_string(), "fmt".to_string()],
                 outcome: GateOutcome::Success,

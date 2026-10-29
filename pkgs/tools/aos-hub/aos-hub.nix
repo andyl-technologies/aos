@@ -46,6 +46,11 @@
     else protobuf;
   cargoDeps = aosWorkspaceVendor;
   cargoEnv = {
+    # Keep the full Native suite within the service image's closure budget.
+    # Both dependency artifacts and real binaries use the same release profile.
+    CARGO_PROFILE_RELEASE_OPT_LEVEL = "s";
+    CARGO_PROFILE_RELEASE_LTO = "thin";
+    CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "1";
     OPENSSL_DIR = "${openssl}";
     OPENSSL_LIB_DIR = "${openssl}/lib";
     OPENSSL_INCLUDE_DIR = "${openssl}/include";
@@ -61,6 +66,11 @@
   cargoArtifactContract = {
     family = "aos-hub-native-postgres-release";
     features = ["postgres"];
+    releaseProfile = {
+      optLevel = "s";
+      lto = "thin";
+      codegenUnits = 1;
+    };
     nativeInputs = map toString [openssl sqlite libssh2 buildPkgConfig buildProtobuf aos-hub-console-dist];
   };
   cargoArtifacts = mkCargoArtifacts {
@@ -72,7 +82,7 @@
       cargoRoot = "crates";
     };
     cargoRoot = "crates";
-    cargoFlags = "-p aos-hub-native --features postgres";
+    cargoFlags = "-p aos-hub-native --features postgres --bin aos-hub --bin aos-hub-egress --bin aos-hub-authority --bin aos-hub-authority-bootstrap --bin aos-hub-direct-review --bin aos-hub-provider-conformance";
     buildDeps = [buildPerl buildPkgConfig openssl sqlite buildProtobuf aos-hub-console-dist];
     runtimeDeps = [openssl sqlite libssh2 zlib];
   };
@@ -164,10 +174,10 @@ in
 
     inherit version;
 
-    # Build the hub package's control-plane and fixed egress binaries.
+    # Build the control plane, fixed egress and retained authority operator tools.
     # PostgreSQL is the strongly-consistent shared nonce store for replicated
     # aos-hub-egress deployments. SQLite remains available for a singleton.
-    cargoFlags = "-p aos-hub-native --features postgres";
+    cargoFlags = "-p aos-hub-native --features postgres --bin aos-hub --bin aos-hub-egress --bin aos-hub-authority --bin aos-hub-authority-bootstrap --bin aos-hub-direct-review --bin aos-hub-provider-conformance";
 
     inherit cargoDeps cargoArtifacts cargoEnv cargoArtifactContract;
     cargoRoot = "crates";

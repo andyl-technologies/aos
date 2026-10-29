@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title}</title>
+<meta name="aos-session-csrf" content="{csrf}">
+<meta name="aos-site-brand" content="{brand}">
+<meta name="aos-site-tagline" content="{tagline}">
+<meta name="aos-site-announcement" content="{announcement}">
+<meta name="aos-site-tos-url" content="{tos_url}">
+<meta name="aos-site-privacy-url" content="{privacy_url}">
+<meta name="aos-site-support-url" content="{support_url}">
+<meta name="aos-app-version" content="{app_version}">
+<meta name="aos-container-gc-enabled" content="{container_gc_enabled}">
+<script src="/_assets/theme.js?v={asset_version}"></script>
+<link rel="stylesheet" href="/_assets/style.css?v={asset_version}">
+<link rel="stylesheet" href="/_assets/{css}">
+<script src="/_assets/app.js?v={asset_version}" defer></script>
+<script type="module" src="/_assets/{bootstrap}"></script>
+</head>
+<body>
+<noscript>The AOS Hub management console requires JavaScript.</noscript>
+</body>
+</html>

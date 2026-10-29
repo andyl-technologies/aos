@@ -119,6 +119,10 @@ in
     # libraries are needed beyond the stdenv C compiler.
     cargoFlags = "-p garage";
     doCheck = false;
+    patches = [./garage-patches/0002-sqlite-writer-transactions.patch];
+    postPatch = ''
+      cp ${./garage-patches/sqlite-writer-transactions.rs} src/db/sqlite_writer_transactions.rs
+    '';
     runtimeDeps = [];
 
     module = ./_garage-config;
@@ -219,6 +223,13 @@ in
             printf '%s\n' PASS >"$out/result"
           ''
         else throw "the Garage native module contract checks failed";
+
+      sqlite-transactions = self.overrideAttrs (_previous: {
+        pname = "garage-sqlite-transactions";
+        cargoFlags = "-p garage_db --features bundled-libs";
+        doCheck = true;
+        cargoTestFlags = "-p garage_db --features bundled-libs --lib";
+      });
 
       lifecycle = import ./_garage-tests/lifecycle.nix {
         inherit testing self renderedConfig;

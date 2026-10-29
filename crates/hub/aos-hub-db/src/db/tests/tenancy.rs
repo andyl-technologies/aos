@@ -197,7 +197,9 @@ async fn purge_is_no_op_for_org_restored_in_window() {
 
 #[tokio::test]
 async fn sole_owner_delete_blocked_then_transfer_succeeds() {
-    use aos_hub_model::domain::{Permission, Principal, Role};
+    use aos_hub_model::domain::Permission;
+    use aos_hub_model::domain::Principal;
+    use aos_hub_model::domain::Role;
     let db = Database::open_in_memory().await.unwrap();
     let org = db.create_org("acme", "Acme").await.unwrap();
     let org_scope = db.org_by_id(org).await.unwrap().unwrap().stable_id;

@@ -95,9 +95,9 @@ impl Database {
         }
         statements.extend([
             Statement::new(
-                "INSERT INTO users (id, email, display_name, created_at)
-                 VALUES (?1, ?2, NULL, ?3)",
-                vals![user_id, email, now],
+                "INSERT INTO users (id, email, display_name, created_at, principal_incarnation)
+                 VALUES (?1, ?2, NULL, ?3, ?4)",
+                vals![user_id, email, now, uuid::Uuid::new_v4().to_string()],
             )
             .expecting(1),
             Statement::new(

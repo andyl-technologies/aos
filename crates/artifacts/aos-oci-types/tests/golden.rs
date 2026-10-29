@@ -175,7 +175,11 @@ fn golden_container_release() -> ContainerRelease {
             closure: artifact_descriptor(MediaType::AosNixClosure, b"closure"),
         },
         evidence: ContainerReferrers {
-            abilities: artifact_descriptor(MediaType::AosContainerStaticAbilities, b"abilities"),
+            deployment: None,
+            abilities: Some(artifact_descriptor(
+                MediaType::AosContainerStaticAbilities,
+                b"abilities",
+            )),
             sbom: artifact_descriptor(MediaType::SpdxJson, b"sbom"),
             source: artifact_descriptor(MediaType::AosSourceClosure, b"source"),
             license: artifact_descriptor(MediaType::AosLicenseReport, b"license"),

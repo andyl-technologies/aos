@@ -16,7 +16,8 @@
 
 use axum::http::{header, HeaderMap};
 
-use aos_hub_db::db::{Database, SessionAuth};
+use aos_hub_db::db::Database;
+use aos_hub_db::db::SessionAuth;
 use aos_hub_model::auth::session::COOKIE_NAME;
 use aos_hub_model::domain::Principal;
 
@@ -93,6 +94,11 @@ pub async fn resolve_session(
     let Some(email) = db.user_email(auth.user_id).await? else {
         return Ok(None);
     };
+    // Email resolution awaits another database read. Recheck the original
+    // session/account pin before publishing a resolved browser identity.
+    if !db.session_auth_is_current(&auth).await? {
+        return Ok(None);
+    }
     Ok(Some(ResolvedSession {
         secret: secret.to_string(),
         auth,
@@ -151,3 +157,7 @@ mod tests {
         assert!(resolve_session(&db, "nope").await.unwrap().is_none());
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "session/identity_tests.rs"]
+mod identity_tests;

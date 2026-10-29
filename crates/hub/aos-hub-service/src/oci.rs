@@ -9,6 +9,12 @@
 pub mod namespace;
 mod upload;
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) use upload::parse_start_query;
+
+pub use upload::observations::{
+    decode_hybrid_oci_upload_control_observation, HybridOciUploadControlObservation,
+};
 pub use upload::{recover_expired_oci_work, OciRecoverySummary};
 
 use std::collections::BTreeMap;
@@ -27,12 +33,18 @@ use base64::Engine as _;
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
-use crate::oci_http::{OciAccess, OciHttpMetadata, OciHttpRequest};
+use crate::oci_http::OciAccess;
+use crate::oci_http::OciHttpMetadata;
+use crate::oci_http::OciHttpRequest;
 use crate::placement_read::PlacementReadOutcome;
-use crate::service::{RpcError, RpcService};
-use aos_hub_db::db::{InboundEndpointHost, RegistryRecord};
-use aos_hub_model::auth::jwt::{OciRepositoryGrant, OciTokenGrant};
-use aos_hub_model::delivery_http::{DeliveryMethod, HttpTimestamp};
+use crate::service::RpcError;
+use crate::service::RpcService;
+use aos_hub_db::db::InboundEndpointHost;
+use aos_hub_db::db::RegistryRecord;
+use aos_hub_model::auth::jwt::OciRepositoryGrant;
+use aos_hub_model::auth::jwt::OciTokenGrant;
+use aos_hub_model::delivery_http::DeliveryMethod;
+use aos_hub_model::delivery_http::HttpTimestamp;
 
 /// Distribution API version advertised on every OCI response.
 pub const DISTRIBUTION_API_VERSION: &str = "registry/2.0";
@@ -530,10 +542,33 @@ impl RpcService {
             .any(|grant| grant.actions.iter().any(|action| action.as_str() == "push"));
         let read_requires_auth = route_requires_hub_auth
             || !(registry.visibility == "public" || registry.org_id.is_none());
-        let (subject, hub_bearer) = match authorization {
+        let (subject, hub_bearer, owner_kind, owner_incarnation) = match authorization {
             Some(value) if value.starts_with("Bearer ") => {
                 let claims = self.require_claims(Some(value))?;
-                (format!("hub:{}", claims.sub), value.to_string())
+                let (owner_kind, owner_incarnation) = if claims.browser_session_id_hash.is_some() {
+                    // Ordinary browser Distribution remains supported. The
+                    // direct branch separately refuses its pseudo-token subject.
+                    (None, None)
+                } else {
+                    let current = self
+                        .db
+                        .current_token_authority(&claims.sub)
+                        .await
+                        .map_err(RpcError::internal)?
+                        .ok_or_else(|| {
+                            RpcError::Unauthenticated("current API token required".into())
+                        })?;
+                    (
+                        Some(current.owner.kind.as_str().to_owned()),
+                        current.owner_incarnation,
+                    )
+                };
+                (
+                    format!("hub:{}", claims.sub),
+                    value.to_string(),
+                    owner_kind,
+                    owner_incarnation,
+                )
             }
             Some(value) if value.starts_with("Basic ") => {
                 let encoded = value.strip_prefix("Basic ").unwrap_or_default();
@@ -554,6 +589,8 @@ impl RpcService {
                 (
                     format!("token:{}", auth.token_id),
                     format!("Bearer {bearer}"),
+                    Some(auth.owner.kind.as_str().to_owned()),
+                    auth.owner_incarnation.clone(),
                 )
             }
             Some(_) => {
@@ -561,7 +598,9 @@ impl RpcService {
                     "OCI token exchange requires Bearer or Basic credentials".into(),
                 ));
             }
-            None if !wants_push && !read_requires_auth => ("anonymous".to_string(), String::new()),
+            None if !wants_push && !read_requires_auth => {
+                ("anonymous".to_string(), String::new(), None, None)
+            }
             None => {
                 return Err(RpcError::Unauthenticated(
                     "credentials are required for this registry".into(),
@@ -590,6 +629,8 @@ impl RpcService {
             .mint_oci(
                 &OciTokenGrant {
                     subject,
+                    owner_kind,
+                    owner_incarnation,
                     authority: authority.to_string(),
                     registry_stable_id: registry.stable_id.clone(),
                     grants: grants.to_vec(),
@@ -625,6 +666,17 @@ impl RpcService {
             && !route_requires_oci_token
             && (registry.visibility == "public" || registry.org_id.is_none())
         {
+            aos_hub_db::hybrid_ingress::observation::record_existing_check(
+                "oci_public_pull_policy",
+                &(
+                    registry.id,
+                    &registry.stable_id,
+                    registry.org_id,
+                    &registry.visibility,
+                    authority,
+                    repository,
+                ),
+            );
             return Ok(());
         }
         let header = authorization
@@ -646,6 +698,12 @@ impl RpcService {
             return Err(RpcError::PermissionDenied(
                 "OCI token is not authorized for this repository request".into(),
             ));
+        }
+        if required_action == "pull" {
+            aos_hub_db::hybrid_ingress::observation::record_existing_check(
+                "oci_repository_grant",
+                &claims,
+            );
         }
         Ok(())
     }
@@ -914,6 +972,45 @@ impl RpcService {
                 head,
             );
         }
+        if self.hybrid_delivery
+            && matches!(
+                (&resolved.request, &method),
+                (OciRequest::BlobUploadCollection { .. }, &Method::POST)
+            )
+        {
+            // Both transports authenticate the original owner and empty body
+            // before creating a repository. Explicit proxy mode uses the
+            // Distribution session whose chunks remain in the Worker.
+            let external = match self.hybrid_external_oci_writer(&registry).await {
+                Ok(external) => external,
+                Err(response) => return response,
+            };
+            if external
+                || self.hybrid_upload_mode
+                    == aos_hub_db::hybrid_upload::HybridUploadMode::WorkerProxy
+            {
+                return self
+                    .begin_worker_oci_allocation_request(
+                        &registry,
+                        repository_name,
+                        &resolved.authority,
+                        &headers,
+                        query,
+                        body,
+                    )
+                    .await;
+            }
+            return self
+                .begin_direct_oci_allocation_request(
+                    &registry,
+                    repository_name,
+                    &resolved.authority,
+                    &headers,
+                    query,
+                    body,
+                )
+                .await;
+        }
         let creates_repository = matches!(
             (&resolved.request, &method),
             (OciRequest::BlobUploadCollection { .. }, &Method::POST)
@@ -952,7 +1049,8 @@ impl RpcService {
             Err(_) => return unavailable_response("repository catalog is unavailable", head),
         };
         let private = resolved.access_policy_kind != "public"
-            || !(registry.visibility == "public" || registry.org_id.is_none());
+            || !(registry.visibility == "public" || registry.org_id.is_none())
+            || authorization.is_some();
         // A push-only rollout authorizes immutable blob/manifest HEAD probes
         // with the push grant, but those probes still use the read-side object
         // responder. Only protocol write operations enter the write handler.
@@ -962,6 +1060,7 @@ impl RpcService {
                 .serve_oci_write(
                     &registry,
                     &repository,
+                    &resolved.authority,
                     resolved.request,
                     method,
                     headers,
@@ -1151,6 +1250,23 @@ impl RpcService {
             response.headers_mut().insert(name, value);
         }
         if *method == Method::HEAD && plan.status < 300 {
+            if self.hybrid_delivery {
+                let probe = crate::placement_read::head_verified_image_from_placements(
+                    &self.db,
+                    self.surface.as_ref(),
+                    registry_id,
+                    &object_key,
+                    &digest.encoded(),
+                    byte_size,
+                )
+                .await;
+                return match probe {
+                    Ok(PlacementReadOutcome::Found(_)) => response,
+                    Ok(PlacementReadOutcome::NotFound) | Err(_) => {
+                        unavailable_response("OCI object is temporarily unavailable", true)
+                    }
+                };
+            }
             let probe_range = (byte_size > 0).then_some((0, 0));
             let probe = crate::placement_read::stream_verified_image_from_placements(
                 &self.db,
@@ -1209,6 +1325,64 @@ impl RpcService {
                     return redirect;
                 }
             }
+        }
+        if self.hybrid_delivery {
+            use aos_hub_db::hybrid_ingress::HybridDeliveryTarget;
+            use aos_hub_db::hybrid_ingress::HybridPlannedDelivery;
+            use aos_hub_db::hybrid_ingress::HYBRID_DELIVERY_HEADER;
+
+            let snapshot = crate::placement_read::head_verified_image_from_placements(
+                &self.db,
+                self.surface.as_ref(),
+                registry_id,
+                &object_key,
+                &digest.encoded(),
+                byte_size,
+            )
+            .await;
+            let Ok(PlacementReadOutcome::Found(snapshot)) = snapshot else {
+                return unavailable_response("OCI object is temporarily unavailable", false);
+            };
+            let content_type = plan.headers.get("content-type").cloned();
+            let cache_control = plan.headers.get("cache-control").cloned();
+            let (Some(content_type), Some(cache_control)) = (content_type, cache_control) else {
+                return unavailable_response("OCI response metadata is incomplete", false);
+            };
+            let external_binding = match aos_hub_db::hybrid_ingress::delivery_binding(
+                &self.db,
+                snapshot.value.binding_id,
+            )
+            .await
+            {
+                Ok(binding) => binding,
+                Err(_) => {
+                    return unavailable_response("OCI delivery binding is unavailable", false)
+                }
+            };
+            let target = HybridDeliveryTarget {
+                object_key: snapshot.value.object_key,
+                external_binding,
+                object_size: snapshot.value.size,
+                object_etag: snapshot.value.strong_etag,
+                content_type,
+                cache_control,
+                producer_document: false,
+                planned_response: Some(HybridPlannedDelivery {
+                    status: plan.status,
+                    start: range.start,
+                    end: range.end,
+                    headers: plan.headers,
+                }),
+            };
+            let encoded = match serde_json::to_vec(&target) {
+                Ok(bytes) => base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes),
+                Err(_) => return unavailable_response("OCI delivery grant is invalid", false),
+            };
+            return Response::builder()
+                .header(HYBRID_DELIVERY_HEADER, encoded)
+                .header(header::CACHE_CONTROL, "private, no-store")
+                .body(Body::empty())
+                .unwrap_or_else(|_| unavailable_response("OCI delivery grant is invalid", false));
         }
         let storage_range = (plan.status == StatusCode::PARTIAL_CONTENT.as_u16())
             .then_some((range.start, range.end));

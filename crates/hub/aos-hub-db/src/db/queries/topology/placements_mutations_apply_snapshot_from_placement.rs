@@ -422,7 +422,7 @@ impl Database {
     ) -> Result<Vec<ReusablePlacementEvidence>> {
         self.backend
             .query(
-                "SELECT surface_object_id, state, observed_hash, observed_size, etag
+                "SELECT surface_object_id, state, observed_hash, observed_size, etag, provider_version
                    FROM object_placements
                   WHERE placement_id = ?1
                   ORDER BY surface_object_id",
@@ -437,6 +437,7 @@ impl Database {
                     observed_hash: row.get(2)?,
                     observed_size: row.get(3)?,
                     etag: row.get(4)?,
+                    provider_version: row.get(5)?,
                 })
             })
             .collect()
@@ -563,7 +564,8 @@ impl Database {
             if presence.state == "missing"
                 && (presence.observed_hash.is_some()
                     || presence.observed_size.is_some()
-                    || presence.etag.is_some())
+                    || presence.etag.is_some()
+                    || presence.provider_version.is_some())
             {
                 bail!("missing placement scan evidence cannot describe physical bytes");
             }
@@ -571,6 +573,13 @@ impl Database {
                 && (presence.observed_hash.is_none() || presence.observed_size.is_none())
             {
                 bail!("present placement scan evidence requires a digest and size");
+            }
+            if presence
+                .provider_version
+                .as_deref()
+                .is_some_and(|version| !crate::storage_work::valid_provider_version(version))
+            {
+                bail!("placement scan provider upload version is invalid");
             }
             if let Some(hash) = presence.observed_hash.as_deref() {
                 validate_key_bytes(hash, "placement scan observed hash", 128)?;
@@ -611,9 +620,9 @@ impl Database {
                        (surface_object_id, cache_id, registry_id, placement_id,
                         state, observed_hash, observed_size, etag,
                         observed_inventory_generation, observed_at,
-                        catalog_object_resource_version)
+                        catalog_object_resource_version, provider_version)
                      SELECT object.id, object.cache_id, object.registry_id, placement.id,
-                            ?6, ?7, ?8, ?9, ?3, ?13, object.resource_version
+                            ?6, ?7, ?8, ?9, ?3, ?13, object.resource_version, ?15
                      FROM surface_objects object
                      JOIN surface_placements placement
                        ON object.registry_id = placement.registry_id
@@ -649,7 +658,8 @@ impl Database {
                         claim_token,
                         operation_resource_version,
                         observed_at,
-                        claim_checked_at
+                        claim_checked_at,
+                        presence.provider_version
                     ],
                 )
                 .expecting(1),
@@ -797,17 +807,19 @@ impl Database {
               AND g.consumer_scope_key = COALESCE(r.owner_scope_key, c.owner_scope_key)
               AND g.state = 'active'
              WHERE b.id = ?4
-               AND ((?1 IS NOT NULL AND r.id IS NOT NULL)
-                 OR (?2 IS NOT NULL AND c.id IS NOT NULL))
-               AND (?1 IS NULL OR NOT EXISTS (
+               AND ((CAST(?1 AS BIGINT) IS NOT NULL AND r.id IS NOT NULL)
+                 OR (CAST(?2 AS BIGINT) IS NOT NULL AND c.id IS NOT NULL))
+               AND (CAST(?1 AS BIGINT) IS NULL OR NOT EXISTS (
                  SELECT 1 FROM oci_gc_registry_locks registry_lock
                  WHERE registry_lock.registry_id = ?1))
                AND NOT EXISTS (SELECT 1 FROM surface_placements existing
                  WHERE existing.binding_id = b.id
                    AND (existing.prefix = '' OR ?5 = ''
                      OR existing.prefix = ?5
-                     OR substr(existing.prefix, 1, length(?5) + 1) = ?5 || '/'
-                     OR substr(?5, 1, length(existing.prefix) + 1) = existing.prefix || '/'))",
+                     OR (substr(existing.prefix, 1, length(?5)) = ?5
+                       AND substr(existing.prefix, length(?5) + 1, 1) = '/')
+                     OR (substr(?5, 1, length(existing.prefix)) = existing.prefix
+                       AND substr(?5, length(existing.prefix) + 1, 1) = '/')))",
                 &vals![
                     registry_id,
                     cache_id,
@@ -850,8 +862,10 @@ impl Database {
                          WHERE existing.binding_id = ?1
                            AND (existing.prefix = '' OR ?2 = ''
                              OR existing.prefix = ?2
-                             OR substr(existing.prefix, 1, length(?2) + 1) = ?2 || '/'
-                             OR substr(?2, 1, length(existing.prefix) + 1) = existing.prefix || '/')
+                             OR (substr(existing.prefix, 1, length(?2)) = ?2
+                               AND substr(existing.prefix, length(?2) + 1, 1) = '/')
+                             OR (substr(?2, 1, length(existing.prefix)) = existing.prefix
+                               AND substr(?2, length(existing.prefix) + 1, 1) = '/'))
                          LIMIT 1",
                         &vals![input.binding_id, prefix],
                     )
@@ -875,8 +889,10 @@ impl Database {
                      WHERE existing.binding_id = ?1
                        AND (existing.prefix = '' OR ?2 = ''
                          OR existing.prefix = ?2
-                         OR substr(existing.prefix, 1, length(?2) + 1) = ?2 || '/'
-                         OR substr(?2, 1, length(existing.prefix) + 1) = existing.prefix || '/')
+                         OR (substr(existing.prefix, 1, length(?2)) = ?2
+                           AND substr(existing.prefix, length(?2) + 1, 1) = '/')
+                         OR (substr(?2, 1, length(existing.prefix)) = existing.prefix
+                           AND substr(?2, length(existing.prefix) + 1, 1) = '/'))
                      LIMIT 1",
                     &vals![input.binding_id, prefix],
                 )

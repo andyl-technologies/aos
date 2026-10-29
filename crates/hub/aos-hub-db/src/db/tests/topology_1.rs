@@ -352,6 +352,68 @@ async fn signed_images_require_complete_exact_placement_presence_and_remain_gc_r
             ]
         })
         .collect::<Vec<_>>();
+
+    // Admit the verified manifest before indexing creates derived catalogue rows.
+    let origin_publication_id = "image-origin-publication";
+    db.create_registry_publication(&NewRegistryPublication {
+        publication_id: origin_publication_id.into(),
+        registry_id,
+        generation: "image-origin-generation".into(),
+        manifest_digest: "1".repeat(64),
+        refs_digest: "2".repeat(64),
+        default_commit: Some(snapshot.commit.clone()),
+        parent_publication_id: None,
+    })
+    .await
+    .unwrap();
+    db.set_registry_publication_placement(&SetRegistryPublicationPlacement {
+        publication_id: origin_publication_id.into(),
+        placement_id: placement.id,
+        required: true,
+        state: "preparing".into(),
+        observed_at: unix_now(),
+    })
+    .await
+    .unwrap();
+    db.admit_registry_publication_manifest_objects(
+        registry_id,
+        origin_publication_id,
+        &identities
+            .iter()
+            .map(|identity| RegistryPublicationManifestObject {
+                object_key: identity.object_key.clone(),
+                expected_hash: identity.sha256.clone(),
+                expected_size: identity.byte_size,
+                object_kind: "immutable".into(),
+            })
+            .collect::<Vec<_>>(),
+    )
+    .await
+    .unwrap();
+
+    for identity in &identities {
+        let object = db
+            .surface_object_named(SurfaceTarget::Registry(registry_id), &identity.object_key)
+            .await
+            .unwrap()
+            .unwrap();
+        db.record_registry_publication_object_presence(
+            origin_publication_id,
+            object.id,
+            placement.id,
+            &identity.sha256,
+            identity.byte_size,
+            Some(&identity.strong_etag),
+            unix_now(),
+        )
+        .await
+        .unwrap();
+    }
+    // Closing the precursor preserves verified copies without blocking indexing.
+    db.fail_registry_publication(origin_publication_id, unix_now())
+        .await
+        .unwrap();
+
     db.lease_image_snapshot(
         "in-flight-index",
         &identities[0].sha256,
@@ -435,21 +497,28 @@ async fn signed_images_require_complete_exact_placement_presence_and_remain_gc_r
     })
     .await
     .unwrap();
+    db.admit_registry_publication_manifest_objects(
+        registry_id,
+        publication_id,
+        &identities
+            .iter()
+            .map(|identity| RegistryPublicationManifestObject {
+                object_key: identity.object_key.clone(),
+                expected_hash: identity.sha256.clone(),
+                expected_size: identity.byte_size,
+                object_kind: "immutable".into(),
+            })
+            .collect::<Vec<_>>(),
+    )
+    .await
+    .unwrap();
+
     for identity in &identities {
         let object = db
             .surface_object_named(SurfaceTarget::Registry(registry_id), &identity.object_key)
             .await
             .unwrap()
             .unwrap();
-        db.set_registry_publication_object(&SetRegistryPublicationObject {
-            publication_id: publication_id.into(),
-            surface_object_id: object.id,
-            object_kind: "immutable".into(),
-            expected_hash: identity.sha256.clone(),
-            expected_size: identity.byte_size,
-        })
-        .await
-        .unwrap();
         db.record_registry_publication_object_presence(
             publication_id,
             object.id,
@@ -963,26 +1032,23 @@ async fn registry_placement_delete_detaches_only_terminal_placement_history() {
     })
     .await
     .unwrap();
-    let object = db
-        .create_surface_object(&SetSurfaceObject {
-            surface: SurfaceTarget::Registry(registry_id),
+    db.admit_registry_publication_manifest_objects(
+        registry_id,
+        publication_id,
+        &[RegistryPublicationManifestObject {
             object_key: "objects/terminal".into(),
-            content_hash: Some("d".repeat(64)),
-            size: Some(9),
+            expected_hash: "d".repeat(64),
+            expected_size: 9,
             object_kind: "immutable".into(),
-            mutable_publication_id: None,
-        })
-        .await
-        .unwrap();
-    db.set_registry_publication_object(&SetRegistryPublicationObject {
-        publication_id: publication_id.into(),
-        surface_object_id: object.id,
-        object_kind: "immutable".into(),
-        expected_hash: "d".repeat(64),
-        expected_size: 9,
-    })
+        }],
+    )
     .await
     .unwrap();
+    let object = db
+        .surface_object_named(SurfaceTarget::Registry(registry_id), "objects/terminal")
+        .await
+        .unwrap()
+        .unwrap();
     db.set_registry_publication_placement(&SetRegistryPublicationPlacement {
         publication_id: publication_id.into(),
         placement_id: placement.id,
@@ -1003,6 +1069,15 @@ async fn registry_placement_delete_detaches_only_terminal_placement_history() {
     )
     .await
     .unwrap();
+
+    assert_eq!(
+        db.surface_object_usage(object.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .accounted_bytes,
+        9
+    );
 
     assert!(!db
         .delete_registry_surface_placement(placement.id, placement.resource_version)

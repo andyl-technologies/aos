@@ -10,15 +10,24 @@ use aos_oci_types::{RepositoryName, Sha256Digest};
 
 use super::super::cache_upload_tests::release_test_service;
 use super::*;
-use crate::fetch::{SurfaceFetch, SurfaceListPage, SurfaceProvider};
+use crate::fetch::SurfaceFetch;
+use crate::fetch::SurfaceListPage;
+use crate::fetch::SurfaceProvider;
 use crate::oci_inventory_controller::NATIVE_OCI_INVENTORY_DISPATCH_BUDGET;
-use crate::registry_delete_controller::{RegistryDeletionController, RegistryDeletionPassStats};
+use crate::registry_delete_controller::RegistryDeletionController;
+use crate::registry_delete_controller::RegistryDeletionPassStats;
 use aos_hub_db::backend::Statement;
-use aos_hub_db::db::{
-    oci_blob_object_key, AppendOciProviderInventoryPage, BeginOciProviderInventory,
-    CompleteOciProviderInventory, Database, NewBindingWriteRevision, NewSurfacePlacementSpec,
-    OciProviderInventoryEntryInput, RegistryRecord, SurfacePlacementRecord, SurfaceTarget,
-};
+use aos_hub_db::db::oci_blob_object_key;
+use aos_hub_db::db::AppendOciProviderInventoryPage;
+use aos_hub_db::db::BeginOciProviderInventory;
+use aos_hub_db::db::CompleteOciProviderInventory;
+use aos_hub_db::db::Database;
+use aos_hub_db::db::NewBindingWriteRevision;
+use aos_hub_db::db::NewSurfacePlacementSpec;
+use aos_hub_db::db::OciProviderInventoryEntryInput;
+use aos_hub_db::db::RegistryRecord;
+use aos_hub_db::db::SurfacePlacementRecord;
+use aos_hub_db::db::SurfaceTarget;
 
 /// Binds SQL parameters like the database module's private `vals!`.
 macro_rules! values {
@@ -361,6 +370,7 @@ async fn stale_inventory_listing_objects_is_recollected_before_deletion() {
                 observed_hash: untracked,
                 byte_size: 19,
                 strong_etag: "\"stale\"".into(),
+                provider_version: None,
             }],
             now: stale_at + 1,
             lease_seconds: 100,

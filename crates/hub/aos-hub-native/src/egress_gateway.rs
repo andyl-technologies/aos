@@ -24,9 +24,10 @@ use tokio::io::{AsyncSeekExt as _, AsyncWriteExt as _};
 use tokio_util::io::ReaderStream;
 
 use aos_hub_db::db::Database;
-use aos_hub_service::egress_protocol::{
-    self, ChallengeObservation, ResponseObservation, SignedRequestParts,
-};
+use aos_hub_service::egress_protocol;
+use aos_hub_service::egress_protocol::ChallengeObservation;
+use aos_hub_service::egress_protocol::ResponseObservation;
+use aos_hub_service::egress_protocol::SignedRequestParts;
 
 const REQUEST_CAP: usize = aos_hub_service::service::MAX_UPLOAD_BYTES;
 const RESPONSE_CAP: u64 = 2 * 1024 * 1024 * 1024;

@@ -23,11 +23,22 @@
 // The pure rendering primitives and the console chrome live in the shared,
 // wasm-clean core crate; re-export them so the hub's richer page builders, the
 // retained identity pages and shared browse surface render byte-identically.
-pub use aos_hub_service::web::console_render::{
-    ago, csrf_field, datalist, live_table, meter, page_with_session, set_app_version,
-    table_raw_headers, urlencode, Pager, SessionIndicator, StateLine,
-};
-pub use aos_hub_service::web::render::{escape, human_size, key_fingerprint, table};
+pub use aos_hub_service::web::console_render::ago;
+pub use aos_hub_service::web::console_render::csrf_field;
+pub use aos_hub_service::web::console_render::datalist;
+pub use aos_hub_service::web::console_render::live_table;
+pub use aos_hub_service::web::console_render::meter;
+pub use aos_hub_service::web::console_render::page_with_session;
+pub use aos_hub_service::web::console_render::set_app_version;
+pub use aos_hub_service::web::console_render::table_raw_headers;
+pub use aos_hub_service::web::console_render::urlencode;
+pub use aos_hub_service::web::console_render::Pager;
+pub use aos_hub_service::web::console_render::SessionIndicator;
+pub use aos_hub_service::web::console_render::StateLine;
+pub use aos_hub_service::web::render::escape;
+pub use aos_hub_service::web::render::human_size;
+pub use aos_hub_service::web::render::key_fingerprint;
+pub use aos_hub_service::web::render::table;
 
 tokio::task_local! {
     /// The signed-in user's email for the current request, set per-request

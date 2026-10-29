@@ -3,9 +3,9 @@
 use super::*;
 
 #[tokio::test]
-async fn native_reference_schema_upgrades_from_released_production_versions() {
-    // Released versions 2 through 5 add the channel ledger, private stages, OCI
-    // retirement, and namespace routes before native reference migrations.
+async fn native_reference_schema_refuses_released_production_versions_without_schema_writes() {
+    // Historical version numbers cannot authorize serving under a new identity.
+    // Refusal must preserve each released catalogue and its bookkeeping.
     for baseline_version in [1, 2, 3, 4, 5] {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("hub.db");
@@ -22,25 +22,40 @@ async fn native_reference_schema_upgrades_from_released_production_versions() {
                 [baseline_version as i64],
             )
             .unwrap();
+
+        let catalogue = |connection: &Connection| {
+            connection
+                .prepare("SELECT type, name, tbl_name, sql FROM sqlite_schema ORDER BY type, name")
+                .unwrap()
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                    ))
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        };
+        let before = catalogue(&connection);
         drop(connection);
 
-        drop(Database::open(&path).await.unwrap());
+        let error = match Database::open(&path).await {
+            Ok(_) => panic!("historical schema unexpectedly opened for serving"),
+            Err(error) => error,
+        };
 
+        assert!(error
+            .to_string()
+            .contains("explicitly initialize a new canonical database"));
         let connection = Connection::open(&path).unwrap();
         let version: i64 = connection
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        let graph_table: i64 = connection
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master
-                     WHERE type = 'table' AND name = 'release_ability_graphs'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-
-        assert_eq!(version, MIGRATIONS.len() as i64);
-        assert_eq!(graph_table, 1);
+        assert_eq!(version, baseline_version as i64);
+        assert_eq!(catalogue(&connection), before);
     }
 }
 

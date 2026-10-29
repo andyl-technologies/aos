@@ -120,7 +120,7 @@ impl Database {
                         retired_at
                  FROM registry_publications
                  WHERE registry_id = ?1 AND (?2 = '' OR state = ?2)
-                   AND (?3 IS NULL OR ordinal < ?3)
+                   AND (CAST(?3 AS BIGINT) IS NULL OR ordinal < ?3)
                  ORDER BY ordinal DESC LIMIT ?4",
                 &vals![registry_id, state, before_ordinal, limit + 1],
             )

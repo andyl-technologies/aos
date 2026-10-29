@@ -8,23 +8,28 @@ impl Database {
         id: &str,
         touch: bool,
     ) -> Result<Option<TokenAuth>> {
+        if !direct_identity::canonical_token_id(id) {
+            return Ok(None);
+        }
         let now = unix_now();
         let row = self
             .backend
             .query_opt(
                 "SELECT t.owner_kind, t.owner_id, t.scope_key, t.permissions,
-                        t.expires_at, t.revoked_at, t.rotated_at
+                        t.expires_at, t.revoked_at, t.rotated_at, t.owner_incarnation
                  FROM tokens t
                  JOIN authorization_scopes a ON a.scope_key = t.scope_key
                  LEFT JOIN orgs o ON o.id = a.org_id
                  WHERE t.id = ?1 AND (a.org_id IS NULL OR o.deleted_at IS NULL)
                    AND ((t.owner_kind = 'user' AND EXISTS (
                           SELECT 1 FROM users u
-                           WHERE u.id = t.owner_id AND u.deleted_at IS NULL))
+                           WHERE u.id = t.owner_id AND u.deleted_at IS NULL
+                             AND u.principal_incarnation = t.owner_incarnation))
                      OR (t.owner_kind = 'service_account' AND EXISTS (
                           SELECT 1 FROM service_accounts s
                           JOIN orgs owner_org ON owner_org.id = s.org_id
-                           WHERE s.id = t.owner_id AND owner_org.deleted_at IS NULL)))",
+                           WHERE s.id = t.owner_id AND owner_org.deleted_at IS NULL
+                             AND s.principal_incarnation = t.owner_incarnation)))",
                 &vals![id],
             )
             .await
@@ -50,7 +55,7 @@ impl Database {
             return Ok(None);
         }
         if let Some(rotated) = rotated_at {
-            if now >= rotated + ROTATION_GRACE_SECS {
+            if now.saturating_sub(rotated) >= ROTATION_GRACE_SECS {
                 return Ok(None);
             }
         }
@@ -58,6 +63,12 @@ impl Database {
             return Ok(None);
         };
         let principal = aos_hub_model::domain::Principal { kind, id: owner_id };
+        let Some(owner_incarnation) = row.get::<Option<String>>(7)? else {
+            return Ok(None);
+        };
+        if direct_identity::validate_actor_incarnation(principal, &owner_incarnation).is_err() {
+            return Ok(None);
+        }
         if !self
             .principal_is_live(principal.kind.as_str(), principal.id)
             .await?
@@ -91,9 +102,18 @@ impl Database {
                 tracing::warn!(error = %e, token_id = %id, "failed to stamp token last_used_at");
             }
         }
+        let latest = unix_now();
+        if expires_at.is_some_and(|expiry| latest >= expiry)
+            || rotated_at
+                .is_some_and(|rotated| latest.saturating_sub(rotated) >= ROTATION_GRACE_SECS)
+        {
+            return Ok(None);
+        }
         Ok(Some(TokenAuth {
             token_id: id.to_string(),
             owner: principal,
+            owner_incarnation: Some(owner_incarnation),
+            browser_session_id_hash: None,
             scope: aos_hub_model::domain::Scope::parse(&scope),
             permissions,
             expires_at,

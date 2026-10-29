@@ -374,9 +374,11 @@ impl Database {
 }
 
 mod administration;
+mod authorization_context;
 mod caches;
 mod documentation;
 mod identity;
+mod membership;
 mod registries;
 mod releases;
 mod runtime;

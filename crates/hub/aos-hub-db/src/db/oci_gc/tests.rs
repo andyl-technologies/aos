@@ -13,13 +13,25 @@ use aos_oci_types::{
     Annotations, Descriptor, ImageManifest, MediaType, RepositoryName, Sha256Digest, Tag,
 };
 
-use crate::db::{
-    oci_catalog_declaration_digest, AddOciPublicationObject, AppendOciUploadChunk,
-    BeginOciPublication, BeginOciUpload, ClaimOciUpload, CompleteOciUpload, Database,
-    IndexOciRepositoryCatalog, NewBindingWriteRevision, NewSurfacePlacementSpec,
-    OciBlobClaimOutcome, OciCatalogObject, OciCatalogProjection, OciPublicationRequiredPlacement,
-    OciSha256State, OciUploadChunkRecord, SurfaceTarget, MIGRATIONS,
-};
+use crate::db::oci_catalog_declaration_digest;
+use crate::db::AddOciPublicationObject;
+use crate::db::AppendOciUploadChunk;
+use crate::db::BeginOciPublication;
+use crate::db::BeginOciUpload;
+use crate::db::ClaimOciUpload;
+use crate::db::CompleteOciUpload;
+use crate::db::Database;
+use crate::db::IndexOciRepositoryCatalog;
+use crate::db::NewBindingWriteRevision;
+use crate::db::NewSurfacePlacementSpec;
+use crate::db::OciBlobClaimOutcome;
+use crate::db::OciCatalogObject;
+use crate::db::OciCatalogProjection;
+use crate::db::OciPublicationRequiredPlacement;
+use crate::db::OciSha256State;
+use crate::db::OciUploadChunkRecord;
+use crate::db::SurfaceTarget;
+use crate::db::MIGRATIONS;
 use crate::dialect::Dialect;
 
 #[test]
@@ -367,6 +379,7 @@ async fn seal_inventory_for_digests(
     let mut entries = digests
         .iter()
         .map(|(digest, byte_size)| OciProviderInventoryEntryInput {
+            provider_version: None,
             object_key: crate::db::oci_blob_object_key(*digest),
             object_digest: *digest,
             observed_hash: *digest,
@@ -644,6 +657,7 @@ async fn purge_requires_post_fence_empty_head_and_rejects_failed_newer_scan() {
             next_provider_cursor: None,
             last_listed_key: Some(crate::db::oci_blob_object_key(untracked)),
             entries: vec![OciProviderInventoryEntryInput {
+                provider_version: None,
                 object_key: crate::db::oci_blob_object_key(untracked),
                 object_digest: untracked,
                 observed_hash: untracked,
@@ -2646,6 +2660,7 @@ async fn provider_inventory_checkpoints_survive_takeover_and_seal_tracked_and_un
     let untracked = Sha256Digest::digest(b"untracked");
     let mut entries = vec![
         OciProviderInventoryEntryInput {
+            provider_version: Some("inventory-upload-v1".into()),
             object_key: crate::db::oci_blob_object_key(tracked),
             object_digest: tracked,
             observed_hash: tracked,
@@ -2653,6 +2668,7 @@ async fn provider_inventory_checkpoints_survive_takeover_and_seal_tracked_and_un
             strong_etag: "\"tracked-etag\"".to_string(),
         },
         OciProviderInventoryEntryInput {
+            provider_version: Some("inventory-upload-v1".into()),
             object_key: crate::db::oci_blob_object_key(untracked),
             object_digest: untracked,
             observed_hash: untracked,
@@ -2703,6 +2719,13 @@ async fn provider_inventory_checkpoints_survive_takeover_and_seal_tracked_and_un
         "committed provider page did not replay exactly"
     );
 
+    let mut recreated_page = terminal_page.clone();
+    recreated_page.entries[0].provider_version = Some("inventory-upload-v2".into());
+    assert!(database
+        .append_oci_provider_inventory_page(&recreated_page)
+        .await
+        .is_err());
+
     let complete = database
         .complete_oci_provider_inventory(&CompleteOciProviderInventory {
             generation_id: generation.id.clone(),
@@ -2723,6 +2746,14 @@ async fn provider_inventory_checkpoints_survive_takeover_and_seal_tracked_and_un
         ),
         ("complete", 2, 16, 1)
     );
+    let expected_digest_entries = &terminal_page.entries;
+    assert_eq!(
+        complete.inventory_digest,
+        Some(Sha256Digest::digest(
+            &serde_json::to_vec(&expected_digest_entries).unwrap()
+        ))
+    );
+
     let classifications = database
         .backend
         .query(
@@ -3192,6 +3223,7 @@ async fn reviewed_plan_apply_claim_evidence_and_atomic_accounting_complete() {
             next_provider_cursor: None,
             last_listed_key: Some(crate::db::oci_blob_object_key(digest)),
             entries: vec![OciProviderInventoryEntryInput {
+                provider_version: Some("lifecycle-upload-v1".into()),
                 object_key: crate::db::oci_blob_object_key(digest),
                 object_digest: digest,
                 observed_hash: digest,
@@ -3238,6 +3270,7 @@ async fn reviewed_plan_apply_claim_evidence_and_atomic_accounting_complete() {
             next_provider_cursor: None,
             last_listed_key: Some(crate::db::oci_blob_object_key(digest)),
             entries: vec![OciProviderInventoryEntryInput {
+                provider_version: Some("lifecycle-upload-v1".into()),
                 object_key: crate::db::oci_blob_object_key(digest),
                 object_digest: digest,
                 observed_hash: digest,
@@ -3614,6 +3647,98 @@ async fn reviewed_plan_apply_claim_evidence_and_atomic_accounting_complete() {
         ),
         (digest, true, placement.id)
     );
+    assert_eq!(
+        primary_claim.expected_provider_version.as_deref(),
+        Some("lifecycle-upload-v1")
+    );
+    let action = database
+        .oci_gc_placement_action(&primary_claim.action_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        action.expected_provider_version,
+        primary_claim.expected_provider_version
+    );
+    // Re-admission uses the retained generation after head and capability rotation.
+    assert_eq!(
+        database
+            .active_oci_gc_placement_action_claim(
+                &primary_claim.action_id,
+                &primary_claim.claim_token,
+                999_997,
+            )
+            .await
+            .unwrap(),
+        Some(primary_claim.clone()),
+    );
+    assert!(database
+        .active_oci_gc_placement_action_claim(&primary_claim.action_id, "wrong-token", 999_997,)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(database
+        .active_oci_gc_placement_action_claim(
+            &primary_claim.action_id,
+            &primary_claim.claim_token,
+            primary_claim.lease_expires_at,
+        )
+        .await
+        .unwrap()
+        .is_none());
+
+    database
+        .backend
+        .execute(
+            "UPDATE binding_credential_revisions SET validation_state = 'invalid'
+         WHERE binding_id = ?1 AND purpose = 'delete' AND generation = ?2",
+            &vals![
+                primary_claim.binding_id,
+                primary_claim.delete_credential_generation
+            ],
+        )
+        .await
+        .unwrap();
+    assert!(database
+        .active_oci_gc_placement_action_claim(
+            &primary_claim.action_id,
+            &primary_claim.claim_token,
+            999_997,
+        )
+        .await
+        .unwrap()
+        .is_none());
+    database
+        .backend
+        .execute(
+            "UPDATE binding_credential_revisions SET validation_state = 'valid'
+         WHERE binding_id = ?1 AND purpose = 'delete' AND generation = ?2",
+            &vals![
+                primary_claim.binding_id,
+                primary_claim.delete_credential_generation
+            ],
+        )
+        .await
+        .unwrap();
+
+    database.backend.execute(
+        "UPDATE oci_registry_state SET mutation_epoch = mutation_epoch + 1 WHERE registry_id = ?1",
+        &vals![registry_id],
+    ).await.unwrap();
+    assert!(database
+        .active_oci_gc_placement_action_claim(
+            &primary_claim.action_id,
+            &primary_claim.claim_token,
+            999_997,
+        )
+        .await
+        .unwrap()
+        .is_none());
+    database.backend.execute(
+        "UPDATE oci_registry_state SET mutation_epoch = mutation_epoch - 1 WHERE registry_id = ?1",
+        &vals![registry_id],
+    ).await.unwrap();
+
     for (ordinal, (claim, claim_token)) in [
         (replica_claim, "degraded-claim"),
         (primary_claim, "gc-claim"),
@@ -4410,10 +4535,10 @@ async fn expired_plans_stop_blocking_while_applying_work_still_blocks() {
 
 #[tokio::test]
 async fn registry_deletion_abandons_plans_and_ignores_their_frozen_actions() {
-    use crate::db::{
-        PrepareRegistryDeletion, RegistryDeletionCommit, RegistryDeletionOutcome,
-        RegistryDeletionVerdict,
-    };
+    use crate::db::PrepareRegistryDeletion;
+    use crate::db::RegistryDeletionCommit;
+    use crate::db::RegistryDeletionOutcome;
+    use crate::db::RegistryDeletionVerdict;
 
     let database = Database::open_in_memory().await.unwrap();
     seed_registry(&database).await;
@@ -4469,9 +4594,10 @@ async fn registry_deletion_abandons_plans_and_ignores_their_frozen_actions() {
 
 #[tokio::test]
 async fn registry_deletion_retires_delivery_setup_workflows() {
-    use crate::db::{
-        PrepareRegistryDeletion, RegistryDeletionCommit, RegistryDeletionOutcome, SurfaceTarget,
-    };
+    use crate::db::PrepareRegistryDeletion;
+    use crate::db::RegistryDeletionCommit;
+    use crate::db::RegistryDeletionOutcome;
+    use crate::db::SurfaceTarget;
 
     let database = Database::open_in_memory().await.unwrap();
     seed_registry(&database).await;

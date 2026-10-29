@@ -1677,6 +1677,43 @@ mod tests {
     }
 
     #[test]
+    fn cache_upload_auth_args_preserve_explicit_hub_selectors_from_config_and_cli() {
+        let config = RegistryUploadAuthConfig {
+            hub_origin: Some("https://configured-hub.example.test".into()),
+            hub_registry: Some("configured-registry".into()),
+            upload_urls: vec!["https://unrelated.example.test/static".into()],
+            ..Default::default()
+        };
+        let from_config = CacheUploadAuthArgs::default().auth_options_with_config(Some(&config));
+        assert_eq!(from_config.hub_origin, config.hub_origin);
+        assert_eq!(from_config.hub_registry, config.hub_registry);
+
+        let args = CacheUploadAuthArgs {
+            hub_origin: Some("https://selected-hub.example.test".into()),
+            ..Default::default()
+        };
+        let merged = args.auth_options_with_config(Some(&config));
+        assert_eq!(merged.hub_origin, args.hub_origin);
+        assert_eq!(merged.hub_registry, config.hub_registry);
+
+        let explicit = CacheUploadAuthArgs {
+            hub_origin: args.hub_origin.clone(),
+            hub_registry: Some("selected-registry".into()),
+            ..Default::default()
+        };
+        let from_cli = explicit.auth_options();
+        assert_eq!(from_cli.hub_origin, explicit.hub_origin);
+        assert_eq!(from_cli.hub_registry, explicit.hub_registry);
+
+        let generic = RegistryUploadAuthConfig {
+            upload_urls: config.upload_urls.clone(),
+            ..Default::default()
+        };
+        let generic = CacheUploadAuthArgs::default().auth_options_with_config(Some(&generic));
+        assert!(generic.hub_origin.is_none() && generic.hub_registry.is_none());
+    }
+
+    #[test]
     fn cache_upload_auth_args_map_to_backend_options() {
         let args = CacheUploadAuthArgs {
             token: Some("token".into()),
@@ -1690,6 +1727,7 @@ mod tests {
             ssh_key: Some("/tmp/key".into()),
             ssh_password: Some("ssh-pass".into()),
             ssh_ask_pass: true,
+            ..Default::default()
         };
 
         let auth = args.auth_options();
@@ -1721,6 +1759,7 @@ mod tests {
             ssh_key: Some("/etc/apm/config-key".into()),
             ssh_password: Some("config-ssh-pass".into()),
             ssh_ask_pass: true,
+            ..Default::default()
         };
         let args = CacheUploadAuthArgs {
             token: Some("cli-token".into()),
@@ -1734,6 +1773,7 @@ mod tests {
             ssh_key: Some("/tmp/cli-key".into()),
             ssh_password: None,
             ssh_ask_pass: false,
+            ..Default::default()
         };
 
         let auth = args.auth_options_with_config(Some(&config));

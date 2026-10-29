@@ -14,7 +14,9 @@
 use anyhow::anyhow;
 use async_trait::async_trait;
 
-use aos_hub_service::jobs::{Job, JobEnvelope, Queue};
+use aos_hub_service::jobs::Job;
+use aos_hub_service::jobs::JobEnvelope;
+use aos_hub_service::jobs::Queue;
 
 /// A [`Queue`] backed by a bound Cloudflare Queue.
 ///

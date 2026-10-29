@@ -2182,18 +2182,18 @@
     "scope": "isolated guard throughput; does not establish end-to-end VM throughput",
     "original_recorded_commit_before_rebase": "53a2ea23f7993f9d9b7eae488764ea06f22941ce",
     "rebased_sources_verified_identical": [
-      "crates/crucible-qemu-plugin/src/runtime/callback_quiescence.rs",
-      "crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs",
-      "crates/crucible-qemu-plugin/src/coverage/live.rs"
+      "crates/crucible/qemu/crucible-qemu-plugin/src/runtime/callback_quiescence.rs",
+      "crates/crucible/qemu/crucible-qemu-plugin/src/runtime/live_callbacks.rs",
+      "crates/crucible/qemu/crucible-qemu-plugin/src/coverage/live.rs"
     ],
     "optimized_source_sha256": "8795b09cf023f4378897f6dafefc9496753d2b681bf092b01679633c3415f5ca",
     "affinity": "Not explicitly pinned",
     "mean_time_reduction_percent": 49.339405756947805,
     "timing_method": "Rust std::time::Instant elapsed nanoseconds around the loop; Arc/state setup outside the timed interval",
     "reproduction": {
-      "source_module": "crates/crucible-qemu-plugin/src/runtime/callback_quiescence.rs",
+      "source_module": "crates/crucible/qemu/crucible-qemu-plugin/src/runtime/callback_quiescence.rs",
       "harness_source": "#[cfg(baseline)]\n#[path = \"baseline.rs\"]\nmod callback_quiescence;\n\n#[cfg(optimized)]\n#[path = \"optimized.rs\"]\nmod callback_quiescence;\n\nuse callback_quiescence::LiveCallbackQuiescence;\nuse std::hint::black_box;\nuse std::sync::Arc;\nuse std::time::Instant;\n\n#[inline(never)]\nfn callback(quiescence: &Arc<LiveCallbackQuiescence>) {\n    if let Some(guard) = black_box(quiescence).enter() {\n        black_box(&guard);\n    }\n}\n\nfn main() {\n    let quiescence = Arc::new(LiveCallbackQuiescence::new());\n    let started = Instant::now();\n\n    for _ in 0..10_000_000 {\n        callback(&quiescence);\n    }\n\n    println!(\"nanoseconds={}\", started.elapsed().as_nanos());\n    black_box(quiescence);\n}\n",
-      "source_extraction": "Write baseline.rs from git show 6df2fe66e61e932ed9f44350084da4939b620800:crates/crucible-qemu-plugin/src/runtime/callback_quiescence.rs; write optimized.rs from git show d026f865847549c5f17b5e39368deaec45bfd5b7:crates/crucible-qemu-plugin/src/runtime/callback_quiescence.rs",
+      "source_extraction": "Write baseline.rs from git show 6df2fe66e61e932ed9f44350084da4939b620800:crates/crucible/qemu/crucible-qemu-plugin/src/runtime/callback_quiescence.rs; write optimized.rs from git show d026f865847549c5f17b5e39368deaec45bfd5b7:crates/crucible/qemu/crucible-qemu-plugin/src/runtime/callback_quiescence.rs",
       "compile": "nix develop --accept-flake-config --option builders '' -c rustc --edition 2021 -O --emit asm,link --cfg baseline harness.rs -o baseline; repeat with --cfg optimized -o optimized",
       "run": "Run the baseline and optimized binaries directly in five alternating pairs; retain every printed nanoseconds value"
     }
@@ -2240,8 +2240,8 @@
     },
     "reproduction": {
       "common_fixture_revision": "fd219eae1f05fc3d6424be44cde7c41bdbc2c931",
-      "production_module": "crates/crucible-qemu-plugin/src/runtime/live_callbacks/preemption.rs",
-      "test_module": "crates/crucible-qemu-plugin/src/runtime/live_callbacks/tests/preemption.rs",
+      "production_module": "crates/crucible/qemu/crucible-qemu-plugin/src/runtime/live_callbacks/preemption.rs",
+      "test_module": "crates/crucible/qemu/crucible-qemu-plugin/src/runtime/live_callbacks/tests/preemption.rs",
       "benchmark_test_source": "#[test]\n#[ignore = \"local dispatch throughput measurement\"]\nfn measure_empty_preemption_dispatch() {\n    use std::hint::black_box;\n    use std::time::Instant;\n\n    super::TEST_ICOUNT_RAW.set(0);\n    let slot = NodeSlot::new(KIND_VM);\n    let ceiling = authorize_advance_ceiling(0, 5000, None).unwrap();\n    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)\n        .unwrap();\n    let state = super::test_live_state(1, 1, 0, &slot).unwrap();\n    let started = Instant::now();\n\n    for _ in 0..5_000_000 {\n        black_box(black_box(&state).max_advance_icount()).unwrap();\n    }\n\n    println!(\"dispatches=5000000 nanoseconds={}\", started.elapsed().as_nanos());\n}",
       "steps": [
         "Archive crates at common_fixture_revision into PERF_WORKDIR; use the same cached AOS dev shell for both variants",
@@ -2849,23 +2849,23 @@
     "relevant_sources_identical_to_baseline": true,
     "sources": [
       {
-        "path": "crates/crucible-device/src/subnode/io_core_private.rs",
+        "path": "crates/crucible/engine/crucible-device/src/subnode/io_core_private.rs",
         "sha256": "63eac1b4d9a81df37566664c1fd35b9c725bef70be49495699f3524cb50705f4"
       },
       {
-        "path": "crates/crucible-device/src/subnode/frame.rs",
+        "path": "crates/crucible/engine/crucible-device/src/subnode/frame.rs",
         "sha256": "229a000ae615ae479824648f39871438afaebb0ccd4c63cefa1d0901929a02df"
       },
       {
-        "path": "crates/crucible-qemu/src/supervision/block_io_servicer.rs",
+        "path": "crates/crucible/qemu/crucible-qemu-host/src/supervision/block_io_servicer.rs",
         "sha256": "930a68d507b13f2cc5896eda1ea3e6f20e2abdd8a32a1226058db43a00cc477d"
       },
       {
-        "path": "crates/crucible-api/src/vm_lifecycle/construction.rs",
+        "path": "crates/crucible/control/crucible-control-api/src/vm_lifecycle/construction.rs",
         "sha256": "8b209f88760ff84c0fed2a7421ce6e4d738270480cce8e9d30570f495dd82c82"
       },
       {
-        "path": "crates/crucible-qemu-plugin/src/block_io.rs",
+        "path": "crates/crucible/qemu/crucible-qemu-plugin/src/block_io.rs",
         "sha256": "bb53d69a28f415d13c1d1345038a92d2cbae6dd739bcfc0918b387168bee8d99"
       }
     ],

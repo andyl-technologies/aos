@@ -59,5 +59,11 @@ pub mod seal;
 // `crate::auth::{token,session,magic,device,password,permission_from_str,
 // webauthn,jwt}::…` path is unchanged. (jwt's HS256 is now hmac/sha2-based —
 // no jsonwebtoken/ring — so it builds for wasm32.)
-pub use aos_hub_model::auth::{device, jwt, password, permission_from_str, session, token};
-pub use aos_hub_service::auth::{magic, webauthn};
+pub use aos_hub_model::auth::device;
+pub use aos_hub_model::auth::jwt;
+pub use aos_hub_model::auth::password;
+pub use aos_hub_model::auth::permission_from_str;
+pub use aos_hub_model::auth::session;
+pub use aos_hub_model::auth::token;
+pub use aos_hub_service::auth::magic;
+pub use aos_hub_service::auth::webauthn;

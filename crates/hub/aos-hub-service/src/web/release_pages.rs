@@ -15,7 +15,11 @@ use super::release_browse::{
     is_prerelease, release_href, release_order, unavailable_page, ReleaseContext,
 };
 use super::render::{escape, hash_value, table};
-use aos_hub_db::db::{ChannelSummary, Database, IndexStatus, RegistryRecord, ReleaseRow};
+use aos_hub_db::db::ChannelSummary;
+use aos_hub_db::db::Database;
+use aos_hub_db::db::IndexStatus;
+use aos_hub_db::db::RegistryRecord;
+use aos_hub_db::db::ReleaseRow;
 use aos_registry_format::support::{Date, SupportKind, SupportPolicy, SupportState};
 
 /// Published content counts, distinguishing incomplete projections from empty sets.

@@ -1,0 +1,5 @@
+# Retired binding ids fence id allocation and reference no physical objects.
+binding_id_tombstones	id	authority_dependency	value
+binding_id_tombstones	stable_id	authority_dependency	value
+binding_id_tombstones	owner_scope_key	authority_dependency	value
+binding_id_tombstones	deleted_at	authority_dependency	value

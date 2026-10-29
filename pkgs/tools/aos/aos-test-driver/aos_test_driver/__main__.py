@@ -182,6 +182,7 @@ def _build_machine(entry: dict[str, Any], tmpdir: Path) -> Machine:
             var_size_mib=entry.get("var_size_mib"),
             extra_disks=entry.get("extra_disks", []),
             host_store_mount=entry.get("host_store_mount", False),
+            filter_unicast=entry.get("filter_unicast", False),
             tpm=entry.get("tpm", False),
             swtpm_bin=entry.get("swtpm_bin"),
             kernel_params=entry.get("kernel_params"),

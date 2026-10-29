@@ -1,12 +1,16 @@
 //! Regression tests for metadata preservation and signed draft plan/apply.
 
 use super::*;
-use crate::fetch::{SurfaceFetch, SurfaceProvider};
-use crate::surface_write::{SurfaceWrite, SurfaceWriteProvider};
-use aos_hub_db::db::{
-    BindingWriteRevisionRecord, IndexSnapshot, SurfacePlacementRecord, TokenAuth,
-};
-use aos_hub_model::domain::{Permission, Principal, Scope};
+use crate::fetch::SurfaceFetch;
+use crate::fetch::SurfaceProvider;
+use crate::surface_write::SurfaceWrite;
+use crate::surface_write::SurfaceWriteProvider;
+use aos_hub_db::db::BindingWriteRevisionRecord;
+use aos_hub_db::db::IndexSnapshot;
+use aos_hub_db::db::SurfacePlacementRecord;
+use aos_hub_model::domain::Permission;
+use aos_hub_model::domain::Principal;
+use aos_hub_model::domain::Scope;
 use aos_registry_format::object::{encode_loose, encode_tree, hash_object, ObjectKind, TreeEntry};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -227,18 +231,18 @@ async fn fixture() -> (RpcService, String, MemorySurface, Oid) {
         .unwrap();
     let token = service
         .jwt_keys
-        .mint_browser_session(
-            &TokenAuth {
-                token_id: "metadata-editor".into(),
-                owner: Principal::user(user),
-                scope: Scope::root(),
-                permissions: vec![
+        .mint(
+            &crate::service::authentication::provisioned_test_auth(
+                &service.db,
+                Principal::user(user),
+                Scope::root(),
+                &vec![
                     Permission::Read,
                     Permission::RegistryConfigure,
                     Permission::AuditRead,
                 ],
-                expires_at: None,
-            },
+            )
+            .await,
             3600,
         )
         .unwrap();
@@ -403,14 +407,14 @@ async fn metadata_apply_checks_confirmation_and_current_permission_before_writin
         .unwrap();
     let read_token = service
         .jwt_keys
-        .mint_browser_session(
-            &TokenAuth {
-                token_id: "metadata-read-only".into(),
-                owner: Principal::user(user),
-                scope: Scope::root(),
-                permissions: vec![Permission::Read],
-                expires_at: None,
-            },
+        .mint(
+            &crate::service::authentication::provisioned_test_auth(
+                &service.db,
+                Principal::user(user),
+                Scope::root(),
+                &vec![Permission::Read],
+            )
+            .await,
             3600,
         )
         .unwrap();

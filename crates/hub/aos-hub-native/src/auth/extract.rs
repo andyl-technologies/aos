@@ -226,7 +226,9 @@ pub async fn session_allows(
 // the Worker shares them; re-exported here so every
 // `crate::auth::extract::{connect_or_csrf_ok, mint_csrf_token,
 // verify_csrf_token}` call site is unchanged.
-pub use aos_hub_service::web::csrf::{connect_or_csrf_ok, mint_csrf_token, verify_csrf_token};
+pub use aos_hub_service::web::csrf::connect_or_csrf_ok;
+pub use aos_hub_service::web::csrf::mint_csrf_token;
+pub use aos_hub_service::web::csrf::verify_csrf_token;
 
 /// Extracts the `__Host-aos_session` value from a request's `Cookie` header.
 fn session_secret_from_cookies(headers: &HeaderMap) -> Option<String> {
@@ -247,6 +249,8 @@ mod tests {
             sub: "t".into(),
             owner_kind: "user".into(),
             owner_id: 1,
+            owner_incarnation: None,
+            browser_session_id_hash: None,
             scope: ORG_SCOPE.into(),
             perms: vec!["read".into(), "publish".into()],
             provenance: BearerProvenance::AccessToken,
@@ -293,6 +297,8 @@ mod tests {
             sub: "t".into(),
             owner_kind: "user".into(),
             owner_id: 1,
+            owner_incarnation: None,
+            browser_session_id_hash: None,
             scope: ORG_SCOPE.into(),
             perms: vec!["read".into()],
             provenance: BearerProvenance::AccessToken,
@@ -372,14 +378,8 @@ mod tests {
         db.grant_membership("user", user, &org.stable_id, "maintainer")
             .await
             .unwrap();
-        let session = DbSessionAuth {
-            user_id: user,
-            auth_level: 0,
-            last_authenticated_at: 0,
-            expires_at: i64::MAX,
-            authentication: aos_hub_db::db::SessionAuthentication::LegacyLocal,
-            reauthentication_generation: 0,
-        };
+        let secret = db.create_session(user, 3600, 0).await.unwrap();
+        let session = db.validate_session(&secret).await.unwrap().unwrap();
         assert!(session_allows(
             &db,
             &session,

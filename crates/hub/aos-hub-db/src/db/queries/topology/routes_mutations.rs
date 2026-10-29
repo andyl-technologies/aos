@@ -65,3 +65,41 @@ impl Database {
         self.topology_operation(operation_id).await
     }
 }
+
+impl Database {
+    pub(in crate::db) async fn due_physical_placement_operations(
+        &self,
+        now: i64,
+        limit: usize,
+        include_copies: bool,
+    ) -> Result<Vec<TopologyOperationRecord>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let operation_filter = if include_copies {
+            "IN ('scan_placement', 'replicate_placement', 'repair_placement')"
+        } else {
+            "= 'scan_placement'"
+        };
+        self.backend
+            .query(
+                &format!(
+                    "SELECT {OPERATION_COLUMNS} FROM topology_operations operation
+                     WHERE operation.operation_kind {operation_filter}
+                       AND (operation.state = 'pending'
+                         OR (operation.state = 'running' AND (
+                           NOT EXISTS (SELECT 1 FROM placement_scan_claims claim
+                             WHERE claim.operation_id = operation.operation_id)
+                           OR EXISTS (SELECT 1 FROM placement_scan_claims claim
+                             WHERE claim.operation_id = operation.operation_id
+                               AND claim.lease_expires_at <= ?1))))
+                     ORDER BY operation.created_at, operation.operation_id LIMIT ?2"
+                ),
+                &vals![now, i64::try_from(limit)?],
+            )
+            .await?
+            .iter()
+            .map(row_to_topology_operation)
+            .collect()
+    }
+}

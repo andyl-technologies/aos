@@ -14,12 +14,14 @@ use sha2::{Digest as _, Sha256};
 use super::{
     claims_principal, parse_resource_version, RouteReservationPlanSeal, RpcError, RpcService,
 };
-use aos_hub_db::db::{
-    InstanceOciRouteRecord, InstanceOciRouteReservation, InstanceOciRouteSpec, RegistryRecord,
-    SurfaceTarget,
-};
+use aos_hub_db::db::InstanceOciRouteRecord;
+use aos_hub_db::db::InstanceOciRouteReservation;
+use aos_hub_db::db::InstanceOciRouteSpec;
+use aos_hub_db::db::RegistryRecord;
+use aos_hub_db::db::SurfaceTarget;
 use aos_hub_model::auth::jwt::Claims;
-use aos_hub_model::domain::{Permission, Scope};
+use aos_hub_model::domain::Permission;
+use aos_hub_model::domain::Scope;
 
 const CREATE_PLAN: &str = "create_instance_oci_route";
 const UPDATE_PLAN: &str = "update_instance_oci_route";

@@ -11,13 +11,15 @@
 use sha2::Digest;
 
 use super::{clock, parse_resource_version, pb, Permission, RpcError, RpcService, Scope, Sha256};
-use crate::registry_delete_controller::{
-    readiness_message, registry_deletion_operation_id, RegistryDeletionDetail,
-};
-use aos_hub_db::db::{
-    NewTopologyOperation, NewTopologyOperationTarget, NewTopologyOperationTargetRef,
-    RegistryDeletionReadiness, RegistryDeletionVerdict, REGISTRY_DELETION_OPERATION_KIND,
-};
+use crate::registry_delete_controller::readiness_message;
+use crate::registry_delete_controller::registry_deletion_operation_id;
+use crate::registry_delete_controller::RegistryDeletionDetail;
+use aos_hub_db::db::NewTopologyOperation;
+use aos_hub_db::db::NewTopologyOperationTarget;
+use aos_hub_db::db::NewTopologyOperationTargetRef;
+use aos_hub_db::db::RegistryDeletionReadiness;
+use aos_hub_db::db::RegistryDeletionVerdict;
+use aos_hub_db::db::REGISTRY_DELETION_OPERATION_KIND;
 
 #[cfg(test)]
 #[path = "registry_delete_tests.rs"]

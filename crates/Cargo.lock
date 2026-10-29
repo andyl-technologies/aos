@@ -602,6 +602,8 @@ dependencies = [
 name = "aos-hub-api"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
+ "hex",
  "pbjson",
  "pbjson-build",
  "prost",
@@ -609,6 +611,8 @@ dependencies = [
  "prost-types",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "url",
 ]
 
 [[package]]
@@ -617,11 +621,19 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "aos-hub-api",
+ "aos-transfer",
+ "async-trait",
+ "futures-util",
+ "hex",
  "http",
+ "rand 0.9.4",
  "reqwest",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
  "tokio",
+ "tokio-stream",
  "tokio-util",
  "url",
 ]
@@ -634,13 +646,19 @@ dependencies = [
  "aos-hub-ui",
  "aos-module-docs",
  "aos-registry-format",
+ "async-lock",
+ "base64 0.22.1",
  "futures",
  "gloo-net",
+ "hex",
  "js-sys",
  "leptos",
+ "md-5 0.11.0",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.18",
+ "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
@@ -650,13 +668,17 @@ dependencies = [
 name = "aos-hub-db"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
  "anyhow",
+ "aos-core",
+ "aos-hub-api",
  "aos-hub-model",
  "aos-module-docs",
  "aos-oci-types",
  "aos-registry-format",
  "aos-release-format",
  "async-trait",
+ "axum",
  "base64 0.22.1",
  "ed25519-dalek",
  "futures-util",
@@ -677,6 +699,7 @@ dependencies = [
  "unicode-normalization",
  "url",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
@@ -686,11 +709,13 @@ dependencies = [
  "aes-gcm",
  "anyhow",
  "aos-hub-api",
+ "aos-module-docs",
  "aos-oci-types",
  "aos-registry-format",
  "argon2",
  "async-trait",
  "base64 0.22.1",
+ "ed25519-dalek",
  "getrandom 0.2.17",
  "getrandom 0.3.4",
  "hex",
@@ -722,6 +747,7 @@ dependencies = [
  "aos-hub-db",
  "aos-hub-model",
  "aos-hub-service",
+ "aos-module-docs",
  "aos-nar",
  "aos-nix-cache",
  "aos-oci",
@@ -743,9 +769,11 @@ dependencies = [
  "hex",
  "hmac 0.12.1",
  "http",
+ "http-body",
  "http-body-util",
  "jsonwebtoken",
  "lzma-rs",
+ "md-5 0.11.0",
  "p256 0.13.2",
  "rand 0.9.4",
  "rcgen",
@@ -767,6 +795,7 @@ dependencies = [
  "tower",
  "tower-http",
  "tracing",
+ "tracing-subscriber",
  "url",
  "uuid",
  "xz2",
@@ -811,7 +840,9 @@ dependencies = [
  "send_wrapper",
  "serde",
  "serde_json",
+ "serde_urlencoded",
  "sha2 0.10.9",
+ "sqlx",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -843,6 +874,7 @@ dependencies = [
  "aos-hub-model",
  "aos-hub-native",
  "aos-hub-service",
+ "aos-module-docs",
  "aos-oci-types",
  "aos-registry-format",
  "async-trait",
@@ -854,7 +886,9 @@ dependencies = [
  "hex",
  "http",
  "js-sys",
+ "md-5 0.11.0",
  "rand 0.9.4",
+ "ruzstd",
  "semver",
  "send_wrapper",
  "serde",
@@ -871,6 +905,8 @@ dependencies = [
  "wasm-bindgen-futures",
  "worker",
  "worker-sys",
+ "zeroize",
+ "zstd",
 ]
 
 [[package]]
@@ -964,6 +1000,7 @@ dependencies = [
  "anyhow",
  "aos-cli-ui",
  "aos-hub-api",
+ "aos-hub-client",
  "aos-nar",
  "aos-nix",
  "aos-transfer",
@@ -1006,8 +1043,12 @@ name = "aos-oci"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aos-hub-api",
+ "aos-hub-client",
  "aos-oci-types",
  "aos-registry-format",
+ "aos-transfer",
+ "async-trait",
  "axum",
  "base64 0.22.1",
  "bytes",
@@ -1139,6 +1180,7 @@ dependencies = [
  "aos-cli-ui",
  "aos-deployment",
  "aos-deployment-format",
+ "aos-hub-api",
  "aos-hub-client",
  "aos-module-docs",
  "aos-nar",
@@ -1163,12 +1205,14 @@ dependencies = [
  "rand 0.9.4",
  "rayon",
  "reqwest",
+ "rusqlite",
  "rustix",
  "semver",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "ssh-key",
+ "tar",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -1342,16 +1386,23 @@ name = "aos-transfer"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aos-hub-api",
+ "aos-module-format",
  "async-trait",
  "aws-config",
  "aws-sdk-s3",
+ "aws-smithy-http-client",
  "aws-types",
+ "base64 0.22.1",
  "bytes",
  "digest 0.10.7",
  "futures-util",
  "hex",
+ "md-5 0.11.0",
  "rand 0.9.4",
  "reqwest",
+ "rusqlite",
+ "rustix",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -6671,6 +6722,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
+name = "ruzstd"
+version = "0.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7c1c839d570d835527c9a5e4db7cb2198683a988cb9d7293fc8674e6bd58fc8"
+dependencies = [
+ "twox-hash",
+]
+
+[[package]]
 name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7025,6 +7085,15 @@ dependencies = [
  "cfg-if",
  "cpufeatures 0.3.0",
  "digest 0.11.3",
+]
+
+[[package]]
+name = "sharded-slab"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
+dependencies = [
+ "lazy_static",
 ]
 
 [[package]]
@@ -7779,6 +7848,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "thread_local"
+version = "1.1.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1ad99c4c6d32803332c548b1af0540b357b3f5fc0be8f6c6bfe8b2e6ae784070"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
 name = "throw_error"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8074,10 +8152,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "tracing-subscriber"
+version = "0.3.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb7f578e5945fb242538965c2d0b04418d38ec25c79d160cd279bf0731c8d319"
+dependencies = [
+ "sharded-slab",
+ "thread_local",
+ "tracing-core",
+]
+
+[[package]]
 name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
+
+[[package]]
+name = "twox-hash"
+version = "2.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5283634e518fe9e82c7b20520bb4bc209009fd16c82077c802f8111ecbb0117a"
 
 [[package]]
 name = "typed-builder"

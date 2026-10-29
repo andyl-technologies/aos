@@ -20,6 +20,10 @@ pub(super) async fn watch_hub_operation(
     operation_id: &str,
     timeout: Option<&str>,
 ) -> Result<()> {
+    // Leave room inside the client's 30-second HTTP timeout for the Worker
+    // proxy hop and response handling after the server's long poll ends.
+    const WATCH_POLL_SECONDS: i64 = 20;
+
     let total_timeout = timeout
         .map(|value| parse_duration_seconds(value, "--timeout"))
         .transpose()?;
@@ -42,7 +46,9 @@ pub(super) async fn watch_hub_operation(
                 &hub_types::WatchOperationRequest {
                     operation_id: operation_id.into(),
                     after_resource_version: after_resource_version.clone(),
-                    timeout_seconds: remaining.unwrap_or(30).min(30),
+                    timeout_seconds: remaining
+                        .unwrap_or(WATCH_POLL_SECONDS)
+                        .min(WATCH_POLL_SECONDS),
                 },
             )
             .await?;

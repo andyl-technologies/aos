@@ -82,16 +82,67 @@ impl Database {
             .backend
             .query_opt(
                 "SELECT 1 FROM memberships membership
-                   JOIN users user ON user.id = membership.principal_id
+                   JOIN users user_record ON user_record.id = membership.principal_id
                   WHERE membership.principal_kind = 'user'
                     AND membership.principal_id = ?1
                     AND membership.scope_key = 'instance'
                     AND membership.role = 'owner'
-                    AND user.deleted_at IS NULL",
+                    AND user_record.deleted_at IS NULL",
                 &vals![user_id],
             )
             .await
             .context("checking instance owner recovery authority")?
             .is_some())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Database;
+
+    async fn assert_instance_owner_recovery_authority(db: &Database) {
+        let user_id = db
+            .find_or_create_user("recovery-owner@example.test")
+            .await
+            .unwrap();
+        let org_id = db
+            .create_org("recovery-owner", "Recovery Owner")
+            .await
+            .unwrap();
+        let org = db.org_by_id(org_id).await.unwrap().unwrap();
+
+        assert!(!db.user_is_instance_owner(user_id).await.unwrap());
+
+        db.grant_membership("user", user_id, &org.stable_id, "owner")
+            .await
+            .unwrap();
+        assert!(!db.user_is_instance_owner(user_id).await.unwrap());
+
+        db.grant_membership("user", user_id, "instance", "admin")
+            .await
+            .unwrap();
+        assert!(!db.user_is_instance_owner(user_id).await.unwrap());
+
+        db.grant_membership("user", user_id, "instance", "owner")
+            .await
+            .unwrap();
+        assert!(db.user_is_instance_owner(user_id).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn sqlite_instance_owner_recovery_authority() {
+        let db = Database::open_in_memory().await.unwrap();
+        assert_instance_owner_recovery_authority(&db).await;
+    }
+
+    #[cfg(feature = "postgres")]
+    #[tokio::test]
+    async fn postgres_instance_owner_recovery_authority() {
+        let Ok(url) = std::env::var("AOS_HUB_AUTHENTICATION_POLICY_TEST_PG_URL") else {
+            eprintln!("live PostgreSQL instance owner recovery authority was not run");
+            return;
+        };
+        let db = Database::connect(&url).await.unwrap();
+        assert_instance_owner_recovery_authority(&db).await;
     }
 }

@@ -107,6 +107,9 @@ impl Database {
         if !aos_hub_model::domain::Scope::is_canonical(scope) {
             bail!("invalid stable authorization scope");
         }
+        // Capture the owner incarnation before authorization reads. The
+        // final INSERT must still observe that exact owner after every await.
+        let owner_incarnation = self.ensure_principal_incarnation(owner).await?;
         if !self
             .principal_is_live(owner.kind.as_str(), owner.id)
             .await?
@@ -133,16 +136,16 @@ impl Database {
             .execute(
                 "INSERT INTO tokens
              (id, hash, owner_kind, owner_id, scope_key, permissions, comment, created_at,
-              expires_at, revoked_at, last_used_at)
-             SELECT ?1, ?2, ?3, ?4, a.scope_key, ?6, ?7, ?8, ?9, NULL, NULL
+              expires_at, revoked_at, last_used_at, owner_incarnation)
+             SELECT ?1, ?2, ?3, ?4, a.scope_key, ?6, ?7, ?8, ?9, NULL, NULL, ?10
              FROM authorization_scopes a LEFT JOIN orgs o ON o.id = a.org_id
              WHERE a.scope_key = ?5 AND (a.org_id IS NULL OR o.deleted_at IS NULL)
                AND ((?3 = 'user' AND EXISTS (
-                      SELECT 1 FROM users u WHERE u.id = ?4 AND u.deleted_at IS NULL))
+                      SELECT 1 FROM users u WHERE u.id = ?4 AND u.deleted_at IS NULL AND u.principal_incarnation = ?10))
                  OR (?3 = 'service_account' AND EXISTS (
                       SELECT 1 FROM service_accounts s
                       JOIN orgs owner_org ON owner_org.id = s.org_id
-                       WHERE s.id = ?4 AND owner_org.deleted_at IS NULL)))",
+                       WHERE s.id = ?4 AND owner_org.deleted_at IS NULL AND s.principal_incarnation = ?10)))",
                 &vals![
                     id,
                     hash,
@@ -153,6 +156,7 @@ impl Database {
                     comment,
                     unix_now(),
                     expires_at,
+                    owner_incarnation,
                 ],
             )
             .await?;
@@ -291,7 +295,7 @@ impl Database {
         let Some(old) = self
             .backend
             .query_opt(
-                "SELECT owner_kind, owner_id, scope_key, permissions, comment, expires_at
+                "SELECT owner_kind, owner_id, scope_key, permissions, comment, expires_at, owner_incarnation
              FROM tokens WHERE id = ?1 AND revoked_at IS NULL",
                 &vals![token_id],
             )
@@ -309,6 +313,12 @@ impl Database {
             return Ok(None);
         };
         let owner = aos_hub_model::domain::Principal { kind, id: owner_id };
+        let Some(owner_incarnation) = old.get::<Option<String>>(6)? else {
+            return Ok(None);
+        };
+        if self.principal_incarnation(owner).await?.as_ref() != Some(&owner_incarnation) {
+            return Ok(None);
+        }
         if !self.principal_is_live(&owner_kind, owner_id).await? {
             return Ok(None);
         }
@@ -330,26 +340,27 @@ impl Database {
             .checked_batch(&[
                 Statement::new(
                     "UPDATE tokens SET rotated_at = ?2
-                     WHERE id = ?1 AND revoked_at IS NULL AND rotated_at IS NULL",
-                    vals![token_id, now].to_vec(),
+                     WHERE id = ?1 AND revoked_at IS NULL AND rotated_at IS NULL
+                       AND owner_incarnation = ?3",
+                    vals![token_id, now, owner_incarnation].to_vec(),
                 )
                 .expecting(1),
                 Statement::new(
                     "INSERT INTO tokens
                  (id, hash, owner_kind, owner_id, scope_key, permissions, comment, created_at,
-                  expires_at, revoked_at, last_used_at)
-                 SELECT ?1, ?2, ?3, ?4, a.scope_key, ?6, ?7, ?8, ?9, NULL, NULL
+                  expires_at, revoked_at, last_used_at, owner_incarnation)
+                 SELECT ?1, ?2, ?3, ?4, a.scope_key, ?6, ?7, ?8, ?9, NULL, NULL, ?10
                  FROM authorization_scopes a LEFT JOIN orgs o ON o.id = a.org_id
-                 WHERE (a.org_id IS NULL OR o.deleted_at IS NULL)
+                 WHERE a.scope_key = ?5 AND (a.org_id IS NULL OR o.deleted_at IS NULL)
                    AND ((?3 = 'user' AND EXISTS (
-                          SELECT 1 FROM users u WHERE u.id = ?4 AND u.deleted_at IS NULL))
+                          SELECT 1 FROM users u WHERE u.id = ?4 AND u.deleted_at IS NULL AND u.principal_incarnation = ?10))
                      OR (?3 = 'service_account' AND EXISTS (
                           SELECT 1 FROM service_accounts s
                           JOIN orgs owner_org ON owner_org.id = s.org_id
-                           WHERE s.id = ?4 AND owner_org.deleted_at IS NULL)))",
+                           WHERE s.id = ?4 AND owner_org.deleted_at IS NULL AND s.principal_incarnation = ?10)))",
                     vals![
                         new_id, hash, owner_kind, owner_id, scope, perms_json, comment, now,
-                        expires_at
+                        expires_at, owner_incarnation
                     ]
                     .to_vec(),
                 )
@@ -580,6 +591,7 @@ impl Database {
         {
             return Ok(false);
         }
+        let owner_incarnation = self.ensure_principal_incarnation(approver).await?;
         let Some(row) = self
             .backend
             .query_opt(
@@ -630,9 +642,9 @@ impl Database {
                 Statement::new(
                     "INSERT INTO tokens
                  (id, hash, owner_kind, owner_id, scope_key, permissions, comment, created_at,
-                  expires_at, revoked_at, last_used_at)
+                  expires_at, revoked_at, last_used_at, owner_incarnation)
                  SELECT ?1, ?8, ?2, ?3, a.scope_key, ?5,
-                        'OAuth device authorization', ?6, ?9, NULL, NULL
+                        'OAuth device authorization', ?6, ?9, NULL, NULL, ?10
                  FROM device_codes device
                  JOIN authorization_scopes a ON a.scope_key = ?4
                  LEFT JOIN orgs o ON o.id = a.org_id
@@ -641,11 +653,11 @@ impl Database {
                    AND device.user_code = ?7 AND device.approved_by_user = ?3
                    AND device.expires_at > ?6
                    AND ((?2 = 'user' AND EXISTS (
-                          SELECT 1 FROM users u WHERE u.id = ?3 AND u.deleted_at IS NULL))
+                          SELECT 1 FROM users u WHERE u.id = ?3 AND u.deleted_at IS NULL AND u.principal_incarnation = ?10))
                      OR (?2 = 'service_account' AND EXISTS (
                           SELECT 1 FROM service_accounts s
                           JOIN orgs owner_org ON owner_org.id = s.org_id
-                           WHERE s.id = ?3 AND owner_org.deleted_at IS NULL)))",
+                           WHERE s.id = ?3 AND owner_org.deleted_at IS NULL AND s.principal_incarnation = ?10)))",
                     vals![
                         token_id,
                         approver.kind.as_str(),
@@ -656,6 +668,7 @@ impl Database {
                         user_code,
                         authority_hash,
                         now + aos_hub_model::auth::token::REFRESH_TOKEN_ABSOLUTE_TTL_SECS,
+                        owner_incarnation,
                     ]
                     .to_vec(),
                 )

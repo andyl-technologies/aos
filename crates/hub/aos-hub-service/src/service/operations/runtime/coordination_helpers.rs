@@ -16,17 +16,11 @@ impl RpcService {
         &self,
         claims: &Claims,
     ) -> Result<bool, RpcError> {
-        let Some(principal) = claims_principal(claims) else {
-            return Ok(false);
+        let principal = match self.current_principal(claims).await {
+            Ok(principal) => principal,
+            Err(RpcError::PermissionDenied(_)) => return Ok(false),
+            Err(error) => return Err(error),
         };
-        if !self
-            .db
-            .principal_is_live(principal.kind.as_str(), principal.id)
-            .await
-            .map_err(RpcError::internal)?
-        {
-            return Ok(false);
-        }
         if principal.kind != PrincipalKind::User {
             return Ok(true);
         }
@@ -391,8 +385,11 @@ impl RpcService {
         registry: &RegistryRecord,
         path: &str,
         request: crate::image_http::ImageHttpRequest<'_>,
+        cacheable: bool,
     ) -> Result<RegistryServeOutcome, RpcError> {
-        use crate::image_http::{plan_image_response, ImageAccess, ImageHttpMetadata};
+        use crate::image_http::plan_image_response;
+        use crate::image_http::ImageAccess;
+        use crate::image_http::ImageHttpMetadata;
         use aos_hub_db::db::IndexedSystemImageObject;
         use axum::body::Body;
         use axum::http::{header, HeaderName, HeaderValue, StatusCode};
@@ -417,7 +414,7 @@ impl RpcService {
                 sha256: image.delivery.artifact_contract.document.sha256.clone(),
             },
         };
-        let access = if registry.visibility == "public" {
+        let access = if cacheable {
             ImageAccess::Public
         } else {
             ImageAccess::Private
@@ -440,6 +437,11 @@ impl RpcService {
                 response.body(Body::empty()).map_err(RpcError::internal)?,
             ));
         };
+        if self.hybrid_delivery {
+            return self
+                .hybrid_signed_image_delivery(registry.id, path, &metadata, access, &plan)
+                .await;
+        }
         let requested = (plan.status == 206).then_some((body_range.start, body_range.end));
         let read = match placement_read::stream_verified_image_from_placements(
             self.db.as_ref(),
@@ -550,16 +552,14 @@ impl RpcService {
             return Err(RpcError::invalid("idempotency_key is required"));
         }
         let claims = self.require_claims(auth)?;
+        self.current_principal(&claims).await?;
         let plan = self
             .db
             .topology_plan(plan_id)
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("topology plan"))?;
-        if plan.plan_kind != plan_kind
-            || plan.actor_kind != claims.owner_kind
-            || plan.actor_id != Some(claims.owner_id)
-        {
+        if plan.plan_kind != plan_kind || !Self::plan_actor_matches(&plan, &claims) {
             return Err(RpcError::FailedPrecondition(
                 "plan belongs to another actor or operation".to_string(),
             ));
@@ -896,5 +896,96 @@ impl RpcService {
             resource_version: authority.resource_version.to_string(),
             incarnation_id: authority.incarnation_id,
         }
+    }
+}
+
+impl RpcService {
+    pub(in crate::service) async fn hybrid_signed_image_delivery(
+        &self,
+        registry_id: i64,
+        path: &str,
+        metadata: &crate::image_http::ImageHttpMetadata,
+        access: crate::image_http::ImageAccess,
+        response_plan: &crate::image_http::ImageResponsePlan,
+    ) -> Result<RegistryServeOutcome, RpcError> {
+        use aos_hub_db::hybrid_ingress::HybridDeliveryTarget;
+        use aos_hub_db::hybrid_ingress::HybridPlannedDelivery;
+        use aos_hub_db::hybrid_ingress::HYBRID_DELIVERY_HEADER;
+
+        let body_range = response_plan.body_range.ok_or_else(|| {
+            RpcError::FailedPrecondition("signed image delivery has no body range".into())
+        })?;
+        let snapshot = match placement_read::head_verified_image_from_placements(
+            &self.db,
+            self.surface.as_ref(),
+            registry_id,
+            path,
+            &metadata.sha256,
+            metadata.byte_size,
+        )
+        .await
+        .map_err(RpcError::surface_read)?
+        {
+            PlacementReadOutcome::Found(read) => read.value,
+            PlacementReadOutcome::NotFound => return Ok(RegistryServeOutcome::NotFound),
+        };
+
+        let mut headers = response_plan.headers.clone();
+        if access == crate::image_http::ImageAccess::Private {
+            headers.insert("vary".into(), "Authorization, Cookie".into());
+        }
+        let content_type = headers
+            .get("content-type")
+            .cloned()
+            .ok_or_else(|| RpcError::FailedPrecondition("image content type is absent".into()))?;
+        let cache_control = headers
+            .get("cache-control")
+            .cloned()
+            .ok_or_else(|| RpcError::FailedPrecondition("image cache policy is absent".into()))?;
+        let external_binding =
+            aos_hub_db::hybrid_ingress::delivery_binding(&self.db, snapshot.binding_id)
+                .await
+                .map_err(RpcError::surface_read)?;
+        let target = HybridDeliveryTarget {
+            object_key: snapshot.object_key,
+            external_binding,
+            object_size: snapshot.size,
+            object_etag: snapshot.strong_etag,
+            content_type,
+            cache_control,
+            producer_document: false,
+            planned_response: Some(HybridPlannedDelivery {
+                status: response_plan.status,
+                start: body_range.start,
+                end: body_range.end,
+                headers,
+            }),
+        };
+        let target = serde_json::to_vec(&target).map_err(RpcError::internal)?;
+        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(target);
+        let response = axum::response::Response::builder()
+            .header(HYBRID_DELIVERY_HEADER, encoded)
+            .header(axum::http::header::CACHE_CONTROL, "private, no-store")
+            .body(axum::body::Body::empty())
+            .map_err(RpcError::internal)?;
+        Ok(RegistryServeOutcome::Response(response))
+    }
+}
+
+impl RpcService {
+    pub(in crate::service) fn private_delivery_response(
+        mut response: axum::response::Response,
+    ) -> axum::response::Response {
+        use axum::http::{header, HeaderValue};
+
+        response.headers_mut().insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("private, no-store"),
+        );
+        response.headers_mut().insert(
+            header::VARY,
+            HeaderValue::from_static("Authorization, Cookie"),
+        );
+        response
     }
 }

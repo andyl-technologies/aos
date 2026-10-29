@@ -38,13 +38,13 @@ impl Database {
                 .execute(
                     "UPDATE cache_population_targets SET required = ?4,
                     placement_policy_revision_id = ?5,
-                    placement_policy_revision_state = CASE WHEN ?5 IS NULL
+                    placement_policy_revision_state = CASE WHEN CAST(?5 AS BIGINT) IS NULL
                       THEN NULL ELSE 'published' END, selector_json = ?6,
                     validation_gate = ?7, enabled = ?8,
                     resource_version = resource_version + 1, updated_at = ?9
                  WHERE cache_id = ?1 AND registry_id = ?2 AND trigger_kind = ?3
                    AND resource_version = ?10
-                   AND (?5 IS NULL OR EXISTS (SELECT 1 FROM placement_policy_revisions
+                   AND (CAST(?5 AS BIGINT) IS NULL OR EXISTS (SELECT 1 FROM placement_policy_revisions
                        WHERE id = ?5 AND cache_id = ?1 AND state = 'published'))",
                     &vals![
                         input.cache_id,
@@ -68,10 +68,10 @@ impl Database {
                     placement_policy_revision_state, selector_json,
                     validation_gate, enabled, created_at, updated_at)
                  SELECT c.id, r.id, ?3, ?4, ?5,
-                        CASE WHEN ?5 IS NULL THEN NULL ELSE 'published' END,
+                        CASE WHEN CAST(?5 AS BIGINT) IS NULL THEN NULL ELSE 'published' END,
                         ?6, ?7, ?8, ?9, ?9
                  FROM binary_caches c CROSS JOIN registries r WHERE c.id = ?1 AND r.id = ?2
-                   AND (?5 IS NULL OR EXISTS (SELECT 1 FROM placement_policy_revisions
+                   AND (CAST(?5 AS BIGINT) IS NULL OR EXISTS (SELECT 1 FROM placement_policy_revisions
                        WHERE id = ?5 AND cache_id = c.id AND state = 'published'))",
                     &vals![
                         input.cache_id,

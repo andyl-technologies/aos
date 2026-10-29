@@ -111,7 +111,7 @@ impl Database {
              WHERE registry_id = ?1 AND surface_object_id IN (
                SELECT id FROM surface_objects
                WHERE registry_id = ?1 AND object_key LIKE 'images/sha256/%')
-               AND (?2 IS NULL OR placement_id = ?2)",
+               AND (CAST(?2 AS BIGINT) IS NULL OR placement_id = ?2)",
             vals![registry_id, indexed_placement_id].to_vec(),
         ));
         stmts.push(Statement::new(

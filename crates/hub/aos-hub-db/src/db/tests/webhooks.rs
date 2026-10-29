@@ -430,3 +430,12 @@ async fn registry_delete_cas_commits_history_audit_and_outbox_once() {
     assert_eq!(audit[0].action, "registry.deleted");
     assert_eq!(audit[0].change_id.as_deref(), Some(change_id.as_str()));
 }
+
+#[test]
+fn production_baseline_is_immutable() {
+    // New schema changes append a migration; they do not replace this digest.
+    assert_eq!(
+        hex::encode(sha2::Sha256::digest(MIGRATIONS[0].as_bytes())),
+        "ac60f004a8c71ad9aaf5169a3497a40cbd886648eedee5394da9bc7cbd72e061"
+    );
+}

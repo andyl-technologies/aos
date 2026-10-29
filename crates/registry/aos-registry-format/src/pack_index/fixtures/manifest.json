@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "gitVersion": "git version 2.55.0",
+  "objects": {
+    "base": {
+      "oid": "1b02e543a8a52ebbebe0941361209a7a32d1da5c146a5995e1d8f1197fd5d6ef",
+      "kind": "blob",
+      "size": 180251
+    },
+    "changed": {
+      "oid": "12a78ddd6f892d9f26b296e2eabcbc222b869ece061efbf11c331b36ba766913",
+      "kind": "blob",
+      "size": 180251
+    },
+    "small": {
+      "oid": "992845b147177f48f2d6fcf756770a7eb12639c88af1382b7056726ab06f1a7b",
+      "kind": "blob",
+      "size": 28
+    },
+    "tree": {
+      "oid": "03e6f64dece1eeb7a033445f3fa390f0dd11bb1e05d1e88c1426a4333ded6b43",
+      "kind": "tree"
+    },
+    "commit": {
+      "oid": "b2ad1a19544c0434a71b509a5a8096090204fce131a3bcaa6f1ba41182dedb27",
+      "kind": "commit"
+    },
+    "tag": {
+      "oid": "6fd256b0ead914536916d355e53e24fb988ae3920b365e33d4d40768379b03bc",
+      "kind": "tag"
+    }
+  },
+  "ofs": {
+    "path": "objects/pack/pack-4f80008ef850a52fda8ac6970b09ce95015fd14e74715f67f303415c17c2e979.idx",
+    "packSha256": "6fa4ec52fba545aae796e7d7818a94b71bc969117ad6eb5b50a908c403a2a56c",
+    "indexSha256": "a938a741612b3d73f26d6378c9aa4d940e181c288395e81b64f075a1360d4130",
+    "packSize": 1196,
+    "indexSize": 1336,
+    "verifyPack": "1b02e543a8a52ebbebe0941361209a7a32d1da5c146a5995e1d8f1197fd5d6ef blob   180251 613 12\n12a78ddd6f892d9f26b296e2eabcbc222b869ece061efbf11c331b36ba766913 blob   45 58 625 1 1b02e543a8a52ebbebe0941361209a7a32d1da5c146a5995e1d8f1197fd5d6ef\n992845b147177f48f2d6fcf756770a7eb12639c88af1382b7056726ab06f1a7b blob   28 38 683\n03e6f64dece1eeb7a033445f3fa390f0dd11bb1e05d1e88c1426a4333ded6b43 tree   151 149 721\nb2ad1a19544c0434a71b509a5a8096090204fce131a3bcaa6f1ba41182dedb27 commit 219 141 870\n6fd256b0ead914536916d355e53e24fb988ae3920b365e33d4d40768379b03bc tag    183 153 1011\nnon delta: 5 objects\nchain length = 1: 1 object\n"
+  },
+  "ref": {
+    "path": "objects/pack/pack-d2be9106d2f607e5eaba91b810edcae8ce562fff6113d735414d61f7744e5662.idx",
+    "packSha256": "c11f6ac684c6372cccddfaedf0448edffcdb9c81aab928c6e3f6f1f20109bdb2",
+    "indexSha256": "d7b3c1bc2688705a8c0454fa5df6c37b20cec05460885f072d21f8fbb166ea2f",
+    "packSize": 1226,
+    "indexSize": 1336,
+    "verifyPack": "1b02e543a8a52ebbebe0941361209a7a32d1da5c146a5995e1d8f1197fd5d6ef blob   180251 613 12\n12a78ddd6f892d9f26b296e2eabcbc222b869ece061efbf11c331b36ba766913 blob   45 88 625 1 1b02e543a8a52ebbebe0941361209a7a32d1da5c146a5995e1d8f1197fd5d6ef\n992845b147177f48f2d6fcf756770a7eb12639c88af1382b7056726ab06f1a7b blob   28 38 713\n03e6f64dece1eeb7a033445f3fa390f0dd11bb1e05d1e88c1426a4333ded6b43 tree   151 149 751\nb2ad1a19544c0434a71b509a5a8096090204fce131a3bcaa6f1ba41182dedb27 commit 219 141 900\n6fd256b0ead914536916d355e53e24fb988ae3920b365e33d4d40768379b03bc tag    183 153 1041\nnon delta: 5 objects\nchain length = 1: 1 object\n"
+  }
+}

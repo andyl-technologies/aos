@@ -79,3 +79,6 @@ pub type TransferManager = TransferEngine;
 /// Configuration for [`TransferManager`].
 #[cfg(feature = "transfer")]
 pub type TransferManagerConfig = TransferEngineConfig;
+
+#[cfg(feature = "direct-upload")]
+pub mod direct_upload;
