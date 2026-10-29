@@ -99,7 +99,7 @@ in {
   nativeServicesEnabled = registry.enable && commit.enable;
   disabledServicesAbsent = !disabled.aos.services."configuration-evaluation.registry-synchronization".enable && !disabled.aos.services."configuration-evaluation.image-boot-commit".enable;
   initrdOmitsHostFinalization = !initrd.aos.services."configuration-evaluation.image-boot-commit".enable;
-  authenticatedMeasurementRequired = command.arguments == ["commit" "--require-attestation-quote" "--image-evidence-executable" "${package.outPath}/bin/aos-boot-measurements" "--pcr-public-key" key];
+  authenticatedMeasurementRequired = command.arguments == ["commit" "--require-attestation-quote" "--boot-measurements-executable" "${package.outPath}/bin/aos-boot-measurements" "--pcr-public-key" key];
   unmeasuredCommitRetained = (builtins.head unmeasured.aos.services."configuration-evaluation.image-boot-commit".lifecycle.start).executable.arguments == ["commit"];
   finalizationWaitsForActivation = commit.dependencies.requires == ["aos-mount-esp.service" "aos-activate.service"] && commit.dependencies.before == ["multi-user.target"];
   activationRetryPullsFinalization =

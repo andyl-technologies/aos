@@ -231,7 +231,7 @@
       ["commit"]
       ++ lib.optional cfg.measuredBoot "--require-attestation-quote"
       ++ lib.optionals cfg.measuredBoot [
-        "--image-evidence-executable"
+        "--boot-measurements-executable"
         config.aos.boot.bootMeasurementsExecutable
         "--pcr-public-key"
         cfg.pcrPublicKey
