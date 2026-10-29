@@ -11,10 +11,10 @@ This guide defines the responsibilities attached to those boundaries. It does
 not replace the command-by-command [canonical release
 runbook](canonical-releases.md), the package review guidance in [Review package
 security](package-security.md), or the wire-format reference under
-[`docs/registry`](../registry/README.md).
+[registry engineering documentation](../engineering/registry/README.md).
 
-Canonical production publication remains disabled until the launch gates in
-[RFC-0017](../rfcs/0017-canonical-hub-publishing/README.md) are complete. The
+Canonical production publication remains disabled until its launch gates are
+complete; see [canonical release publishing](../engineering/release-publishing/README.md). The
 checked-in Secure Boot keys are public test fixtures and provide no production
 identity.
 
@@ -78,8 +78,7 @@ active registry keys and signs them in one process. That is an implemented test
 and development path, not the production role model in the table. A production
 image must instead carry a threshold-authenticated TUF root in addition to the
 registry continuity anchor, and the launch gate must prove role- and path-aware
-verification. See [RFC-0017's security and key
-architecture](../rfcs/0017-canonical-hub-publishing/03-security-and-keys.md).
+verification. See [canonical release security and keys](../engineering/release-publishing/security-and-keys.md).
 
 Private production keys must not enter:
 

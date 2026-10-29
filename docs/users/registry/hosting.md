@@ -19,7 +19,7 @@ need a separate Hub registry or deployment. Default catalogs and channels omit
 candidate revisions; directly addressed Git objects and cache/CDN URLs may
 still expose their uploaded bytes. Permissioned Hub stage views track the same
 stage id and revision as `apr`. See
-[Release stages](../../registry/release-stages.md).
+[Release stages](../../engineering/registry/release-stages.md).
 
 ## Choose a topology
 

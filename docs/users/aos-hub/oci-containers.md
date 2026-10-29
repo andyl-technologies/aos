@@ -142,6 +142,6 @@ metadata.
   bytes have reached every required placement.
 
 Container administration and garbage collection examples are in the
-[OCI GC runbook](../../plans/registry/oci-gc-runbook.md). The
+[OCI GC runbook](oci-gc.md). The
 [OCI container engineering notes](../../engineering/oci-containers/README.md)
 describe the Distribution contract, publication, and GC design.

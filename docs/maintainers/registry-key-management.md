@@ -98,7 +98,7 @@ each backup, migrate and verify every sealed value, and only then retire old
 decryption material. JWT rotation invalidates issued access tokens and does not
 rotate artifact trust.
 
-See the [security and key architecture](../rfcs/0017-canonical-hub-publishing/03-security-and-keys.md),
+See the [security and key architecture](../engineering/release-publishing/security-and-keys.md),
 [main runbook](registry-main.md), and
 [Hub backup and recovery runbook](aos-hub-backup-recovery.md) for release and
 recovery gates.
