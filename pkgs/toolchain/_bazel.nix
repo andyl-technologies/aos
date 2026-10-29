@@ -1471,6 +1471,12 @@ in
             # Re-hash disk cache entries before trusting them. A shared cache
             # must not turn one damaged file into wrong package outputs.
             patch --batch -p1 < ${./bazel-patches/disk-cache-integrity.patch}
+
+            # Run shell commands through a pinned Bash instead of /bin/sh,
+            # which hermetic sandboxes need not provide. The placeholder is
+            # resolved after the path rewrites below, which would otherwise
+            # rewrite the /bin/bash suffix of the pinned path again.
+            patch --batch -p1 < ${./bazel-patches/pinned-command-shell.patch}
           ''}
                   ${lib.optionalString (source != null && builtins.compareVersions version "9.0.0" < 0) ''
             # The dist archive bundles an empty Android emulator
@@ -1538,6 +1544,20 @@ in
                   patch --batch -p1 < ${./bazel-patches/bazel_rc.patch} || true
                   sed -i "s|@bazelSystemBazelRCPath@|/dev/null|g" \
                     src/main/cpp/option_processor.cc
+
+                  ${lib.optionalString isBazel9 ''
+            # The shell is compiled into the installed Bazel, so it must be
+            # the target platform's Bash even when cross-building.
+            shell_sources=$(grep -rl --include='*.java' '@aosShell@' src/main/java)
+            test "$(printf '%s\n' "$shell_sources" | wc -l)" = 4
+            sed -i 's|@aosShell@|${bash}/bin/bash|g' $shell_sources
+            # Documentation comments may still mention /bin/sh as an example.
+            if grep -rn --include='*.java' '"/bin/sh"\|#!/bin/sh' src/main/java |
+              grep -v '^[^:]*:[0-9]*: *\(\*\|//\)'; then
+              echo "Bazel source still hard-codes /bin/sh" >&2
+              exit 1
+            fi
+          ''}
 
                   # Strip rules_python toolchain/pip registrations from MODULE.bazel
                   # (same as vendor FOD step — prevents downloading pre-built Python)
@@ -2099,6 +2119,47 @@ in
 
             # The re-executed action replaces the evicted entry.
             test "$(sha256sum < "$blob" | cut -d' ' -f1)" = "$digest"
+          '';
+        };
+
+        # Bazel must build without /bin/sh, including the workspace status
+        # command, which Bazel runs through its own shell rather than the
+        # configured shell executable.
+        no-bin-sh = offlineCheck {
+          name = "bazel-${version}-no-bin-sh";
+          buildDeps = [pkgs.util-linux];
+          files = {
+            "MODULE.bazel" = ''
+              module(name = "no_bin_sh")
+            '';
+            "BUILD.bazel" = ''
+              genrule(
+                  name = "status",
+                  outs = ["status.txt"],
+                  stamp = 1,
+                  cmd = "grep '^STABLE_SHELL_FREE ' bazel-out/stable-status.txt > $@",
+              )
+            '';
+            # No shebang: the status command is interpreted by Bazel's shell.
+            "workspace-status.sh" = ''
+              echo "STABLE_SHELL_FREE ok"
+            '';
+          };
+          script = ''
+            chmod +x workspace-status.sh
+            mkdir "$TMPDIR/empty-bin"
+            export -f run_bazel
+
+            # Hide the sandbox's /bin in a private mount namespace.
+            unshare --user --map-root-user --mount -- ${pkgs.bash}/bin/bash -euc '
+              mount --bind "$TMPDIR/empty-bin" /bin
+              test ! -e /bin/sh
+              run_bazel "$TMPDIR/output" build //:status \
+                --workspace_status_command="$PWD/workspace-status.sh"
+            '
+
+            test "$(cat "$TMPDIR/output/execroot/_main/bazel-out/k8-fastbuild/bin/status.txt")" \
+              = "STABLE_SHELL_FREE ok"
           '';
         };
       };
