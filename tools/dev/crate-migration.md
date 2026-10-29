@@ -46,10 +46,10 @@ After mechanical edits, review and validate:
   the affected runtime and license-boundary gates.
 
 The authoritative active package set is `crates/Cargo.toml`, not the historical
-migration map. New package locations and dependency boundaries are documented in
-`docs/architecture/crate-workspace.md`.
+migration map. Package locations and dependency boundaries are documented in the
+[Rust workspace guide](../../docs/engineering/rust-workspace.md).
 
-The [complete rename reference](../../docs/architecture/crate-renames.md) maps
-every former package to its final owner after the later merges and extractions.
-In particular, the surviving `aos-core` name now identifies portable primitives;
-its former native utilities belong to `aos-nar`, `aos-nix`, and `aos-cli-ui`.
+Later merges and extractions moved some mapped packages again; the map is an
+input to the initial move, not a record of final owners. In particular, the
+surviving `aos-core` name now identifies portable primitives; its former native
+utilities belong to `aos-nar`, `aos-nix`, and `aos-cli-ui`.

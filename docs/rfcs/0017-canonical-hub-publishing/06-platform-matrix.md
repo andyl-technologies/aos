@@ -208,8 +208,7 @@ The repository's [`flake.nix`](../../../flake.nix) currently exposes
 `x86_64-linux` and `aarch64-linux` as flake systems, while the
 [system-image guide](../../maintainers/system-images.md) documents only an
 `x86_64-linux` image target. Darwin cross-package composition and checks exist,
-but the [Darwin package-matrix plan](../../plans/darwin-package-matrix.md) states
-that real macOS qualification is still required.
+but real macOS qualification is still required.
 
 Consequently, no release may be called full-matrix or stable until:
 
