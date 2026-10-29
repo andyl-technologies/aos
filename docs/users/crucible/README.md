@@ -141,7 +141,7 @@ The usual progression is:
 6. Save or resume when investigating a particular execution prefix; use
    `campaign branch` for an authenticated alternate Campaign decision.
 7. Use bounded `search` or `fuzz` only after ordinary runs are deterministic.
-8. Cluster retained findings with `triage`.
+8. Cluster findings retained by a campaign snapshot with `triage`.
 
 ## Guide map
 

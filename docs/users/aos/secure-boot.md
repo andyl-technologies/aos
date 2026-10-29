@@ -79,7 +79,7 @@ The authenticated root contains the image-baked trust policy:
 | --- | --- |
 | `/etc/apm/registries.d` | Registry URLs, channels, priorities, and bootstrap caches |
 | `/etc/apm/trusted-keys.d` | Registry Ed25519 bootstrap anchors |
-| `/etc/apm/trusted-sb-certs.d` | Secure Boot db certificates used to re-check cataloged UKIs before upgrade |
+| `/etc/apm/trusted-sb-certs.d` | Secure Boot db certificates rendered from registry configuration; APM does not currently read them |
 | `/etc/apm/trusted-config-keys.d` | Keys allowed to authorize signed `host.nix` input |
 
 An immutable EROFS image without dm-verity resists ordinary writes but does not
@@ -212,9 +212,17 @@ store graph, and authenticated configuration inputs.
 ## Upgrade without breaking the chain
 
 Before writing an inactive root, APM verifies the candidate's signed registry
-catalog, store identity, root hash, expected measurement, Secure Boot signer,
-and SBAT policy. It also re-authenticates installed normal and recovery UKIs
-against the immutable db certificate snapshot carried by the running image.
+catalog and store identity. The boot runtime then checks the size and SHA-256
+of every staged artifact against the signed delivery metadata, validates the
+root against its dm-verity root hash, requires the candidate UKI to name the
+opposite slot and the same root hash, and checks the identity of any recovery
+UKI it installs.
+
+APM does not check the candidate UKI's Secure Boot signer or SBAT generation
+before staging. The firmware enforces both when it boots the candidate. A UKI
+that the firmware rejects never reaches blessing, so boot counting returns to
+the known-good slot. The signed recovery environment separately verifies UKIs
+against the db certificates carried in its own initrd before it restores them.
 
 The candidate uses systemd-boot counting. AOS blesses it only after it boots,
 re-evaluates configuration against its own ABI, reaches the ready PCR phase,
