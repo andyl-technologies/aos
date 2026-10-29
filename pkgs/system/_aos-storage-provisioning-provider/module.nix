@@ -34,6 +34,7 @@ in {
       result.options = {
         provisioning_plan = field types.plan "Validated plan from the authorized native module fixed point.";
         canonical_plan = field lib.types.str "Canonical bytes of the validated provisioning plan from the same authored sources.";
+        install_plan = field types.install "Validated installation intent from the same fixed point.";
       };
     };
     storageProvisioning.operations.commit = {

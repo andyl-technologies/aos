@@ -419,10 +419,13 @@ impl Evaluation {
     /// Unavailable host package options are checked during host admission; they
     /// cannot contribute executable effects through this data-only projection.
     ///
+    /// The result is `{ "storage": ..., "install": ... }`, both forced from one
+    /// fixed point so installer media and first boot agree on the same input.
+    ///
     /// # Errors
     /// Returns an error for undeclared or mistyped provisioning configuration,
     /// source failure, cancellation, timeout, or malformed projected output.
-    pub fn provisioning_storage(
+    pub fn provisioning(
         &self,
         staging: &Path,
         timeout_ms: u64,
@@ -432,7 +435,7 @@ impl Evaluation {
             staging,
             timeout_ms,
             cancellation,
-            "(evaluated.extendModules { checkDefinitionPaths = [[\"aos\" \"provisioning\"]]; }).config.aos.provisioning.storage",
+            "let provisioning = (evaluated.extendModules { checkDefinitionPaths = [[\"aos\" \"provisioning\"]]; }).config.aos.provisioning; in { inherit (provisioning) storage install; }",
             false,
         )
     }

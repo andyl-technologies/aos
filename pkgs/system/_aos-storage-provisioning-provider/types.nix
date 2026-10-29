@@ -52,6 +52,10 @@ in {
     arrays = defaulted (lib.types.attrsOf array) {} "Canonical validated MD array definitions.";
     partitions = field (lib.types.attrsOf partition) "Canonical validated partition definitions.";
   };
+  install = record {
+    mode = field (lib.types.enum ["disabled" "unattended"]) "Installation mode.";
+    targetDevice = defaulted nullableText null "Whole stable target disk.";
+  };
   marker = record {
     schema = field (lib.types.enum ["aos.storage.provisioning-marker-observation/v1"]) "Durable marker observation schema.";
     state = field (lib.types.enum ["absent" "completed" "pending" "indeterminate"]) "Observed transaction state.";
