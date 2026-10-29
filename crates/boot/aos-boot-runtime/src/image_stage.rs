@@ -22,7 +22,7 @@ use crate::boot_storage::with_writable_boot;
 use crate::image_profile::{
     BOOT_ROOT, IMAGE_PROFILE, candidate_path, private_directory, validate_measurement_sidecars,
 };
-use crate::recovery::{RecoveryEvidence, validate_uki_identity};
+use crate::recovery::{RecoveryEntry, validate_uki_identity};
 use aos_nix::executable::validate_store_executable;
 
 #[path = "image_stage/copy_up.rs"]
@@ -63,7 +63,7 @@ struct Tools {
 }
 
 struct PreparedRecovery {
-    evidence: RecoveryEvidence,
+    evidence: RecoveryEntry,
     uki: PathBuf,
     entry: PathBuf,
 }
@@ -364,17 +364,17 @@ fn stage(request: &Request, tools: &Tools) -> Result<Value> {
     let running_inventory =
         crate::initrd_archive::registered_initrd_roots(&running_initrd.join("initrd.img"))?;
     let candidate_inventory = crate::initrd_archive::registered_roots(&uki_path)?;
-    let journal = crate::initrd_store::writable_journal(
+    let state_directory = crate::initrd_store::writable_state_directory(
         &request.initrd_state_directory,
         &request.initrd_storage_root,
         Path::new(BOOT_ROOT),
     )?;
     // Boot commit restores the ESP read-only. Publish the capsule through its
-    // checked /boot view without changing the sealed journal mount's access.
+    // checked /boot view without changing the sealed state directory mount's access.
     with_writable_boot(&tools.mount, || {
         crate::initrd_store::preserve(
             &tools.nix_store,
-            &journal,
+            &state_directory,
             &request.retained_initrd_store_roots,
             &running_inventory,
             &candidate_inventory,
@@ -467,7 +467,7 @@ fn prepare_recovery(
     verify_path(&uki, byte_size, sha256)?;
     let copy = target.to_ascii_uppercase();
     let recovery_abi = validate_uki_identity(&uki, &copy, release)?;
-    let evidence = RecoveryEvidence {
+    let evidence = RecoveryEntry {
         copy: copy.clone(),
         uki_path: format!("EFI/AOS/recovery-{target}.efi"),
         entry_path: format!("loader/entries/recovery-{target}.conf"),
@@ -1184,7 +1184,7 @@ mod tests {
         let recovery_entry = temp.path().join("recovery-entry");
         fs::write(&normal, b"signed normal").unwrap();
         fs::write(&recovery_uki, b"signed recovery").unwrap();
-        let evidence = RecoveryEvidence {
+        let evidence = RecoveryEntry {
             copy: "B".to_string(),
             uki_path: "EFI/AOS/recovery-b.efi".to_string(),
             entry_path: "loader/entries/recovery-b.conf".to_string(),

@@ -31,7 +31,7 @@ mkDerivation {
     role = "public-package";
   };
   pname = "python3-jinja2";
-  qualification.packageProbe = lib.qualification.commandProbe {
+  smokeTest = lib.qualification.commandProbe {
     primary = {
       input = "A template variable containing HTML markup.";
       operation = "Render the template with Jinja2 autoescaping enabled.";

@@ -94,7 +94,7 @@ in
       role = "public-package";
     };
     pname = "libexif";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "An EXIF image-description tag containing AOS.";
         operation = "Serialize and parse the tag with libexif.";

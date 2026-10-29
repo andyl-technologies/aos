@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::artifact::require_identifier;
 use crate::digest::Sha256Digest;
-use crate::evidence::GateResult;
+use crate::evidence::Outcome;
 use crate::registry::registry_policy;
 
 /// Original Hub publication payload schema.
@@ -118,7 +118,7 @@ pub struct QualificationReceiptV1 {
     /// Digest of exact qualification policy bytes.
     pub policy_digest: Sha256Digest,
     /// Public qualification result.
-    pub result: GateResult,
+    pub result: Outcome,
     /// Digest of the complete public qualification report.
     pub report_digest: Sha256Digest,
     /// Public qualification authority identity.
@@ -150,7 +150,7 @@ impl QualificationReceiptV1 {
         {
             bail!("qualification nonce must be 32 bytes of lowercase hexadecimal");
         }
-        if self.result != GateResult::Passed {
+        if self.result != Outcome::Passed {
             bail!("qualification receipt is not passing");
         }
         if !self.qualified_at.ends_with('Z')

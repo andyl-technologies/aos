@@ -406,7 +406,7 @@ async fn process_publish_finalizes_complete_signed_graph_without_a_data_plane_ta
     .expect("release sidecar");
     let release_value = serde_json::to_value(&release).expect("release JSON");
     let signature_input = serde_json::json!({
-        "schema": "aos.container.signature-input/v1",
+        "schema": "aos.container.signature-input/v2",
         "identity": release_value["identity"].clone(),
         "oci": release_value["oci"].clone(),
         "nix": release_value["nix"].clone(),
@@ -417,7 +417,6 @@ async fn process_publish_finalizes_complete_signed_graph_without_a_data_plane_ta
             "license": release_value["evidence"]["license"].clone(),
             "provenance": release_value["evidence"]["provenance"].clone(),
         },
-        "qualification": release_value["qualification"].clone(),
     });
     let signature_input_path = workspace.path().join("signature-input.json");
     fs::write(
@@ -830,6 +829,8 @@ fn manifest_response(
         return Response::builder()
             .status(StatusCode::OK)
             .header(CONTENT_TYPE, media_type)
+            // Registries report the manifest length on HEAD as well as GET.
+            .header(CONTENT_LENGTH, bytes.len())
             .header(
                 "docker-content-digest",
                 Sha256Digest::digest(bytes).to_string(),

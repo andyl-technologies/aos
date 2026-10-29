@@ -16,7 +16,7 @@ in
       role = "public-package";
     };
     pname = "which";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Which returns the same executable path exactly.";

@@ -105,7 +105,7 @@ pub struct AppState {
     /// Verifier for short-lived assertions from an explicitly configured TLS,
     /// VPN, or layer-7 ingress adapter.
     pub delivery_attestation_verifier:
-        Option<Arc<aos_hub_service::delivery_attestation::DeliveryAttestationVerifier>>,
+        Option<Arc<aos_hub_service::delivery_attestation::IngressAssertionVerifier>>,
     /// Runtime-owned signer material for the domain-probe well-known route.
     pub domain_probe_terminator:
         Option<Arc<dyn aos_hub_service::topology_probe::DomainProbeTerminatorProvider>>,
@@ -119,7 +119,7 @@ pub struct AppState {
     pub container_rollout: aos_hub_service::container_rollout::ContainerRollout,
     /// Deployment-owned release receipt authority.
     pub release_evidence:
-        Option<Arc<dyn aos_hub_service::release_evidence::ReleaseEvidenceAuthority>>,
+        Option<Arc<dyn aos_hub_service::release_receipt_signer::ReleaseEvidenceAuthority>>,
 }
 
 impl AppState {
@@ -439,7 +439,7 @@ async fn verify_hybrid_ingress(
     // The public Worker terminates the layer-7 endpoint; Native is its origin.
     parts
         .extensions
-        .insert(aos_hub_service::connect::DeliveryTransportEvidence {
+        .insert(aos_hub_service::connect::VerifiedTransport {
             scheme: assertion.scheme.clone(),
             ingress_kind: "layer7".into(),
             tls_identity: Some(public_host),
@@ -548,7 +548,7 @@ async fn verify_hybrid_ingress(
 /// ```
 pub async fn router_with_transport(
     state: Arc<AppState>,
-    transport: Option<aos_hub_service::connect::DeliveryTransportEvidence>,
+    transport: Option<aos_hub_service::connect::VerifiedTransport>,
 ) -> Router {
     router_with_ports(
         state,
@@ -563,7 +563,7 @@ pub async fn router_with_transport(
 
 async fn router_with_ports(
     state: Arc<AppState>,
-    transport: Option<aos_hub_service::connect::DeliveryTransportEvidence>,
+    transport: Option<aos_hub_service::connect::VerifiedTransport>,
     surface_override: Option<Arc<dyn aos_hub_service::fetch::SurfaceProvider>>,
     write_override: Option<Arc<dyn aos_hub_service::surface_write::SurfaceWriteProvider>>,
     direct_factory: Option<Arc<dyn crate::direct_upload::DirectUploadTransportFactory>>,

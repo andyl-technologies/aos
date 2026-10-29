@@ -4,15 +4,14 @@
 //! JSON body:
 //!
 //! ```text
-//! magic | version | flags | body length | sequence | previous digest | body digest | header digest | body
+//! magic | version | flags | body length | sequence | body digest | header digest | body
 //! ```
 //!
-//! The frame digest covers the complete header and body. Its value becomes the
-//! next frame's `previous digest`, making interior record removal, reordering,
-//! or replacement detectable. Detecting loss of an entire valid suffix requires
-//! the caller to retain the expected head digest separately. A partial final
-//! header or body is a torn tail. Any invalid complete frame is corruption and
-//! is retained for investigation.
+//! The header digest and body digest detect damaged frames, and the sequence
+//! field detects removed or reordered interior frames. A partial final header
+//! or body is a torn tail. Any invalid complete frame is corruption and is
+//! retained for investigation. Journals written in an earlier on-disk format
+//! are rejected with [`JournalError::UnsupportedFormat`] and left untouched.
 
 mod file;
 mod frame;

@@ -67,7 +67,7 @@ in
       role = "public-package";
     };
     pname = "aos-registry-server";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The initializer creates the ValidPaths and Refs tables under the requested root.";

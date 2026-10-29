@@ -103,7 +103,7 @@ in
       role = "public-package";
     };
     pname = "cargo-c";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "A dependency-free Rust crate exporting one C function.";
         operation = "Build its C ABI and inspect the library, header, and pkg-config file.";

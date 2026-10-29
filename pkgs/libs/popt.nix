@@ -15,7 +15,7 @@ in
       role = "public-package";
     };
     pname = "popt";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The parser stores integer value 42 and reaches end of options.";

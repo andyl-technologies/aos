@@ -21,7 +21,9 @@ use sha2::{Digest, Sha256};
 #[cfg(test)]
 use zeroize::Zeroizing;
 
+use crate::snapshot::retire_columns;
 use crate::snapshot::SnapshotClassifier;
+use crate::snapshot::GENERATION27_RETIRED_COLUMNS;
 use crate::snapshot::SnapshotSchemaManifest;
 use crate::value::Row;
 use crate::value::Value;
@@ -61,17 +63,31 @@ static GENERATION16_SOURCE: LazyLock<String> = LazyLock::new(|| {
     ]
     .concat()
 });
-static COVERAGE: LazyLock<String> = LazyLock::new(|| {
+static GENERATION25_COVERAGE: LazyLock<String> = LazyLock::new(|| {
     [
         GENERATION16_COVERAGE.as_str(),
         include_str!("coverage-v25-delta.tsv"),
     ]
     .concat()
 });
-static SOURCE: LazyLock<String> = LazyLock::new(|| {
+static GENERATION25_SOURCE: LazyLock<String> = LazyLock::new(|| {
     [
         GENERATION16_SOURCE.as_str(),
         include_str!("../schema-v25-delta.tsv"),
+    ]
+    .concat()
+});
+static COVERAGE: LazyLock<String> = LazyLock::new(|| {
+    [
+        retire_columns(&GENERATION25_COVERAGE, 1, GENERATION27_RETIRED_COLUMNS).as_str(),
+        include_str!("coverage-v27-delta.tsv"),
+    ]
+    .concat()
+});
+static SOURCE: LazyLock<String> = LazyLock::new(|| {
+    [
+        retire_columns(&GENERATION25_SOURCE, 2, GENERATION27_RETIRED_COLUMNS).as_str(),
+        include_str!("../schema-v27-delta.tsv"),
     ]
     .concat()
 });
@@ -206,11 +222,23 @@ impl ObjectRequirementsCoverage {
     /// # Errors
     /// Refuses changed columns or inconsistent confidentiality policies.
     pub fn current25() -> Result<Self> {
+        Self::from_generation_contract(
+            GENERATION25_COVERAGE.as_str(),
+            GENERATION25_SOURCE.as_str(),
+            25,
+        )
+    }
+
+    /// Admits the current coverage, including retired binding ids.
+    ///
+    /// # Errors
+    /// Refuses changed columns or inconsistent confidentiality policies.
+    pub fn current27() -> Result<Self> {
         Self::from_contract(COVERAGE.as_str())
     }
 
     fn from_contract(coverage: &str) -> Result<Self> {
-        Self::from_generation_contract(coverage, SOURCE.as_str(), 25)
+        Self::from_generation_contract(coverage, SOURCE.as_str(), 27)
     }
 
     fn from_generation_contract(coverage: &str, source: &str, generation: usize) -> Result<Self> {

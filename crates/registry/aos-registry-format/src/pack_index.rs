@@ -730,6 +730,49 @@ mod tests {
     }
 
     #[test]
+    fn truncated_offset_delta_headers_stop_at_the_pack_trailer() {
+        for header in [vec![0x60], vec![0x60, 0x80]] {
+            let mut pack = b"PACK".to_vec();
+            pack.extend_from_slice(&2_u32.to_be_bytes());
+            pack.extend_from_slice(&1_u32.to_be_bytes());
+            pack.extend_from_slice(&header);
+
+            let (index_path, _, pack) = finish_pack(pack, Vec::new());
+            let pack_path = companion_pack_path(&index_path).unwrap();
+            let error = validate_pack(&pack_path, &pack).unwrap_err();
+
+            assert!(
+                error
+                    .to_string()
+                    .contains("companion pack entry is truncated"),
+                "unexpected error for {header:?}: {error:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_truncated_reference_delta_base_returns_an_error() {
+        for base_bytes in 0..OBJECT_ID_BYTES {
+            let mut pack = b"PACK".to_vec();
+            pack.extend_from_slice(&2_u32.to_be_bytes());
+            pack.extend_from_slice(&1_u32.to_be_bytes());
+            pack.push(0x70);
+            pack.extend(std::iter::repeat_n(0x41, base_bytes));
+
+            let (index_path, _, pack) = finish_pack(pack, Vec::new());
+            let pack_path = companion_pack_path(&index_path).unwrap();
+            let error = validate_pack(&pack_path, &pack).unwrap_err();
+
+            assert!(
+                error
+                    .to_string()
+                    .contains("reference-delta base is truncated"),
+                "unexpected error for {base_bytes} base bytes: {error:#}"
+            );
+        }
+    }
+
+    #[test]
     fn resolves_forward_reference_delta_chain_once_per_entry() {
         let contents: [&[u8]; 4] = [b"abcd", b"abc", b"ab", b"a"];
         let oids = contents

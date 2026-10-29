@@ -37,7 +37,7 @@ in
       role = "public-package";
     };
     pname = "gobject-introspection";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "G-ir-compiler accepts the schema and writes the typelib representation.";

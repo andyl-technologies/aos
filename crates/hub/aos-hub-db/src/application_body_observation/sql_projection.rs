@@ -40,7 +40,7 @@ impl SqlProjection {
         source.update(include_bytes!("../application_body_observation.rs"));
         source.update(include_bytes!("rpc.rs"));
         source.update(include_bytes!("../db/direct_upload.rs"));
-        source.update(include_bytes!("../db/publication_admission.rs"));
+        source.update(include_bytes!("../db/publication_manifest_batch.rs"));
         source.update(include_bytes!("sql_projection/dynamic.rs"));
         source.update(include_bytes!("../direct_upload/service.rs"));
         source.update(include_bytes!(

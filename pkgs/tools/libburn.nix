@@ -24,7 +24,7 @@ in
       role = "public-package";
     };
     pname = "libburn";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Cdrskin creates one padded track whose payload and zero-filled remainder are exact.";

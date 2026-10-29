@@ -32,7 +32,7 @@ in
       role = "public-package";
     };
     pname = "python3-dbus";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The signature contains one complete array type and round-trips unchanged.";

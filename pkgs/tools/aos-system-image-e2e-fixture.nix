@@ -256,7 +256,7 @@ in
       role = "build-input";
     };
     pname = "aos-system-image-e2e-fixture";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The fixture is valid Bash and declares both image formats plus its signed release flow.";

@@ -87,7 +87,7 @@ impl<M: Write, P: Write> ObjectRequirementsWriter<M, P> {
     ) -> Result<Self> {
         limits.validate()?;
         hash_string(source_capture_root_sha256)?;
-        let coverage = ObjectRequirementsCoverage::current25()?;
+        let coverage = ObjectRequirementsCoverage::current27()?;
         let archive = FreshArchiveId::generate(rng)?;
         let metadata_key = FreshStreamKey::generate(rng)?;
         let private_key = FreshStreamKey::generate(rng)?;
@@ -265,12 +265,14 @@ impl<M: Read, P: Read> ObjectRequirementsReader<M, P> {
         let generation12 = ObjectRequirementsCoverage::current12()?;
         let generation13 = ObjectRequirementsCoverage::current13()?;
         let generation16 = ObjectRequirementsCoverage::current16()?;
-        let current = ObjectRequirementsCoverage::current25()?;
+        let generation25 = ObjectRequirementsCoverage::current25()?;
+        let current = ObjectRequirementsCoverage::current27()?;
         let selection = metadata.select_exact(&[
             historical.header(&id, "metadata", source_capture_root_sha256),
             generation12.header(&id, "metadata", source_capture_root_sha256),
             generation13.header(&id, "metadata", source_capture_root_sha256),
             generation16.header(&id, "metadata", source_capture_root_sha256),
+            generation25.header(&id, "metadata", source_capture_root_sha256),
             current.header(&id, "metadata", source_capture_root_sha256),
         ])?;
         let coverage = match selection {
@@ -278,6 +280,7 @@ impl<M: Read, P: Read> ObjectRequirementsReader<M, P> {
             1 => generation12,
             2 => generation13,
             3 => generation16,
+            4 => generation25,
             _ => current,
         };
         private.compare(&coverage.header(&id, "private", source_capture_root_sha256))?;

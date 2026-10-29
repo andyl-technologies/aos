@@ -118,8 +118,8 @@ impl PostgresSnapshotReader {
     pub async fn open(database_url: &str, limits: PostgresSnapshotLimits) -> Result<Self> {
         limits.validate()?;
         ensure!(
-            crate::db::MIGRATIONS.len() == 25,
-            "PostgreSQL capture contract requires explicit generation-twenty-five support"
+            crate::db::MIGRATIONS.len() == 27,
+            "PostgreSQL capture contract requires explicit generation-twenty-seven support"
         );
         Self::open_inner(database_url, limits)
             .await
@@ -175,7 +175,7 @@ impl PostgresSnapshotReader {
             );
         }
 
-        let compiled = CompiledSqliteSnapshotCatalogue::load_generation(25).await?;
+        let compiled = CompiledSqliteSnapshotCatalogue::load_generation(27).await?;
         let schema = compiled.schema().clone();
         // All names come from the compiled catalogue. These locks prohibit
         // concurrent rewrite/drop while ordinary DML and VACUUM remain allowed.
@@ -207,7 +207,7 @@ impl PostgresSnapshotReader {
             "changed PostgreSQL semantic catalogue"
         );
         let version_matches: bool = sqlx::query_scalar(
-            "SELECT count(*)=1 AND min(version)=25 AND max(version)=25 FROM public.schema_version",
+            "SELECT count(*)=1 AND min(version)=27 AND max(version)=27 FROM public.schema_version",
         )
         .fetch_one(&mut *transaction)
         .await?;

@@ -5,7 +5,7 @@ use aos_hub_db::storage_work::binding_custody::*;
 use aos_hub_db::storage_work::StorageBindingPublication;
 use aos_hub_db::storage_work::StorageBindingSnapshot;
 use aos_hub_db::storage_work::StorageCredentialMaterial;
-use aos_hub_model::storage::StorageCredentialProbeEvidence;
+use aos_hub_model::storage::StorageCredentialProbeResult;
 use serde::{Deserialize, Serialize};
 
 /// Private material and its permanent original probe identity.
@@ -15,7 +15,7 @@ pub(super) struct HeldCredential {
     pub(super) original: StorageCredentialCustodyProbe,
     pub(super) material: Option<StorageCredentialMaterial>,
     pub(super) material_not_after: i64,
-    pub(super) positive: Option<StorageCredentialProbeEvidence>,
+    pub(super) positive: Option<StorageCredentialProbeResult>,
     pub(super) pending: bool,
     pub(super) revoked: bool,
 }

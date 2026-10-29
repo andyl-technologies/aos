@@ -51,7 +51,7 @@ use aos_hub_model::storage::DocumentationInspection;
 use aos_hub_model::storage::FrozenSurfaceAccess;
 use aos_hub_model::storage::MultipartAbortOutcome;
 use aos_hub_model::storage::PartTag;
-use aos_hub_model::storage::StorageCredentialProbeEvidence;
+use aos_hub_model::storage::StorageCredentialProbeResult;
 use aos_hub_service::fetch::StreamedRead;
 use aos_hub_service::fetch::SurfaceDeliveryHead;
 use aos_hub_service::fetch::SurfaceFetch;
@@ -1200,7 +1200,7 @@ impl StorageCredentialProbeProvider for HybridStorageCredentialProbeProvider {
         credential: &BindingCredentialRevisionRecord,
         operation_id: &str,
         probe_token: &str,
-    ) -> Result<StorageCredentialProbeEvidence> {
+    ) -> Result<StorageCredentialProbeResult> {
         anyhow::ensure!(
             credential.binding_id == binding.id,
             "credential probe binding mismatch"

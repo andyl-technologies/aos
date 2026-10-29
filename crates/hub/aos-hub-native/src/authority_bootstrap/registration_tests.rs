@@ -58,12 +58,11 @@ impl Api {
                 .await
             }
             None => {
-                let listener =
-                    aos_hub_service::connect::DeliveryTransportEvidence::from_verified_url(
-                        &url::Url::parse("https://localhost").unwrap(),
-                        "hub",
-                    )
-                    .unwrap();
+                let listener = aos_hub_service::connect::VerifiedTransport::from_verified_url(
+                    &url::Url::parse("https://localhost").unwrap(),
+                    "hub",
+                )
+                .unwrap();
                 aos_hub_native::server::router_with_transport(Arc::new(state), Some(listener)).await
             }
         };

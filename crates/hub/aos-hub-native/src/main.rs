@@ -1410,7 +1410,7 @@ async fn main() -> Result<()> {
                     let qualification_keys = serde_json::from_str(&qualification_keys_source)
                         .context("parsing qualification public-key map")?;
                     app_state.release_evidence = Some(Arc::new(
-                        aos_hub_service::release_evidence::Ed25519ReleaseEvidenceAuthority::from_base64(
+                        aos_hub_service::release_receipt_signer::Ed25519ReleaseEvidenceAuthority::from_base64(
                             deployment_id,
                             key_id,
                             seed.trim(),
@@ -1465,7 +1465,7 @@ async fn main() -> Result<()> {
                         format!("reading delivery attestation key at {}", path.display())
                     })?;
                 app_state.delivery_attestation_verifier = Some(Arc::new(
-                    aos_hub_service::delivery_attestation::DeliveryAttestationVerifier::new(&key)
+                    aos_hub_service::delivery_attestation::IngressAssertionVerifier::new(&key)
                         .context("invalid delivery attestation key")?,
                 ));
             }
@@ -2050,7 +2050,7 @@ async fn main() -> Result<()> {
                     &private_key,
                     server_name.clone(),
                 )?;
-                let transport = aos_hub_service::connect::DeliveryTransportEvidence {
+                let transport = aos_hub_service::connect::VerifiedTransport {
                     scheme: "https".to_owned(),
                     ingress_kind: "hub".to_owned(),
                     tls_identity: Some(aos_hub_db::db::InboundEndpointHost::Domain(server_name)),

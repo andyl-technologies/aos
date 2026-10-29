@@ -41,7 +41,7 @@ in
       role = "public-package";
     };
     pname = "libapparmor";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The parser returns the qualification label and enforce mode.";

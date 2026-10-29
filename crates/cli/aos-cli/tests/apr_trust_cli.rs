@@ -27,8 +27,15 @@ fn apr_trust_cli_pins_lists_replaces_and_removes_keys() -> Result<()> {
     )?;
     assert_eq!(fs::read_to_string(&key_file)?, "core:Ed25519:aGlqa2w=\n",);
 
-    run_apr(&home, &["trust", "remove", "core"])?;
-    assert!(!key_file.exists());
+    let output = run_apr(&home, &["trust", "remove", "core"])?;
+    assert!(output.contains("Removed pinned trust keys"));
+    assert_eq!(
+        fs::read_to_string(&key_file)?,
+        "# bootstrap disabled\n# revoked: core:Ed25519:aGlqa2w=\n"
+    );
+
+    run_apr(&home, &["trust", "pin", "core", "core:Ed25519:aGlqa2w="])?;
+    assert_eq!(fs::read_to_string(&key_file)?, "core:Ed25519:aGlqa2w=\n");
 
     let err = Command::new(env!("CARGO_BIN_EXE_apr"))
         .env("HOME", &home)
@@ -37,6 +44,37 @@ fn apr_trust_cli_pins_lists_replaces_and_removes_keys() -> Result<()> {
         .context("running apr trust pin with mismatched registry")?;
     assert!(!err.status.success());
     assert!(String::from_utf8_lossy(&err.stderr).contains("expected 'core'"));
+
+    Ok(())
+}
+
+#[test]
+fn apr_trust_cli_removes_configuration_only_bootstrap_key() -> Result<()> {
+    let tmp = tempfile::TempDir::new()?;
+    let home = tmp.path().join("home");
+    let config_dir = home.join(".config").join("apm");
+    let registry_dir = config_dir.join("registries.d");
+    fs::create_dir_all(&registry_dir)?;
+    fs::write(
+        registry_dir.join("core.toml"),
+        r#"[registry]
+name = "core"
+url = "https://registry.invalid/core"
+
+[registry.signing]
+required = true
+public_key = "core:Ed25519:YWJjZA=="
+"#,
+    )?;
+
+    let output = run_apr(&home, &["trust", "remove", "core"])?;
+    assert!(output.contains("Removed pinned trust keys"));
+
+    let key_file = config_dir.join("trusted-keys.d").join("core.pub");
+    assert_eq!(
+        fs::read_to_string(&key_file)?,
+        "# bootstrap disabled\n# revoked: core:Ed25519:YWJjZA==\n"
+    );
 
     Ok(())
 }

@@ -99,7 +99,7 @@ pub(super) async fn custody_client(
                     // persistence; physical SDK probe qualification is separate.
                     sign_storage_credential_custody_probe_reply(&key, &StorageCredentialCustodyProbeReply {
                         request,
-                        evidence: aos_hub_model::storage::StorageCredentialProbeEvidence {
+                        evidence: aos_hub_model::storage::StorageCredentialProbeResult {
                             valid: true, conditional_writes_supported: false, error: None,
                             evidence: serde_json::json!({"fixture": "authenticated-controller-result"}),
                         },

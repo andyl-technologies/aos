@@ -22,7 +22,7 @@ in
       role = "public-package";
     };
     pname = "linux-headers";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The headers provide a self-consistent seccomp, audit, and socket-filter userspace ABI.";

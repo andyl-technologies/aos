@@ -154,12 +154,21 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     inherit (resolvedBuildPackages) bash coreutils;
     system = stdenv.buildPlatform.system;
   };
+  # Package recipes declare their smoke test as `smokeTest`.
+  authoredSmokeTest = packageName: attrs:
+    if attrs ? qualification
+    then throw "Package '${packageName}' sets qualification; declare its smoke test as smokeTest."
+    else attrs.smokeTest or null;
+
+  # The companion document keeps its `aos.package.qualification` schema and
+  # `qualificationDocument`/`qualificationArtifact` names, which published
+  # packages already carry.
   qualificationArtifactsFor = package:
-    lib.optionalAttrs (package ? qualification) (let
+    lib.optionalAttrs (package ? smokeTest) (let
       packageName = package.catalogName or package.pname or package.name;
       projected = lib.qualification.projectPackageProbe {
         owner = packageName;
-        probe = package.qualification.packageProbe;
+        probe = package.smokeTest;
       };
       dependencies = builtins.genericClosure {
         startSet = [
@@ -193,7 +202,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         else if selector.package == packageName && item.key != builtins.toString package
         then knownOutputs
         else if knownOutputs ? ${key} && knownOutputs.${key} != path
-        then throw "Package '${packageName}' qualification selects conflicting artifacts for ${key}."
+        then throw "Package '${packageName}' smoke test selects conflicting artifacts for ${key}."
         else knownOutputs // {${key} = path;};
       outputs = builtins.foldl' (known: item:
         builtins.foldl' (retainOutput item) known (item.value.outputs or ["out"])) {}
@@ -203,7 +212,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
           key = builtins.toJSON selector;
         in {
           inherit selector;
-          path = outputs.${key} or (throw "Package '${packageName}' qualification selector ${key} is outside its declared dependency closure.");
+          path = outputs.${key} or (throw "Package '${packageName}' smoke test selector ${key} is outside its declared dependency closure.");
         })
         projected.selectors;
       document = {
@@ -282,7 +291,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         system = null;
         targetSystem = null;
         platformSupport = null;
-        qualification = null;
+        smokeTest = null;
         qualificationDocument = null;
         qualificationArtifact = null;
       }
@@ -351,13 +360,13 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       };
   in
     assert version == release.version;
-      if !(package ? qualification)
+      if authoredSmokeTest name package == null
       then annotated
       else
         withQualification {
           packageName = name;
           version = package.version;
-          packageProbe = package.qualification.packageProbe;
+          packageProbe = authoredSmokeTest name package;
         }
         annotated;
 
@@ -392,7 +401,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       }
     );
   mkOciPackageEvidence = {packageSet ? self, ...} @ args:
-    import ./containers/_aos-oci-backend/container/package-evidence.nix (
+    import ./containers/_aos-oci-backend/container/package-source-map.nix (
       (builtins.removeAttrs args ["packageSet"])
       // {
         inherit lib;
@@ -429,7 +438,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       // {
         catalogName = packageName;
         inherit (release) version versionRequirement;
-        qualification.packageProbe = normalized;
+        smokeTest = normalized;
       };
     result =
       authored
@@ -468,21 +477,20 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       source = args.module or null;
     };
     moduleDeps = args.moduleDeps or [];
-    checkedQualification =
-      if !(args ? qualification)
+    authoredProbe = authoredSmokeTest packageName args;
+    checkedSmokeTest =
+      if authoredProbe == null
       then null
-      else if !builtins.isAttrs args.qualification || builtins.attrNames args.qualification != ["packageProbe"]
-      then throw "Package '${packageName}' qualification must contain exactly packageProbe."
-      else {packageProbe = lib.qualification.normalizePackageProbe args.qualification.packageProbe;};
+      else lib.qualification.normalizePackageProbe authoredProbe;
     qualificationMetadata =
-      if checkedQualification == null
+      if checkedSmokeTest == null
       then {}
       else
         qualificationArtifactsFor (drv
           // {
             catalogName = packageName;
             version = release.version;
-            qualification = checkedQualification;
+            smokeTest = checkedSmokeTest;
             inherit moduleDeps;
             buildDeps = args.buildDeps or [];
             runtimeDeps = runtimeDependencySupport.inputs (args.runtimeDeps or []);
@@ -533,7 +541,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     lowerArgs =
       # Deployment modules are retained as source artifacts, never evaluated by
       # the payload builder or passed as low-level derivation attributes.
-      (builtins.removeAttrs args ["abilities" "module" "moduleDeps" "catalogName" "platformSupport" "qualification" "configModule" "sharedBuildCache" "cacheCCompilers" "accacheLlvmOptions" "outputPackages"])
+      (builtins.removeAttrs args ["abilities" "module" "moduleDeps" "catalogName" "platformSupport" "smokeTest" "configModule" "sharedBuildCache" "cacheCCompilers" "accacheLlvmOptions" "outputPackages"])
       // lib.optionalAttrs (args ? version) {inherit (release) version;}
       // lib.optionalAttrs cacheCCompilers (builtins.removeAttrs cCompilerCacheEnvironment ["RUSTC_WRAPPER"])
       // {
@@ -572,8 +580,8 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       // lib.optionalAttrs (moduleArtifact != null) {
         module = moduleArtifact;
       }
-      // lib.optionalAttrs (checkedQualification != null) {
-        qualification = checkedQualification;
+      // lib.optionalAttrs (checkedSmokeTest != null) {
+        smokeTest = checkedSmokeTest;
         inherit (qualificationMetadata) qualificationDocument qualificationArtifact;
       };
     platformAttrs = lib.optionalAttrs (packagePlatformSupport != null) {
@@ -608,7 +616,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
   in
     if args ? versionRequirement || args ? moduleCompatibility
     then throw "Package compatibility is derived from version; versionRequirement and moduleCompatibility cannot be authored."
-    else builtins.deepSeq checkedQualification (addBuilderOverrides mkDerivation args result);
+    else builtins.deepSeq checkedSmokeTest (addBuilderOverrides mkDerivation args result);
 
   # The stdenv cc-wrapper provides gcc/g++/ld/ar/etc.
   bootstrapTools =
@@ -1383,7 +1391,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     src = aosWorkspaceVendorSource;
     name = "aos-workspace-vendor";
     sourceRoot = "source";
-    hash = "sha256-gcnWX6l9u9LcTSRVr334KPrN15YcP0WvlSO15D6nU7I=";
+    hash = "sha256-Md42GwuqWhUcE/s1VyEGqVXvaPAfi0N3WMl4u2kZtA4=";
   };
 
   # Auto-discover packages from subdirectories.
@@ -2007,7 +2015,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
 
       qemu-crucible = mkQemuPackage {
         pname = "qemu-crucible";
-        qualification.packageProbe = lib.qualification.commandProbe {
+        smokeTest = lib.qualification.commandProbe {
           "primary" = {
             "artifacts" = [];
             "expected" = "qemu-img reports the two images as identical.";
@@ -2072,7 +2080,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       };
       qemu-crucible-reference = mkQemuPackage {
         pname = "qemu-crucible-reference";
-        qualification.packageProbe = lib.qualification.commandProbe {
+        smokeTest = lib.qualification.commandProbe {
           "primary" = {
             "artifacts" = [];
             "expected" = "qemu-img reports the two images as identical.";

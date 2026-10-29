@@ -2,7 +2,6 @@
 
 use anyhow::{bail, Context, Result};
 use aos_oci_types::{MediaType, RepositoryName, Sha256Digest};
-use serde::Serialize;
 
 use super::{OciGcCandidateRecord, OciGcPlacementActionRecord};
 use crate::backend::Statement;
@@ -122,42 +121,6 @@ impl OciGcDeleteOutcome {
     }
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CanonicalDeletionEvidence<'a> {
-    action_id: &'a str,
-    response_idempotency_key: &'a str,
-    outcome: &'a str,
-    conditional_etag: Option<&'a str>,
-    provider_request_id: Option<&'a str>,
-    confirmed_at: i64,
-}
-
-/// Computes the canonical digest independently verified for deletion evidence.
-///
-/// # Errors
-///
-/// Returns an error when JSON serialization fails.
-pub fn oci_gc_deletion_evidence_digest(
-    action_id: &str,
-    response_idempotency_key: &str,
-    outcome: OciGcDeleteOutcome,
-    conditional_etag: Option<&str>,
-    provider_request_id: Option<&str>,
-    confirmed_at: i64,
-) -> Result<Sha256Digest> {
-    Ok(Sha256Digest::digest(&serde_json::to_vec(
-        &CanonicalDeletionEvidence {
-            action_id,
-            response_idempotency_key,
-            outcome: outcome.as_str(),
-            conditional_etag,
-            provider_request_id,
-            confirmed_at,
-        },
-    )?))
-}
-
 /// Idempotent successful provider response for one claimed action.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordOciGcDeletionSuccess {
@@ -173,8 +136,6 @@ pub struct RecordOciGcDeletionSuccess {
     pub conditional_etag: Option<String>,
     /// Provider request identity, when supplied.
     pub provider_request_id: Option<String>,
-    /// Canonical controller digest of the complete provider response.
-    pub evidence_digest: Sha256Digest,
     /// Provider confirmation time in Unix seconds.
     pub confirmed_at: i64,
 }
@@ -378,23 +339,12 @@ impl Database {
         if input.outcome == OciGcDeleteOutcome::Deleted && conditional_etag.is_none() {
             bail!("conditional deletion requires a strong entity tag");
         }
-        let expected_evidence_digest = oci_gc_deletion_evidence_digest(
-            &input.action_id,
-            &input.response_idempotency_key,
-            input.outcome,
-            conditional_etag.as_deref(),
-            input.provider_request_id.as_deref(),
-            input.confirmed_at,
-        )?;
-        if input.evidence_digest != expected_evidence_digest {
-            bail!("OCI GC deletion evidence digest is not canonical");
-        }
         if let Some(existing) = self
             .backend
             .query_opt(
                 "SELECT evidence.action_id, evidence.outcome,
-                        evidence.conditional_etag, evidence.evidence_digest,
-                        evidence.provider_request_id, evidence.confirmed_at
+                        evidence.conditional_etag, evidence.provider_request_id,
+                        evidence.confirmed_at
                  FROM oci_gc_deletion_evidence evidence
                  WHERE evidence.response_idempotency_key = ?1",
                 &vals![input.response_idempotency_key],
@@ -404,9 +354,8 @@ impl Database {
             if existing.get::<String>(0)? == input.action_id
                 && existing.get::<String>(1)? == input.outcome.as_str()
                 && existing.get::<Option<String>>(2)? == conditional_etag
-                && existing.get::<String>(3)? == input.evidence_digest.to_string()
-                && existing.get::<Option<String>>(4)? == input.provider_request_id
-                && existing.get::<i64>(5)? == input.confirmed_at
+                && existing.get::<Option<String>>(3)? == input.provider_request_id
+                && existing.get::<i64>(4)? == input.confirmed_at
             {
                 return self
                     .oci_gc_placement_action(&input.action_id)
@@ -421,16 +370,15 @@ impl Database {
                     format!(
                         "INSERT INTO oci_gc_deletion_evidence
                        (action_id, response_idempotency_key, outcome,
-                        conditional_etag, provider_request_id, evidence_digest,
-                        confirmed_at)
-                     SELECT action.id, ?3, ?4, ?5, ?6, ?7, ?8
+                        conditional_etag, provider_request_id, confirmed_at)
+                     SELECT action.id, ?3, ?4, ?5, ?6, ?7
                      FROM oci_gc_placement_actions action
                      WHERE action.id = ?1 AND action.state = 'claimed'
                        AND action.claim_token = ?2
-                       AND action.lease_expires_at > ?8 AND {}
+                       AND action.lease_expires_at > ?7 AND {}
                        AND (?4 = 'already_absent'
                          OR action.expected_strong_etag = ?5)",
-                        gc_action_authorization_sql("action", "?8")
+                        gc_action_authorization_sql("action", "?7")
                     ),
                     vals![
                         input.action_id,
@@ -439,7 +387,6 @@ impl Database {
                         input.outcome.as_str(),
                         conditional_etag,
                         input.provider_request_id,
-                        input.evidence_digest.to_string(),
                         input.confirmed_at
                     ],
                 )

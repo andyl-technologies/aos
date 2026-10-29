@@ -1257,7 +1257,6 @@ class Scenario:
                 f"{shlex.quote(self.package_outputs["out"]["store_path"] + "/bin/aos")} ability journal {journal} --format json"
             ))
             if (inspection.get("schema") != "aos.activation.inspection"
-                    or inspection.get("liveStateVerified") is not False
                     or inspection.get("pending") is not None or inspection.get("completed") is None
                     or inspection.get("incompleteTailBytes") != 0):
                 raise RuntimeError("native boot scope lacks a complete durable deployment")

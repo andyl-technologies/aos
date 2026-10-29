@@ -666,13 +666,13 @@ fn qualification_section(
     slug: &str,
     record: &aos_release_format::record::ReleaseRecordV1,
 ) -> String {
-    use aos_release_format::evidence::GateResult;
+    use aos_release_format::evidence::Outcome;
     use aos_release_format::qualification::claims::ClaimDisposition;
 
     let summary = &record.qualification;
     let (result_class, result_label) = match summary.result {
-        GateResult::Passed => ("ok", "Qualified"),
-        GateResult::Failed => ("bad", "Failed qualification"),
+        Outcome::Passed => ("ok", "Qualified"),
+        Outcome::Failed => ("bad", "Failed qualification"),
     };
     let mut body = String::from("<h2>Qualification</h2><div class=\"release-facts\">");
     let _ = write!(
@@ -910,7 +910,7 @@ mod tests {
     #[test]
     fn release_record_renders_result_claims_support_and_provenance() {
         use aos_release_format::digest::Sha256Digest;
-        use aos_release_format::evidence::GateResult;
+        use aos_release_format::evidence::Outcome;
         use aos_release_format::qualification::claims::{
             AssuranceLevel, ClaimDisposition, ClaimOutcome,
         };
@@ -930,7 +930,7 @@ mod tests {
             qualification: QualificationSummaryV1 {
                 policy_id: "full-release-qualification".into(),
                 policy_digest: Sha256Digest::of_bytes(b"policy"),
-                result: GateResult::Passed,
+                result: Outcome::Passed,
                 qualified_at: "2026-09-05T12:00:00Z".into(),
                 authority_id: "qualification-authority".into(),
                 receipt_digest: Sha256Digest::of_bytes(b"receipt"),

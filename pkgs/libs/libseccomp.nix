@@ -62,7 +62,7 @@ in
       role = "public-package";
     };
     pname = "libseccomp";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The name resolves to the SCMP_ARCH_X86_64 token.";

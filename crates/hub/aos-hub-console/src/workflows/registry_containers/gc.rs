@@ -447,7 +447,11 @@ fn ContainerUntrackedObjectCard(
                 <div class="subworkflow untracked-repair-status">
                     <div class="compact-list-row"><strong>"Durable repair"</strong><StatusBadge state=repair.state.clone() positive=repair.state == "complete"/></div>
                     <div class="resource-identity"><div><span>"Plan / operation"</span><code>{repair.plan_id}</code></div><div><span>"Resource version"</span><code>{repair.resource_version}</code></div><div><span>"Frozen inventory"</span><code>{repair.inventory_generation_id}</code></div><div><span>"Object"</span><code>{repair.object_key}</code></div><div><span>"Last error"</span><code>{repair.last_error}</code></div></div>
-                    {repair.evidence.map(|evidence| view! { <div class="notice success"><strong>{evidence.outcome}</strong><code>{evidence.evidence_digest}</code><span>{format!("Confirmed at {}", evidence.confirmed_at)}</span></div> })}
+                    {repair.evidence.map(|evidence| {
+                        let conditional_etag = (!evidence.conditional_etag.is_empty()).then(|| view! { <code>{format!("If-Match {}", evidence.conditional_etag)}</code> });
+                        let provider_request_id = (!evidence.provider_request_id.is_empty()).then(|| view! { <code>{format!("Provider request {}", evidence.provider_request_id)}</code> });
+                        view! { <div class="notice success"><strong>{evidence.outcome}</strong>{conditional_etag}{provider_request_id}<span>{format!("Confirmed at {}", evidence.confirmed_at)}</span></div> }
+                    })}
                     <button class="secondary-button" type="button" disabled=move || busy.get() on:click=move |_| on_refresh_status.run(())>"Refresh repair status"</button>
                     <p class="muted">"A fresh complete provider inventory is still required before registry purge."</p>
                 </div>

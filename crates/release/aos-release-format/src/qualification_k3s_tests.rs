@@ -65,7 +65,7 @@ fn fixture(topology: K3sTopology) -> Result<(ReleasePlan, ReleaseManifestV1)> {
     Ok((plan, manifest))
 }
 
-fn fleet_case(plan: &ReleasePlan, manifest: &ReleaseManifestV1) -> Result<QualificationCase> {
+fn fleet_case(plan: &ReleasePlan, manifest: &ReleaseManifestV1) -> Result<ReleaseTest> {
     cases(
         plan,
         manifest,

@@ -151,7 +151,6 @@ in {
               f"{AOS} ability journal {shlex.quote(state + '/effects.journal')} --format json"
           ))
           assert view["schema"] == "aos.activation.inspection", view
-          assert view["liveStateVerified"] is False, view
           assert view["incompleteTailBytes"] == 0, view
           assert view["pending"] is None, view
           assert view["completed"] is not None, view

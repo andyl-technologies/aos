@@ -24,7 +24,7 @@ in
       role = "public-package";
     };
     pname = "dwarves";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Pahole finds and decodes the requested DWARF type.";

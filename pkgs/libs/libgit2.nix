@@ -58,7 +58,7 @@ in
       role = "public-package";
     };
     pname = "libgit2";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The round-tripped hexadecimal object name is unchanged.";

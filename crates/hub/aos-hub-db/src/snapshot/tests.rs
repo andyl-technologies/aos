@@ -210,13 +210,13 @@ async fn contract_covers_the_actual_production_initializer() {
     let tables = sqlx::query("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
         .fetch_all(&pool).await.unwrap();
     let contracts = contract().unwrap();
-    assert_eq!(contracts.len(), 294);
+    assert_eq!(contracts.len(), 295);
     assert_eq!(
         contracts
             .values()
             .map(|table| table.columns.len())
             .sum::<usize>(),
-        2862
+        2864
     );
     assert_eq!(tables.len(), contracts.len());
 

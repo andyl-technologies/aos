@@ -9,7 +9,7 @@ use aos_hub_db::storage_work::StorageCredentialMaterial;
 use aos_hub_db::storage_work::StorageCredentialReference;
 use aos_hub_db::storage_work::StorageCredentialSelector;
 use aos_hub_db::value::Value;
-use aos_hub_model::storage::StorageCredentialProbeEvidence;
+use aos_hub_model::storage::StorageCredentialProbeResult;
 use base64::Engine as _;
 use sha2::{Digest as _, Sha256};
 
@@ -101,7 +101,7 @@ async fn sqlite_restart_retains_unknown_original_and_positive_cold_material_proo
     assert!(retained.require_adoption(&expected, 110).is_err());
 
     retained.pending = false;
-    retained.positive = Some(StorageCredentialProbeEvidence {
+    retained.positive = Some(StorageCredentialProbeResult {
         valid: true,
         conditional_writes_supported: false,
         error: None,

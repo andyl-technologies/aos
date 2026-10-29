@@ -138,10 +138,10 @@ pub struct DocumentationInspection {
     pub search: Vec<aos_module_docs::SearchDocument>,
 }
 
-/// Purpose-specific evidence from a controller-owned storage credential probe.
+/// Outcome of a controller-owned, purpose-specific storage credential probe.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct StorageCredentialProbeEvidence {
+pub struct StorageCredentialProbeResult {
     /// Whether the exact credential generation exercised its declared purpose.
     pub valid: bool,
     /// Whether a write probe proved create-if-absent semantics.

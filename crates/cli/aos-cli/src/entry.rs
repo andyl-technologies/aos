@@ -497,7 +497,7 @@ fn validate_container_runtime(command: &Commands) -> Result<()> {
     // Every admitted repository command waits here so `docker exec aos ...`
     // cannot race PID-1 setup.
     if runtime.as_deref() == Some(OsStr::new("container")) {
-        aos_package_manager::container_admission::synchronize()?;
+        aos_package_manager::container_init_sync::synchronize()?;
     }
 
     Ok(())

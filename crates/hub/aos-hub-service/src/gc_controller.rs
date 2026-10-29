@@ -15,7 +15,7 @@ use crate::surface_write::SurfaceDeleteOutcome;
 use crate::surface_write::SurfaceDeletePrecondition;
 use crate::surface_write::SurfaceWriteProvider;
 use aos_hub_db::db::Database;
-use aos_hub_db::db::ObjectDeletionAttemptReceipt;
+use aos_hub_db::db::DeletionAttempt;
 use aos_hub_db::db::ObjectDeletionJobRecord;
 use aos_hub_db::db::RecordObjectDeletionAttemptResponse;
 
@@ -162,7 +162,7 @@ impl CacheGcDeletionController {
     #[allow(clippy::type_complexity)]
     async fn perform_backend_delete(
         &self,
-        receipt: &ObjectDeletionAttemptReceipt,
+        receipt: &DeletionAttempt,
     ) -> (
         String,
         Option<String>,

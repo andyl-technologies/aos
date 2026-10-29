@@ -171,7 +171,7 @@ impl RemoteStorageWorkClient {
         credential: &BindingCredentialRevisionRecord,
         operation_id: &str,
         probe_token: &str,
-    ) -> Result<StorageCredentialProbeEvidence> {
+    ) -> Result<StorageCredentialProbeResult> {
         let now = aos_hub_model::clock::now_unix_secs();
         let request = StorageCredentialCustodyProbe {
             version: 1,

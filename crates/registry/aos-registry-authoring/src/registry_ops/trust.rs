@@ -68,9 +68,10 @@ pub fn run_trust(config: &ApmConfig, command: &TrustCommand, printer: &Printer) 
             }
 
             if *replace {
-                let _ = store.remove(registry)?;
+                store.replace(&trusted)?;
+            } else {
+                store.store(&trusted)?;
             }
-            store.store(&trusted)?;
             if printer.mode() == OutputMode::Json {
                 printer.json(&serde_json::json!({
                     "action": "trust_pin",
@@ -144,9 +145,16 @@ pub fn run_trust(config: &ApmConfig, command: &TrustCommand, printer: &Printer) 
         }
         TrustCommand::Remove { registry } => {
             validate_registry_name(registry)?;
+            let bootstrap_keys = config
+                .find_registry(registry)
+                .and_then(|(registry, _)| registry.signing.as_ref())
+                .and_then(|signing| signing.public_key.clone())
+                .into_iter()
+                .collect::<Vec<_>>();
 
             if aos_registry_client::dry_run::active() {
-                let pinned = !store.lookup_all(registry).is_empty();
+                let pinned = !store.lookup_all(registry).is_empty()
+                    || (!store.bootstrap_disabled(registry)? && !bootstrap_keys.is_empty());
                 if pinned {
                     printer.info(&format!(
                         "Would remove pinned trust keys for registry '{registry}'"
@@ -160,7 +168,7 @@ pub fn run_trust(config: &ApmConfig, command: &TrustCommand, printer: &Printer) 
                 return Ok(());
             }
 
-            let removed = store.remove(registry)?;
+            let removed = store.remove_with_bootstrap_keys(registry, &bootstrap_keys)?;
             if printer.mode() == OutputMode::Json {
                 printer.json(&serde_json::json!({
                     "action": "trust_remove",

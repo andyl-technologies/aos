@@ -1640,7 +1640,7 @@ pub struct RpcService {
     /// probe, inventory, and GC jobs without waiting for the cron schedule.
     pub maintenance_jobs: Option<Arc<dyn crate::jobs::Queue>>,
     /// Restricted deployment authority for release and channel evidence.
-    pub release_evidence: Option<Arc<dyn crate::release_evidence::ReleaseEvidenceAuthority>>,
+    pub release_evidence: Option<Arc<dyn crate::release_receipt_signer::ReleaseEvidenceAuthority>>,
     /// Serializes memory-bounded Git pack/index verification within the process or Worker isolate.
     pack_validation: Arc<futures_util::lock::Mutex<()>>,
 }

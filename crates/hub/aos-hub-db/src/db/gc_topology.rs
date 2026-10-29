@@ -553,9 +553,9 @@ pub struct ObjectDeletionJobRecord {
     pub expected_provider_version: Option<String>,
 }
 
-/// Durable backend request and response evidence for one deletion attempt.
+/// Request fields and recorded backend response for one physical deletion attempt.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ObjectDeletionAttemptReceipt {
+pub struct DeletionAttempt {
     /// Stable idempotency key sent to the physical deletion controller.
     pub request_id: String,
     /// Owning cache.
@@ -578,7 +578,7 @@ pub struct ObjectDeletionAttemptReceipt {
     pub expected_hash: Option<String>,
     /// Exact byte size captured by the inventory.
     pub expected_size: Option<i64>,
-    /// Complete inventory generation supplying the evidence.
+    /// Complete inventory generation that supplied the expected values.
     pub expected_inventory_generation: i64,
     /// Exact binding captured by inventory.
     pub binding_id: i64,
@@ -9303,7 +9303,7 @@ impl Database {
     pub async fn object_deletion_attempt_receipt(
         &self,
         request_id: &str,
-    ) -> Result<Option<ObjectDeletionAttemptReceipt>> {
+    ) -> Result<Option<DeletionAttempt>> {
         self.backend
             .query_opt(
                 "SELECT request_id, cache_id, job_id, attempt_number,
@@ -9318,7 +9318,7 @@ impl Database {
                 &vals![request_id],
             )
             .await?
-            .map(|row| row_to_object_deletion_attempt_receipt(&row))
+            .map(|row| row_to_deletion_attempt(&row))
             .transpose()
     }
 
@@ -9331,7 +9331,7 @@ impl Database {
         &self,
         cache_id: i64,
         job_id: &str,
-    ) -> Result<Option<ObjectDeletionAttemptReceipt>> {
+    ) -> Result<Option<DeletionAttempt>> {
         self.backend
             .query_opt(
                 "SELECT receipt.request_id, receipt.cache_id, receipt.job_id,
@@ -9355,7 +9355,7 @@ impl Database {
                 &vals![cache_id, job_id],
             )
             .await?
-            .map(|row| row_to_object_deletion_attempt_receipt(&row))
+            .map(|row| row_to_deletion_attempt(&row))
             .transpose()
     }
 
@@ -9431,7 +9431,7 @@ impl Database {
     pub async fn record_object_deletion_attempt_response(
         &self,
         input: &RecordObjectDeletionAttemptResponse,
-    ) -> Result<ObjectDeletionAttemptReceipt> {
+    ) -> Result<DeletionAttempt> {
         validate_stable_key(&input.request_id, "cache GC deletion request id")?;
         let success = matches!(input.outcome.as_str(), "deleted" | "not_found");
         let failure = matches!(
@@ -10604,8 +10604,8 @@ fn require_same_part_body(
     Ok(())
 }
 
-fn row_to_object_deletion_attempt_receipt(row: &Row) -> Result<ObjectDeletionAttemptReceipt> {
-    Ok(ObjectDeletionAttemptReceipt {
+fn row_to_deletion_attempt(row: &Row) -> Result<DeletionAttempt> {
+    Ok(DeletionAttempt {
         request_id: row.get(0)?,
         cache_id: row.get(1)?,
         job_id: row.get(2)?,

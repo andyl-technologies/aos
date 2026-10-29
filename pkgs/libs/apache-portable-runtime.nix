@@ -38,7 +38,7 @@ in
     pname = "apr";
     inherit version;
 
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "The installed APR configuration helper.";
         operation = "Request the installed APR release version.";

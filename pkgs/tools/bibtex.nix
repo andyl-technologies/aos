@@ -46,7 +46,7 @@ in
       role = "public-package";
     };
     pname = "bibtex";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "An auxiliary file, bibliography entry, and minimal BibTeX style.";
         operation = "Generate a bibliography using the installed BibTeX executable.";

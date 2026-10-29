@@ -1,8 +1,8 @@
-//! Bounded cache-upload ticket admission.
+//! Batched cache-upload ticket inserts.
 //!
 //! Bulk clients must not turn one upload inventory into a query/insert/query
 //! sequence per object. This module reads every occupied active slot in one
-//! query and admits all unoccupied proxy tickets in one checked transaction.
+//! query and inserts all unoccupied proxy tickets in one checked transaction.
 //! The transaction retains the same placement, binding, credential, inventory,
 //! deletion, and ownership fences as single-ticket admission.
 
@@ -18,9 +18,9 @@ use super::{row_to_cache_write_ticket, validate_key_bytes, CacheWriteTicketRecor
 /// Maximum proxy upload tickets admitted in one database transaction.
 pub const MAX_CACHE_WRITE_TICKET_ADMISSION_BATCH: usize = 256;
 
-/// One requested proxy-upload ticket.
+/// Ticket id, object key, and declared size for one proxy-upload ticket to insert.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CacheProxyWriteAdmission {
+pub struct UploadTicketRequest {
     /// Client-visible opaque ticket identity.
     pub ticket_id: String,
     /// Cache-relative object key protected by the ticket.
@@ -180,7 +180,7 @@ impl Database {
         quota_org_id: Option<i64>,
         expires_at: i64,
         now: i64,
-        admissions: &[CacheProxyWriteAdmission],
+        admissions: &[UploadTicketRequest],
     ) -> Result<()> {
         if cache_id <= 0
             || placement_id <= 0
@@ -298,7 +298,7 @@ mod tests {
             .await
             .unwrap();
         let admissions = (0..64)
-            .map(|index| CacheProxyWriteAdmission {
+            .map(|index| UploadTicketRequest {
                 ticket_id: format!("bulk-ticket-{index:04}"),
                 object_key: format!("nar/bulk-{index:04}.nar"),
                 declared_size: index + 1,

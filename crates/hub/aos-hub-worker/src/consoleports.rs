@@ -87,7 +87,7 @@ impl aos_hub_service::topology_probe::StorageCredentialProbeProvider
         credential: &aos_hub_db::db::BindingCredentialRevisionRecord,
         _operation_id: &str,
         probe_token: &str,
-    ) -> Result<aos_hub_model::storage::StorageCredentialProbeEvidence> {
+    ) -> Result<aos_hub_model::storage::StorageCredentialProbeResult> {
         anyhow::ensure!(
             credential.binding_id == binding.id,
             "credential probe binding identity is inconsistent"
@@ -118,7 +118,7 @@ pub(crate) async fn probe_storage_credential(
     purpose: &str,
     generation: i64,
     probe_token: &str,
-) -> Result<aos_hub_model::storage::StorageCredentialProbeEvidence> {
+) -> Result<aos_hub_model::storage::StorageCredentialProbeResult> {
     let now = aos_hub_model::clock::now_unix_secs();
     let path = format!(
         ".aos/credential-probes/{}/{}/{}",
@@ -252,7 +252,7 @@ pub(crate) async fn probe_storage_credential(
         _ => anyhow::bail!("credential probe purpose is not supported"),
     };
     let error = (!valid).then(|| format!("{} capability probe was rejected by origin", purpose));
-    Ok(aos_hub_model::storage::StorageCredentialProbeEvidence {
+    Ok(aos_hub_model::storage::StorageCredentialProbeResult {
         valid,
         conditional_writes_supported: false,
         error,
@@ -830,7 +830,7 @@ impl WorkerEgressClient {
         rand::rng().fill(&mut nonce_bytes);
         let nonce = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(nonce_bytes);
         let timestamp = aos_hub_model::clock::now_unix_secs();
-        let evidence = aos_hub_service::egress_protocol::RequestEvidence {
+        let evidence = aos_hub_service::egress_protocol::SignedRequestParts {
             timestamp,
             nonce: &nonce,
             target_url: target,
@@ -940,7 +940,7 @@ impl WorkerEgressClient {
         let signature = required("x-aos-egress-signature")?;
         aos_hub_service::egress_protocol::verify_response(
             key,
-            &aos_hub_service::egress_protocol::ResponseEvidence {
+            &aos_hub_service::egress_protocol::ResponseObservation {
                 timestamp,
                 nonce: &nonce,
                 final_url: &final_url,

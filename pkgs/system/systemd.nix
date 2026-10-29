@@ -166,7 +166,7 @@ in
       role = "public-package";
     };
     pname = "systemd";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "systemd-escape emits the canonical escaped path.";
@@ -710,14 +710,14 @@ in
           EOF
           chmod +x "$handlers/bin/aos-systemd-boot-platform"
 
-          cat > "$handlers/bin/aos-systemd-image-evidence" << EOF
+          cat > "$handlers/bin/aos-systemd-boot-measurements" << EOF
           #!${bash}/bin/bash
-          exec "${aos-systemd-provider}/bin/aos-systemd-image-evidence" \\
+          exec "${aos-systemd-provider}/bin/aos-systemd-boot-measurements" \\
             --openssl "${openssl}/bin/openssl" \\
             --objcopy "${pe-tools}/bin/objcopy" \\
             "\$@"
           EOF
-          chmod +x "$handlers/bin/aos-systemd-image-evidence"
+          chmod +x "$handlers/bin/aos-systemd-boot-measurements"
 
         '';
       }
@@ -823,7 +823,7 @@ in
             esac
           done
 
-          for executable in aos-systemd-credential-encrypt aos-systemd-boot-platform aos-systemd-image-evidence aos-systemd-image-stage; do
+          for executable in aos-systemd-credential-encrypt aos-systemd-boot-platform aos-systemd-boot-measurements aos-systemd-image-stage; do
             test -x "$handlers/bin/$executable"
             test ! -e "$out/bin/$executable"
             test ! -L "$out/bin/$executable"

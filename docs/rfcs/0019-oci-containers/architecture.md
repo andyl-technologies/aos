@@ -496,18 +496,20 @@ binds:
 - logical container name, initially only `aos`;
 - OCI index and per-platform manifest descriptors;
 - Nix definition and output provenance;
-- full-closure package mapping, corresponding-source, and license
-  qualification, with `readyForVerifiedPublication = true`;
 - native deployment or static ability and launch-obligation evidence;
 - closure manifest and SBOM descriptors;
 - source, license, signature, and attestation referrers.
 
-The signature input, DSSE payload type, signed release sidecar, and static
-ability evidence each use their single `/v1` contract. A release requires a
-native deployment descriptor, a legacy static ability descriptor, or both.
-Every supplied descriptor must appear unchanged in the signature input and
-final release, so every parser, verifier, Hub indexer, and graph traversal sees
-the same signed deployment contract. Omitting both descriptors is invalid.
+The build fails unless every runtime closure path maps to one package with
+retained corresponding source and license metadata, so a sidecar exists only
+for a complete closure and carries no completeness field. The sidecar is
+schema version 2 and the signature input is `aos.container.signature-input/v2`;
+the DSSE payload type and static ability evidence use their `/v1` contracts.
+A release requires a native deployment descriptor, a legacy static ability
+descriptor, or both. Every supplied descriptor must appear unchanged in the
+signature input and final release, so every parser, verifier, Hub indexer, and
+graph traversal sees the same signed deployment contract. Omitting both
+descriptors is invalid.
 
 Images that retain a native deployment document also include its OCI referrer
 descriptor as `evidence.deployment` in the signature input and final release.
@@ -541,7 +543,7 @@ runs `aos container publish
 control-plane mutation. The paired `apr release --container-release
 FINAL_BUNDLE/container-release.json --container-signature-input
 FINAL_BUNDLE/signature-input.json`
-arguments then validate their exact unsigned identity and qualification and
+arguments then validate their exact unsigned identity and evidence and
 commit the canonical sidecar under the release lock before creating the signed
 release tag. Resume proves the tagged commit contains the exact same sidecar.
 Once the Hub indexer has authenticated it, rerunning `aos container publish`

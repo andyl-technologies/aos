@@ -12,8 +12,8 @@ use hmac::{Hmac, Mac as _};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use crate::connect::DeliveryAccessEvidence;
-use crate::connect::DeliveryTransportEvidence;
+use crate::connect::VerifiedAccess;
+use crate::connect::VerifiedTransport;
 
 /// HTTP header carrying the compact signed ingress assertion.
 pub const DELIVERY_ATTESTATION_HEADER: &str = "x-aos-delivery-attestation";
@@ -65,10 +65,10 @@ pub enum DeliveryAccessAssertion {
     },
 }
 
-/// Versioned payload authenticated by an ingress adapter.
+/// Versioned HMAC ingress assertion payload signed by an upstream ingress adapter.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct DeliveryAttestation {
+pub struct IngressAssertion {
     /// Wire-format version. Version 1 is the only accepted version.
     pub version: u8,
     /// Unix timestamp at which the adapter issued the assertion.
@@ -95,7 +95,7 @@ pub struct DeliveryAttestation {
 
 /// Verification failures for an ingress assertion.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
-pub enum DeliveryAttestationError {
+pub enum IngressAssertionError {
     /// The configured verifier key is too short for a production HMAC key.
     #[error("delivery attestation key must contain at least 32 bytes")]
     WeakKey,
@@ -118,17 +118,18 @@ pub enum DeliveryAttestationError {
 
 /// Verifies short-lived HMAC assertions from one configured ingress trust domain.
 #[derive(Clone)]
-pub struct DeliveryAttestationVerifier {
+pub struct IngressAssertionVerifier {
     key: Vec<u8>,
 }
 
-/// Cryptographically verified assertion awaiting durable replay admission.
+/// Ingress assertion whose HMAC and request binding verified, awaiting the
+/// durable one-use nonce check.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VerifiedDeliveryAttestation {
+pub struct VerifiedIngressAssertion {
     /// Transport facts authenticated by the ingress adapter.
-    pub transport: DeliveryTransportEvidence,
+    pub transport: VerifiedTransport,
     /// Access facts authenticated by the ingress adapter.
-    pub access: DeliveryAccessEvidence,
+    pub access: VerifiedAccess,
     /// Exact route identity sealed into the assertion.
     pub route_id: String,
     /// Exact immutable route configuration digest sealed into the assertion.
@@ -139,26 +140,26 @@ pub struct VerifiedDeliveryAttestation {
     pub expires_at: i64,
 }
 
-impl std::fmt::Debug for DeliveryAttestationVerifier {
+impl std::fmt::Debug for IngressAssertionVerifier {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
-            .debug_struct("DeliveryAttestationVerifier")
+            .debug_struct("IngressAssertionVerifier")
             .field("key", &"[REDACTED]")
             .finish()
     }
 }
 
-impl DeliveryAttestationVerifier {
+impl IngressAssertionVerifier {
     /// Creates a verifier from an explicit deployment secret.
     ///
     /// # Errors
     ///
-    /// Returns [`DeliveryAttestationError::WeakKey`] when `key` contains fewer
+    /// Returns [`IngressAssertionError::WeakKey`] when `key` contains fewer
     /// than 32 bytes.
-    pub fn new(key: impl AsRef<[u8]>) -> Result<Self, DeliveryAttestationError> {
+    pub fn new(key: impl AsRef<[u8]>) -> Result<Self, IngressAssertionError> {
         let key = key.as_ref();
         if key.len() < 32 {
-            return Err(DeliveryAttestationError::WeakKey);
+            return Err(IngressAssertionError::WeakKey);
         }
         Ok(Self { key: key.to_vec() })
     }
@@ -179,43 +180,43 @@ impl DeliveryAttestationVerifier {
         authority: &str,
         path_and_query: &str,
         now: i64,
-    ) -> Result<VerifiedDeliveryAttestation, DeliveryAttestationError> {
+    ) -> Result<VerifiedIngressAssertion, IngressAssertionError> {
         let (payload_text, signature_text) = compact
             .split_once('.')
             .filter(|(_, signature)| !signature.contains('.'))
-            .ok_or(DeliveryAttestationError::Malformed)?;
+            .ok_or(IngressAssertionError::Malformed)?;
         let payload = URL_SAFE_NO_PAD
             .decode(payload_text)
-            .map_err(|_| DeliveryAttestationError::Malformed)?;
+            .map_err(|_| IngressAssertionError::Malformed)?;
         let signature = URL_SAFE_NO_PAD
             .decode(signature_text)
-            .map_err(|_| DeliveryAttestationError::Malformed)?;
+            .map_err(|_| IngressAssertionError::Malformed)?;
         if URL_SAFE_NO_PAD.encode(&payload) != payload_text
             || URL_SAFE_NO_PAD.encode(&signature) != signature_text
             || signature.len() != 32
         {
-            return Err(DeliveryAttestationError::Malformed);
+            return Err(IngressAssertionError::Malformed);
         }
         let mut mac =
-            HmacSha256::new_from_slice(&self.key).map_err(|_| DeliveryAttestationError::WeakKey)?;
+            HmacSha256::new_from_slice(&self.key).map_err(|_| IngressAssertionError::WeakKey)?;
         mac.update(payload_text.as_bytes());
         mac.verify_slice(&signature)
-            .map_err(|_| DeliveryAttestationError::InvalidSignature)?;
-        let assertion: DeliveryAttestation =
-            serde_json::from_slice(&payload).map_err(|_| DeliveryAttestationError::Malformed)?;
+            .map_err(|_| IngressAssertionError::InvalidSignature)?;
+        let assertion: IngressAssertion =
+            serde_json::from_slice(&payload).map_err(|_| IngressAssertionError::Malformed)?;
         if assertion.version != 1
             || assertion.issued_at > now + FUTURE_SKEW_SECONDS
             || assertion.expires_at < now
             || assertion.expires_at < assertion.issued_at
             || assertion.expires_at - assertion.issued_at > MAX_LIFETIME_SECONDS
         {
-            return Err(DeliveryAttestationError::InvalidTime);
+            return Err(IngressAssertionError::InvalidTime);
         }
         if assertion.method != method
             || assertion.authority != authority
             || assertion.path_and_query != path_and_query
         {
-            return Err(DeliveryAttestationError::RequestMismatch);
+            return Err(IngressAssertionError::RequestMismatch);
         }
         if !matches!(assertion.transport.scheme.as_str(), "http" | "https")
             || !matches!(assertion.transport.ingress_kind.as_str(), "hub" | "layer7")
@@ -232,27 +233,27 @@ impl DeliveryAttestationVerifier {
                 .bytes()
                 .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
         {
-            return Err(DeliveryAttestationError::InvalidEvidence);
+            return Err(IngressAssertionError::InvalidEvidence);
         }
         let tls_identity = if assertion.transport.scheme == "https" {
             Some(super::connect::attested_authority_host(authority)?)
         } else {
             None
         };
-        let transport = DeliveryTransportEvidence {
+        let transport = VerifiedTransport {
             scheme: assertion.transport.scheme,
             ingress_kind: assertion.transport.ingress_kind,
             tls_identity,
         };
         let access = match assertion.access {
-            DeliveryAccessAssertion::None => DeliveryAccessEvidence {
+            DeliveryAccessAssertion::None => VerifiedAccess {
                 boundary: None,
                 external_provider: None,
             },
             DeliveryAccessAssertion::PrivateNetwork {
                 boundary_id,
                 boundary_revision,
-            } if !boundary_id.is_empty() && boundary_revision > 0 => DeliveryAccessEvidence {
+            } if !boundary_id.is_empty() && boundary_revision > 0 => VerifiedAccess {
                 boundary: Some((boundary_id, boundary_revision)),
                 external_provider: None,
             },
@@ -261,14 +262,14 @@ impl DeliveryAttestationVerifier {
                 resource_id,
                 revision,
             } if !provider_kind.is_empty() && !resource_id.is_empty() && !revision.is_empty() => {
-                DeliveryAccessEvidence {
+                VerifiedAccess {
                     boundary: None,
                     external_provider: Some((provider_kind, resource_id, revision)),
                 }
             }
-            _ => return Err(DeliveryAttestationError::InvalidEvidence),
+            _ => return Err(IngressAssertionError::InvalidEvidence),
         };
-        Ok(VerifiedDeliveryAttestation {
+        Ok(VerifiedIngressAssertion {
             transport,
             access,
             route_id: assertion.route_id,
@@ -279,7 +280,7 @@ impl DeliveryAttestationVerifier {
     }
 
     #[cfg(test)]
-    fn sign(&self, assertion: &DeliveryAttestation) -> String {
+    fn sign(&self, assertion: &IngressAssertion) -> String {
         let payload = serde_json::to_vec(assertion).unwrap();
         let payload = URL_SAFE_NO_PAD.encode(payload);
         let mut mac = HmacSha256::new_from_slice(&self.key).unwrap();
@@ -289,7 +290,7 @@ impl DeliveryAttestationVerifier {
     }
 }
 
-impl From<()> for DeliveryAttestationError {
+impl From<()> for IngressAssertionError {
     fn from((): ()) -> Self {
         Self::InvalidEvidence
     }
@@ -299,8 +300,8 @@ impl From<()> for DeliveryAttestationError {
 mod tests {
     use super::*;
 
-    fn assertion() -> DeliveryAttestation {
-        DeliveryAttestation {
+    fn assertion() -> IngressAssertion {
+        IngressAssertion {
             version: 1,
             issued_at: 100,
             expires_at: 130,
@@ -324,7 +325,7 @@ mod tests {
 
     #[test]
     fn verifies_exact_request_and_typed_evidence() {
-        let verifier = DeliveryAttestationVerifier::new([7_u8; 32]).unwrap();
+        let verifier = IngressAssertionVerifier::new([7_u8; 32]).unwrap();
         let compact = verifier.sign(&assertion());
         let verified = verifier
             .verify(
@@ -342,7 +343,7 @@ mod tests {
 
     #[test]
     fn rejects_spoofed_unsigned_and_rebound_assertions() {
-        let verifier = DeliveryAttestationVerifier::new([7_u8; 32]).unwrap();
+        let verifier = IngressAssertionVerifier::new([7_u8; 32]).unwrap();
         let compact = verifier.sign(&assertion());
         for (method, authority, path_and_query) in [
             ("POST", "cache.example:8443", "/nar/abc?download=1"),
@@ -352,7 +353,7 @@ mod tests {
         ] {
             assert_eq!(
                 verifier.verify(&compact, method, authority, path_and_query, 115),
-                Err(DeliveryAttestationError::RequestMismatch)
+                Err(IngressAssertionError::RequestMismatch)
             );
         }
         let mut bytes = compact.clone().into_bytes();
@@ -368,8 +369,7 @@ mod tests {
                 "/nar/abc?download=1",
                 115,
             ),
-            Err(DeliveryAttestationError::InvalidSignature)
-                | Err(DeliveryAttestationError::Malformed)
+            Err(IngressAssertionError::InvalidSignature) | Err(IngressAssertionError::Malformed)
         ));
         assert_eq!(
             verifier.verify(
@@ -379,13 +379,13 @@ mod tests {
                 "/nar/abc?download=1",
                 115,
             ),
-            Err(DeliveryAttestationError::Malformed)
+            Err(IngressAssertionError::Malformed)
         );
     }
 
     #[test]
     fn rejects_stale_and_overlong_assertions() {
-        let verifier = DeliveryAttestationVerifier::new([7_u8; 32]).unwrap();
+        let verifier = IngressAssertionVerifier::new([7_u8; 32]).unwrap();
         let compact = verifier.sign(&assertion());
         assert_eq!(
             verifier.verify(
@@ -395,13 +395,13 @@ mod tests {
                 "/nar/abc?download=1",
                 131,
             ),
-            Err(DeliveryAttestationError::InvalidTime)
+            Err(IngressAssertionError::InvalidTime)
         );
     }
 
     #[test]
     fn seals_the_exact_route_configuration_revision() {
-        let verifier = DeliveryAttestationVerifier::new([7_u8; 32]).unwrap();
+        let verifier = IngressAssertionVerifier::new([7_u8; 32]).unwrap();
         let compact = verifier.sign(&assertion());
         let verified = verifier
             .verify(

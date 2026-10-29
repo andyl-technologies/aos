@@ -3,6 +3,133 @@
 use super::*;
 
 #[tokio::test]
+async fn viewer_operation_reads_expose_only_redacted_provider_failures() {
+    let (service, db, _lease, _admin_auth) = injected_service(vec![], vec![]).await;
+    let org_id = db
+        .create_org("operation-reader", "Operation reader")
+        .await
+        .unwrap();
+    let org = db.org_by_id(org_id).await.unwrap().unwrap();
+    let viewer_id = db
+        .create_user("operation-reader@example.test", None)
+        .await
+        .unwrap();
+    db.grant_membership("user", viewer_id, &org.stable_id, Role::Viewer.as_str())
+        .await
+        .unwrap();
+    let (_, token_secret) = db
+        .create_token(
+            Principal::user(viewer_id),
+            &org.stable_id,
+            &[Permission::Read, Permission::PlacementRead],
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let viewer_token = db.validate_token(&token_secret).await.unwrap().unwrap();
+    let viewer_auth = format!(
+        "Bearer {}",
+        service.jwt_keys.mint(&viewer_token, 3_600).unwrap()
+    );
+    let binding_id = db
+        .create_topology_binding(
+            Some(org_id),
+            &uuid::Uuid::new_v4().simple().to_string(),
+            &org.stable_id,
+            "primary",
+            "r2",
+            None,
+            Some("test-bucket"),
+            Some("operation-reader/registry"),
+            Some("https"),
+            Some("dns"),
+            Some(b"storage.example.invalid"),
+            Some(443),
+            Some("auto"),
+            Some("private"),
+        )
+        .await
+        .unwrap();
+    let registry_id = db
+        .create_managed_registry(org_id, "", "operation-reader", "public", &[], false)
+        .await
+        .unwrap();
+    let placement = db
+        .create_surface_placement(&NewSurfacePlacementSpec {
+            surface: SurfaceTarget::Registry(registry_id),
+            name: "primary".into(),
+            binding_id,
+            prefix: "operation-reader/registry".into(),
+            kind: "complete".into(),
+            desired_state: "active".into(),
+            hash_range: None,
+            desired_read_enabled: true,
+            read_order: 0,
+            requires_conditional_writes: false,
+        })
+        .await
+        .unwrap();
+    let operation = db
+        .create_topology_operation(&aos_hub_db::db::NewTopologyOperation {
+            operation_id: "viewer-redacted-provider-failure".into(),
+            operation_kind: "scan_placement".into(),
+            control_permission: Permission::StorageManage,
+            targets: vec![aos_hub_db::db::NewTopologyOperationTarget {
+                role: "primary".into(),
+                target: aos_hub_db::db::NewTopologyOperationTargetRef::Placement(placement.id),
+                generation_key: placement.resource_version,
+                configuration_digest: String::new(),
+            }],
+            detail_json: serde_json::json!({"phase":"failed"}).to_string(),
+            progress_total: None,
+        })
+        .await
+        .unwrap();
+    let marker = "signed-capability-marker";
+    let failure = crate::jobs::redacted_operation_failure(&format!(
+        "provider request failed: https://storage.example/object?X-Amz-Signature={marker}"
+    ));
+    let claimed = db
+        .claim_surface_placement_scan_operation(
+            &operation.operation_id,
+            operation.resource_version,
+            "viewer-redaction-claim",
+            600,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    db.update_topology_operation(
+        &claimed.operation_id,
+        claimed.resource_version,
+        "failed",
+        0,
+        None,
+        &claimed.detail_json,
+        Some(&failure),
+        claimed.started_at,
+        Some(claimed.created_at),
+    )
+    .await
+    .unwrap();
+
+    let response = service
+        .get_operation(
+            Some(&viewer_auth),
+            pb::GetOperationRequest {
+                operation_id: operation.operation_id,
+            },
+        )
+        .await
+        .unwrap();
+    let error = response.operation.unwrap().error;
+    assert!(error.starts_with("operation failed; detail redacted; fingerprint="));
+    assert!(!error.contains(marker));
+    assert!(!error.contains("storage.example"));
+}
+
+#[tokio::test]
 async fn registry_without_a_canonical_route_has_no_consumer_url() {
     let (service, db, _lease, _auth) = injected_service(vec![], vec![]).await;
     let binding = db

@@ -458,9 +458,9 @@ mod registry_accounting;
 mod session_identity;
 mod storage_authority;
 
-mod cache_write_admission;
+mod cache_upload_tickets_batch;
 mod controller_leases;
-pub use cache_write_admission::*;
+pub use cache_upload_tickets_batch::*;
 pub use controller_leases::{ControllerLeaseFence, CONTROLLER_LEASE_TTL_SECONDS};
 mod delivery_identity;
 pub use delivery_identity::*;
@@ -483,7 +483,7 @@ mod oci_namespaces;
 pub use oci_namespaces::*;
 mod oci_release_projection;
 mod placement_policy;
-mod publication_admission;
+mod publication_manifest_batch;
 mod registry_delete;
 pub use registry_delete::*;
 mod registry_delete_operation;
@@ -506,7 +506,7 @@ mod signing_keys;
 mod topology;
 mod worker_jobs;
 pub use placement_policy::*;
-pub use publication_admission::*;
+pub use publication_manifest_batch::*;
 pub use registry_index_build::*;
 pub use release_publication::*;
 pub use signing_keys::*;
@@ -550,7 +550,8 @@ pub fn portable_relational_id(incarnation: uuid::Uuid) -> i64 {
 /// through 16 append Native ability references, documentation, and deployment reports.
 /// Versions 17 through 25 append verifier identities, mailboxes, controller leases,
 /// authentication evidence, membership incarnations, browser binding, flow retention,
-/// and indexed documentation lookup.
+/// and indexed documentation lookup. Versions 26 and 27 append non-reusable
+/// topology binding ids and OCI deletion rows without a derived digest column.
 pub const MIGRATIONS: &[&str] = &[
     include_str!("schema.sql"),
     include_str!("002-r2-gc-incarnation.sql"),
@@ -577,13 +578,15 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("migration-0015-oidc-browser-binding.sql"),
     include_str!("migration-0016-oidc-flow-retention.sql"),
     include_str!("migration-0017-native-documentation-lookup.sql"),
+    include_str!("migration-0018-binding-id-tombstones.sql"),
+    include_str!("migration-0019-oci-deletion-evidence-fields.sql"),
 ];
 
 /// Identifies the production migration lineage independently of its version.
 ///
 /// Historical development ledgers are incompatible even when their integer
 /// version happens to match a production migration.
-pub const SCHEMA_IDENTITY: &str = "aos-hub/canonical-serving/25";
+pub const SCHEMA_IDENTITY: &str = "aos-hub/canonical-serving/27";
 
 /// Returns every migration's individual SQL statements, in order.
 ///
@@ -2132,7 +2135,8 @@ pub fn snapshot_schema_identity(generation: usize) -> Result<&'static str> {
         12 => Ok(SNAPSHOT_SCHEMA_IDENTITY_12),
         13 => Ok(SNAPSHOT_SCHEMA_IDENTITY_13),
         16 => Ok("aos-hub/canonical-serving/16"),
-        25 => Ok(SCHEMA_IDENTITY),
+        25 => Ok("aos-hub/canonical-serving/25"),
+        27 => Ok(SCHEMA_IDENTITY),
         _ => anyhow::bail!("unsupported snapshot schema generation"),
     }
 }

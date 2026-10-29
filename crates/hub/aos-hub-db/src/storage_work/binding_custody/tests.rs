@@ -110,7 +110,7 @@ fn probe_reply_allows_bounded_clock_skew_without_extending_expiry() {
             &StorageCredentialCustodyProbeReply {
                 request: original.clone(),
                 observed_at,
-                evidence: StorageCredentialProbeEvidence {
+                evidence: StorageCredentialProbeResult {
                     valid: true,
                     conditional_writes_supported: false,
                     error: None,
@@ -148,7 +148,7 @@ fn probe_reply_requires_fresh_exact_task_nonce_and_purpose() {
         &StorageCredentialCustodyProbeReply {
             request: original.clone(),
             observed_at: 110,
-            evidence: StorageCredentialProbeEvidence {
+            evidence: StorageCredentialProbeResult {
                 valid: true,
                 conditional_writes_supported: false,
                 error: None,

@@ -2,7 +2,7 @@
 
 use anyhow::{ensure, Result};
 use aos_hub_db::storage_work::binding_custody::StorageCredentialCustodyProbe;
-use aos_hub_model::storage::StorageCredentialProbeEvidence;
+use aos_hub_model::storage::StorageCredentialProbeResult;
 use aos_hub_service::s3surface::Method as S3Method;
 use aos_hub_service::s3surface::S3Surface;
 use worker::{Fetch, Method, Request, RequestInit, RequestRedirect, Response};
@@ -10,7 +10,7 @@ use worker::{Fetch, Method, Request, RequestInit, RequestRedirect, Response};
 pub(super) async fn execute(
     surface: &S3Surface,
     request: &StorageCredentialCustodyProbe,
-) -> Result<StorageCredentialProbeEvidence> {
+) -> Result<StorageCredentialProbeResult> {
     let reference = &request.snapshot.credentials[0];
     let path = format!(
         ".aos/credential-probes/{}/{}/{}",
@@ -110,7 +110,7 @@ pub(super) async fn execute(
         }
         _ => anyhow::bail!("credential probe purpose unsupported"),
     };
-    Ok(StorageCredentialProbeEvidence {
+    Ok(StorageCredentialProbeResult {
         valid,
         conditional_writes_supported: false,
         error: (!valid).then(|| "credential purpose rejected by provider".into()),

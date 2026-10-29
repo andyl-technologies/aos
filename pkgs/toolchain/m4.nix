@@ -16,7 +16,7 @@ in
       role = "public-package";
     };
     pname = "m4";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "m4 emits the macro's exact value 42.";

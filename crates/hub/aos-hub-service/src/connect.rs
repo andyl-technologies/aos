@@ -659,13 +659,12 @@ macro_rules! rpc_route {
     };
 }
 
-/// Trusted transport facts supplied by the native listener or Worker runtime.
-/// Trusted transport facts supplied by the native listener or Worker runtime.
+/// Transport facts supplied by the native listener or Worker runtime.
 ///
 /// These values are not inferred from forwarding headers. A trusted layer-7
-/// adapter may construct the evidence only after authenticating its ingress.
+/// adapter may construct this value only after authenticating its ingress.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DeliveryTransportEvidence {
+pub struct VerifiedTransport {
     /// Actual listener scheme.
     pub scheme: String,
     /// `hub` or `layer7`, matching the immutable endpoint revision.
@@ -674,8 +673,8 @@ pub struct DeliveryTransportEvidence {
     pub tls_identity: Option<aos_hub_db::db::InboundEndpointHost>,
 }
 
-impl DeliveryTransportEvidence {
-    /// Builds transport evidence from a runtime-verified absolute request URL.
+impl VerifiedTransport {
+    /// Builds transport facts from a runtime-verified absolute request URL.
     #[must_use]
     pub fn from_verified_url(url: &url::Url, ingress_kind: &str) -> Option<Self> {
         if !matches!(ingress_kind, "hub" | "layer7") {
@@ -694,9 +693,9 @@ impl DeliveryTransportEvidence {
     }
 }
 
-/// Trusted route-access assertion supplied by a configured ingress.
+/// Route-access facts verified from a configured ingress assertion.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DeliveryAccessEvidence {
+pub struct VerifiedAccess {
     /// Exact verified private-network policy.
     pub boundary: Option<(String, i64)>,
     /// Exact verified external provider `(kind, resource, revision)`.
@@ -736,7 +735,7 @@ pub struct ResolvedRoute {
 /// header, invalid signature, expired assertion, or request mismatch.
 pub fn apply_delivery_attestation(
     mut request: Request,
-    verifier: Option<&crate::delivery_attestation::DeliveryAttestationVerifier>,
+    verifier: Option<&crate::delivery_attestation::IngressAssertionVerifier>,
     now: i64,
 ) -> Result<Request, Response> {
     use crate::delivery_attestation::DELIVERY_ATTESTATION_HEADER;
@@ -893,11 +892,7 @@ pub fn attested_authority_host(authority: &str) -> Result<aos_hub_db::db::Inboun
 fn request_endpoint(
     request: &Request,
 ) -> Result<Option<(aos_hub_db::db::InboundEndpointHost, u16, String, String)>, ()> {
-    let Some(evidence) = request
-        .extensions()
-        .get::<DeliveryTransportEvidence>()
-        .cloned()
-    else {
+    let Some(evidence) = request.extensions().get::<VerifiedTransport>().cloned() else {
         return Ok(None);
     };
     let default_port = match evidence.scheme.as_str() {
@@ -1204,7 +1199,7 @@ async fn require_route_access(
     svc: &RpcService,
     route: &aos_hub_db::db::InboundRouteRecord,
     headers: HeaderMap,
-    attestation: Option<crate::delivery_attestation::VerifiedDeliveryAttestation>,
+    attestation: Option<crate::delivery_attestation::VerifiedIngressAssertion>,
 ) -> Result<(), RpcError> {
     let authorization = headers
         .get(header::AUTHORIZATION)
@@ -1284,7 +1279,7 @@ async fn require_route_access(
 }
 
 fn attestation_matches_route(
-    attestation: &crate::delivery_attestation::VerifiedDeliveryAttestation,
+    attestation: &crate::delivery_attestation::VerifiedIngressAssertion,
     route: &aos_hub_db::db::InboundRouteRecord,
 ) -> bool {
     attestation.route_id == route.id
@@ -1292,7 +1287,7 @@ fn attestation_matches_route(
 }
 
 fn attested_access_matches_route(
-    access: &DeliveryAccessEvidence,
+    access: &VerifiedAccess,
     route: &aos_hub_db::db::InboundRouteRecord,
 ) -> bool {
     match route.access_policy_kind.as_str() {
@@ -1486,7 +1481,7 @@ pub async fn rewrite_for_route(
             let access_headers = request.headers().clone();
             let attestation = request
                 .extensions()
-                .get::<crate::delivery_attestation::VerifiedDeliveryAttestation>()
+                .get::<crate::delivery_attestation::VerifiedIngressAssertion>()
                 .cloned();
             if let Err(error) = require_route_access(svc, route, access_headers, attestation).await
             {
@@ -1597,7 +1592,7 @@ pub async fn rewrite_for_route(
     let access_headers = request.headers().clone();
     let attestation = request
         .extensions()
-        .get::<crate::delivery_attestation::VerifiedDeliveryAttestation>()
+        .get::<crate::delivery_attestation::VerifiedIngressAssertion>()
         .cloned();
     // Browser reads apply the registry visibility matrix in `browse_dispatch`:
     // hidden registries deliberately look absent instead of issuing an
@@ -1918,8 +1913,8 @@ async fn internal_delivery_handler(
 #[cfg(not(target_arch = "wasm32"))]
 async fn dispatch_route(
     svc: Arc<RpcService>,
-    verifier: Option<Arc<crate::delivery_attestation::DeliveryAttestationVerifier>>,
-    default_transport: DeliveryTransportEvidence,
+    verifier: Option<Arc<crate::delivery_attestation::IngressAssertionVerifier>>,
+    default_transport: VerifiedTransport,
     request: Request,
     next: Next,
 ) -> Response {
@@ -1931,11 +1926,7 @@ async fn dispatch_route(
         Ok(request) => request,
         Err(response) => return response,
     };
-    if request
-        .extensions()
-        .get::<DeliveryTransportEvidence>()
-        .is_none()
-    {
+    if request.extensions().get::<VerifiedTransport>().is_none() {
         request.extensions_mut().insert(default_transport);
     }
     // Hybrid handlers issue signed delivery grants for bulk reads; their
@@ -1960,13 +1951,13 @@ async fn dispatch_route(
 pub fn with_route_dispatch(
     router: Router,
     service: Arc<RpcService>,
-    verifier: Option<Arc<crate::delivery_attestation::DeliveryAttestationVerifier>>,
+    verifier: Option<Arc<crate::delivery_attestation::IngressAssertionVerifier>>,
 ) -> Router {
     with_route_dispatch_transport(
         router,
         service,
         verifier,
-        DeliveryTransportEvidence {
+        VerifiedTransport {
             scheme: "http".to_owned(),
             ingress_kind: "hub".to_owned(),
             tls_identity: None,
@@ -1984,8 +1975,8 @@ pub fn with_route_dispatch(
 pub fn with_route_dispatch_transport(
     router: Router,
     service: Arc<RpcService>,
-    verifier: Option<Arc<crate::delivery_attestation::DeliveryAttestationVerifier>>,
-    default_transport: DeliveryTransportEvidence,
+    verifier: Option<Arc<crate::delivery_attestation::IngressAssertionVerifier>>,
+    default_transport: VerifiedTransport,
 ) -> Router {
     // The middleware must run *before* routing so its URI rewrite changes which
     // route matches. `Router::layer` runs *after* routing, so instead the inner
@@ -5301,15 +5292,15 @@ mod tests {
             serves_oci: false,
             ready: true,
         };
-        let verified = crate::delivery_attestation::VerifiedDeliveryAttestation {
-            transport: DeliveryTransportEvidence {
+        let verified = crate::delivery_attestation::VerifiedIngressAssertion {
+            transport: VerifiedTransport {
                 scheme: "https".into(),
                 ingress_kind: "layer7".into(),
                 tls_identity: Some(aos_hub_db::db::InboundEndpointHost::Domain(
                     "cache.example".into(),
                 )),
             },
-            access: DeliveryAccessEvidence {
+            access: VerifiedAccess {
                 boundary: Some(("boundary-1".into(), 7)),
                 external_provider: None,
             },
@@ -5340,7 +5331,7 @@ mod tests {
         assert!(matches!(request_endpoint(&no_evidence), Ok(None)));
 
         let host = aos_hub_db::db::InboundEndpointHost::Domain("cache.example".into());
-        let evidence = DeliveryTransportEvidence {
+        let evidence = VerifiedTransport {
             scheme: "https".into(),
             ingress_kind: "hub".into(),
             tls_identity: Some(host.clone()),
@@ -5562,7 +5553,7 @@ mod tests {
             let request = axum::http::Request::builder()
                 .uri(url.as_str())
                 .header(header::ACCEPT, accept)
-                .extension(DeliveryTransportEvidence::from_verified_url(&url, "hub").unwrap())
+                .extension(VerifiedTransport::from_verified_url(&url, "hub").unwrap())
                 .body(axum::body::Body::empty())
                 .unwrap();
             rewrite_for_route(&self.service, request)

@@ -5,7 +5,7 @@
 //! operations and report measured state through the corresponding reconcile
 //! RPC; scheduling never mutates an observation inline.
 
-use aos_hub_model::storage::StorageCredentialProbeEvidence;
+use aos_hub_model::storage::StorageCredentialProbeResult;
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
@@ -94,7 +94,7 @@ struct GrantRevocationTarget {
 
 /// Typed measurements produced by the shared domain controller.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DomainProbeEvidence {
+pub struct DomainProbeResult {
     /// Typed, canonical DNS answers observed across A, AAAA, and CNAME queries.
     pub dns_records: Vec<DnsProbeRecord>,
     /// Whether the runtime completed a verified TLS handshake for the hostname.
@@ -113,7 +113,7 @@ pub struct DomainProbeEvidence {
 
 /// Exact active observation returned by a controller-owned route adapter.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RouteProbeEvidence {
+pub struct RouteProbeResult {
     /// Stable route identity.
     pub route_id: String,
     /// Exact desired route generation.
@@ -157,7 +157,7 @@ pub trait RouteObservationProvider: aos_hub_db::backend::BackendBounds {
     async fn observe(
         &self,
         target: &aos_hub_db::db::RouteReconciliationTarget,
-    ) -> Result<RouteProbeEvidence>;
+    ) -> Result<RouteProbeResult>;
 }
 
 /// Controller-owned adapter for real, purpose-specific storage probes.
@@ -181,7 +181,7 @@ pub trait StorageCredentialProbeProvider: aos_hub_db::backend::BackendBounds {
         credential: &aos_hub_db::db::BindingCredentialRevisionRecord,
         operation_id: &str,
         probe_token: &str,
-    ) -> Result<StorageCredentialProbeEvidence>;
+    ) -> Result<StorageCredentialProbeResult>;
 }
 
 struct UnavailableStorageCredentialProbeProvider;
@@ -195,7 +195,7 @@ impl StorageCredentialProbeProvider for UnavailableStorageCredentialProbeProvide
         _credential: &aos_hub_db::db::BindingCredentialRevisionRecord,
         _operation_id: &str,
         _probe_token: &str,
-    ) -> Result<StorageCredentialProbeEvidence> {
+    ) -> Result<StorageCredentialProbeResult> {
         anyhow::bail!("no controller-owned storage credential probe adapter is configured")
     }
 }
@@ -217,7 +217,7 @@ pub trait ExternalRouteControlPlane: aos_hub_db::backend::BackendBounds {
     async fn observe_external(
         &self,
         target: &aos_hub_db::db::RouteReconciliationTarget,
-    ) -> Result<RouteProbeEvidence>;
+    ) -> Result<RouteProbeResult>;
 }
 
 /// Authenticated transport for the fixed Cloudflare v4 control-plane API.
@@ -261,7 +261,7 @@ impl ExternalRouteControlPlane for CloudflareRouteControlPlane {
     async fn observe_external(
         &self,
         target: &aos_hub_db::db::RouteReconciliationTarget,
-    ) -> Result<RouteProbeEvidence> {
+    ) -> Result<RouteProbeResult> {
         anyhow::ensure!(
             target.external_provider_kind.as_deref() == Some("cloudflare"),
             "Cloudflare adapter cannot observe another provider"
@@ -338,7 +338,7 @@ impl ExternalRouteControlPlane for CloudflareRouteControlPlane {
             hex::encode(Sha256::digest(&body)) == field("aos_liveness_sha256")?,
             "Cloudflare edge bytes do not match authenticated control-plane metadata"
         );
-        Ok(RouteProbeEvidence {
+        Ok(RouteProbeResult {
             route_id: target.id.clone(),
             configuration_generation: target.configuration_generation,
             configuration_digest: target.configuration_digest.clone(),
@@ -400,7 +400,7 @@ impl RouteObservationProvider for ControllerOwnedRouteObservationProvider {
     async fn observe(
         &self,
         target: &aos_hub_db::db::RouteReconciliationTarget,
-    ) -> Result<RouteProbeEvidence> {
+    ) -> Result<RouteProbeResult> {
         if target.mode == "direct" {
             return self
                 .direct
@@ -430,7 +430,7 @@ impl RouteObservationProvider for UnavailableRouteObservationProvider {
     async fn observe(
         &self,
         _target: &aos_hub_db::db::RouteReconciliationTarget,
-    ) -> Result<RouteProbeEvidence> {
+    ) -> Result<RouteProbeResult> {
         anyhow::bail!("no controller-owned delivery-route observation adapter is configured")
     }
 }
@@ -572,7 +572,7 @@ impl RouteObservationProvider for SignedManifestRouteObservationProvider {
     async fn observe(
         &self,
         target: &aos_hub_db::db::RouteReconciliationTarget,
-    ) -> Result<RouteProbeEvidence> {
+    ) -> Result<RouteProbeResult> {
         anyhow::ensure!(
             target.mode == "direct",
             "signed publication adapter only observes direct routes"
@@ -606,7 +606,7 @@ impl RouteObservationProvider for SignedManifestRouteObservationProvider {
             hex::encode(Sha256::digest(&body)) == route.liveness_sha256,
             "live edge bytes do not match the signed publication manifest"
         );
-        Ok(RouteProbeEvidence {
+        Ok(RouteProbeResult {
             route_id: route.route_id.clone(),
             configuration_generation: route.configuration_generation,
             configuration_digest: route.configuration_digest.clone(),
@@ -654,7 +654,7 @@ fn validated_route_liveness_url(canonical_url: &str, liveness_url: &str) -> Resu
 
 fn validate_route_evidence(
     target: &aos_hub_db::db::RouteReconciliationTarget,
-    evidence: &RouteProbeEvidence,
+    evidence: &RouteProbeResult,
 ) -> Result<()> {
     anyhow::ensure!(
         evidence.route_id == target.id
@@ -1413,6 +1413,7 @@ impl DomainProbeController {
             if let Err(error) = self.run_claimed(&claimed).await {
                 let now = clock::now_unix_secs();
                 let detail = serde_json::json!({ "attempts": 3 }).to_string();
+                let message = crate::jobs::redacted_operation_failure(&format!("{error:#}"));
                 let failure_update = self
                     .db
                     .update_topology_operation(
@@ -1422,9 +1423,7 @@ impl DomainProbeController {
                         0,
                         None,
                         &detail,
-                        Some(&format!(
-                            "domain measurement failed after retries: {error:#}"
-                        )),
+                        Some(&message),
                         Some(now),
                         Some(now),
                     )
@@ -1497,6 +1496,7 @@ impl DomainProbeController {
                     completed += 1;
                     continue;
                 }
+                let message = crate::jobs::redacted_operation_failure(&format!("{error:#}"));
                 self.db
                     .update_topology_operation(
                         &current.operation_id,
@@ -1505,9 +1505,7 @@ impl DomainProbeController {
                         0,
                         Some(1),
                         &current.detail_json,
-                        Some(&format!(
-                            "storage credential probe could not produce trusted evidence: {error:#}"
-                        )),
+                        Some(&message),
                         current.started_at.or(Some(now)),
                         Some(now),
                     )
@@ -1560,10 +1558,7 @@ impl DomainProbeController {
             };
             if let Err(error) = self.run_grant_revocation_claimed(&claimed).await {
                 let now = clock::now_unix_secs();
-                let message = format!("{error:#}")
-                    .chars()
-                    .take(4 * 1024)
-                    .collect::<String>();
+                let message = crate::jobs::redacted_operation_failure(&format!("{error:#}"));
                 self.db
                     .update_topology_operation(
                         &claimed.operation_id,
@@ -1644,6 +1639,10 @@ impl DomainProbeController {
                 evidence.valid == evidence.error.is_none(),
                 "storage credential adapter returned inconsistent evidence"
             );
+            let probe_error = evidence
+                .error
+                .as_deref()
+                .map(crate::jobs::redacted_operation_failure);
             let checkpoint_detail = serde_json::json!({
                 "bindingId": target.stable_id,
                 "purpose": purpose,
@@ -1653,7 +1652,7 @@ impl DomainProbeController {
                 "bindingWriteRevision": detail.get("bindingWriteRevision"),
                 "probeToken": probe_token,
                 "probeResult": if evidence.valid { "valid" } else { "invalid" },
-                "probeError": evidence.error,
+                "probeError": probe_error.as_deref(),
                 "conditionalWritesSupported": evidence.conditional_writes_supported,
                 "evidence": evidence.evidence,
             })
@@ -1679,7 +1678,7 @@ impl DomainProbeController {
                     &credential,
                     &checkpoint,
                     state,
-                    evidence.error.as_deref(),
+                    probe_error.as_deref(),
                 )
                 .await?;
             let committed = self
@@ -1741,7 +1740,7 @@ impl DomainProbeController {
                 .cloned()
                 .context("credential probe checkpoint has no evidence")?;
             (
-                StorageCredentialProbeEvidence {
+                StorageCredentialProbeResult {
                     valid,
                     conditional_writes_supported,
                     error,
@@ -1952,10 +1951,7 @@ impl DomainProbeController {
             }
             .await;
             if let Err(error) = result {
-                let message = format!("{error:#}")
-                    .chars()
-                    .take(4 * 1024)
-                    .collect::<String>();
+                let message = crate::jobs::redacted_operation_failure(&format!("{error:#}"));
                 self.db
                     .fail_topology_pin_resolution_job(&job, &message)
                     .await?;
@@ -2327,7 +2323,9 @@ impl DomainProbeController {
             Err(error) => (
                 "degraded",
                 "failed",
-                Some(format!("delivery observation failed: {error:#}")),
+                Some(crate::jobs::redacted_operation_failure(&format!(
+                    "{error:#}"
+                ))),
                 None,
             ),
         };
@@ -2478,7 +2476,7 @@ impl DomainProbeController {
         generation: i64,
         domain_id: i64,
         hostname: &str,
-    ) -> Result<DomainProbeEvidence> {
+    ) -> Result<DomainProbeResult> {
         let (endpoint_id, endpoint_generation, signing_identity) =
             self.db.domain_probe_signing_identity(domain_id).await?;
         let mut last_error = None;
@@ -2586,7 +2584,7 @@ async fn measure_domain_once(
     signing_identity: &aos_hub_db::db::EndpointProbeSigningIdentity,
     dns_json_endpoint: &str,
     probe_location: &str,
-) -> Result<DomainProbeEvidence> {
+) -> Result<DomainProbeResult> {
     let mut tls_url = url::Url::parse(&format!("https://{hostname}/.well-known/aos-domain-probe"))?;
     tls_url.query_pairs_mut().append_pair("nonce", nonce);
     let (a, aaaa, cname, tls) = futures_util::join!(
@@ -2606,7 +2604,7 @@ async fn measure_domain_once(
             Err(error) => tracing::warn!(
                 %hostname,
                 %record_type,
-                error = %format!("{error:#}"),
+                error = %crate::jobs::redacted_operation_failure(&format!("{error:#}")),
                 "domain DNS probe attempt failed"
             ),
         }
@@ -2627,7 +2625,7 @@ async fn measure_domain_once(
         signing_identity,
         now,
     )?;
-    Ok(DomainProbeEvidence {
+    Ok(DomainProbeResult {
         dns_records,
         tls_handshake_valid: true,
         responder_endpoint_id: tls.endpoint_id,
@@ -2951,8 +2949,8 @@ mod tests {
         }
     }
 
-    fn route_evidence() -> RouteProbeEvidence {
-        RouteProbeEvidence {
+    fn route_evidence() -> RouteProbeResult {
+        RouteProbeResult {
             route_id: "route:test".to_string(),
             configuration_generation: 4,
             configuration_digest: "a".repeat(64),

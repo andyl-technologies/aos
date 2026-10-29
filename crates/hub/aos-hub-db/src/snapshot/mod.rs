@@ -64,13 +64,51 @@ static GENERATION16_CONTRACT: LazyLock<String> = LazyLock::new(|| {
     ]
     .concat()
 });
-static CONTRACT: LazyLock<String> = LazyLock::new(|| {
+static GENERATION25_CONTRACT: LazyLock<String> = LazyLock::new(|| {
     [
         GENERATION16_CONTRACT.as_str(),
         include_str!("schema-v25-delta.tsv"),
     ]
     .concat()
 });
+static CONTRACT: LazyLock<String> = LazyLock::new(|| {
+    [
+        retire_columns(&GENERATION25_CONTRACT, 2, GENERATION27_RETIRED_COLUMNS).as_str(),
+        include_str!("schema-v27-delta.tsv"),
+    ]
+    .concat()
+});
+
+/// Columns that generation twenty-seven drops from earlier generations.
+///
+/// Delta files only append, so a later generation that drops a column derives
+/// its contract by filtering the earlier one. Historical generations keep the
+/// column and still decode archives that carry it.
+pub(crate) const GENERATION27_RETIRED_COLUMNS: &[(&str, &str)] = &[
+    ("oci_gc_deletion_evidence", "evidence_digest"),
+    ("oci_untracked_repair_evidence", "evidence_digest"),
+];
+
+/// Removes retired `(table, column)` rows from a tab-separated contract.
+///
+/// `column_field` is the zero-based field holding the column name. Comments
+/// and unrelated rows keep their original order.
+pub(crate) fn retire_columns(
+    document: &str,
+    column_field: usize,
+    retired: &[(&str, &str)],
+) -> String {
+    document
+        .split_inclusive('\n')
+        .filter(|line| {
+            let fields: Vec<_> = line.trim_end_matches('\n').split('\t').collect();
+            let column = fields.get(column_field).copied();
+            !retired
+                .iter()
+                .any(|(table, retired)| fields.first() == Some(table) && column == Some(retired))
+        })
+        .collect()
+}
 const LEGACY_CONTRACT_MIGRATION_DIGESTS: &[&str] = &[
     "ac60f004a8c71ad9aaf5169a3497a40cbd886648eedee5394da9bc7cbd72e061",
     "8da079db002b25543fc856e9cc57f335e67a73b3272c9a339ef8cc66c65ae51d",
@@ -146,7 +184,7 @@ static GENERATION16_MIGRATION_DIGESTS: LazyLock<Vec<&'static str>> = LazyLock::n
     digests
 });
 
-static CONTRACT_MIGRATION_DIGESTS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+static GENERATION25_MIGRATION_DIGESTS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
     let mut digests = GENERATION16_MIGRATION_DIGESTS.clone();
     digests.push("c535b21cc2b0c00ddc67dfb2e19bc447e170b8082dc1f2fef0312cfa0cfc9c65");
     digests.push("014663373e8fabce496c255045b466bec932f82e540b6e08faa0d643770a4e8b");
@@ -157,6 +195,13 @@ static CONTRACT_MIGRATION_DIGESTS: LazyLock<Vec<&'static str>> = LazyLock::new(|
     digests.push("66d27116ef60643425a40d9f68bea2965fae07483032b2c0b503a37fee1e196e");
     digests.push("8518ff8179f062602a06562a7702852b261c9bdf8ee8d87721722f20900f057a");
     digests.push("ce257919050039ada7aa717ce7e48bfed2cda6d93031db49f2c3174832721ec9");
+    digests
+});
+
+static CONTRACT_MIGRATION_DIGESTS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+    let mut digests = GENERATION25_MIGRATION_DIGESTS.clone();
+    digests.push("28cdfcb79813c332b3d195a1f8ca285be831003996fce21f4d25652b5829ad04");
+    digests.push("e695d6562d28a765f8f9fcd0c73d2968ef516a4e8e0fde93f3773ae189e97921");
     digests
 });
 
@@ -533,7 +578,11 @@ fn generation_contract(version: usize) -> Result<(&'static str, &'static [&'stat
             GENERATION16_CONTRACT.as_str(),
             GENERATION16_MIGRATION_DIGESTS.as_slice(),
         )),
-        25 => Ok((CONTRACT.as_str(), CONTRACT_MIGRATION_DIGESTS.as_slice())),
+        25 => Ok((
+            GENERATION25_CONTRACT.as_str(),
+            GENERATION25_MIGRATION_DIGESTS.as_slice(),
+        )),
+        27 => Ok((CONTRACT.as_str(), CONTRACT_MIGRATION_DIGESTS.as_slice())),
         _ => anyhow::bail!("snapshot generation is unsupported"),
     }
 }

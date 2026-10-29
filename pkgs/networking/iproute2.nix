@@ -19,7 +19,7 @@ in
       role = "public-package";
     };
     pname = "iproute2";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Ss accepts the compound port filter and completes the local socket query.";

@@ -1078,7 +1078,7 @@ mod entry {
         Router,
         Arc<RpcService>,
         ConsoleDeps,
-        Option<Arc<aos_hub_service::delivery_attestation::DeliveryAttestationVerifier>>,
+        Option<Arc<aos_hub_service::delivery_attestation::IngressAssertionVerifier>>,
     )> {
         let secret = env.secret(HUB_JWT_SECRET)?.to_string();
         if secret.is_empty() {
@@ -1122,7 +1122,7 @@ mod entry {
                     ))
                 })?;
                 Some(Arc::new(
-                    aos_hub_service::release_evidence::Ed25519ReleaseEvidenceAuthority::from_json(
+                    aos_hub_service::release_receipt_signer::Ed25519ReleaseEvidenceAuthority::from_json(
                         deployment_id.to_string(),
                         &config.to_string(),
                     )
@@ -1133,7 +1133,7 @@ mod entry {
                     })?,
                 )
                     as Arc<
-                        dyn aos_hub_service::release_evidence::ReleaseEvidenceAuthority,
+                        dyn aos_hub_service::release_receipt_signer::ReleaseEvidenceAuthority,
                     >)
             }
             None => None,
@@ -1171,7 +1171,7 @@ mod entry {
             .secret(HUB_DELIVERY_ATTESTATION_KEY)
             .ok()
             .map(|secret| {
-                aos_hub_service::delivery_attestation::DeliveryAttestationVerifier::new(
+                aos_hub_service::delivery_attestation::IngressAssertionVerifier::new(
                     secret.to_string().as_bytes(),
                 )
                 .map(Arc::new)
@@ -2910,7 +2910,7 @@ mod entry {
         console_deps: ConsoleDeps,
         remote_sql_metrics: crate::remotebackend::RemoteSqlMetrics,
         delivery_attestation_verifier:
-            Option<Arc<aos_hub_service::delivery_attestation::DeliveryAttestationVerifier>>,
+            Option<Arc<aos_hub_service::delivery_attestation::IngressAssertionVerifier>>,
     }
 
     async fn shard_request_runtime(
@@ -3097,7 +3097,7 @@ mod entry {
         console_deps: ConsoleDeps,
         sql_metrics: crate::sqldobackend::SqlDoMetrics,
         delivery_attestation_verifier:
-            Option<Arc<aos_hub_service::delivery_attestation::DeliveryAttestationVerifier>>,
+            Option<Arc<aos_hub_service::delivery_attestation::IngressAssertionVerifier>>,
     }
 
     fn recovery_identity(env: &Env) -> Result<(String, String)> {

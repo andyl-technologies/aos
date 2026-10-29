@@ -1,10 +1,10 @@
-//! Focused invariants for Phase 7 OCI GC canonical evidence and schema.
+//! Focused invariants for Phase 7 OCI GC deletion evidence and schema.
 
 use super::{
-    oci_gc_deletion_evidence_digest, AppendOciProviderInventoryPage, ApplyOciGc,
-    ApplyOciRegistryPurgeFence, ApplyOciUntrackedRepair, BeginOciProviderInventory, CancelOciGc,
-    CompleteOciProviderInventory, OciGcDeleteOutcome, OciProviderInventoryEntryInput,
-    OciRegistryPurgeFenceAction, OciUntrackedRepairKind, PlanOciGc, PlanOciRegistryPurgeFence,
+    AppendOciProviderInventoryPage, ApplyOciGc, ApplyOciRegistryPurgeFence,
+    ApplyOciUntrackedRepair, BeginOciProviderInventory, CancelOciGc, CompleteOciProviderInventory,
+    OciGcDeleteOutcome, OciProviderInventoryEntryInput, OciRegistryPurgeFenceAction,
+    OciUntrackedRepairKind, OciUntrackedRepairOutcome, PlanOciGc, PlanOciRegistryPurgeFence,
     PlanOciUntrackedRepair, RecordOciConditionalDeleteCapability, RecordOciGcDeletionSuccess,
     RecordOciUntrackedRepairSuccess, RequeueOciGcPlacementAction, OCI_GC_CANCELLED_REASON,
     OCI_GC_PLAN_TTL_SECONDS,
@@ -114,40 +114,6 @@ fn live_graph_identity_query_translates_for_postgres_and_mysql() {
             .translate(&query)
             .unwrap_or_else(|error| panic!("{dialect:?} rejected identity SQL: {error:#}"));
     }
-}
-
-#[test]
-fn deletion_evidence_digest_binds_every_response_field() {
-    let baseline = oci_gc_deletion_evidence_digest(
-        "action",
-        "retry",
-        OciGcDeleteOutcome::Deleted,
-        Some("\"etag\""),
-        Some("provider-request"),
-        42,
-    )
-    .unwrap();
-    let changed_request = oci_gc_deletion_evidence_digest(
-        "action",
-        "retry",
-        OciGcDeleteOutcome::Deleted,
-        Some("\"etag\""),
-        Some("other-request"),
-        42,
-    )
-    .unwrap();
-    let changed_time = oci_gc_deletion_evidence_digest(
-        "action",
-        "retry",
-        OciGcDeleteOutcome::Deleted,
-        Some("\"etag\""),
-        Some("provider-request"),
-        43,
-    )
-    .unwrap();
-
-    assert_ne!(baseline, changed_request);
-    assert_ne!(baseline, changed_time);
 }
 
 async fn seed_registry(database: &Database) {
@@ -771,15 +737,6 @@ async fn purge_requires_post_fence_empty_head_and_rejects_failed_newer_scan() {
         .unwrap()
         .unwrap();
     assert_eq!(claim.repair.id, repair.id);
-    let evidence_digest = oci_gc_deletion_evidence_digest(
-        &repair.id,
-        "purge-repair-response",
-        OciGcDeleteOutcome::Deleted,
-        Some("\"out-of-band\""),
-        Some("provider-delete-request"),
-        now + 13,
-    )
-    .unwrap();
     database
         .record_oci_untracked_repair_success(&RecordOciUntrackedRepairSuccess {
             plan_id: repair.id,
@@ -788,7 +745,6 @@ async fn purge_requires_post_fence_empty_head_and_rejects_failed_newer_scan() {
             outcome: OciGcDeleteOutcome::Deleted,
             conditional_etag: Some("\"out-of-band\"".to_string()),
             provider_request_id: Some("provider-delete-request".to_string()),
-            evidence_digest,
             confirmed_at: now + 13,
         })
         .await
@@ -2899,15 +2855,6 @@ async fn provider_inventory_checkpoints_survive_takeover_and_seal_tracked_and_un
         ),
         (pending.id.as_str(), untracked, "\"untracked-etag\"", 1)
     );
-    let repair_evidence = oci_gc_deletion_evidence_digest(
-        &pending.id,
-        "repair-response",
-        OciGcDeleteOutcome::Deleted,
-        Some("\"untracked-etag\""),
-        Some("provider-repair-request"),
-        8,
-    )
-    .unwrap();
     let success = RecordOciUntrackedRepairSuccess {
         plan_id: pending.id.clone(),
         claim_token: "repair-claim".to_string(),
@@ -2915,7 +2862,6 @@ async fn provider_inventory_checkpoints_survive_takeover_and_seal_tracked_and_un
         outcome: OciGcDeleteOutcome::Deleted,
         conditional_etag: Some("\"untracked-etag\"".to_string()),
         provider_request_id: Some("provider-repair-request".to_string()),
-        evidence_digest: repair_evidence,
         confirmed_at: 8,
     };
     let repaired = database
@@ -2923,7 +2869,29 @@ async fn provider_inventory_checkpoints_survive_takeover_and_seal_tracked_and_un
         .await
         .unwrap();
     assert_eq!(repaired.state, "confirmed_absent");
-    assert_eq!(repaired.evidence_digest, Some(repair_evidence));
+    assert_eq!(
+        (
+            repaired.outcome,
+            repaired.conditional_etag.as_deref(),
+            repaired.provider_request_id.as_deref(),
+            repaired.confirmed_at,
+        ),
+        (
+            Some(OciUntrackedRepairOutcome::Deleted),
+            Some("\"untracked-etag\""),
+            Some("provider-repair-request"),
+            Some(8),
+        )
+    );
+    let mut conflicting = success.clone();
+    conflicting.provider_request_id = Some("other-provider-request".to_string());
+    assert!(
+        database
+            .record_oci_untracked_repair_success(&conflicting)
+            .await
+            .is_err(),
+        "replay with a different provider request id was accepted"
+    );
     assert_eq!(
         database
             .record_oci_untracked_repair_success(&success)
@@ -3780,15 +3748,6 @@ async fn reviewed_plan_apply_claim_evidence_and_atomic_accounting_complete() {
     {
         let response_idempotency_key = format!("delete-response-{ordinal}");
         let provider_request_id = format!("provider-request-{ordinal}");
-        let evidence_digest = oci_gc_deletion_evidence_digest(
-            &claim.action_id,
-            &response_idempotency_key,
-            OciGcDeleteOutcome::Deleted,
-            claim.expected_strong_etag.as_deref(),
-            Some(&provider_request_id),
-            999_997,
-        )
-        .unwrap();
         let success = RecordOciGcDeletionSuccess {
             action_id: claim.action_id.clone(),
             claim_token: claim_token.to_string(),
@@ -3796,7 +3755,6 @@ async fn reviewed_plan_apply_claim_evidence_and_atomic_accounting_complete() {
             outcome: OciGcDeleteOutcome::Deleted,
             conditional_etag: claim.expected_strong_etag,
             provider_request_id: Some(provider_request_id),
-            evidence_digest,
             confirmed_at: 999_997,
         };
         let confirmed = database

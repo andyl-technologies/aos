@@ -46,6 +46,18 @@ use aos_hub_service::storage_credential::StorageCredentialResolver;
 use aos_hub_service::surface_write as core_sw;
 use aos_hub_service::web::console::ports as console_ports;
 
+/// Sends an HTTP request without retaining its URL in transport errors.
+///
+/// Provider URLs can carry short-lived capabilities in their query strings.
+/// Reqwest attaches the complete request URL to transport errors by default,
+/// so adapters must remove it before adding context or returning the error.
+async fn send_without_request_url(request: reqwest::RequestBuilder) -> Result<reqwest::Response> {
+    request
+        .send()
+        .await
+        .map_err(|error| anyhow::Error::new(error.without_url()))
+}
+
 /// Loads exact secret-version bindings from an owner-private reference manifest.
 ///
 /// The JSON object maps each opaque provider reference to a local secret-file
@@ -99,7 +111,9 @@ impl NativeStorageCredentialProbeProvider {
     }
 
     async fn send(&self, method: reqwest::Method, url: &str) -> Result<reqwest::StatusCode> {
-        Ok(self.client.request(method, url).send().await?.status())
+        Ok(send_without_request_url(self.client.request(method, url))
+            .await?
+            .status())
     }
 }
 
@@ -113,7 +127,7 @@ impl aos_hub_service::topology_probe::StorageCredentialProbeProvider
         credential: &aos_hub_db::db::BindingCredentialRevisionRecord,
         _operation_id: &str,
         probe_token: &str,
-    ) -> Result<aos_hub_model::storage::StorageCredentialProbeEvidence> {
+    ) -> Result<aos_hub_model::storage::StorageCredentialProbeResult> {
         anyhow::ensure!(
             credential.binding_id == binding.id,
             "credential probe binding identity is inconsistent"
@@ -164,7 +178,7 @@ impl aos_hub_service::topology_probe::StorageCredentialProbeProvider
             }
             "write" => {
                 let recovery_url = surface.list_multipart_uploads_url(&probe_path, now)?;
-                let recovery = self.client.get(&recovery_url).send().await?;
+                let recovery = send_without_request_url(self.client.get(&recovery_url)).await?;
                 let recovery_status = recovery.status();
                 statuses.insert(
                     "multipartRecoveryListStatus".into(),
@@ -196,12 +210,9 @@ impl aos_hub_service::topology_probe::StorageCredentialProbeProvider
                     anyhow::ensure!(abort.is_success(), "multipart recovery abort was rejected");
                 }
                 let create_url = surface.multipart_url("create", &probe_path, None, None, now)?;
-                let create = self
-                    .client
-                    .post(&create_url)
-                    .body(Vec::new())
-                    .send()
-                    .await?;
+                let create =
+                    send_without_request_url(self.client.post(&create_url).body(Vec::new()))
+                        .await?;
                 let create_status = create.status();
                 statuses.insert(
                     "multipartCreateStatus".into(),
@@ -240,7 +251,7 @@ impl aos_hub_service::topology_probe::StorageCredentialProbeProvider
                 credential.purpose
             )
         });
-        Ok(aos_hub_model::storage::StorageCredentialProbeEvidence {
+        Ok(aos_hub_model::storage::StorageCredentialProbeResult {
             valid,
             conditional_writes_supported,
             error,
@@ -1887,7 +1898,9 @@ async fn send_s3_request(
         if let Some(bytes) = body.as_ref() {
             request = request.body(bytes.clone());
         }
-        let response = request.send().await.context("S3 transport failed")?;
+        let response = send_without_request_url(request)
+            .await
+            .context("S3 transport failed")?;
         if !response.status().is_redirection() {
             return Ok(response);
         }
@@ -2433,6 +2446,28 @@ mod multipart_tests {
         assert_eq!(url_origin(&original), url_origin(&same));
         assert_ne!(url_origin(&original), url_origin(&changed_host));
         assert_ne!(url_origin(&original), url_origin(&changed_scheme));
+    }
+
+    #[tokio::test]
+    async fn request_transport_errors_omit_provider_urls() {
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let peer = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            drop(stream);
+        });
+        let marker = "signed-capability-marker";
+        let url = format!("http://{address}/object?X-Amz-Signature={marker}");
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+        let error = send_without_request_url(client.get(url)).await.unwrap_err();
+        peer.await.unwrap();
+
+        let request_error = error.downcast_ref::<reqwest::Error>().unwrap();
+        assert!(request_error.url().is_none());
+        assert!(!format!("{error:#}").contains(marker));
     }
 
     #[test]

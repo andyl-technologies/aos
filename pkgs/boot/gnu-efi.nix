@@ -30,7 +30,7 @@ in
         role = "public-package";
       };
       pname = "gnu-efi";
-      qualification.packageProbe = lib.qualification.commandProbe {
+      smokeTest = lib.qualification.commandProbe {
         "primary" = {
           "artifacts" = [];
           "expected" = "The headers compile and libefi plus libgnuefi are valid Unix archives.";

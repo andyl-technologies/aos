@@ -91,9 +91,14 @@ async fn cases(db: Arc<Database>) {
             .get(0)
             .unwrap();
         assert_eq!(retained, original);
-        db.delete_topology_binding(binding.id, binding.resource_version)
-            .await
-            .unwrap();
+        db.delete_topology_binding(
+            binding.id,
+            &binding.stable_id,
+            &binding.owner_scope_key,
+            binding.resource_version,
+        )
+        .await
+        .unwrap();
         db.backfill_binding_identity_reservations().await.unwrap();
         db.validate_binding_identity_reservations().await.unwrap();
     }
@@ -215,9 +220,14 @@ async fn sqlite_binding_identity_history_checks_the_second_page_and_original_has
         let binding = binding(&db, &stable_id).await;
         let original = original(&binding, None);
         history(&db, &binding, &original, false, false).await;
-        db.delete_topology_binding(binding.id, binding.resource_version)
-            .await
-            .unwrap();
+        db.delete_topology_binding(
+            binding.id,
+            &binding.stable_id,
+            &binding.owner_scope_key,
+            binding.resource_version,
+        )
+        .await
+        .unwrap();
     }
     db.backfill_binding_identity_reservations().await.unwrap();
     let last = db

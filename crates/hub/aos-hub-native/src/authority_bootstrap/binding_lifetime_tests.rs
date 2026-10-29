@@ -94,7 +94,9 @@ async fn public_same_second_row_reuse_cannot_recreate_identity_or_apply_old_cred
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(current.id, original.id);
+        // Deleted binding ids are tombstoned, so the replacement never reuses
+        // the original row id. The stale plan must still fail on identity.
+        assert_ne!(current.id, original.id);
         assert_eq!(current.resource_version, original.resource_version);
         assert_eq!(current.owner_scope_key, original.owner_scope_key);
         let (status, _) = api.request("BindingService", "SetBindingCredential", json!({

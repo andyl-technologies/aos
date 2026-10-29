@@ -19,7 +19,7 @@ use crate::boot_storage::with_writable_boot;
 use crate::image_profile::{
     BOOT_ROOT, IMAGE_PROFILE, PayloadSource, private_directory, validate_measurement_sidecars,
 };
-use crate::recovery::{RecoveryEvidence, RecoveryPayload};
+use crate::recovery::{RecoveryEntry, RecoveryPayload};
 
 const RETENTION_ROOT: &str = "rollout-retention";
 const BOOT_ARTIFACT_CONTRACT: &str = "contract.json";
@@ -90,12 +90,16 @@ struct ImageGeneration {
 #[derive(Debug, Deserialize)]
 struct ProviderStateEnvelope {
     schema: String,
-    evidence: SystemdBootGenerationEvidence,
+    /// Stored under the historical `evidence` key of `boot_provider_state`.
+    evidence: InstalledBootEntry,
 }
 
+/// Records the installed boot entry and staged UKI of one generation.
+///
+/// Promotion, retirement, and cleanup act on these recorded paths.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
-struct SystemdBootGenerationEvidence {
+struct InstalledBootEntry {
     installed_entry: String,
     #[serde(default, rename = "uki-source-path")]
     uki_source_path: Option<String>,
@@ -108,7 +112,7 @@ struct SystemdBootGenerationEvidence {
     #[serde(default, rename = "slot")]
     slot: Option<String>,
     #[serde(default, rename = "recovery")]
-    recovery: Option<RecoveryEvidence>,
+    recovery: Option<RecoveryEntry>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -960,10 +964,7 @@ fn retain_payloads(rollout: &RolloutRequest) -> Result<()> {
     )
 }
 
-fn checked_staged_bytes(
-    evidence: &SystemdBootGenerationEvidence,
-    source: &Path,
-) -> Result<Vec<u8>> {
+fn checked_staged_bytes(evidence: &InstalledBootEntry, source: &Path) -> Result<Vec<u8>> {
     ensure!(
         fs::symlink_metadata(source)?.is_file(),
         "staged UKI is not regular"
@@ -1015,7 +1016,7 @@ fn promote_candidate(identity: &ImageIdentity, reset_count: bool) -> Result<()> 
 }
 
 fn promote_staged_payload(
-    evidence: &SystemdBootGenerationEvidence,
+    evidence: &InstalledBootEntry,
     boot: &Path,
     profile: &Path,
     reset_count: bool,
@@ -1110,7 +1111,7 @@ fn checked_destination_parent(boot: &Path, destination: &Path) -> Result<()> {
 
 fn publish_recovery_payload(
     boot: &Path,
-    evidence: &RecoveryEvidence,
+    evidence: &RecoveryEntry,
     payload: &RecoveryPayload,
 ) -> Result<()> {
     let uki = boot.join(&evidence.uki_path);
@@ -1499,7 +1500,7 @@ fn remove_inactive_payload(rollout: &RolloutRequest, retained: &RetentionManifes
 }
 
 fn staged_payload_paths(
-    evidence: &SystemdBootGenerationEvidence,
+    evidence: &InstalledBootEntry,
     profile: &Path,
 ) -> Result<Option<Vec<PathBuf>>> {
     let Some(source) = &evidence.uki_source_path else {
@@ -1521,7 +1522,7 @@ fn staged_payload_paths(
     Ok(Some(paths))
 }
 
-fn remove_staged_payload(evidence: &SystemdBootGenerationEvidence, profile: &Path) -> Result<()> {
+fn remove_staged_payload(evidence: &InstalledBootEntry, profile: &Path) -> Result<()> {
     let Some(paths) = staged_payload_paths(evidence, profile)? else {
         return Ok(());
     };
@@ -1692,7 +1693,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("candidate.efi");
         fs::write(&path, b"authenticated UKI").unwrap();
-        let evidence = SystemdBootGenerationEvidence {
+        let evidence = InstalledBootEntry {
             installed_entry: "EFI/Linux/candidate-gen12+3.efi".into(),
             uki_source_path: Some("candidates/12/candidate.efi".into()),
             uki_sha256: Some(Sha256Digest::of_bytes(b"authenticated UKI").to_string()),
@@ -1754,7 +1755,7 @@ mod tests {
         bytes
     }
 
-    fn paired_promotion_fixture(root: &Path) -> (PathBuf, PathBuf, SystemdBootGenerationEvidence) {
+    fn paired_promotion_fixture(root: &Path) -> (PathBuf, PathBuf, InstalledBootEntry) {
         let boot = root.join("boot");
         let profile = root.join("profile");
         for directory in [
@@ -1775,7 +1776,7 @@ mod tests {
             .unwrap();
         }
         let uki = recovery_pe("B");
-        let recovery = RecoveryEvidence {
+        let recovery = RecoveryEntry {
             copy: "B".into(),
             uki_path: "EFI/AOS/recovery-b.efi".into(),
             entry_path: "loader/entries/recovery-b.conf".into(),
@@ -1791,7 +1792,7 @@ mod tests {
             recovery.entry_bytes().unwrap(),
         )
         .unwrap();
-        let evidence = SystemdBootGenerationEvidence {
+        let evidence = InstalledBootEntry {
             installed_entry: "EFI/Linux/candidate-gen2+3.efi".into(),
             uki_source_path: Some("candidates/2/candidate.efi".into()),
             uki_sha256: Some(Sha256Digest::of_bytes(b"normal candidate").to_string()),

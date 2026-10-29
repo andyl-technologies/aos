@@ -598,7 +598,6 @@ async fn operator_recovers_only_exact_held_generation_and_refuses_a_hold_removed
 
 #[tokio::test]
 async fn known_head_result_requires_current_sql_authorization_when_receipt_is_committed() {
-    use aos_hub_db::db::oci_gc_deletion_evidence_digest;
     use aos_hub_db::db::OciGcDeleteOutcome;
     use aos_hub_db::db::RecordOciGcDeletionSuccess;
 
@@ -655,15 +654,6 @@ async fn known_head_result_requires_current_sql_authorization_when_receipt_is_co
             conditional_etag: None,
             provider_request_id: None,
             confirmed_at: now,
-            evidence_digest: oci_gc_deletion_evidence_digest(
-                &fixture.claim.action_id,
-                "authenticated-head-receipt",
-                outcome,
-                None,
-                None,
-                now,
-            )
-            .unwrap(),
         };
         let result = fixture
             .db

@@ -32,7 +32,7 @@ in
       role = "public-package";
     };
     pname = "latex2man";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "A small LaTeX manual source with a title and description.";
         operation = "Convert the source to a troff manual page.";

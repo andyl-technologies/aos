@@ -63,9 +63,7 @@ pub enum MaintainCommand {
     Test(MaintainTestArgs),
     /// Run or accept one bounded local repair-agent proposal
     Repair(MaintainRepairArgs),
-    /// Generate and verify the complete local candidate evidence dossier
-    Evidence(MaintainRunIdentityArgs),
-    /// Render reviewed pull-request title, body, and publication inputs offline
+    /// Verify a final-gated candidate and render its pull-request text offline
     PreparePr(MaintainRunIdentityArgs),
     /// Publish only the exact final-gated branch and matching pull request
     PublishPr(MaintainPublishPrArgs),

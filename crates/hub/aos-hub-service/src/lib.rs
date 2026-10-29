@@ -42,7 +42,7 @@ pub mod placement_scan;
 pub mod ratelimit;
 pub mod registry_delete_controller;
 pub mod reindex;
-pub mod release_evidence;
+pub mod release_receipt_signer;
 pub mod robots;
 pub mod s3surface;
 pub mod service;

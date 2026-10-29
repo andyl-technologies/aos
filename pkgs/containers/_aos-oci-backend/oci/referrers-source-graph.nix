@@ -25,18 +25,18 @@
   checkedReferenceGraph =
     if builtins.isAttrs referenceGraph && (referenceGraph.passthru.referenceGraph or false)
     then referenceGraph
-    else throw "evidence-source-graph: referenceGraph must be produced by mkReferenceGraph";
+    else throw "referrers-source-graph: referenceGraph must be produced by mkReferenceGraph";
   checkedCatalog =
     if builtins.isList packageCatalog
     then packageCatalog
-    else throw "evidence-source-graph: packageCatalog must be a list";
+    else throw "referrers-source-graph: packageCatalog must be a list";
   validated =
     if !builtins.isList candidateSources
-    then throw "evidence-source-graph: candidateSources must be a list"
+    then throw "referrers-source-graph: candidateSources must be a list"
     else if invalidSourcePaths != []
-    then throw "evidence-source-graph: candidate sources must be canonical /nix/store paths: ${builtins.toJSON invalidSourcePaths}"
+    then throw "referrers-source-graph: candidate sources must be canonical /nix/store paths: ${builtins.toJSON invalidSourcePaths}"
     else if builtins.length sourcePaths != builtins.length (lib.unique sourcePaths)
-    then throw "evidence-source-graph: duplicate candidateSources entry"
+    then throw "referrers-source-graph: duplicate candidateSources entry"
     else true;
 in
   builtins.deepSeq [validated checkedReferenceGraph checkedCatalog] (mkDerivation {

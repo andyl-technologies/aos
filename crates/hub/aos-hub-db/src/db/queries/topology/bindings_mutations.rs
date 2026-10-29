@@ -486,7 +486,19 @@ impl Database {
             );
         }
         let now = unix_now();
-        let id = self.max_id("bindings").await? + 1;
+        let id: i64 = self
+            .backend
+            .query_opt(
+                "SELECT COALESCE(MAX(id), 0) + 1 FROM (
+                   SELECT id FROM bindings
+                   UNION ALL
+                   SELECT id FROM binding_id_tombstones
+                 ) AS allocated_binding_ids",
+                &[],
+            )
+            .await?
+            .context("binding id allocator returned no row")?
+            .get(0)?;
         let default_key = is_instance_default.then_some("singleton");
         let reservation_id = uuid::Uuid::new_v4().to_string();
         let statements = [
@@ -702,15 +714,22 @@ impl Database {
     ///
     /// # Errors
     ///
-    /// Returns an error on database failure.
+    /// Returns an error for an invalid reviewed identity or a database failure.
     pub async fn delete_topology_binding(
         &self,
         id: i64,
+        stable_id: &str,
+        owner_scope_key: &str,
         expected_resource_version: i64,
     ) -> Result<bool> {
+        validate_key_bytes(stable_id, "binding stable id", 64)?;
+        validate_key_bytes(owner_scope_key, "binding owner scope", 64)?;
         let Some(binding) = self.binding(id).await? else {
             return Ok(false);
         };
+        if binding.stable_id != stable_id || binding.owner_scope_key != owner_scope_key {
+            return Ok(false);
+        }
         let reservation = self
             .binding_identity_reservation(&binding.stable_id)
             .await?
@@ -725,6 +744,10 @@ impl Database {
 }
 
 impl Database {
+    /// Deletes the reviewed binding identity and records its id tombstone.
+    ///
+    /// The permanent identity reservation must still match, so a binding
+    /// recreated under the same stable id cannot satisfy an older plan.
     pub(in crate::db) async fn delete_topology_binding_inner(
         &self,
         binding: &BindingRecord,
@@ -732,12 +755,15 @@ impl Database {
         expected_resource_version: i64,
     ) -> Result<bool> {
         let id = binding.id;
+        let stable_id = binding.stable_id.as_str();
+        let owner_scope_key = binding.owner_scope_key.as_str();
         let exists = self
             .backend
             .query_opt(
                 "SELECT 1 FROM bindings
-                 WHERE id = ?1 AND resource_version = ?2 AND is_instance_default = 0",
-                &vals![id, expected_resource_version],
+                 WHERE id = ?1 AND stable_id = ?2 AND owner_scope_key = ?3
+                   AND resource_version = ?4 AND is_instance_default = 0",
+                &vals![id, stable_id, owner_scope_key, expected_resource_version],
             )
             .await?
             .is_some();
@@ -748,61 +774,117 @@ impl Database {
         // Credential heads and write-state rows use restrictive composite foreign keys so
         // deleting the binding cannot rely on cascades alone. Keep the blocker CAS and the
         // dependent-row teardown in one transaction to avoid partially deleting live state.
-        self.backend
+        let deletion = self
+            .backend
             .checked_batch(&[
                 Statement::new(
                     "UPDATE bindings SET resource_version = resource_version
-                     WHERE id = ?1 AND resource_version = ?2 AND is_instance_default = 0
-                       AND stable_id = ?3
+                     WHERE id = ?1 AND stable_id = ?2 AND owner_scope_key = ?3
+                       AND resource_version = ?4 AND is_instance_default = 0
                        AND EXISTS (SELECT 1 FROM binding_identity_reservations identity
-                         WHERE identity.stable_id = ?3 AND identity.reservation_id = ?4)
+                         WHERE identity.stable_id = ?2 AND identity.reservation_id = ?5)
                        AND NOT EXISTS (SELECT 1 FROM surface_placements WHERE binding_id = ?1)
-                       AND NOT EXISTS (SELECT 1 FROM gateway_revisions WHERE binding_id = ?1)",
+                       AND NOT EXISTS (SELECT 1 FROM gateway_revisions WHERE binding_id = ?1)
+                       AND NOT EXISTS (SELECT 1 FROM topology_defaults WHERE binding_id = ?1)
+                       AND NOT EXISTS (SELECT 1 FROM binding_consumer_scopes
+                         WHERE binding_id = ?1 AND state = 'active' AND grant_kind <> 'owner')",
                     vals![
                         id,
+                        stable_id,
+                        owner_scope_key,
                         expected_resource_version,
-                        &binding.stable_id,
                         reservation_id
                     ],
                 )
                 .expecting(1),
                 Statement::new(
-                    "DELETE FROM binding_write_state WHERE binding_id = ?1",
-                    vals![id],
+                    "INSERT INTO binding_id_tombstones
+                     (id, stable_id, owner_scope_key, deleted_at)
+                     SELECT id, stable_id, owner_scope_key, ?5 FROM bindings
+                     WHERE id = ?1 AND stable_id = ?2 AND owner_scope_key = ?3
+                       AND resource_version = ?4 AND is_instance_default = 0",
+                    vals![
+                        id,
+                        stable_id,
+                        owner_scope_key,
+                        expected_resource_version,
+                        unix_now()
+                    ],
+                )
+                .expecting(1),
+                Statement::new(
+                    "DELETE FROM binding_write_state WHERE binding_id = ?1
+                       AND EXISTS (SELECT 1 FROM bindings
+                         WHERE id = ?1 AND stable_id = ?2 AND owner_scope_key = ?3
+                           AND resource_version = ?4)",
+                    vals![id, stable_id, owner_scope_key, expected_resource_version],
                 )
                 .unchecked(),
                 Statement::new(
-                    "DELETE FROM binding_write_revisions WHERE binding_id = ?1",
-                    vals![id],
+                    "DELETE FROM binding_write_revisions WHERE binding_id = ?1
+                       AND EXISTS (SELECT 1 FROM bindings
+                         WHERE id = ?1 AND stable_id = ?2 AND owner_scope_key = ?3
+                           AND resource_version = ?4)",
+                    vals![id, stable_id, owner_scope_key, expected_resource_version],
                 )
                 .unchecked(),
                 Statement::new(
-                    "DELETE FROM binding_credential_heads WHERE binding_id = ?1",
-                    vals![id],
+                    "DELETE FROM binding_credential_heads WHERE binding_id = ?1
+                       AND EXISTS (SELECT 1 FROM bindings
+                         WHERE id = ?1 AND stable_id = ?2 AND owner_scope_key = ?3
+                           AND resource_version = ?4)",
+                    vals![id, stable_id, owner_scope_key, expected_resource_version],
                 )
                 .unchecked(),
                 Statement::new(
-                    "DELETE FROM binding_credential_revisions WHERE binding_id = ?1",
-                    vals![id],
+                    "DELETE FROM binding_credential_revisions WHERE binding_id = ?1
+                       AND EXISTS (SELECT 1 FROM bindings
+                         WHERE id = ?1 AND stable_id = ?2 AND owner_scope_key = ?3
+                           AND resource_version = ?4)",
+                    vals![id, stable_id, owner_scope_key, expected_resource_version],
                 )
                 .unchecked(),
                 Statement::new(
-                    "DELETE FROM binding_scope_grant_pins WHERE binding_id = ?1",
-                    vals![id],
+                    "DELETE FROM binding_scope_grant_pins WHERE binding_id = ?1
+                       AND EXISTS (SELECT 1 FROM bindings
+                         WHERE id = ?1 AND stable_id = ?2 AND owner_scope_key = ?3
+                           AND resource_version = ?4)",
+                    vals![id, stable_id, owner_scope_key, expected_resource_version],
                 )
                 .unchecked(),
                 Statement::new(
-                    "DELETE FROM binding_consumer_scopes WHERE binding_id = ?1",
-                    vals![id],
+                    "DELETE FROM binding_consumer_scopes WHERE binding_id = ?1
+                       AND EXISTS (SELECT 1 FROM bindings
+                         WHERE id = ?1 AND stable_id = ?2 AND owner_scope_key = ?3
+                           AND resource_version = ?4)",
+                    vals![id, stable_id, owner_scope_key, expected_resource_version],
                 )
                 .unchecked(),
                 Statement::new(
-                    "DELETE FROM bindings WHERE id = ?1 AND resource_version = ?2",
-                    vals![id, expected_resource_version],
+                    "DELETE FROM bindings
+                     WHERE id = ?1 AND stable_id = ?2 AND owner_scope_key = ?3
+                       AND resource_version = ?4 AND is_instance_default = 0",
+                    vals![id, stable_id, owner_scope_key, expected_resource_version],
                 )
                 .expecting(1),
             ])
-            .await?;
+            .await;
+        if let Err(error) = deletion {
+            let reviewed_binding_remains = self
+                .backend
+                .query_opt(
+                    "SELECT 1 FROM bindings
+                     WHERE id = ?1 AND stable_id = ?2 AND owner_scope_key = ?3
+                       AND resource_version = ?4 AND is_instance_default = 0",
+                    &vals![id, stable_id, owner_scope_key, expected_resource_version],
+                )
+                .await?
+                .is_some();
+            if !reviewed_binding_remains {
+                return Ok(false);
+            }
+            return Err(error);
+        }
         Ok(true)
     }
 }

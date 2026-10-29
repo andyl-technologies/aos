@@ -725,10 +725,7 @@ impl PlacementScanController {
             return Ok(());
         }
         let now = clock::now_unix_secs();
-        let message = format!("{error:#}")
-            .chars()
-            .take(4 * 1024)
-            .collect::<String>();
+        let message = crate::jobs::redacted_operation_failure(&format!("{error:#}"));
         self.db
             .finish_claimed_surface_placement_scan_operation(
                 &current.operation_id,
@@ -996,6 +993,10 @@ mod tests {
 
     struct EmptySurfaceProvider;
 
+    struct FailingSurfaceProvider {
+        message: String,
+    }
+
     struct EmptySurface;
 
     struct ListedSurfaceProvider {
@@ -1040,6 +1041,16 @@ mod tests {
             _placement: &SurfacePlacementRecord,
         ) -> Result<Box<dyn SurfaceFetch>> {
             Ok(Box::new(EmptySurface))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SurfaceProvider for FailingSurfaceProvider {
+        async fn placement_fetcher(
+            &self,
+            _placement: &SurfacePlacementRecord,
+        ) -> Result<Box<dyn SurfaceFetch>> {
+            anyhow::bail!(self.message.clone())
         }
     }
 
@@ -1870,6 +1881,31 @@ mod tests {
         assert_eq!(current.state, "running");
         assert_eq!(current.resource_version, replacement.resource_version);
         assert!(current.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn scan_failure_persists_only_redacted_evidence() {
+        let (db, _placement, operation) =
+            scan_fixture("placement-scan-redaction", "scan-redaction").await;
+        let marker = "signed-capability-marker";
+        let provider = FailingSurfaceProvider {
+            message: format!(
+                "provider request failed: https://storage.example/object?X-Amz-Signature={marker}"
+            ),
+        };
+        let controller = PlacementScanController::new(Arc::clone(&db), Arc::new(provider));
+
+        assert_eq!(controller.run_due(1).await.unwrap(), 1);
+
+        let current = db
+            .topology_operation(&operation.operation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let persisted = current.error.unwrap();
+        assert!(persisted.starts_with("operation failed; detail redacted; fingerprint="));
+        assert!(!persisted.contains(marker));
+        assert!(!persisted.contains("storage.example"));
     }
 
     #[tokio::test]

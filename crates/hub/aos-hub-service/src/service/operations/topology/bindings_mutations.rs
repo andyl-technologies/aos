@@ -236,6 +236,7 @@ impl RpcService {
             return Ok(response);
         };
         if binding.id != input.binding_db_id
+            || binding.owner_scope_key != input.owner_scope_key
             || binding.resource_version != input.baseline_resource_version
         {
             return Err(RpcError::FailedPrecondition(

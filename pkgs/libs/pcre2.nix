@@ -61,7 +61,7 @@ in
       role = "public-package";
     };
     pname = "pcre2";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The engine reports the whole match and one capture.";

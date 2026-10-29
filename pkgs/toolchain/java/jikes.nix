@@ -18,7 +18,7 @@ in
       role = "public-package";
     };
     pname = "jikes";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Jikes emits a classfile containing the declared answer constant.";

@@ -433,10 +433,10 @@ pub(super) fn validate_idp_locator(raw: &str) -> Result<()> {
 /// Admits generation-eight evidence without rewriting historical private cells.
 pub(super) fn validate_current_release_receipt(table: &str, text: &str) -> Result<()> {
     use aos_release_format::receipt::{
-        ChannelReceipt, PublicationReceipt, SignedReceiptEnvelope, SIGNED_RECEIPT,
+        ChannelReceipt, PublicationReceipt, SignedEnvelope, SIGNED_RECEIPT,
     };
 
-    let envelope: SignedReceiptEnvelope = closed(parse(text)?)?;
+    let envelope: SignedEnvelope = closed(parse(text)?)?;
     ensure!(
         envelope.schema_version == SIGNED_RECEIPT,
         "snapshot signed receipt version is unknown"

@@ -204,7 +204,7 @@ in
       role = "public-package";
     };
     pname = "aos-hub-worker-dist";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The shim references the module, the module is WebAssembly, and required static assets exist.";

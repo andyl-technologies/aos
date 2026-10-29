@@ -49,8 +49,6 @@ pub const PACKAGE_UPDATE_RUN_V1: &str = "aos.package-update-run/v1";
 pub const PACKAGE_UPDATE_MATERIALIZATION_V1: &str = "aos.package-update-materialization/v1";
 /// Schema identity for one tree-bound gate execution set.
 pub const PACKAGE_UPDATE_GATE_RESULTS_V1: &str = "aos.package-update-gate-results/v1";
-/// Schema identity for the complete local candidate evidence dossier.
-pub const PACKAGE_UPDATE_EVIDENCE_V1: &str = "aos.package-update-evidence/v1";
 /// Schema identity for one bounded repair-agent request.
 pub const PACKAGE_UPDATE_AGENT_TASK_V1: &str = "aos.package-update-agent-task/v1";
 /// Schema identity for one bounded repair-agent response.
@@ -58,7 +56,10 @@ pub const PACKAGE_UPDATE_AGENT_RESULT_V1: &str = "aos.package-update-agent-resul
 /// Schema identity for one accepted repair attempt.
 pub const PACKAGE_UPDATE_REPAIR_ATTEMPT_V1: &str = "aos.package-update-repair-attempt/v1";
 /// Schema identity for one exact remote publication effect.
-pub const PACKAGE_UPDATE_PR_PUBLICATION_V1: &str = "aos.package-update-pr-publication/v1";
+///
+/// Version 2 binds the canonical final gate-results digest; version 1
+/// publications bound a separate evidence dossier and are not read.
+pub const PACKAGE_UPDATE_PR_PUBLICATION_V2: &str = "aos.package-update-pr-publication/v2";
 /// Schema identity for one exact-head pull-request observation.
 pub const PACKAGE_UPDATE_PR_OBSERVATION_V1: &str = "aos.package-update-pr-observation/v1";
 
@@ -68,5 +69,8 @@ pub const MAINTENANCE_JOURNAL_EVENT_V1: &str = "aos.maintain.journal-event/v1";
 /// Schema identifier for the first transient maintenance progress event.
 pub const MAINTENANCE_PROGRESS_EVENT_V1: &str = "aos.maintain.progress-event/v1";
 
-/// Schema identifier for the first maintenance command result.
-pub const MAINTENANCE_CLI_V1: &str = "aos.maintain.cli/v1";
+/// Schema identifier for the maintenance command result.
+///
+/// Version 2 drops the evidence dossier and names the pull-request draft's
+/// binding `gateResultsDigest`.
+pub const MAINTENANCE_CLI_V2: &str = "aos.maintain.cli/v2";

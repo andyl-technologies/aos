@@ -21,19 +21,18 @@ use aos_cli_ui::output::Printer;
 use aos_release_format::canonical;
 use aos_release_format::digest::Sha256Digest;
 use aos_release_format::evidence::{
-    GateResult, QUALIFICATION_EXECUTOR_REQUEST, QUALIFICATION_EXECUTOR_RESPONSE,
-    QUALIFICATION_REPORT, QualificationExecutorRequest, QualificationExecutorResponse,
-    QualificationReport,
+    Outcome, QUALIFICATION_EXECUTOR_REQUEST, QUALIFICATION_EXECUTOR_RESPONSE, QUALIFICATION_REPORT,
+    QualificationExecutorRequest, QualificationExecutorResponse, QualificationReport,
 };
 use aos_release_format::plan::{PlannedDestination, ReleasePlan, SurfaceKind, SurfaceRole};
 use aos_release_format::platform::Platform;
 use aos_release_format::qualification::QualificationPhase;
-use aos_release_format::qualification_evidence::{
-    NATIVE_ADAPTER_MATRIX_REQUIREMENT, validate_matrix_for_case,
-};
 use aos_release_format::receipt::{
-    QualificationReceipt, RECEIPT_SIGNATURE_DOMAIN, SIGNED_RECEIPT, SignedReceiptEnvelope,
+    RECEIPT_SIGNATURE_DOMAIN, SIGNED_RECEIPT, SignedEnvelope, StagingTestApproval,
     verify_signed_receipt_with_key,
+};
+use aos_release_format::release_tests::{
+    NATIVE_ADAPTER_MATRIX_REQUIREMENT, validate_matrix_for_case,
 };
 use aos_release_format::signing::{
     SignatureAlgorithm, SignerRole, SigningContext, SigningOperation, SigningRequest,
@@ -147,7 +146,7 @@ async fn run_attempt(
             canonical::from_slice::<QualificationReport>(&bytes, "prepared qualification report")?
         }
         None => QualificationReport {
-            claims: aos_release_format::qualification_evidence::assess_observations(
+            claims: aos_release_format::release_tests::assess_observations(
                 plan,
                 &bundle.manifest.payload,
                 Some(&destination.name),
@@ -234,13 +233,13 @@ async fn run_attempt(
         .await;
     }
 
-    let receipt = QualificationReceipt {
+    let receipt = StagingTestApproval {
         schema_version: aos_release_format::receipt::QUALIFICATION_RECEIPT.to_owned(),
         staging_receipt_digest: publication.digest,
         manifest_digest,
         policy_id: STAGING_POLICY_ID.to_owned(),
         policy_digest: plan.public_evidence_policy_digest,
-        result: GateResult::Passed,
+        result: Outcome::Passed,
         report_digest: Sha256Digest::of_bytes(&report_bytes),
         authority_id: String::new(),
         nonce: args.authority_nonce.clone(),
@@ -307,14 +306,14 @@ async fn collect_observations(
     publication: &SignedReceipt,
     attempt: &Path,
 ) -> Result<(
-    Vec<aos_release_format::evidence::EvidenceRecord>,
+    Vec<aos_release_format::evidence::TestResult>,
     BTreeMap<String, Vec<u8>>,
 )> {
     let plan = &bundle.plan;
     let executors = platform_paths(&args.executors)?;
     let identities = platform_values(&args.executor_identities, "executor identity")?;
     let timeout = bounded_timeout(args.executor_timeout_seconds, "executor")?;
-    let cases = aos_release_format::qualification_evidence::cases(
+    let cases = aos_release_format::release_tests::cases(
         plan,
         &bundle.manifest.payload,
         Some(&destination.name),
@@ -433,15 +432,15 @@ pub(super) fn verify_executor_response(
         .map(|observation| validate_matrix_for_case(case, observation))
         .transpose()?
         .flatten();
-    let matrix_result_mismatch = matrix_passed
-        .is_some_and(|passed| (response.evidence.result == GateResult::Passed) != passed);
+    let matrix_result_mismatch =
+        matrix_passed.is_some_and(|passed| (response.evidence.result == Outcome::Passed) != passed);
     if response.evidence.id != expected_id
         || response.evidence.policy_id != request.policy_id
         || response.evidence.policy_digest != request.policy_digest
         || response.evidence.platform != case.platform
         || response.evidence.subjects != request.subjects
         || matrix_result_mismatch
-        || (response.evidence.result != GateResult::Passed
+        || (response.evidence.result != Outcome::Passed
             && case.requirement_id != NATIVE_ADAPTER_MATRIX_REQUIREMENT
             && case.claim.as_ref().is_none_or(|claim| claim.blocks_release))
         || response.evidence.authority_id != identity
@@ -556,8 +555,8 @@ async fn sign_receipt(
     args: &ReleaseQualifyRunArgs,
     plan: &ReleasePlan,
     destination: &PlannedDestination,
-    mut receipt: QualificationReceipt,
-) -> Result<(QualificationReceipt, Vec<u8>, Vec<u8>)> {
+    mut receipt: StagingTestApproval,
+) -> Result<(StagingTestApproval, Vec<u8>, Vec<u8>)> {
     let (key_id, key_path) = parse_pair(&args.authority_key, "qualification authority key")?;
     let requirement = plan
         .signers
@@ -611,7 +610,7 @@ async fn sign_receipt(
         )
         .await?;
     let signing_response = canonical::to_vec(&response)?;
-    let envelope = SignedReceiptEnvelope {
+    let envelope = SignedEnvelope {
         schema_version: SIGNED_RECEIPT.to_owned(),
         key_id: key_id.to_owned(),
         payload: serde_json::to_value(&receipt)?,
@@ -619,7 +618,7 @@ async fn sign_receipt(
     };
     let bytes = canonical::to_vec(&envelope)?;
     let trusted_keys = BTreeMap::from([(key_id.to_owned(), trusted.public_key)]);
-    let (_, verified): (String, QualificationReceipt) =
+    let (_, verified): (String, StagingTestApproval) =
         verify_signed_receipt_with_key(&bytes, &trusted_keys)?;
     if verified != receipt {
         bail!("qualification authority envelope changed the receipt");

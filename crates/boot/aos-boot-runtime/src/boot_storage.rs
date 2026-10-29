@@ -1,7 +1,7 @@
 //! Scopes firmware-partition writes and restores its read-only mount afterward.
 //!
 //! Image staging and boot selection share this policy. They write through
-//! `/boot`, leaving the sealed initrd journal's separate mount read-only.
+//! `/boot`, leaving the sealed initrd state directory's separate mount read-only.
 
 use std::path::Path;
 use std::process::{Command, Stdio};

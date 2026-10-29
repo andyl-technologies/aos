@@ -29,9 +29,8 @@ use aos_oci::{PullOptions, RegistryClient, RegistryReference};
 use aos_oci_types::{
     CONTAINER_DSSE_SIGNATURE_NAMESPACE, CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE,
     CONTAINER_SIGNATURE_INPUT_SCHEMA, ContainerDsseEnvelope, ContainerDsseSignature,
-    ContainerEvidenceQualificationCheck, ContainerEvidenceUnknownPath, ContainerRelease,
-    ContainerSignatureInput, ContainerSignatureInputEvidence, MediaType, RepositoryName,
-    Sha256Digest, Tag, to_canonical_json,
+    ContainerRelease, ContainerSignatureInput, ContainerSignatureInputEvidence, MediaType,
+    RepositoryName, Sha256Digest, Tag, to_canonical_json,
 };
 use aos_registry_client::security::parse_signing_key;
 use axum::body::Body;
@@ -107,7 +106,6 @@ async fn signed_apr_release_admits_and_publishes_the_staged_graph() -> Result<()
         workspace.path(),
         fixture.root(),
         &release,
-        &release_path,
         &signature_input,
     )
     .await?;
@@ -556,7 +554,6 @@ fn signature_input(release: &ContainerRelease) -> ContainerSignatureInput {
             license: release.evidence.license.clone(),
             provenance: release.evidence.provenance.clone(),
         },
-        qualification: release.qualification.clone(),
     }
 }
 
@@ -605,7 +602,6 @@ async fn assert_local_publication_rejections(
     workspace: &Path,
     layout: &Path,
     release: &ContainerRelease,
-    release_path: &Path,
     signature_input: &ContainerSignatureInput,
 ) -> Result<()> {
     let noncanonical = workspace.join("noncanonical-release.json");
@@ -625,28 +621,6 @@ async fn assert_local_publication_rejections(
     )?;
     assert_failure_contains(&rejected, "document must use canonical JSON");
 
-    let mut unqualified = signature_input.clone();
-    unqualified.qualification.corresponding_source = ContainerEvidenceQualificationCheck {
-        complete: false,
-        unknown_paths: vec![ContainerEvidenceUnknownPath {
-            path: "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-unqualified".to_string(),
-            reason: "missing corresponding source".to_string(),
-        }],
-    };
-    unqualified.qualification.ready_for_verified_publication = false;
-    let unqualified_path = workspace.join("unqualified-signature-input.json");
-    fs::write(&unqualified_path, to_canonical_json(&unqualified)?)?;
-    let rejected = publish_output(
-        hub,
-        workspace,
-        layout,
-        release_path,
-        &unqualified_path,
-        &reference,
-        "reject-unqualified",
-        true,
-    )?;
-    assert_failure_contains(&rejected, "readyForVerifiedPublication must be true");
     assert!(hub.observations.lock().unwrap().is_empty());
     assert!(
         hub.db

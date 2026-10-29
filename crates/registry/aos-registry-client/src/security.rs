@@ -5,8 +5,10 @@
 //! (Phase 2) and the registry add command (Phase 6D).  It does not wire
 //! any CLI commands itself.
 
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use base64::Engine;
@@ -63,6 +65,13 @@ impl TrustedKey {
 /// image under `/etc/apm/trusted-keys.d`).
 const REVOKED_LINE_PREFIX: &str = "# revoked:";
 
+/// Marks a registry whose trust was explicitly emptied by an operator.
+///
+/// The marker distinguishes removal from a registry that has never consumed a
+/// configured bootstrap key. It lives in the writable trust file so read-only
+/// image anchors and configuration cannot silently restore removed trust.
+const BOOTSTRAP_DISABLED_LINE: &str = "# bootstrap disabled";
+
 // ---------------------------------------------------------------------------
 // Key store
 // ---------------------------------------------------------------------------
@@ -92,6 +101,30 @@ impl KeyStore {
     /// Returns `None` if no key file is found.
     pub fn lookup(&self, registry: &str) -> Option<TrustedKey> {
         self.lookup_all(registry).into_iter().next()
+    }
+
+    /// Returns whether bootstrap trust was explicitly disabled for `registry`.
+    ///
+    /// Only the writable trust layer owns this state. Read-only image anchors
+    /// cannot disable or re-enable an operator's local bootstrap decision.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the writable state file exists but cannot be read.
+    pub fn bootstrap_disabled(&self, registry: &str) -> Result<bool> {
+        let Some(dir) = self.trusted_dirs.first() else {
+            return Ok(false);
+        };
+        let path = dir.join(format!("{registry}.pub"));
+
+        match fs::read_to_string(&path) {
+            Ok(content) => Ok(content
+                .lines()
+                .map(str::trim)
+                .any(|line| line == BOOTSTRAP_DISABLED_LINE)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error).with_context(|| format!("reading {}", path.display())),
+        }
     }
 
     /// Look up every trusted key for `registry`.
@@ -209,6 +242,9 @@ impl KeyStore {
                 .map(str::trim)
                 .filter(|line| !line.is_empty())
                 .filter_map(|line| {
+                    if line == BOOTSTRAP_DISABLED_LINE {
+                        return None;
+                    }
                     if let Some(excluded) = parse_revoked_line(line) {
                         if excluded == new_line {
                             return None;
@@ -232,10 +268,34 @@ impl KeyStore {
         let mut content = lines.join("\n");
         content.push('\n');
 
-        fs::write(&path, &content)
+        write_trust_file(&path, &content)
             .with_context(|| format!("writing trusted key to {}", path.display()))?;
 
         Ok(())
+    }
+
+    /// Replaces writable trust state with exactly `key`.
+    ///
+    /// This is the explicit recovery path used by commands that request full
+    /// replacement. It clears prior pins, exclusions, and bootstrap-disabled
+    /// state for the registry without modifying read-only anchors.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no writable directory is configured or the
+    /// directory or key file cannot be created or written.
+    pub fn replace(&self, key: &TrustedKey) -> Result<()> {
+        let dir = self
+            .trusted_dirs
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("no trusted key directories configured"))?;
+
+        fs::create_dir_all(dir)
+            .with_context(|| format!("creating trusted keys directory {}", dir.display()))?;
+
+        let path = dir.join(format!("{}.pub", key.registry));
+        write_trust_file(&path, &format!("{}\n", key.key_line()))
+            .with_context(|| format!("writing trusted key to {}", path.display()))
     }
 
     /// Synchronize the writable store for `registry` with a roster's active
@@ -340,7 +400,7 @@ impl KeyStore {
 
         fs::create_dir_all(dir)
             .with_context(|| format!("creating trusted keys directory {}", dir.display()))?;
-        fs::write(&path, &content)
+        write_trust_file(&path, &content)
             .with_context(|| format!("writing trusted keys to {}", path.display()))?;
 
         Ok(KeySyncReport {
@@ -350,55 +410,125 @@ impl KeyStore {
         })
     }
 
-    /// Remove trusted keys for `registry` from the effective trust set.
+    /// Removes trusted keys for `registry` from the effective trust set.
     ///
-    /// Deletes keys from the writable directory (index 0). Keys that remain
-    /// visible from read-only anchor directories are masked by writing
-    /// `# revoked:` exclusion lines into the writable directory, leaving the
-    /// anchor files untouched.
+    /// Replaces writable pins with full-identity `# revoked:` exclusions and a
+    /// durable marker that prevents automatic bootstrap from configuration.
+    /// Read-only anchor files are left untouched.
     ///
     /// # Errors
     ///
-    /// Returns an error if the writable trust file cannot be removed or
-    /// rewritten, or if an existing anchor file cannot be read.
+    /// Returns an error if the writable trust file cannot be read or rewritten,
+    /// or if an existing anchor file cannot be read.
     pub fn remove(&self, registry: &str) -> Result<bool> {
+        self.remove_with_bootstrap_keys(registry, &[])
+    }
+
+    /// Removes effective trust and disables automatic bootstrap for `registry`.
+    ///
+    /// `bootstrap_keys` supplies configuration anchors that are not otherwise
+    /// visible through the trusted-key directories. Every supplied key must use
+    /// the canonical `registry:Ed25519:<base64>` identity and name `registry`.
+    /// An explicit later [`KeyStore::store`] call clears the disabled state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a supplied bootstrap key is malformed or belongs to
+    /// another registry, or if the writable trust file cannot be created.
+    pub fn remove_with_bootstrap_keys(
+        &self,
+        registry: &str,
+        bootstrap_keys: &[String],
+    ) -> Result<bool> {
         let Some(dir) = self.trusted_dirs.first() else {
             return Ok(false);
         };
 
-        let had_effective_keys = !self.lookup_all(registry).is_empty();
+        let effective_keys = self.lookup_all(registry);
+        let had_effective_keys = !effective_keys.is_empty()
+            || (!bootstrap_keys.is_empty() && !self.bootstrap_disabled(registry)?);
         let path = dir.join(format!("{registry}.pub"));
-        let mut anchored = Vec::new();
+        let mut removed = effective_keys
+            .iter()
+            .map(TrustedKey::key_line)
+            .collect::<Vec<_>>();
         for anchor_dir in self.trusted_dirs.iter().skip(1) {
             for line in
                 trusted_key_lines_from_file(&anchor_dir.join(format!("{registry}.pub")), registry)?
             {
-                if !anchored.contains(&line) {
-                    anchored.push(line);
+                if !removed.contains(&line) {
+                    removed.push(line);
                 }
             }
         }
 
-        if anchored.is_empty() {
-            if path.exists() {
-                fs::remove_file(&path).with_context(|| format!("removing {}", path.display()))?;
+        for key in bootstrap_keys {
+            let (key_registry, algorithm, public_key) = parse_signing_key(key)
+                .with_context(|| format!("validating configured bootstrap key for '{registry}'"))?;
+            if key_registry != registry {
+                bail!(
+                    "configured bootstrap key belongs to registry '{key_registry}', expected '{registry}'"
+                );
             }
-            return Ok(had_effective_keys);
+            let canonical = format!("{key_registry}:{algorithm}:{public_key}");
+            if !removed.contains(&canonical) {
+                removed.push(canonical);
+            }
         }
 
         fs::create_dir_all(dir)
             .with_context(|| format!("creating trusted keys directory {}", dir.display()))?;
-        let mut content = anchored
-            .iter()
-            .map(|line| format!("{REVOKED_LINE_PREFIX} {line}"))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let mut lines = vec![BOOTSTRAP_DISABLED_LINE.to_string()];
+        lines.extend(
+            removed
+                .iter()
+                .map(|line| format!("{REVOKED_LINE_PREFIX} {line}")),
+        );
+        let mut content = lines.join("\n");
         content.push('\n');
-        fs::write(&path, &content)
+        write_trust_file(&path, &content)
             .with_context(|| format!("writing trusted keys to {}", path.display()))?;
 
         Ok(had_effective_keys)
     }
+}
+
+/// Atomically publishes one writable trust file and syncs its directory entry.
+fn write_trust_file(path: &Path, content: &str) -> Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("trust file has no parent: {}", path.display()))?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow::anyhow!("trust file name is not valid UTF-8: {}", path.display()))?;
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let temporary = parent.join(format!(".{file_name}.tmp-{}-{nonce}", std::process::id()));
+
+    let result = (|| -> Result<()> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .with_context(|| format!("creating {}", temporary.display()))?;
+        file.write_all(content.as_bytes())
+            .with_context(|| format!("writing {}", temporary.display()))?;
+        file.sync_all()
+            .with_context(|| format!("syncing {}", temporary.display()))?;
+        fs::rename(&temporary, path).with_context(|| format!("publishing {}", path.display()))?;
+        fs::File::open(parent)
+            .with_context(|| format!("opening {}", parent.display()))?
+            .sync_all()
+            .with_context(|| format!("syncing {}", parent.display()))
+    })();
+
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
 }
 
 /// Read canonical trusted-key lines for `registry` from `path`.
@@ -1039,6 +1169,7 @@ mod tests {
         let store = KeyStore::new(vec![dir]);
         assert!(store.remove("aos-core").unwrap());
         assert!(store.lookup("aos-core").is_none());
+        assert!(store.bootstrap_disabled("aos-core").unwrap());
         // Removing again should return false.
         assert!(!store.remove("aos-core").unwrap());
     }
@@ -1060,10 +1191,44 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(writable.join("core.pub")).unwrap(),
-            "# revoked: core:Ed25519:AAAA\n"
+            "# bootstrap disabled\n# revoked: core:Ed25519:AAAA\n"
         );
         assert!(store.lookup_all("core").is_empty());
+        assert!(store.bootstrap_disabled("core").unwrap());
         assert!(!store.remove("core").unwrap());
+    }
+
+    #[test]
+    fn key_store_remove_records_configuration_only_bootstrap_key() {
+        let tmp = TempDir::new().unwrap();
+        let writable = tmp.path().join("writable");
+        let store = KeyStore::new(vec![writable.clone()]);
+        let configured = vec!["core:Ed25519:AAAA".to_string()];
+
+        assert!(
+            store
+                .remove_with_bootstrap_keys("core", &configured)
+                .unwrap()
+        );
+
+        assert!(store.bootstrap_disabled("core").unwrap());
+        assert_eq!(
+            fs::read_to_string(writable.join("core.pub")).unwrap(),
+            "# bootstrap disabled\n# revoked: core:Ed25519:AAAA\n"
+        );
+
+        store
+            .store(&TrustedKey {
+                registry: "core".into(),
+                algorithm: "Ed25519".into(),
+                public_key: "AAAA".into(),
+                fingerprint: key_fingerprint("AAAA"),
+                source: KeySource::Tofu,
+            })
+            .unwrap();
+
+        assert!(!store.bootstrap_disabled("core").unwrap());
+        assert_eq!(store.lookup_all("core").len(), 1);
     }
 
     // -- tofu_check ---------------------------------------------------------

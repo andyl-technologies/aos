@@ -36,7 +36,7 @@ impl RpcService {
     #[must_use]
     pub fn with_release_evidence(
         mut self,
-        authority: Arc<dyn crate::release_evidence::ReleaseEvidenceAuthority>,
+        authority: Arc<dyn crate::release_receipt_signer::ReleaseEvidenceAuthority>,
     ) -> Self {
         self.release_evidence = Some(authority);
         self

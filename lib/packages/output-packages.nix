@@ -24,7 +24,7 @@
         "documentationArtifact"
         "module"
         "moduleDeps"
-        "qualification"
+        "smokeTest"
         "qualificationDocument"
         "qualificationArtifact"
         "outputPackages"

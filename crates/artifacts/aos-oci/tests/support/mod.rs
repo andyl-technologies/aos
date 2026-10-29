@@ -8,11 +8,9 @@ use std::io::Write as _;
 use std::path::Path;
 
 use aos_oci_types::{
-    Annotations, CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA, CONTAINER_RELEASE_SCHEMA_VERSION,
-    CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE, CONTAINER_SIGNATURE_INPUT_SCHEMA,
-    ContainerEvidenceMappingQualification, ContainerEvidenceQualification,
-    ContainerEvidenceQualificationCheck, ContainerNixProvenance, ContainerOciRelease,
-    ContainerRelease, ContainerReleaseEvidence, ContainerReleaseIdentity, ContainerSignatureInput,
+    Annotations, CONTAINER_RELEASE_SCHEMA_VERSION, CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE,
+    CONTAINER_SIGNATURE_INPUT_SCHEMA, ContainerNixProvenance, ContainerOciRelease,
+    ContainerReferrers, ContainerRelease, ContainerReleaseIdentity, ContainerSignatureInput,
     ContainerSignatureInputEvidence, Descriptor, HistoryEntry, ImageConfig, ImageIndex,
     ImageManifest, ImageRuntimeConfig, MediaType, NixDefinitionIdentity, NixOutputIdentity,
     Platform, RootFs, RootFsType, Sha256Digest, to_canonical_json,
@@ -272,8 +270,7 @@ fn signed_release_graph(fixture: &Fixture, include_deployment: bool) -> Containe
             },
             closure: artifact("closure", MediaType::AosNixClosure),
         },
-        qualification: ready_qualification(),
-        evidence: ContainerReleaseEvidence {
+        evidence: ContainerReferrers {
             deployment: include_deployment
                 .then(|| artifact("deployment", MediaType::AosArtifactDeployment)),
             abilities: Some(artifact(
@@ -303,7 +300,6 @@ pub fn publication_signature_input(release: &ContainerRelease) -> ContainerSigna
             license: release.evidence.license.clone(),
             provenance: release.evidence.provenance.clone(),
         },
-        qualification: release.qualification.clone(),
     }
 }
 
@@ -343,7 +339,7 @@ pub fn write_publication_inputs(inputs: &Path, layout: &Path, input: &ContainerS
     let mut unsigned = unsigned.as_object().expect("unsigned object").clone();
     unsigned.remove("schema");
     let signing_request = serde_json::json!({
-        "schema": "aos.container.signing-request/v1",
+        "schema": "aos.container.signing-request/v2",
         "input": {
             "mediaType": CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE,
             "digest": Sha256Digest::digest(&input_bytes),
@@ -359,12 +355,10 @@ pub fn write_publication_inputs(inputs: &Path, layout: &Path, input: &ContainerS
         "constraints": {
             "exactInputBytesRequired": true,
             "privateMaterialPermittedInNixBuild": false,
-            "finalizerMustRejectUnqualifiedInput": true,
             "finalizerMustVerifyEnvelope": true,
             "finalizerMustAddSignatureReferrerDescriptor": true,
             "releaseSurfaceMustSignFinalSidecar": true,
         },
-        "qualified": true,
         "unsignedRelease": unsigned,
     });
     fs::write(
@@ -450,25 +444,6 @@ pub fn replace_signature_artifact(
         .expect("container signature artifact blob");
     }
     release.evidence.signature = descriptor;
-}
-
-pub fn ready_qualification() -> ContainerEvidenceQualification {
-    ContainerEvidenceQualification {
-        schema: CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA.to_string(),
-        mapping: ContainerEvidenceMappingQualification {
-            complete: true,
-            unknown_paths: Vec::new(),
-        },
-        corresponding_source: ContainerEvidenceQualificationCheck {
-            complete: true,
-            unknown_paths: Vec::new(),
-        },
-        licensing: ContainerEvidenceQualificationCheck {
-            complete: true,
-            unknown_paths: Vec::new(),
-        },
-        ready_for_verified_publication: true,
-    }
 }
 
 fn content_descriptor(media_type: MediaType, bytes: &[u8]) -> Descriptor {

@@ -502,7 +502,7 @@ async fn app_state(db: Arc<Database>, input: &Input) -> Result<crate::server::Ap
         MAX_INPUT_BYTES,
     )?)?;
     state.release_evidence = Some(Arc::new(
-        aos_hub_service::release_evidence::Ed25519ReleaseEvidenceAuthority::from_base64(
+        aos_hub_service::release_receipt_signer::Ed25519ReleaseEvidenceAuthority::from_base64(
             input.deployment_id.clone(),
             release.publication_key_id.clone(),
             &publication_seed,

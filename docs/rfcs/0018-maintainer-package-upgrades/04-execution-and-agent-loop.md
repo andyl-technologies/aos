@@ -37,6 +37,10 @@ abandoned       the maintainer intentionally stops and retains evidence
 failed          a terminal policy/infrastructure failure exhausts its budget
 ```
 
+`prepare-pr` performs the `final-gated -> ready-for-pr` transition after it
+verifies the run's retained check results; no separate command runs between
+final gates and PR preparation.
+
 State transitions are pure and append-only. Filesystem, Nix, network, agent,
 test, and Git effects implement a transition's typed intent, then append its
 result. Resume never infers a success from missing state.
@@ -326,7 +330,7 @@ The generated PR has stable sections:
 - deterministic and agent-assisted repair summary;
 - final Git head and complete gate results;
 - explicit human/specialist checks and unresolved warnings;
-- local evidence digest and reproduction commands.
+- final gate-results digest and reproduction commands.
 
 Commit messages and PR text contain no AI attribution, provider/model name,
 generated-by marker, or agent session link. They may accurately say that a

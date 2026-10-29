@@ -8,14 +8,14 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
 use aos_core::{Sha256Digest, json};
+use aos_package_maintenance::PACKAGE_UPDATE_PR_PUBLICATION_V2;
 use aos_package_maintenance::agent::{AgentResultV1, AgentTaskV1};
 use aos_package_maintenance::discovery::DiscoverySnapshotV1;
 use aos_package_maintenance::envelope::InventoryEnvelopeV1;
 use aos_package_maintenance::plan::PackageUpdatePlanV1;
-use aos_package_maintenance::remote::{PullRequestObservationV1, PullRequestPublicationV1};
+use aos_package_maintenance::remote::{PullRequestObservationV1, PullRequestPublicationV2};
 use aos_package_maintenance::run::{
-    GateResultsV1, MaterializationRecordV1, PackageUpdateEvidenceV1, PackageUpdateRunV1,
-    RepairAttemptV1,
+    GateResultsV1, MaterializationRecordV1, PackageUpdateRunV1, RepairAttemptV1,
 };
 use aos_package_maintenance::workflow::{
     ActorClass, EventBindings, JournalEvent, JournalPayload, RunState, verify_journal,
@@ -52,6 +52,18 @@ pub(super) struct MaterializationPreimage {
 }
 
 impl StateStore {
+    /// Opens an isolated store rooted in a test directory.
+    #[cfg(test)]
+    pub(super) fn open_fixture(root: &Path) -> Result<Self> {
+        let repository = root.join("repository");
+        secure_directory(&repository)?;
+        secure_directory(&repository.join("runs"))?;
+        Ok(Self {
+            root: root.to_path_buf(),
+            repository,
+        })
+    }
+
     /// Opens the repository namespace and creates protected directories.
     pub(super) fn open(
         override_root: Option<&Path>,
@@ -774,42 +786,21 @@ impl StateStore {
         Ok(records)
     }
 
-    /// Stores the immutable final local evidence dossier.
-    pub(super) fn write_evidence(
-        &self,
-        evidence: &PackageUpdateEvidenceV1,
-    ) -> Result<Sha256Digest> {
-        evidence.validate()?;
-        let directory = self.run_directory(evidence.run_id.as_str())?;
-        write_immutable(&directory, "final-evidence.json", evidence)?;
-        Sha256Digest::of_canonical(
-            aos_package_maintenance::PACKAGE_UPDATE_EVIDENCE_V1,
-            evidence,
-        )
-    }
-
-    /// Reads and validates a retained final local evidence dossier.
-    pub(super) fn read_evidence(&self, run_id: &str) -> Result<Option<PackageUpdateEvidenceV1>> {
-        let path = self.run_directory(run_id)?.join("final-evidence.json");
-        let Some(evidence) = read_optional(&path, "package update evidence")? else {
-            return Ok(None);
-        };
-        let evidence: PackageUpdateEvidenceV1 = evidence;
-        evidence.validate()?;
-        if evidence.run_id.as_str() != run_id {
-            bail!("package update evidence belongs to another run");
-        }
-        Ok(Some(evidence))
-    }
-
     /// Stores the immutable exact branch and pull-request publication result.
-    pub(super) fn write_publication(&self, publication: &PullRequestPublicationV1) -> Result<()> {
+    ///
+    /// `gate_results_digest` is the canonical final gate-results digest of the
+    /// verified ready candidate; the publication must bind exactly that digest.
+    pub(super) fn write_publication(
+        &self,
+        publication: &PullRequestPublicationV2,
+        gate_results_digest: Sha256Digest,
+    ) -> Result<()> {
         publication.validate()?;
         let run = self
             .read_run(publication.run_id.as_str())?
             .ok_or_else(|| anyhow::anyhow!("publication run is unavailable"))?;
         if run.candidate_commit.as_ref() != Some(&publication.head)
-            || run.evidence_digest != Some(publication.evidence_digest)
+            || publication.gate_results_digest != gate_results_digest
         {
             bail!("publication does not match the final-gated run");
         }
@@ -818,15 +809,37 @@ impl StateStore {
     }
 
     /// Reads and validates the immutable publication result, when present.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the record is unreadable or malformed, uses a
+    /// schema other than the current publication schema, or belongs to
+    /// another run. Earlier publication schemas are not migrated; their runs
+    /// must be restarted.
     pub(super) fn read_publication(
         &self,
         run_id: &str,
-    ) -> Result<Option<PullRequestPublicationV1>> {
+    ) -> Result<Option<PullRequestPublicationV2>> {
         let path = self.run_directory(run_id)?.join("publication.json");
-        let Some(publication) = read_optional(&path, "pull-request publication")? else {
+        let Some(document) = read_optional::<serde_json::Value>(&path, "pull-request publication")?
+        else {
             return Ok(None);
         };
-        let publication: PullRequestPublicationV1 = publication;
+
+        // Check the schema before the closed typed decode so an earlier record
+        // reports its version instead of an unknown-field error.
+        let schema = document
+            .get("schema")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("<missing>");
+        if schema != PACKAGE_UPDATE_PR_PUBLICATION_V2 {
+            bail!(
+                "pull-request publication uses unsupported schema {schema}; \
+                 restart the run with the current controller"
+            );
+        }
+        let publication: PullRequestPublicationV2 =
+            serde_json::from_value(document).context("decoding pull-request publication")?;
         publication.validate()?;
         if publication.run_id.as_str() != run_id {
             bail!("pull-request publication belongs to another run");
@@ -1471,7 +1484,7 @@ mod tests {
 
     use aos_package_maintenance::envelope::{GitObjectFormat, GitObjectId};
     use aos_package_maintenance::identity::{PlanId, RunId};
-    use aos_package_maintenance::run::{ConfinementEvidence, GateResult};
+    use aos_package_maintenance::run::{ConfinementEvidence, Outcome};
     use aos_package_maintenance::workflow::GateOutcome;
 
     use super::*;
@@ -1620,7 +1633,6 @@ mod tests {
             worktree_cleaned: false,
             accepted_candidate: None,
             candidate_commit: None,
-            evidence_digest: None,
             base_commit: GitObjectId {
                 algorithm: GitObjectFormat::Sha1,
                 value: "0".repeat(40),
@@ -1656,7 +1668,7 @@ mod tests {
                 resource_limited: true,
                 nix_sandbox_verified: true,
             },
-            results: vec![GateResult {
+            results: vec![Outcome {
                 gate_id: "fmt".to_string(),
                 argv: vec!["aos".to_string(), "fmt".to_string()],
                 outcome,
@@ -1690,6 +1702,29 @@ mod tests {
             store
                 .read_gate_log(run_id.as_str(), "quick", "fmt")
                 .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn earlier_publication_schemas_are_rejected_by_version() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let store = StateStore::open_fixture(temporary.path())?;
+        let run_directory = store.repository.join("runs/run-fixture");
+        fs::create_dir(&run_directory)?;
+        assert!(store.read_publication("run-fixture")?.is_none());
+
+        // An earlier record carries a field the current schema does not know;
+        // the error must name the schema rather than the field.
+        let earlier = br#"{"schema":"aos.package-update-pr-publication/v1","evidenceDigest":"x"}"#;
+        fs::write(run_directory.join("publication.json"), earlier)?;
+        let error = store
+            .read_publication("run-fixture")
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("earlier publication was accepted"))?;
+        assert!(
+            format!("{error:#}").contains("aos.package-update-pr-publication/v1"),
+            "{error:#}"
         );
         Ok(())
     }

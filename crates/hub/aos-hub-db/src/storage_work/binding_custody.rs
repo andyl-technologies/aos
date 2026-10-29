@@ -11,7 +11,7 @@ use super::{
     StorageBindingPublication, StorageBindingSnapshot, StorageCredentialMaterial, StorageWorkError,
     StorageWorkKey,
 };
-use aos_hub_model::storage::StorageCredentialProbeEvidence;
+use aos_hub_model::storage::StorageCredentialProbeResult;
 
 /// Protected operator endpoint for one original queued credential material.
 pub const STORAGE_CREDENTIAL_CUSTODY_PATH: &str = "/_internal/storage/v1/credential-custody";
@@ -168,7 +168,7 @@ pub struct StorageCredentialCustodyProbeReply {
     /// Exact fresh original, including current SQL head and task pins.
     pub request: StorageCredentialCustodyProbe,
     /// Actual bounded provider measurements, never operator readiness input.
-    pub evidence: StorageCredentialProbeEvidence,
+    pub evidence: StorageCredentialProbeResult,
     /// Fresh authenticated readback time of the retained actual measurements.
     pub observed_at: i64,
 }

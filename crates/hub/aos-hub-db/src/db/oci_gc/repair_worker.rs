@@ -8,9 +8,8 @@
 //! inventory is still required before registry purge can converge.
 
 use anyhow::{bail, Context, Result};
-use aos_oci_types::Sha256Digest;
 
-use super::{oci_gc_deletion_evidence_digest, OciGcDeleteOutcome, OciUntrackedRepairPlanRecord};
+use super::{OciGcDeleteOutcome, OciUntrackedRepairPlanRecord};
 use crate::backend::Statement;
 use crate::db::sanitize_log_text;
 use crate::db::validate_key_bytes;
@@ -46,8 +45,6 @@ pub struct RecordOciUntrackedRepairSuccess {
     pub conditional_etag: Option<String>,
     /// Provider request identity retained for audit.
     pub provider_request_id: Option<String>,
-    /// Canonical complete response-evidence digest.
-    pub evidence_digest: Sha256Digest,
     /// Provider absence confirmation time.
     pub confirmed_at: i64,
 }
@@ -302,17 +299,6 @@ impl Database {
         {
             bail!("OCI untracked repair deletion evidence is malformed");
         }
-        let canonical = oci_gc_deletion_evidence_digest(
-            &input.plan_id,
-            &input.response_idempotency_key,
-            input.outcome,
-            input.conditional_etag.as_deref(),
-            input.provider_request_id.as_deref(),
-            input.confirmed_at,
-        )?;
-        if canonical != input.evidence_digest {
-            bail!("OCI untracked repair evidence digest conflicts with its payload");
-        }
         if let Some(existing) = self.oci_untracked_repair_plan(&input.plan_id).await? {
             if existing.state == "confirmed_absent" {
                 let response_key = self
@@ -338,7 +324,6 @@ impl Database {
                         })
                     && existing.provider_request_id == input.provider_request_id
                     && existing.conditional_etag == input.conditional_etag
-                    && existing.evidence_digest == Some(input.evidence_digest)
                     && existing.confirmed_at == Some(input.confirmed_at);
                 if exact {
                     return Ok(existing);
@@ -360,11 +345,11 @@ impl Database {
                 Statement::new(
                     "INSERT INTO oci_untracked_repair_evidence
                        (plan_id, outcome, provider_request_id, conditional_etag,
-                        evidence_digest, confirmed_at)
-                     SELECT id, ?3, ?4, ?5, ?6, ?7
+                        confirmed_at)
+                     SELECT id, ?3, ?4, ?5, ?6
                      FROM oci_untracked_repair_plans
                      WHERE id = ?1 AND claim_token = ?2 AND state = 'claimed'
-                       AND lease_expires_at > ?7
+                       AND lease_expires_at > ?6
                      ON CONFLICT(plan_id) DO NOTHING",
                     vals![
                         input.plan_id,
@@ -372,7 +357,6 @@ impl Database {
                         outcome,
                         input.provider_request_id,
                         input.conditional_etag,
-                        input.evidence_digest.to_string(),
                         input.confirmed_at
                     ],
                 )
@@ -401,15 +385,13 @@ impl Database {
                      WHERE id = ?1 AND claim_token = ?2 AND state = 'claimed'
                        AND EXISTS (SELECT 1 FROM oci_untracked_repair_evidence evidence
                          WHERE evidence.plan_id = ?1 AND evidence.outcome = ?5
-                           AND evidence.evidence_digest = ?6
                            AND evidence.confirmed_at = ?4)",
                     vals![
                         input.plan_id,
                         input.claim_token,
                         input.response_idempotency_key,
                         input.confirmed_at,
-                        outcome,
-                        input.evidence_digest.to_string()
+                        outcome
                     ],
                 )
                 .expecting(1),

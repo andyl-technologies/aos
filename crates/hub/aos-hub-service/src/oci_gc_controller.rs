@@ -323,14 +323,6 @@ fn success_record(
         )
         .as_bytes(),
     ));
-    let evidence_digest = aos_hub_db::db::oci_gc_deletion_evidence_digest(
-        &claim.action_id,
-        &response_idempotency_key,
-        success.outcome,
-        success.conditional_etag.as_deref(),
-        None,
-        confirmed_at,
-    )?;
     Ok(RecordOciGcDeletionSuccess {
         action_id: claim.action_id.clone(),
         claim_token: claim.claim_token.clone(),
@@ -338,7 +330,6 @@ fn success_record(
         outcome: success.outcome,
         conditional_etag: success.conditional_etag,
         provider_request_id: None,
-        evidence_digest,
         confirmed_at,
     })
 }

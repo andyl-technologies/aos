@@ -9,16 +9,51 @@
   stdenv,
 }: let
   version = "1.11.1";
+  backports = [
+    {
+      identity = "aos/validate-etm-packet-length";
+      file = ./libssh2-validate-etm-packet-length.patch;
+      sha256 = "919563254dfcf57cc4679d6833809259f105dada15ca09e5671537d6090a29ec";
+    }
+    {
+      identity = "libssh2/5e4776146552d898b9c0e1b313cd093fa8dc92d0";
+      file = ./libssh2-clear-consumed-sftp-response.patch;
+      sha256 = "e9ab6237b611d1804cef2fdc86e2605fd10d0abf9feec4734294b91db4afc565";
+    }
+  ];
+  verifiedBackports =
+    map (
+      backport:
+        assert builtins.hashFile "sha256" backport.file == backport.sha256;
+          backport.file
+    )
+    backports;
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
     pname = "libssh2";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The known-host collection reports an exact match.";
@@ -126,7 +161,9 @@ in
           script = ''
             tar xf $src
             cd libssh2-${version}
-            patch --fuzz=0 -p1 < ${./libssh2-validate-etm-packet-length.patch}
+            for backport in ${lib.escapeShellArgs (map (backport: "${backport}") verifiedBackports)}; do
+              patch --fuzz=0 -p1 < "$backport"
+            done
           '';
         }
       ]
@@ -172,6 +209,19 @@ in
             test -n "$guard_line"
             test -n "$decrypt_line"
             test "$guard_line" -lt "$decrypt_line"
+
+            awk '
+              /SSH2_FREE\(session, data\);/ { response_free_line = NR; next }
+              response_free_line && /data = NULL;/ {
+                response_clear_line = NR
+                next
+              }
+              response_clear_line && /sftp_packet_require\(sftp, SSH_FXP_HANDLE/ {
+                fixed = response_clear_line == response_free_line + 1
+                exit
+              }
+              END { exit !fixed }
+            ' src/sftp.c
           '';
         }
         {
@@ -186,6 +236,11 @@ in
       description = "libssh2 — client-side C library implementing the SSH2 protocol";
       homepage = "https://libssh2.org";
       license = "BSD-3-Clause";
+    };
+
+    passthru = {
+      evidenceSources = verifiedBackports;
+      nativePatchIdentities = map (backport: builtins.removeAttrs backport ["file"]) backports;
     };
 
     checks = {
