@@ -125,11 +125,11 @@ in
           export AOS_EVIDENCE_DEPLOYMENT=${lib.escapeShellArg (builtins.toString checkedDeploymentArtifact.artifact)}
           export AOS_EVIDENCE_REFERENCE_GRAPH=${lib.escapeShellArg (builtins.toString checkedReferenceGraph)}
           export AOS_EVIDENCE_SOURCE_GRAPH=${lib.escapeShellArg (builtins.toString checkedSourceGraph)}
-          export AOS_EVIDENCE_PLATFORM_VALIDATOR=${./evidence-platforms.sh}
+          export AOS_EVIDENCE_PLATFORM_VALIDATOR=${./referrers-platforms.sh}
           printf '%s\n' ${layerArguments} > evidence-layer-paths
           export AOS_EVIDENCE_LAYER_PATHS="$PWD/evidence-layer-paths"
           ${common.archiveScript}
-          ${builtins.readFile ./evidence-assemble.sh}
+          ${builtins.readFile ./referrers-assemble.sh}
         '';
       }
     ];

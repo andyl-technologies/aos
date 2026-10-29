@@ -647,11 +647,9 @@ fn parse_container_release(bytes: &[u8]) -> Result<LoadedContainerRelease> {
 mod container_release_tests {
     use super::*;
     use aos_oci_types::{
-        Annotations, ContainerEvidenceMappingQualification, ContainerEvidenceQualification,
-        ContainerEvidenceQualificationCheck, ContainerNixProvenance, ContainerOciRelease,
-        ContainerReleaseEvidence, ContainerReleaseIdentity, Descriptor, MediaType,
-        NixDefinitionIdentity, NixOutputIdentity, Platform, Sha256Digest,
-        CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA, CONTAINER_RELEASE_SCHEMA_VERSION,
+        Annotations, ContainerNixProvenance, ContainerOciRelease, ContainerReferrers,
+        ContainerReleaseIdentity, Descriptor, MediaType, NixDefinitionIdentity, NixOutputIdentity,
+        Platform, Sha256Digest, CONTAINER_RELEASE_SCHEMA_VERSION,
     };
 
     fn descriptor(media_type: MediaType, label: &str) -> Descriptor {
@@ -703,23 +701,7 @@ mod container_release_tests {
                 },
                 closure: evidence_descriptor(MediaType::AosNixClosure, "closure"),
             },
-            qualification: ContainerEvidenceQualification {
-                schema: CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA.to_string(),
-                mapping: ContainerEvidenceMappingQualification {
-                    complete: true,
-                    unknown_paths: Vec::new(),
-                },
-                corresponding_source: ContainerEvidenceQualificationCheck {
-                    complete: true,
-                    unknown_paths: Vec::new(),
-                },
-                licensing: ContainerEvidenceQualificationCheck {
-                    complete: true,
-                    unknown_paths: Vec::new(),
-                },
-                ready_for_verified_publication: true,
-            },
-            evidence: ContainerReleaseEvidence {
+            evidence: ContainerReferrers {
                 abilities: evidence_descriptor(MediaType::AosContainerStaticAbilities, "abilities"),
                 sbom: evidence_descriptor(MediaType::SpdxJson, "sbom"),
                 source: evidence_descriptor(MediaType::AosSourceClosure, "source"),
