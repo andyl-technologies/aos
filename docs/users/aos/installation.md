@@ -300,11 +300,23 @@ also select test-only packages and keys. For example:
 The private deployment input must be available to a controlled build sandbox;
 these are Nix path values so their contents are copied into that builder's
 store. Use a signing builder whose store, logs, and substituter outputs are not
-shared, then destroy its private-key-bearing store paths after the build. This
-repository does not yet provide an offline-signing protocol or key-custody
-service. Never commit or publish the private input. The repository's
-measured-boot systems are test fixtures with public keys; do not install them
-on a real machine.
+shared, then destroy its private-key-bearing store paths after the build. Never
+commit or publish the private input. The repository's measured-boot systems are
+test fixtures with public keys; do not install them on a real machine.
+
+The ZFS installation bundle below requires this in-build signing. To keep
+private keys out of the Nix store entirely, use external finalization instead.
+Set `aos.boot.secureBoot.externalFinalization.enable = true`, omit `dbKey`,
+`lockdown.moduleSigningKey`, and `measuredBoot.pcrPrivateKey`, and supply only
+public material: `dbCert`, `enrollAuthDir`, `lockdown.moduleSigningCert`, and
+`measuredBoot.pcrPublicKey`. External finalization also requires lockdown,
+measured boot, recovery, and dm-verity to be enabled. Nix then builds the
+unsigned `system.build.unsignedImageAssembly` and no signed disk images or
+installation bundle. `aos maintain release step finalize-image` signs that
+assembly through an external signer process under a release plan and writes
+the signed raw, QCOW2, VMDK, and VHD disks. The signer interface, the bundled
+file-backed signer, and the full command are described in
+[Finalize each Linux image](../../maintainers/canonical-releases.md#finalize-each-linux-image).
 
 Build the module's `system.build.installBundle` output on x86 Linux. Run the
 bundle's `bin/aos-install-zfs` from a trusted AOS recovery environment that has the exact ZFS
