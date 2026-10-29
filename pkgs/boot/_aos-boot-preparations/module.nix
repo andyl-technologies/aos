@@ -685,7 +685,8 @@
     (left: right: builtins.toJSON left < builtins.toJSON right)
     (builtins.map
       (serviceDefinition: serviceResource serviceDefinition.service)
-      (baseServices ++ substrateServices ++ handoffInitrdServices));
+      # Only enabled services can complete before the handoff target.
+      (baseServices ++ lib.optionals cfg.enable substrateServices ++ handoffInitrdServices));
   serviceConfigsFor = enabled: services:
     builtins.listToAttrs (builtins.map
       (serviceDefinition: {
