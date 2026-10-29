@@ -19,6 +19,17 @@ improve it where that is safe and proportionate. Keep formatting,
 documentation-only work, behavior-preserving refactors, and behavior changes
 reviewable as distinct changes whenever practical.
 
+## Design documentation
+
+A pull request that makes or changes a design decision records it in the
+relevant page under [`docs/engineering/`](docs/engineering/README.md), in the
+same pull request. Engineering pages describe the code as it is and the reasons
+for its shape; they change with the code instead of accumulating proposals
+beside it. AOS has no separate design-record or proposal process, and new
+documents must not cite the retired RFC series. The
+[code style guide](docs/engineering/code-style.md#documentation) gives the exact
+rule and how it distinguishes external standards such as IETF RFCs.
+
 ## Rust workspace ownership
 
 Before adding or splitting a crate, read the

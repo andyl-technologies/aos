@@ -5,8 +5,8 @@
   - [Install an image](aos/installation.md)
   - [Customize an image and first-boot storage](aos/configuration.md)
   - [Understand and operate host.nix](aos/host-nix.md)
-  - [Use the repository CLI](cli.md)
-  - [Manage packages](packages.md)
+  - [Use the repository CLI](aos/cli.md)
+  - [Manage packages](aos/packages.md)
   - [Configure package registries](aos/registries.md)
   - [Understand native package runtime policy](aos/package-sandbox.md)
   - [Use Secure Boot and verify package trust](aos/secure-boot.md)
@@ -41,3 +41,10 @@
 The [runtime abilities guide](aos/runtime-abilities.md) shows how package,
 interface, operator, and handler modules produce deferred execution graphs, with
 Nix examples and matching CLI/Hub inspection paths.
+
+## Related documentation
+
+Building images, publishing releases, and maintaining a fork are covered in the
+[maintainer documentation](../maintainers/README.md). How each component is
+implemented and why is covered in the
+[engineering documentation](../engineering/README.md).

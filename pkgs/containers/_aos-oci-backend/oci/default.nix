@@ -56,7 +56,7 @@ in rec {
   };
 
   # Short aliases are useful to call sites while the long names preserve the
-  # RFC vocabulary at the public boundary.
+  # documented OCI vocabulary at the public boundary.
   mkMetadataLayer = mkRootMetadataLayer;
   mkImage = mkImageLayout;
   mkIndex = mkMultiPlatformIndex;
