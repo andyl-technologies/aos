@@ -1434,7 +1434,7 @@ mod tests {
             release.validate(),
             Err(Error::InvalidValue {
                 field: "container release schemaVersion",
-                reason: "expected 2 or 1, got 3".to_string(),
+                reason: "expected 2, got 3".to_string(),
             })
         );
 
