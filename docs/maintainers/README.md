@@ -81,6 +81,10 @@ registries, store realizations, and runtime measurements.
 package build isolation, declared privileges, generated service confinement,
 host effects, and security regression testing.
 
+[Upgrade packages with `aos maintain`](package-upgrades.md) covers upstream
+discovery, planned updates in isolated worktrees, repair, final gates, and
+pull-request publication.
+
 ## Use the repository CLI
 
 Run the packaged repository command through the flake:
