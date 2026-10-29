@@ -897,6 +897,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-installer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-activation",
+ "aos-boot-media",
+ "aos-module-format",
+ "aos-storage-layout",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "aos-linux-project-quota"
 version = "0.1.0"
 dependencies = [

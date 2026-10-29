@@ -26,6 +26,7 @@ members = [
     "boot/aos-boot-media",
     "boot/aos-boot-runtime",
     "boot/aos-configuration-image",
+    "boot/aos-installer",
     "boot/aos-platform-metadata",
     "boot/aos-recovery",
     "boot/aos-storage-layout",

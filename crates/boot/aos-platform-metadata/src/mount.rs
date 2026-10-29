@@ -195,6 +195,7 @@ impl ConfigDriveProbe for FakeProbe {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use super::single_device;
 

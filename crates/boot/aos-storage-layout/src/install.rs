@@ -49,12 +49,35 @@ pub struct InstallPlan {
 ///
 /// # Errors
 ///
-/// Returns an error when unattended mode lacks a target, the target is not a
-/// normalized `/dev/disk/by-id` path naming a whole disk, a disabled plan names
-/// a target, or a storage partition names the target explicitly.
+/// Returns an error for invalid intent (see [`validate_install_intent`]) or a
+/// storage partition that names the target explicitly.
 pub fn validate_install_plan(install: &InstallPlan, storage: &ProvisioningPlan) -> Result<()> {
+    let Some(target) = validate_install_intent(install)? else {
+        return Ok(());
+    };
+    for (logical, partition) in &storage.storage.partitions {
+        if partition.device.as_deref() == Some(target) {
+            bail!(
+                "partition '{logical}' names the install target explicitly; \
+                 omit its device to place it on the root disk"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Validates installation intent on its own and returns the unattended target.
+///
+/// Returns `None` for a disabled plan.
+///
+/// # Errors
+///
+/// Returns an error when unattended mode lacks a target, the target is not a
+/// normalized `/dev/disk/by-id` path naming a whole disk, or a disabled plan
+/// names a target.
+pub fn validate_install_intent(install: &InstallPlan) -> Result<Option<&str>> {
     let target = match (install.mode, install.target_device.as_deref()) {
-        (InstallMode::Disabled, None) => return Ok(()),
+        (InstallMode::Disabled, None) => return Ok(None),
         (InstallMode::Disabled, Some(_)) => {
             bail!("aos.provisioning.install.targetDevice requires mode = \"unattended\"")
         }
@@ -77,19 +100,11 @@ pub fn validate_install_plan(install: &InstallPlan, storage: &ProvisioningPlan) 
     {
         bail!("install target '{target}' names a partition, not a whole disk");
     }
-
-    for (logical, partition) in &storage.storage.partitions {
-        if partition.device.as_deref() == Some(target) {
-            bail!(
-                "partition '{logical}' names the install target explicitly; \
-                 omit its device to place it on the root disk"
-            );
-        }
-    }
-    Ok(())
+    Ok(Some(target))
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used)]
 mod tests {
     use std::collections::BTreeMap;
 
