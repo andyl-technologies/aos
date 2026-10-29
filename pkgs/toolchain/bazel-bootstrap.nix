@@ -256,7 +256,7 @@ in
       role = "build-input";
     };
     pname = "bazel-bootstrap";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Bazel returns success and reports its release version.";

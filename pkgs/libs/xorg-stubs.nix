@@ -91,7 +91,7 @@ in
       role = "public-package";
     };
     pname = "xorg-stubs";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The header contract compiles, the stub library links, and the program prints 1.";

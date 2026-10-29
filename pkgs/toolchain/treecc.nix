@@ -18,7 +18,7 @@ in
       role = "public-package";
     };
     pname = "treecc";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "TreeCC's generated node constructor stores the supplied integer and the consumer prints 42.";

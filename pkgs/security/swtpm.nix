@@ -34,7 +34,7 @@ in
       role = "public-package";
     };
     pname = "swtpm";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Swtpm-setup creates all three nonempty configuration files below the requested directory.";

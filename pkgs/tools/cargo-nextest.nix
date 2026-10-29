@@ -56,7 +56,7 @@ in
       role = "public-package";
     };
     pname = "cargo-nextest";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Cargo-nextest returns success and identifies its executable.";

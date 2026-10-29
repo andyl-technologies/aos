@@ -28,7 +28,7 @@ in
       role = "public-package";
     };
     pname = "libutempter";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Libutempter invokes the helper and reports a successful update.";

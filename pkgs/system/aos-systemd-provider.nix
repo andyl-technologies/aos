@@ -36,7 +36,7 @@ in
       role = "public-package";
     };
     pname = "aos-systemd-provider";
-    qualification.packageProbe = lib.qualification.providerExecutableProbe {
+    smokeTest = lib.qualification.providerExecutableProbe {
       name = "aos-systemd-provider";
       entryPoint = "bin/aos-systemd-native-resource-provider";
     };

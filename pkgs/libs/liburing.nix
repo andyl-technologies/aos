@@ -51,7 +51,7 @@ in
       role = "public-package";
     };
     pname = "liburing";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Liburing creates a usable kernel ring and releases it successfully.";

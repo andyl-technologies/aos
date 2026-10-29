@@ -18,7 +18,7 @@ in
       role = "public-package";
     };
     pname = "efibootmgr";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Efibootmgr identifies version 18 and returns success.";

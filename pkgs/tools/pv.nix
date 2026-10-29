@@ -15,7 +15,7 @@ in
       role = "public-package";
     };
     pname = "pv";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "pv preserves every input byte on standard output.";

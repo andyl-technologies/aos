@@ -8,7 +8,7 @@ mkDerivation {
     role = "public-package";
   };
   pname = "aos-selinux-run";
-  qualification.packageProbe = lib.qualification.commandProbe {
+  smokeTest = lib.qualification.commandProbe {
     "primary" = {
       "artifacts" = [];
       "expected" = "The wrapper returns success and describes the required context and command boundary.";

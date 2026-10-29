@@ -25,7 +25,7 @@ in
       role = "public-package";
     };
     pname = "tar";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The extracted member bytes exactly match the input.";

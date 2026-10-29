@@ -14,7 +14,7 @@ in
       role = "public-package";
     };
     pname = "docbook-xsl";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The catalog maps current DocBook stylesheet URIs to the installed tree.";

@@ -17,7 +17,7 @@ in
       role = "public-package";
     };
     pname = "libtirpc";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The decoded integer equals the original value.";

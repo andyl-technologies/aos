@@ -19,7 +19,7 @@ in
       role = "public-package";
     };
     pname = "libgcrypt";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The helper returns the known 256-bit authentication code.";
