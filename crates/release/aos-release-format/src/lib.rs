@@ -89,8 +89,13 @@ pub use digest::Sha256Digest;
 /// Schema for release plans with surfaces, destinations, and profiles.
 pub const RELEASE_PLAN: &str = "aos.release.plan/v1";
 
-/// Schema identifier for the first finalized release-manifest contract.
-pub const RELEASE_MANIFEST_V1: &str = "aos.release.manifest/v1";
+/// Schema identifier for the finalized release-manifest contract.
+///
+/// Manifests carry no build-phase test results: assembly checks the build
+/// report, advisory disposition, and repeat-build policy directly and refuses
+/// to produce a manifest when any of them fails. Version 1 manifests, which
+/// carried such results, are no longer accepted.
+pub const RELEASE_MANIFEST_V2: &str = "aos.release.manifest/v2";
 
 /// Schema identifier for per-destination journal entries.
 pub const RELEASE_JOURNAL_ENTRY: &str = "aos.release.journal-entry/v1";
