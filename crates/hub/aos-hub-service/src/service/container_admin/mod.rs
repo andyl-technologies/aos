@@ -639,7 +639,6 @@ mod tests {
             outcome: Some(OciUntrackedRepairOutcome::Deleted),
             provider_request_id: Some("provider-request".to_string()),
             conditional_etag: Some("\"strong\"".to_string()),
-            evidence_digest: Some(Sha256Digest::digest(b"evidence")),
             confirmed_at: Some(18),
             resource_version: 19,
         };
@@ -656,14 +655,10 @@ mod tests {
         assert_eq!(evidence.outcome, "deleted");
         assert_eq!(evidence.provider_request_id, "provider-request");
         assert_eq!(evidence.conditional_etag, "\"strong\"");
-        assert_eq!(
-            evidence.evidence_digest,
-            record.evidence_digest.as_ref().unwrap().to_string()
-        );
         assert_eq!(evidence.confirmed_at, 18);
 
         let mut malformed = record;
-        malformed.evidence_digest = None;
+        malformed.confirmed_at = None;
         assert!(untracked_repair_message("andyl/main", &malformed).is_err());
     }
 
@@ -1158,11 +1153,6 @@ fn untracked_repair_message(
     let evidence = record
         .outcome
         .map(|outcome| {
-            let evidence_digest = record.evidence_digest.ok_or_else(|| {
-                RpcError::internal(anyhow::anyhow!(
-                    "terminal untracked repair evidence omitted its digest"
-                ))
-            })?;
             let confirmed_at = record.confirmed_at.ok_or_else(|| {
                 RpcError::internal(anyhow::anyhow!(
                     "terminal untracked repair evidence omitted its confirmation time"
@@ -1177,7 +1167,6 @@ fn untracked_repair_message(
                 outcome: outcome.to_string(),
                 provider_request_id: record.provider_request_id.clone().unwrap_or_default(),
                 conditional_etag: record.conditional_etag.clone().unwrap_or_default(),
-                evidence_digest: evidence_digest.to_string(),
                 confirmed_at,
             })
         })
