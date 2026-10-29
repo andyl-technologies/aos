@@ -26,6 +26,26 @@ for `x86_64-linux` and `aarch64-linux`. Only released AOS revisions are in
 the cache. Pin the `aos` input to a release tag; an arbitrary commit can
 change toolchain derivations and fall back to source builds.
 
+## aarch64-linux needs the cache or an x86_64-linux builder
+
+The AOS bootstrap seed is an i386 executable, so AOS always cross-builds
+`aarch64-linux` outputs from `x86_64-linux`. Every `aarch64-linux`
+derivation, from AOS or from a downstream `lib.aarch64-linux` builder, is
+scheduled on an `x86_64-linux` builder. On an `aarch64-linux` machine:
+
+- Paths in the cache download as usual, and the cross-built programs run
+  natively there. A dev shell or app whose inputs are all in the cache
+  needs no `x86_64-linux` machine.
+- A path the cache lacks, including every downstream package, needs an
+  `x86_64-linux` remote builder. Without one, Nix stops with an error that
+  the derivation needs an `x86_64-linux` system.
+- Rebuilding the AOS toolchain on that builder also needs QEMU binfmt
+  emulation for `aarch64-linux` in its sandbox, because later bootstrap
+  stages run target programs.
+
+Run the [cache check](#check-cache-coverage) with `--system aarch64-linux`
+to confirm that no AOS toolchain path would reach the builder.
+
 ## Flake settings
 
 Nix reads `nixConfig` only from the flake being built, never from its inputs.
