@@ -1205,6 +1205,51 @@ before appending it. The cache plan must therefore select exactly one cache key
 with threshold one. The output becomes visible only after every narinfo is
 signed, and existing output paths are never replaced.
 
+### Publish the downstream toolchain closures
+
+Downstream repositories that take AOS as their only flake input download
+their compilers and build tools from this cache instead of rebuilding them.
+The [toolchain set](../engineering/downstream/flake-api.md#toolchain-set) in
+[`lib/downstream-toolchains.nix`](../../lib/downstream-toolchains.nix) names
+those packages: Bazel and its JDK, the C and C++ compiler wrapper with GCC,
+binutils, and glibc, LLVM, Rust, Go, Node.js, pnpm, Python, and `protoc`.
+
+No separate publication step exists. Every member is an ordinary public
+package, so planning places it in both Linux package cells, `step build`
+realizes all of its named outputs, and `step finalize-cache` publishes their
+complete runtime closures. The `checks.downstream.toolchain-release` check
+keeps that true: it fails when a member is missing from the release package
+inventory, is not a public package, has host constraints that exclude a
+Linux platform, or sits on a [deferred platform](#prepare-a-plan-request). Deferring a
+Linux platform therefore also requires a reviewed decision to stop publishing
+downstream toolchains there.
+
+`aarch64-linux` cells are planned from the `x86_64-linux` coordinator with
+`crossSystem`, and the flake's `lib.aarch64-linux` and
+`legacyPackages.aarch64-linux` use the same evaluation, so the published
+paths are the ones downstream flakes request.
+
+After a publication, prove that a clean machine downloads every toolchain
+from the surface that was just published. `toolchain-cache-check` copies only
+the toolchain derivation files into an empty store and realizes both
+platforms with no local build slots:
+
+```sh
+store=$(mktemp -d)
+nix run .#toolchain-cache-check -- --realise --store "$store" -- \
+  --option substituters https://cdn.aos.staging.andyl.org/andyl/experimental/ \
+  --option trusted-public-keys "$CACHE_PUBLIC_KEY"
+chmod -R u+w "$store" && rm -rf "$store"
+```
+
+Set the substituter to the published surface's cache origin and
+`CACHE_PUBLIC_KEY` to the `name:base64` Nix public key that verifies its
+narinfo signatures. For the production `andyl/experimental` surface these are
+the values in the flake's `nixConfig`. Run the command from the clean source
+checkout frozen in the plan, so the embedded derivations are the planned ones.
+A failure lists the derivations that would be built; treat it as an
+incomplete publication.
+
 ### Close and sign the bundle
 
 Before closing the bundle, prepare a reviewed canonical advisory disposition.

@@ -17,6 +17,7 @@ The [downstream quickstart](quickstart.md) shows the contract in use.
 | `lib` | `lib.<system>.<name>` | The builder API in [Exported names](#exported-names). |
 | `legacyPackages` | `legacyPackages.<system>.<name>` | The complete package set. Only the names in [Package attributes](#package-attributes) are part of the contract. |
 | `templates` | `templates.default`, `templates.downstream` | A minimal downstream repository for `nix flake init -t`. |
+| `apps` | `apps.<system>.toolchain-cache-check` | The [toolchain cache check](#toolchain-set), run with `nix run`. |
 
 Supported systems are `x86_64-linux` and `aarch64-linux`. Downstream flakes
 should enumerate `builtins.attrNames aos.lib` instead of hard-coding the list.
@@ -89,6 +90,20 @@ format: one name per row in backticks, a kind (`function`, `namespace`, or
 | `ociTools.mkImageLayout` | function | 1.0 | stable | Assemble an OCI image layout from layers. |
 | `ociTools.mkMultiPlatformIndex` | function | 1.0 | stable | Combine per-platform image layouts in one OCI index. |
 | `ociTools.mkDockerArchive` | function | 1.0 | stable | Convert an image layout into a `docker load` archive. |
+| `toolchains` | namespace | 1.0 | stable | Toolchain packages that every release publishes to the binary cache. |
+| `toolchains.bazel` | value | 1.0 | stable | The `bazel` package attribute. |
+| `toolchains.openjdk-21` | value | 1.0 | stable | The `openjdk-21` package attribute. |
+| `toolchains.cc` | value | 1.0 | stable | The `cc` package attribute. |
+| `toolchains.gcc` | value | 1.0 | stable | The `gcc` package attribute. |
+| `toolchains.binutils` | value | 1.0 | stable | The `binutils` package attribute. |
+| `toolchains.glibc` | value | 1.0 | stable | The `glibc` package attribute. |
+| `toolchains.llvm` | value | 1.0 | stable | The `llvm` package attribute. |
+| `toolchains.rust` | value | 1.0 | stable | The `rust` package attribute. |
+| `toolchains.go` | value | 1.0 | stable | The `go` package attribute. |
+| `toolchains.nodejs` | value | 1.0 | stable | The `nodejs` package attribute. |
+| `toolchains.pnpm` | value | 1.0 | stable | The `pnpm` package attribute. |
+| `toolchains.python3` | value | 1.0 | stable | The `python3` package attribute. |
+| `toolchains.protobuf` | value | 1.0 | stable | The `protobuf` package attribute. |
 <!-- downstream-api:exports:end -->
 
 Builders for Bazel workspaces are not part of this version. The package set's
@@ -278,6 +293,39 @@ against its deployment artifact and closure audit.
 | `mkMultiPlatformIndex` | `{ images; deploymentArtifact; annotations ? {}; referenceName ? null; pname ?; }` | OCI index over per-platform image layouts. |
 | `mkDockerArchive` | `{ image; references; pname ?; }` | `docker load` archive of a layout with at least one repository tag. |
 
+## Toolchain set
+
+`lib.<system>.toolchains` names the packages a downstream workspace uses as
+compilers and build tools: Bazel and the JDK it runs on, the AOS C and C++
+compiler wrapper with GCC, binutils, and glibc, LLVM, Rust, Go, Node.js, pnpm,
+Python, and `protoc`. Every AOS release publishes the complete runtime
+closure of each member, with all of its outputs, to the binary cache for both
+Linux platforms, so machines that use the same AOS revision download
+identical store paths instead of building them.
+
+`apps.<system>.toolchain-cache-check` is a command that fails when realizing
+the set would build anything locally. It embeds the toolchain derivations of
+every supported system, so one machine can check both platforms. Like every
+`aarch64-linux` derivation, the `aarch64-linux` copy of the command builds on
+an `x86_64-linux` builder; the `x86_64-linux` copy alone covers both
+platforms.
+
+```text
+toolchain-cache-check [--realise] [--store DIR] [--system SYSTEM]... [-- NIX_ARGUMENT...]
+```
+
+| Option | Meaning |
+| --- | --- |
+| *(none)* | Ask Nix for a dry run. Exit 0 when every toolchain path is valid locally or substitutable; exit 1 and list the derivations that would be built otherwise. |
+| `--realise` | Download every toolchain path with `--max-jobs 0`, so Nix fails instead of building a missing path. |
+| `--store DIR` | Copy only the toolchain derivation files into a local store at `DIR` and check against it, as a clean machine would. |
+| `--system SYSTEM` | Check only `SYSTEM`; repeatable. The default checks every embedded system. |
+| `-- NIX_ARGUMENT...` | Pass the remaining arguments to `nix build`, such as `--option substituters URL`. |
+
+Exit status 2 reports a usage error, a failed Nix command, or a path Nix
+cannot realize. The
+[binary cache guide](binary-cache.md) shows how CI runs it.
+
 ## Compatibility policy
 
 The contract version has the form `<major>.<minor>` and is exported as
@@ -309,8 +357,8 @@ The documentation check fails when a removed name is still exported.
 
 ## Verification
 
-Two checks guard this contract. Both run in `nix-build -A checks.eval` and
-as flake checks.
+These checks guard the contract. All but the fixture build run in
+`nix-build -A checks.eval`; all of them are also flake checks.
 
 - `checks.downstream.api-docs` reads the three marked tables on this page. It
   fails when a row has the wrong format, an exported name is undocumented, a
@@ -323,6 +371,11 @@ as flake checks.
   evaluation. `checks.downstream.fixture-eval` instantiates every fixture
   output; `checks.downstream.fixture` builds the packages and runs the
   fixture's own checks.
+
+- `checks.downstream.toolchain-release` fails when a toolchain set member
+  would leave the release package matrix on either Linux platform, and
+  `checks.downstream.toolchain-cache-check` tests the cache check command
+  against recorded Nix output.
 
 When you add a name, add its row and bump the minor version here and in
 `apiVersion`; the fixture should exercise new builders.

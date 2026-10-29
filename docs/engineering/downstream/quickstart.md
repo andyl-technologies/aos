@@ -101,6 +101,10 @@ only for trusted users; otherwise add the substituter and key to the daemon's
 own `nix.conf`. `fallback = true` lets Nix build a path from source when the
 cache does not have it.
 
+The [binary cache guide](binary-cache.md) covers daemon trust in detail and
+the `toolchain-cache-check` command, which fails CI when any AOS toolchain
+would build locally instead of downloading.
+
 ## Test against a local AOS checkout
 
 Override the input to build against uncommitted AOS changes without editing

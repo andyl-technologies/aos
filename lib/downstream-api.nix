@@ -16,6 +16,7 @@
 ##! lib.<system>.apiVersion          contract version, "<major>.<minor>"
 ##! lib.<system>.mkDerivation        package builder
 ##! lib.<system>.ociTools.<builder>  OCI image builders
+##! lib.<system>.toolchains.<name>   toolchain packages the cache publishes
 ##! ```
 {pkgs}: let
   inherit (pkgs) lib;
@@ -36,6 +37,13 @@
     mkDeploymentArtifact = args: pkgs.ociTools.mkDeploymentArtifact ({inherit pkgs;} // args);
     mkRuntimeClosureAudit = args: lib.build.runtimeClosureAudit (args // {inherit pkgs;});
   };
+
+  # Each member's package attribute name is its name in the set, which is
+  # also the package name the release matrix publishes.
+  toolchains = builtins.listToAttrs (map (name: {
+    inherit name;
+    value = pkgs.${name};
+  }) (import ./downstream-toolchains.nix));
 in {
   # Bump the minor version for additions and the major version for removals
   # or incompatible changes. The documentation check compares this value with
@@ -80,5 +88,5 @@ in {
     fetchNpmDeps
     ;
 
-  inherit ociTools;
+  inherit ociTools toolchains;
 }

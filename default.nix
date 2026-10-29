@@ -1803,6 +1803,8 @@ in rec {
       baseline-policy = import ./tests/abilities/baseline-policy.nix {inherit pkgs lib;};
       downstream-api = downstream.api-docs;
       downstream-fixture = downstream.fixture-eval;
+      downstream-toolchain-release = downstream.toolchain-release;
+      downstream-toolchain-cache-check = downstream.toolchain-cache-check;
       config-provenance = configProvenanceChecks.suites;
       rendered-evaluation = builtins.removeAttrs renderedEvalSuites ["rendered-system"];
     };

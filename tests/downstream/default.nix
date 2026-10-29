@@ -10,6 +10,10 @@
 ##! attributes the contract documents, so a fixture that reaches for any other
 ##! package fails evaluation. `fixture-eval` instantiates every output without
 ##! building; `fixture` builds the packages and runs the fixture's checks.
+##!
+##! `toolchain-release` keeps the toolchain set in the release package matrix
+##! on both Linux platforms, and `toolchain-cache-check` exercises the
+##! downstream cache command against recorded Nix output.
 {
   pkgs,
   lib,
@@ -63,7 +67,7 @@
     malformed = map (entry: "${table}: ${entry.row}") (builtins.filter (entry: entry.fields == null) parsed);
   };
 
-  namePattern = "`([A-Za-z][A-Za-z0-9_']*([.][A-Za-z][A-Za-z0-9_']*)?)`";
+  namePattern = "`([A-Za-z][A-Za-z0-9_']*([.][A-Za-z][A-Za-z0-9_'-]*)?)`";
   versionPattern = "([0-9]+[.][0-9]+)";
 
   exportsTable = parseTable "exports" "[|] ${namePattern} [|] (function|namespace|value) [|] ${versionPattern} [|] (stable|deprecated) [|] [^|]+ [|]";
@@ -217,6 +221,9 @@ in {
       fixturePackages ++ fixtureChecks ++ fixtureShells
     );
   };
+
+  toolchain-release = import ./toolchain-release.nix {inherit pkgs lib;};
+  toolchain-cache-check = import ./toolchain-cache-check.nix {inherit pkgs;};
 
   fixture = passingCheck "aos-downstream-fixture-check" {
     buildDeps = fixturePackages ++ fixtureChecks;
