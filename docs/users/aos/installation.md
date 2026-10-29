@@ -345,7 +345,7 @@ AOS accepts a literal `host.nix` through the following transports:
 
 | Platform | Transport and payload |
 | --- | --- |
-| AOS metadata drive | Filesystem label `aos-metadata`, with `/host.nix`; optional `/host.nix.sig` and `/facts.json` |
+| AOS metadata drive | Filesystem label `AOS-META`, with `/host.nix`; optional `/host.nix.sig` and `/facts.json` |
 | NoCloud | Filesystem label `cidata`; `/user-data` contains literal Nix, with optional `/user-data.sig` |
 | OpenStack config drive | Filesystem label `config-2`; `openstack/latest/user_data` contains literal Nix |
 | QEMU | `fw_cfg` blob `opt/org.andyl/host-nix`, with optional `opt/org.andyl/host-nix.sig` |
@@ -368,7 +368,7 @@ tests:
 mkdir -p metadata
 cp host.nix metadata/host.nix
 xorriso -as mkisofs \
-  -V aos-metadata \
+  -V AOS-META \
   -o metadata.iso \
   metadata
 ```

@@ -79,7 +79,7 @@ Offline media is checked before DMI-based cloud detection.
 
 | Channel | Where AOS reads the module | Signature location |
 | --- | --- | --- |
-| AOS metadata drive, label `aos-metadata` | `/host.nix` | `/host.nix.sig` |
+| AOS metadata drive, label `AOS-META` | `/host.nix` | `/host.nix.sig` |
 | NoCloud drive, label `cidata` | `/user-data` | `/user-data.sig` |
 | OpenStack config drive, label `config-2` | `/openstack/latest/user_data` | `/openstack/latest/user_data.sig` |
 | QEMU `fw_cfg` | `opt/org.andyl/host-nix` | `opt/org.andyl/host-nix.sig` |
@@ -91,13 +91,18 @@ DigitalOcean, and OpenStack. Other providers are treated as bare metal unless
 an offline metadata or config drive is attached; AOS does not guess at an
 unrecorded provider API.
 
+The `AOS-META` label fits the 11-character FAT volume-label limit, so any
+filesystem the kernel can read works, including a FAT-formatted USB stick
+prepared on Windows or macOS. AOS refuses to boot from provisioning input when
+more than one attached device carries the label.
+
 Create an AOS metadata ISO with `xorriso` on the deployment workstation:
 
 ```sh
 mkdir -p metadata
 cp host.nix metadata/host.nix
 xorriso -as mkisofs \
-  -V aos-metadata \
+  -V AOS-META \
   -o metadata.iso \
   metadata
 ```

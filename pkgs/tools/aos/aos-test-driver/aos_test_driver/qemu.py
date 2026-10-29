@@ -66,7 +66,7 @@ class QemuMachine(Machine):
     - ``boot="image"``: boot a self-bootable raw disk image under OVMF
       (two pflash drives).
 
-    Either shape may attach an ``aos-metadata`` ISO as a SCSI CD-ROM. Image
+    Either shape may attach an ``AOS-META`` ISO as a SCSI CD-ROM. Image
     tests use that channel to exercise native first-boot provisioning before
     repartitioning. The per-run disk copy is grown to ``disk_size_mib`` and
     its GPT backup header relocated (``sgdisk -e``) so systemd-repart sees the
@@ -322,7 +322,7 @@ class QemuMachine(Machine):
                 log.info("  Metadata: %s", self.metadata_copy)
 
         # The metadata ISO rides on a SCSI CD-ROM so the guest sees
-        # /dev/sr0 with ISO9660 volume label `aos-metadata` — exactly
+        # /dev/sr0 with ISO9660 volume label `AOS-META` — exactly
         # what the initrd metadata detector probes for.
         #
         # `localaddr=127.0.0.1` on the mcast netdev binds the multicast
@@ -546,7 +546,7 @@ class QemuMachine(Machine):
             ]
 
         # Attach native provisioning input for either boot shape. The initrd
-        # probes the `aos-metadata` filesystem label before cloud DMI routing.
+        # probes the `AOS-META` filesystem label before cloud DMI routing.
         if self.metadata_src is not None:
             argv += [
                 "-drive",

@@ -3,7 +3,7 @@
 # Each machine boots through the selected platform's production initrd path.
 # Per-machine identity and test transport configuration are baked into the
 # image through `extendModules`. Tests may additionally
-# attach a read-only `aos-metadata` ISO to exercise the production
+# attach a read-only `AOS-META` ISO to exercise the production
 # cloud-metadata provisioning path.
 # Inter-VM L2 is QEMU's `-netdev socket,mcast=…` transport — host-local
 # UDP multicast carrying Ethernet frames — so no host bridge or tap setup
@@ -268,7 +268,7 @@
                 '')
                 metadataFiles}
               ${pkgs.libisoburn}/bin/xorriso -as mkisofs \
-                -V aos-metadata \
+                -V AOS-META \
                 -o "$out/metadata.iso" \
                 "$out/tree"
             '';
@@ -305,7 +305,7 @@
               system = effectiveSystem;
               inherit development;
               inherit (m) extraClosures varSizeMiB varProvisioning;
-              # The aos-metadata transport obtains operator input only from
+              # The AOS-META transport obtains operator input only from
               # host.nix; facts and signatures alone still select fallback.
               provisioningSource =
                 if m.metadata ? "host.nix"

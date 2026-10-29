@@ -1,9 +1,14 @@
 //! Package-owned config-drive probing and read-only mounting.
 //!
-//! Offline channels (the AOS `aos-metadata` ISO, NoCloud `cidata`, OpenStack
+//! Offline channels (the AOS `AOS-META` drive, NoCloud `cidata`, OpenStack
 //! `config-2`) arrive as a labeled ISO9660/vfat block device. `detect` probes
 //! the known labels, mounts the first hit read-only, and returns the private
 //! mountpoint to the matching [`PlatformFetcher`] within one provider call.
+//!
+//! The AOS label fits the 11-character FAT volume-label limit and is upper
+//! case, matching what Windows, macOS, and `mkfs.fat` write, so a USB stick
+//! formatted on any workstation can carry it. A label carried by more than one
+//! device is an error: configuration authority is never chosen arbitrarily.
 //!
 //! [`PlatformFetcher`]: crate::fetcher::PlatformFetcher
 //!
@@ -11,17 +16,17 @@
 //! `blkid`/`mount` or require root:
 //!
 //! - [`BlkidProbe`] — production. Shells out to the AOS-built
-//!   `pkgs.util-linux` `blkid -L` and `mount -o ro`.
+//!   `pkgs.util-linux` `blkid` (cache disabled) and `mount -o ro`.
 //! - [`FakeProbe`] — test double. Maps a label directly to a fixture
 //!   directory, modelling an already-mounted drive.
 //!
 //! # Label → platform
 //!
-//! | Label          | Platform       |
-//! |----------------|----------------|
-//! | `aos-metadata` | `aos-metadata` |
-//! | `cidata`       | `nocloud`      |
-//! | `config-2`     | `config-drive` |
+//! | Label      | Platform       |
+//! |------------|----------------|
+//! | `AOS-META` | `aos-metadata` |
+//! | `cidata`   | `nocloud`      |
+//! | `config-2` | `config-drive` |
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -31,16 +36,19 @@ use anyhow::{Context, Result, bail};
 
 /// The labels probed for an offline config-drive, in priority order.
 ///
-/// `aos-metadata` (the AOS-native channel) wins over the generic cloud-init
+/// `AOS-META` (the AOS-native channel) wins over the generic cloud-init
 /// labels so an operator override short-circuits everything else.
-pub const CONFIG_DRIVE_LABELS: &[&str] = &["aos-metadata", "cidata", "config-2"];
+pub const CONFIG_DRIVE_LABELS: &[&str] = &[AOS_METADATA_LABEL, "cidata", "config-2"];
+
+/// The filesystem label of the AOS-native offline metadata drive.
+pub const AOS_METADATA_LABEL: &str = "AOS-META";
 
 /// Maps a filesystem label to its provider platform identifier.
 ///
 /// Returns `None` for an unknown label.
 pub fn platform_for_label(label: &str) -> Option<&'static str> {
     match label {
-        "aos-metadata" => Some("aos-metadata"),
+        AOS_METADATA_LABEL => Some("aos-metadata"),
         "cidata" => Some("nocloud"),
         "config-2" => Some("config-drive"),
         _ => None,
@@ -71,7 +79,7 @@ pub trait ConfigDriveProbe {
     fn probe_and_mount(&self, labels: &[&str], mountpoint: &Path) -> Result<Option<ConfigDrive>>;
 }
 
-/// Production probe: exact `blkid -L <label>` then exact `mount -o ro`.
+/// Production probe: exact cache-free `blkid` label lookup then exact `mount -o ro`.
 pub struct BlkidProbe {
     blkid: PathBuf,
     mount: PathBuf,
@@ -86,23 +94,39 @@ impl BlkidProbe {
         }
     }
 
-    /// Resolve a label to a device node via `blkid -L`, or `None` if absent.
+    /// Resolve a label to its one device node, or `None` if absent.
+    ///
+    /// `blkid -L` silently picks one device when several share a label, so the
+    /// probe lists every match and rejects ambiguity instead.
     fn device_for_label(&self, label: &str) -> Result<Option<String>> {
         let out = Command::new(&self.blkid)
-            .arg("-L")
-            .arg(label)
+            .args(["-c", "/dev/null", "-o", "device", "-t"])
+            .arg(format!("LABEL={label}"))
             .output()
-            .with_context(|| format!("running {} -L {label}", self.blkid.display()))?;
+            .with_context(|| format!("running {} -t LABEL={label}", self.blkid.display()))?;
         if !out.status.success() {
             // blkid exits non-zero when the label is absent — not an error.
             return Ok(None);
         }
-        let dev = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if dev.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(dev))
-        }
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        single_device(label, stdout.lines())
+    }
+}
+
+/// Selects the one non-empty device line, rejecting a label shared by several devices.
+fn single_device<'a>(label: &str, lines: impl Iterator<Item = &'a str>) -> Result<Option<String>> {
+    let devices = lines
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    match devices.as_slice() {
+        [] => Ok(None),
+        [device] => Ok(Some((*device).to_string())),
+        _ => bail!(
+            "{} devices carry the {label} label ({}); refusing to choose one",
+            devices.len(),
+            devices.join(", ")
+        ),
     }
 }
 
@@ -167,5 +191,28 @@ impl ConfigDriveProbe for FakeProbe {
             }
         }
         Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::single_device;
+
+    #[test]
+    fn a_single_labeled_device_is_selected() {
+        let selected = single_device("AOS-META", ["", "/dev/sdb1", ""].into_iter());
+        assert_eq!(selected.ok().flatten().as_deref(), Some("/dev/sdb1"));
+    }
+
+    #[test]
+    fn an_absent_label_is_not_an_error() {
+        assert_eq!(single_device("AOS-META", std::iter::empty()).ok(), Some(None));
+    }
+
+    #[test]
+    fn a_label_shared_by_several_devices_is_rejected() {
+        let error = single_device("AOS-META", ["/dev/sdb1", "/dev/sdc1"].into_iter())
+            .expect_err("ambiguous label must fail");
+        assert!(error.to_string().contains("refusing to choose one"));
     }
 }

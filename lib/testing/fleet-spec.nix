@@ -142,7 +142,7 @@
         default = {};
         description = ''
           Files exposed to the initrd on a read-only ISO labelled
-          `aos-metadata`. Attribute names are plain file names such as
+          `AOS-META`. Attribute names are plain file names such as
           `host.nix` and values are their exact contents. Use this
           to exercise the production cloud-metadata provisioning path.
         '';

@@ -8,7 +8,7 @@
 //!
 //! Channels:
 //!
-//! - [`AosMetadataFetcher`] — the AOS-native `aos-metadata` ISO: literal
+//! - [`AosMetadataFetcher`] — the AOS-native `AOS-META` drive: literal
 //!   `host.nix`, optional `host.nix.sig`, and optional pre-baked `facts.json`.
 //! - [`NoCloudFetcher`] — NoCloud `cidata`: `user-data` is the literal
 //!   `host.nix`; `meta-data` (YAML) + `network-config` (netplan) feed facts.
@@ -129,17 +129,17 @@ fn read_opt_string(
 }
 
 // ---------------------------------------------------------------------------
-// aos-metadata ISO
+// AOS-META drive
 // ---------------------------------------------------------------------------
 
-/// The AOS-native `aos-metadata` ISO channel.
+/// The AOS-native `AOS-META` drive channel.
 pub struct AosMetadataFetcher {
     dir: PathBuf,
     budget: ReadBudget,
 }
 
 impl AosMetadataFetcher {
-    /// Reads from the invocation-private mounted `aos-metadata` directory.
+    /// Reads from the invocation-private mounted `AOS-META` directory.
     pub fn new(dir: impl Into<PathBuf>) -> Self {
         Self {
             dir: dir.into(),
