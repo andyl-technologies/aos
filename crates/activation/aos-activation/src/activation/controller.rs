@@ -60,7 +60,7 @@ impl Activation {
     /// Converges a checked graph, recovering any unfinished prior transaction.
     ///
     /// `retire` explicitly authorizes deletion of named persistent effects that
-    /// are absent from the desired graph. All required artifacts are admitted
+    /// are absent from the desired graph. All required artifacts are authenticated
     /// and retained before recording or executing a new transaction.
     ///
     /// # Errors
@@ -86,9 +86,9 @@ impl Activation {
 
     /// Resumes a caller-identified transaction across process restarts.
     ///
-    /// A completed transaction returns its durable receipt without repeating
+    /// A completed transaction returns its durable completion record without repeating
     /// transaction-scoped effects when its caller is recovering a generation commit.
-    /// The receipt covers the most recent transaction; callers must use fresh
+    /// The record covers the most recent transaction; callers must use fresh
     /// identities for subsequent transactions and recover them in order.
     ///
     /// # Errors
@@ -120,7 +120,7 @@ impl Activation {
     /// Subsequent installation transactions may replace unstarted desired work.
     ///
     /// # Errors
-    /// Returns an error for identity reuse, admission, recovery, handler, or
+    /// Returns an error for identity reuse, artifact authentication, recovery, handler, or
     /// journal failures. Recovery requires the original execution policy.
     pub fn activate_once_with_policy(
         &mut self,
@@ -245,9 +245,9 @@ impl Activation {
         &self.state.retired
     }
 
-    /// Returns the latest durable receipt without observing external resources.
+    /// Returns the latest durable completion record without observing external resources.
     #[must_use]
-    pub fn completed_receipt(&self) -> Option<super::CompletedTransaction> {
+    pub fn completed_transaction_record(&self) -> Option<super::CompletedTransaction> {
         self.state
             .completed
             .as_ref()
@@ -285,7 +285,7 @@ impl Activation {
     /// Restores handler retention from the checked journal without dispatching effects.
     ///
     /// Callers may lose their GC-root filesystem across boot while retaining the
-    /// journal. Original artifacts must still pass admission before their exact
+    /// journal. Original artifacts must still be authenticated before their exact
     /// ownership roots can be recreated.
     ///
     /// # Errors

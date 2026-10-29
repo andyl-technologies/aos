@@ -597,28 +597,28 @@ class Handler(ResourceHandler):
             value["owned_paths"] = sorted(str(self.unit_directory / name) for name in names)
         super().save(value)
 
-    def image_custody(self, desired, action):
+    def adopted_image_units(self, desired, action):
         """Authenticates projected aliases before adopting their /etc entries."""
-        receipt = self.receipt or {}
-        custody = dict(receipt.get("image_units", {}))
-        owned_names = set(receipt.get("units", {})) | set(receipt.get("previous_units", {}))
+        owned_state = self.owned_state or {}
+        adopted = dict(owned_state.get("image_units", {}))
+        owned_names = set(owned_state.get("units", {})) | set(owned_state.get("previous_units", {}))
         eligible = self.value.get("bootstrap", False) or self.value.get("activation_owner", "ability") != "ability"
         if action == "remove" or self.invocation.get("action") == "remove":
             eligible = False
         for name, expected in desired.items():
             path = self.unit_directory / name
-            if not path.is_symlink() or name in custody:
+            if not path.is_symlink() or name in adopted:
                 continue
             if not eligible:
                 raise ValueError("service definition has no authenticated image projection")
             target = os.readlink(path)
             actual = image_unit_digest(target)
             completed_projection = (
-                receipt.get("kind") == "service"
-                and not receipt.get("pending")
-                and not receipt.get("removing")
-                and not receipt.get("dispatching")
-                and receipt.get("units", {}).get(name) == expected
+                owned_state.get("kind") == "service"
+                and not owned_state.get("pending")
+                and not owned_state.get("removing")
+                and not owned_state.get("dispatching")
+                and owned_state.get("units", {}).get(name) == expected
             )
             if actual != expected:
                 # An image upgrade can replace a completed service's volatile
@@ -632,8 +632,8 @@ class Handler(ResourceHandler):
                     raise ValueError("owned service definition was replaced by an external link")
                 # Coldboot loses the volatile regular /etc leaf. Re-adopt only
                 # a matching definition or the selected image's proven alias.
-            custody[name] = {"target": target, "digest": actual}
-        return custody
+            adopted[name] = {"target": target, "digest": actual}
+        return adopted
 
     def selected_image_unit(self, name, target):
         """Matches the alias to the verified image's selected manager projection."""
@@ -642,18 +642,18 @@ class Handler(ResourceHandler):
         selected = self.image_unit_directory / name
         return str(selected.resolve(strict=True)) == target
 
-    def unit_safe(self, name, desired, prior_units, custody):
+    def unit_safe(self, name, desired, prior_units, adopted):
         """Accepts owned bytes or an exact alias authenticated for conversion."""
-        allowed = {None, desired, prior_units.get(name), (self.receipt or {}).get("previous_units", {}).get(name)}
-        if name in custody:
-            allowed.add(custody[name]["digest"])
-        return self.unit_digest(name, custody) in allowed
+        allowed = {None, desired, prior_units.get(name), (self.owned_state or {}).get("previous_units", {}).get(name)}
+        if name in adopted:
+            allowed.add(adopted[name]["digest"])
+        return self.unit_digest(name, adopted) in allowed
 
-    def unit_digest(self, name, custody):
+    def unit_digest(self, name, adopted):
         """Checks an owned regular leaf or its exact pending image alias."""
         path = self.unit_directory / name
         if path.is_symlink():
-            original = custody.get(name)
+            original = adopted.get(name)
             if original is None or os.readlink(path) != original["target"]:
                 raise ValueError("service definition link changed outside its owning effect")
             if image_unit_digest(original["target"]) != original["digest"]:
@@ -671,16 +671,16 @@ class Handler(ResourceHandler):
         concurrency = self.value.get("concurrency")
         if not concurrency or not self.state_directory.exists():
             return
-        for receipt_path in self.state_directory.glob("*.json"):
-            if receipt_path == self.receipt_path:
+        for owned_state_path in self.state_directory.glob("*.json"):
+            if owned_state_path == self.owned_state_path:
                 continue
-            receipt = json.loads(receipt_path.read_text())
-            if receipt.get("concurrency") == concurrency["group"]:
-                observed = self.manager("show", receipt["resource"], "--property=ActiveState", "--value", check=False)
+            owned_state = json.loads(owned_state_path.read_text())
+            if owned_state.get("concurrency") == concurrency["group"]:
+                observed = self.manager("show", owned_state["resource"], "--property=ActiveState", "--value", check=False)
                 if observed.returncode != 0 or observed.stdout.strip() in {"active", "activating", "reloading", "deactivating"}:
                     raise ValueError("another service is active in this exclusive concurrency group")
 
-    def execution_evidence(self, unit_name):
+    def unit_status(self, unit_name):
         observed = self.manager("show", unit_name, "--property=ActiveState,Result,ExecMainStartTimestampMonotonic,ExecMainExitTimestampMonotonic", check=False)
         if observed.returncode:
             return None
@@ -724,7 +724,7 @@ class Handler(ResourceHandler):
 
         # Pending publication already contains the desired bytes. Compare with
         # its retained predecessor so recovery still dispatches a real change.
-        previous = self.receipt or {}
+        previous = self.owned_state or {}
         prior_pending = previous.get("pending", False)
         previous_units = previous.get("previous_units" if prior_pending else "units", {})
         previous_links = previous.get("previous_links" if prior_pending else "links", {})
@@ -745,38 +745,38 @@ class Handler(ResourceHandler):
             or configuration != previous_configuration
         )
 
-        prior_units = dict((self.receipt or {}).get("previous_units", {}), **(self.receipt or {}).get("units", {}))
-        prior_links = dict((self.receipt or {}).get("previous_links", {}), **(self.receipt or {}).get("links", {}))
+        prior_units = dict((self.owned_state or {}).get("previous_units", {}), **(self.owned_state or {}).get("units", {}))
+        prior_links = dict((self.owned_state or {}).get("previous_links", {}), **(self.owned_state or {}).get("links", {}))
         owner = self.value.get("activation_owner", "ability")
         try:
-            custody = self.image_custody(desired, action)
+            adopted = self.adopted_image_units(desired, action)
             for name in desired.keys() | prior_units.keys():
-                self.unit_digest(name, custody)
+                self.unit_digest(name, adopted)
         except (ValueError, OSError):
             if action == "observe":
                 return {"status": "indeterminate"}
             raise
-        expected = all(self.unit_digest(name, custody) == value for name, value in desired.items())
+        expected = all(self.unit_digest(name, adopted) == value for name, value in desired.items())
         expected = expected and self.links_match(realization["links"])
         if action == "observe" and self.invocation.get("action") == "remove":
-            if self.receipt is None:
+            if self.owned_state is None:
                 absent = all(not (self.unit_directory / name).exists() and not (self.unit_directory / name).is_symlink() for name in desired)
                 return {"status": "absent" if absent else "indeterminate"}
-            if self.receipt.get("removing") and self.receipt.get("dispatching"):
+            if self.owned_state.get("removing") and self.owned_state.get("dispatching"):
                 # A failed stop may have run arbitrary package commands. File
                 # identity alone cannot authorize another lifecycle invocation.
                 return {"status": "indeterminate"}
-            storage = self.receipt.get("private_storage", private_storage_sources(self.value))
-            handoffs = self.receipt.get("storage_handoffs")
+            storage = self.owned_state.get("private_storage", private_storage_sources(self.value))
+            handoffs = self.owned_state.get("storage_handoffs")
             if storage:
                 if handoffs is None:
                     return {"status": "retry-safe"}
                 try:
-                    if any(handoff_state(record) != "complete" for record in handoffs) or not self.receipt.get("storage_handoffs_done"):
+                    if any(handoff_state(record) != "complete" for record in handoffs) or not self.owned_state.get("storage_handoffs_done"):
                         return {"status": "retry-safe"}
                 except (ValueError, OSError):
                     return {"status": "indeterminate"}
-            if any(self.unit_digest(name, custody) not in {None, value} for name, value in prior_units.items()):
+            if any(self.unit_digest(name, adopted) not in {None, value} for name, value in prior_units.items()):
                 return {"status": "indeterminate"}
             if not self.links_safe(prior_links):
                 return {"status": "indeterminate"}
@@ -787,58 +787,58 @@ class Handler(ResourceHandler):
                 return {"status": "absent"}
             return {"status": "retry-safe"}
         if action == "observe":
-            if self.receipt and self.receipt.get("pending") and self.receipt.get("dispatching"):
-                if not expected or self.receipt["revision"] != self.invocation["revision"]:
+            if self.owned_state and self.owned_state.get("pending") and self.owned_state.get("dispatching"):
+                if not expected or self.owned_state["revision"] != self.invocation["revision"]:
                     return {"status": "indeterminate"}
-                evidence = self.execution_evidence(unit_name)
-                started = int((evidence or {}).get("ExecMainStartTimestampMonotonic", "0"))
-                prior_start = int(self.receipt.get("prior_start", "0"))
-                exited = int((evidence or {}).get("ExecMainExitTimestampMonotonic", "0"))
-                completed = evidence and started > prior_start and (evidence.get("ActiveState") == "active" or exited >= started)
-                if completed and (start_mode == "enqueue" or evidence.get("Result") == "success"):
+                status = self.unit_status(unit_name)
+                started = int((status or {}).get("ExecMainStartTimestampMonotonic", "0"))
+                prior_start = int(self.owned_state.get("prior_start", "0"))
+                exited = int((status or {}).get("ExecMainExitTimestampMonotonic", "0"))
+                completed = status and started > prior_start and (status.get("ActiveState") == "active" or exited >= started)
+                if completed and (start_mode == "enqueue" or status.get("Result") == "success"):
                     # Unit retirement may still be pending after dispatch. Reconcile
                     # it before acknowledging the evidenced dispatch.
-                    if self.receipt.get("previous_units") or self.receipt.get("previous_links"):
+                    if self.owned_state.get("previous_units") or self.owned_state.get("previous_links"):
                         return {"status": "indeterminate"}
                     # Enqueued startup acknowledges dispatch, not health. A
                     # completed failed run is evidence that it was dispatched.
-                    self.save(dict(self.receipt, pending=False, dispatching=False))
+                    self.save(dict(self.owned_state, pending=False, dispatching=False))
                     return {"status": "current", "outputs": result}
                 return {"status": "indeterminate"}
-            if expected and self.receipt and not self.receipt.get("pending") and self.receipt["revision"] == self.invocation["revision"]:
+            if expected and self.owned_state and not self.owned_state.get("pending") and self.owned_state["revision"] == self.invocation["revision"]:
                 if start_mode == "wait" and owner == "ability" and self.value["auto_start"] and self.value["enabled"]:
                     state = self.manager("show", unit_name, "--property=ActiveState", "--value", check=False)
                     if state.returncode != 0 or state.stdout.strip() not in {"active", "reloading"}:
                         if self.value["lifecycle"]["execution_model"] != "oneshot":
                             return {"status": "retry-safe"}
                 return {"status": "current", "outputs": result}
-            safe = all(self.unit_safe(name, value, prior_units, custody) for name, value in desired.items())
+            safe = all(self.unit_safe(name, value, prior_units, adopted) for name, value in desired.items())
             safe = safe and self.links_safe(dict(prior_links, **realization["links"]))
-            if not self.receipt and all(not (self.unit_directory / name).exists() for name in desired):
+            if not self.owned_state and all(not (self.unit_directory / name).exists() for name in desired):
                 return {"status": "absent"}
             return {"status": "retry-safe" if safe else "indeterminate"}
         if action == "remove":
-            if not self.receipt:
+            if not self.owned_state:
                 if all(not (self.unit_directory / name).exists() for name in desired):
                     return {}
-                raise ValueError("service removal has no ownership receipt")
+                raise ValueError("service removal has no ownership record")
             for name, value in prior_units.items():
-                if self.unit_digest(name, custody) not in {None, value}:
+                if self.unit_digest(name, adopted) not in {None, value}:
                     raise ValueError("service definition changed outside its owning effect")
             if not self.links_safe(prior_links):
                 raise ValueError("service installation link changed outside its owning effect")
-            if self.receipt.get("removing") and self.receipt.get("dispatching"):
+            if self.owned_state.get("removing") and self.owned_state.get("dispatching"):
                 raise ValueError("service removal has an uncertain stop dispatch")
-            if not self.receipt.get("removal_stopped"):
+            if not self.owned_state.get("removal_stopped"):
                 for guard in self.value["lifecycle"].get("removal_guard", []):
                     executable = guard["executable"]
                     checked = subprocess.run([absolute(executable["path"]), *executable["arguments"]], capture_output=True, text=True, check=False)
                     if checked.returncode and not guard["ignore_failure"]:
                         raise ValueError("service removal guard rejected retirement: " + checked.stderr[:4096])
-                if self.receipt.get("owner") == "ability":
-                    self.save(dict(self.receipt, removing=True, dispatching=True))
-                    self.manager("stop", *self.receipt.get("starts", []), *self.receipt.get("units", {}))
-                self.save(dict(self.receipt, removing=True, dispatching=False, removal_stopped=True))
+                if self.owned_state.get("owner") == "ability":
+                    self.save(dict(self.owned_state, removing=True, dispatching=True))
+                    self.manager("stop", *self.owned_state.get("starts", []), *self.owned_state.get("units", {}))
+                self.save(dict(self.owned_state, removing=True, dispatching=False, removal_stopped=True))
             self.retire_private_storage()
             self.remove_links(prior_links)
             for name in prior_units:
@@ -846,7 +846,7 @@ class Handler(ResourceHandler):
             self.manager("daemon-reload")
             return self.finish_remove()
         for name, value in desired.items():
-            if not self.unit_safe(name, value, prior_units, custody):
+            if not self.unit_safe(name, value, prior_units, adopted):
                 raise ValueError("service definition conflicts with external configuration")
         if not self.links_safe(prior_links):
             raise ValueError("service installation link changed outside its owning effect")
@@ -866,11 +866,11 @@ class Handler(ResourceHandler):
             finally:
                 os.close(descriptor)
         self.claim_paths([str(self.unit_directory / name) for name in set(desired) | set(realization["links"])])
-        receipt = {"kind": "service", "units": desired, "links": realization["links"], "resource": unit_name, "starts": realization["starts"], "owner": owner, "pending": True, "previous_units": prior_units, "previous_links": prior_links, "image_units": custody, "concurrency": (self.value.get("concurrency") or {}).get("group")}
-        receipt.update(configuration=configuration, previous_configuration=previous_configuration)
-        receipt["private_storage"] = sorted(set(private_storage_sources(self.value)) | set((self.receipt or {}).get("private_storage", [])))
-        old_resource = (self.receipt or {}).get("resource")
-        self.save(receipt)
+        owned_state = {"kind": "service", "units": desired, "links": realization["links"], "resource": unit_name, "starts": realization["starts"], "owner": owner, "pending": True, "previous_units": prior_units, "previous_links": prior_links, "image_units": adopted, "concurrency": (self.value.get("concurrency") or {}).get("group")}
+        owned_state.update(configuration=configuration, previous_configuration=previous_configuration)
+        owned_state["private_storage"] = sorted(set(private_storage_sources(self.value)) | set((self.owned_state or {}).get("private_storage", [])))
+        old_resource = (self.owned_state or {}).get("resource")
+        self.save(owned_state)
         for name, text in realization["units"].items():
             # Adopt the mutable /etc entry as a regular owned file. Pending
             # custody authenticates a projected alias only until this conversion.
@@ -883,17 +883,17 @@ class Handler(ResourceHandler):
         if owner == "ability" and not self.value["enabled"]:
             # Disabling keeps owned definitions and surviving worker identities.
             # Retirement guards apply only when removing the package's effect.
-            self.manager("stop", *self.receipt.get("starts", []), *realization["units"])
+            self.manager("stop", *self.owned_state.get("starts", []), *realization["units"])
         if owner == "ability" and self.value["enabled"] and self.value["auto_start"]:
             if realization["starts"]:
                 self.manager("start", *realization["starts"])
             change = self.value["lifecycle"]["configuration_change_action"]
             update = self.invocation.get("previous") is not None
-            evidence = self.execution_evidence(unit_name)
+            status = self.unit_status(unit_name)
             needs_start = (
                 start_mode == "wait"
                 and self.value["lifecycle"]["execution_model"] != "oneshot"
-                and (evidence or {}).get("ActiveState") not in {"active", "reloading"}
+                and (status or {}).get("ActiveState") not in {"active", "reloading"}
             )
             # Dependency outputs order reconciliation. Their new revisions do
             # not restart an unchanged service. Explicit activation inputs and
@@ -902,30 +902,30 @@ class Handler(ResourceHandler):
                 operation = "start"
                 if update and configuration_changed:
                     operation = {"reload": "reload-or-restart", "restart": "restart", "none": "start"}[change]
-                receipt.update(dispatching=True, prior_start=(evidence or {}).get("ExecMainStartTimestampMonotonic", "0"))
-                self.save(receipt)
+                owned_state.update(dispatching=True, prior_start=(status or {}).get("ExecMainStartTimestampMonotonic", "0"))
+                self.save(owned_state)
                 if start_mode == "enqueue":
                     self.manager(operation, "--no-block", unit_name)
                 else:
                     self.manager(operation, unit_name)
         for name in prior_units.keys() - desired.keys():
-            if self.unit_digest(name, custody) == prior_units[name]:
+            if self.unit_digest(name, adopted) == prior_units[name]:
                 durable_unlink(self.unit_directory / name)
-        self.save(dict(receipt, pending=False, dispatching=False, previous_units={}, previous_links={}, previous_configuration={}, image_units={}))
+        self.save(dict(owned_state, pending=False, dispatching=False, previous_units={}, previous_links={}, previous_configuration={}, image_units={}))
         return result
 
     def retire_private_storage(self):
         """Journals private directory custody before removing any public alias."""
-        sources = self.receipt.get("private_storage", private_storage_sources(self.value))
-        if sources and self.receipt.get("owner") != "ability":
+        sources = self.owned_state.get("private_storage", private_storage_sources(self.value))
+        if sources and self.owned_state.get("owner") != "ability":
             raise ValueError("private storage retirement requires an owned service stop")
-        if "storage_handoffs" not in self.receipt:
+        if "storage_handoffs" not in self.owned_state:
             # Validate the entire plan before transferring its first directory.
             handoffs = plan_handoffs(sources)
-            self.save(dict(self.receipt, storage_handoffs=handoffs))
-        for record in self.receipt["storage_handoffs"]:
+            self.save(dict(self.owned_state, storage_handoffs=handoffs))
+        for record in self.owned_state["storage_handoffs"]:
             complete_handoff(record)
-        self.save(dict(self.receipt, storage_handoffs_done=True))
+        self.save(dict(self.owned_state, storage_handoffs_done=True))
 
     def links_match(self, links):
         return all((self.unit_directory / name).is_symlink() and os.readlink(self.unit_directory / name) == target for name, target in links.items())

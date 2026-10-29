@@ -42,8 +42,8 @@ path = "src/bin/aos-systemd-image-stage.rs"
 required-features = ["boot-tools"]
 
 [[bin]]
-name = "aos-systemd-image-evidence"
-path = "src/bin/aos-systemd-image-evidence.rs"
+name = "aos-systemd-boot-measurements"
+path = "src/bin/aos-systemd-boot-measurements.rs"
 required-features = ["boot-tools"]
 
 [[bin]]

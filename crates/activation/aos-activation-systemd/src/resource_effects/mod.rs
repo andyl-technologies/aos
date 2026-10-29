@@ -1,6 +1,6 @@
-//! Owns native instance resource receipts and bounded host-side dispatch.
+//! Owns native instance resource ownership records and bounded host-side dispatch.
 //!
-//! Receipts retain exact unit definitions before dispatch. A receipt never grants
+//! Ownership records retain exact unit definitions before dispatch. An ownership record never grants
 //! authority over a foreign file or manager unit, even when its name matches.
 
 mod credential;
@@ -190,7 +190,7 @@ mod tests {
     }
 
     #[test]
-    fn receipts_do_not_follow_symlinks() {
+    fn ownership_records_do_not_follow_symlinks() {
         let temporary = tempfile::tempdir().unwrap();
         let target = temporary.path().join("target");
         fs::write(&target, b"secret").unwrap();
