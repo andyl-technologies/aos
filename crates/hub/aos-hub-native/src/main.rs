@@ -751,7 +751,7 @@ async fn main() -> Result<()> {
                         format!("reading delivery attestation key at {}", path.display())
                     })?;
                 app_state.delivery_attestation_verifier = Some(Arc::new(
-                    aos_hub_service::delivery_attestation::DeliveryAttestationVerifier::new(&key)
+                    aos_hub_service::delivery_attestation::IngressAssertionVerifier::new(&key)
                         .context("invalid delivery attestation key")?,
                 ));
             }
@@ -1150,7 +1150,7 @@ async fn main() -> Result<()> {
                     &private_key,
                     server_name.clone(),
                 )?;
-                let transport = aos_hub_service::connect::DeliveryTransportEvidence {
+                let transport = aos_hub_service::connect::VerifiedTransport {
                     scheme: "https".to_owned(),
                     ingress_kind: "hub".to_owned(),
                     tls_identity: Some(aos_hub_db::db::InboundEndpointHost::Domain(server_name)),

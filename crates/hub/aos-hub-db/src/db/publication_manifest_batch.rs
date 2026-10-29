@@ -1,4 +1,4 @@
-//! Bounded registry-publication manifest admission.
+//! Batched registry-publication manifest inserts.
 //!
 //! Publication manifests remain invisible while `preparing`. This module uses
 //! that lifecycle boundary to admit a page of logical surface objects and its
