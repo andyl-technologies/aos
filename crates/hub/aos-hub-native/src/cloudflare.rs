@@ -1116,7 +1116,7 @@ impl Secrets {
                 .context("invalid Worker route reservation keyring")?;
         }
         if let Some(config) = &self.release_evidence_config {
-            aos_hub_service::release_evidence::Ed25519ReleaseEvidenceAuthority::from_json(
+            aos_hub_service::release_receipt_signer::Ed25519ReleaseEvidenceAuthority::from_json(
                 "deployment-validation",
                 config,
             )

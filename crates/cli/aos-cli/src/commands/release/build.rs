@@ -412,7 +412,7 @@ fn build_journal(
         new_state: ReleaseState::Planned,
         destination: None,
         operation_ids: vec!["release-plan".to_string()],
-        evidence: vec![],
+        attachments: vec![],
         recorded_at: started_at.to_string(),
     };
     planned.validate()?;
@@ -427,7 +427,7 @@ fn build_journal(
         new_state: ReleaseState::Built,
         destination: None,
         operation_ids: vec!["nix-realise-check".to_string()],
-        evidence: vec![Sha256Digest::of_bytes(report), Sha256Digest::of_bytes(sbom)],
+        attachments: vec![Sha256Digest::of_bytes(report), Sha256Digest::of_bytes(sbom)],
         recorded_at: completed_at.to_string(),
     };
     built.validate()?;

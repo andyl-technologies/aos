@@ -910,7 +910,7 @@ fn published_staging_destination<'a>(
         .entries
         .iter()
         .filter(|entry| entry.new_state == ReleaseState::Published)
-        .filter(|entry| entry.evidence.contains(&receipt.digest))
+        .filter(|entry| entry.attachments.contains(&receipt.digest))
         .find_map(|entry| entry.destination.as_deref())
         .context("journal records no staging publication with this receipt")?;
     let destination = plan.destination(name)?;

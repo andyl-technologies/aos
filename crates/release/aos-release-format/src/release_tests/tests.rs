@@ -2,12 +2,12 @@
 
 use crate::artifact::{ArtifactKind, ArtifactRelation, ArtifactRelationship};
 use crate::digest::Sha256Digest;
-use crate::evidence::{EvidenceRecord, GateResult};
+use crate::evidence::{Outcome, TestResult};
 use crate::manifest::PackageResult;
 use crate::plan::PlatformCell;
 use crate::platform::{MatrixCell, Platform};
 use crate::qualification::QualificationPhase;
-use crate::qualification_evidence::{assess_observations, cases, validate_observations};
+use crate::release_tests::{assess_observations, cases, validate_observations};
 use crate::signing::SignerRole;
 use crate::verify::tests::{
     EDGE, STABLE, artifact, digest, final_set, observations, package_id, planned,
@@ -414,7 +414,7 @@ fn missing_oci_artifact_and_removed_plan_gate_fail_closed() -> anyhow::Result<()
 fn qualification_rejects_missing_failed_replayed_and_stale_observations() -> anyhow::Result<()> {
     let (plan, manifest) = qualification_fixture()?;
     let records = observations(&plan, &manifest, Some(STABLE), QualificationPhase::Staging)?;
-    let check = |records: &[EvidenceRecord], now| {
+    let check = |records: &[TestResult], now| {
         validate_observations(
             &plan,
             &manifest,
@@ -428,7 +428,7 @@ fn qualification_rejects_missing_failed_replayed_and_stale_observations() -> any
     let now = "2026-09-01T00:00:02Z";
     assert!(check(&records[1..], now).is_err());
     let mut failed = records.clone();
-    failed[0].result = GateResult::Failed;
+    failed[0].result = Outcome::Failed;
     assert!(check(&failed, now).is_err());
     let mut replay = records.clone();
     replay[0].qualification.as_mut().unwrap().case_digest = digest("another-case");
@@ -471,7 +471,7 @@ fn qualification_rejects_missing_failed_replayed_and_stale_observations() -> any
 fn completion_requires_measured_soak_and_nonzero_operation_denominators() -> anyhow::Result<()> {
     let (plan, manifest) = qualification_fixture()?;
     let mut records = observations(&plan, &manifest, Some(STABLE), QualificationPhase::Complete)?;
-    let check = |records: &[EvidenceRecord]| {
+    let check = |records: &[TestResult]| {
         validate_observations(
             &plan,
             &manifest,
@@ -634,7 +634,7 @@ fn soak_profile_requires_a_week_of_observation_for_qualified_claims() -> anyhow:
         record.finished_at = "2026-09-08T00:00:00Z".into();
         record.qualification.as_mut().unwrap().observed_seconds = 604_800;
     }
-    let check = |records: &[EvidenceRecord]| {
+    let check = |records: &[TestResult]| {
         validate_observations(
             &plan,
             &manifest,
@@ -697,7 +697,7 @@ fn effective_profile_must_match_the_planned_destination() -> anyhow::Result<()> 
 #[test]
 fn qualification_admission_is_fresh_and_bound_to_the_destination_ring() -> anyhow::Result<()> {
     use crate::qualification_admission::{
-        QUALIFICATION_ADMISSION, QualificationAdmission, QualificationRolloutIntent,
+        QUALIFICATION_ADMISSION, QualificationRolloutIntent, RingApproval,
     };
 
     let (plan, _) = qualification_fixture()?;
@@ -706,7 +706,7 @@ fn qualification_admission_is_fresh_and_bound_to_the_destination_ring() -> anyho
         .iter()
         .find(|role| role.role == SignerRole::Qualification)
         .unwrap();
-    let mut admission = QualificationAdmission {
+    let mut admission = RingApproval {
         schema_version: QUALIFICATION_ADMISSION.into(),
         phase: QualificationPhase::Complete,
         destination: STABLE.into(),
@@ -759,7 +759,7 @@ fn independent_review_follows_the_destination_review_threshold() -> anyhow::Resu
     use crate::qualification_admission::{
         QUALIFICATION_REVIEW, QualificationReview, verify_reviews,
     };
-    use crate::receipt::{RECEIPT_SIGNATURE_DOMAIN, SIGNED_RECEIPT, SignedReceiptEnvelope};
+    use crate::receipt::{RECEIPT_SIGNATURE_DOMAIN, SIGNED_RECEIPT, SignedEnvelope};
     use base64::Engine as _;
     use ed25519_dalek::{Signer as _, SigningKey};
 
@@ -777,7 +777,7 @@ fn independent_review_follows_the_destination_review_threshold() -> anyhow::Resu
         Sha256Digest::separated(RECEIPT_SIGNATURE_DOMAIN, crate::canonical::to_vec(&review)?)
             .as_bytes(),
     );
-    let envelope = SignedReceiptEnvelope {
+    let envelope = SignedEnvelope {
         schema_version: SIGNED_RECEIPT.into(),
         key_id: fixture.key.key_id.clone(),
         payload: serde_json::to_value(review)?,
