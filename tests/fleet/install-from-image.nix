@@ -119,7 +119,12 @@
       # The registry workflow uses basic Git transport operations. Reuse the
       # runtime client without pulling development-language helpers into boot.
       environment.systemPackages = [pkgs.git-minimal];
-      aos.image.budgets.maxRootMiB = 640;
+      # The test packages and Git client exceed the production download
+      # budget; keep the larger contract local to this fixture image.
+      aos.image.budgets = {
+        maxRootMiB = 640;
+        maxDownloadMiB = 1024;
+      };
     }
   ];
 
