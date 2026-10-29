@@ -126,10 +126,12 @@ in
             --extern aos_boot_identity=libaos_boot_identity.rlib \
             --extern aos_boot_media=libaos_boot_media.rlib \
             -o libaos_recovery.rlib
+          # The binary names aos_recovery directly; rustc resolves that
+          # library's own aos_boot_media dependency from this directory.
           ${rustcCommand} --edition=2024 \
             ${recoverySource}/src/main.rs \
+            -L dependency=. \
             --extern aos_boot_identity=libaos_boot_identity.rlib \
-            --extern aos_boot_media=libaos_boot_media.rlib \
             --extern aos_recovery=libaos_recovery.rlib \
             -o aos-recovery
           ${rustcCommand} --edition=2024 --test ${recoverySource}/src/lib.rs \
