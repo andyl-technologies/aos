@@ -4,12 +4,23 @@
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdir, open, readFile, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import { join, resolve } from "node:path";
 
 const root = resolve(process.argv[2] ?? "");
 const dist = process.env.AOS_DIRECT_GUARD_E2E_DIST;
 const executable = process.env.AOS_DIRECT_GUARD_E2E_WORKERD;
 if (!process.argv[2] || !dist || !executable) throw new Error("Launcher arguments are required.");
+// Each invocation owns fresh state and an independent listener, so local test
+// loops can run concurrently without reaching another fixture's fixed port.
+const reservation = createServer();
+await new Promise((done, reject) => {
+  reservation.once("error", reject);
+  reservation.listen(0, "127.0.0.1", done);
+});
+const port = reservation.address().port;
+await new Promise((done, reject) => reservation.close(error => error ? reject(error) : done()));
+const origin = `http://127.0.0.1:${port}`;
 await mkdir(root, { recursive: true, mode: 0o700 });
 await mkdir(join(root, "do-storage"), { mode: 0o700 });
 await writeFile(join(root, "shim.mjs"), await readFile(join(dist, "shim.mjs")), { flag: "wx" });
@@ -18,7 +29,7 @@ const config = `using Workerd = import "/workerd/workerd.capnp";
 const config :Workerd.Config = (
   services = [ (name = "main", worker = .mainWorker),
     (name = "do-disk", disk = (path = "do-storage", writable = true)) ],
-  sockets = [(name = "http", address = "127.0.0.1:8796", http = (), service = "main")]
+  sockets = [(name = "http", address = "127.0.0.1:${port}", http = (), service = "main")]
 );
 const mainWorker :Workerd.Worker = (
   modules = [(name = "shim.mjs", esModule = embed "shim.mjs"),
@@ -64,7 +75,7 @@ async function start() {
   for (let attempt = 0; attempt < 240; attempt += 1) {
     if (launchFailed || child.exitCode !== null || child.signalCode !== null) throw new Error("Workerd failed before readiness; logs retained.");
     try {
-      const response = await fetch("http://127.0.0.1:8796/.well-known/aos-deployment", { signal: AbortSignal.timeout(1000) });
+      const response = await fetch(origin + "/.well-known/aos-deployment", { signal: AbortSignal.timeout(1000) });
       if (response.status === 200) return;
     } catch {}
     await new Promise((done) => setTimeout(done, 100));
@@ -75,7 +86,7 @@ async function start() {
 async function probe(action, journal = false) {
   observation += 1;
   const route = journal ? "direct-journal" : "direct-guard";
-  const response = await fetch(`http://127.0.0.1:8796/_e2e/${route}`, {
+  const response = await fetch(`${origin}/_e2e/${route}`, {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ key, action }), signal: AbortSignal.timeout(30_000),
   });
@@ -91,7 +102,7 @@ try {
   const deniedPaths = ["/.aos-direct-upload/source", "/org/.aos-direct-qualification/run",
     "/org/%2eaos-direct-upload/source", "/org%2f.aos-direct-upload%2fsource"];
   for (const [index, path] of deniedPaths.entries()) {
-    const response = await fetch(`http://127.0.0.1:8796${path}`, { signal: AbortSignal.timeout(5000) });
+    const response = await fetch(origin + path, { signal: AbortSignal.timeout(5000) });
     await writeFile(join(root, `private-namespace-${index}.json`), JSON.stringify({path,status:response.status}),
       {flag:"wx",mode:0o600});
     if (response.status !== 404) throw new Error("Reserved public namespace reached a backend.");

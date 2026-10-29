@@ -10,6 +10,11 @@ if [[ $1 == config && $2 == show ]]; then
   printf 'trusted-users = root %s\n' "$(id -un)"
   exit 0
 fi
+if [[ $1 == develop && $* == *hub-direct-shell.nix* ]]; then
+  printf '%s\n' "$@" > "$AOS_DEV_TEST_DIRECT_ARGS"
+  printf '%s\n' "$AOS_DEV_ROOT" > "$AOS_DEV_TEST_DIRECT_ROOT"
+  exit 0
+fi
 case " $* " in
   *'nix-config.nix text '*)
     printf '%s\n' \
@@ -106,6 +111,21 @@ export AOS_DEV_TEST_NIX_CONFIG_LOG="$scratch/nix-config.log"
 bash -n "$root/tools/dev/aos-dev" "$root"/tools/dev/lib/*.bash
 bash "$root/tools/dev/aos-dev" help | grep -Fq 'Usage: aos-dev'
 bash "$root/tools/dev/aos-dev" completion bash | grep -Fq '_aos_dev_complete()'
+
+# The focused loop enters its small shell directly and preserves parser args.
+export AOS_DEV_TEST_DIRECT_ARGS="$scratch/direct-args"
+export AOS_DEV_TEST_DIRECT_ROOT="$scratch/direct-root"
+CARGO_TARGET_DIR="$scratch/cargo-target" bash "$root/tools/dev/aos-dev" \
+  test hub-direct unit --timeout 9
+grep -Fxq -- "$root/tools/dev/hub-direct-shell.nix" "$AOS_DEV_TEST_DIRECT_ARGS"
+grep -Fxq -- "$root/tools/dev/hub-direct.py" "$AOS_DEV_TEST_DIRECT_ARGS"
+grep -Fxq -- unit "$AOS_DEV_TEST_DIRECT_ARGS"
+grep -Fxq -- --timeout "$AOS_DEV_TEST_DIRECT_ARGS"
+grep -Fxq -- 9 "$AOS_DEV_TEST_DIRECT_ARGS"
+grep -Fxq -- "$root" "$AOS_DEV_TEST_DIRECT_ROOT"
+if bash "$root/tools/dev/aos-dev" test unknown > "$scratch/direct-invalid.log" 2>&1; then
+  exit 1
+fi
 test "$(bash "$root/tools/dev/aos-dev" list packages)" = $'alpha\nbeta'
 test "$(bash "$root/tools/dev/aos-dev" list check)" = $'eval\nbuild'
 test "$(bash "$root/tools/dev/aos-dev" list check build)" = 'build'

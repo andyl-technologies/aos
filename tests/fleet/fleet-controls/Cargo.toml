@@ -1,0 +1,21 @@
+[package]
+name = "aos-fleet-controls"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+aos-hub-db = { path = "../../../crates/hub/aos-hub-db" }
+anyhow = "1"
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+
+[patch.crates-io]
+libssh2-sys = { path = "../../../crates/bindings/libssh2-sys" }
+
+[dev-dependencies]
+tempfile = "3"

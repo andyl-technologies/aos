@@ -15,6 +15,8 @@
         "${repositoryRootString}/tools/dev/lib"
         "${repositoryRootString}/tools/dev/tests"
         "${repositoryRootString}/tools/dev/tests/cli.bash"
+        "${repositoryRootString}/tools/dev/tests/hub-direct.py"
+        "${repositoryRootString}/tools/dev/hub-direct.py"
         "${repositoryRootString}/tools/dev/cache-mount-smoke.nix"
         "${repositoryRootString}/tools/dev/nix-config.nix"
         "${repositoryRootString}/tools/dev/targets.nix"
@@ -34,12 +36,14 @@ in
       pkgs.grep
       pkgs.sed
       pkgs.util-linux
+      pkgs.python3
     ];
     phases = [
       {
         name = "check";
         script = ''
           ${pkgs.bash}/bin/bash "$src/tools/dev/tests/cli.bash" "$src" "$TMPDIR/aos-dev-test"
+          ${pkgs.python3}/bin/python3 -B "$src/tools/dev/tests/hub-direct.py"
           mkdir -p "$out"
           echo PASS > "$out/result"
         '';

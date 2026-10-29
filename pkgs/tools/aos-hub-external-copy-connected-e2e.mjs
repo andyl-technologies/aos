@@ -29,16 +29,27 @@ const counters = { creates: 0, parts: 0, completes: 0, completeRequests: 0, abor
 const uploads = new Map();
 const destinations = new Map();
 const sourceAliases = new Set([setup.sourceKey]);
+const sourcePrefix = setup.sourceKey.slice(0, -"nar/source.nar".length);
+const destinationPrefix = setup.destinationKey.slice(0, -"nar/source.nar".length);
+assert(setup.sourceKey.endsWith("nar/source.nar") && setup.destinationKey.endsWith("nar/source.nar"));
+assert(destinationPrefix.endsWith("objects/destination/"));
+// The paired case uses an independent source binding. Keep its actual prefix
+// when matching the destination and the separate repair placement to a source.
+const destinationPrefixes = [destinationPrefix,
+  destinationPrefix.replace(/objects\/destination\/$/, "objects/repair-target/")];
 const credentialProbePrefixes = setup.object.cohorts
   .map(cohort => `${cohort.association.binding_prefix}/.aos/credential-probes/`);
 let capacityBinding = "";
-if (setup.copy.version === 2) {
-  assert.match(setup.sourceDigest, /^[0-9a-f]{64}$/);
+// The local development loop also exercises the common request owner with the
+// one-binding fixture. Pin this optional policy to the actual compiled module.
+const capacitySource = setup.sourceDigest ?? process.env.AOS_COPY_PROVIDER_SOURCE_DIGEST;
+if (setup.copy.version === 2 || capacitySource) {
+  assert.match(capacitySource, /^[0-9a-f]{64}$/);
   const wasm = await readFile(join(dist, "index.wasm"));
-  assert(wasm.includes(Buffer.from(setup.sourceDigest)), "Actual selected compiled source marker");
+  assert(wasm.includes(Buffer.from(capacitySource)), "Actual selected compiled source marker");
   capacityBinding = `,(name="HUB_PROVIDER_CAPACITY_POLICY",text=${quote(JSON.stringify({
-    version: 1, deployment_id: "fixture-deployment", source_digest: setup.sourceDigest,
-    script_version: `emulated-${setup.sourceDigest}`, maximum_provider_requests: 3,
+    version: 1, deployment_id: "fixture-deployment", source_digest: capacitySource,
+    script_version: `emulated-${capacitySource}`, maximum_provider_requests: 3,
   }))})`;
 }
 let catalogueRace = false;
@@ -179,8 +190,9 @@ async function provider(request, response) {
     response.end(); return;
   }
   if (request.method === "POST" && url.searchParams.has("uploads")) {
-    const sourceKey = key.replace("/objects/destination/", "/objects/source/");
-    assert.notEqual(sourceKey, key);
+    const selectedPrefix = destinationPrefixes.find(prefix => key.startsWith(prefix));
+    assert(selectedPrefix, "Upload belongs to an actual destination placement");
+    const sourceKey = sourcePrefix + key.slice(selectedPrefix.length);
     assert(sourceAliases.has(sourceKey), "Destination belongs to an actual enabled source");
     counters.creates++;
     const upload = `actual-upload-${counters.creates}`;
@@ -232,6 +244,29 @@ await mkdir(join(root, "do-storage"), { mode: 0o700 });
 for (const name of ["shim.mjs", "index.wasm"]) {
   await writeFile(join(root, name), await readFile(join(dist, name)), { flag: "wx", mode: 0o600 });
 }
+const traceProvider = process.env.AOS_COPY_TRACE_PROVIDER === "1";
+if (traceProvider) {
+  // Observe the existing Fetch promise without replacing or consuming its body.
+  // This diagnostic wrapper is local-only; ordinary connected gates use shim.mjs.
+  await writeFile(join(root, "provider-timing.mjs"), `
+export * from "./shim.mjs";
+export { default } from "./shim.mjs";
+const send = globalThis.fetch.bind(globalThis);
+globalThis.fetch = async (...arguments_) => {
+  const started = Date.now();
+  try {
+    const response = await send(...arguments_);
+    console.log("direct_transport_timing phase=provider_response_headers elapsed_millis="
+      + (Date.now() - started) + " success=true");
+    return response;
+  } catch (error) {
+    console.log("direct_transport_timing phase=provider_response_headers elapsed_millis="
+      + (Date.now() - started) + " success=false");
+    throw error;
+  }
+};
+`, { flag: "wx", mode: 0o600 });
+}
 for (const [target, name] of [["ca.crt", "hub-hybrid-fleet-s3-ca.crt"], ["server.crt", "hub-hybrid-fleet-s3.crt"], ["server.key", "hub-hybrid-fleet-s3.key"]]) {
   await writeFile(join(root, target), await readFile(join(tls, name)), { flag: "wx", mode: 0o600 });
 }
@@ -252,7 +287,7 @@ const config :Workerd.Config = (
  sockets=[(name="http",address="127.0.0.1:${workerPort}",http=(),service="main")]
 );
 const main :Workerd.Worker = (
- modules=[(name="shim.mjs",esModule=embed "shim.mjs"),(name="index.wasm",wasm=embed "index.wasm")],
+ modules=[${traceProvider ? '(name="provider-timing.mjs",esModule=embed "provider-timing.mjs"),' : ""}(name="shim.mjs",esModule=embed "shim.mjs"),(name="index.wasm",wasm=embed "index.wasm")],
  compatibilityDate="2024-09-09",compatibilityFlags=["nodejs_compat","enable_request_signal"],globalOutbound="provider",
  durableObjectNamespaces=[(className="ExternalObjectGuard",uniqueKey="copy-guard",enableSql=true),(className="HybridBindingState",uniqueKey="copy-bindings",enableSql=true)],
  durableObjectStorage=(localDisk="do-disk"),

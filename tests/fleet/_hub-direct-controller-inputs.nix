@@ -6,12 +6,13 @@
   runtimeSourceIdentity ? null,
   separateDatabase ? true,
   readRevisionFixture ? null,
+  nativeBodyObservationTools ? null,
 }: let
   aos = import source {};
   spec = import (source + "/tests/fleet/hub-hybrid.nix") {
     inherit (aos) lib pkgs;
     mkSystem = import ./_hub-fixture-system.nix {inherit (aos) mkSystem;};
-    inherit runtimeSourceIdentity separateDatabase readRevisionFixture;
+    inherit runtimeSourceIdentity separateDatabase readRevisionFixture nativeBodyObservationTools;
     externalDirect = true;
     runtimeSource = source;
   };
