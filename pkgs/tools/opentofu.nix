@@ -4,6 +4,7 @@
   mkGoPackage,
   fetchurl,
   fetchGoModules,
+  bash,
   git,
 }: let
   # OpenTofu 1.13.2 requires Go 1.27.3, newer than the self-hosted AOS
@@ -68,8 +69,22 @@ in
     # Module installer and backend tests create local Git repositories, and
     # the credentials-helper test executes a shell script from testdata.
     buildDeps = [git];
+
+    # The local-exec provisioner runs commands through a hard-coded /bin/sh.
+    # Use the source-built shell instead, and update the tests that assert
+    # the interpreter in their expected output.
+    runtimeDeps = [bash];
     postPatch = ''
       patchShebangs internal/command/cliconfig/svcauthconfig/testdata
+
+      for file in \
+        internal/builtin/provisioners/local-exec/resource_provisioner.go \
+        internal/builtin/provisioners/local-exec/resource_provisioner_test.go \
+        internal/command/e2etest/primary_test.go
+      do
+        sed -i 's|\(\[\]string{\)"/bin/sh"|\1"${bash}/bin/sh"|; s|\[\\"/bin/sh\\"|[\\"${bash}/bin/sh\\"|g; s|\["/bin/sh"|["${bash}/bin/sh"|g' "$file"
+        ! grep -q '"/bin/sh\\\?"' "$file"
+      done
     '';
     preBuild = ''
       export HOME="$TMPDIR/home"
