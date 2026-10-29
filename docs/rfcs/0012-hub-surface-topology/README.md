@@ -92,7 +92,7 @@ The resulting topology is:
 | [`08-decisions-and-open-questions.md`](08-decisions-and-open-questions.md) | Locked choices, rejected conflations, and remaining bounded questions |
 | [`09-interface-contracts.md`](09-interface-contracts.md) | Normative Web UI navigation/actions, system-image discovery/downloads, clean-break CLI commands, and Connect-JSON services |
 | [`10-settings-information-architecture.md`](10-settings-information-architecture.md) | Uniform instance/organization/registry/cache settings shell, navbar hierarchy, page ownership, and responsive layout |
-| [`11-web-route-cutover-ledger.md`](11-web-route-cutover-ledger.md) | Exhaustive method+path replacement/deletion ledger for the hard Web UI cutover |
+| [`11-web-route-cutover-ledger.md`](11-web-route-cutover-ledger.md) | Exhaustive method+path replacement/deletion table for the hard Web UI cutover |
 | [`12-topology-cutover-operator-runbook.md`](12-topology-cutover-operator-runbook.md) | Signed one-shot plan, quiescence, backup/restore proof, switch, rollback, and post-cutover GC procedure |
 | [`13-control-plane-parity.md`](13-control-plane-parity.md) | Canonical API ownership, Rust client console, browser and CLI authentication, capability parity, and management-surface cutover |
 | [`14-settings-workflows.md`](14-settings-workflows.md) | Effective settings, guided and advanced access, durable delivery setup, and verified activation |
@@ -100,7 +100,7 @@ The resulting topology is:
 | [`hub-control-plane-capabilities-v1.json`](hub-control-plane-capabilities-v1.json) | Exhaustive API audience classification and CLI/Web ownership contract |
 | [`hub-cli-json-schema-v1.json`](hub-cli-json-schema-v1.json) | JSON Schema for the stable `aos hub --json` success envelope |
 | [`hub-topology-cutover-plan-v1.schema.json`](hub-topology-cutover-plan-v1.schema.json) | Closed schema for the secret-free signed cutover plan |
-| [`hub-topology-cutover-report-v1.schema.json`](hub-topology-cutover-report-v1.schema.json) | Closed schema for success, rollback, and failed-closed execution evidence |
+| [`hub-topology-cutover-report-v1.schema.json`](hub-topology-cutover-report-v1.schema.json) | Closed schema for success, rollback, and failed-closed execution results |
 
 The cutover artifacts use the closed `aos-cutover-schema/v1` dialect defined by
 the checked metaschema and implemented by the offline verifier. Acceptance

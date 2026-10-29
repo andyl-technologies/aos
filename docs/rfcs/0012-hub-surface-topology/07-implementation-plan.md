@@ -175,7 +175,7 @@ created and removed, with no operation changing either of the other two.
 partition target, and the configured number of recent releases remain present
 across GC; removing one shared-cache subscription cannot collect another
 registry's closure; concurrent root/population/inventory change stales the old
-plan; and partial placement deletion never loses presence evidence or reports
+plan; and partial placement deletion never loses presence records or reports
 unconfirmed bytes as reclaimed.
 
 ## Phase 5a: first-class AOS system-image distribution
@@ -320,7 +320,7 @@ CLI `--help`, route inventory, and Web UI routing prove the old topology is
 absent. Any retained external URL is a normal route, not a legacy
 alias or special-case handler.
 
-## Required rename and deletion ledger
+## Required rename and deletion list
 
 The cutover is incomplete until these concepts disappear from steady-state
 source and generated artifacts:
@@ -373,7 +373,7 @@ storage, and Worker Durable Object SQLite/R2 where the runtime supports the bind
 - an authority-free surface is read-only and initial authority creation is
   idempotent;
 - cutover leaves explicitly read-only legacy surfaces authority-free, creates
-  ready authority only from validated unambiguous writable evidence, and
+  ready authority only from validated, unambiguous observations of writability, and
   aborts on unproven declared writability or multiple writer candidates;
 - several complete placements coexist without stored primary/write fields;
 - one observed primary plus complete replicas is derived consistently;
@@ -438,7 +438,7 @@ storage, and Worker Durable Object SQLite/R2 where the runtime supports the bind
 - range requests and conditional requests;
 - canonical change without disabling old route;
 - any route endpoint/target/access/capability update increments the
-  configuration generation, invalidates old probe/access/direct evidence, and
+  configuration generation, invalidates old probe, access, and direct-route results, and
   withholds healthy/canonical advertisement until exact-generation reprobe;
 - endpoint origin or network-realm change requires a replacement endpoint and
   an impact-planned route/gateway move;

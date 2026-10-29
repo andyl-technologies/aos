@@ -112,7 +112,7 @@ does not synthesize effects or call server-side compatibility handlers.
 Login, logout, account security, passkey ceremonies, device approval, and
 public registry browsing remain server-rendered. They are deliberately outside
 the management application boundary and are listed explicitly in the route
-cutover ledger.
+cutover table.
 
 ### End-user system images
 
@@ -1374,7 +1374,7 @@ returned operation is executed by a controller-owned adapter that resolves the
 immutable secret reference and exercises the declared `read`, `write`,
 `delete`, `list`, or `presign` capability against the configured origin. Write
 validation separately records whether create-if-absent semantics were observed.
-Sanitized status evidence is retained on the operation; secret material and
+Sanitized status observations are retained on the operation; secret material and
 signed probe URLs are never persisted. The credential-head observation and its
 named audit/outbox event are committed under the exact head-version CAS.
 
@@ -1386,7 +1386,7 @@ unabortable upload fails closed. The probe token is durable before external I/O,
 so retries recover crashes before the create response, after the upload id, and
 after abort without requiring object-delete or bucket-wide list authority.
 `conditionalWritesSupported` remains false unless a separate adapter can
-produce equally recoverable provider evidence; a successful ordinary write
+produce equally recoverable provider results; a successful ordinary write
 probe never infers conditional semantics.
 
 ### DomainService
@@ -1412,7 +1412,7 @@ creates a durable, generically targeted operation and queues external I/O; it
 requires the exact current resource version plus an idempotency key, and a
 retry resolves to the same operation instead of scheduling duplicate work. It
 never changes observations inline. There is no public reconciliation RPC: the
-native and Worker controllers claim the operation and record evidence directly
+native and Worker controllers claim the operation and record observations directly
 in one lease-version-fenced database transaction.
 
 The controller queries typed A, AAAA, and CNAME records and canonicalizes IP
@@ -1425,7 +1425,7 @@ canonically base64url-encoded Ed25519 envelope. Its signed statement binds the
 nonce, a maximum-30-second issuance window, hostname, exact endpoint id and
 generation, and pinned public-key identity. It does not carry certificate
 fingerprints, provider mode, configuration digests, SANs, or validity dates:
-those would be self-attested because neither portable reqwest nor Worker Fetch
+those would be self-reported because neither portable reqwest nor Worker Fetch
 exposes the live TLS leaf. The successful HTTPS connection independently proves
 public trust, hostname coverage, and current validity for that request.
 
@@ -1447,7 +1447,7 @@ responder explicitly unready until endpoint-generation material is deployed.
 External/CDN terminators must implement this responder contract themselves and
 remain unready until their provider reports the exact generation installed.
 The verified TLS connection and signed responder identity are both required;
-the manifest is readiness configuration, not certificate evidence.
+the manifest is readiness configuration, not an observation of the certificate.
 
 ### NetworkPolicyService
 

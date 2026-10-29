@@ -533,7 +533,7 @@ preflight proves that its legacy destination was intended to be writable, the
 exact credential/capability revision validates, and there is one unambiguous
 writer. An explicitly read-only surface remains authority-free. A declared
 writable surface whose capability cannot be proven, or any surface with
-ambiguous writer evidence, aborts cutover rather than being downgraded or
+ambiguous writer observations, aborts cutover rather than being downgraded or
 guessed. The migration then removes the old fields before the new runtime
 starts; production code never dual-reads both representations.
 
@@ -668,8 +668,8 @@ heads independently.
 
 A shard can therefore be healthy for its partition without being presented as
 a complete endpoint. A degraded placement may remain eligible only while all
-object/publication predicates for the particular request are proven; unknown
-evidence does not become a speculative read. The placement inventory may show
+object/publication predicates for the particular request are proven; an unknown
+observation does not become a speculative read. The placement inventory may show
 the coarser desired read-selection posture, but route selection and
 `ExplainSurfaceRequest` use this complete formula in native and Worker paths.
 
@@ -808,7 +808,7 @@ generation in the same transaction/batch as becoming eligible. Each pin
 composite-FKs to that generation and `state = active`; revocation therefore has
 one winner against pin acquisition and cannot update the grant state until its
 impact plan releases every live pin. A revoked historical row never authorizes
-use, and an active grant without the matching live target pin is not evidence
+use, and an active grant without the matching live target pin does not show
 that a target is serving. Attach/enable/create-default/activate transitions
 acquire pins; detach/disable/move/delete transitions release them atomically.
 
@@ -1774,8 +1774,8 @@ retirement applies the same guard.
 `configuration_digest` covers the normalized endpoint generation, base path,
 surface, mode, exact target/policy/gateway tuple, access-policy digest,
 capabilities, and enabled posture. For an update whose rendered URL remains
-identical, `UpdateRoute` atomically deletes its old probe/access/direct-evidence
-rows, inserts the complete immutable `route_configurations` snapshot,
+identical, `UpdateRoute` atomically deletes its old probe-result, access, and
+direct-route rows, inserts the complete immutable `route_configurations` snapshot,
 increments `configuration_generation`, and writes the new digest under the
 route resource-version plan; old observations then cannot satisfy the composite
 FK. Initial creation portably inserts a disabled route with a null current
@@ -1800,7 +1800,7 @@ not ready and are never projected as an alternate path.
 `DeleteRoute` physically removes the live route after a guarded plan/apply. It
 requires the route to be disabled, non-canonical, absent from every current
 signed stack projection, and free of all live endpoint, gateway, boundary, and
-grant pins. Apply explicitly deletes direct/access evidence, deletes the route
+grant pins. Apply explicitly deletes direct-route and access records, deletes the route
 observation, nulls the current configuration pointer, deletes configuration
 snapshots, and finally deletes the route in that dependency order in one
 transaction/batch. All relevant FKs
@@ -2583,7 +2583,7 @@ manifest digest tuples. A single placement finishing does not make the cache
 inventory complete. Every `present` row carries hash and size derived from the
 bytes read from that exact placement plus a backend-issued strong ETag when the
 backend exposes one; the scanner never copies expected database identity into
-observed evidence without verification. Building observations remain in
+an observation without verification. Building observations remain in
 `cache_inventory_object_observations`; replacing live `object_placements` and
 advancing the generation head are one atomic publication, so a partial scan is
 never visible to GC. Active
@@ -3031,8 +3031,8 @@ row without proving the candidate is fenced and the observed writer is ready.
   `DeleteGateway`
 
 `ExplainRoute` returns the normalized endpoint/realm and grant, selected access
-decision, publication-head/manifest evidence, placement candidates, origin
-credential purpose, path rewrite, and rejection reasons without disclosing
+decision, publication-head and manifest observations, placement candidates,
+origin credential purpose, path rewrite, and rejection reasons without disclosing
 secrets.
 
 Boundary creation accepts a typed identity specification; the service derives

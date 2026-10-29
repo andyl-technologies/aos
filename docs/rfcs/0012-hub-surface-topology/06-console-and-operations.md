@@ -236,7 +236,7 @@ Abandoned/leaked    0 B
 
 Each failed action shows placement, phase, expected object version, attempt and
 next retry. Retry is idempotent. Abandon is a separate destructive review that
-keeps leaked-presence evidence and never increases reclaimed-byte totals.
+keeps the leaked-presence record and never increases reclaimed-byte totals.
 
 ## Setup snippets
 
