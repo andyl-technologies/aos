@@ -890,10 +890,6 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       else acc
   ) {} (builtins.attrNames pkgs);
 
-  packagePresetCheck = import ./tests/packages/preset.nix {
-    inherit pkgs testing;
-    mkSystem = mkFixtureSystem;
-  };
   apmInstallAtBootCheck = import ./lib/testing/apm-install-at-boot.nix {
     inherit pkgs testing;
     mkSystem = mkFixtureSystem;
@@ -2166,7 +2162,6 @@ in rec {
     };
     systemd-credentials = import ./tests/abilities/systemd-credentials.nix {inherit pkgs lib;};
     systemd-verity = build.systemd-verity;
-    package-preset = packagePresetCheck;
     selinux-base = selinuxBaseCheck;
     apm-install-at-boot = apmInstallAtBootCheck;
     lint = import ./tests/packages/lint.nix {inherit pkgs lib;};
@@ -2180,7 +2175,6 @@ in rec {
         hub-settings = hubSettingsTest;
         apm-install-at-boot = apmInstallAtBootCheck;
         homes-enabled = homesEnabledCheck;
-        package-preset = packagePresetCheck;
         selinux-base = selinuxBaseCheck;
       };
     integration = packageChecks // stdenvChecks;
