@@ -74,7 +74,7 @@ in
     };
     pname = "aos-network-ruleset-provider";
 
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "The local native handler version command.";
         operation = "Print the packaged version without accessing the host firewall.";

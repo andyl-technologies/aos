@@ -32,7 +32,7 @@ in
       role = "public-package";
     };
     pname = "libsharpyuv";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "A four-by-four grayscale RGB gradient.";
         operation = "Convert it to full-range YUV through the installed SharpYUV library.";

@@ -71,7 +71,7 @@ in
       role = "public-package";
     };
     pname = "aos-boot-preparation-provider";
-    qualification.packageProbe = lib.qualification.providerExecutableProbe {
+    smokeTest = lib.qualification.providerExecutableProbe {
       name = "aos-boot-preparation-provider";
       entryPoint = "bin/aos-boot-preparation-provider";
     };

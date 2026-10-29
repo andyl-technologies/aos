@@ -211,8 +211,7 @@ pub struct QualificationRequirement {
     pub id: String,
     /// Exact evaluated native-adapter matrix for the matrix requirement.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub native_operation_spec:
-        Option<crate::qualification_evidence::NativeOperationQualificationSpec>,
+    pub native_operation_spec: Option<crate::release_tests::NativeOperationQualificationSpec>,
     /// Restricts a native ability obligation to production-tier destinations.
     #[serde(default, skip_serializing_if = "is_false")]
     pub production_only: bool,
@@ -308,18 +307,18 @@ impl QualificationContract {
         for gate in &self.requirements {
             nonempty_strings(&gate.checks, "acceptance conditions")?;
             claims::merge_measurements(&mut BTreeMap::new(), &gate.measurements)?;
-            if gate.id == crate::qualification_evidence::NATIVE_ADAPTER_MATRIX_REQUIREMENT {
+            if gate.id == crate::release_tests::NATIVE_ADAPTER_MATRIX_REQUIREMENT {
                 let spec = gate.native_operation_spec.as_ref().ok_or_else(|| {
                     anyhow::anyhow!(
                         "native adapter matrix requirement lacks its exact specification"
                     )
                 })?;
-                crate::qualification_evidence::validate_native_operation_qualification_spec(spec)?;
+                crate::release_tests::validate_native_operation_qualification_spec(spec)?;
                 if gate
                     .checks
                     .iter()
                     .filter(|check| {
-                        check.as_str() == crate::qualification_evidence::NATIVE_ADAPTER_MATRIX_CHECK
+                        check.as_str() == crate::release_tests::NATIVE_ADAPTER_MATRIX_CHECK
                     })
                     .count()
                     != 1

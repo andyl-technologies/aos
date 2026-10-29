@@ -8,9 +8,9 @@ use aos_oci_types::{
 
 use super::cursor::{finish_page, page_context, validate_page_size};
 use super::{
-    OciAdminClosureMemberRecord, OciAdminEvidenceRecord, OciAdminLayerRecord,
-    OciAdminManifestRecord, OciAdminPage, OciAdminPlatformRecord, OciAdminProvenanceRecord,
-    OciAdminPublicationRecord, OciAdminReferrerRecord, OciAdminRepositoryRecord,
+    OciAdminClosureMemberRecord, OciAdminLayerRecord, OciAdminManifestRecord, OciAdminPage,
+    OciAdminPlatformRecord, OciAdminProvenanceRecord, OciAdminPublicationRecord,
+    OciAdminReferrerRecord, OciAdminRepositoryRecord, OciAdminRoleReferrerRecord,
     OciAdminTagHistoryRecord, OciAdminTagRecord, OciRepositoryListFilter, OciRetentionPolicyRecord,
     OciTagListFilter,
 };
@@ -1110,7 +1110,7 @@ impl Database {
             )
             .await?
             .iter()
-            .map(row_to_evidence)
+            .map(row_to_role_referrer)
             .collect::<Result<Vec<_>>>()?;
         row_to_provenance(row, closure_members, evidence)
     }
@@ -1300,7 +1300,7 @@ fn row_to_publication(row: &Row) -> Result<OciAdminPublicationRecord> {
 fn row_to_provenance(
     row: &Row,
     closure_members: Vec<OciAdminClosureMemberRecord>,
-    evidence: Vec<OciAdminEvidenceRecord>,
+    evidence: Vec<OciAdminRoleReferrerRecord>,
 ) -> Result<OciAdminProvenanceRecord> {
     Ok(OciAdminProvenanceRecord {
         repository: RepositoryName::parse(&row.get::<String>(0)?)?,
@@ -1327,8 +1327,8 @@ fn row_to_closure_member(row: &Row) -> Result<OciAdminClosureMemberRecord> {
     })
 }
 
-fn row_to_evidence(row: &Row) -> Result<OciAdminEvidenceRecord> {
-    Ok(OciAdminEvidenceRecord {
+fn row_to_role_referrer(row: &Row) -> Result<OciAdminRoleReferrerRecord> {
+    Ok(OciAdminRoleReferrerRecord {
         kind: row.get(0)?,
         digest: Sha256Digest::parse(&row.get::<String>(1)?)?,
         media_type: MediaType::parse(&row.get::<String>(2)?)?,

@@ -20,7 +20,7 @@ in
       role = "public-package";
     };
     pname = "protobuf-c";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "protoc-c validates the declaration and generates both outputs.";

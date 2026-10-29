@@ -18,7 +18,7 @@ in
       role = "public-package";
     };
     pname = "libnetfilter_conntrack";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The object preserves the exact address and port values.";

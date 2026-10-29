@@ -31,7 +31,7 @@ mkDerivation {
     role = "public-package";
   };
   pname = "python3-typogrify";
-  qualification.packageProbe = lib.qualification.commandProbe {
+  smokeTest = lib.qualification.commandProbe {
     primary = {
       input = "Quoted text, a double hyphen, and an acronym.";
       operation = "Transform the text through the installed typogrify filters.";

@@ -34,7 +34,7 @@ in
       role = "public-package";
     };
     pname = "kmod";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Libkmod returns an object retaining the exact module name.";

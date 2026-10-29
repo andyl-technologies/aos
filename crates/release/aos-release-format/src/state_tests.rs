@@ -50,7 +50,7 @@ impl Journal {
             new_state,
             destination: destination.map(str::to_owned),
             operation_ids: Vec::new(),
-            evidence: Vec::new(),
+            attachments: Vec::new(),
             recorded_at: "2026-09-03T00:00:00Z".to_owned(),
         }
     }

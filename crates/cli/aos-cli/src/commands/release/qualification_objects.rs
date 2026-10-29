@@ -18,7 +18,7 @@ use aos_release_format::evidence::{
     QualificationTrustedKey,
 };
 use aos_release_format::manifest::ManifestEnvelopeV1;
-use aos_release_format::qualification_evidence::QualificationPredecessor;
+use aos_release_format::release_tests::QualificationPredecessor;
 use aos_release_format::signing::TrustedEd25519Key;
 use url::Url;
 
@@ -126,7 +126,7 @@ pub(super) fn retained_predecessor(
 /// Lists the retained predecessor objects an update case exercises.
 pub(super) fn predecessor_bundle(
     retained: Option<&RetainedPredecessor>,
-    case: &aos_release_format::qualification_evidence::QualificationCase,
+    case: &aos_release_format::release_tests::ReleaseTest,
 ) -> Result<Option<QualificationRetainedBundle>> {
     let Some(expected) = case.predecessor.as_ref() else {
         return Ok(None);

@@ -54,7 +54,7 @@ in
       role = "public-package";
     };
     pname = "pango";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "The markup <b>AOS</b>.";
         operation = "Build and serialize its text layout.";

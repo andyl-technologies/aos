@@ -20,7 +20,7 @@ in
       role = "public-package";
     };
     pname = "xfsprogs";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Mkfs creates the image and xfs_db reports the canonical XFS magic value.";

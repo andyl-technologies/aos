@@ -47,7 +47,7 @@ in
       role = "public-package";
     };
     pname = "erofs-utils";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The checker accepts the generated read-only filesystem.";

@@ -83,7 +83,7 @@ in
       role = "public-package";
     };
     pname = "libwebp";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "A one-pixel RGBA image.";
         operation = "Compile against the installed WebP library and round-trip the image.";

@@ -2,8 +2,9 @@
 //!
 //! The Nix-built registry selects executable closures; a remote request cannot
 //! supply a command. Scenarios receive the original request on stdin and read
-//! `objects.json` for verified local paths and `downloads.json` for transfer
-//! evidence in their private working directory. Their stdout is a canonical
+//! `objects.json` for local paths in their private working directory. Every
+//! listed object was downloaded and checked against its signed length and
+//! SHA-256 digest before the scenario starts. Their stdout is a canonical
 //! executor response. Every attempt is retained, including failures; the
 //! coordinator still independently validates coverage.
 
@@ -18,8 +19,8 @@ use aos_cli_ui::output::Printer;
 use aos_release_format::Sha256Digest;
 use aos_release_format::canonical;
 use aos_release_format::evidence::{
-    EvidenceRecord, GateResult, QUALIFICATION_EXECUTOR_RESPONSE, QualificationExecutorRequest,
-    QualificationExecutorResponse,
+    Outcome, QUALIFICATION_EXECUTOR_RESPONSE, QualificationExecutorRequest,
+    QualificationExecutorResponse, TestResult,
 };
 use aos_release_format::manifest::{ManifestEnvelopeV1, ReleaseManifestV1};
 use aos_release_format::plan::ReleasePlan;
@@ -27,8 +28,8 @@ use aos_release_format::platform::Platform;
 use aos_release_format::qualification::QualificationPhase;
 use aos_release_format::qualification::claims::CompatibilityAssessment;
 use aos_release_format::qualification::environment::EnvironmentInventory;
-use aos_release_format::qualification_evidence::{
-    CheckObservation, NATIVE_ADAPTER_MATRIX_CHECK, NATIVE_ADAPTER_MATRIX_REQUIREMENT,
+use aos_release_format::release_tests::{
+    CheckResult, NATIVE_ADAPTER_MATRIX_CHECK, NATIVE_ADAPTER_MATRIX_REQUIREMENT,
     NativeAdapterMatrixObservation, QualificationObservation, native_adapter_matrix_check,
     validate_native_adapter_matrix_observation,
 };
@@ -93,7 +94,7 @@ struct ScenarioReport {
     started_at: String,
     finished_at: String,
     observed_seconds: u64,
-    checks: BTreeMap<String, CheckObservation>,
+    checks: BTreeMap<String, CheckResult>,
     operations: BTreeMap<String, u64>,
     #[serde(default)]
     environment: Option<serde_json::Value>,
@@ -103,19 +104,6 @@ struct ScenarioReport {
     capabilities: Option<aos_release_format::qualification::capabilities::CapabilityEvidence>,
     #[serde(default)]
     native_adapter_matrix: Option<NativeAdapterMatrixObservation>,
-}
-
-#[derive(Serialize)]
-struct DownloadTrace {
-    mode: &'static str,
-    requests: Vec<DownloadRequestTrace>,
-}
-
-#[derive(Serialize)]
-struct DownloadRequestTrace {
-    status: u16,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    content_range: Option<String>,
 }
 
 /// Prints the cases one destination's profile selects at a hold point.
@@ -142,12 +130,8 @@ fn cases(args: &ReleaseQualificationCasesArgs, printer: &Printer) -> Result<()> 
     if let Some(destination) = &args.to {
         aos_release_format::plan::parse_destination_name(destination)?;
     }
-    let cases = aos_release_format::qualification_evidence::cases(
-        &plan,
-        &manifest,
-        args.to.as_deref(),
-        phase,
-    )?;
+    let cases =
+        aos_release_format::release_tests::cases(&plan, &manifest, args.to.as_deref(), phase)?;
     let case_digests = cases
         .iter()
         .map(|case| Ok((case.id.clone(), case.digest()?)))
@@ -278,7 +262,7 @@ fn build_response(
         (fields.checks, None)
     };
     let passed = checks.values().all(|check| check.passed);
-    let evidence = EvidenceRecord {
+    let evidence = TestResult {
         qualification: Some(QualificationObservation {
             capabilities: fields.capabilities,
             environment,
@@ -298,9 +282,9 @@ fn build_response(
         platform: case.platform,
         subjects: request.subjects.clone(),
         result: if passed {
-            GateResult::Passed
+            Outcome::Passed
         } else {
-            GateResult::Failed
+            Outcome::Failed
         },
         report_digest: Sha256Digest::of_bytes(&report_bytes),
         authority_id: identity.to_owned(),
@@ -321,7 +305,7 @@ fn build_response(
 
 fn validate_report_fields(
     request: &QualificationExecutorRequest,
-    case: &aos_release_format::qualification_evidence::QualificationCase,
+    case: &aos_release_format::release_tests::ReleaseTest,
     report: &ScenarioReport,
 ) -> Result<()> {
     if report.schema_version != SCENARIO_REPORT {
@@ -481,11 +465,10 @@ async fn execute(args: &ReleaseQualificationExecuteArgs) -> Result<()> {
             .build()?;
         let resumed_artifact = resumed_artifact(&request)?;
         let mut objects = BTreeMap::new();
-        let mut downloads = BTreeMap::new();
         for object in &request.objects {
             let filename = Sha256Digest::of_bytes(object.artifact_id.as_bytes()).hex();
             let path = directory.join(filename);
-            let trace = download_object(
+            download_object(
                 &client,
                 object,
                 &path,
@@ -493,13 +476,8 @@ async fn execute(args: &ReleaseQualificationExecuteArgs) -> Result<()> {
             )
             .await?;
             objects.insert(object.artifact_id.clone(), path);
-            downloads.insert(object.artifact_id.clone(), trace);
         }
         fs::write(directory.join("objects.json"), canonical::to_vec(&objects)?)?;
-        fs::write(
-            directory.join("downloads.json"),
-            canonical::to_vec(&downloads)?,
-        )?;
 
         let predecessor_directory = directory.join("predecessor");
         let mut predecessor_objects = BTreeMap::new();
@@ -617,16 +595,20 @@ fn resumed_artifact(request: &QualificationExecutorRequest) -> Result<Option<Str
         .context("image resume qualification has no resumable subject object")
 }
 
+/// Downloads one signed object and checks its exact length and SHA-256 digest.
+///
+/// With `resume`, the object arrives through two exact HTTP ranges, which is
+/// how an image case exercises interrupted-download recovery. Scenarios rely
+/// on this check and do not hash the objects again.
 async fn download_object(
     client: &reqwest::Client,
     object: &aos_release_format::evidence::QualificationObject,
     path: &Path,
     resume: bool,
-) -> Result<DownloadTrace> {
+) -> Result<()> {
     let mut file = File::options().create_new(true).write(true).open(path)?;
     let mut size = 0_u64;
     let mut hash = Sha256::new();
-    let mut requests = Vec::new();
 
     if resume {
         let first_size = (object.size_bytes / 2).min(1024 * 1024).max(1);
@@ -646,8 +628,7 @@ async fn download_object(
                 .get(CONTENT_RANGE)
                 .context("resumed object download omitted Content-Range")?
                 .to_str()
-                .context("resumed object Content-Range is not ASCII")?
-                .to_owned();
+                .context("resumed object Content-Range is not ASCII")?;
             if content_range != expected_content_range {
                 bail!(
                     "resumed object download for {} returned an unexpected Content-Range",
@@ -663,10 +644,6 @@ async fn download_object(
                 object.size_bytes,
             )
             .await?;
-            requests.push(DownloadRequestTrace {
-                status: reqwest::StatusCode::PARTIAL_CONTENT.as_u16(),
-                content_range: Some(content_range),
-            });
         }
     } else {
         let response = client.get(&object.url).send().await?;
@@ -685,10 +662,6 @@ async fn download_object(
             object.size_bytes,
         )
         .await?;
-        requests.push(DownloadRequestTrace {
-            status: reqwest::StatusCode::OK.as_u16(),
-            content_range: None,
-        });
     }
 
     if size != object.size_bytes
@@ -700,11 +673,7 @@ async fn download_object(
         );
     }
     file.sync_all()?;
-
-    Ok(DownloadTrace {
-        mode: if resume { "range-resume" } else { "complete" },
-        requests,
-    })
+    Ok(())
 }
 
 async fn write_response(
@@ -772,9 +741,9 @@ fn select<'a>(
         .is_some_and(|spec| {
             spec.cohorts.iter().any(|cohort| {
                 cohort.selected_evaluation.role
-                    == aos_release_format::qualification_evidence::NativeEvaluationRole::Scenario
+                    == aos_release_format::release_tests::NativeEvaluationRole::Scenario
                     || cohort.adoption_evaluation.role
-                        == aos_release_format::qualification_evidence::NativeEvaluationRole::Scenario
+                        == aos_release_format::release_tests::NativeEvaluationRole::Scenario
             })
         })
     {
@@ -790,9 +759,9 @@ mod tests {
     const MATRIX_REGISTRY_BYTES: &[u8] =
         br#"{"schema_version":"aos.release.qualification-scenarios/v1"}"#;
 
-    fn package_case() -> aos_release_format::qualification_evidence::QualificationCase {
-        aos_release_format::qualification_evidence::QualificationCase {
-            schema_version: aos_release_format::qualification_evidence::QUALIFICATION_CASE.into(),
+    fn package_case() -> aos_release_format::release_tests::ReleaseTest {
+        aos_release_format::release_tests::ReleaseTest {
+            schema_version: aos_release_format::release_tests::QUALIFICATION_CASE.into(),
             claim: None,
             measurements: BTreeMap::new(),
             minimum_observed_seconds: None,
@@ -867,9 +836,8 @@ mod tests {
         })
     }
 
-    fn matrix_spec() -> Result<aos_release_format::qualification_evidence::NativeAdapterMatrixSpec>
-    {
-        use aos_release_format::qualification_evidence::NativeAdapterSurfaceSpec;
+    fn matrix_spec() -> Result<aos_release_format::release_tests::NativeAdapterMatrixSpec> {
+        use aos_release_format::release_tests::NativeAdapterSurfaceSpec;
 
         let operation = serde_json::json!({"ability":"fixture","name":"ensure"});
         let identity = vec!["fixture", "host", "fixture", "fixture", "ensure", "subject"];
@@ -960,9 +928,9 @@ mod tests {
     }
 
     fn native_operation_spec(
-        matrix_spec: aos_release_format::qualification_evidence::NativeAdapterMatrixSpec,
-    ) -> aos_release_format::qualification_evidence::NativeOperationQualificationSpec {
-        use aos_release_format::qualification_evidence::{
+        matrix_spec: aos_release_format::release_tests::NativeAdapterMatrixSpec,
+    ) -> aos_release_format::release_tests::NativeOperationQualificationSpec {
+        use aos_release_format::release_tests::{
             NativeEvaluationRole, NativeOperationCohortSpec, NativeOperationQualificationSpec,
             NativeSelectedEvaluation,
         };
@@ -988,7 +956,7 @@ mod tests {
         }
     }
 
-    fn matrix_case() -> Result<aos_release_format::qualification_evidence::QualificationCase> {
+    fn matrix_case() -> Result<aos_release_format::release_tests::ReleaseTest> {
         let spec = matrix_spec()?;
         let mut case = package_case();
         case.id = "ability-native-adapter-matrix/release".into();
@@ -998,7 +966,7 @@ mod tests {
         case.checks = vec![NATIVE_ADAPTER_MATRIX_CHECK.into()];
         case.native_operation_spec = Some(native_operation_spec(spec));
         case.predecessor = Some(
-            aos_release_format::qualification_evidence::QualificationPredecessor {
+            aos_release_format::release_tests::QualificationPredecessor {
                 registry: "andyl/testing".into(),
                 release_id: "release-2026.8.0".into(),
                 manifest_digest: Sha256Digest::of_bytes(b"predecessor manifest"),
@@ -1008,7 +976,7 @@ mod tests {
     }
 
     fn matrix_report() -> Result<serde_json::Value> {
-        use aos_release_format::qualification_evidence::{
+        use aos_release_format::release_tests::{
             NATIVE_ADAPTER_MATRIX_OBSERVATION_V1, NativeAdapterCellObservation,
             NativeAdapterMatrixEnvironment, NativeAdapterMatrixEnvironmentStatus,
             NativeAdapterMatrixObservation,
@@ -1051,7 +1019,7 @@ mod tests {
                         .map(|postcondition| {
                             (
                                 postcondition.clone(),
-                                CheckObservation {
+                                CheckResult {
                                     passed: false,
                                     detail: "unqualified fixture cell".into(),
                                 },
@@ -1066,7 +1034,7 @@ mod tests {
             schema_version: NATIVE_ADAPTER_MATRIX_OBSERVATION_V1.into(),
             environment: environment.clone(),
             cohorts: vec![
-                aos_release_format::qualification_evidence::NativeOperationCohortObservation {
+                aos_release_format::release_tests::NativeOperationCohortObservation {
                     id: "synthetic-cohort".into(),
                     matrix_spec: spec.clone(),
                     selected_evaluation: native_operation_spec(spec.clone()).cohorts[0]
@@ -1284,7 +1252,7 @@ mod tests {
     fn update_request_requires_the_verified_predecessor_graph() -> Result<()> {
         let mut request = package_request()?;
         request.qualification_case.predecessor = Some(
-            aos_release_format::qualification_evidence::QualificationPredecessor {
+            aos_release_format::release_tests::QualificationPredecessor {
                 registry: "andyl/experimental".into(),
                 release_id: "qualification-snapshot-2026.9.0".into(),
                 manifest_digest: Sha256Digest::of_bytes(b"predecessor-manifest"),
@@ -1367,7 +1335,7 @@ mod tests {
         let mut claimed = report;
         claimed["checks"] = serde_json::to_value(BTreeMap::from([(
             case.checks[0].clone(),
-            CheckObservation {
+            CheckResult {
                 passed: true,
                 detail: "producer supplied an aggregate status".into(),
             },
@@ -1392,7 +1360,7 @@ mod tests {
             "linux-x86-v1",
         )?;
 
-        assert_eq!(response.evidence.result, GateResult::Failed);
+        assert_eq!(response.evidence.result, Outcome::Failed);
 
         let changed_registry =
             br#"{"schema_version":"aos.release.qualification-scenarios/v1","scenarios":{}}"#;
@@ -1419,7 +1387,7 @@ mod tests {
             .is_err()
         );
 
-        response.evidence.result = GateResult::Passed;
+        response.evidence.result = Outcome::Passed;
         assert!(
             qualification_run::verify_executor_response(&request, "linux-x86-v1", &response,)
                 .is_err()

@@ -22,7 +22,7 @@ in
       role = "public-package";
     };
     pname = "libslirp";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The runtime version matches the public header and exposes a positive state version.";

@@ -17,7 +17,7 @@ in
       role = "public-package";
     };
     pname = "libnftnl";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The table object preserves its family and name attributes.";

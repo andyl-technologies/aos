@@ -36,7 +36,7 @@ in
       role = "public-package";
     };
     pname = "mdbook";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "A one-chapter Markdown book.";
         operation = "Build the book as HTML.";
