@@ -150,7 +150,7 @@ in rec {
           which walks `[Install]` to create runtime symlinks in the
           tmpfs `/etc` upper. The `[Install]` lines are idempotent for
           stage 2 (whose symlinks already exist) but load-bearing for
-          dynamically installed RFC-0001 package targets.
+          dynamically installed package targets.
       '';
     };
 

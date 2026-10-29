@@ -163,8 +163,6 @@ Registry producers and release automation should continue with the
 
 The [runtime abilities guide](../users/aos/runtime-abilities.md) explains module
 composition, generated package artifacts, and deferred execution. The
-[native infrastructure contract](../rfcs/0022-abilities-and-effects/infrastructure-cutover.md)
-identifies implemented entry points and limits; the
-[consumer migration handoff](../rfcs/0022-abilities-and-effects/consumer-migration.md)
-tracks publication, APM, boot/image, and indexed-documentation integrations still
-to be moved. Infrastructure checks alone do not qualify existing OS consumers.
+[engineering notes](../engineering/abilities/README.md) map the implementation,
+its entry points, and its limits. Infrastructure checks alone do not qualify an
+image or its handlers; see [qualification](qualification.md).

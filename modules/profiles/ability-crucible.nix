@@ -1,4 +1,4 @@
-##! Optional RFC-0022 baseline Crucible instrumentation profile.
+##! Optional baseline Crucible instrumentation profile for native abilities.
 ##!
 ##! The profile connects the ordinary native ability executor's protected
 ##! boundary observer to generic Crucible guest markers. It is disabled by

@@ -923,8 +923,8 @@ in rec {
   # .requires / .upholds via `generateUnits`'s symlink farm; the
   # `[Install]` section is redundant-but-safe in that case (systemd's
   # preset/enable mechanism is idempotent if the symlinks already
-  # exist). RFC-0001 package targets rely on this section as the
-  # runtime preset path: the evaluated manifest names the target, and the
+  # exist). Package targets (`aos-pkg-<name>.target`) rely on this section
+  # as the runtime preset path: the evaluated manifest names the target, and the
   # every-boot `aos-preset.service` walks `[Install]` to create the runtime
   # symlink in the tmpfs /etc upper.
   commonUnitText = def: bodyLines: let
@@ -950,9 +950,9 @@ in rec {
   # `generateUnits` assembles symlinks and drop-ins.
 
   targetToUnit = def: let
-    # RFC-0001 package targets are enabled by preset policy at runtime, so
-    # their unit text needs an [Install] section even though the expose
-    # artifact must not carry direct multi-user.target.wants symlinks.
+    # Package targets are enabled by preset policy at runtime, so their unit
+    # text needs an [Install] section even though they must not ship direct
+    # multi-user.target.wants symlinks.
     presetOnlyWantedBy =
       if lib.hasPrefix "aos-pkg-" def.name && lib.hasSuffix ".target" def.name && def.wantedBy == []
       then ["multi-user.target"]

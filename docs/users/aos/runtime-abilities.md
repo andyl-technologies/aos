@@ -7,8 +7,9 @@ data; the Rust runtime executes the selected handlers later.
 
 This guide describes the native package and runtime interface. The examples
 introduce the machinery with a small service contract; production domain
-contracts are documented from their actual module declarations. Implementation
-and qualification progress are tracked in the [migration checklist](../../rfcs/0022-abilities-and-effects/consumer-migration.md).
+contracts are documented from their actual module declarations. The
+[engineering notes](../../engineering/abilities/README.md) describe the
+implementation behind this interface.
 
 ```mermaid
 flowchart LR
@@ -661,7 +662,7 @@ is limited to 64 MiB.
 A process handler implements `apply`, `remove`, and `observe`, accepting a JSON
 invocation on stdin. Apply returns the declared result object; remove returns
 an empty object. Observe reports current results, absence, a safe retry, or an
-indeterminate outcome. See the [execution contract](../../rfcs/0022-abilities-and-effects/execution-contract.md)
+indeterminate outcome. See the [handler process protocol](../../engineering/abilities/execution.md#handler-process-protocol)
 for the wire boundary and source locations.
 
 Logical effect identity includes the installation scope, declaring package,
