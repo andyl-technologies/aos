@@ -24,7 +24,6 @@
   publishSysrootImage = imageFixtures.imageRaw;
   publishSysrootDisk = imageFixtures.imageRawDisk;
   publishSysrootInfo = imageFixtures.imageRawInfo;
-  publishSysrootUki = imageFixtures.imageUki;
   maintainerWorkflowDeps =
     publishDeps
     ++ [
@@ -376,7 +375,6 @@ in {
     publishSysrootImage
     publishSysrootDisk
     publishSysrootInfo
-    publishSysrootUki
     maintainerWorkflowDeps
     setupNixPublishEnv
     setupAltNixPublishEnv

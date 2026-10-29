@@ -12,6 +12,8 @@
   apm,
   pkgs,
 }: let
+  inherit (pkgs) lib;
+
   fixtures = import ./fixtures.nix {
     pkgs = pkgs;
     aosPkg = apm;
@@ -73,7 +75,6 @@
     imageRaw
     imageRawDisk
     imageRawInfo
-    imageUki
     ;
   imageWorkflowDeps =
     fixtures.commonDeps
@@ -90,14 +91,71 @@
       imageQcow2
       imageQcow2Disk
       imageQcow2Info
-      imageUki
     ];
 
-  setupImageRegistryWorkflow = ''
+  # Shell variable stem for each image encoding's fixture store paths.
+  imageVariables = {
+    raw = "RAW";
+    qcow2 = "QCOW2";
+  };
+
+  publishImageGroup = format: let
+    stem = imageVariables.${format};
+  in ''
+    --image-payload "$IMAGE_${stem}_STORE" \
+      --image-disk "$IMAGE_${stem}_DISK_STORE" \
+      --image-info "$IMAGE_${stem}_INFO_STORE" \
+      --image-format ${format} \
+      --image-contract-schema aos.image.metadata/v1 \
+  '';
+
+  assertCatalogedImage = format: let
+    stem = imageVariables.${format};
+  in
+    ''
+      assert_file_contains "$REG_DIR/packages/s/server.toml" \
+        "''${${stem}_HASH}" "published package records ${format} image store hash"
+      assert_file_contains "$REG_DIR/packages/s/server.toml" \
+        "format = \"${format}\"" "published package records ${format} image format"
+      assert_file_contains "$REG_DIR/packages/s/server.toml" \
+        "''${${stem}_INFO_HASH}" "signed ${format} catalog records metadata store identity"
+    ''
+    + lib.optionalString (format == "qcow2") ''
+      assert_file_contains "$REG_DIR/packages/s/server.toml" \
+        '"qemu-kvm"' "signed QCOW2 catalog carries the QEMU target"
+      assert_file_contains "$REG_DIR/packages/s/server.toml" \
+        '"openstack"' "signed QCOW2 catalog carries the OpenStack target"
+    '';
+
+  assertCachedImage = format: let
+    stem = imageVariables.${format};
+  in ''
+    assert_file_exists "/tmp/image-cache/''${${stem}_HASH}.narinfo" \
+      "static cache has ${format} image narinfo"
+    assert_file_exists "/tmp/image-cache/''${${stem}_INFO_HASH}.narinfo" \
+      "static cache has ${format} image metadata narinfo"
+  '';
+
+  assertImageStoreValid = format: let
+    stem = imageVariables.${format};
+  in ''
+    assert_store_valid "$IMAGE_${stem}_DISK_STORE" "${format} image disk"
+    assert_store_valid "$IMAGE_${stem}_INFO_STORE" "${format} image metadata"
+  '';
+
+  # A platform publication binds one provider artifact set, so a check that
+  # downloads one encoding publishes only that encoding.
+  setupImageRegistryWorkflow = formats: ''
     ${fixtures.setupPreamble}
     ${setupNixEnv}
 
     mount -o remount,rw / || true
+
+    # System-scope apm commands require the immutable AOS root identity.
+    mkdir -p /usr/lib/aos/toplevel
+    printf '%s\n' 'ID=aos' 'VERSION_ID=2026.03' \
+      'AOS_PACKAGE_MODULE_LIBRARY=/nix/store/00000000000000000000000000000000-aos-module-library' \
+      > /usr/lib/aos/toplevel/os-release
 
     IMAGE_RAW_STORE="${imageRaw}"
     IMAGE_QCOW2_STORE="${imageQcow2}"
@@ -105,7 +163,6 @@
     IMAGE_RAW_INFO_STORE="${imageRawInfo}"
     IMAGE_QCOW2_DISK_STORE="${imageQcow2Disk}"
     IMAGE_QCOW2_INFO_STORE="${imageQcow2Info}"
-    IMAGE_UKI="${imageUki}/systemd-bootx64.efi"
     SERVER_STORE="${serverToplevel}"
     RAW_HASH=$(basename "$IMAGE_RAW_DISK_STORE" | cut -d- -f1)
     RAW_INFO_HASH=$(basename "$IMAGE_RAW_INFO_STORE" | cut -d- -f1)
@@ -169,17 +226,7 @@
       --license MIT \
       --maintainer image-workflow@example.invalid \
       --sysroot \
-      --image-payload "$IMAGE_RAW_STORE" \
-      --image-disk "$IMAGE_RAW_DISK_STORE" \
-      --image-info "$IMAGE_RAW_INFO_STORE" \
-      --image-format raw \
-      --image-uki "$IMAGE_UKI" \
-      --image-payload "$IMAGE_QCOW2_STORE" \
-      --image-disk "$IMAGE_QCOW2_DISK_STORE" \
-      --image-info "$IMAGE_QCOW2_INFO_STORE" \
-      --image-format qcow2 \
-      --image-uki "$IMAGE_UKI" \
-      --registry image-reg \
+      ${lib.concatMapStrings publishImageGroup formats}--registry image-reg \
       --no-commit
 
     assert_file_contains "$REG_DIR/packages/s/server.toml" \
@@ -187,27 +234,18 @@
     assert_file_contains "$REG_DIR/packages/s/server.toml" \
       "$SERVER_HASH" "published package records server store hash"
     assert_file_contains "$REG_DIR/packages/s/server.toml" \
-      "$RAW_HASH" "published package records raw image store hash"
-    assert_file_contains "$REG_DIR/packages/s/server.toml" \
-      "$QCOW2_HASH" "published package records qcow2 image store hash"
-    assert_file_contains "$REG_DIR/packages/s/server.toml" \
-      "format = \"raw\"" "published package records raw image format"
-    assert_file_contains "$REG_DIR/packages/s/server.toml" \
-      "format = \"qcow2\"" "published package records qcow2 image format"
-    assert_file_contains "$REG_DIR/packages/s/server.toml" \
       "schema_version = 2" "published image catalog requires store-backed delivery"
-    assert_file_contains "$REG_DIR/packages/s/server.toml" \
-      "$RAW_INFO_HASH" "signed raw catalog records metadata store identity"
-    assert_file_contains "$REG_DIR/packages/s/server.toml" \
-      "$QCOW2_INFO_HASH" "signed QCOW2 catalog records metadata store identity"
     assert_file_contains "$REG_DIR/packages/s/server.toml" \
       "application/vnd.aos.image-info+json" \
       "signed catalog carries per-format image-info references"
-    assert_file_contains "$REG_DIR/packages/s/server.toml" \
-      '"qemu-kvm"' "signed QCOW2 catalog carries the QEMU target"
-    assert_file_contains "$REG_DIR/packages/s/server.toml" \
-      '"openstack"' "signed QCOW2 catalog carries the OpenStack target"
-    assert_file_not_exists "$REG_DIR/.git/aos-image-staging" \
+    CONTRACT_SCHEMAS=$(grep -c 'schema = "aos.image.metadata/v1"' \
+      "$REG_DIR/packages/s/server.toml" || true)
+    if [ "$CONTRACT_SCHEMAS" -eq ${toString (builtins.length formats)} ]; then
+      pass "signed catalog binds each image to the provider contract schema"
+    else
+      fail "expected ${toString (builtins.length formats)} provider contract schemas, found $CONTRACT_SCHEMAS"
+    fi
+    ${lib.concatMapStrings assertCatalogedImage formats}    assert_file_not_exists "$REG_DIR/.git/aos-image-staging" \
       "publisher does not create a parallel direct-image plane"
 
     $APR cache generate \
@@ -218,15 +256,7 @@
       --no-commit
     assert_file_exists "/tmp/image-cache/$SERVER_HASH.narinfo" \
       "static cache has server narinfo"
-    assert_file_exists "/tmp/image-cache/$RAW_HASH.narinfo" \
-      "static cache has raw image narinfo"
-    assert_file_exists "/tmp/image-cache/$RAW_INFO_HASH.narinfo" \
-      "static cache has raw image metadata narinfo"
-    assert_file_exists "/tmp/image-cache/$QCOW2_HASH.narinfo" \
-      "static cache has qcow2 image narinfo"
-    assert_file_exists "/tmp/image-cache/$QCOW2_INFO_HASH.narinfo" \
-      "static cache has qcow2 image metadata narinfo"
-    assert_dir_exists "/tmp/image-cache/nar" "static cache has NAR directory"
+    ${lib.concatMapStrings assertCachedImage formats}    assert_dir_exists "/tmp/image-cache/nar" "static cache has NAR directory"
     assert_file_contains "$REG_DIR/registry.toml" \
       "http://127.0.0.1:18084" "registry records cache URL"
 
@@ -271,7 +301,8 @@
       "apm show displays server version"
     assert_file_contains /tmp/image-show.out "Sysroot.*yes" \
       "apm show displays sysroot designation"
-    assert_file_contains /tmp/image-show.out "Image formats.*raw, qcow2" \
+    assert_file_contains /tmp/image-show.out \
+      "Image formats.*${lib.concatStringsSep ", " formats}" \
       "apm show displays available image formats"
 
     echo "==> Consumer: sync system registry for apm image download"
@@ -289,11 +320,7 @@
     ln -sfn /var/lib/apm/registries/image-reg /var/lib/apm/remote/image-reg
 
     assert_store_valid "$SERVER_STORE" "server sysroot"
-    assert_store_valid "$IMAGE_RAW_DISK_STORE" "raw image disk"
-    assert_store_valid "$IMAGE_RAW_INFO_STORE" "raw image metadata"
-    assert_store_valid "$IMAGE_QCOW2_DISK_STORE" "qcow2 image disk"
-    assert_store_valid "$IMAGE_QCOW2_INFO_STORE" "qcow2 image metadata"
-  '';
+    ${lib.concatMapStrings assertImageStoreValid formats}  '';
 
   mkImagePullTest = {
     format,
@@ -307,7 +334,7 @@
       rootfsDeps = imageWorkflowDeps;
       memory = 1024;
       testScript = ''
-        ${setupImageRegistryWorkflow}
+        ${setupImageRegistryWorkflow [format]}
 
         echo "==> Test: apm image download server --format ${format}"
         $APM image download server --system --registry image-reg --format ${format} \
@@ -388,7 +415,7 @@ in {
     rootfsDeps = imageWorkflowDeps;
     memory = 1024;
     testScript = ''
-      ${setupImageRegistryWorkflow}
+      ${setupImageRegistryWorkflow ["raw" "qcow2"]}
 
       assert_file_not_contains() {
         if grep -q "$2" "$1" 2>/dev/null; then
