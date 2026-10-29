@@ -41,7 +41,7 @@ impl DispatchIdentity {
     }
 }
 
-/// Projects one digest-verified, state-machine-checked journal frame.
+/// Projects one checksum-verified, state-machine-checked journal frame.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InspectionRecord {
@@ -86,14 +86,16 @@ pub struct RetainedEffect {
     pub outputs: Value,
 }
 
-/// Reports durable activation state without claiming live-state verification.
+/// Reports durable activation state recorded in the journal.
+///
+/// Every field is replayed from journal records. Inspection never queries the
+/// live resources those records describe, so retained outputs are previous
+/// handler results rather than verified current state.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActivationInspection {
     /// Names the native inspection format.
     pub schema: &'static str,
-    /// Explicitly distinguishes retained results from live observations.
-    pub live_state_verified: bool,
     /// Reports an incomplete final frame without modifying the journal.
     pub incomplete_tail_bytes: u64,
     /// Names the active transaction, if any.
@@ -133,14 +135,14 @@ impl ActivationInspection {
 
 /// Reports a checked observed prefix while the controller may still be running.
 ///
-/// The observation does not establish writer synchronization, cross-journal
-/// publication consistency, or the current state of external resources. Its
-/// private inspection has no retained-invocation authority accessor.
+/// The observation is a prefix read without the journal lock. It does not
+/// establish writer synchronization, cross-journal publication consistency,
+/// or the current state of external resources. Its private inspection has no
+/// retained-invocation authority accessor. It serializes exactly like
+/// [`ActivationInspection`].
 #[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(transparent)]
 pub struct ActivationObservation {
-    read_consistency: &'static str,
-    #[serde(flatten)]
     inspection: ActivationInspection,
 }
 
@@ -155,9 +157,8 @@ pub struct ActivationObservation {
 /// Returns an error for insecure files, exceeded limits, shrinking input,
 /// complete-frame corruption, or invalid native activation ordering or schemas.
 pub fn observe(path: impl AsRef<Path>, limits: JournalLimits) -> Result<ActivationObservation> {
-    let snapshot = FileJournal::<Event>::observe_snapshot(path, limits)?;
+    let snapshot = FileJournal::<Event>::read_unlocked(path, limits)?;
     Ok(ActivationObservation {
-        read_consistency: "observed-prefix",
         inspection: project_snapshot(snapshot)?,
     })
 }
@@ -171,7 +172,7 @@ pub fn observe(path: impl AsRef<Path>, limits: JournalLimits) -> Result<Activati
 /// Returns an error for insecure files, lock contention, corruption, exceeded
 /// limits, or any record that violates native activation ordering or schemas.
 pub fn inspect(path: impl AsRef<Path>, limits: JournalLimits) -> Result<ActivationInspection> {
-    let snapshot = FileJournal::<Event>::read_only_snapshot(path, limits)?;
+    let snapshot = FileJournal::<Event>::read_locked(path, limits)?.into_snapshot();
     project_snapshot(snapshot)
 }
 
@@ -256,7 +257,6 @@ fn project_snapshot(snapshot: JournalSnapshot<Event>) -> Result<ActivationInspec
     Ok(ActivationInspection {
         retired_effects: state.retired.clone(),
         schema: "aos.activation.inspection",
-        live_state_verified: false,
         incomplete_tail_bytes,
         pending: state
             .pending
@@ -393,12 +393,10 @@ mod tests {
 
         let observed = serde_json::to_value(observe(&path, JournalLimits::default())?)?;
 
-        assert_eq!(observed["readConsistency"], "observed-prefix");
         assert_eq!(observed["transaction"], "held");
         assert_eq!(observed["pending"]["journalSequence"], 2);
         assert_eq!(observed["pending"]["action"], "apply");
         assert_eq!(observed["pending"], observed["records"][1]["dispatch"]);
-        assert_eq!(observed["liveStateVerified"], false);
         assert!(observed["completed"].is_null());
         assert!(inspect(&path, JournalLimits::default()).is_err());
         assert!(Activation::open(&path, JournalLimits::default()).is_err());
@@ -443,7 +441,6 @@ mod tests {
         assert!(pending.completed.is_none());
         assert!(pending.retained_outputs.is_empty());
         assert!(pending.retained_effects().is_empty());
-        assert!(!pending.live_state_verified);
         assert_eq!(fs::read(&path)?, before);
 
         host.halt_boundary = None;
