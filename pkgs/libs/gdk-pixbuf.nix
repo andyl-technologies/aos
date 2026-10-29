@@ -94,7 +94,7 @@ in
       role = "public-package";
     };
     pname = "gdk-pixbuf";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "A one-pixel red RGBA PNG image.";
         operation = "Decode the image and emit its GdkPixdata C representation.";

@@ -19,7 +19,7 @@ in
       role = "public-package";
     };
     pname = "tcl";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Tcl prints the exact integer result 42.";

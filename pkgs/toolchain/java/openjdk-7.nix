@@ -180,7 +180,7 @@ in
       role = "public-package";
     };
     pname = "openjdk-7";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The packaged toolchain produces runnable bytecode that prints 42.";

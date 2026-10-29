@@ -41,7 +41,7 @@ in
       role = "public-package";
     };
     pname = "nginx";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Nginx reports successful configuration validation.";

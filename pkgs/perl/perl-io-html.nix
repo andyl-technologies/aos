@@ -32,7 +32,7 @@ in
       role = "public-package";
     };
     pname = "perl-io-html";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The module normalizes the declaration to utf-8-strict.";

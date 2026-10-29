@@ -25,7 +25,7 @@ in
       role = "public-package";
     };
     pname = "btrfs-progs";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Mkfs writes a valid filesystem that dump-super can decode.";

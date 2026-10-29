@@ -65,7 +65,7 @@ in
       role = "public-package";
     };
     pname = "gc";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The public API returns the expected value and the consumer prints the fixed success line.";

@@ -27,7 +27,7 @@ in
     pname = "glibc-locales";
     module = ./_glibc-locales;
 
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The locale is available and decodes U+00E9 from exactly two bytes.";

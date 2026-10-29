@@ -23,7 +23,7 @@ in
       role = "public-package";
     };
     pname = "delve";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Delve returns success and identifies its debugger version.";

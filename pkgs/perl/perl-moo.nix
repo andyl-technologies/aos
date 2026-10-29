@@ -36,7 +36,7 @@ in
       role = "public-package";
     };
     pname = "perl-moo";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Moo initializes the attribute and the method returns qualified.";

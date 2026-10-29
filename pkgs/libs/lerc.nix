@@ -36,7 +36,7 @@ in
       role = "public-package";
     };
     pname = "lerc";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "A two-by-two unsigned-byte raster tile.";
         operation = "Compress and decompress the tile through Lerc's C API.";

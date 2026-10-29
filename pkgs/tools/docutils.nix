@@ -35,7 +35,7 @@ in
       role = "public-package";
     };
     pname = "docutils";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Docutils emits a successful document-tree representation.";

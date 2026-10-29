@@ -49,7 +49,7 @@ in
       role = "public-package";
     };
     pname = "doxygen";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "A documented C header and a minimal Doxygen configuration.";
         operation = "Generate HTML API documentation with the installed Doxygen executable.";

@@ -62,7 +62,7 @@ in
       role = "public-package";
     };
     pname = "nghttp2";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "nghttp2 accepts the RFC-compatible header name.";

@@ -32,7 +32,7 @@ in
       role = "public-package";
     };
     pname = "perl-uri";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The URI resolves to /a/qualified, lowercases the host, and retains the query.";

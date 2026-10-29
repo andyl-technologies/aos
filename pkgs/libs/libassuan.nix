@@ -18,7 +18,7 @@ in
       role = "public-package";
     };
     pname = "libassuan";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Libassuan returns a usable context without an error.";

@@ -10,7 +10,7 @@ use crate::manifest::ReleaseManifestV1;
 use crate::plan::ReleasePlan;
 use crate::platform::{MatrixCell, Platform};
 use crate::qualification::{QualificationContract, QualificationPhase};
-use crate::qualification_evidence::cases;
+use crate::release_tests::cases;
 use crate::verify::tests::{
     EDGE, current_contract, qualification_fixture, rebind, testing_fixture,
 };

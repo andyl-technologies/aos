@@ -27,7 +27,7 @@ in
       role = "public-package";
     };
     pname = "gtk-doc";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Gtk-doc records the public function in the generated declaration list.";

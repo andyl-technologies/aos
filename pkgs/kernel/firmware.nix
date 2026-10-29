@@ -15,7 +15,7 @@ in
       role = "public-package";
     };
     pname = "firmware";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "WHENCE identifies upstream firmware and the selected tree contains many payload files.";

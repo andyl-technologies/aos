@@ -23,7 +23,7 @@ in
       role = "public-package";
     };
     pname = "docker-buildx";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Buildx returns JSON with the declared context, Dockerfile, and tag.";

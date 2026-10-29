@@ -16,7 +16,7 @@ in
       role = "public-package";
     };
     pname = "patchelf";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "patchelf reports the exact newly stored RPATH.";

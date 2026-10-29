@@ -68,7 +68,7 @@ in
     ];
 
     module = ./_ability-package-smoke;
-    qualification.packageProbe = qualification.packageProbe {
+    smokeTest = qualification.packageProbe {
       primary = operation {
         input = "The installed package output.";
         expected = "The package contains its fixture marker.";

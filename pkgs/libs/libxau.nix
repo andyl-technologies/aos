@@ -81,7 +81,7 @@ in
       role = "public-package";
     };
     pname = "libxau";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "An X authorization record with a four-byte cookie.";
         operation = "Write and read the record through libXau.";
