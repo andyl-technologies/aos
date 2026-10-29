@@ -17,7 +17,7 @@ use aos_oci_types::{
     Annotations, CONTAINER_DSSE_SIGNATURE_NAMESPACE, CONTAINER_RELEASE_SCHEMA_VERSION,
     CONTAINER_RELEASE_SIDECAR_PATH, CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE,
     CONTAINER_SIGNATURE_INPUT_SCHEMA, ContainerDsseEnvelope, ContainerDsseSignature,
-    ContainerRelease, ContainerReleaseEvidence, ContainerSignatureInput, Descriptor, ImageIndex,
+    ContainerReferrers, ContainerRelease, ContainerSignatureInput, Descriptor, ImageIndex,
     ImageManifest, MediaType, Sha256Digest, to_canonical_json,
 };
 use base64::Engine as _;
@@ -513,7 +513,7 @@ fn signed_release(
         identity: input.identity.clone(),
         oci: input.oci.clone(),
         nix: input.nix.clone(),
-        evidence: ContainerReleaseEvidence {
+        evidence: ContainerReferrers {
             abilities: input.evidence.abilities.clone(),
             sbom: input.evidence.sbom.clone(),
             source: input.evidence.source.clone(),

@@ -5,10 +5,10 @@
 use aos_oci_types::limits::SCHEMA_VERSION;
 use aos_oci_types::{
     Annotations, CONTAINER_RELEASE_SCHEMA_VERSION, ContainerNixProvenance, ContainerOciRelease,
-    ContainerRelease, ContainerReleaseEvidence, ContainerReleaseIdentity, Descriptor,
-    DistributionError, DistributionErrorCode, DistributionErrorEnvelope, HistoryEntry, ImageConfig,
-    ImageIndex, ImageManifest, ImageRuntimeConfig, MediaType, NixDefinitionIdentity,
-    NixOutputIdentity, Platform, RootFs, RootFsType, Sha256Digest, to_canonical_json,
+    ContainerReferrers, ContainerRelease, ContainerReleaseIdentity, Descriptor, DistributionError,
+    DistributionErrorCode, DistributionErrorEnvelope, HistoryEntry, ImageConfig, ImageIndex,
+    ImageManifest, ImageRuntimeConfig, MediaType, NixDefinitionIdentity, NixOutputIdentity,
+    Platform, RootFs, RootFsType, Sha256Digest, to_canonical_json,
 };
 
 fn descriptor(media_type: MediaType, content: &[u8]) -> Descriptor {
@@ -174,7 +174,7 @@ fn golden_container_release() -> ContainerRelease {
             },
             closure: artifact_descriptor(MediaType::AosNixClosure, b"closure"),
         },
-        evidence: ContainerReleaseEvidence {
+        evidence: ContainerReferrers {
             abilities: artifact_descriptor(MediaType::AosContainerStaticAbilities, b"abilities"),
             sbom: artifact_descriptor(MediaType::SpdxJson, b"sbom"),
             source: artifact_descriptor(MediaType::AosSourceClosure, b"source"),

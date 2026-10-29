@@ -3324,10 +3324,10 @@ mod tests {
     use aos_hub_db::db::Database;
     use aos_oci_types::{
         to_canonical_json, Annotations, ContainerDsseSignature, ContainerNixProvenance,
-        ContainerOciRelease, ContainerReleaseEvidence, ContainerReleaseIdentity,
-        ContainerSignatureInput, ContainerSignatureInputEvidence, NixDefinitionIdentity,
-        NixOutputIdentity, Platform, CONTAINER_RELEASE_SCHEMA_VERSION,
-        CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE, CONTAINER_SIGNATURE_INPUT_SCHEMA,
+        ContainerOciRelease, ContainerReferrers, ContainerReleaseIdentity, ContainerSignatureInput,
+        ContainerSignatureInputEvidence, NixDefinitionIdentity, NixOutputIdentity, Platform,
+        CONTAINER_RELEASE_SCHEMA_VERSION, CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE,
+        CONTAINER_SIGNATURE_INPUT_SCHEMA,
     };
 
     fn container_descriptor(media_type: MediaType, label: &str) -> Descriptor {
@@ -3373,7 +3373,7 @@ mod tests {
             },
             closure: evidence(MediaType::AosNixClosure, "closure"),
         };
-        let release_evidence = ContainerReleaseEvidence {
+        let release_evidence = ContainerReferrers {
             abilities: evidence(MediaType::AosContainerStaticAbilities, "abilities"),
             sbom: evidence(MediaType::SpdxJson, "sbom"),
             source: evidence(MediaType::AosSourceClosure, "source"),

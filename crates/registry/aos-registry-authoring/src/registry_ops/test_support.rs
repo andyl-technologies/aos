@@ -18,7 +18,7 @@ use anyhow::{Context, Result};
 use aos_nix_cache::AuthOptions;
 use aos_oci_types::{
     Annotations, CONTAINER_RELEASE_SCHEMA_VERSION, CONTAINER_SIGNATURE_INPUT_SCHEMA,
-    ContainerNixProvenance, ContainerOciRelease, ContainerRelease, ContainerReleaseEvidence,
+    ContainerNixProvenance, ContainerOciRelease, ContainerReferrers, ContainerRelease,
     ContainerReleaseIdentity, ContainerSignatureInput, ContainerSignatureInputEvidence, Descriptor,
     MediaType, NixDefinitionIdentity, NixOutputIdentity, Platform, Sha256Digest,
 };
@@ -254,7 +254,7 @@ pub(in crate::registry_ops) fn container_release_inputs(
             },
             closure: evidence_descriptor(MediaType::AosNixClosure, "closure"),
         },
-        evidence: ContainerReleaseEvidence {
+        evidence: ContainerReferrers {
             abilities: evidence_descriptor(MediaType::AosContainerStaticAbilities, "abilities"),
             sbom: evidence_descriptor(MediaType::SpdxJson, "sbom"),
             source: evidence_descriptor(MediaType::AosSourceClosure, "source"),

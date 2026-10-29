@@ -10,7 +10,7 @@ use std::path::Path;
 use aos_oci_types::{
     Annotations, CONTAINER_RELEASE_SCHEMA_VERSION, CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE,
     CONTAINER_SIGNATURE_INPUT_SCHEMA, ContainerNixProvenance, ContainerOciRelease,
-    ContainerRelease, ContainerReleaseEvidence, ContainerReleaseIdentity, ContainerSignatureInput,
+    ContainerReferrers, ContainerRelease, ContainerReleaseIdentity, ContainerSignatureInput,
     ContainerSignatureInputEvidence, Descriptor, HistoryEntry, ImageConfig, ImageIndex,
     ImageManifest, ImageRuntimeConfig, MediaType, NixDefinitionIdentity, NixOutputIdentity,
     Platform, RootFs, RootFsType, Sha256Digest, to_canonical_json,
@@ -261,7 +261,7 @@ pub fn add_signed_release_graph(fixture: &Fixture) -> ContainerRelease {
             },
             closure: artifact("closure", MediaType::AosNixClosure),
         },
-        evidence: ContainerReleaseEvidence {
+        evidence: ContainerReferrers {
             abilities: artifact("abilities", MediaType::AosContainerStaticAbilities),
             sbom: artifact("sbom", MediaType::SpdxJson),
             source: artifact("source", MediaType::AosSourceClosure),

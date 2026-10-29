@@ -647,7 +647,7 @@ fn parse_container_release(bytes: &[u8]) -> Result<LoadedContainerRelease> {
 mod container_release_tests {
     use super::*;
     use aos_oci_types::{
-        Annotations, ContainerNixProvenance, ContainerOciRelease, ContainerReleaseEvidence,
+        Annotations, ContainerNixProvenance, ContainerOciRelease, ContainerReferrers,
         ContainerReleaseIdentity, Descriptor, MediaType, NixDefinitionIdentity, NixOutputIdentity,
         Platform, Sha256Digest, CONTAINER_RELEASE_SCHEMA_VERSION,
     };
@@ -701,7 +701,7 @@ mod container_release_tests {
                 },
                 closure: evidence_descriptor(MediaType::AosNixClosure, "closure"),
             },
-            evidence: ContainerReleaseEvidence {
+            evidence: ContainerReferrers {
                 abilities: evidence_descriptor(MediaType::AosContainerStaticAbilities, "abilities"),
                 sbom: evidence_descriptor(MediaType::SpdxJson, "sbom"),
                 source: evidence_descriptor(MediaType::AosSourceClosure, "source"),

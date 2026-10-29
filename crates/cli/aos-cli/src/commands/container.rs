@@ -1969,8 +1969,8 @@ mod tests {
     use super::*;
     use aos_oci_types::{
         Annotations, CONTAINER_RELEASE_SCHEMA_VERSION, ContainerNixProvenance, ContainerOciRelease,
-        ContainerReleaseEvidence, ContainerReleaseIdentity, Descriptor, MediaType,
-        NixDefinitionIdentity, NixOutputIdentity, Platform,
+        ContainerReferrers, ContainerReleaseIdentity, Descriptor, MediaType, NixDefinitionIdentity,
+        NixOutputIdentity, Platform,
     };
     use axum::Router;
     use axum::body::{Body, to_bytes};
@@ -2439,7 +2439,7 @@ mod tests {
                 },
                 closure: evidence_descriptor(MediaType::AosNixClosure, "closure"),
             },
-            evidence: ContainerReleaseEvidence {
+            evidence: ContainerReferrers {
                 abilities: evidence_descriptor(MediaType::AosContainerStaticAbilities, "abilities"),
                 sbom: evidence_descriptor(MediaType::SpdxJson, "sbom"),
                 source: evidence_descriptor(MediaType::AosSourceClosure, "source"),

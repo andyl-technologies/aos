@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use aos_nix_cache::AuthOptions;
 use aos_oci_types::{
     Annotations, CONTAINER_RELEASE_SCHEMA_VERSION, ContainerNixProvenance, ContainerOciRelease,
-    ContainerRelease, ContainerReleaseEvidence, ContainerReleaseIdentity, Descriptor, MediaType,
+    ContainerReferrers, ContainerRelease, ContainerReleaseIdentity, Descriptor, MediaType,
     NixDefinitionIdentity, NixOutputIdentity, Platform, Sha256Digest, to_canonical_json,
 };
 use aos_registry_authoring::registry::static_upload;
@@ -71,7 +71,7 @@ fn container_release_attachment(version: &str) -> Result<ContainerReleaseAttachm
             },
             closure: evidence_descriptor(MediaType::AosNixClosure, "closure"),
         },
-        evidence: ContainerReleaseEvidence {
+        evidence: ContainerReferrers {
             abilities: evidence_descriptor(MediaType::AosContainerStaticAbilities, "abilities"),
             sbom: evidence_descriptor(MediaType::SpdxJson, "sbom"),
             source: evidence_descriptor(MediaType::AosSourceClosure, "source"),

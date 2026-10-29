@@ -117,7 +117,7 @@ pub struct ContainerRelease {
     /// Static ability evidence is retained as an opaque OCI descriptor here.
     /// Launch admission must parse its payload, verify the image binding, and
     /// discharge every external obligation before granting runtime authority.
-    pub evidence: ContainerReleaseEvidence,
+    pub evidence: ContainerReferrers,
 }
 
 impl ContainerRelease {
@@ -517,7 +517,7 @@ impl ContainerSignatureInputEvidence {
         )
     }
 
-    fn matches(&self, evidence: &ContainerReleaseEvidence) -> bool {
+    fn matches(&self, evidence: &ContainerReferrers) -> bool {
         self.abilities == evidence.abilities
             && self.sbom == evidence.sbom
             && self.source == evidence.source
@@ -721,10 +721,10 @@ impl NixOutputIdentity {
     }
 }
 
-/// Required evidence referrers for a signed AOS container release.
+/// Referrer descriptors required for a signed AOS container release.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ContainerReleaseEvidence {
+pub struct ContainerReferrers {
     /// OCI referrer manifest retaining static abilities and launch obligations.
     ///
     /// This descriptor is archival evidence. It does not itself grant an
@@ -748,7 +748,7 @@ pub struct ContainerReleaseEvidence {
     pub signature: Descriptor,
 }
 
-impl ContainerReleaseEvidence {
+impl ContainerReferrers {
     /// Validates all mandatory evidence descriptor roles.
     ///
     /// # Errors
@@ -1273,7 +1273,7 @@ mod tests {
                 },
                 closure: evidence_descriptor(MediaType::AosNixClosure, "closure"),
             },
-            evidence: ContainerReleaseEvidence {
+            evidence: ContainerReferrers {
                 abilities: evidence_descriptor(MediaType::AosContainerStaticAbilities, "abilities"),
                 sbom: evidence_descriptor(MediaType::SpdxJson, "sbom"),
                 source: evidence_descriptor(MediaType::AosSourceClosure, "source"),

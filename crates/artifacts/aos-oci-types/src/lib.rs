@@ -58,7 +58,7 @@ pub use release::{
     CONTAINER_DSSE_SIGNATURE_NAMESPACE, CONTAINER_RELEASE_SCHEMA_VERSION,
     CONTAINER_RELEASE_SIDECAR_PATH, CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE,
     CONTAINER_SIGNATURE_INPUT_SCHEMA, ContainerDsseEnvelope, ContainerDsseSignature,
-    ContainerNixProvenance, ContainerOciRelease, ContainerRelease, ContainerReleaseEvidence,
+    ContainerNixProvenance, ContainerOciRelease, ContainerReferrers, ContainerRelease,
     ContainerReleaseIdentity, ContainerSignatureInput, ContainerSignatureInputEvidence,
     NixDefinitionIdentity, NixOutputIdentity, definition_attribute_matches_image,
 };
