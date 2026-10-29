@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.gates.typedChoice",
-  taskIds ? ["T-CAM-2.1" "T-CAM-2.2" "T-CAM-2.3" "T-CAM-2.4" "T-CAM-2.5" "T-CAM-2.7"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -17,7 +16,6 @@ in
 
     buildDeps = [pkgs.coreutils pkgs.rust pkgs.pkg-config pkgs.sqlite];
     ATTR_PATH = attrPath;
-    TASK_IDS = builtins.concatStringsSep "," taskIds;
     DEPENDENCY_PATHS = builtins.concatStringsSep ":" dependencies;
 
     phases = [
@@ -107,7 +105,6 @@ in
             printf 'PASS\n'
             printf 'gate=gate:typed-choice\n'
             printf 'attr_path=%s\n' "$ATTR_PATH"
-            printf 'task_ids=%s\n' "$TASK_IDS"
             printf 'scope=typed-domain,selection-replay,live-network-selection,preemption-selection,guest-selectable-codec\n'
           } > "$out/result"
         '';

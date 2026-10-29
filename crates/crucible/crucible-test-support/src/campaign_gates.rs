@@ -1,10 +1,10 @@
-//! Executable gate contracts for RFC-0020 campaign requirements.
+//! Executable gate contracts for Crucible campaign gates.
 //!
-//! RFC-0020 defines gates beyond the canonical determinism gate catalog.
+//! Campaign gates extend the canonical determinism gate catalog.
 //! This registry records whether each campaign gate has an isolable automated
 //! target wired to a Nix check.
 
-/// The executable contract attached to an RFC-0020 gate.
+/// The executable contract attached to a campaign gate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CampaignGateContract {
     /// One or more isolable Cargo targets or product flights wired to a Nix check.
@@ -97,7 +97,7 @@ const fn integration_target(
     }
 }
 
-/// A canonical gate referenced by RFC-0020 requirement traceability.
+/// A canonical campaign gate and its executable contract.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CampaignGateSpec {
     /// Canonical gate name, including the `gate:` prefix.
@@ -384,7 +384,7 @@ const CAMPAIGN_ENVOY_PRODUCT_NIX_SOURCES: &[&str] = &[
     "tests/crucible/phase9-campaign-envoy-product-lifecycle.nix",
 ];
 
-/// Canonical RFC-0020 campaign gate catalog.
+/// Canonical campaign gate catalog.
 pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
     automated(
         "gate:abi-conformance",
@@ -955,7 +955,6 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
                 runner: "campaign-store-process-flight",
                 evidence: &[
                     "gate=gate:campaign-packaged-lifecycle",
-                    "tasks=T-CAM-4.8",
                     "campaign_lifecycle_lazy_widening=true",
                     "campaign_lifecycle_finite_branch_deduplication=true",
                     "campaign_lifecycle_live_status_explanation=true",
@@ -983,13 +982,13 @@ pub const CAMPAIGN_GATES: &[CampaignGateSpec] = &[
     ),
 ];
 
-/// Returns every RFC-0020 gate in stable lexical order.
+/// Returns every campaign gate in stable lexical order.
 #[must_use]
 pub fn campaign_gates() -> &'static [CampaignGateSpec] {
     CAMPAIGN_GATES
 }
 
-/// Finds an RFC-0020 gate by its canonical name.
+/// Finds a campaign gate by its canonical name.
 #[must_use]
 pub fn find_campaign_gate(name: &str) -> Option<&'static CampaignGateSpec> {
     CAMPAIGN_GATES.iter().find(|gate| gate.name == name)

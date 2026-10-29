@@ -1,4 +1,4 @@
-//! Checks the T-OBS-3 open-set event-log payload projection.
+//! Checks the open-set event-log payload projection.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.

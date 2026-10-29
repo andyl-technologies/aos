@@ -647,7 +647,7 @@ pub fn ordered_scheduled_events(events: &[ScheduledEvent]) -> Vec<&ScheduledEven
 /// Frame (backend-input) deliveries and device [`IoCompletion`] events are both
 /// cross-node happenings resolved at a node's advanced frontier; this folds them
 /// into one canonically ordered list keyed by `(virtual_time, consumer, producer,
-/// sequence)` ([SCHED-29], [SCHED-33]). When no device completion is due the
+/// sequence)`. When no device completion is due the
 /// frame list is returned unchanged, so the no-device path is byte-identical to
 /// before the device seam existed.
 #[must_use]

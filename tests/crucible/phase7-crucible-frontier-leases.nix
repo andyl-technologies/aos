@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.crucibleFrontierLeases",
-  taskIds ? ["T-DCE-2"],
   dependencies ? [],
 }: let
   distributedExplorationDoc = builtins.readFile ../../docs/engineering/crucible/distributed-exploration.md;
@@ -195,10 +194,6 @@
         label = "package validates no static partitioning";
         needle = "grep -q '^static_partitioning=false$'";
       }
-      {
-        label = "package records DCE claim lease task";
-        needle = "dce_claim_lease_task=T-DCE-2";
-      }
     ]
     ++ failuresFor "default.nix" rootDefault [
       {
@@ -302,7 +297,6 @@ in
             cat > "$out/result" <<RESULT
             PASS
             check=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
             fleet_store_component=${fleetStore}
             runtime_probe=crucible-fleet-store probe
             claim_lease=ttl-hint

@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath,
-  taskIds,
 }:
 pkgs.mkDerivation {
   pname = "crucible-phase7-debugger-live-architectures";
@@ -96,7 +95,6 @@ pkgs.mkDerivation {
         cat > "$out/result" <<'RESULT'
         PASS
         check=${attrPath}
-        tasks=${lib.concatStringsSep "," taskIds}
         execution=live-packaged-qemu-tcg
         architectures=x86_64,aarch64
         rsp_negotiation=true

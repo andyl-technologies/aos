@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase6.searchReductions",
-  taskIds ? ["T-ADV-9"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -14,8 +13,6 @@
   reductionGateTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/gate_search_reductions.rs;
   contentAddressGateTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/gate_content_address.rs;
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -181,10 +178,6 @@
         needle = "checks.crucible.phase6.searchReductions";
       }
       {
-        label = "phase6 search reductions task id";
-        needle = ''taskIds = ["T-ADV-9"]'';
-      }
-      {
         label = "phase4 replay oracle raw dependency";
         needle = "\n          phase4.gates.replayOracle.rawGate\n";
       }
@@ -298,7 +291,6 @@ in
             cat > "$out/result" <<RESULT
             PASS
             check=${attrPath}
-            tasks=${taskList}
             gate=gate:search-reductions
             reductions=symmetry,partial-order
             scope=content-addressed-dag-node-dedup

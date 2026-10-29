@@ -7,8 +7,8 @@
 //! [`LatencyModel`] maps a request to a modeled latency in nanoseconds.
 //!
 //! The critical contract is that latency is a deterministic function of the
-//! request alone ([IO-4]): it never reads the host clock, host scheduling, or
-//! how long the host actually spent producing the payload.
+//! request alone: it never reads the host clock, host scheduling, or how long
+//! the host actually spent producing the payload.
 
 /// A correlation identifier echoed from a request to its response.
 ///
@@ -33,7 +33,7 @@ pub enum ResponseStatus {
 ///
 /// The payload is opaque bytes the concrete device interprets. The
 /// `request_icount` is the requester's icount at ARRIVE; it is the base for the
-/// completion-time computation ([IO-2]) and never the host clock.
+/// completion-time computation and never the host clock.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Request {
     /// The requester's icount when the request was emitted (ARRIVE time).
@@ -60,8 +60,8 @@ impl Request {
 ///
 /// The status and payload are fixed at COMPUTE; the `delivery_icount` is the
 /// exact virtual-time instant at which the response becomes visible to the
-/// consumer ([IO-2]). Until the consumer clock reaches it, the response sits in
-/// the in-flight queue.
+/// consumer. Until the consumer clock reaches it, the response sits in the
+/// in-flight queue.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Response {
     /// The correlation id echoed from the originating request.
@@ -133,9 +133,9 @@ impl ComputedResponse {
 /// A deterministic map from a request to its modeled latency in nanoseconds.
 ///
 /// Implementations MUST be pure functions of the request (and per-device
-/// parameters baked into the implementor) — never of host timing ([IO-4],
-/// [IO-22]). The returned value is added to the requester's virtual time to
-/// derive the completion instant.
+/// parameters baked into the implementor) — never of host timing. The returned
+/// value is added to the requester's virtual time to derive the completion
+/// instant.
 pub trait LatencyModel {
     /// Returns the modeled latency of `request` in virtual nanoseconds.
     ///

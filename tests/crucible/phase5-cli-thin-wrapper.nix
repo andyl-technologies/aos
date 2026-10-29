@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.cliThinWrapper",
-  taskIds ? ["T-CLI-2"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -23,8 +22,6 @@
     component = "client";
   };
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
@@ -66,7 +63,7 @@
       }
       {
         label = "thin-wrapper proof predicate";
-        needle = "fn proves_t_cli_2";
+        needle = "fn satisfies_thin_wrapper_contract";
       }
       {
         label = "closed CLI subcommand model";
@@ -324,7 +321,6 @@ in
 
     CRUCIBLE_T_CLI_2_FAILURES = failureText;
     ATTR_PATH = attrPath;
-    TASK_IDS = taskList;
     DEPENDENCY_COUNT = toString (builtins.length dependencies);
     DEPENDENCY_PATHS = builtins.concatStringsSep ":" dependencies;
 
@@ -382,9 +378,8 @@ in
     ];
 
     meta = {
-      description = "Crucible phase 5 CLI thin-wrapper gate for ${taskList}";
       passthru = {
-        inherit attrPath taskIds dependencies;
+        inherit attrPath dependencies;
         failureText = failureText;
       };
     };

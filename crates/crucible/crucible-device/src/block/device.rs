@@ -2,18 +2,17 @@
 //!
 //! This module owns [`BlockDevice`], which implements the COMPUTE half of the
 //! uniform lifecycle for block I/O. It decodes a [`BlockRequest`] from the
-//! request payload, serves it against the [`BaseImage`] + [`CowOverlay`]
-//! ([IO-5], [IO-6]), and re-encodes a [`BlockResponse`] as the response payload.
-//! The deterministic completion time is supplied by [`BlockLatency`] and applied
-//! by the [`IoCore`] the device composes ([IO-10], [IO-22]).
+//! request payload, serves it against the [`BaseImage`] + [`CowOverlay`], and
+//! re-encodes a [`BlockResponse`] as the response payload. The deterministic
+//! completion time is supplied by [`BlockLatency`] and applied by the
+//! [`IoCore`] the device composes.
 //!
 //! It also owns [`BlockSnapshot`], the device half of a `MaterializedState`
 //! contribution: the overlay delta (dirty pages only), the device RNG position
 //! cursor, the active fault table, the in-flight responses, the base hash, and
-//! the device length — **never** the base image bytes ([IO-11], [TEMP-9]).
-//! [`BlockDevice::restore`]
+//! the device length — **never** the base image bytes. [`BlockDevice::restore`]
 //! stacks the delta over a parent overlay and re-arms the in-flight queue, and
-//! [`BlockDevice::materialize`] hands off a standalone raw image ([IO-12]).
+//! [`BlockDevice::materialize`] hands off a standalone raw image.
 //!
 //! ```text
 //! request payload  = BlockRequest::encode()   (rides the SLOT_BLK_IO ring)
@@ -52,10 +51,10 @@ pub use snapshot::{BlockSnapshot, BlockSnapshotCodecError, MAX_BLOCK_SNAPSHOT_BY
 /// The largest read payload that fits one shmem frame alongside its header.
 ///
 /// A [`BlockResponse`] rides a single SPSC frame whose data field is
-/// [`crucible_qemu_shmem::MAX_FRAME_DATA`] bytes ([SHM-13]); the read payload must
-/// leave room for the fixed [`RESPONSE_HEADER_LEN`]-byte response header. A read
-/// whose `count` exceeds this is rejected with an error status ([IO-8]) rather
-/// than emitting an un-transportable frame. The bound is derived from the
+/// [`crucible_qemu_shmem::MAX_FRAME_DATA`] bytes; the read payload must leave
+/// room for the fixed [`RESPONSE_HEADER_LEN`]-byte response header. A read
+/// whose `count` exceeds this is rejected with an error status rather than
+/// emitting an un-transportable frame. The bound is derived from the
 /// `crucible-qemu-shmem` constant, never hardcoded, so it tracks the ABI.
 pub const MAX_READ_BYTES: usize = crucible_qemu_shmem::MAX_FRAME_DATA - RESPONSE_HEADER_LEN;
 
@@ -63,9 +62,9 @@ pub const MAX_READ_BYTES: usize = crucible_qemu_shmem::MAX_FRAME_DATA - RESPONSE
 ///
 /// Latency is `base_op_ns(op) + per_byte_ns * count` — a pure function of the
 /// operation and the byte count and the device's configured parameters, with no
-/// host-timing term ([IO-10], [IO-22]). The per-op floors let read, write, and
-/// flush differ. All arithmetic saturates so an adversarial `count` cannot
-/// panic; no floating point is used ([IO-24]).
+/// host-timing term. The per-op floors let read, write, and flush differ. All
+/// arithmetic saturates so an adversarial `count` cannot panic; no floating
+/// point is used.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BlockLatency {
     /// Fixed latency floor for a read, in virtual nanoseconds.
@@ -258,7 +257,7 @@ fn block_response_to_uniform_device(response: &BlockResponse) -> Result<Response
 /// latency), sidestepping the `&mut self`-to-both-args borrow conflict. It is
 /// the concrete [`IoSubNode`]: every request is decoded, served against the
 /// overlay/base, and re-encoded — out-of-range and malformed requests become
-/// error-status responses, never panics ([IO-6], [IO-8]).
+/// error-status responses, never panics.
 struct BlockServer<'a> {
     base: &'a BaseImage,
     overlay: &'a mut CowOverlay,
@@ -286,8 +285,8 @@ impl<'a> IoSubNode for BlockServer<'a> {
 
     fn compute(&mut self, request: &Request) -> Result<ComputedResponse, DeviceError> {
         // Decode the wire request from the opaque payload. Hostile bytes yield an
-        // error-status response keyed to the uniform request id ([IO-8]); the
-        // device never panics or reads out of bounds.
+        // error-status response keyed to the uniform request id; the device never
+        // panics or reads out of bounds.
         match BlockRequest::decode(&request.payload) {
             Ok(decoded) => self.storage_faults.execute(
                 self.base,

@@ -2,12 +2,10 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.segmentParallelReplay",
-  taskIds ? ["T-PERF-33"],
   dependencies ? [],
   campaignComposition ? null,
   testing ? import ../../lib/testing {inherit pkgs lib;},
 }: let
-  taskList = lib.concatStringsSep "," taskIds;
   segmentReplaySource = builtins.path {
     path = ../../crates/crucible/crucible-test-support/src/segment_replay.rs;
     name = "crucible-segment-replay.rs";
@@ -59,7 +57,6 @@
     check=${attrPath}
     gate=gate:segment-parallel-replay
     proving_gates=gate:replay-oracle,gate:divergence-bisect
-    tasks=${taskList}
     status=complete
     admission_class=A
     replay_split=realizable-checkpoint-coordinates

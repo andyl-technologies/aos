@@ -696,7 +696,7 @@ impl Canonical for CampaignOperationalStatus {
     }
 }
 
-/// Complete CAPI-6 status at one exact campaign snapshot.
+/// Complete campaign status at one exact campaign snapshot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CampaignStatusSummary {
     semantic: CampaignSemanticStatus,

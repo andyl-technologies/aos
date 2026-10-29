@@ -105,7 +105,6 @@ in
           PASS
           gate=gate:campaign-metadata-million
           check=${attrPath}
-          task=T-CAM-9.2
           admissions=1000000
           requests=62500
           request_size=16

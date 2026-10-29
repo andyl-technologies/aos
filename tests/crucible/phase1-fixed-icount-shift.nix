@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.fixedIcountShift",
-  taskIds ? ["T-TIME-2"],
 }: let
   root = ../..;
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -251,14 +250,12 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
             default_shift=0
             sim_ticks_per_ns=1000
             sim_ticks_per_instruction=50
             auto_shift=forbidden
             scenario_hash=qemu_icount_shift,sim_ticks_per_ns,sim_ticks_per_instruction
             per_node_tick_scale=fixed
-            decision_register=D-2
             RESULT
           '';
         }

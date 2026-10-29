@@ -111,15 +111,15 @@ impl BlockRequest {
 
     /// Encodes this request into its little-endian wire bytes.
     ///
-    /// The reserved `u16` is emitted as zero ([IO-8]). For a write the payload
-    /// follows the 28-byte header; for every other op no payload is appended.
-    /// The wire `count` is the `u32` view of the write payload length.
+    /// The reserved `u16` is emitted as zero. For a write the payload follows
+    /// the 28-byte header; for every other op no payload is appended. The wire
+    /// `count` is the `u32` view of the write payload length.
     ///
     /// # Errors
     ///
     /// Returns [`BlockCodecError::CountOverflow`] when a write payload exceeds
     /// `u32::MAX` bytes and cannot be represented in the wire `count` field --
-    /// rejected loudly rather than silently clamped ([IO-8]).
+    /// rejected loudly rather than silently clamped.
     pub fn encode(&self) -> Result<Vec<u8>, BlockCodecError> {
         let count = if self.op == BlockOp::Write {
             u32::try_from(self.data.len()).map_err(|_| BlockCodecError::CountOverflow {
@@ -147,7 +147,7 @@ impl BlockRequest {
     /// Never panics and never reads out of bounds on hostile input: a too-short
     /// buffer, an unknown op, a wrong version, or a `count` that exceeds the
     /// available write payload all return a [`BlockCodecError`] rather than
-    /// parsing past the buffer ([IO-8]).
+    /// parsing past the buffer.
     ///
     /// # Errors
     ///

@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.guestHostAppRandomCap",
-  taskIds ? ["T-GHC-17"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -16,8 +15,6 @@
   phase2AppRandomGate = builtins.readFile ./phase2-plugin-app-random-doorbell.nix;
   guestHostChannelDoc = builtins.readFile ../../docs/engineering/crucible/guest-host-channel.md;
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -227,10 +224,6 @@
         label = "phase4 app-random cap attr path";
         needle = "checks.crucible.phase4.guestHostAppRandomCap";
       }
-      {
-        label = "phase4 app-random cap task id";
-        needle = "taskIds = [\"T-GHC-17\"]";
-      }
     ];
 in
   if failures != []
@@ -439,7 +432,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             app_random_draw_cap=scenario-hash-material
             cap_exceeded=typed-error
             zero_requests=disabled-vs-compiled-in-unused-fingerprint-identical

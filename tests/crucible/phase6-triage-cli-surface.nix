@@ -3,7 +3,6 @@
   dependencies ? [],
   lib,
   pkgs,
-  taskIds ? ["T-TRI-8"],
 }: let
   inherit (import ./_lib.nix {inherit lib;}) failuresFor;
 
@@ -13,7 +12,6 @@
   failureTriagePage = builtins.readFile ../../docs/engineering/crucible/failure-triage.md;
   cliSource = import ./_cli-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
-  taskList = builtins.concatStringsSep "," taskIds;
 
   failures =
     failuresFor "docs/engineering/crucible/failure-triage.md" failureTriagePage [
@@ -134,10 +132,6 @@
         needle = "phase6-triage-cli-surface.nix";
       }
       {
-        label = "triage CLI surface task id";
-        needle = "taskIds = [\"T-TRI-8\"]";
-      }
-      {
         label = "triage thin-driver raw dependency";
         needle = "phase6.triageThinDriver.rawGate";
       }
@@ -220,7 +214,6 @@ in
             {
               echo "crucible_gate=phase6-triage-cli-surface"
               echo "attr_path=${attrPath}"
-              echo "task_ids=${taskList}"
               echo "cargo_deps=${cargoDeps}"
               echo "rust_test=crucible-cli::cli_triage_help_surface_lists_required_flags_and_exit_code_contract"
             } > "$out/nix-support/hydra-build-products"

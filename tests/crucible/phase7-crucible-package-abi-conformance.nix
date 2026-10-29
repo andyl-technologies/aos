@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.cruciblePackageAbiConformance",
-  taskIds ? ["T-PKG-11"],
   rawAbiGate ?
     import ./phase2-abi-conformance.nix {
       inherit pkgs lib;
@@ -34,7 +33,6 @@
     entry = ../../crates/crucible/crucible-control-api/src/rpc_abi.rs;
   };
 
-  taskList = builtins.concatStringsSep "," taskIds;
   gatedAbiRawGate =
     if gatedAbiGate != null && gatedAbiGate ? rawGate
     then gatedAbiGate.rawGate
@@ -73,7 +71,7 @@
       }
       {
         label = "scoped phase2 ABI gate wiring";
-        needle = "abiConformance = greenBeforeAdvance {\n        attrPath = \"checks.crucible.phase2.gates.abiConformance\";\n        # lint needle: abiConformance = import ./phase2-abi-conformance.nix\n        gate = import ./phase2-abi-conformance.nix {\n          inherit pkgs lib;\n          attrPath = \"checks.crucible.phase2.gates.abiConformance\";\n          taskIds = [\"T-HARN-17\" \"T-API-11\" \"T-API-12\" \"T-PAT-8\"];\n          dependencies = [\n            phase1.gates.licenseBoundary.rawGate\n            phase1.gates.harnessLint.rawGate\n            phase1.gates.layer0Determinism.rawGate";
+        needle = "abiConformance = greenBeforeAdvance {\n        attrPath = \"checks.crucible.phase2.gates.abiConformance\";\n        # lint needle: abiConformance = import ./phase2-abi-conformance.nix\n        gate = import ./phase2-abi-conformance.nix {\n          inherit pkgs lib;\n          attrPath = \"checks.crucible.phase2.gates.abiConformance\";\n          dependencies = [\n            phase1.gates.licenseBoundary.rawGate\n            phase1.gates.harnessLint.rawGate\n            phase1.gates.layer0Determinism.rawGate";
       }
       {
         label = "scoped phase2 ABI wrapper dependencies";
@@ -274,7 +272,6 @@ in
           {
             printf '%s\n' 'PASS'
             printf 'check=%s\n' "$ATTR_PATH"
-            printf 'tasks=%s\n' "$TASK_IDS"
             printf '%s\n' 'gate=gate:abi-conformance'
             printf 'raw_abi_gate=%s\n' "$RAW_ABI_GATE"
             printf 'gated_abi_gate=%s\n' "$GATED_ABI_GATE"
@@ -292,7 +289,6 @@ in
         ''
       ];
       ATTR_PATH = attrPath;
-      TASK_IDS = taskList;
       RAW_ABI_GATE = rawAbiGate;
       GATED_ABI_GATE = gatedAbiGate;
       GATED_ABI_RAW_GATE = gatedAbiRawGate;

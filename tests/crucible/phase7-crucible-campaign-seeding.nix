@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.crucibleCampaignSeeding",
-  taskIds ? ["T-DCE-5"],
   dependencies ? [],
 }: let
   casSource =
@@ -174,10 +173,6 @@
         label = "package validates findings ledger";
         needle = "grep -q '^findings_ledger=cross-run-grow-only$'";
       }
-      {
-        label = "package records DCE campaign seed task";
-        needle = "dce_campaign_seed_task=T-DCE-5";
-      }
     ]
     ++ failuresFor "default.nix" rootDefault [
       {
@@ -267,7 +262,6 @@ in
             cat > "$out/result" <<RESULT
             PASS
             check=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
             fleet_store_component=${fleetStore}
             runtime_probe=crucible-fleet-store probe
             campaign_seed=prior-corpus

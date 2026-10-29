@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.abiConformance",
-  taskIds ? ["T-HARN-17" "T-API-11" "T-API-12" "T-PAT-8"],
   dependencies ? [],
   campaignComposition ? null,
 }: let
@@ -44,8 +43,6 @@
   apiRpcGolden = builtins.readFile ../../crates/crucible/crucible-control-api/src/rpc_abi/golden.rs;
   apiGateTest = builtins.readFile ../../crates/crucible/crucible-control-api/tests/gate_abi_conformance.rs;
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -359,10 +356,6 @@
         label = "phase2 exposes ABI conformance check";
         needle = "abiConformance = import ./phase2-abi-conformance.nix";
       }
-      {
-        label = "phase2 gate passes task IDs";
-        needle = "taskIds = [\"T-HARN-17\" \"T-API-11\" \"T-API-12\" \"T-PAT-8\"]";
-      }
     ];
 in
   if failures != []
@@ -594,7 +587,6 @@ in
               cat > "$out/result" <<'RESULT'
               PASS
               check=${attrPath}
-              tasks=${taskList}
               gate=gate:abi-conformance
               shmem_vectors=generated-header,layout-fixture,spsc-structure-aware,spsc-snapshot-byte-codec
               protocol_vectors=hello,hello-ack,setup-payload,setup-ack,quit
@@ -607,7 +599,7 @@ in
               zero_test_guards=exact-count-and-canonical-owner
               version_bump_rule=shmem+protocol+rpc-golden-corpora
               rpc_exact_version_rejection=true
-              reference_client_scope=implemented-T-API-13
+              reference_client_scope=implemented
               RESULT
             '';
           }

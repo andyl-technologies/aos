@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.gates.e2eDeterminism",
-  taskIds ? ["T-ASRT-16" "T-DET-26" "T-HARN-23"],
   dependencies ? [],
   campaignComposition ? null,
   testing ? import ../../lib/testing {inherit pkgs lib;},
@@ -125,7 +124,6 @@ in
         "component=gate:e2e-determinism/native-qemu-acceptance"
         "canonical_gate=gate:e2e-determinism"
         "canonical_gate_status=satisfied"
-        "tasks=${builtins.concatStringsSep "," taskIds}"
         "backend=qemu-tcg-production-vm-lifecycle"
         "scenario=representative-three-vm-fault-injected"
         "native_workload=nginx-curl-block-ninep"

@@ -2,8 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuLiveWhiteboxDoorbell",
-  taskIds ? ["T-DET-31" "T-PLUG-14" "T-PLUG-27" "T-GHC-4" "T-GHC-6" "T-GHC-9" "T-GHC-12" "T-GHC-16"],
-  openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -543,8 +541,6 @@
       {
         printf 'PASS\n'
         printf 'attr_path=%s\n' "${attrPath}"
-        printf 'task_ids=%s\n' "${builtins.concatStringsSep "," taskIds}"
-        printf 'open_task_ids=%s\n' "${builtins.concatStringsSep "," openTaskIds}"
         printf 'status=complete\n'
         printf 'plugin_loaded=rust-control-cdylib\n'
         test "$installer_launches" -eq 9

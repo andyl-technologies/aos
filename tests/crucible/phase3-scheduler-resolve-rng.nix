@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase3.schedulerResolveRng",
-  taskIds ? ["T-SCHED-17"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -15,7 +14,6 @@
     + builtins.readFile ../../crates/crucible/crucible-engine/src/model/fault_signal/execution_runtime_replay_test.rs;
   defaultChecks = builtins.readFile ./default.nix;
   inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
-  taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "crates/crucible/crucible-engine/src/model/fault_signal/execution_runtime.rs" executionRuntime [
       {
@@ -116,7 +114,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             component=crucible-fault-signal-runtime
             seeded_resolution=canonical-choice-context
             recorded_outcomes=ResolvedEffectTrace

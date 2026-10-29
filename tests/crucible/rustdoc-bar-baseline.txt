@@ -1,5 +1,5 @@
-# Existing rustdoc-bar findings exposed by the workspace-scoped T-PKG-8 package
-# test path.
+# Existing rustdoc-bar findings exposed by the workspace-scoped package test
+# path.
 #
 # Format:
 # repo-relative crate source<TAB>finding detail<TAB>count

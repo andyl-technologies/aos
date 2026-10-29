@@ -425,8 +425,8 @@ impl TemporalGraph {
     /// content address. The underlying single-frontier expansion remains
     /// [`Self::search`], so strategies order the work-list without changing the
     /// graph semantics. Graph-level symmetry and partial-order reductions are
-    /// deliberately not applied by this T-ADV-8 driver; T-ADV-9 owns reduction
-    /// soundness for multi-frontier search.
+    /// deliberately not applied by this driver; reduction soundness for
+    /// multi-frontier search is owned by the reduction layer.
     ///
     /// # Errors
     ///
@@ -466,8 +466,8 @@ impl TemporalGraph {
     /// used to attach self-contained reproduction artifacts to every discovered
     /// failure. This keeps failure reporting reproducible while the assertion and
     /// triage layers own the semantics of what counts as a failure. Graph-level
-    /// symmetry and partial-order reductions are not applied here; T-ADV-9 owns
-    /// reduction soundness for multi-frontier search.
+    /// symmetry and partial-order reductions are not applied here; the reduction
+    /// layer owns reduction soundness for multi-frontier search.
     ///
     /// # Errors
     ///

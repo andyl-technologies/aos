@@ -308,16 +308,16 @@ All paths are under `checks.crucible.`.
 ### Advanced-feature ladder
 
 Exploration features build on each other in a fixed ladder, encoded by
-`AdvancedFeatureRung` and `ADVANCED_FEATURE_TASK_ORDER`:
+`AdvancedFeatureRung` and `ADVANCED_FEATURE_LADDER`:
 
 ```text
 exact-determinism -> save-restore -> fork -> search -> coverage-feedback -> fuzzing
 ```
 
-Each `AdvancedFeatureTaskOrder` entry is keyed by a `task_id` string that
-`tests/crucible/default.nix` uses in the `taskIds` list of the check that
-implements it. Every entry is scheduled in phase6 and requires a set of gate
-occurrences that are green in earlier phases:
+Each `AdvancedFeatureStep` entry is keyed by the attribute path of the check
+that implements it, such as `checks.crucible.phase6.coverageGuidedFuzzing`.
+Every entry is scheduled in phase6 and requires a set of gate occurrences that
+are green in earlier phases:
 
 | Rung | Entries | Required green occurrences |
 | --- | --- | --- |
@@ -333,10 +333,9 @@ and app-randomness entries. Two checks enforce the ladder.
 `advanced_feature_ladder_failures` rejects a required gate that is missing or
 not in an earlier phase, a prerequisite listed later, or a rung that moves
 backward. `advanced_feature_schedule_failures` parses
-`tests/crucible/default.nix` and rejects an unknown or doubly scheduled entry, a
-check without an attribute path, a check not wrapped in `greenBeforeAdvance` or
-`redBeforeAdvance`, a missing dependency on a required gate or prerequisite
-check, and a phase6 import without explicit `taskIds`.
+`tests/crucible/default.nix` and rejects an entry whose check is not declared,
+a check not wrapped in its own `greenBeforeAdvance` or `redBeforeAdvance`, and
+a missing top-level dependency on a required gate or prerequisite check.
 
 ## Nix wiring
 

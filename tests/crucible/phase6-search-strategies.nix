@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase6.searchStrategies",
-  taskIds ? ["T-ADV-8"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -11,8 +10,6 @@
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
   strategyGateTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/gate_search_strategies.rs;
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -244,10 +241,6 @@
         needle = "checks.crucible.phase6.searchStrategies";
       }
       {
-        label = "phase6 search strategies task id";
-        needle = ''taskIds = ["T-ADV-8"]'';
-      }
-      {
         label = "phase4 replay oracle raw dependency";
         needle = "\n          phase4.gates.replayOracle.rawGate\n";
       }
@@ -353,7 +346,6 @@ in
             cat > "$out/result" <<RESULT
             PASS
             check=${attrPath}
-            tasks=${taskList}
             gate=gate:search-strategies
             strategy=bfs,dfs,priority,coverage-guided
             rust_test=crucible_engine::gate_search_strategies

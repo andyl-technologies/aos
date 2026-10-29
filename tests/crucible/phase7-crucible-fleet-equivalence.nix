@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.gates.fleetEquivalence",
-  taskIds ? ["T-DCE-8"],
   dependencies ? [],
   campaignComposition ? null,
   e2eDeterminism ? null,
@@ -388,7 +387,6 @@ in
           PASS
           check=${attrPath}
           gate=gate:fleet-equivalence
-          tasks=${builtins.concatStringsSep "," taskIds}
           single_host_search=exhaustive-breadth-first
           fleet_search=shared-worklist-work-stealing
           work_stealing_fleet=host-profile-matrix
@@ -486,7 +484,6 @@ in
             status=component-only
             evidence_scope=simdouble-fleet
             live_qemu_acceptance=not-established-by-this-check
-            tasks=${builtins.concatStringsSep "," taskIds}
             single_host_search=exhaustive-breadth-first
             fleet_search=shared-worklist-work-stealing
             work_stealing_fleet=host-profile-matrix

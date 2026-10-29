@@ -19,7 +19,7 @@
   # Some focused boot-prefix probes exercise deterministic INIT/SIPI delivery
   # before Linux starts the secondary vCPU's normal RR execution. They still
   # validate every exported cursor snapshot but leave the positive handoff
-  # proof to the canonical long-horizon S11 run.
+  # proof to the canonical long-horizon run.
   requireRrSwitchEvents ? true,
   # This bounds host wall time only. The deterministic proof horizon remains
   # the content-addressed stopAt node-icount under host preemption.
@@ -131,7 +131,7 @@
     "console=ttyS0 reboot=k panic=1 rdinit=/init"
     "lpj=1 tsc_early_khz=4000000"
     # The 50 ps clock makes Linux's legacy IOAPIC IRQ0 wiring self-check spend
-    # hundreds of millions of instructions in a TSC delay. S11 still boots
+    # hundreds of millions of instructions in a TSC delay. The spike still boots
     # with the local APIC, IOAPIC, and four CPUs; its proof is SMP/RR execution.
     "no_timer_check"
     "norandmaps random.trust_cpu=off"
@@ -437,7 +437,8 @@
   };
 
   # Skip SeaBIOS's calibration-heavy prefix while retaining the q35 devices
-  # and guest-driven AP INIT/SIPI sequence. This is the S5 reset image.
+  # and guest-driven AP INIT/SIPI sequence. This is the virtual-memory spike's
+  # reset image.
   linuxReset = pkgs.mkDerivation {
     pname = "crucible-phase0-s11-linux-reset";
     version = "0";

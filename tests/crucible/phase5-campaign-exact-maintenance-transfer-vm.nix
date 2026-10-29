@@ -29,7 +29,6 @@ in
           }
 
           require_serial_line gate=gate:campaign-exact-maintenance-transfer
-          require_serial_line tasks=T-CAM-5.8
           require_serial_line tier=real-packaged-qemu
           for claim in \
             source_active_world_exact_pause_restart=true \
@@ -54,7 +53,6 @@ in
           cat > "$out/result" <<RESULT
           PASS
           gate=gate:campaign-exact-maintenance-transfer
-          tasks=T-CAM-5.8
           tier=real-packaged-qemu
           source_active_world_exact_pause_restart=true
           source_exact_resume_progress=true

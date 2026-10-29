@@ -2,8 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.guestHostAppRandomDoorbell",
-  taskIds ? ["T-GHC-16"],
-  openTaskIds ? [],
   phase0S5 ? import ./phase0-s5.nix {inherit pkgs lib;},
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -46,11 +44,7 @@
   virtualMemorySpike = import ./phase4-guest-host-virtual-memory-spike.nix {
     inherit pkgs lib phase0S5;
     attrPath = "checks.crucible.phase4.guestHostVirtualMemorySpike";
-    taskIds = ["T-GHC-13"];
   };
-
-  taskList = builtins.concatStringsSep "," taskIds;
-  openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
@@ -181,10 +175,6 @@
     ]
     ++ failuresFor "crates/crucible/crucible-qemu-plugin/Cargo.toml" pluginCargo [
       {
-        label = "test-only engine dependency";
-        needle = "Test-only HARN-16 cross-check";
-      }
-      {
         label = "production plugin deps stay L1-only";
         needle = "production plugin dependencies stay L1-only";
       }
@@ -257,7 +247,7 @@
     ]
     ++ failuresFor "tests/crucible/phase4-guest-host-virtual-memory-spike.nix" virtualMemorySpikeGate [
       {
-        label = "S5 guest-memory evidence";
+        label = "phase0 guest-memory evidence";
         needle = "check=checks.crucible.phase0.s5VirtualMemory";
       }
       {
@@ -275,7 +265,7 @@
         needle = "checks.crucible.phase4.guestHostAppRandomDoorbell";
       }
       {
-        label = "phase4 app-random doorbell reuses phase0 S5 result";
+        label = "phase4 app-random doorbell reuses phase0 virtual-memory result";
         needle = "phase0S5 = phase0.s5VirtualMemory;";
       }
     ]
@@ -442,8 +432,6 @@ in
             PASS
             check=${attrPath}
             gate=gate:abi-conformance
-            tasks=${taskList}
-            open_tasks=${openTaskList}
             status=partial
             evidence_scope=callback-core-and-engine-model
             doorbell_kind=random_request

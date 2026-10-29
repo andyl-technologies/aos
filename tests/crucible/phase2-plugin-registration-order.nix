@@ -2,8 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginRegistrationOrder",
-  taskIds ? ["T-PLUG-3"],
-  openTaskIds ? [],
   livePluginInstall ? import ./phase2-qemu-live-plugin-install.nix {inherit pkgs lib;},
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -15,8 +13,6 @@
   pluginSpec = builtins.readFile ../../docs/engineering/crucible/qemu-plugin.md;
   defaultChecks = builtins.readFile ./default.nix;
 
-  taskList = builtins.concatStringsSep "," taskIds;
-  openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -235,8 +231,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
-            open_tasks=${openTaskList}
             status=complete
             sequencer=crucible-qemu-plugin::registration
             fixed_order=parse,handshake,time-control,setup,map,arm-wake,callbacks,setup-ack,boot-barrier,first-instruction

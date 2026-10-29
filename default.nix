@@ -999,11 +999,11 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     inherit pkgs lib mkSystem testing;
   };
 
-  # T-PKG-15: the shared Crucible VM/fleet check substrate. It assembles the
-  # whole Crucible closure (patched QEMU + plugin + CLI + kernel + fixtures) as
+  # The shared Crucible VM/fleet check substrate. It assembles the whole
+  # Crucible closure (patched QEMU + plugin + CLI + kernel + fixtures) as
   # hermetic inputs and runs the built CLI under TCG with NO `kvm` system
-  # feature ([PKG-29], [PKG-30], spec §26.8). The canonical Phase 4 gate and
-  # the real-VM performance checks ride this same runner.
+  # feature. The canonical Phase 4 gate and the real-VM performance checks ride
+  # this same runner.
   crucibleFleetRunner = import ./tests/crucible/_fleet-runner.nix {inherit pkgs lib;};
 
   crucibleFleetChecks = {
@@ -1061,7 +1061,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
 
           now_ns() { date +%s%N; }
 
-          # --- Throughput ([PERF-13]): scenarios per wall-clock second over a
+          # --- Throughput: scenarios per wall-clock second over a
           # fixed sequential batch of real CLI process runs. ---
           batch=8
           t_start=$(now_ns)
@@ -1079,7 +1079,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
           available_cores="$(nproc)"
           [ "$available_cores" -gt 0 ] || available_cores=1
 
-          # --- Parallelism proxy ([PERF-3]): real host speedup of N concurrent
+          # --- Parallelism proxy: real host speedup of N concurrent
           # CLI processes versus the sequential batch. More cores must not make
           # the same work slower; the realized speedup is reported, never
           # asserted against an absolute target on a shared builder. ---
@@ -1111,7 +1111,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
           # without pinning an absolute speedup on a noisy shared host.
           test "$par_ms" -le $(( seq_ms * 3 ))
 
-          # --- Logical fleet sweep ([PERF-27]): run 1, 2, 4, and 8 independent
+          # --- Logical fleet sweep: run 1, 2, 4, and 8 independent
           # explorer-host processes against the shared content-addressed store.
           # The live ratio assertion requires at least 50% of ideal scaling
           # until available host cores saturate; the sweep also records
@@ -1166,7 +1166,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
             } >> "$fleet_sweep"
           done
 
-          # --- Idle compression ([PERF-2], real): the same scenario at the
+          # --- Idle compression (real): the same scenario at the
           # QEMU-backed workflow runs in bounded wall-clock; record it. ---
           idle_ms=$seq_ms
 
@@ -1209,11 +1209,11 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
           "idle_batch_ms=$idle_ms"
           "batch_size=$batch"
           "$(cat \"$fleet_sweep\")"
-          "metric_throughput=real-process-wall-clock-batch [PERF-13]"
-          "metric_parallelism=real-process-concurrent-speedup [PERF-3]"
-          "metric_restore_latency=exact-descriptor-restore-through-runnable-cont [PERF-12]"
-          "metric_coverage_ips=checks.crucible.phase0.coverageOverhead [PERF-14]"
-          "metric_fleet_sweep=logical-host-concurrency-on-reference-runner [PERF-27]"
+          "metric_throughput=real-process-wall-clock-batch"
+          "metric_parallelism=real-process-concurrent-speedup"
+          "metric_restore_latency=exact-descriptor-restore-through-runnable-cont"
+          "metric_coverage_ips=checks.crucible.phase0.coverageOverhead"
+          "metric_fleet_sweep=logical-host-concurrency-on-reference-runner"
           "modeled_gate=checks.crucible.phase7.gates.perfBench"
           "lib_testing_runner=tests/crucible/_fleet-runner.nix"
         ];
@@ -1277,20 +1277,17 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
 
               shared_dag_store_result="${sharedDagStoreGate}/result"
               grep -q '^PASS$' "$shared_dag_store_result"
-              grep -q '^tasks=T-DCE-1$' "$shared_dag_store_result"
               grep -q '^shared_store_backend=SharedDagStore$' "$shared_dag_store_result"
               grep -q '^concurrent_put=idempotent$' "$shared_dag_store_result"
 
               frontier_lease_result="${frontierLeaseGate}/result"
               grep -q '^PASS$' "$frontier_lease_result"
-              grep -q '^tasks=T-DCE-2$' "$frontier_lease_result"
               grep -q '^claim_lease=ttl-hint$' "$frontier_lease_result"
               grep -q '^stale_claim_lock=reclaimable$' "$frontier_lease_result"
               grep -q '^hash_affinity=priority-only$' "$frontier_lease_result"
 
               four_layer_dedup_result="${fourLayerDedupGate}/result"
               grep -q '^PASS$' "$four_layer_dedup_result"
-              grep -q '^tasks=T-DCE-3$' "$four_layer_dedup_result"
               grep -q '^dedup_layers=exists,coverage-map,reduction-fingerprint,claim-set$' "$four_layer_dedup_result"
               grep -q '^coverage_map_admission=compare-and-merge$' "$four_layer_dedup_result"
               grep -q '^coverage_map_repair=entry-markers-before-fingerprint$' "$four_layer_dedup_result"
@@ -1298,7 +1295,6 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
 
               campaign_manifest_result="${campaignManifestGate}/result"
               grep -q '^PASS$' "$campaign_manifest_result"
-              grep -q '^tasks=T-DCE-4$' "$campaign_manifest_result"
               grep -q '^campaign_manifest=content-addressed$' "$campaign_manifest_result"
               grep -q '^campaign_head=cas-advanced$' "$campaign_manifest_result"
               grep -q '^campaign_head_lock=advisory-head-file$' "$campaign_manifest_result"
@@ -1309,7 +1305,6 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
 
               campaign_seeding_result="${campaignSeedingGate}/result"
               grep -q '^PASS$' "$campaign_seeding_result"
-              grep -q '^tasks=T-DCE-5$' "$campaign_seeding_result"
               grep -q '^campaign_seed=prior-corpus$' "$campaign_seeding_result"
               grep -q '^campaign_seed_artifact=self-contained$' "$campaign_seeding_result"
               grep -q '^campaign_seed_replay=bit-identical$' "$campaign_seeding_result"
@@ -1323,7 +1318,6 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
 
               campaign_storage_bounding_result="${campaignStorageBoundingGate}/result"
               grep -q '^PASS$' "$campaign_storage_bounding_result"
-              grep -q '^tasks=T-DCE-6$' "$campaign_storage_bounding_result"
               grep -q '^campaign_gc_roots=manifest-roots$' "$campaign_storage_bounding_result"
               grep -q '^campaign_gc_unpinned=swept-candidate$' "$campaign_storage_bounding_result"
               grep -q '^campaign_gc_value=cache-only$' "$campaign_storage_bounding_result"
@@ -1336,7 +1330,6 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
 
               campaign_provenance_result="${campaignProvenanceGate}/result"
               grep -q '^PASS$' "$campaign_provenance_result"
-              grep -q '^tasks=T-PKG-22$' "$campaign_provenance_result"
               grep -q '^provenance_key=campaign_provenance_key$' "$campaign_provenance_result"
               grep -q '^refusal=RefuseCrossProvenanceReuse$' "$campaign_provenance_result"
               grep -q '^baseline_event=crucible.campaign.fresh-lineage-baseline.v1$' "$campaign_provenance_result"
@@ -1344,14 +1337,12 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
 
               determinism_guardrail_result="${determinismGuardrailGate}/result"
               grep -q '^PASS$' "$determinism_guardrail_result"
-              grep -q '^tasks=T-DCE-7$' "$determinism_guardrail_result"
               grep -q '^harness_lint_extension=distribution-metadata-flow$' "$determinism_guardrail_result"
               grep -q '^distribution_metadata_guardrail=reduce-decision-content-key-artifact-ban$' "$determinism_guardrail_result"
 
               fleet_equivalence_result="${fleetEquivalenceGate}/result"
               grep -q '^PASS$' "$fleet_equivalence_result"
               grep -q '^gate=gate:fleet-equivalence$' "$fleet_equivalence_result"
-              grep -q '^tasks=T-DCE-8$' "$fleet_equivalence_result"
               grep -q '^finding_set=content-addressed$' "$fleet_equivalence_result"
               grep -q '^artifact_bytes=byte-identical$' "$fleet_equivalence_result"
               grep -q '^structural_equivalence=root-budget-graph-exhaustion$' "$fleet_equivalence_result"
@@ -1362,7 +1353,6 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
               campaign_continuity_result="${campaignContinuityGate}/result"
               grep -q '^PASS$' "$campaign_continuity_result"
               grep -q '^gate=gate:campaign-continuity$' "$campaign_continuity_result"
-              grep -q '^tasks=T-DCE-9$' "$campaign_continuity_result"
               grep -q '^seed_reproducibility=bit-identical-prior-corpus$' "$campaign_continuity_result"
               grep -q '^coverage_ratchet=monotone-non-decreasing$' "$campaign_continuity_result"
               grep -q '^accumulated_coverage=grow-only-union-crdt$' "$campaign_continuity_result"

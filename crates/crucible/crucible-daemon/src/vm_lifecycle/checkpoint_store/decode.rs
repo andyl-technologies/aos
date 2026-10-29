@@ -309,7 +309,7 @@ where
     deserializer.deserialize_bytes(PlanVisitor)
 }
 
-/// Converts a semantic decoder resource marker into the public LIMIT-2 type.
+/// Converts a semantic decoder resource marker into the public resource-limit type.
 pub(super) fn map_decode_resource_error<T>(
     error: &ciborium::de::Error<T>,
 ) -> Option<LifecycleApiError> {

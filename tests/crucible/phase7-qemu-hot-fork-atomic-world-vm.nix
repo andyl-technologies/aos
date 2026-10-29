@@ -3,7 +3,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.gates.worldForkAtomicity",
-  taskIds ? [],
   campaignComposition ? null,
   prefixOnly ? false,
   testing ? import ../../lib/testing {inherit pkgs lib;},
@@ -360,7 +359,6 @@
       'failures=fork,adoption,target-cleanup,repository-publication' \
       'final_resource_audit=process,descriptors,memory,attempt-storage,content-store' \
       'check=${attrPath}' \
-      'tasks=${builtins.concatStringsSep "," taskIds}' \
       > ${resultPath}
     cat ${resultPath}
     ${pkgs.util-linux}/bin/umount /tmp/attempts

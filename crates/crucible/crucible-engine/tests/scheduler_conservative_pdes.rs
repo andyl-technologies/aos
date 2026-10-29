@@ -1,4 +1,4 @@
-//! Checks the T-SCHED-3 conservative-PDES advance rule.
+//! Checks the conservative-PDES advance rule.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.

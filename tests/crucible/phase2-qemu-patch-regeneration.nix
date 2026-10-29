@@ -2,8 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPatchRegeneration",
-  taskIds ? ["T-PATCH-24"],
-  openTaskIds ? [],
   qemuPackage ? pkgs.qemu-crucible,
   atomicPatchRepository ?
     import ./_qemu-atomic-patch-repository.nix {
@@ -100,7 +98,7 @@ in
         }
       ];
       passthru = {
-        inherit attrPath taskIds openTaskIds dependencies;
+        inherit attrPath dependencies;
         gateName = "gate:qemu-patch-regeneration";
         atomicPatchRepository = atomicPatchRepository;
       };

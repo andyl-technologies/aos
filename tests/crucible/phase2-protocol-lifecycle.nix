@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.protocolLifecycle",
-  taskIds ? ["T-PROTO-6"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -11,8 +10,6 @@
   lifecycleTest = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/tests/lifecycle.rs;
   layer1InjectionTest = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/tests/gate_layer1_injection.rs;
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -240,10 +237,6 @@
         label = "canonical ABI conformance gate is implemented";
         needle = "abiConformance = import ./phase2-abi-conformance.nix";
       }
-      {
-        label = "canonical ABI conformance task list";
-        needle = "taskIds = [\"T-HARN-17\" \"T-API-11\" \"T-API-12\" \"T-PAT-8\"]";
-      }
     ];
 in
   if failures != []
@@ -319,7 +312,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             gates=gate:abi-conformance,gate:control-responsive
             rust_tests=crucible_qemu_protocol::lifecycle,crucible_qemu_protocol::gate_layer1_injection
             lifecycle=connect,Hello,HelloAck,Setup,SetupAck,run-via-shmem,Quit

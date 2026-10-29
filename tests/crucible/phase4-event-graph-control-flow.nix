@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.eventGraphControlFlow",
-  taskIds ? ["T-TRIG-1"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -16,7 +15,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-  taskList = builtins.concatStringsSep "," taskIds;
   engineFacingSources = builtins.concatStringsSep "\n" [
     trigger
     libSource
@@ -307,16 +305,15 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             component=crucible-trigger
             gates=gate:layer1-injection,gate:e2e-determinism
             model=event-graph-control-flow-spine
-            condition_semantics=implemented-T-TRIG-2-through-T-TRIG-11
-            plan_lowering=implemented-T-TRIG-16
-            verdicts=implemented-T-TRIG-17
-            event_graph_serialization=implemented-T-TRIG-18
-            black_box_guarantee=implemented-T-TRIG-19
-            replay_oracle=implemented-T-TRIG-20
+            condition_semantics=implemented
+            plan_lowering=implemented
+            verdicts=implemented
+            event_graph_serialization=implemented
+            black_box_guarantee=implemented
+            replay_oracle=implemented
             RESULT
           '';
         }

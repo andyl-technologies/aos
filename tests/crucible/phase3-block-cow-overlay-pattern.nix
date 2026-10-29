@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase3.blockCowOverlayPattern",
-  taskIds ? ["T-IO-2" "T-IO-5" "T-PAT-7"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -27,7 +26,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-  taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "docs/engineering/crucible/io-subnodes.md" ioDoc [
       {
@@ -212,10 +210,6 @@
         label = "phase3 exposes block CoW overlay pattern check";
         needle = "blockCowOverlayPattern = import ./phase3-block-cow-overlay-pattern.nix";
       }
-      {
-        label = "gate task IDs include pattern and IO owners";
-        needle = "taskIds = [\"T-IO-2\" \"T-IO-5\" \"T-PAT-7\"]";
-      }
     ];
 in
   if failures != []
@@ -283,7 +277,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             component=crucible-block-cow-overlay
             base_image=read-only-content-addressed
             overlay_pages=BTreeMap-4KiB

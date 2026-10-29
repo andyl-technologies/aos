@@ -2,8 +2,8 @@
 //! scheduler RESOLVE path.
 //!
 //! A fixed scenario run `N` times under deliberately hostile host conditions
-//! MUST yield byte-identical canonical event logs and final fingerprints
-//! (INV-1, INV-4, INV-9 — the determinism that *survives* hostile conditions).
+//! MUST yield byte-identical canonical event logs and final fingerprints (the
+//! determinism that *survives* hostile conditions).
 //! This gate drives a **2-VM scenario with a disk sub-node** through the
 //! host-adversary matrix ([`crucible_test_support::adversarial`]) — hostile
 //! host thread scheduling, varied core counts, injected load, producer/consumer
@@ -24,7 +24,7 @@
 //! red: host RUN dispatch leaking into RESOLVE/EMIT, the rendezvous frequency
 //! moving a delivery tick, or the COMPUTE/submit order changing the result. Both
 //! disk completions are additionally asserted to land at ticks computed
-//! INDEPENDENTLY from the request + modeled latency ([IO-2], [IO-4]). The gate also
+//! INDEPENDENTLY from the request + modeled latency. The gate also
 //! asserts the matrix is genuinely adversarial (more than one profile, the
 //! concurrent condition actually dispatches two independent RUNs at once, and BOTH
 //! sequential completions are delivered) so the proof is not vacuous.
@@ -51,7 +51,7 @@ use crucible_test_support::adversarial::{canonical_host_adversary_matrix, run_pr
 
 /// The determinism-relevant fingerprint of one full run.
 ///
-/// Equality is the [HARN-11] invariant: the recorded decision stream `S`, every
+/// Equality is the determinism invariant: the recorded decision stream `S`, every
 /// resolved happening (frame or I/O completion) by content, and every observed
 /// delivery `(tick, consumer, sequence)`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -135,9 +135,8 @@ fn disk_sub_node(seed: Seed, condition: HostCondition) -> DeviceSchedulingSubNod
         device,
         seed,
     );
-    // Two reads at distinct request ticks. COMPUTE/submit order is a host detail
-    // ([IO-4]); under ComputeSkew the requests are submitted in reversed host
-    // order. The device resolves the *sorted* modeled set, so the resulting
+    // Two reads at distinct request ticks. COMPUTE/submit order is a host detail;
+    // under ComputeSkew the requests are submitted in reversed host order. The device resolves the *sorted* modeled set, so the resulting
     // completions and their fault draws are a pure function of the request set and
     // the seed — identical under either submit order. This is the COMPUTE-time skew
     // dimension of the adversarial gate.
@@ -401,7 +400,7 @@ fn gate_adversarial_determinism_two_vm_disk_scenario_is_byte_identical_across_ho
 
 #[test]
 fn gate_adversarial_determinism_disk_completions_land_at_independently_computed_ticks() {
-    // The COMPUTE-skew teeth ([IO-2], [IO-4], [DET-19]): submitting the two disk
+    // The COMPUTE-skew teeth: submitting the two disk
     // reads in forward vs reversed host order yields a BYTE-IDENTICAL fingerprint,
     // and BOTH completions land at ticks computed INDEPENDENTLY from the request +
     // modeled latency — never the consumer frontier.
@@ -410,7 +409,7 @@ fn gate_adversarial_determinism_disk_completions_land_at_independently_computed_
     let skewed = run(seed, 3).fingerprint;
     assert_eq!(
         forward, skewed,
-        "COMPUTE-time submit order must not change the result ([IO-4])"
+        "COMPUTE-time submit order must not change the result"
     );
     let disk_deliveries: Vec<u64> = forward
         .resolved
@@ -432,7 +431,7 @@ fn gate_adversarial_determinism_disk_completions_land_at_independently_computed_
 }
 
 /// Independently computes a fault-free disk read's exact completion tick from
-/// the request tick and the modeled block latency ([IO-2]).
+/// the request tick and the modeled block latency.
 ///
 /// The default [`BlockLatency`] is authored in nanoseconds. The device converts
 /// that latency to exact ticks before adding the request tick.

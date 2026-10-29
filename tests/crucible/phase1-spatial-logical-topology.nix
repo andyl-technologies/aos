@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.spatialLogicalTopology",
-  taskIds ? ["T-SPAT-9"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -267,7 +266,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
             related_gates=gate:content-address,gate:e2e-determinism
             spatial_graph_task=logical-topology-no-physical-layout
             world_identity=independent-of-transport-layout

@@ -246,4 +246,4 @@ pub(super) fn readdir_names(reply: &[u8]) -> Vec<String> {
     names
 }
 
-// ---- version negotiation (IO-16) -------------------------------------
+// ---- version negotiation -------------------------------------

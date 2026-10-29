@@ -26,11 +26,11 @@
 //!    EQUAL to a value computed independently from the request + modeled latency
 //!    ([`expected_disk_completion_tick`]) — pinned to the device arithmetic, not
 //!    recomputed from the delivery under test — and asserted INVARIANT across host
-//!    conditions / COMPUTE-submit order ([IO-2], [IO-4], [DET-19]).
+//!    conditions / COMPUTE-submit order.
 //! 2. **Run-twice byte-identity.** If RESOLVE order leaked host interleaving the
 //!    serial / concurrent arms would diverge.
 //! 3. **Fail-loud late delivery.** The negative control proves a frame due in a
-//!    node's past is rejected ([SCHED-31]), never delivered late.
+//!    node's past is rejected, never delivered late.
 //!
 //! The full *production* falsifiability proof for the exactness property — driving
 //! `SingleScheduler::resolve_device_completions` into the freeze-time bug and
@@ -312,7 +312,7 @@ fn gate_layer1_injection_run_twice_is_byte_identical_across_host_conditions() {
 
 #[test]
 fn gate_layer1_injection_observes_each_injection_at_its_independently_computed_tick() {
-    // The teeth ([IO-2], [DET-19]): each injection's observed tick must EQUAL an
+    // The teeth: each injection's observed tick must EQUAL an
     // tick computed INDEPENDENTLY from the request + modeled latency — pinned to
     // the device arithmetic, not recomputed from the delivery the gate is checking.
     // If production stamped the consumer frontier (the freeze-time bug) the disk
@@ -350,7 +350,7 @@ fn gate_layer1_injection_observes_each_injection_at_its_independently_computed_t
 
 #[test]
 fn gate_layer1_injection_exact_tick_is_invariant_under_host_condition() {
-    // The anti-freeze-time guarantee ([IO-4], [DET-19]): the disk completion's
+    // The anti-freeze-time guarantee: the disk completion's
     // exact tick is a pure function of the request + modeled latency, so driving
     // under either host condition yields the SAME observed tick.
     let seed = Seed::from_u64(0x1a1e_c742);
@@ -361,7 +361,7 @@ fn gate_layer1_injection_exact_tick_is_invariant_under_host_condition() {
 }
 
 /// Independently computes a fault-free disk read's exact completion tick from
-/// the request tick and the modeled block latency ([IO-2]).
+/// the request tick and the modeled block latency.
 ///
 /// The default [`BlockLatency`] is authored in nanoseconds. The device converts
 /// that latency to exact simulation ticks before adding the request tick.
@@ -385,7 +385,7 @@ fn disk_completion_ticks(record: RunRecord) -> Vec<u64> {
 fn gate_layer1_injection_late_delivery_fails_loud() {
     // The fail-loud half of the gate: a peer frame whose delivery tick is in the
     // consumer's PAST when the consumer is advanced must be rejected by the
-    // scheduler's lookahead guard ([SCHED-31]), never delivered late. We arm a
+    // scheduler's lookahead guard, never delivered late. We arm a
     // frame due at vt 1 for node `b`, then advance `b` far past it with NO horizon
     // term holding it back, and assert RESOLVE localizes a late delivery.
     let consumer = scheduler_node("b");
@@ -425,8 +425,7 @@ fn gate_layer1_injection_late_delivery_fails_loud() {
     let message = error.to_string();
     // The TARGET fails loud at the conservative-PDES guard ("unresolved cross-node
     // dependency is due at ..") which rejects the advance BEFORE the RESOLVE late
-    // guard ("late scheduled event") would fire; either is the past-due fail-loud
-    // ([SCHED-31]).
+    // guard ("late scheduled event") would fire; either is the past-due fail-loud.
     assert!(
         message.contains("late scheduled event")
             || message.contains("unresolved cross-node dependency"),

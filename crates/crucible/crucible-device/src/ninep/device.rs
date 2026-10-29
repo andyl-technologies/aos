@@ -3,16 +3,16 @@
 //! This module owns [`NinepDevice`], which implements the COMPUTE half of the
 //! uniform lifecycle for 9p I/O. It decodes a 9p request frame from the request
 //! payload, dispatches it through the [`NinepServer`] against the served
-//! [`FsTree`] ([IO-13]..[IO-17]), and returns the encoded reply frame as the
-//! response payload. The deterministic completion time is supplied by
-//! [`NinepLatency`] and applied by the [`IoCore`] the device composes ([IO-22]).
+//! [`FsTree`], and returns the encoded reply frame as the response payload. The
+//! deterministic completion time is supplied by [`NinepLatency`] and applied by
+//! the [`IoCore`] the device composes.
 //!
 //! It also owns [`NinepSnapshot`], the device half of a `MaterializedState`
 //! contribution: the uniform-core snapshot, the server's fid table + negotiated
 //! `msize`, exact fault directives, visibility continuation, and session
-//! identity — **never** the served tree
-//! bytes ([IO-19], [TEMP-9]). [`NinepDevice::restore`] re-supplies the
-//! content-addressed tree and re-arms the fid table and in-flight queue.
+//! identity — **never** the served tree bytes. [`NinepDevice::restore`]
+//! re-supplies the content-addressed tree and re-arms the fid table and
+//! in-flight queue.
 //!
 //! ```text
 //! request payload  = 9p request frame   (rides the SLOT_9P_IO ring)
@@ -45,9 +45,9 @@ use super::tree::{FsTree, Node};
 ///
 /// Latency is `base_op_ns(message kind) + per_byte_ns * frame_len` — a pure
 /// function of the request frame and the device's configured parameters, with no
-/// host-timing term ([IO-22]). Distinct per-op floors let a heavy `readdir`/
-/// `read` cost more than a trivial `clunk`/`version`. All arithmetic saturates so
-/// an adversarial frame length cannot panic; no floating point is used ([IO-24]).
+/// host-timing term. Distinct per-op floors let a heavy `readdir`/ `read` cost
+/// more than a trivial `clunk`/`version`. All arithmetic saturates so an
+/// adversarial frame length cannot panic; no floating point is used.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct NinepLatency {
     /// Fixed latency floor for a metadata/control message, in virtual ns.

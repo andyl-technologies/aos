@@ -2,8 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.timeMultiVcpuAggregateClock",
-  taskIds ? [],
-  openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -175,7 +173,7 @@
         needle = "register_count_assertion=nonempty_per_vcpu";
       }
       {
-        label = "multi-vCPU spike pins the predeclared S11 horizon";
+        label = "multi-vCPU spike pins the predeclared horizon";
         needle = "stopAt ? 8000000000";
       }
       {
@@ -317,8 +315,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
-            open_tasks=${builtins.concatStringsSep "," openTaskIds}
             status=complete
             evidence_scope=multi-vcpu-clock-model
             gate=gate:layer0-determinism

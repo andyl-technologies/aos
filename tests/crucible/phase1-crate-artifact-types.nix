@@ -405,7 +405,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=checks.crucible.phase1.crateArtifactTypes
-            tasks=T-CRATE-10
             cdylib_package=crucible-qemu-plugin
             binary_package=crucible-cli
             binary_name=crucible

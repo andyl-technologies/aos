@@ -3,7 +3,6 @@
   dependencies ? [],
   lib,
   pkgs,
-  taskIds ? ["T-TRI-6"],
 }: let
   # Substring scan by index. The regex form (builtins.match ".*needle.*")
   # overflows the Nix regex engine's stack on large haystacks such as the CLI
@@ -35,7 +34,6 @@
     entry = ../../crates/crucible/crucible-engine/tests/gate_failure_signature.rs;
   };
   defaultChecks = builtins.readFile ./default.nix;
-  taskList = builtins.concatStringsSep "," taskIds;
 
   failures =
     failuresFor "docs/engineering/crucible/failure-triage.md" failureTriagePage [
@@ -276,10 +274,6 @@
         needle = "checks.crucible.phase6.perClusterReports";
       }
       {
-        label = "explicit task id";
-        needle = "taskIds = [\"T-TRI-6\"]";
-      }
-      {
         label = "signature minimization raw dependency";
         needle = "phase6.signaturePreservingMinimization.rawGate";
       }
@@ -313,7 +307,6 @@
 in
   pkgs.runCommand "crucible-phase6-per-cluster-reports-0" {
     nativeBuildInputs = dependencies;
-    CRUCIBLE_TASK_IDS = taskList;
     CRUCIBLE_ATTR_PATH = attrPath;
     CRUCIBLE_CARGO_DEPS = cargoDeps;
     inherit failureText;
@@ -327,7 +320,6 @@ in
     {
       echo "crucible_gate=phase6-per-cluster-reports"
       echo "attr_path=$CRUCIBLE_ATTR_PATH"
-      echo "task_ids=$CRUCIBLE_TASK_IDS"
       echo "cargo_deps=$CRUCIBLE_CARGO_DEPS"
     } > "$out/nix-support/hydra-build-products"
   ''

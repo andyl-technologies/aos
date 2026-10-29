@@ -193,7 +193,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=checks.crucible.phase1.harnessComponents
-            tasks=T-CRATE-11
             components=fingerprint,divergence,replay_oracle,abi,adversarial
             dev_dependency_only=true
             RESULT

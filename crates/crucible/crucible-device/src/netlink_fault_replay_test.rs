@@ -73,7 +73,7 @@ fn corruption_strategies_use_seeded_selectors() {
     );
 }
 
-// ---- into-the-past: fail-loud (IO-34) ----
+// ---- into-the-past: fail-loud ----
 
 #[test]
 fn reorder_into_consumer_past_fails_loud() {
@@ -100,7 +100,7 @@ fn reorder_into_consumer_past_fails_loud() {
     );
 }
 
-// ---- into-the-past: clamp policy (IO-34) ----
+// ---- into-the-past: clamp policy ----
 
 #[test]
 fn reorder_into_consumer_past_clamps_to_future() {
@@ -146,7 +146,7 @@ fn clamp_preserves_duplicate_gap_when_both_land_in_past() {
     assert!(primary > l.current_icount() && dup > l.current_icount());
 }
 
-// ---- effective-latency-change raises the recompute signal (IO-33) ----
+// ---- effective-latency-change raises the recompute signal ----
 
 #[test]
 fn effective_latency_change_raises_recompute_signal() {
@@ -226,7 +226,7 @@ fn regression_recompute_tracks_minimum_latency_not_delivery_profile() {
     }
 }
 
-// ---- snapshot / restore round-trip (IO-23) ----
+// ---- snapshot / restore round-trip ----
 
 #[test]
 fn snapshot_restore_round_trips() {
@@ -265,7 +265,7 @@ fn restore_rejects_corrupt_subfloor_snapshot() {
     ));
 }
 
-// ---- run-twice determinism, byte-identical (IO-22) ----
+// ---- run-twice determinism, byte-identical ----
 
 /// Drives a fixed frame+draw sequence through a fresh link and returns the
 /// (delivery_icount, frame_id, payload) of every delivery in order.
@@ -402,7 +402,7 @@ fn link_slot_references_router_constant() {
     assert_eq!(LINK_SLOT, crucible_qemu_shmem::SLOT_NET_ROUTER);
 }
 
-// ---- seeded per-device RNG drives the link draws (IO-21, IO-23) -------
+// ---- seeded per-device RNG drives the link draws -------
 
 #[test]
 fn emit_from_rng_is_reproducible_and_advances_the_cursor() {

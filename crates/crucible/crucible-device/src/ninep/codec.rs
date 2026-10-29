@@ -1,13 +1,13 @@
 //! The 9P2000.L wire codec: message framing, QIDs, and bounds-checked decode.
 //!
 //! This module owns the on-wire format the 9p sub-node speaks across the
-//! `SLOT_9P_IO` shmem rings ([IO-16], [IO-18]). The framing is the Plan 9
-//! convention: a fixed `size[4] type[1] tag[2]` header followed by a
-//! type-specific body, with **all multi-byte integers little-endian**. Strings
-//! are `len[2] data[len]`; a QID is the fixed 13-byte `type[1] version[4]
-//! path[8]`. Decoding is fully bounds-checked: an arbitrary byte sequence never
-//! panics, never reads out of bounds, and yields a [`NinepCodecError`] when
-//! malformed — the fuzz-safe boundary `gate:abi-conformance` consumes.
+//! `SLOT_9P_IO` shmem rings. The framing is the Plan 9 convention: a fixed
+//! `size[4] type[1] tag[2]` header followed by a type-specific body, with **all
+//! multi-byte integers little-endian**. Strings are `len[2] data[len]`; a QID
+//! is the fixed 13-byte `type[1] version[4] path[8]`. Decoding is fully
+//! bounds-checked: an arbitrary byte sequence never panics, never reads out of
+//! bounds, and yields a [`NinepCodecError`] when malformed — the fuzz-safe
+//! boundary `gate:abi-conformance` consumes.
 //!
 //! ```text
 //! 9p message frame (little-endian)
@@ -16,7 +16,7 @@
 //!   off 5   u16  tag    -- request/response correlation tag
 //!   off 7   ...         -- type-specific body
 //!
-//! string  = len[2] data[len]           -- u16 length, then raw bytes (UTF-8)
+//! string  = len[2] data[len]           -- u16 length, then raw bytes
 //! qid     = type[1] version[4] path[8] -- 13 bytes; path is a stable path-hash
 //!
 //! Tversion size[4] Tversion tag[2] msize[4] version[s]
@@ -59,14 +59,14 @@ pub const HEADER_LEN: usize = 7;
 /// The encoded length of a 9p QID: `type[1] version[4] path[8]`.
 pub const QID_LEN: usize = 13;
 
-/// The fixed protocol version string the server pins ([IO-16]).
+/// The fixed protocol version string the server pins.
 pub const PROTOCOL_VERSION: &str = "9P2000.L";
 
 // ---- 9p message type codes (9P2000.L) ----------------------------------------
 
 /// `Tlerror` is unused in 9P2000.L; type 6 is reserved. Kept for completeness.
 pub const TLERROR: u8 = 6;
-/// `Rlerror`: the Linux error reply carrying a 32-bit errno ([IO-17]).
+/// `Rlerror`: the Linux error reply carrying a 32-bit errno.
 pub const RLERROR: u8 = 7;
 /// `Tstatfs`: query filesystem statistics for a fid.
 pub const TSTATFS: u8 = 8;
@@ -185,8 +185,8 @@ pub const RREMOVE: u8 = 123;
 
 /// The QID type byte: the high-level kind of the file the QID names.
 ///
-/// The numeric values are part of the 9p wire ABI ([IO-13], [IO-18]) and follow
-/// the Plan 9 `QTDIR`/`QTSYMLINK`/`QTFILE` convention.
+/// The numeric values are part of the 9p wire ABI and follow the Plan 9
+/// `QTDIR`/`QTSYMLINK`/`QTFILE` convention.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum QidType {
     /// A regular file.
@@ -235,21 +235,21 @@ impl QidType {
 /// A 9p QID: the server's unique, cacheable identifier for a file.
 ///
 /// The `path` is a **stable hash of the file's path within the served tree**,
-/// never a host inode number ([IO-13]); `version` is the fixed
-/// [`Qid::FIXED_VERSION`]; `kind` is derived from the file's content. Two runs on
-/// two hosts produce byte-identical QIDs for the same served tree.
+/// never a host inode number; `version` is the fixed [`Qid::FIXED_VERSION`];
+/// `kind` is derived from the file's content. Two runs on two hosts produce
+/// byte-identical QIDs for the same served tree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Qid {
     /// The high-level file kind.
     pub kind: QidType,
-    /// The fixed QID version ([IO-13]); always [`Qid::FIXED_VERSION`] on emit.
+    /// The fixed QID version; always [`Qid::FIXED_VERSION`] on emit.
     pub version: u32,
-    /// The stable path-hash identifying the file ([IO-13]).
+    /// The stable path-hash identifying the file.
     pub path: u64,
 }
 
 impl Qid {
-    /// The fixed QID version every emitted QID carries ([IO-13]).
+    /// The fixed QID version every emitted QID carries.
     pub const FIXED_VERSION: u32 = 1;
 
     /// Builds a QID with the fixed version from a kind and a path-hash.
@@ -298,9 +298,9 @@ impl Qid {
 ///
 /// Each variant carries exactly the fields the server reads; the read/traverse
 /// subset is modeled explicitly, every *mutating* operation collapses to
-/// [`TMessage::Mutating`] (answered `EROFS`, [IO-17]), and any byte that names a
-/// type this server does not implement decodes to [`TMessage::Unknown`]
-/// (answered `ENOSYS`, [IO-17]).
+/// [`TMessage::Mutating`] (answered `EROFS`), and any byte that names a type
+/// this server does not implement decodes to [`TMessage::Unknown`] (answered
+/// `ENOSYS`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TMessage {
     /// `Tversion`: negotiate the protocol version and `msize`.
@@ -388,7 +388,7 @@ pub enum TMessage {
         /// The fid to fsync.
         fid: u32,
     },
-    /// A mutating message the read-only server answers with `EROFS` ([IO-17]).
+    /// A mutating message the read-only server answers with `EROFS`.
     Mutating {
         /// The mutating message's type byte, for diagnostics.
         msg_type: u8,
@@ -415,10 +415,10 @@ impl Message {
     /// Never panics and never reads out of bounds on hostile input: a truncated
     /// frame, an inconsistent `size` field, a string length that runs past the
     /// buffer, or an `nwname` count that overruns all return a
-    /// [`NinepCodecError`] rather than parsing past the buffer ([IO-18]). A
-    /// mutating message type decodes to [`TMessage::Mutating`] and an
-    /// unimplemented type to [`TMessage::Unknown`] (both are well-formed bodies
-    /// the server answers in band), so only structural corruption errors here.
+    /// [`NinepCodecError`] rather than parsing past the buffer. A mutating
+    /// message type decodes to [`TMessage::Mutating`] and an unimplemented type
+    /// to [`TMessage::Unknown`] (both are well-formed bodies the server answers
+    /// in band), so only structural corruption errors here.
     ///
     /// # Errors
     ///
@@ -440,7 +440,7 @@ impl Message {
         let tag = u16_le(header, 5);
 
         // The size prefix MUST equal the actual frame length: a frame whose
-        // declared size disagrees with its byte count is malformed ([IO-18]).
+        // declared size disagrees with its byte count is malformed.
         if size as usize != bytes.len() {
             return Err(NinepCodecError::SizeMismatch {
                 declared: size,
@@ -708,7 +708,7 @@ pub fn encode_rfsync(tag: u16) -> Result<Vec<u8>, NinepCodecError> {
 /// Encodes an `Rxattrwalk` reply with a fixed zero attribute size.
 ///
 /// A read-only export advertises no extended attributes, so the reported size is
-/// always zero — deterministic and host-independent ([IO-15]).
+/// always zero — deterministic and host-independent.
 ///
 /// # Errors
 ///
@@ -719,7 +719,7 @@ pub fn encode_rxattrwalk(tag: u16, size: u64) -> Result<Vec<u8>, NinepCodecError
     finish_frame(frame)
 }
 
-/// Encodes an `Rlerror` reply carrying a Linux errno ([IO-17]).
+/// Encodes an `Rlerror` reply carrying a Linux errno.
 ///
 /// # Errors
 ///
@@ -730,7 +730,7 @@ pub fn encode_rlerror(tag: u16, ecode: u32) -> Result<Vec<u8>, NinepCodecError> 
     finish_frame(frame)
 }
 
-/// The fixed attributes carried in an `Rgetattr` reply ([IO-15]).
+/// The fixed attributes carried in an `Rgetattr` reply.
 ///
 /// Every field is fixed or content-derived: timestamps are a fixed epoch,
 /// ownership is root, the block size is fixed, and the block count is derived
@@ -762,9 +762,9 @@ pub struct GetattrReply {
 impl GetattrReply {
     /// Encodes this attribute set as an `Rgetattr` reply.
     ///
-    /// The timestamp fields (atime/mtime/ctime, both seconds and nanoseconds, and
-    /// the legacy btime/gen/data_version words) are all emitted as the fixed
-    /// epoch zero, so no host clock can leak into the reply ([IO-15]).
+    /// The timestamp fields (atime/mtime/ctime, both seconds and nanoseconds,
+    /// and the legacy btime/gen/data_version words) are all emitted as the
+    /// fixed epoch zero, so no host clock can leak into the reply.
     ///
     /// # Errors
     ///
@@ -790,7 +790,7 @@ impl GetattrReply {
     }
 }
 
-/// The fixed statistics carried in an `Rstatfs` reply ([IO-15]).
+/// The fixed statistics carried in an `Rstatfs` reply.
 ///
 /// Synthetic and host-independent: a fixed filesystem type, block size, and
 /// (zero) usage counters, so `statfs` never leaks host device accounting.
@@ -842,7 +842,7 @@ impl StatfsReply {
 ///
 /// The `offset` is the cookie a client passes to resume enumeration; it is
 /// assigned after the deterministic sort so it never depends on host readdir
-/// order ([IO-14]). Returns the number of bytes appended.
+/// order. Returns the number of bytes appended.
 ///
 /// # Errors
 ///
@@ -867,8 +867,8 @@ pub fn push_dirent(
 /// A forward-only, bounds-checked reader over a 9p frame body.
 ///
 /// Every accessor advances the cursor only on success and returns
-/// [`NinepCodecError::Truncated`] when the requested field runs past the buffer,
-/// so decoding hostile input never panics or reads out of bounds ([IO-18]).
+/// [`NinepCodecError::Truncated`] when the requested field runs past the
+/// buffer, so decoding hostile input never panics or reads out of bounds.
 struct Cursor<'a> {
     bytes: &'a [u8],
     pos: usize,
@@ -965,7 +965,7 @@ fn u64_le(buf: &[u8], offset: usize) -> u64 {
 /// A malformed-message failure of the 9p wire codec.
 ///
 /// Every variant is a pure function of the input bytes; decoding hostile input
-/// always lands here rather than panicking ([IO-18], `gate:abi-conformance`).
+/// always lands here rather than panicking (`gate:abi-conformance`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum NinepCodecError {
     /// The buffer (or a body field) is shorter than the bytes it must contain.

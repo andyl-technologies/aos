@@ -228,7 +228,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=checks.crucible.phase1.aosWorkspaceBuild
-            tasks=T-CRATE-14
             packages=crucible-controller,crucible,crucible-qemu-plugin,qemu-crucible
             cargo_deps=fetchCargoVendor
             plugin_headers=qemu-crucible

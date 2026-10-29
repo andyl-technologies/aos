@@ -4,13 +4,11 @@
   qemuPackage ? pkgs.qemu-crucible,
   referenceQemu ? pkgs.qemu-crucible-reference,
   attrPath ? "checks.crucible.phase2.qemuRegisterMutation",
-  taskIds ? ["T-QEMU-0051"],
   rejectionAtomicity ? false,
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
   atomicPatch = import ../../pkgs/emulation/qemu-patches/_atomic-patch.nix;
   patchSource = builtins.readFile (patchDir + "/${atomicPatch.file}");
-  taskList = builtins.concatStringsSep "," taskIds;
   inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
   liveCaseCount = 67;
 
@@ -401,7 +399,6 @@ in
               echo gate=gate:patch-microtests
               echo atomic_patch=${atomicPatch.file}
               echo attr_path=${attrPath}
-              echo task_ids=${taskList}
               echo patched_fixture_exercised=true
               echo stock_negative_control=true
               echo patched_non_sim_inert=true

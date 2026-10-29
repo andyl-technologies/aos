@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.adversarialExampleVerify",
-  taskIds ? ["T-EX-5"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -83,10 +82,6 @@
         label = "phase7 adversarial example attr path";
         needle = "checks.crucible.phase7.adversarialExampleVerify";
       }
-      {
-        label = "phase7 adversarial example task id";
-        needle = "taskIds = [\"T-EX-5\"]";
-      }
     ];
 in
   if failures != []
@@ -164,7 +159,6 @@ in
             mkdir -p "$out/nix-support"
             cat > "$out/nix-support/crucible-phase7-adversarial-example-verify.txt" <<REPORT
             attr=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
             adversarial_profiles=${builtins.concatStringsSep "," [
               "quiet-single-core"
               "loaded-single-core"

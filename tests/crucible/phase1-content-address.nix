@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.gates.contentAddress",
-  taskIds ? ["T-ASRT-17" "T-HARN-11" "T-PAT-4" "T-TEMP-1" "T-TEMP-2" "T-TEMP-3" "T-TEMP-6" "T-TEMP-8" "T-TEMP-9" "T-TEMP-10" "T-TEMP-11"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -909,7 +908,7 @@
       }
       {
         label = "red placeholder panic";
-        needle = "implementation is pending T-HARN-11";
+        needle = "implementation is pending";
       }
     ]
     ++ forbiddenFor "crates/crucible/crucible-determinism/tests/gate_content_address.rs" simGate [
@@ -919,7 +918,7 @@
       }
       {
         label = "red placeholder panic";
-        needle = "implementation is pending T-HARN-11";
+        needle = "implementation is pending";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-test-support/src/gate_targets.rs" gateTargets [
@@ -962,50 +961,6 @@
       {
         label = "phase1 content-address attr path";
         needle = "attrPath = \"checks.crucible.phase1.gates.contentAddress\"";
-      }
-      {
-        label = "phase1 content-address lists T-HARN-11";
-        needle = "\"T-HARN-11\"";
-      }
-      {
-        label = "phase1 content-address lists T-ASRT-17";
-        needle = "\"T-ASRT-17\"";
-      }
-      {
-        label = "phase1 content-address lists T-PAT-4";
-        needle = "\"T-PAT-4\"";
-      }
-      {
-        label = "phase1 content-address lists T-TEMP-1";
-        needle = "\"T-TEMP-1\"";
-      }
-      {
-        label = "phase1 content-address lists T-TEMP-2";
-        needle = "\"T-TEMP-2\"";
-      }
-      {
-        label = "phase1 content-address lists T-TEMP-3";
-        needle = "\"T-TEMP-3\"";
-      }
-      {
-        label = "phase1 content-address lists T-TEMP-6";
-        needle = "\"T-TEMP-6\"";
-      }
-      {
-        label = "phase1 content-address lists T-TEMP-8";
-        needle = "\"T-TEMP-8\"";
-      }
-      {
-        label = "phase1 content-address lists T-TEMP-9";
-        needle = "\"T-TEMP-9\"";
-      }
-      {
-        label = "phase1 content-address lists T-TEMP-10";
-        needle = "\"T-TEMP-10\"";
-      }
-      {
-        label = "phase1 content-address lists T-TEMP-11";
-        needle = "\"T-TEMP-11\"";
       }
     ]
     ++ failuresFor "docs/engineering/crucible/execution-graph.md" executionGraphDoc [
@@ -1167,7 +1122,6 @@ in
             PASS
             check=${attrPath}
             gate=gate:content-address
-            tasks=${builtins.concatStringsSep "," taskIds}
             rust_tests=crucible_engine::predicate_dsl,crucible_engine::gate_content_address,crucible_determinism::gate_content_address
             corpus=fixed-vectors-and-collision-sampling
             predicate_dsl=world-plan-resolved-content-addressed-conditions

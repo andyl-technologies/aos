@@ -4,17 +4,15 @@
 //! focused submodules and re-exports their public surface:
 //!
 //! - [`codec`]: the versioned, little-endian, bounds-checked block wire ABI
-//!   ([`BlockRequest`] / [`BlockResponse`], [IO-8], [IO-9]).
+//!   ([`BlockRequest`] / [`BlockResponse`]).
 //! - [`overlay`]: the read-only [`BaseImage`] and its in-memory 4 KiB
-//!   copy-on-write [`CowOverlay`] with dirty-page tracking and materialize
-//!   ([IO-5], [IO-6], [IO-7], [IO-12]).
+//!   copy-on-write [`CowOverlay`] with dirty-page tracking and materialize.
 //! - [`device`]: the [`BlockDevice`] [`IoSubNode`](crate::subnode::IoSubNode)
 //!   implementation, its [`BlockLatency`] completion model, and its
-//!   [`BlockSnapshot`] device-half `MaterializedState` ([IO-10], [IO-11],
-//!   [IO-22], [IO-23]).
+//!   [`BlockSnapshot`] device-half `MaterializedState`.
 //!
 //! The block device composes the uniform [`IoCore`](crate::subnode::IoCore) of
-//! the CS-IO-1 foundation for the clock, rings, in-flight queue, and
+//! the shared I/O foundation for the clock, rings, in-flight queue, and
 //! COMPUTE-then-DELIVER lifecycle; this module supplies only the block-specific
 //! COMPUTE (serve a request against the overlay/base) and state (overlay, RNG
 //! placeholder, base image).

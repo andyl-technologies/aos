@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.guestNonModification",
-  taskIds ? ["T-DET-21"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -223,10 +222,6 @@
         label = "phase1 exposes guest non-modification check";
         needle = "guestNonModification = import ./phase1-guest-non-modification.nix";
       }
-      {
-        label = "phase1 replay-oracle lists T-DET-21";
-        needle = "\"T-DET-21\"";
-      }
     ]
     ++ failuresFor "docs/engineering/crucible/determinism.md" determinismDoc [
       {
@@ -325,7 +320,6 @@ in
             check=${attrPath}
             gate=gate:replay-oracle
             required_gates=gate:any-guest,gate:replay-oracle
-            tasks=${builtins.concatStringsSep "," taskIds}
             rust_test=crucible_qemu_host::deterministic_launch::launch_profile_enforces_guest_non_modification
             scope=launch-contract-gate
             guest_writes=copy-on-write-overlay

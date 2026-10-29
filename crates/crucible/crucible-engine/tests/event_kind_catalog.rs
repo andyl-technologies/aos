@@ -1,4 +1,4 @@
-//! Checks T-OBS-13 event-kind catalog freezing.
+//! Checks event-kind catalog freezing.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
@@ -13,7 +13,7 @@ use crucible_engine::{
 };
 
 const EXPECTED_CATALOG_HASH: &str =
-    "50c440576c24fb6b5a10359c231fb551e7b63e7b7f26ae231fd9f421db0aa139";
+    "1db93d533f0cbcac4c40408b1cc8cd4bbf909c18bfb233ee2f9f25534b79a17f";
 
 #[test]
 fn event_kind_catalog_is_versioned_sorted_and_single_source_for_classes() {
@@ -103,7 +103,7 @@ fn event_kind_catalog_records_structural_dependency_map() {
 
     assert_eq!(
         dependencies
-            .get("0016-08-observability-measurement-debugging")
+            .get("guest-measurement")
             .copied()
             .unwrap_or(&[]),
         &[
@@ -115,7 +115,7 @@ fn event_kind_catalog_records_structural_dependency_map() {
     );
     assert_eq!(
         dependencies
-            .get("0012-05-recording-replay-observability")
+            .get("fault-signal-recording")
             .copied()
             .unwrap_or(&[]),
         &[
@@ -136,10 +136,7 @@ fn event_kind_catalog_records_structural_dependency_map() {
         ]
     );
     assert_eq!(
-        dependencies
-            .get("18-assertions-properties")
-            .copied()
-            .unwrap_or(&[]),
+        dependencies.get("assertions").copied().unwrap_or(&[]),
         &[
             "assertion_evaluated",
             "assertion_proximity",
@@ -147,24 +144,18 @@ fn event_kind_catalog_records_structural_dependency_map() {
             "guest_marker",
         ]
     );
+    assert_eq!(dependencies.get("session").copied().unwrap_or(&[]), &["*"]);
     assert_eq!(
-        dependencies
-            .get("20-session-control-plane")
-            .copied()
-            .unwrap_or(&[]),
+        dependencies.get("control-api").copied().unwrap_or(&[]),
         &["*"]
     );
-    assert_eq!(dependencies.get("21-api").copied().unwrap_or(&[]), &["*"]);
     assert_eq!(
-        dependencies
-            .get("22-advanced-features")
-            .copied()
-            .unwrap_or(&[]),
+        dependencies.get("exploration").copied().unwrap_or(&[]),
         &["assertion_proximity", "coverage"]
     );
     assert_eq!(
         dependencies
-            .get("24-determinism-harness-testing")
+            .get("determinism-harness")
             .copied()
             .unwrap_or(&[]),
         causal_kinds().as_slice()

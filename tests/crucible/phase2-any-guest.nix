@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.anyGuest",
-  taskIds ? ["T-DET-22" "T-HARN-16"],
   dependencies ? [],
   campaignComposition ? null,
   testing ? import ../../lib/testing {inherit pkgs lib;},
@@ -18,8 +17,6 @@
   harnessTesting = builtins.readFile ../../docs/engineering/crucible/testing-and-gates.md;
   guestNonModification = builtins.readFile ./phase1-guest-non-modification.nix;
   whiteboxGate = import ./phase2-plugin-whitebox-doorbell.nix {inherit pkgs lib;};
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
@@ -523,7 +520,7 @@
           ;;
       esac
 
-      # Stock guest cmdline (D-31): no entropy-suppression flags. Determinism
+      # Stock guest cmdline: no entropy-suppression flags. Determinism
       # is sealed host-side (fixed -cpu without RDRAND/RDSEED, seeded fw_cfg
       # entropy, -icount), so KASLR/ASLR stay enabled and remain reproducible.
       append="console=ttyS0 reboot=k panic=1 rdinit=/init quiet net.ifnames=0"
@@ -697,7 +694,6 @@
     {
       echo PASS
       echo check=${attrPath}
-      echo tasks=${taskList}
       echo gate=gate:any-guest
       echo runtime_proof=real-qemu-stock-guest-matrix
       echo real_qemu_launch_matrix=diskless,cow_block

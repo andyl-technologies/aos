@@ -2,8 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.sessionSimDoubleSuite",
-  taskIds ? ["T-SESS-12" "T-PAT-6"],
-  openTaskIds ? [],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -28,9 +26,6 @@
   lifecycleCheck = builtins.readFile ./phase5-session-lifecycle.nix;
   commandCheck = builtins.readFile ./phase5-session-command-set.nix;
   controlResponsiveCheck = builtins.readFile ./phase5-control-responsive.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
-  openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
@@ -343,10 +338,6 @@
         needle = "sessionSimDoubleSuite = import ./phase5-session-sim-double-suite.nix";
       }
       {
-        label = "phase5 SimDouble suite carries completed session and pattern tasks";
-        needle = "taskIds = [\"T-SESS-12\" \"T-PAT-6\"]";
-      }
-      {
         label = "phase5 SimDouble suite attr path";
         needle = "attrPath = \"checks.crucible.phase5.sessionSimDoubleSuite\"";
       }
@@ -464,8 +455,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
-            open_tasks=${openTaskList}
             status=partial
             component=crucible-session
             backend=crucible-sim-double-adapter

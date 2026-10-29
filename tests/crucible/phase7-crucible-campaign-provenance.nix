@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.crucibleCampaignProvenance",
-  taskIds ? ["T-PKG-22"],
   dependencies ? [],
 }: let
   packagingDoc = builtins.readFile ../../docs/engineering/crucible/packaging.md;
@@ -184,7 +183,6 @@ in
             cat > "$out/result" <<RESULT
             PASS
             check=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
             provenance_key=campaign_provenance_key
             corpus_reuse_decision=CampaignCorpusReuseDecision
             refusal=RefuseCrossProvenanceReuse

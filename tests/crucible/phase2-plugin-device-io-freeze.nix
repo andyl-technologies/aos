@@ -2,8 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginDeviceIoFreeze",
-  taskIds ? [],
-  openTaskIds ? ["T-PLUG-9"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -29,8 +27,6 @@
   shmemNodeSlotTests = builtins.readFile ../../crates/crucible/crucible-qemu-shmem/tests/multi_vcpu_node_slot.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
-  taskList = builtins.concatStringsSep "," taskIds;
-  openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -357,8 +353,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
-            open_tasks=${openTaskList}
             status=partial
             device_io_active=published-before-submit
             pending_counter=one-to-one-submit-completion

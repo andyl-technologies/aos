@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase3.schedulerOrderingLint",
-  taskIds ? ["T-SCHED-9"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -66,7 +65,6 @@
     )
     orderingPathSources;
 
-  taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "docs/engineering/crucible/scheduling.md" schedulingDoc [
       {
@@ -327,7 +325,6 @@ in
             PASS
             check=${attrPath}
             gate=gate:harness-lint
-            tasks=${taskList}
             component=crucible-scheduler
             ordering_path=no-unordered-map-set-default-random-hasher
             custom_static_tier=hash-iteration,default-random-hasher

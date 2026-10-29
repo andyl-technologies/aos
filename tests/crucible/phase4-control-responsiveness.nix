@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.gates.controlResponsiveness",
-  taskIds ? ["T-CAM-4.5" "T-CAM-4.6" "T-CAM-4.9" "T-CAM-8.1" "T-CAM-8.2"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -27,7 +26,6 @@ in
       ]
       ++ dependencies;
     ATTR_PATH = attrPath;
-    TASK_IDS = builtins.concatStringsSep "," taskIds;
     DEPENDENCY_COUNT = toString (builtins.length dependencies);
 
     phases = [
@@ -108,7 +106,6 @@ in
             printf 'PASS\n'
             printf 'gate=gate:control-responsiveness\n'
             printf 'attr_path=%s\n' "$ATTR_PATH"
-            printf 'task_ids=%s\n' "$TASK_IDS"
             printf 'dependency_count=%s\n' "$DEPENDENCY_COUNT"
             printf 'tier=model\n'
             printf 'controls=campaign-pause,campaign-status,campaign-pin,executor-shutdown\n'

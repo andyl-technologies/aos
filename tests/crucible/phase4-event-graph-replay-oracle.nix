@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.gates.replayOracle",
-  taskIds ? ["T-TRIG-20" "T-ASRT-16" "T-ASRT-18"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -21,7 +20,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-  taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "docs/engineering/crucible/conditions-and-triggers.md" conditionsDoc [
       {
@@ -318,9 +316,8 @@ in
             mkdir -p "$out/nix-support"
             {
               echo "attr=${attrPath}"
-              echo "tasks=${taskList}"
               echo "gate=phase4-event-graph-replay-oracle"
-              echo "replay_oracle=implemented-T-TRIG-20"
+              echo "replay_oracle=implemented"
               echo "e2e_determinism=covered-by-checks.crucible.phase4.gates.e2eDeterminism"
               echo "fixed_scenario_seed_schedule=true"
               echo "identical_trigger_firings=true"

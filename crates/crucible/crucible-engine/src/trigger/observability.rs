@@ -378,7 +378,7 @@ impl BasicBlockCoverageConfig {
     ///
     /// Disabled coverage returns [`BasicBlockCoverageRegistrationPlan::Disabled`]
     /// before validating coverage-only settings, so the engine creates no
-    /// coverage consumer token. The plugin-side T-PLUG-15 registration plan owns
+    /// coverage consumer token. The plugin-side registration plan owns
     /// the corresponding proof that QEMU receives no TCG-exec callback when the
     /// launch switch is off.
     ///

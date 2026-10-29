@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.shmemAbiConformance",
-  taskIds ? ["T-SHM-14" "T-SHM-19"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -37,7 +36,6 @@
   gateTargets = builtins.readFile ../../crates/crucible/crucible-test-support/src/gate_targets.rs;
   gateTargetMapping = builtins.readFile ./phase1-gate-target-mapping.nix;
 
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
@@ -1606,7 +1604,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             gate=gate:abi-conformance
             rust_tests=crucible_qemu_shmem::gate_abi_conformance,crucible_qemu_shmem::preemption_mailbox,crucible_qemu_shmem::hot_fork_ring_image
             generated_header_diff=checked

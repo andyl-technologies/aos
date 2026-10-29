@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.guestHostDoorbellFrame",
-  taskIds ? ["T-GHC-7"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -38,7 +37,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-  taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "docs/engineering/crucible/guest-host-channel.md" guestHostChannelDoc [
       {
@@ -211,10 +209,6 @@
         label = "phase4 doorbell frame attr path";
         needle = "checks.crucible.phase4.guestHostDoorbellFrame";
       }
-      {
-        label = "phase4 doorbell frame task id";
-        needle = "taskIds = [\"T-GHC-7\"]";
-      }
     ]
     ++ forbiddenFor "crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhitebox [
       {
@@ -315,7 +309,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             gate=gate:abi-conformance
             frame=whitebox-doorbell-fixed-header-le
             version_rule=WHITEBOX_DOORBELL_FRAME_REGENERATION_RULE

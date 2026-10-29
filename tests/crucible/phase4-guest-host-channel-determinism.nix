@@ -2,8 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.guestHostChannelDeterminism",
-  taskIds ? ["T-GHC-12"],
-  openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -53,8 +51,6 @@
     )
     forbiddenCallbackApis;
 
-  taskList = builtins.concatStringsSep "," taskIds;
-  openTaskList = builtins.concatStringsSep "," openTaskIds;
   failures =
     failuresFor "docs/engineering/crucible/guest-host-channel.md" guestHostChannelDoc [
       {
@@ -184,10 +180,6 @@
       {
         label = "phase4 channel determinism attr path";
         needle = "checks.crucible.phase4.guestHostChannelDeterminism";
-      }
-      {
-        label = "phase4 channel determinism task id";
-        needle = "taskIds = [\"T-GHC-12\"]";
       }
     ]
     ++ failuresFor "tests/crucible/phase4-guest-host-channel-determinism.nix" phaseGate [
@@ -351,11 +343,8 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
-            open_tasks=${openTaskList}
             status=partial
             evidence_scope=callback-core-and-scheduler-model
-            spec_contracts=GHC-30,GHC-31,GHC-32
             payload_read=trap-icount-snapshot
             host_guest_direction=explicit-delivery-icount-producer-timing-invariant
             marker_fingerprint=scheduler-witness-identical-with-markers-on-vs-off

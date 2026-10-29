@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.gates.branchPointModel",
-  taskIds ? ["T-CAM-4.1" "T-CAM-4.2" "T-CAM-4.3" "T-CAM-4.4"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -61,7 +60,6 @@ in
           cat > "$out/result" <<RESULT
           PASS
           check=${attrPath}
-          tasks=${builtins.concatStringsSep "," taskIds}
           gate=gate:branch-point-model
           scope=parent-scoped-identity,finite-generated-convergence,lazy-cursors,semantic-deduplication,immutable-execution-basis,retained-causes,observation-credit,cold-restart,statistical-intervention-exclusion
           RESULT

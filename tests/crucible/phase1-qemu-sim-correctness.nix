@@ -306,7 +306,6 @@ in
             gate=gate:layer1-injection
             gate=gate:qemu-inert
             gate=gate:patch-microtests
-            tasks=T-PATCH-16
             atomic_patch=${atomicPatch.file}
             patched_fixture_exercised=true
             stock_negative_control=true

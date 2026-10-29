@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.protocolSetupCompletion",
-  taskIds ? ["T-PROTO-5"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -35,8 +34,6 @@
   pluginSetup = import ./_qemu-plugin-setup-source.nix {inherit lib;};
   pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -278,10 +275,6 @@
         label = "canonical ABI conformance gate is implemented";
         needle = "abiConformance = import ./phase2-abi-conformance.nix";
       }
-      {
-        label = "canonical ABI conformance task list";
-        needle = "taskIds = [\"T-HARN-17\" \"T-API-11\" \"T-API-12\" \"T-PAT-8\"]";
-      }
     ];
 in
   if failures != []
@@ -376,7 +369,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             gates=gate:abi-conformance,gate:control-responsive
             rust_tests=crucible_qemu_protocol::setup_completion,crucible_qemu_shmem::setup_validation,crucible-qemu-plugin::setup,crucible-qemu-plugin::time_control
             setup_region=mmap-region_len

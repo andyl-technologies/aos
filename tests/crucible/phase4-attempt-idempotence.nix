@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.gates.attemptIdempotence",
-  taskIds ? ["T-CAM-4.2" "T-CAM-4.9"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -61,7 +60,6 @@ in
           cat > "$out/result" <<RESULT
           PASS
           check=${attrPath}
-          tasks=${builtins.concatStringsSep "," taskIds}
           gate=gate:attempt-idempotence
           matrix=admission-replay,assignment-replay,running-retry,assignment-conflict,pre-publication-restart,ref-cas-retry,post-publication-replay,equal-completion,conflicting-completion,exact-credit
           RESULT

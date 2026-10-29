@@ -1,4 +1,4 @@
-//! Checks the T-SCHED-7 rendezvous frequency/exactness split.
+//! Checks the rendezvous frequency/exactness split.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.

@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.spatialValidationPass",
-  taskIds ? ["T-SPAT-21"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -453,7 +452,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
             component=parse-build-validation-pass
             spatial_rows=world,links,plan,properties,ready-point,vcpu-count,fixed-tick-scale
             launch_rows=mirrored-by-crucible-qemu

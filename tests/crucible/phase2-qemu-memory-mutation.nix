@@ -4,12 +4,10 @@
   qemuPackage ? pkgs.qemu-crucible,
   referenceQemu ? pkgs.qemu-crucible-reference,
   attrPath ? "checks.crucible.phase2.qemuMemoryMutation",
-  taskIds ? ["T-QEMU-0049"],
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
   atomicPatch = import ../../pkgs/emulation/qemu-patches/_atomic-patch.nix;
   patchSource = builtins.readFile (patchDir + "/${atomicPatch.file}");
-  taskList = builtins.concatStringsSep "," taskIds;
   inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
   liveCaseCount = 40;
 
@@ -309,7 +307,6 @@ in
               printf 'qemu_package=%s\n' '${qemuPackage}'
               printf 'qemu_package_version=%s\n' '${qemuPackage.version}'
               printf 'attr_path=%s\n' '${attrPath}'
-              printf 'task_ids=%s\n' '${taskList}'
               printf 'backend=actual-patched-and-stock-qemu\n'
               printf 'live_cases=%s\n' '${toString liveCaseCount}'
               printf 'architectures=%s\n' 'x86_64,aarch64'

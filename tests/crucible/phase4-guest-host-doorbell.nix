@@ -2,8 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.guestHostDoorbell",
-  taskIds ? ["T-GHC-4"],
-  openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -17,8 +15,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-  taskList = builtins.concatStringsSep "," taskIds;
-  openTaskList = builtins.concatStringsSep "," openTaskIds;
   failures =
     failuresFor "crates/crucible/crucible-qemu-plugin/src/lib.rs" pluginLib [
       {
@@ -145,10 +141,6 @@
         label = "phase4 doorbell attr path";
         needle = "checks.crucible.phase4.guestHostDoorbell";
       }
-      {
-        label = "phase4 doorbell task id";
-        needle = "taskIds = [\"T-GHC-4\"]";
-      }
     ]
     ++ forbiddenFor "crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhiteboxDoorbell [
       {
@@ -251,8 +243,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
-            open_tasks=${openTaskList}
             status=partial
             evidence_scope=doorbell-callback-core-model
             doorbell=synchronous-trapped-instruction

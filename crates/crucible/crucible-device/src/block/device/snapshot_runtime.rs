@@ -3,17 +3,17 @@
 use super::*;
 
 impl BlockDevice {
-    /// Snapshots the device half of a `MaterializedState` ([IO-11], [IO-23]).
+    /// Snapshots the device half of a `MaterializedState`.
     ///
     /// Captures the overlay **delta** (only pages dirtied since the last
     /// checkpoint boundary), the **dirty page set itself** (so a mid-epoch
     /// snapshot/restore preserves which pages still owe the next checkpoint a
-    /// delta, [IO-7]), the device RNG cursor, the active fault table, the latency model
-    /// parameters (part of the `World`, [IO-10]), the in-flight responses with
-    /// their delivery icounts, the base hash, and the device length -- **never**
-    /// the base image bytes ([TEMP-9]). The dirty set is *not* cleared here;
-    /// call [`BlockDevice::checkpoint_boundary`] after taking the delta to begin
-    /// a disjoint successor delta.
+    /// delta), the device RNG cursor, the active fault table, the latency model
+    /// parameters (part of the `World`), the in-flight responses with their
+    /// delivery icounts, the base hash, and the device length -- **never** the
+    /// base image bytes. The dirty set is *not* cleared here; call
+    /// [`BlockDevice::checkpoint_boundary`] after taking the delta to begin a
+    /// disjoint successor delta.
     #[must_use]
     pub fn snapshot(&self) -> BlockSnapshot {
         BlockSnapshot {
@@ -28,7 +28,7 @@ impl BlockDevice {
         }
     }
 
-    /// Clears the overlay dirty set at a checkpoint boundary ([IO-7]).
+    /// Clears the overlay dirty set at a checkpoint boundary.
     ///
     /// Call this *after* [`BlockDevice::snapshot`] captures the delta so the next
     /// snapshot captures only pages dirtied afterward, giving successive
@@ -39,20 +39,19 @@ impl BlockDevice {
 
     /// Restores a device from a snapshot stacked over a parent overlay.
     ///
-    /// The parent overlay (the materialized state up to the snapshot's parent) is
-    /// passed in `parent`; the snapshot's delta is stacked on top, the **dirty
-    /// page set** is restored verbatim (so the next checkpoint emits the same
-    /// delta an uninterrupted run would, [IO-7]), the RNG position and the
+    /// The parent overlay (the materialized state up to the snapshot's parent)
+    /// is passed in `parent`; the snapshot's delta is stacked on top, the
+    /// **dirty page set** is restored verbatim (so the next checkpoint emits the
+    /// same delta an uninterrupted run would), the RNG position and the
     /// snapshot's **latency model** are restored (the latency params are part of
-    /// the `World`, [IO-10]), and the in-flight responses are re-armed via the
-    /// core snapshot ([IO-11]). The base image is supplied separately (it is
-    /// content-addressed and shared, never carried in the snapshot, [TEMP-9]);
-    /// the restore verifies its hash matches.
+    /// the `World`), and the in-flight responses are re-armed via the core
+    /// snapshot. The base image is supplied separately (it is content-addressed
+    /// and shared, never carried in the snapshot); the restore verifies its hash
+    /// matches.
     ///
-    /// The restored state is byte-identical to an uninterrupted run ([IO-11],
-    /// [IO-22], [IO-28]): the same dirty bookkeeping, the same completion model,
-    /// and the same in-flight queue, so post-restore `delivery_icount`s and
-    /// payloads match exactly.
+    /// The restored state is byte-identical to an uninterrupted run: the same
+    /// dirty bookkeeping, the same completion model, and the same in-flight
+    /// queue, so post-restore `delivery_icount`s and payloads match exactly.
     ///
     /// Pass `parent = None` to restore a self-contained snapshot whose captured
     /// `full_pages` already hold the complete overlay (the common in-process case
@@ -86,9 +85,9 @@ impl BlockDevice {
             Some(parent) => {
                 let mut overlay = parent.clone();
                 overlay.apply_delta(&snapshot.overlay_delta);
-                // Restore the dirty set the snapshot captured ([IO-7]); the
-                // applied delta is not implicitly clean, and clearing it here
-                // would lose pages the next checkpoint still owes.
+                // Restore the dirty set the snapshot captured; the applied
+                // delta is not implicitly clean, and clearing it here would
+                // lose pages the next checkpoint still owes.
                 overlay.set_dirty(snapshot.dirty.clone());
                 overlay
             }
@@ -100,8 +99,8 @@ impl BlockDevice {
             overlay,
             storage_faults: snapshot.storage_faults.clone(),
             // Restore the snapshot's latency model so post-restore completion
-            // icounts match an uninterrupted run ([IO-10], [IO-22]); never
-            // substitute the default, which would silently diverge.
+            // icounts match an uninterrupted run; never substitute the default,
+            // which would silently diverge.
             latency: snapshot.latency,
         })
     }
@@ -127,8 +126,8 @@ impl BlockDevice {
     ///
     /// Like [`BlockDevice::restore`] but takes the `latency` model explicitly.
     /// Plain [`BlockDevice::restore`] already restores the snapshot's recorded
-    /// latency faithfully; use this only when the caller authoritatively re-binds
-    /// the latency parameters from the live `World` ([IO-10]).
+    /// latency faithfully; use this only when the caller authoritatively
+    /// re-binds the latency parameters from the live `World`.
     ///
     /// # Errors
     ///
@@ -146,9 +145,8 @@ impl BlockDevice {
 
     /// Materializes the full current disk image: base with overlay applied.
     ///
-    /// The hand-off for the real-time QEMU path ([IO-12]): a standalone raw image
-    /// QEMU can mount. The base image is **not** mutated ([INV-5]); a fresh `Vec`
-    /// is produced.
+    /// The hand-off for the real-time QEMU path: a standalone raw image QEMU
+    /// can mount. The base image is **not** mutated; a fresh `Vec` is produced.
     #[must_use]
     pub fn materialize(&self) -> Vec<u8> {
         self.overlay.materialize(&self.base)

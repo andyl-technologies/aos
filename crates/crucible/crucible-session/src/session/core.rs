@@ -226,8 +226,8 @@ impl From<&PauseReason> for PauseReasonKind {
 
 /// Actor-owned breakpoint registry for a live session.
 ///
-/// This type is intentionally only a registry at the T-SESS-1 layer. Later
-/// command tasks define how breakpoint specifications are added, removed, and
+/// This type is intentionally only a registry at the session layer. Command
+/// handlers define how breakpoint specifications are added, removed, and
 /// evaluated at deterministic event-log boundaries.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BreakpointSet {

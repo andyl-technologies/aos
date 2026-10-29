@@ -1,4 +1,4 @@
-//! Checks T-GHC-2 OS-agnostic black-box observation.
+//! Checks OS-agnostic black-box observation.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.

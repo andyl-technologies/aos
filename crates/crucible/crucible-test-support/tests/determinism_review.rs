@@ -52,7 +52,6 @@ fn determinism_review_policy_matches_engineering_standards() -> Result<(), Box<d
         "phase1-determinism-review.nix",
         &gate_nix,
         &[
-            "tasks=T-STD-13",
             "review_checklist=docs/engineering/crucible/engineering-standards.md",
             "root_cause_rule=source-only",
             "expectedDeterminismChecklistItems",

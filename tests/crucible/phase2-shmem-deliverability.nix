@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.shmemDeliverability",
-  taskIds ? ["T-SHM-13"],
 }: let
   phase0S4 = import ./phase0-s4.nix {inherit pkgs;};
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -19,7 +18,6 @@
   };
   defaultChecks = builtins.readFile ./default.nix;
 
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
@@ -203,7 +201,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             gate=gate:layer1-injection
             gate=gate:content-address
             gate=gate:divergence-bisect

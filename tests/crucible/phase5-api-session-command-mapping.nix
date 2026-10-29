@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.apiSessionCommandMapping",
-  taskIds ? ["T-API-2"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -15,8 +14,6 @@
   sessionMapping = builtins.readFile ../../crates/crucible/crucible-control-api/src/session_mapping.rs;
   sessionMappingTest = builtins.readFile ../../crates/crucible/crucible-control-api/tests/gate_session_mapping.rs;
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -130,7 +127,6 @@ in
 
     CRUCIBLE_T_API_2_FAILURES = failureText;
     ATTR_PATH = attrPath;
-    TASK_IDS = taskList;
     DEPENDENCY_COUNT = toString (builtins.length dependencies);
     DEPENDENCY_PATHS = builtins.concatStringsSep ":" dependencies;
 
@@ -194,7 +190,6 @@ in
           {
             printf 'PASS\n'
             printf 'check=%s\n' "$ATTR_PATH"
-            printf 'tasks=%s\n' "$TASK_IDS"
             printf 'dependency_count=%s\n' "$DEPENDENCY_COUNT"
             printf 'method_mapping=thin_session_wrapper\n'
             printf 'request_shape=typed_programmatic\n'

@@ -306,7 +306,7 @@ mod tests {
 
         // Fixture publication constructs real typed projection envelopes. The
         // traversal assertions below bound production page and proof size;
-        // CPERF-6 allocation instrumentation lives in the huge-domain gate
+        // Allocation instrumentation lives in the huge-domain gate
         // fixture, whose contract specifically covers integral cardinality.
         let blobs = Arc::new(MemoryBlobBackend::new(
             "million-dormant-frontier",

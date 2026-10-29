@@ -1,16 +1,16 @@
 //! The read-only base image and its in-memory 4 KiB copy-on-write overlay.
 //!
 //! This module owns [`BaseImage`] (a content-addressed, never-mutated byte
-//! array, [IO-5]) and [`CowOverlay`] (the in-memory page overlay layered over
-//! it). Reads resolve each 4 KiB page from the overlay if present, else from the
+//! array) and [`CowOverlay`] (the in-memory page overlay layered over it).
+//! Reads resolve each 4 KiB page from the overlay if present, else from the
 //! base; writes copy the affected base page up into the overlay and patch it
 //! there; the set of dirtied pages is tracked so a checkpoint captures only the
-//! delta dirtied since its parent ([IO-7], [TEMP-15]).
+//! delta dirtied since its parent.
 //!
 //! Page geometry is fixed at [`PAGE_SIZE`] = 4096 bytes. The overlay keys pages
 //! by their **page base** (the page-aligned byte offset) in a [`BTreeMap`] so
 //! every captured delta and every materialize pass iterates pages in a single
-//! deterministic order ([IO-24]) — never a default-hasher order.
+//! deterministic order — never a default-hasher order.
 //!
 //! ```text
 //! page_index(off) = off / 4096
@@ -32,10 +32,10 @@ pub const PAGE_SIZE: usize = 4096;
 
 /// A read-only, content-addressed base disk image held in memory.
 ///
-/// The base is **never mutated** by any device operation ([IO-5], [INV-5]); all
-/// writes land in the [`CowOverlay`]. Its content hash is computed once at
-/// construction and used to key the device's identity and to verify that a
-/// restore stacks an overlay over the same parent.
+/// The base is **never mutated** by any device operation; all writes land in
+/// the [`CowOverlay`]. Its content hash is computed once at construction and
+/// used to key the device's identity and to verify that a restore stacks an
+/// overlay over the same parent.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BaseImage {
     bytes: Vec<u8>,
@@ -45,9 +45,8 @@ pub struct BaseImage {
 impl BaseImage {
     /// Wraps `bytes` as a read-only base image, hashing its content.
     ///
-    /// The BLAKE3 content hash is the base's stable identity ([IO-5]); it is
-    /// recomputed nowhere else, so the base bytes can never silently change
-    /// identity.
+    /// The BLAKE3 content hash is the base's stable identity; it is recomputed
+    /// nowhere else, so the base bytes can never silently change identity.
     #[must_use]
     pub fn new(bytes: Vec<u8>) -> Self {
         let hash = *blake3::hash(&bytes).as_bytes();
@@ -105,12 +104,12 @@ fn page_base_of(offset: u64) -> u64 {
 /// Each entry maps a page base to its full 4 KiB page bytes. A page is present
 /// only after a copy-up (a write touching it); reads of an absent page fall
 /// through to the base. The `dirty` set records pages written since the last
-/// checkpoint boundary so the next snapshot captures a disjoint delta ([IO-7]).
+/// checkpoint boundary so the next snapshot captures a disjoint delta.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct CowOverlay {
     /// Copied-up pages keyed by page base, in deterministic ascending order.
     pages: BTreeMap<u64, [u8; PAGE_SIZE]>,
-    /// Page bases dirtied since the last checkpoint boundary ([IO-7]).
+    /// Page bases dirtied since the last checkpoint boundary.
     dirty: BTreeSet<u64>,
 }
 
@@ -129,7 +128,7 @@ impl CowOverlay {
 
     /// Returns the page bases dirtied since the last checkpoint boundary.
     ///
-    /// The iteration order is ascending by page base ([IO-24]).
+    /// The iteration order is ascending by page base.
     #[must_use]
     pub fn dirty_pages(&self) -> &BTreeSet<u64> {
         &self.dirty
@@ -138,12 +137,12 @@ impl CowOverlay {
     /// Reads `len` bytes at `offset`, overlay page over base page.
     ///
     /// Each spanned 4 KiB page resolves from the overlay if copied up, else from
-    /// the read-only base ([IO-5]). The base is never consulted for mutation.
+    /// the read-only base. The base is never consulted for mutation.
     ///
     /// # Errors
     ///
     /// Returns [`DeviceError::OutOfRange`] when `[offset, offset+len)` extends
-    /// past the device length ([IO-6]); the read never truncates or extends.
+    /// past the device length; the read never truncates or extends.
     pub fn read(&self, base: &BaseImage, offset: u64, len: u64) -> Result<Vec<u8>, DeviceError> {
         let end = checked_range_end(offset, len, base.len())?;
         let mut out = Vec::with_capacity(len as usize);
@@ -168,12 +167,12 @@ impl CowOverlay {
     ///
     /// Each spanned page is copied up from the base into the overlay (if not
     /// already present) and patched in place; every touched page base is marked
-    /// dirty ([IO-5], [IO-7]). The base image is never written.
+    /// dirty. The base image is never written.
     ///
     /// # Errors
     ///
     /// Returns [`DeviceError::OutOfRange`] when `[offset, offset+data.len())`
-    /// extends past the device length ([IO-6]).
+    /// extends past the device length.
     pub fn write(&mut self, base: &BaseImage, offset: u64, data: &[u8]) -> Result<(), DeviceError> {
         let len = data.len() as u64;
         let end = checked_range_end(offset, len, base.len())?;
@@ -195,9 +194,9 @@ impl CowOverlay {
 
     /// Returns the delta of pages dirtied since the last checkpoint boundary.
     ///
-    /// The returned map holds *only* the dirty pages (a disjoint successor-
-    /// checkpoint delta, [IO-7]/[TEMP-15]), keyed by page base in ascending
-    /// order, alongside each page's BLAKE3 content hash for dedup ([TEMP-16]).
+    /// The returned map holds *only* the dirty pages (a disjoint
+    /// successor-checkpoint delta), keyed by page base in ascending order,
+    /// alongside each page's BLAKE3 content hash for dedup.
     #[must_use]
     pub fn dirty_delta(&self) -> OverlayDelta {
         let mut pages = BTreeMap::new();
@@ -212,7 +211,7 @@ impl CowOverlay {
     /// Returns every live overlay page, regardless of dirty state.
     ///
     /// Used by [`CowOverlay::materialize`] and by a full (non-delta) snapshot.
-    /// Ordered ascending by page base ([IO-24]).
+    /// Ordered ascending by page base.
     #[must_use]
     pub fn all_pages(&self) -> &BTreeMap<u64, [u8; PAGE_SIZE]> {
         &self.pages
@@ -220,14 +219,13 @@ impl CowOverlay {
 
     /// Clears the dirty set at a checkpoint boundary, after the delta is taken.
     ///
-    /// Successive checkpoints then capture disjoint deltas ([IO-7]). The copied-
-    /// up pages themselves remain in the overlay; only the dirty bookkeeping is
-    /// reset.
+    /// Successive checkpoints then capture disjoint deltas. The copied-up pages
+    /// themselves remain in the overlay; only the dirty bookkeeping is reset.
     pub fn clear_dirty(&mut self) {
         self.dirty.clear();
     }
 
-    /// Replaces the dirty page set verbatim (the restore step, [IO-7]).
+    /// Replaces the dirty page set verbatim (the restore step).
     ///
     /// Restore uses this to reinstate the exact dirty bookkeeping a snapshot
     /// captured, so the next checkpoint emits the same delta an uninterrupted run
@@ -240,7 +238,7 @@ impl CowOverlay {
     ///
     /// Each page in `delta` overwrites or inserts the corresponding overlay
     /// page; the applied pages are *not* marked dirty (they already belong to
-    /// the parent-plus-delta materialized state, [IO-11]).
+    /// the parent-plus-delta materialized state).
     pub fn apply_delta(&mut self, delta: &OverlayDelta) {
         for (&pb, page) in &delta.pages {
             self.pages.insert(pb, *page);
@@ -250,10 +248,10 @@ impl CowOverlay {
     /// Produces the full current disk image: base bytes with every overlay page
     /// applied on top.
     ///
-    /// This is the materialize-to-image hand-off ([IO-12]): the returned `Vec`
-    /// is a standalone raw image a real-time QEMU can mount. The base image is
-    /// **not** mutated — the bytes are copied first, then overlay pages overwrite
-    /// their ranges ([INV-5]).
+    /// This is the materialize-to-image hand-off: the returned `Vec` is a
+    /// standalone raw image a real-time QEMU can mount. The base image is
+    /// **not** mutated — the bytes are copied first, then overlay pages
+    /// overwrite their ranges.
     ///
     /// # Panics
     ///
@@ -270,7 +268,7 @@ impl CowOverlay {
             debug_assert!(
                 start < image.len(),
                 "overlay page base {start} lies beyond image length {}; \
-                 a copy-up must be range-checked against the base ([IO-12])",
+                 a copy-up must be range-checked against the base",
                 image.len()
             );
             if start >= image.len() {
@@ -285,7 +283,7 @@ impl CowOverlay {
     /// Reconstructs an overlay from its full page set and dirty set.
     ///
     /// Used by snapshot restore: the captured pages and dirty bookkeeping are
-    /// stacked verbatim ([IO-11]).
+    /// stacked verbatim.
     #[must_use]
     pub fn from_parts(pages: BTreeMap<u64, [u8; PAGE_SIZE]>, dirty: BTreeSet<u64>) -> Self {
         Self { pages, dirty }
@@ -294,9 +292,9 @@ impl CowOverlay {
 
 /// A copy-on-write delta: the pages dirtied since a parent checkpoint.
 ///
-/// Keyed by page base in deterministic ascending order ([IO-24]). This is the
-/// device half of a `MaterializedState` overlay contribution ([IO-11]); it never
-/// carries the base image ([TEMP-9]).
+/// Keyed by page base in deterministic ascending order. This is the device half
+/// of a `MaterializedState` overlay contribution; it never carries the base
+/// image.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct OverlayDelta {
     /// The dirtied pages keyed by page base, ascending.
@@ -307,7 +305,7 @@ impl OverlayDelta {
     /// Returns the BLAKE3 hash of each delta page, keyed by page base.
     ///
     /// The per-page content hash is what the temporal graph uses to deduplicate
-    /// identical pages across checkpoints ([IO-11], [TEMP-16]).
+    /// identical pages across checkpoints.
     #[must_use]
     pub fn page_hashes(&self) -> BTreeMap<u64, [u8; 32]> {
         self.pages
@@ -322,8 +320,7 @@ impl OverlayDelta {
 /// # Errors
 ///
 /// Returns [`DeviceError::OutOfRange`] when the range overflows `u64` or extends
-/// past `device_len` ([IO-6]). A zero-length range at exactly `device_len` is
-/// in range.
+/// past `device_len`. A zero-length range at exactly `device_len` is in range.
 fn checked_range_end(offset: u64, len: u64, device_len: u64) -> Result<u64, DeviceError> {
     let end = offset.checked_add(len).ok_or(DeviceError::OutOfRange {
         offset,

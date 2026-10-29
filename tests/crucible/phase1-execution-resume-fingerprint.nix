@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.executionResumeFingerprint",
-  taskIds ? ["T-EXEC-5"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -159,7 +158,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
             proof=resume-plus-continue-equals-uninterrupted
             witness=reduced-state-execution-fingerprint
             rng_state=schedule-hydrated-decision-recorder

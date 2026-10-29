@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase3.schedulerQuantumLoop",
-  taskIds ? ["T-SCHED-12"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -60,7 +59,6 @@
   in
     missing ++ outOfOrder;
 
-  taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "docs/engineering/crucible/scheduling.md" schedulingDoc [
       {
@@ -301,12 +299,11 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             component=crucible-scheduler
             quantum=PICK-RUN-RESOLVE-decision-EMIT-STEP-boundary
             pure_sequence=true
             step_equivalence=true
-            full_event_log_emit=deferred-to-T-SCHED-19
+            full_event_log_emit=deferred
             frontier_guard=true
             RESULT
           '';

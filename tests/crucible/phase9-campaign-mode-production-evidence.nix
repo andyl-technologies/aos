@@ -3,8 +3,6 @@
   lib,
   campaignComposition ? null,
   attrPath,
-  taskIds ? [],
-  openTaskIds ? [],
   dependencies ? [],
   gate,
   executionFamily,
@@ -38,8 +36,6 @@
       "PASS"
       "check=${attrPath}"
       "gate=${gate}"
-      "tasks=${builtins.concatStringsSep "," taskIds}"
-      "open_tasks=${builtins.concatStringsSep "," openTaskIds}"
       "status=complete"
     ]
     ++ semanticEvidence);

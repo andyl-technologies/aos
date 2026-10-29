@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.gates.campaignStoreComposition",
-  taskIds ? ["T-CAM-5.5" "T-CAM-5.6" "T-CAM-5.7"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -263,7 +262,6 @@ in
           cat > "$out/result" <<RESULT
           PASS
           check=${attrPath}
-          tasks=${builtins.concatStringsSep "," taskIds}
           gate=gate:campaign-store-composition
           allowed_transparent_layer_orders=6
           composed_routes=mirrored-fact,tiered-ram,deferred-finding

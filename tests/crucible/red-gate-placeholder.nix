@@ -4,7 +4,6 @@
   owner,
   phase,
   reason,
-  taskIds,
   dependencies ? [],
 }: let
   gateSlug = builtins.replaceStrings [":"] ["-"] gateName;
@@ -28,7 +27,6 @@ in
           gate=${gateName}
           phase=${phase}
           owner=${owner}
-          tasks=${builtins.concatStringsSep "," taskIds}
           reason=${reason}
           RESULT
           cat "$out/result" >&2

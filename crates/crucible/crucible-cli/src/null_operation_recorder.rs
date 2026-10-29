@@ -9,7 +9,7 @@ pub(super) fn execute_cli_dispatch_plan(
     plan: &CliThinWrapperPlan,
     recorder: &mut impl CliOperationRecorder,
 ) -> Result<(), CliError> {
-    if !plan.proves_t_cli_2() {
+    if !plan.satisfies_thin_wrapper_contract() {
         return Err(CliError::Backend(
             "CLI invocation violates the thin-wrapper contract".to_string(),
         ));

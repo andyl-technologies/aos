@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuAsyncDriver",
-  taskIds ? ["T-QEMU-14"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -33,7 +32,6 @@
   qemuSpec = builtins.readFile ../../docs/engineering/crucible/qemu-integration.md;
   defaultChecks = builtins.readFile ./default.nix;
 
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
@@ -464,7 +462,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             attr_path=${attrPath}
-            tasks=${taskList}
             qemu_39=sync-node-step-to-host-io-runtime
             qemu_40=one-quantum-bounded-await-yield-between-steps
             qemu_41=advance-hot-path-shmem-only

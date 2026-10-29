@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase6.checkpointMaterialization",
-  taskIds ? ["T-ADV-6"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -10,7 +9,6 @@
   graphSource = import ./_crucible-model-source.nix {inherit lib;};
   gateTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/gate_checkpoint_materialization.rs;
   defaultChecks = builtins.readFile ./default.nix;
-  taskList = builtins.concatStringsSep "," taskIds;
   inherit (import ./_lib.nix {inherit lib;}) failuresFor;
   failures =
     failuresFor "crates/crucible/crucible-engine model" graphSource [
@@ -95,7 +93,6 @@ in
             cat > "$out/result" <<RESULT
             PASS
             check=${attrPath}
-            tasks=${taskList}
             exact_fat_checkpoint=content-addressed-and-complete
             thin_checkpoint=advisory-reconstruction-cache
             RESULT

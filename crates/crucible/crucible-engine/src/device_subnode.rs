@@ -3,8 +3,8 @@
 //! This module is the integration capstone that wires the `crucible-device` (L1)
 //! block and 9p exact-completion sub-nodes into the
 //! [`SingleScheduler`](crate::SingleScheduler) (L3) so that **cross-node I/O
-//! injection is icount-deterministic** (Contract B, [IO-2], [IO-4],
-//! [SCHED-29]). A [`DeviceSchedulingSubNode`] holds a concrete device's
+//! injection is icount-deterministic** (Contract B). A
+//! [`DeviceSchedulingSubNode`] holds a concrete device's
 //! [`IoCore`] — the in-flight queue of
 //! computed-not-delivered responses — together with its scheduling identity.
 //! Network-link sub-nodes have their own delivery
@@ -15,15 +15,15 @@
 //!
 //! 1. **Horizon term.** A sub-node's
 //!    [`next_exact_local_event`](DeviceSchedulingSubNode::next_exact_local_event)
-//!    is its in-flight head's **final** (post-fault) `delivery_icount` ([IO-31]).
+//!    is its in-flight head's **final** (post-fault) `delivery_icount`.
 //!    The scheduler folds it into the owning VM node's
 //!    [`ExactLocalEvent::IoCompletion`](crate::scheduler::ExactLocalEvent::IoCompletion)
 //!    term, so an otherwise-idle requester is fast-forwarded **exactly** to its
-//!    next I/O completion with no conservative slack ([IO-3], [SCHED-10]).
+//!    next I/O completion with no conservative slack.
 //! 2. **RESOLVE delivery.** When the requester's frontier reaches a completion's
 //!    `delivery_icount`, [`DeviceSchedulingSubNode::deliver_due`] makes the
 //!    response visible at exactly that icount in the canonical
-//!    `(delivery_icount, src_node, seq)` total order ([IO-10], [SCHED-29]),
+//!    `(delivery_icount, src_node, seq)` total order,
 //!    transport-timing-independent. Signal-driven storage and 9p mutations are
 //!    applied by the production adapters before completions enter this scheduler
 //!    bridge; there is no second completion-fault table here.
@@ -90,7 +90,7 @@ impl ModeledCompletion {
 struct PendingCompletion {
     /// The modeled completion this pending item came from.
     modeled_key: ModeledKey,
-    /// The icount at which the response becomes visible ([IO-2]).
+    /// The icount at which the response becomes visible.
     delivery_icount: u64,
     /// The source-node id stamped into the delivery order key.
     src_node: u32,
@@ -297,7 +297,7 @@ pub fn instantiate_world_io_sub_nodes(
     Ok(sub_nodes)
 }
 
-/// A disk/9p device modeled as a first-class scheduling sub-node ([IO-1]).
+/// A disk/9p device modeled as a first-class scheduling sub-node.
 ///
 /// Holds a concrete block or 9p sub-node, its scheduling identity
 /// ([`SchedulerNodeId`]), the target VM [`NodeId`] that observes its completions,
@@ -636,13 +636,13 @@ impl DeviceSchedulingSubNode {
         &self.sub_node
     }
 
-    /// Returns the VM node whose horizon this device's completions bound ([IO-3]).
+    /// Returns the VM node whose horizon this device's completions bound.
     #[must_use]
     pub fn target(&self) -> &NodeId {
         &self.target
     }
 
-    /// Returns the device's content-addressed identity ([IO-26]).
+    /// Returns the device's content-addressed identity.
     #[must_use]
     pub fn device_id(&self) -> &DeviceId {
         &self.device_id
@@ -680,7 +680,7 @@ impl DeviceSchedulingSubNode {
     /// # Errors
     ///
     /// Returns [`DeviceError`] when the device cannot encode the request, when its
-    /// inbound ring is full ([IO-32]), or when its COMPUTE step fails (a
+    /// inbound ring is full, or when its COMPUTE step fails (a
     /// clock/overflow/past-delivery guard). Returns
     /// [`DeviceError::WrongDeviceKind`] when called on a 9p sub-node.
     pub fn submit_fifo(
@@ -773,7 +773,7 @@ impl DeviceSchedulingSubNode {
     }
 
     /// Returns the next not-yet-delivered completion's final delivery icount: the
-    /// sub-node's next exact local event ([IO-31], [SCHED-10]).
+    /// sub-node's next exact local event.
     ///
     /// This is what the scheduler folds into the owning VM node's
     /// [`ExactLocalEvent::IoCompletion`](crate::scheduler::ExactLocalEvent::IoCompletion)
@@ -793,7 +793,7 @@ impl DeviceSchedulingSubNode {
     ///
     /// A completion is **made visible at exactly its `delivery_icount`** — never
     /// at the consumer's later frontier — in the `(delivery_icount, src_node,
-    /// seq)` total order ([IO-10], [SCHED-15]), independent of host or transport
+    /// seq)` total order, independent of host or transport
     /// timing (Contract B). Each delivered completion contributes its buffered
     /// fault [`Decision`]s, in delivery order, so the recorded schedule is
     /// appended in that same total order. Future completions stay in flight at

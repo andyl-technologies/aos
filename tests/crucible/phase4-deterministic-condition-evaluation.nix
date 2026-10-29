@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.deterministicConditionEvaluation",
-  taskIds ? ["T-TRIG-10"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -17,7 +16,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-  taskList = builtins.concatStringsSep "," taskIds;
   evaluationSources = builtins.concatStringsSep "\n" [
     trigger
     scheduler
@@ -438,7 +436,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             component=crucible-trigger
             evaluation_points=event-boundary,quantum-boundary,rendezvous-boundary
             source=checked-event-log-prefix

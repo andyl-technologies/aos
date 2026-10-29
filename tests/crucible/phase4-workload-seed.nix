@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.workloadSeed",
-  taskIds ? ["T-WL-3"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -12,8 +11,6 @@
   engineLib = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
   workloadTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/workload_model.rs;
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -130,10 +127,6 @@
       {
         label = "phase4 workload seed attr path";
         needle = "checks.crucible.phase4.workloadSeed";
-      }
-      {
-        label = "phase4 workload seed task id";
-        needle = "taskIds = [\"T-WL-3\"]";
       }
     ];
 in
@@ -271,7 +264,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             workload_seed_parameter=wseed
             workload_seed_delivery=black-box-cmdline
             workload_seed_content_addressed=true

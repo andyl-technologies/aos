@@ -2,8 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.guestHostDoorbellCollisionInertness",
-  taskIds ? ["T-GHC-6"],
-  openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -17,8 +15,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-  taskList = builtins.concatStringsSep "," taskIds;
-  openTaskList = builtins.concatStringsSep "," openTaskIds;
   failures =
     failuresFor "docs/engineering/crucible/guest-host-channel.md" guestHostChannelDoc [
       {
@@ -163,10 +159,6 @@
         label = "phase4 collision inertness attr path";
         needle = "checks.crucible.phase4.guestHostDoorbellCollisionInertness";
       }
-      {
-        label = "phase4 collision inertness task id";
-        needle = "taskIds = [\"T-GHC-6\"]";
-      }
     ]
     ++ forbiddenFor "crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhiteboxDoorbell [
       {
@@ -249,8 +241,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
-            open_tasks=${openTaskList}
             status=complete
             evidence_scope=doorbell-collision-model-plus-live-gate
             gate=gate:any-guest,gate:abi-conformance

@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.cruciblePackageAbiVersioning",
-  taskIds ? ["T-PKG-10"],
 }: let
   packagingDoc = builtins.readFile ../../docs/engineering/crucible/packaging.md;
   qemuPackageNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
@@ -476,7 +475,6 @@ in
           {
             printf '%s\n' 'PASS'
             printf 'check=%s\n' "$ATTR_PATH"
-            printf 'tasks=%s\n' "$TASK_IDS"
             printf '%s\n' 'package=crucible'
             printf 'shmem_abi=%s\n' "$SHMEM_ABI"
             printf 'guest_host_protocol_abi=%s\n' "$GUEST_HOST_PROTOCOL_ABI"
@@ -492,7 +490,6 @@ in
         ''
       ];
       ATTR_PATH = attrPath;
-      TASK_IDS = builtins.concatStringsSep "," taskIds;
       SHMEM_ABI = shmemAbi;
       GUEST_HOST_PROTOCOL_ABI = guestHostProtocolAbi;
       RPC_ABI_VERSION = rpcAbiVersion;

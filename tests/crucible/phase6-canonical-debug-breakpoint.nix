@@ -2,8 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase6.canonicalDebugBreakpoint",
-  taskIds ? ["T-DBG-3"],
-  openTaskIds ? [],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -31,9 +29,6 @@
     entry = ../../crates/crucible/crucible-engine/tests/gate_canonical_debug_breakpoint.rs;
   };
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
-  openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -223,10 +218,6 @@
         needle = "canonicalDebugBreakpoint = greenBeforeAdvance";
       }
       {
-        label = "explicit task id";
-        needle = "taskIds = [\"T-DBG-3\"]";
-      }
-      {
         label = "read-only debug raw dependency";
         needle = "phase6.readOnlyDebugInspection.rawGate";
       }
@@ -347,8 +338,6 @@ in
             cat > "$out/result" <<RESULT
             PASS
             check=${attrPath}
-            tasks=${taskList}
-            open_tasks=${openTaskList}
             status=complete
             evidence_scope=canonical-breakpoint-model-and-gateway
             gate=gate:canonical-debug-breakpoint

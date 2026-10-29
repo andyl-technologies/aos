@@ -27,7 +27,6 @@
       qemu_package=${qemuPackage}
       qemu_package_version=${qemuPackage.version}
     '';
-  taskIds = ["T-PATCH-12" "T-QEMU-0060" "T-QEMU-0061" "T-QEMU-0062"];
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -852,7 +851,6 @@ in
 
             cat > "$out/result" <<'RESULT'
             PASS
-            tasks=${builtins.concatStringsSep "," taskIds}
             gate=gate:patch-microtests
             atomic_patch=${atomicPatch.file}
             patched_fixture_exercised=true

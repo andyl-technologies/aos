@@ -138,7 +138,6 @@
     cat > "$out/result" <<'RESULT'
     PASS
     check=checks.crucible.phase1.lookaheadGate
-    tasks=T-DET-12
     crate=crucible-shmem
     lookahead_helper=authorize_advance_ceiling
     late_delivery_helper=validate_frame_delivery_is_future

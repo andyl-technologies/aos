@@ -4,7 +4,6 @@
   pkgs,
   qemuPackage ? pkgs.qemu-crucible,
   attrPath ? "checks.crucible.phase6.qemuReadOnlyBlockSource",
-  taskIds ? [],
 }:
 pkgs.mkDerivation {
   pname = "crucible-phase6-qemu-read-only-block-source";
@@ -30,7 +29,6 @@ pkgs.mkDerivation {
         cat > "$out/result" <<'RESULT'
         PASS
         check=${attrPath}
-        tasks=${builtins.concatStringsSep "," taskIds}
         patch=crucible-qemu-11.1.1.patch
         native_source_freeze_restore=true
         writable_descendant_rejected_and_restored=true

@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.crucibleWorkspacePackage",
-  taskIds ? ["T-PKG-8"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
 
@@ -242,7 +241,6 @@ in
             cat > "$out/result" <<RESULT
             PASS
             check=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
             package=crucible
             package_passthru=pkgs.crucible
             build_system=mkCargoPackage

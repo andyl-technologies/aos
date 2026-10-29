@@ -1,4 +1,4 @@
-//! Checks T-GHC-1 black-box guest/host observation surface.
+//! Checks the black-box guest/host observation surface.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.

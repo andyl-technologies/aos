@@ -949,7 +949,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=checks.crucible.phase1.determinismCoreCoverage
-            tasks=T-STD-10
             coverage_profile=crucible-determinism-core-coverage
             instrumentation_build=separate-deterministic
             coverage_measurement=${coverageMeasurement}

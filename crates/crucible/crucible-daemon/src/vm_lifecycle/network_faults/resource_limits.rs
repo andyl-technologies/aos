@@ -2,7 +2,7 @@
 //!
 //! Queue ownership spans ordinary interface queues, shared media, and custody
 //! storage. These helpers measure that single aggregate before mutation and
-//! preserve authored LIMIT-2 coordinates through the scheduler boundary.
+//! preserve authored resource-limit coordinates through the scheduler boundary.
 
 use super::*;
 

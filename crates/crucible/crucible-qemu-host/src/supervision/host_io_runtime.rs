@@ -94,7 +94,7 @@ pub struct QemuLiveHostIoRuntime {
     fault_event_staging_limit: usize,
     /// Canonical records owned outside this runtime's local staging vector.
     fault_event_canonical_current_offset: usize,
-    /// Plan-authored aggregate event-record ceiling reported by LIMIT-2.
+    /// Plan-authored aggregate event-record ceiling reported by the resource limit.
     fault_event_configured_limit: usize,
 }
 
