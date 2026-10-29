@@ -112,6 +112,15 @@ mkDerivation {
         cp -R src/jinja2 "$out/lib/python3.14/site-packages/"
         cp LICENSE.txt "$out/share/licenses/python3-jinja2/"
 
+        # Publish the sdist's core metadata so importlib.metadata consumers,
+        # such as ansible-core's version check, can find the distribution.
+        metadata="$out/lib/python3.14/site-packages/jinja2-3.1.6.dist-info"
+        mkdir -p "$metadata"
+        cp PKG-INFO "$metadata/METADATA"
+        cp LICENSE.txt "$metadata/"
+        touch "$metadata/INSTALLER"
+        PYTHONPATH="$out/lib/python3.14/site-packages" ${buildPackages.python3}/bin/python3 -c \
+          'import importlib.metadata; assert importlib.metadata.version("jinja2") == "3.1.6"'
       '';
     }
   ];
