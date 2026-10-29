@@ -40,14 +40,15 @@
   # selection describe an installed system and have no meaning on the media.
   cmdline = lib.concatStringsSep " " (
     builtins.filter
-    (parameter: builtins.any (prefix: lib.hasPrefix prefix parameter) [
-      "console="
-      "net.ifnames="
-      "systemd.journald.forward_to_console="
-      "loglevel="
-      "lockdown="
-      "module.sig_enforce="
-    ])
+    (parameter:
+      builtins.any (prefix: lib.hasPrefix prefix parameter) [
+        "console="
+        "net.ifnames="
+        "systemd.journald.forward_to_console="
+        "loglevel="
+        "lockdown="
+        "module.sig_enforce="
+      ])
     config.aos.boot.kernelParams
     ++ ["rd.systemd.unit=aos-installer.target" "rd.luks=0"]
   );

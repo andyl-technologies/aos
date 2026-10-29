@@ -37,9 +37,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail, ensure};
+use aos_boot_media::Tools;
 use aos_boot_media::digest::{self, is_canonical};
 use aos_boot_media::trust::DbTrust;
-use aos_boot_media::Tools;
 use serde::Deserialize;
 
 /// Manifest file name inside the payload directory.
@@ -195,7 +195,10 @@ fn validate_manifest<'a>(
             bail!("installer payload component {} is duplicated", entry.id);
         }
     }
-    let expected = COMPONENTS.iter().map(|(id, _)| *id).collect::<BTreeSet<_>>();
+    let expected = COMPONENTS
+        .iter()
+        .map(|(id, _)| *id)
+        .collect::<BTreeSet<_>>();
     ensure!(
         components.keys().copied().collect::<BTreeSet<_>>() == expected,
         "installer payload must contain exactly the disk-image, image-info, and image-delivery components"
@@ -330,12 +333,15 @@ mod tests {
     fn metadata_must_agree_with_the_signed_disk() {
         let manifest = manifest();
         let info = json!({"disk": {"logical": {"sha256": DIGEST}}});
-        let delivery = json!({"format": "raw", "virtualSizeBytes": 4096, "logicalDiskSha256": DIGEST});
+        let delivery =
+            json!({"format": "raw", "virtualSizeBytes": 4096, "logicalDiskSha256": DIGEST});
         assert!(check_metadata(&manifest, &info, &delivery).is_ok());
 
-        let resized = json!({"format": "raw", "virtualSizeBytes": 8192, "logicalDiskSha256": DIGEST});
+        let resized =
+            json!({"format": "raw", "virtualSizeBytes": 8192, "logicalDiskSha256": DIGEST});
         assert!(check_metadata(&manifest, &info, &resized).is_err());
-        let qcow2 = json!({"format": "qcow2", "virtualSizeBytes": 4096, "logicalDiskSha256": DIGEST});
+        let qcow2 =
+            json!({"format": "qcow2", "virtualSizeBytes": 4096, "logicalDiskSha256": DIGEST});
         assert!(check_metadata(&manifest, &info, &qcow2).is_err());
     }
 

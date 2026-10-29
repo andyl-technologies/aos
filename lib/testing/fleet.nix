@@ -254,12 +254,11 @@
           if metadataNames == []
           then null
           else if metadataNames == ["host.nix"]
-          then
-            "${pkgs.writeTextFile {
-              name = "aos-fleet-${m.name}-host-nix";
-              text = m.metadata."host.nix";
-              destination = "/host.nix";
-            }}/host.nix"
+          then "${pkgs.writeTextFile {
+            name = "aos-fleet-${m.name}-host-nix";
+            text = m.metadata."host.nix";
+            destination = "/host.nix";
+          }}/host.nix"
           else
             throw ''
               fleet: installer machine "${m.name}" supports only host.nix

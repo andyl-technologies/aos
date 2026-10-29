@@ -207,7 +207,10 @@ mod tests {
 
     #[test]
     fn an_absent_label_is_not_an_error() {
-        assert_eq!(single_device("AOS-META", std::iter::empty()).ok(), Some(None));
+        assert_eq!(
+            single_device("AOS-META", std::iter::empty()).ok(),
+            Some(None)
+        );
     }
 
     #[test]

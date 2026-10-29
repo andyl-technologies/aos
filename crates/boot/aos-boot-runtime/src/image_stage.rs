@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, ensure};
-use aos_boot_media::device::{InstalledLayout, ensure_unused};
 use aos_boot_identity::{BootSlot, NormalBootIdentity, parse_normal, pe::read_uki_text};
+use aos_boot_media::device::{InstalledLayout, ensure_unused};
 use aos_release_format::artifact::BundlePath;
 use serde::Deserialize;
 use serde_json::{Value, json};

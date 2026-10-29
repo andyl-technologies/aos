@@ -110,8 +110,8 @@ pub fn required_bytes(image_bytes: u64, plan: &CanonicalProvisioningPlan) -> Res
         if partition.target != CanonicalPartitionTarget::RootDisk {
             continue;
         }
-        let size = parse_size(&partition.size_min)
-            .with_context(|| format!("partition {name} sizeMin"))?;
+        let size =
+            parse_size(&partition.size_min).with_context(|| format!("partition {name} sizeMin"))?;
         total = total.checked_add(size).context("partition size overflow")?;
     }
     Ok(total)

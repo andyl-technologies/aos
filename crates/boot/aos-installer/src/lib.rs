@@ -137,9 +137,15 @@ fn install(input: &Input, resource: &str) -> Result<serde_json::Value> {
     for metadata in device::matching_devices(&tools.blkid, "LABEL", "AOS-META")? {
         media_disks.push(device::disk_of(&metadata)?);
     }
-    mount_read_only(&input.tools.mount, &payload_partition, Path::new(PAYLOAD_MOUNT))?;
+    mount_read_only(
+        &input.tools.mount,
+        &payload_partition,
+        Path::new(PAYLOAD_MOUNT),
+    )?;
     let result = install_from_payload(input, &tools, &trust, target_path, &media_disks, resource);
-    let unmounted = Command::new(&input.tools.umount).arg(PAYLOAD_MOUNT).status();
+    let unmounted = Command::new(&input.tools.umount)
+        .arg(PAYLOAD_MOUNT)
+        .status();
     let outputs = result?;
     ensure!(
         unmounted.is_ok_and(|status| status.success()),
@@ -167,7 +173,11 @@ fn install_from_payload(
         "release {} will be installed to {} ({}, {} bytes)",
         payload.release,
         target.stable_path,
-        if target.model.is_empty() { "unknown model" } else { &target.model },
+        if target.model.is_empty() {
+            "unknown model"
+        } else {
+            &target.model
+        },
         target.capacity,
     ));
     console::say("every partition and file on that disk will be destroyed");
@@ -205,8 +215,15 @@ fn install_from_payload(
 
     relocate_backup_gpt(&input.tools, &target.device)?;
     let esp = esp_partition_number(&target.sysfs)?;
-    match firmware::boot_next(&input.tools.efibootmgr, &input.tools.mount, &target.device, esp) {
-        Ok(entry) => console::say(&format!("firmware entry Boot{entry} selected for the next boot")),
+    match firmware::boot_next(
+        &input.tools.efibootmgr,
+        &input.tools.mount,
+        &target.device,
+        esp,
+    ) {
+        Ok(entry) => console::say(&format!(
+            "firmware entry Boot{entry} selected for the next boot"
+        )),
         // The installed disk is complete. Without a firmware entry the media
         // boots again, finds the AOS layout, and refuses to reinstall.
         Err(error) => console::say(&format!(
@@ -254,7 +271,10 @@ fn relocate_backup_gpt(tools: &InstallerTools, disk: &Path) -> Result<()> {
         .args(["settle", "--timeout=30"])
         .status()
         .context("running udevadm settle")?;
-    ensure!(settled.success(), "udev did not settle after repartitioning");
+    ensure!(
+        settled.success(),
+        "udev did not settle after repartitioning"
+    );
     Ok(())
 }
 

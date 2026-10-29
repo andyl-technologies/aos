@@ -152,7 +152,9 @@ mod tests {
                 "{target:?} must be rejected"
             );
         }
-        assert!(validate_install_plan(&plan(InstallMode::Disabled, Some(TARGET)), &storage()).is_err());
+        assert!(
+            validate_install_plan(&plan(InstallMode::Disabled, Some(TARGET)), &storage()).is_err()
+        );
     }
 
     #[test]

@@ -39,7 +39,12 @@ pub fn fallback_loader() -> Result<&'static str> {
 ///
 /// Returns an error when the firmware exposes no EFI variables or
 /// `efibootmgr` cannot create and select the entry.
-pub fn boot_next(efibootmgr: &Path, mount: &Path, disk: &Path, esp_partition: u32) -> Result<String> {
+pub fn boot_next(
+    efibootmgr: &Path,
+    mount: &Path,
+    disk: &Path,
+    esp_partition: u32,
+) -> Result<String> {
     ensure_efivars(mount)?;
     let before = entries(efibootmgr)?;
 
