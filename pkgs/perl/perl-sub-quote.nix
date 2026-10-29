@@ -32,7 +32,7 @@ in
       role = "public-package";
     };
     pname = "perl-sub-quote";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The generated subroutine returns 42 for inputs 19 and 23.";

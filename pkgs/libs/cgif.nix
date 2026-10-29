@@ -46,7 +46,7 @@ in
       role = "public-package";
     };
     pname = "cgif";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "A one-pixel red image.";
         operation = "Encode the image through the installed GIF library.";

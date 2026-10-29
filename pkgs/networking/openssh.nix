@@ -54,7 +54,7 @@ in
       role = "public-package";
     };
     pname = "openssh";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Both key generation and private-key parsing succeed.";

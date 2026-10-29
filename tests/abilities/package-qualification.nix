@@ -91,7 +91,7 @@
     version = "1";
     src = null;
     phases = [];
-    qualification.packageProbe = probe;
+    smokeTest = probe;
   };
   namedOutputs = pkgs.mkDerivation {
     pname = "package-qualification-carrier-probe";
@@ -101,7 +101,7 @@
     # Same-name bootstrap/test variants must not replace the subject's outputs.
     buildDeps = [package];
     outputs = ["out" "dev"];
-    qualification.packageProbe = commandProbe;
+    smokeTest = commandProbe;
   };
   noProbe = pkgs.mkDerivation {
     pname = "package-without-qualification";
@@ -149,7 +149,7 @@
       src = null;
       phases = [];
       buildDeps = dependencies;
-      qualification.packageProbe = externalProbe;
+      smokeTest = externalProbe;
     };
   declaredTool = withTools [firstTool];
   rejectsConflictingTools = !(builtins.tryEval (builtins.deepSeq (withTools [firstTool secondTool]).qualificationDocument true)).success;
@@ -165,7 +165,7 @@
         version = "1";
         src = null;
         phases = [];
-        qualification.packageProbe = openProbe;
+        smokeTest = openProbe;
       })
       true)).success;
   rejectsMissingOutput =
@@ -175,19 +175,18 @@
         version = "1";
         src = null;
         phases = [];
-        qualification.packageProbe = commandProbe;
+        smokeTest = commandProbe;
       }).qualificationDocument
       true)).success;
-  rejectsUnknownQualification =
+  # The removed `qualification` argument fails evaluation instead of being
+  # passed through to the derivation environment.
+  rejectsQualificationArgument =
     !(builtins.tryEval (builtins.deepSeq (pkgs.mkDerivation {
-        pname = "invalid-qualification-field";
+        pname = "invalid-qualification-argument";
         version = "1";
         src = null;
         phases = [];
-        qualification = {
-          packageProbe = probe;
-          unchecked = true;
-        };
+        qualification.packageProbe = probe;
       })
       true)).success;
 in
@@ -260,7 +259,7 @@ in
   ];
   assert rejectsOpenProbe;
   assert rejectsMissingOutput;
-  assert rejectsUnknownQualification;
+  assert rejectsQualificationArgument;
   assert (builtins.head (builtins.filter (artifact: artifact.selector.package == "qualification-tool") declaredTool.qualificationDocument.artifacts)).path == builtins.toString firstTool;
   assert rejectsConflictingTools;
   assert rejectsUndeclaredTool; true

@@ -28,7 +28,7 @@ in
       role = "public-package";
     };
     pname = "sbsigntools";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Sbsiglist emits a nonempty signature list containing the DER certificate bytes.";

@@ -23,7 +23,7 @@ in
       role = "public-package";
     };
     pname = "rootlesskit";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "RootlessKit accepts the request and documents its namespace and network controls.";

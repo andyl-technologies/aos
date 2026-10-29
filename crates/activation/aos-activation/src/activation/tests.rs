@@ -126,7 +126,7 @@ impl ActivationAdapter for Host {
 }
 
 #[test]
-fn completed_receipt_revalidates_orphaned_handlers_without_dispatch_or_journal_writes() {
+fn completed_transaction_record_revalidates_orphaned_handlers_without_dispatch_or_journal_writes() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("effects.journal");
     let original = graph(Some("retained"), "persistent");

@@ -1658,12 +1658,13 @@ message RepairContainerUntrackedObjectRequest {
 // registry selector. Authorization is derived from the persisted plan.
 message GetContainerUntrackedRepairRequest { string plan_id = 1; }
 
-// Nonsecret provider evidence proving the terminal conditional outcome.
+// Nonsecret provider response fields recorded for the terminal outcome.
 message ContainerUntrackedRepairEvidence {
   string outcome = 1;
   string provider_request_id = 2;
   string conditional_etag = 3;
-  string evidence_digest = 4;
+  reserved 4;
+  reserved "evidence_digest";
   int64 confirmed_at = 5;
 }
 

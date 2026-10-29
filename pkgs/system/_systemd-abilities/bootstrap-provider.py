@@ -33,7 +33,7 @@ def regular_json(path):
     with os.fdopen(descriptor, "rb") as source:
         metadata = os.fstat(source.fileno())
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 4 * 1024 * 1024:
-            raise ValueError("bootstrap receipt is not a bounded regular file")
+            raise ValueError("bootstrap ownership record is not a bounded regular file")
         return json.load(source)
 
 
@@ -63,20 +63,20 @@ class Bootstrap:
         self.key = digest(invocation["id"].encode())
         self.state = Path(args.state_directory)
         self.path = self.state / (self.key + ".json")
-        self.receipt = regular_json(self.path)
-        if self.receipt is not None and self.receipt.get("owner") != invocation["id"]:
-            raise ValueError("bootstrap receipt owner differs")
+        self.owned_state = regular_json(self.path)
+        if self.owned_state is not None and self.owned_state.get("owner") != invocation["id"]:
+            raise ValueError("bootstrap ownership record owner differs")
         self.units = Path(args.unit_directory)
         self.roots = Path(args.root_directory)
 
-    def save(self, receipt):
+    def save(self, owned_state):
         real_parents(self.path)
         self.state.mkdir(parents=True, exist_ok=True, mode=0o700)
-        encoded = json.dumps(receipt, sort_keys=True).encode()
+        encoded = json.dumps(owned_state, sort_keys=True).encode()
         if len(encoded) > 4 * 1024 * 1024:
-            raise ValueError("bootstrap receipt exceeds its durable byte bound")
+            raise ValueError("bootstrap ownership record exceeds its durable byte bound")
         durable_write(self.path, encoded, 0o600)
-        self.receipt = receipt
+        self.owned_state = owned_state
 
     def command(self, *arguments, input=None):
         result = subprocess.run(arguments, input=input, capture_output=True, check=False)
@@ -125,47 +125,47 @@ class Bootstrap:
     def retain_root_intent(self, root):
         # Import and destination validation may fail before alias publication.
         # Record the root first so recovery or removal can reclaim its exact pin.
-        receipt = dict(self.receipt or {
+        owned_state = dict(self.owned_state or {
             "owner": self.invocation["id"], "revision": self.invocation["revision"],
             "root": root, "digest": None, "entries": {}, "previous": {}, "history": [],
         })
-        receipt["roots"] = list(dict.fromkeys([*receipt.get("roots", []), root]))
-        receipt["pending"] = True
-        self.save(receipt)
+        owned_state["roots"] = list(dict.fromkeys([*owned_state.get("roots", []), root]))
+        owned_state["pending"] = True
+        self.save(owned_state)
 
     def recipient(self, entry):
         key = digest(entry["recipient"].encode())
         if entry["kind"] == "service":
             path = Path(self.args.service_state_directory) / (key + ".json")
-            receipt = regular_json(path)
-            if receipt is not None and receipt.get("id") != entry["recipient"]:
+            owned_state = regular_json(path)
+            if owned_state is not None and owned_state.get("id") != entry["recipient"]:
                 raise ValueError("bootstrap service recipient identity differs")
         else:
             path = Path(self.args.group_state_directory) / (key + "-unit.json")
-            receipt = regular_json(path)
-            if receipt is not None and receipt.get("owner") != entry["recipient"]:
+            owned_state = regular_json(path)
+            if owned_state is not None and owned_state.get("owner") != entry["recipient"]:
                 raise ValueError("bootstrap group recipient identity differs")
-        return receipt
+        return owned_state
 
     def adopted(self, name, entry):
-        receipt = self.recipient(entry)
-        if receipt is None:
+        owned_state = self.recipient(entry)
+        if owned_state is None:
             return False
         path = self.units / name
         if entry["kind"] == "service":
             if entry["link"] is not None:
-                return receipt.get("links", {}).get(name) == entry["target"] and path.is_symlink() and os.readlink(path) == entry["target"]
-            expected = receipt.get("units", {}).get(name)
-            custody = receipt.get("image_units", {}).get(name)
-            if custody is not None and custody != {"target": entry["target"], "digest": entry["digest"]}:
+                return owned_state.get("links", {}).get(name) == entry["target"] and path.is_symlink() and os.readlink(path) == entry["target"]
+            expected = owned_state.get("units", {}).get(name)
+            adopted = owned_state.get("image_units", {}).get(name)
+            if adopted is not None and adopted != {"target": entry["target"], "digest": entry["digest"]}:
                 return False
         else:
-            desired = receipt.get("desired", {})
+            desired = owned_state.get("desired", {})
             if desired.get("unit") != name:
                 return False
             expected = digest(desired.get("text", "").encode())
-            custody = receipt.get("image")
-            if custody is not None and custody != {"target": entry["target"], "seed_digest": entry["digest"]}:
+            adopted = owned_state.get("image")
+            if adopted is not None and adopted != {"target": entry["target"], "seed_digest": entry["digest"]}:
                 return False
         if path.is_symlink():
             return False
@@ -209,14 +209,14 @@ class Bootstrap:
 
     def outputs(self):
         return {"resource": "systemd-bootstrap:" + self.invocation["id"],
-                "storePath": self.receipt["root"], "digest": self.receipt["digest"]}
+                "storePath": self.owned_state["root"], "digest": self.owned_state["digest"]}
 
     def apply(self):
         root, nar_hash, entries = self.render()
-        previous = dict((self.receipt or {}).get("entries", {}))
+        previous = dict((self.owned_state or {}).get("entries", {}))
         # A crash can leave predecessor aliases after the new intent is durable.
         # Select their exact retained entry rather than treating them as foreign.
-        predecessors = (self.receipt or {}).get("previous", {})
+        predecessors = (self.owned_state or {}).get("previous", {})
         for name, old in predecessors.items():
             if self.exact_alias(name, old):
                 previous[name] = old
@@ -230,16 +230,16 @@ class Bootstrap:
                     adopted.add(name)
             elif new is not None and self.check(name, new) != "absent":
                 raise ValueError("bootstrap destination exists without preparation custody")
-        roots = list(dict.fromkeys([*(self.receipt or {}).get("roots", []), root]))
+        roots = list(dict.fromkeys([*(self.owned_state or {}).get("roots", []), root]))
         self.pin(root)
-        receipt = {"owner": self.invocation["id"], "revision": self.invocation["revision"],
+        owned_state = {"owner": self.invocation["id"], "revision": self.invocation["revision"],
                    "root": root, "digest": nar_hash, "roots": roots, "entries": entries,
                    "previous": previous, "pending": True,
-                   "history": (self.receipt or {}).get("history", []) + [
+                   "history": (self.owned_state or {}).get("history", []) + [
                        {"name": name, "entry": entry} for name, entry in previous.items()
-                       if {"name": name, "entry": entry} not in (self.receipt or {}).get("history", [])
+                       if {"name": name, "entry": entry} not in (self.owned_state or {}).get("history", [])
                    ]}
-        self.save(receipt)
+        self.save(owned_state)
         for name, old in previous.items():
             if name not in entries and name not in adopted and self.exact_alias(name, old):
                 durable_unlink(self.units / name)
@@ -259,44 +259,44 @@ class Bootstrap:
                 os.fsync(descriptor)
             finally:
                 os.close(descriptor)
-        self.save(dict(receipt, pending=False, previous={}))
+        self.save(dict(owned_state, pending=False, previous={}))
         return self.outputs()
 
     def observe(self):
-        if self.receipt is None:
+        if self.owned_state is None:
             return {"status": "absent"}
         if self.invocation.get("action") == "remove":
             return {"status": "retry-safe"}
-        if self.receipt.get("pending") or self.receipt.get("revision") != self.invocation["revision"]:
+        if self.owned_state.get("pending") or self.owned_state.get("revision") != self.invocation["revision"]:
             return {"status": "retry-safe"}
-        for name, entry in self.receipt["entries"].items():
+        for name, entry in self.owned_state["entries"].items():
             if self.check(name, entry) == "absent":
                 return {"status": "retry-safe"}
-        self.command(self.args.nix_store, "--check-validity", self.receipt["root"])
-        if self.command(self.args.nix_store, "--query", "--hash", self.receipt["root"]) != self.receipt["digest"]:
+        self.command(self.args.nix_store, "--check-validity", self.owned_state["root"])
+        if self.command(self.args.nix_store, "--query", "--hash", self.owned_state["root"]) != self.owned_state["digest"]:
             raise ValueError("bootstrap immutable tree identity changed")
         return {"status": "current", "outputs": self.outputs()}
 
     def remove(self):
-        if self.receipt is None:
+        if self.owned_state is None:
             return {}
-        entries = dict(self.receipt.get("previous", {}), **self.receipt["entries"])
-        for name, predecessor in self.receipt.get("previous", {}).items():
+        entries = dict(self.owned_state.get("previous", {}), **self.owned_state["entries"])
+        for name, predecessor in self.owned_state.get("previous", {}).items():
             if self.exact_alias(name, predecessor):
                 entries[name] = predecessor
         statuses = {name: self.check(name, entry) for name, entry in entries.items()}
-        history = self.receipt.get("history", []) + [
+        history = self.owned_state.get("history", []) + [
             {"name": name, "entry": entry} for name, entry in entries.items()
         ]
         for item in history:
             entry = item["entry"]
             recipient = self.recipient(entry)
             if entry["kind"] == "service":
-                custody = (recipient or {}).get("image_units", {}).get(item["name"])
-                retained = custody == {"target": entry["target"], "digest": entry["digest"]}
+                adopted = (recipient or {}).get("image_units", {}).get(item["name"])
+                retained = adopted == {"target": entry["target"], "digest": entry["digest"]}
             else:
-                custody = (recipient or {}).get("image")
-                retained = custody == {"target": entry["target"], "seed_digest": entry["digest"]}
+                adopted = (recipient or {}).get("image")
+                retained = adopted == {"target": entry["target"], "seed_digest": entry["digest"]}
             if retained:
                 # Consumers retire first through their typed graph dependency.
                 # A pending handoff cannot become an apparently finished removal.
@@ -304,7 +304,7 @@ class Bootstrap:
         for name, status in statuses.items():
             if status == "prepared":
                 durable_unlink(self.units / name)
-        for root in self.receipt["roots"]:
+        for root in self.owned_state["roots"]:
             path = self.roots / (self.key + "-" + digest(root.encode()))
             real_parents(path)
             if path.is_symlink() and os.readlink(path) == root:

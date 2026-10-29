@@ -35,7 +35,7 @@ mkDerivation {
   pname = "aos-systemd-var-policy";
   module = ./_aos-systemd-var-policy;
   moduleDeps = [service-management aos-boot-storage];
-  qualification.packageProbe = lib.qualification.commandProbe {
+  smokeTest = lib.qualification.commandProbe {
     "primary" = {
       "artifacts" = [];
       "expected" = "Bash accepts the installed migration program's syntax.";

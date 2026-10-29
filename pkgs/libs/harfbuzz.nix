@@ -40,7 +40,7 @@ in
       role = "public-package";
     };
     pname = "harfbuzz";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "The UTF-8 text ffi and an empty shaping font.";
         operation = "Shape the text through the public HarfBuzz buffer and font APIs.";

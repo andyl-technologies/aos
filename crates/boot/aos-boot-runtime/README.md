@@ -12,7 +12,7 @@ The Cargo package retains the installed executable contracts:
 | --- | --- |
 | `aos-boot-preparation-provider` | Transaction-scoped authenticated preparation |
 | `aos-systemd-image-stage` | Inactive-root image staging and read-back |
-| `aos-systemd-image-evidence` | Signed boot measurement evidence |
+| `aos-systemd-boot-measurements` | Signed boot measurement evidence |
 | `aos-systemd-boot-platform` | Retained artifact, selection, health, and restart operations |
 | `aos-systemd-initrd-store` | Journal-owned store transport restoration |
 

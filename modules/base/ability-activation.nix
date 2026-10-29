@@ -53,7 +53,7 @@ in {
     system.build.hostDeploymentBundle = lib.mkOption {
       type = lib.types.package;
       readOnly = true;
-      description = "Host transaction, resolved packages, module library, and image-authenticated admission receipt.";
+      description = "Host transaction, resolved packages, module library, and image-authenticated trusted artifact manifest.";
     };
 
     system.build.initrdDeploymentBundle = lib.mkOption {

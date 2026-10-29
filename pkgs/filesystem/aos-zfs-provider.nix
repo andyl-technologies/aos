@@ -79,7 +79,7 @@ in
       role = "public-package";
     };
     pname = "aos-zfs-provider";
-    qualification.packageProbe = lib.qualification.providerExecutableProbe {
+    smokeTest = lib.qualification.providerExecutableProbe {
       name = "aos-zfs-pool-provider";
       entryPoint = "bin/aos-zfs-pool-provider";
     };

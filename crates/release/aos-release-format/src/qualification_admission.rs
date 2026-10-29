@@ -26,10 +26,12 @@ pub const QUALIFICATION_ADMISSION: &str = "aos.release.qualification-admission/v
 /// Schema of an independent review of one exact observation report.
 pub const QUALIFICATION_REVIEW: &str = "aos.release.qualification-review/v1";
 
-/// Signed authority decision for a rollout or completion observation report.
+/// Signed approval to advance one rollout ring or complete a destination.
+///
+/// The serialized schema remains `aos.release.qualification-admission/v1`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct QualificationAdmission {
+pub struct RingApproval {
     /// Exact admission schema.
     pub schema_version: String,
     /// Hold point; staging uses its established publication receipt protocol.
@@ -60,7 +62,7 @@ pub struct QualificationAdmission {
     pub admitted_at: String,
 }
 
-impl QualificationAdmission {
+impl RingApproval {
     /// Requires a properly scoped, current authority decision.
     ///
     /// The admission must name a planned destination; a rollout admission must

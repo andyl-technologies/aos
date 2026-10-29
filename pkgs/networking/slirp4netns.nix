@@ -25,7 +25,7 @@ in
       role = "public-package";
     };
     pname = "slirp4netns";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Slirp4netns reports its CIDR and port-forwarding controls.";

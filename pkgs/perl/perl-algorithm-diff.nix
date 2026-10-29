@@ -32,7 +32,7 @@ in
       role = "public-package";
     };
     pname = "perl-algorithm-diff";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The module returns alpha and gamma in order.";

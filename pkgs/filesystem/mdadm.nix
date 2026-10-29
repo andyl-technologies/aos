@@ -52,7 +52,7 @@ in
       target = [];
       role = "public-package";
     };
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "The installed target command and its offline query.";
         operation = "Execute the packaged command without network or persistent state.";

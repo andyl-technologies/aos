@@ -16,7 +16,7 @@ in
       role = "public-package";
     };
     pname = "nvidia-gsp-firmware";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Both GPU-family artifacts are complete ELF firmware containers for the packaged driver version with distinct build IDs.";

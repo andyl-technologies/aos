@@ -88,7 +88,7 @@ in
       role = "public-package";
     };
     pname = "containerd";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Containerd returns success and reports its packaged version.";

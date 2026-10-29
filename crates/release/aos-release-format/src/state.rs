@@ -104,8 +104,9 @@ pub struct JournalEntry {
     pub destination: Option<String>,
     /// Stable external or local operation identifiers.
     pub operation_ids: Vec<String>,
-    /// Public evidence identities accepted by this transition.
-    pub evidence: Vec<Sha256Digest>,
+    /// Digests of the signed files and reports this transition accepted.
+    #[serde(rename = "evidence")]
+    pub attachments: Vec<Sha256Digest>,
     /// RFC 3339 UTC timestamp supplied by the effectful coordinator.
     pub recorded_at: String,
 }
@@ -137,7 +138,7 @@ impl JournalEntry {
             bail!("journal timestamp cannot be empty");
         }
         require_unique(&self.operation_ids, "journal operation id")?;
-        require_unique(&self.evidence, "journal evidence digest")?;
+        require_unique(&self.attachments, "journal attachment digest")?;
 
         if self.sequence == 1 {
             if self.previous_entry_digest.is_some()

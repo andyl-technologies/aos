@@ -18,7 +18,7 @@ in
       role = "public-package";
     };
     pname = "libksba";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "KSBA returns the exact eight-byte payload.";

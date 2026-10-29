@@ -22,7 +22,7 @@ in
       role = "public-package";
     };
     pname = "fstrm";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The public API accepts the bounded value and clears the destroyed handle.";

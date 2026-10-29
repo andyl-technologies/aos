@@ -24,7 +24,7 @@ in
       role = "public-package";
     };
     pname = "bottom";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Bottom identifies itself and returns success without opening the terminal UI.";

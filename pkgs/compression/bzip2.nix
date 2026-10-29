@@ -16,7 +16,7 @@ in
       role = "public-package";
     };
     pname = "bzip2";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The decompressed bytes exactly reproduce the original payload.";

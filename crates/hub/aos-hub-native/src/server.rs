@@ -86,7 +86,7 @@ pub struct AppState {
     /// Verifier for short-lived assertions from an explicitly configured TLS,
     /// VPN, or layer-7 ingress adapter.
     pub delivery_attestation_verifier:
-        Option<Arc<aos_hub_service::delivery_attestation::DeliveryAttestationVerifier>>,
+        Option<Arc<aos_hub_service::delivery_attestation::IngressAssertionVerifier>>,
     /// Runtime-owned signer material for the domain-probe well-known route.
     pub domain_probe_terminator:
         Option<Arc<dyn aos_hub_service::topology_probe::DomainProbeTerminatorProvider>>,
@@ -100,7 +100,7 @@ pub struct AppState {
     pub container_rollout: aos_hub_service::container_rollout::ContainerRollout,
     /// Deployment-owned release receipt authority.
     pub release_evidence:
-        Option<Arc<dyn aos_hub_service::release_evidence::ReleaseEvidenceAuthority>>,
+        Option<Arc<dyn aos_hub_service::release_receipt_signer::ReleaseEvidenceAuthority>>,
 }
 
 impl AppState {
@@ -181,7 +181,7 @@ pub async fn router(state: Arc<AppState>) -> Router {
 /// ```
 pub async fn router_with_transport(
     state: Arc<AppState>,
-    transport: Option<aos_hub_service::connect::DeliveryTransportEvidence>,
+    transport: Option<aos_hub_service::connect::VerifiedTransport>,
 ) -> Router {
     // The shared Connect-JSON RPC service, built over the hub's database, signing
     // keys, and base URL (the same fields the old per-hub service held), with the

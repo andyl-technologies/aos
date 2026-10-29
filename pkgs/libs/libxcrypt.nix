@@ -62,7 +62,7 @@ in
       role = "public-package";
     };
     pname = "libxcrypt";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "libxcrypt returns a SHA-512 salt beginning with the requested prefix.";

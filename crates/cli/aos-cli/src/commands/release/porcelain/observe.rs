@@ -17,7 +17,7 @@ use aos_release_format::plan::{PlannedDestination, SurfaceRole};
 use aos_release_format::platform::MatrixCell;
 use aos_release_format::qualification::{ClaimSelection, TargetKind};
 use aos_release_format::qualification_admission::{
-    QUALIFICATION_REVIEW, QualificationAdmission, QualificationReview,
+    QUALIFICATION_REVIEW, QualificationReview, RingApproval,
 };
 use aos_release_format::receipt::{
     ChannelReceipt, CompletionReceipt, verify_signed_receipt_with_key,
@@ -190,7 +190,7 @@ pub(super) fn destination(
     let plan_digest = Sha256Digest::of_bytes(&session.plan_bytes);
     for phase in hold_points {
         let has_cases = match &observation.manifest {
-            Some(manifest) => !aos_release_format::qualification_evidence::cases(
+            Some(manifest) => !aos_release_format::release_tests::cases(
                 plan,
                 &manifest.payload,
                 Some(name),
@@ -473,7 +473,7 @@ pub(super) fn admission_journal(signed: &Path) -> Result<Option<Sha256Digest>> {
 ///
 /// # Errors
 /// Returns an error for an unreadable or malformed payload.
-pub(super) fn read_admission(signed: &Path) -> Result<Option<QualificationAdmission>> {
+pub(super) fn read_admission(signed: &Path) -> Result<Option<RingApproval>> {
     let path = signed.join("qualification-receipt.json");
     if !path.is_file() {
         return Ok(None);

@@ -39,7 +39,7 @@ in
       role = "build-input";
     };
     pname = "aos-test-agent";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The link resolves to a nonempty Bash program with valid syntax.";

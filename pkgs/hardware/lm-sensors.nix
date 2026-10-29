@@ -21,7 +21,7 @@ in
       role = "public-package";
     };
     pname = "lm-sensors";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Libsensors accepts the prefix, bus type, and hexadecimal address.";

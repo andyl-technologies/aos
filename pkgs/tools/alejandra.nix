@@ -21,7 +21,7 @@ in
       role = "public-package";
     };
     pname = "alejandra";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [
           {

@@ -25,7 +25,7 @@ in
       role = "public-package";
     };
     pname = "libisofs";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Libisofs returns an image with the requested volume identifier.";

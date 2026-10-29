@@ -15,7 +15,7 @@ in
       role = "public-package";
     };
     pname = "packaging";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Version ordering places 1.2.3 after 1.2.3rc1.";

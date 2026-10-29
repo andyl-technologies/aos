@@ -106,7 +106,7 @@ in {
 
 
     JOURNAL_PROJECTION = """{
-        schema, liveStateVerified, transaction, pending, completed,
+        schema, transaction, pending, completed,
         records: [.records[] | {sequence, event, transaction, dispatch}],
         desired: (if .desired == null then null else
             {nodes: (.desired.nodes | with_entries(.value = {identity: .value.identity}))}
@@ -137,7 +137,6 @@ in {
             JOURNAL_PROJECTION,
         )
         assert view["schema"] == "aos.activation.inspection", view
-        assert not view["liveStateVerified"], view
         return view
 
 

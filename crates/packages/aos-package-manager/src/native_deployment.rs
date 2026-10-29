@@ -204,7 +204,7 @@ fn apply_profile(
     command: &NativeDeploymentCommand,
     path: &Path,
     deployment: &Deployment,
-    _image_admission: Admission,
+    _image_admission: TrustedRoots,
     image_evaluation: &EvaluationInputs,
     cancellation: &CancellationToken,
     mut sources: Option<bootstrap::BootstrapSources<'_>>,
@@ -224,7 +224,7 @@ fn apply_profile(
     };
     let _profile_guard = inspection.lock_mutation()?;
     let profile = Profile::open_at(path.to_owned(), ProfileScope::System)?;
-    let admission = crate::native_registry::RegistryAdmission::new(
+    let admission = crate::native_registry::VerifiedRegistryRoots::new(
         command.nix_store.clone(),
         &command.state_directory.join("registry-admissions"),
     )?;
@@ -267,7 +267,7 @@ fn apply_profile(
             (deployment.clone(), installed, image_evaluation.clone())
         }
     };
-    let mut admission = crate::native_registry::RegistryAdmission::new(
+    let mut admission = crate::native_registry::VerifiedRegistryRoots::new(
         command.nix_store.clone(),
         &command.state_directory.join("registry-admissions"),
     )?;
@@ -548,9 +548,13 @@ fn apply_profile(
     consumer.apply(&deployment, &generation, cancellation)
 }
 
+/// Locates an image root catalog document and pins its exact bytes.
+///
+/// The catalog lists the store roots the bootstrap image authenticated. The
+/// serialized form is retained under the profile's `admissions` directory.
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct Receipt {
+struct ImageCatalogDocument {
     path: PathBuf,
     digest: Sha256Digest,
 }
@@ -575,13 +579,18 @@ pub(crate) fn image_receipt_root(path: &Path) -> Result<String> {
         .to_owned())
 }
 
-pub(crate) struct Admission {
+/// Store roots listed by retained image catalogs, keyed by canonical root.
+///
+/// A root is accepted only when one of the loaded catalog documents lists it
+/// with a matching NAR identity, or when it is a catalog document's own root.
+/// Every other root is rejected.
+pub(crate) struct TrustedRoots {
     executable: PathBuf,
     roots: BTreeMap<String, AdmittedRoot>,
-    receipts: BTreeMap<String, Receipt>,
+    receipts: BTreeMap<String, ImageCatalogDocument>,
 }
 
-impl Admission {
+impl TrustedRoots {
     pub(crate) fn new(executable: PathBuf) -> Result<Self> {
         ensure!(
             executable.is_absolute(),
@@ -594,7 +603,7 @@ impl Admission {
         })
     }
 
-    fn add(&mut self, receipt: Receipt) -> Result<String> {
+    fn add(&mut self, receipt: ImageCatalogDocument) -> Result<String> {
         let (path, bytes) = read_descriptor_in(
             &receipt.path,
             &self.executable,
@@ -612,7 +621,7 @@ impl Admission {
             }
             self.roots.insert(record.store_path.clone(), record);
         }
-        let receipt = Receipt { path, ..receipt };
+        let receipt = ImageCatalogDocument { path, ..receipt };
         if let Some(previous) = self.receipts.get(&root) {
             ensure!(
                 previous.digest == receipt.digest,
@@ -674,7 +683,7 @@ impl Admission {
     }
 }
 
-impl ArtifactAdmission for Admission {
+impl ArtifactAdmission for TrustedRoots {
     fn admit(&mut self, root: &str) -> Result<AdmittedArtifact> {
         check_root(root)?;
         if let Some(receipt) = self.receipts.get(root) {
@@ -902,7 +911,7 @@ pub(crate) fn configure_profile_observer_projected<
         std::env::var_os("AOS_NIX_STORE")
             .context("native observer requires its packaged Nix store")?,
     );
-    let mut admission = crate::native_registry::RegistryAdmission::new(
+    let mut admission = crate::native_registry::VerifiedRegistryRoots::new(
         executable,
         &profile.path.join("deployment/registry-admissions"),
     )?;
@@ -984,7 +993,9 @@ fn validate_state_location(command: &NativeDeploymentCommand) -> Result<()> {
     Ok(())
 }
 
-fn prepare(command: &NativeDeploymentCommand) -> Result<(Deployment, Admission, Receipt)> {
+fn prepare(
+    command: &NativeDeploymentCommand,
+) -> Result<(Deployment, TrustedRoots, ImageCatalogDocument)> {
     validate_state_location(command)?;
     let (input, _) = aos_deployment::document::read_directory_in(
         &command.input,
@@ -1009,7 +1020,7 @@ fn prepare(command: &NativeDeploymentCommand) -> Result<(Deployment, Admission, 
         )?,
         &packages,
     )?;
-    let receipt = Receipt {
+    let receipt = ImageCatalogDocument {
         path: read_descriptor_in(
             &command.admission,
             &command.nix_store,
@@ -1018,7 +1029,7 @@ fn prepare(command: &NativeDeploymentCommand) -> Result<(Deployment, Admission, 
         .0,
         digest: command.admission_sha256,
     };
-    let mut admission = Admission::new(command.nix_store.clone())?;
+    let mut admission = TrustedRoots::new(command.nix_store.clone())?;
     admission.load_retained(&command.state_directory.join("admissions"))?;
     let receipt_root = admission.add(receipt.clone())?;
     ensure!(
@@ -1055,7 +1066,7 @@ pub(crate) fn read_regular_document(path: &Path) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn persist_receipt(directory: &Path, receipt: &Receipt) -> Result<()> {
+fn persist_receipt(directory: &Path, receipt: &ImageCatalogDocument) -> Result<()> {
     fs::create_dir_all(directory)?;
     ensure!(
         fs::symlink_metadata(directory)?.is_dir(),

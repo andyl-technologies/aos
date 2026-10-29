@@ -1,6 +1,6 @@
 //! Reserves exclusive host transport/port slots before their service starts.
 //!
-//! The receipt is a claim, rather than a socket: services own their listening
+//! The ownership record is a claim, rather than a socket: services own their listening
 //! sockets. First acquisition checks the kernel, while replay checks the shared
 //! claim ledger so the claimant's running service does not collide with itself.
 
@@ -37,7 +37,7 @@ impl Input {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct Receipt {
+struct OwnedState {
     owner: String,
     revision: String,
     input: Input,
@@ -64,28 +64,28 @@ fn available(input: &Input) -> Result<()> {
 /// Reserves or observes one exclusive native host listener slot.
 ///
 /// # Errors
-/// Returns an error for invalid endpoints, conflicting claims, occupied initial ports, or failed receipt writes.
+/// Returns an error for invalid endpoints, conflicting claims, occupied initial ports, or failed ownership record writes.
 pub(super) fn execute(invocation: &Invocation, action: &str) -> Result<Value> {
     let input: Input = serde_json::from_value(invocation.input.clone())?;
     input.validate()?;
     let path = state_path(invocation, "listener");
-    let prior: Option<Receipt> = read_regular(&path, 65_536)?
+    let prior: Option<OwnedState> = read_regular(&path, 65_536)?
         .map(|bytes| serde_json::from_slice(&bytes))
         .transpose()?;
-    if let Some(receipt) = &prior {
+    if let Some(owned_state) = &prior {
         ensure!(
-            receipt.owner == invocation.id,
-            "listener receipt owner differs"
+            owned_state.owner == invocation.id,
+            "listener ownership record owner differs"
         );
-        if receipt.revision != invocation.revision {
+        if owned_state.revision != invocation.revision {
             ensure!(
                 action != "remove"
                     && invocation
                         .previous
                         .as_ref()
-                        .is_some_and(|previous| previous.revision == receipt.revision
+                        .is_some_and(|previous| previous.revision == owned_state.revision
                             && serde_json::from_value::<Input>(previous.input.clone())
-                                .is_ok_and(|input| input == receipt.input)),
+                                .is_ok_and(|input| input == owned_state.input)),
                 "listener update lacks its exact retained previous authority"
             );
         }
@@ -107,10 +107,10 @@ pub(super) fn execute(invocation: &Invocation, action: &str) -> Result<Value> {
             continue;
         }
         let bytes = read_regular(&entry.path(), 65_536)?
-            .ok_or_else(|| anyhow::anyhow!("listener receipt disappeared"))?;
-        let receipt: Receipt = serde_json::from_slice(&bytes)?;
+            .ok_or_else(|| anyhow::anyhow!("listener ownership record disappeared"))?;
+        let owned_state: OwnedState = serde_json::from_slice(&bytes)?;
         ensure!(
-            receipt.input != input,
+            owned_state.input != input,
             "listener already claimed by another effect"
         );
     }
@@ -119,21 +119,26 @@ pub(super) fn execute(invocation: &Invocation, action: &str) -> Result<Value> {
             return Ok(json!({"status":"absent"}));
         }
         return Ok(match prior {
-            Some(receipt) if receipt.input == input && receipt.revision == invocation.revision => {
+            Some(owned_state)
+                if owned_state.input == input && owned_state.revision == invocation.revision =>
+            {
                 json!({"status":"current", "outputs":{"resource":input.resource()}})
             }
             _ => json!({"status":"retry-safe"}),
         });
     }
-    if prior.as_ref().is_none_or(|receipt| receipt.input != input) {
+    if prior
+        .as_ref()
+        .is_none_or(|owned_state| owned_state.input != input)
+    {
         available(&input)?;
     }
-    let receipt = Receipt {
+    let owned_state = OwnedState {
         owner: invocation.id.clone(),
         revision: invocation.revision.clone(),
         input: input.clone(),
     };
-    atomic_write(&path, &serde_json::to_vec(&receipt)?, 0o600)?;
+    atomic_write(&path, &serde_json::to_vec(&owned_state)?, 0o600)?;
     Ok(json!({"resource":input.resource()}))
 }
 

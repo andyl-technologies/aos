@@ -124,7 +124,7 @@ impl aos_hub_service::topology_probe::StorageCredentialProbeProvider
         binding: &aos_hub_db::db::BindingRecord,
         credential: &aos_hub_db::db::BindingCredentialRevisionRecord,
         probe_token: &str,
-    ) -> Result<aos_hub_service::topology_probe::StorageCredentialProbeEvidence> {
+    ) -> Result<aos_hub_service::topology_probe::StorageCredentialProbeResult> {
         anyhow::ensure!(
             credential.binding_id == binding.id,
             "credential probe binding identity is inconsistent"
@@ -249,7 +249,7 @@ impl aos_hub_service::topology_probe::StorageCredentialProbeProvider
             )
         });
         Ok(
-            aos_hub_service::topology_probe::StorageCredentialProbeEvidence {
+            aos_hub_service::topology_probe::StorageCredentialProbeResult {
                 valid,
                 conditional_writes_supported,
                 error,

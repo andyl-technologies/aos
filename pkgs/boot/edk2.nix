@@ -208,7 +208,7 @@ in
       role = "public-package";
     };
     pname = "edk2";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "At least one nonempty flash image carries an FVH signature near its volume header.";

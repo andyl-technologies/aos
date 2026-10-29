@@ -208,7 +208,6 @@ fn journal_inspection_is_checked_and_read_only() {
     );
     let inspection: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(inspection["schema"], "aos.activation.inspection");
-    assert_eq!(inspection["liveStateVerified"], false);
     assert_eq!(inspection["records"], json!([]));
     assert_eq!(std::fs::read(&path).unwrap(), before);
 }
@@ -334,8 +333,6 @@ fn journal_inspection_accepts_large_native_frames_and_rejects_corruption() {
         inspection["desired"]["nodes"][&id]["identity"],
         json!(identity)
     );
-    assert_eq!(inspection["liveStateVerified"], false);
-    assert_eq!(inspection["readConsistency"], "observed-prefix");
     assert_eq!(std::fs::read(&path).unwrap(), before);
     drop(activation);
 

@@ -285,7 +285,7 @@ fn append_finalized_journal(
             .iter()
             .map(|signature| signature.response.provider_operation_id.clone())
             .collect(),
-        evidence: envelope
+        attachments: envelope
             .signatures
             .iter()
             .map(|signature| {

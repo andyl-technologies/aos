@@ -17,7 +17,7 @@ in
       role = "public-package";
     };
     pname = "bc";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The calculator emits the exact integer result.";
