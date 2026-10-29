@@ -49,6 +49,20 @@
 
     aosFor = system: import ./. {inherit system;};
 
+    # The package set that downstream consumers see for `system`. The
+    # bootstrap seed is an i386 executable, so a native aarch64-linux
+    # evaluation cannot start the ladder. AOS releases and containers build
+    # aarch64-linux outputs from the x86_64-linux coordinator instead; use the
+    # same evaluation so downstream store paths match the published ones.
+    downstreamAosFor = system:
+      if system == "x86_64-linux"
+      then aosFor system
+      else
+        import ./. {
+          system = "x86_64-linux";
+          crossSystem = system;
+        };
+
     qualificationExecutorPackages = system: aos:
       {
         qualification-executor = aos.releaseQualificationExecutor;
@@ -239,10 +253,24 @@
   in {
     aosSystems = genAttrs systems (system: (aosFor system).systems);
 
-    # The complete package set, including its builders (mkDerivation,
-    # mkCargoPackage, mkGoPackage, callPackage, mkShell) and `lib`, for
-    # downstream flakes that take AOS as their only input.
-    legacyPackages = genAttrs systems (system: (aosFor system).pkgs);
+    # The complete package set. Downstream flakes read package attributes
+    # here and take builders from the `lib` output below; only the names that
+    # docs/engineering/downstream/flake-api.md lists are a stable contract.
+    legacyPackages = genAttrs systems (system: (downstreamAosFor system).pkgs);
+
+    # The versioned downstream builder contract. Builders close over a package
+    # set built for one platform, so the output is keyed by system like
+    # `packages`: `aos.lib.${system}.mkDerivation`. The contract is
+    # docs/engineering/downstream/flake-api.md.
+    lib = genAttrs systems (system: (downstreamAosFor system).downstreamLib);
+
+    templates = rec {
+      downstream = {
+        path = ./templates/downstream;
+        description = "A minimal repository that builds with AOS as its only flake input";
+      };
+      default = downstream;
+    };
 
     packages = genAttrs systems (
       system: let
