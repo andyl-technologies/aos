@@ -24,6 +24,15 @@ const PLUGIN_PACKAGE: &str = "crucible-qemu-plugin";
 const DEBUG_GATEWAY_PACKAGE: &str = "crucible-qemu-debug-gateway";
 const BOUNDARY_PACKAGES: &[&str] = &["crucible-qemu-protocol", "crucible-qemu-shmem"];
 
+/// Workspace bindings derived from third-party crates, with the upstream
+/// license each one must keep.
+///
+/// These packages are outside the Crucible/QEMU boundary: they never link QEMU
+/// and the resolved dependency-graph checks still reject them from the plugin
+/// and boundary graphs. Relicensing them to the workspace default would
+/// misstate the terms of the upstream code they carry.
+const DERIVED_THIRD_PARTY_PACKAGES: &[(&str, &str)] = &[("libssh2-sys", "MIT OR Apache-2.0")];
+
 #[path = "gate_license_boundary/contributor_authorization.rs"]
 mod contributor_authorization;
 #[path = "gate_license_boundary/dependencies.rs"]
@@ -510,7 +519,10 @@ fn expected_license(package: &str) -> &'static str {
     match package {
         PLUGIN_PACKAGE | DEBUG_GATEWAY_PACKAGE => PLUGIN_LICENSE,
         "crucible-qemu-protocol" | "crucible-qemu-shmem" => BOUNDARY_LICENSE,
-        _ => APACHE_LICENSE,
+        _ => DERIVED_THIRD_PARTY_PACKAGES
+            .iter()
+            .find(|(name, _)| *name == package)
+            .map_or(APACHE_LICENSE, |(_, license)| license),
     }
 }
 
