@@ -8,7 +8,6 @@
   qemuNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
   patchSource = builtins.readFile (patchDir + "/${atomicPatch.file}");
   microtestSource = builtins.readFile ./phase1-qemu-9p-shmem.c;
-  qemuPatchSpec = builtins.readFile ../../docs/rfcs/0010-crucible/11-qemu-patches.md;
   defaultChecks = builtins.readFile ./default.nix;
   qemuSource =
     if qemuPackage == null
@@ -227,16 +226,6 @@
       {
         label = "stock negative control";
         needle = "stock_negative_control_9p_symbols_absent=true";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/11-qemu-patches.md" qemuPatchSpec [
-      {
-        label = "9p shmem patch catalog";
-        needle = "crucible-9p-shmem";
-      }
-      {
-        label = "device callback API patch catalog";
-        needle = "crucible-dev-cb-api";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

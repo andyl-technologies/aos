@@ -9,29 +9,25 @@
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   topologyRendezvousTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/scheduler_topology_rendezvous.rs;
-  schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
+  schedulingDoc = builtins.readFile ../../docs/engineering/crucible/scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/08-scheduling.md" schedulingDoc [
+    failuresFor "docs/engineering/crucible/scheduling.md" schedulingDoc [
       {
-        label = "T-SCHED-24 completion note";
-        needle = "Completed by `checks.crucible.phase3.schedulerTopologyRendezvous`";
+        label = "activation rendezvous";
+        needle = "`TopologySwap` rendezvous record";
       }
       {
-        label = "activation rendezvous note";
-        needle = "exact activation virtual time";
+        label = "no shifted fixed tick";
+        needle = "exactly that time rather than to the next fixed rendezvous tick";
       }
       {
-        label = "no shifted fixed tick note";
-        needle = "not shifted to the next fixed rendezvous tick";
-      }
-      {
-        label = "no mid-run note";
-        needle = "never applies the topology mutation mid-RUN";
+        label = "no mid-run mutation";
+        needle = "no node runs partly under the old and partly under";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [

@@ -8,24 +8,13 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   blackBoxTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/black_box_first_guarantee.rs;
-  triggerDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17a-conditions-and-triggers.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/17a-conditions-and-triggers.md" triggerDoc [
-      {
-        label = "T-TRIG-19 completion note";
-        needle = "Completed by `checks.crucible.phase4.blackBoxFirstGuarantee`";
-      }
-      {
-        label = "event graph replay gate complete";
-        needle = "Completed by `checks.crucible.phase4.gates.replayOracle`";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-engine/tests/black_box_first_guarantee.rs" blackBoxTest [
+    failuresFor "crates/crucible/crucible-engine/tests/black_box_first_guarantee.rs" blackBoxTest [
       {
         label = "complete black-box scenario determinism test";
         needle = "complete_black_box_scenario_runs_deterministically_without_guest_marker";
@@ -103,12 +92,6 @@
       {
         label = "phase4 exposes black-box-first guarantee check";
         needle = "blackBoxFirstGuarantee = import ./phase4-black-box-first-guarantee.nix";
-      }
-    ]
-    ++ forbiddenFor "docs/rfcs/0010-crucible/17a-conditions-and-triggers.md" triggerDoc [
-      {
-        label = "stale T-TRIG-19 remaining-work prose";
-        needle = "remain T-TRIG-19";
       }
     ]
     ++ forbiddenFor "crates/crucible/crucible-engine/tests/black_box_first_guarantee.rs" blackBoxTest [

@@ -11,20 +11,13 @@
   crateRoot = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
   crateManifest = builtins.readFile ../../crates/crucible/crucible-engine/Cargo.toml;
   formalTraceExportTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/formal_trace_export.rs;
-  assertionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/18-assertions-properties.md" assertionDoc [
-      {
-        label = "T-ASRT-9 completion note";
-        needle = "Completed by `checks.crucible.phase4.formalTraceExport`";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [
+    failuresFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [
       {
         label = "external formal trace export";
         needle = "pub struct ExternalFormalTraceExport";

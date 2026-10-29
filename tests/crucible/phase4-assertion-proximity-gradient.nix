@@ -10,20 +10,16 @@
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
   proximityTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/assertion_proximity_gradient.rs;
   evaluationOrderTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/assertion_evaluation_order.rs;
-  assertionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
-  observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;
-  advancedDoc = builtins.readFile ../../docs/rfcs/0010-crucible/22-advanced-features.md;
+  assertionsDoc = builtins.readFile ../../docs/engineering/crucible/assertions.md;
+  eventLogDoc = builtins.readFile ../../docs/engineering/crucible/event-log.md;
+  explorationDoc = builtins.readFile ../../docs/engineering/crucible/exploration.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/18-assertions-properties.md" assertionDoc [
-      {
-        label = "T-ASRT-18 completion note";
-        needle = "Completed by `checks.crucible.phase4.assertionProximityGradient`";
-      }
+    failuresFor "docs/engineering/crucible/assertions.md" assertionsDoc [
       {
         label = "single-VM fingerprint gate named";
         needle = "`checks.crucible.phase1.gates.singleVmFingerprint`";
@@ -33,20 +29,20 @@
         needle = "`checks.crucible.phase4.gates.replayOracle`";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/19-observability-event-log.md" observabilityDoc [
+    ++ failuresFor "docs/engineering/crucible/event-log.md" eventLogDoc [
       {
-        label = "OBS-37 assertion proximity projection";
+        label = "assertion proximity projection";
         needle = "assertion-proximity **distance-to-satisfaction**";
       }
       {
-        label = "OBS-37 event kind";
+        label = "assertion proximity event kind";
         needle = "observational `assertion_proximity` kind";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/22-advanced-features.md" advancedDoc [
+    ++ failuresFor "docs/engineering/crucible/exploration.md" explorationDoc [
       {
         label = "guided search consumer";
-        needle = "AssertionProximity— the distance-to-assertion metric defined in 18";
+        needle = "`AssertionProximityGuidanceSignal`";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [

@@ -16,23 +16,21 @@
     inherit lib;
     entry = ../../crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell.rs;
   };
-  guestHostDoc = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
-  riskDoc = builtins.readFile ../../docs/rfcs/0010-crucible/30-risks-spikes.md;
-  decisionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/31-decision-register.md;
+  guestHostChannelDoc = builtins.readFile ../../docs/engineering/crucible/guest-host-channel.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/16-guest-host-channel.md" guestHostDoc [
-      {
-        label = "T-GHC-13 completion note";
-        needle = "Completed by `checks.crucible.phase4.guestHostVirtualMemorySpike`";
-      }
+    failuresFor "docs/engineering/crucible/guest-host-channel.md" guestHostChannelDoc [
       {
         label = "S5 dependency named";
         needle = "`checks.crucible.phase0.s5VirtualMemory`";
+      }
+      {
+        label = "S5 evidence flags";
+        needle = "paged-mmap reads, reproducible icounts and hashes";
       }
       {
         label = "fallback retained wording";
@@ -41,62 +39,6 @@
       {
         label = "fallback retained condition";
         needle = "retained if that evidence is absent or invalidated";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/30-risks-spikes.md" riskDoc [
-      {
-        label = "RISK-12 retired";
-        needle = "**RISK-12** is retired by `T-RISK-5`";
-      }
-      {
-        label = "S5 check";
-        needle = "`checks.crucible.phase0.s5VirtualMemory`";
-      }
-      {
-        label = "virtual read pass";
-        needle = "`virtual_address_read_result=pass`";
-      }
-      {
-        label = "three placements";
-        needle = "`placements=3`";
-      }
-      {
-        label = "resident read pass";
-        needle = "`resident_read=pass`";
-      }
-      {
-        label = "page spanning read pass";
-        needle = "`page_spanning_read=pass`";
-      }
-      {
-        label = "paged mmap read pass";
-        needle = "`paged_mmap_read=pass`";
-      }
-      {
-        label = "hashes reproducible";
-        needle = "`read_hashes_reproducible=true`";
-      }
-      {
-        label = "fingerprint nonperturbation";
-        needle = "`side_effect_free_fingerprint_match=true`";
-      }
-      {
-        label = "fallback not adopted after pass";
-        needle = "`physical_pinned_fallback_adopted=false`";
-      }
-      {
-        label = "production channel still separate";
-        needle = "`production_whitebox_channel_implemented=false`";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/31-decision-register.md" decisionDoc [
-      {
-        label = "decision register S5 status";
-        needle = "RISK-12 / T-RISK-5";
-      }
-      {
-        label = "decision register fallback scope";
-        needle = "physical / pinned identity-mapped page remains a specified fallback";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/lib.rs" pluginLib [

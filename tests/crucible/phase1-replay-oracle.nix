@@ -28,10 +28,9 @@
   gateCatalogTest = builtins.readFile ../../crates/crucible/crucible-test-support/tests/gate_catalog.rs;
   gateTargetMapping = builtins.readFile ./phase1-gate-target-mapping.nix;
   defaultChecks = builtins.readFile ./default.nix;
-  determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
-  harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
-  executionModel = builtins.readFile ../../docs/rfcs/0010-crucible/05-execution-model.md;
-  patternsAndSketches = builtins.readFile ../../docs/rfcs/0010-crucible/29-patterns-and-sketches.md;
+  testingAndGatesDoc = builtins.readFile ../../docs/engineering/crucible/testing-and-gates.md;
+  executionGraphDoc = builtins.readFile ../../docs/engineering/crucible/execution-graph.md;
+  executionModelDoc = builtins.readFile ../../docs/engineering/crucible/execution-model.md;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
@@ -790,94 +789,66 @@
         needle = "taskIds = [\"T-HARN-12\" \"T-HARN-13\"];\n        reason = \"search-time replay oracle gate is intentionally pending\";";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
+    ++ failuresFor "docs/engineering/crucible/testing-and-gates.md" testingAndGatesDoc [
       {
-        label = "T-HARN-13 completion names sampling config";
-        needle = "`ReplayOracleSamplingConfig`";
+        label = "sampling config";
+        needle = "`ReplayOracleSamplingConfig::new`";
       }
       {
-        label = "T-HARN-13 completion names active search config";
+        label = "active search config";
         needle = "`SearchReplayOracleSamplingConfig`";
       }
       {
-        label = "T-HARN-13 completion names active search API";
+        label = "active search API";
         needle = "`TemporalGraph::search_with_replay_oracle_sampling`";
       }
       {
-        label = "T-HARN-13 completion names sampled mismatch error";
+        label = "sampled mismatch error";
         needle = "`EngineError::SearchReplayOracleMismatch`";
       }
       {
-        label = "T-HARN-13 completion names sampling checker";
+        label = "sampling checker";
         needle = "`check_sampled_search_replay_oracle`";
       }
       {
-        label = "T-HARN-13 completion names bisection checker";
+        label = "bisection checker";
         needle = "`check_sampled_search_replay_oracle_with_bisection`";
       }
       {
-        label = "T-HARN-13 completion names replay-oracle gate";
+        label = "replay-oracle gate";
         needle = "`checks.crucible.phase1.gates.replayOracle`";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsAndSketches [
+    ++ failuresFor "docs/engineering/crucible/execution-graph.md" executionGraphDoc [
       {
-        label = "T-PAT-4 completion names materialization policy";
-        needle = "`crucible_engine::MaterializationPolicy`";
+        label = "materialization policy";
+        needle = "`MaterializationPolicy { max_fat_checkpoints }`";
       }
       {
-        label = "T-PAT-4 completion names fat eviction";
-        needle = "`TemporalGraph::evict_fat_checkpoint_to_thin`";
-      }
-      {
-        label = "T-PAT-4 completion says materialization is cache policy";
-        needle = "materialization a cache policy rather than identity";
-      }
-      {
-        label = "T-PAT-4 completion names replay-oracle gate";
-        needle = "`checks.crucible.phase1.gates.replayOracle`";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/05-execution-model.md" executionModel [
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/07-temporal-graph.md" (builtins.readFile ../../docs/rfcs/0010-crucible/07-temporal-graph.md) [
-      {
-        label = "T-TEMP-3 completion names replay-oracle gate";
-        needle = "`checks.crucible.phase1.gates.replayOracle`";
-      }
-      {
-        label = "T-TEMP-4 completion names materialization policy";
-        needle = "`crucible_engine::MaterializationPolicy`";
-      }
-      {
-        label = "T-TEMP-4 completion names eviction API";
+        label = "fat checkpoint eviction";
         needle = "`evict_fat_checkpoint_to_thin`";
       }
       {
-        label = "T-TEMP-7 names cached snapshot admission";
-        needle = "`TemporalGraph::replay_oracle_admit_cached_snapshot`";
+        label = "materialization is a cache policy";
+        needle = "performance choice; correctness never depends on it";
+      }
+    ]
+    ++ failuresFor "docs/engineering/crucible/execution-model.md" executionModelDoc [
+      {
+        label = "cached snapshot admission";
+        needle = "`replay_oracle_admit_cached_snapshot`";
       }
       {
-        label = "T-TEMP-7 names whole-cache invariant";
-        needle = "`TemporalGraph::validate_cached_snapshots_with_replay_oracle`";
+        label = "whole-cache replay-oracle invariant";
+        needle = "`validate_cached_snapshots_with_replay_oracle`";
       }
       {
-        label = "T-TEMP-9 completion names replay-oracle gate";
-        needle = "`checks.crucible.phase1.gates.replayOracle`";
-      }
-      {
-        label = "T-TEMP-11 completion names replay operation";
+        label = "replay operation";
         needle = "`TemporalGraph::replay`";
       }
       {
-        label = "T-TEMP-11 completion names search operation";
+        label = "search operation";
         needle = "`TemporalGraph::search`";
-      }
-      {
-        label = "T-TEMP-11 completion names replay-oracle gate";
-        needle = "`checks.crucible.phase1.gates.replayOracle`";
       }
     ];
 in

@@ -13,7 +13,6 @@
   crateRoot = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
   propertyTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/property_vocabulary.rs;
   conditionTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/condition_vocabulary_shared.rs;
-  assertionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   sourceFilesIn = dir: prefix: let
@@ -59,13 +58,7 @@
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/18-assertions-properties.md" assertionDoc [
-      {
-        label = "T-ASRT-1 completion note";
-        needle = "Completed by `checks.crucible.phase4.propertyVocabulary`";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
+    failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "property schema version";
         needle = "pub const PROPERTY_SCHEMA_VERSION: u32 = 1;";

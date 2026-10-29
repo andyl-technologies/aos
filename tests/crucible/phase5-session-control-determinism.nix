@@ -9,8 +9,6 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
-  sessionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/20-session-control-plane.md;
-  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -18,19 +16,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/20-session-control-plane.md" sessionDoc [
-      {
-        label = "T-SESS-9 completion note";
-        needle = "Completed by `checks.crucible.phase5.sessionControlDeterminism`";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "phase5 control determinism status note";
-        needle = "`T-SESS-9` is green through `checks.crucible.phase5.sessionControlDeterminism`";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-session/src/lib.rs" sessionLib [
+    failuresFor "crates/crucible/crucible-session/src/lib.rs" sessionLib [
       {
         label = "control replay artifact type";
         needle = "pub struct SessionControlReplayArtifact";

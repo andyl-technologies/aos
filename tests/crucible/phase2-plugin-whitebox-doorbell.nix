@@ -11,7 +11,7 @@
   pluginLib = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/lib.rs;
   pluginWhiteboxDoorbell = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell.rs;
   pluginWhiteboxDoorbellTests = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs;
-  pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
+  pluginSpec = builtins.readFile ../../docs/engineering/crucible/qemu-plugin.md;
   shmemLib = import ./_crucible-shmem-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -48,14 +48,14 @@
     forbiddenCallbackApis;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
+    failuresFor "docs/engineering/crucible/qemu-plugin.md" pluginSpec [
       {
-        label = "white-box doorbell wording";
-        needle = "Implement the optional white-box doorbell trap";
+        label = "white-box doorbell trap";
+        needle = "With `whitebox=on` the plugin recognizes only the frozen encodings";
       }
       {
-        label = "delivery contract wording";
-        needle = "route white-box inputs through the injection contract";
+        label = "white-box cannot reorder execution";
+        needle = "enabling white-box cannot reorder";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/lib.rs" pluginLib [

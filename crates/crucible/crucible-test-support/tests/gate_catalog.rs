@@ -1,4 +1,10 @@
-//! Checks that the RFC gate catalog stays canonical across code and docs.
+//! Checks that the canonical gate catalog stays aligned across code and docs.
+//!
+//! The engineering page `docs/engineering/crucible/testing-and-gates.md` holds
+//! the documented gate table and the gate-ordering plan. Every canonical gate
+//! must appear in the table, and the rest of that page must name exactly the
+//! canonical gates, so the page cannot cite an undefined gate or leave a
+//! defined gate undocumented.
 
 #[path = "support/workspace.rs"]
 mod workspace;
@@ -6,14 +12,16 @@ mod workspace;
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crucible_test_support::{GatePhase, GateStatus, canonical_gates, find_gate};
 
+/// The engineering page that owns the gate catalog table.
+const GATE_CATALOG_DOC: &str = "docs/engineering/crucible/testing-and-gates.md";
+
 #[test]
-fn canonical_gate_catalog_matches_rfc_table_and_references() -> Result<(), Box<dyn Error>> {
-    let rfc_dir = workspace_root().join("docs/rfcs/0010-crucible");
-    let catalog_doc = fs::read_to_string(rfc_dir.join("24-determinism-harness-testing.md"))?;
+fn canonical_gate_catalog_matches_documented_table_and_references() -> Result<(), Box<dyn Error>> {
+    let catalog_doc = fs::read_to_string(workspace_root().join(GATE_CATALOG_DOC))?;
 
     let implemented: BTreeSet<String> = canonical_gates()
         .iter()
@@ -22,7 +30,7 @@ fn canonical_gate_catalog_matches_rfc_table_and_references() -> Result<(), Box<d
     let table = table_gate_names(&catalog_doc);
     assert_eq!(implemented, table);
 
-    let referenced = referenced_gate_names(&rfc_dir)?;
+    let referenced = referenced_gate_names(&catalog_doc);
     assert_eq!(implemented, referenced);
 
     Ok(())
@@ -212,40 +220,6 @@ fn canonical_gates_have_phase_gate_ci_targets() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-#[test]
-fn gate_catalog_doc_lint_failure_modes_remain_wired() -> Result<(), Box<dyn Error>> {
-    let root = workspace_root();
-    let rfc_consistency = fs::read_to_string(
-        root.join("crates/crucible/crucible-test-support/tests/rfc_consistency.rs"),
-    )?;
-    let mut missing = Vec::new();
-
-    for (label, content, needle) in [
-        (
-            "rfc_consistency.rs",
-            rfc_consistency.as_str(),
-            "failures.extend(gate_reference_failures(&gate_catalog, &referenced_gates));",
-        ),
-        (
-            "rfc_consistency.rs",
-            rfc_consistency.as_str(),
-            "rfc_consistency_rules_reject_undefined_and_unreferenced_gates",
-        ),
-    ] {
-        if !content.contains(needle) {
-            missing.push(format!("{label}: missing `{needle}`"));
-        }
-    }
-
-    assert!(
-        missing.is_empty(),
-        "gate catalog doc-lint wiring drift:\n{}",
-        missing.join("\n")
-    );
-
-    Ok(())
-}
-
 fn workspace_root() -> PathBuf {
     workspace::repository_root()
 }
@@ -258,27 +232,13 @@ fn table_gate_names(content: &str) -> BTreeSet<String> {
         .collect()
 }
 
-fn referenced_gate_names(rfc_dir: &Path) -> Result<BTreeSet<String>, Box<dyn Error>> {
-    let mut names = BTreeSet::new();
-    for entry in fs::read_dir(rfc_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().and_then(|extension| extension.to_str()) != Some("md") {
-            continue;
-        }
-
-        for line in fs::read_to_string(&path)?.lines() {
-            if path.file_name().and_then(|name| name.to_str())
-                == Some("24-determinism-harness-testing.md")
-                && line.trim_start().starts_with("| `gate:")
-            {
-                continue;
-            }
-
-            names.extend(gate_names_in_text(line));
-        }
-    }
-    Ok(names)
+/// Collects gate names cited on the page outside the catalog table rows.
+fn referenced_gate_names(content: &str) -> BTreeSet<String> {
+    content
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("| `gate:"))
+        .flat_map(gate_names_in_text)
+        .collect()
 }
 
 fn gate_names_in_text(text: &str) -> BTreeSet<String> {

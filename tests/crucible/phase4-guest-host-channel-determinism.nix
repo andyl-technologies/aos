@@ -20,7 +20,7 @@
     inherit lib;
     entry = ../../crates/crucible/crucible-engine/tests/guest_host_marker_observability.rs;
   };
-  guestHostDoc = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
+  guestHostChannelDoc = builtins.readFile ../../docs/engineering/crucible/guest-host-channel.md;
   phaseGate = builtins.readFile ./phase4-guest-host-channel-determinism.nix;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -56,13 +56,9 @@
   taskList = builtins.concatStringsSep "," taskIds;
   openTaskList = builtins.concatStringsSep "," openTaskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/16-guest-host-channel.md" guestHostDoc [
+    failuresFor "docs/engineering/crucible/guest-host-channel.md" guestHostChannelDoc [
       {
-        label = "T-GHC-12 callback and scheduler evidence";
-        needle = "Callback-core and scheduler-model evidence is provided by";
-      }
-      {
-        label = "channel determinism implementation note";
+        label = "channel determinism engine test";
         needle = "`guest_host_channel_determinism`";
       }
     ]

@@ -10,25 +10,25 @@
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   libSource = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
   idleTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/scheduler_idle_fast_forward.rs;
-  schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
+  schedulingDoc = builtins.readFile ../../docs/engineering/crucible/scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/08-scheduling.md" schedulingDoc [
+    failuresFor "docs/engineering/crucible/scheduling.md" schedulingDoc [
       {
-        label = "T-SCHED-15 completion note";
-        needle = "Completed by `checks.crucible.phase3.schedulerIdleFastForward`";
+        label = "idle fast-forward";
+        needle = "PICK moves an idle node directly to that wake";
       }
       {
-        label = "idle fast-forward requirement";
-        needle = "idle fast-forward";
+        label = "effective clock projection";
+        needle = "`SingleScheduler::effective_clocks`";
       }
       {
-        label = "effective clock requirement";
-        needle = "effective clock";
+        label = "idle wake clock source";
+        needle = "`SchedulerEffectiveClockSource::IdleWake`";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [

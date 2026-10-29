@@ -13,18 +13,18 @@
   propertiesTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/property_fingerprint_neutrality.rs;
   coverageTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/coverage_condition_leaf.rs;
   defaultChecks = builtins.readFile ./default.nix;
-  spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
+  scenarioModelDoc = builtins.readFile ../../docs/engineering/crucible/scenario-model.md;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/06-spatial-graph.md" spatialGraph [
+    failuresFor "docs/engineering/crucible/scenario-model.md" scenarioModelDoc [
       {
-        label = "T-SPAT-2 completion names test";
+        label = "layer orthogonality test";
         needle = "`scenario_layers_stay_structurally_orthogonal`";
       }
       {
-        label = "T-SPAT-2 completion names gate";
+        label = "layer orthogonality check";
         needle = "`checks.crucible.phase1.spatialLayerOrthogonality`";
       }
     ]

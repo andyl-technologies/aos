@@ -47,7 +47,7 @@
     inherit lib;
     entry = ../../crates/crucible/crucible-qemu-host/tests/mapped_quantum.rs;
   };
-  guestHostDoc = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
+  guestHostChannelDoc = builtins.readFile ../../docs/engineering/crucible/guest-host-channel.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
@@ -55,13 +55,13 @@
   taskList = builtins.concatStringsSep "," taskIds;
   openTaskList = builtins.concatStringsSep "," openTaskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/16-guest-host-channel.md" guestHostDoc [
+    failuresFor "docs/engineering/crucible/guest-host-channel.md" guestHostChannelDoc [
       {
-        label = "T-GHC-9 live completion evidence";
+        label = "live white-box doorbell gate";
         needle = "`checks.crucible.phase2.qemuLiveWhiteboxDoorbell`";
       }
       {
-        label = "marker observability implementation note";
+        label = "marker observability engine test";
         needle = "`guest_host_marker_observability`";
       }
     ]

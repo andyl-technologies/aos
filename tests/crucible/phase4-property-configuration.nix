@@ -16,20 +16,13 @@
     inherit lib;
     entry = ../../crates/crucible/crucible-engine/tests/property_vocabulary.rs;
   };
-  assertionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/18-assertions-properties.md" assertionDoc [
-      {
-        label = "T-ASRT-3 completion note";
-        needle = "Completed by `checks.crucible.phase4.propertyConfiguration`";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
+    failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "assertion definition";
         needle = "pub struct AssertionDef";

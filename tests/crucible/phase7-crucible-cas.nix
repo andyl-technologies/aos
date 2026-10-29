@@ -4,7 +4,7 @@
   attrPath ? "checks.crucible.phase7.crucibleCas",
   taskIds ? ["T-PKG-17"],
 }: let
-  packagingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/26-packaging-aos-integration.md;
+  packagingDoc = builtins.readFile ../../docs/engineering/crucible/packaging.md;
   workspaceManifest = builtins.fromTOML (builtins.readFile ../../crates/Cargo.toml);
   packageInventory = import ../../pkgs/tools/crucible/_packages.nix;
   casManifest = builtins.fromTOML (builtins.readFile ../../crates/crucible/crucible-store/Cargo.toml);
@@ -27,14 +27,10 @@
     dependencyNames;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
+    failuresFor "docs/engineering/crucible/packaging.md" packagingDoc [
       {
-        label = "T-PKG-17 completion note";
-        needle = "Completed by `checks.crucible.phase7.crucibleCas`";
-      }
-      {
-        label = "crucible-cas evidence";
-        needle = "`crucible-cas`";
+        label = "crucible-store CAS crate";
+        needle = "Crucible-owned `crucible-store` crate";
       }
     ]
     ++ failuresFor "crates/Cargo.toml" (builtins.readFile ../../crates/Cargo.toml) [
@@ -70,7 +66,7 @@
     ++ failuresFor "crates/crucible/crucible-store/src/lib.rs" casSource [
       {
         label = "crate-level standalone docs";
-        needle = "no dependency on RFC-0007 `ratchet` crates";
+        needle = "intentionally has no\n//! dependency on RFC-0007 `ratchet` crates";
       }
       {
         label = "content hash type";

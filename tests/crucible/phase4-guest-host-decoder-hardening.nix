@@ -23,18 +23,14 @@
     inherit lib;
     entry = ../../crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell.rs;
   };
-  guestHostDoc = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
+  guestHostChannelDoc = builtins.readFile ../../docs/engineering/crucible/guest-host-channel.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/16-guest-host-channel.md" guestHostDoc [
-      {
-        label = "T-GHC-14 completion note";
-        needle = "Completed by `checks.crucible.phase4.guestHostDecoderHardening`";
-      }
+    failuresFor "docs/engineering/crucible/guest-host-channel.md" guestHostChannelDoc [
       {
         label = "bounded declared length coverage";
         needle = "bounded declared";

@@ -44,8 +44,8 @@
       entry = ../../crates/crucible/crucible-qemu-plugin/src/idle_loop/tests/wake_cases.rs;
     });
   pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
-  pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
-  qemuPatchSpec = builtins.readFile ../../docs/rfcs/0010-crucible/11-qemu-patches.md;
+  pluginSpec = builtins.readFile ../../docs/engineering/crucible/qemu-plugin.md;
+  qemuPatchSpec = builtins.readFile ../../docs/engineering/crucible/qemu-patch.md;
   qemuTimeAdvancePatch = builtins.readFile ../../pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch;
   qemuIdleCallbacksPatch = builtins.readFile ../../pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch;
   defaultChecks = builtins.readFile ./default.nix;
@@ -99,35 +99,31 @@
     timePathSources;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
-      {
-        label = "T-PLUG-7 production-flight completion";
-        needle = "Completed by `checks.crucible.phase2.qemuPluginSynchronousIdleAdvance`";
-      }
+    failuresFor "docs/engineering/crucible/qemu-plugin.md" pluginSpec [
       {
         label = "queued advance wording";
-        needle = "queued-advance (`qemu_plugin_advance_time_ticks`) and normal-main-loop completion";
+        needle = "`qemu_plugin_advance_time_ticks` and return from the callback";
       }
       {
-        label = "completion barrier wording";
-        needle = "order timer bottom halves before completion";
+        label = "completion after timer bottom halves";
+        needle = "timer-produced bottom halves";
       }
       {
         label = "busy queued advance retry wording";
-        needle = "re-arm the all-halted edge and recompute after QEMU's";
+        needle = "the all-halted edge, and recomputes after QEMU's";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/11-qemu-patches.md" qemuPatchSpec [
+    ++ failuresFor "docs/engineering/crucible/qemu-patch.md" qemuPatchSpec [
       {
-        label = "queued advance export spec";
+        label = "queued advance export";
         needle = "qemu_plugin_advance_time_ticks(target_tick)";
       }
       {
-        label = "queued virtual timer run spec";
+        label = "queued virtual timer run";
         needle = "qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL)";
       }
       {
-        label = "bottom-half completion spec";
+        label = "bottom-half completion";
         needle = "timer-produced main-loop";
       }
     ]

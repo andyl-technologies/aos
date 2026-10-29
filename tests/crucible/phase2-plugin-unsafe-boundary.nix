@@ -29,7 +29,7 @@
     siblingTests = true;
   };
   pluginNinePIo = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/ninep_io.rs;
-  pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
+  pluginSpec = builtins.readFile ../../docs/engineering/crucible/qemu-plugin.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -37,14 +37,14 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
+    failuresFor "docs/engineering/crucible/qemu-plugin.md" pluginSpec [
       {
-        label = "PLUG-46 unsafe boundary wording";
-        needle = "Every `unsafe` block in the plugin MUST be minimal";
+        label = "unsafe confinement wording";
+        needle = "Unsafe code is confined to the QEMU ABI";
       }
       {
-        label = "PLUG-47 guest memory wording";
-        needle = "Guest memory MUST be read only through the QEMU plugin memory API";
+        label = "guest memory through plugin API";
+        needle = "Guest memory is read and written only through the QEMU plugin memory API";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/lib.rs" pluginLib [

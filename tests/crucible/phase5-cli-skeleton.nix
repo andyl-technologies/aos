@@ -9,19 +9,12 @@
 
   cliMain = import ./_cli-source.nix {inherit lib;};
   cliManifest = builtins.readFile ../../crates/crucible/crucible-cli/Cargo.toml;
-  cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
-      {
-        label = "T-CLI-1 completion note";
-        needle = "Completed by `checks.crucible.phase5.cliSkeleton`";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-cli/Cargo.toml" cliManifest [
+    failuresFor "crates/crucible/crucible-cli/Cargo.toml" cliManifest [
       {
         label = "clap dependency";
         needle = "clap = { workspace = true }";

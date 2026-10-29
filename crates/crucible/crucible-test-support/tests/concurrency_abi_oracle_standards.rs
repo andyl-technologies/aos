@@ -1,4 +1,4 @@
-//! Checks the RFC-0010 concurrency, ABI, and replay-oracle test standards.
+//! Checks the Crucible concurrency, ABI, and replay-oracle test standards.
 
 #![forbid(unsafe_code)]
 

@@ -5,8 +5,7 @@
   taskIds ? ["T-PKG-22"],
   dependencies ? [],
 }: let
-  packagingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/26-packaging-aos-integration.md;
-  dceDoc = builtins.readFile ../../docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md;
+  packagingDoc = builtins.readFile ../../docs/engineering/crucible/packaging.md;
   reproduction = builtins.readFile ../../crates/crucible/crucible-test-support/src/reproduction.rs;
   reproductionTest = builtins.readFile ../../crates/crucible/crucible-test-support/tests/reproduction_artifact.rs;
   defaultChecks = builtins.readFile ./default.nix;
@@ -15,26 +14,14 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
-      {
-        label = "T-PKG-22 completion note";
-        needle = "Completed by `checks.crucible.phase7.crucibleCampaignProvenance`";
-      }
+    failuresFor "docs/engineering/crucible/packaging.md" packagingDoc [
       {
         label = "fresh lineage remains explicit";
         needle = "fresh-lineage baseline event";
       }
-    ]
-    ++ forbiddenFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md" dceDoc [
       {
-        label = "DCE provenance gating section";
-        needle = "A campaign is keyed to the **provenance triple**";
-      }
-      {
-        label = "DCE cross-provenance refusal";
-        needle = "REFUSE reuse; FORK a fresh campaign lineage";
+        label = "cross-provenance refusal";
+        needle = "refuse cross-provenance reuse";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-test-support/src/reproduction.rs" reproduction [

@@ -13,25 +13,21 @@
     entry = ../../crates/crucible/crucible-engine/src/event_catalog.rs;
   };
   catalogTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/event_log_class_catalog.rs;
-  observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;
+  eventLogDoc = builtins.readFile ../../docs/engineering/crucible/event-log.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/19-observability-event-log.md" observabilityDoc [
+    failuresFor "docs/engineering/crucible/event-log.md" eventLogDoc [
       {
-        label = "T-OBS-4 completion note";
-        needle = "Completed by `checks.crucible.phase4.eventLogClassCatalog`";
+        label = "class is a function of the kind";
+        needle = "## Class is a function of the kind";
       }
       {
-        label = "typed payload-kind completion note";
-        needle = "typed payload-kind\n  catalog";
-      }
-      {
-        label = "catalog class requirement";
-        needle = "class is a\n  function of the payload kind";
+        label = "catalog class enforcement at append";
+        needle = "`class_matches_catalog()`";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [

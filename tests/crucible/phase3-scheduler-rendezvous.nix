@@ -11,20 +11,13 @@
   libSource = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
   rendezvousTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/scheduler_rendezvous.rs;
   livenessTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/gate_scheduler_liveness.rs;
-  schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/08-scheduling.md" schedulingDoc [
-      {
-        label = "T-SCHED-7 completion note";
-        needle = "Completed by `checks.crucible.phase3.schedulerRendezvous`";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [
+    failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "rendezvous policy type";
         needle = "pub struct SchedulerRendezvous";

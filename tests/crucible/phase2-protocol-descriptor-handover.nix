@@ -10,8 +10,7 @@
   protocolCargo = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/Cargo.toml;
   protocolLib = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/src/lib.rs;
   descriptorTest = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/tests/descriptor_handover.rs;
-  protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
-  crateSpec = builtins.readFile ../../docs/rfcs/0010-crucible/27-crate-structure.md;
+  crateSpec = builtins.readFile ../../docs/engineering/crucible/crate-structure.md;
   unsafeFenceRust = builtins.readFile ../../crates/crucible/crucible-test-support/tests/crate_unsafe_fence.rs;
   unsafeFenceNix = builtins.readFile ./phase1-crate-unsafe-fence.nix;
   defaultChecks = builtins.readFile ./default.nix;
@@ -143,20 +142,18 @@
         needle = "recv_setup_with_descriptors";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/14-protocol.md" protocolSpec [
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/27-crate-structure.md" crateSpec [
+    ++ failuresFor "docs/engineering/crucible/crate-structure.md" crateSpec [
       {
         label = "protocol unsafe crate table entry";
-        needle = "| `crucible-qemu-protocol` | **UNSAFE**";
+        needle = "| `crucible-qemu-protocol` | Unix `sendmsg`/`recvmsg` with `SCM_RIGHTS` for setup descriptor handover";
       }
       {
         label = "unsafe crate ownership review";
-        needle = "A new unsafe boundary requires an explicit ownership review";
+        needle = "requires an explicit ownership review";
       }
       {
         label = "safe engine and control plane";
-        needle = "The engine and control plane remain safe.";
+        needle = "control plane remain safe.";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-test-support/tests/crate_unsafe_fence.rs" unsafeFenceRust [

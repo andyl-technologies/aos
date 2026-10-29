@@ -9,8 +9,6 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
-  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   helpSurface = builtins.readFile ../../crates/crucible/crucible-cli/tests/help_surface.rs;
   cliMain = import ./_cli-source.nix {inherit lib;};
   cliManifest = builtins.readFile ../../crates/crucible/crucible-cli/Cargo.toml;
@@ -19,27 +17,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
-      {
-        label = "T-CLI-8 packaged production selftest evidence";
-        needle = "Completed under `checks.crucible.phase5.cliSelftest`";
-      }
-      {
-        label = "T-CLI-8 unmodified stock-kernel evidence";
-        needle = "packaged production CLI against the unmodified stock Linux kernel";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "phase5 CLI selftest completion note";
-        needle = "`T-CLI-8` is completed through `checks.crucible.phase5.cliSelftest`";
-      }
-      {
-        label = "phase5 direct packaged production selftest execution";
-        needle = "process invocation of the packaged production\n  `crucible --campaign-deployment /tmp/executor.toml selftest` process";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-cli/tests/help_surface.rs" helpSurface [
+    failuresFor "crates/crucible/crucible-cli/tests/help_surface.rs" helpSurface [
       {
         label = "production selftest excludes test-double options";
         needle = "cli_production_selftest_help_excludes_test_double_options";

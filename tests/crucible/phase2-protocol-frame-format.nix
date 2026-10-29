@@ -10,7 +10,6 @@
   protocolLib = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/src/lib.rs;
   frameFormatTest = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/tests/frame_format.rs;
   protocolAbiGate = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/tests/gate_abi_conformance.rs;
-  protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -87,7 +86,7 @@
       }
       {
         label = "closed registry test";
-        needle = "closed_tag_registry_matches_rfc_14_table";
+        needle = "closed_tag_registry_matches_wire_tag_table";
       }
       {
         label = "unknown tag rejection test";
@@ -111,8 +110,6 @@
         label = "canonical protocol ABI gate literal byte freeze";
         needle = "protocol_golden_vectors_freeze_literal_frame_bytes";
       }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/14-protocol.md" protocolSpec [
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {

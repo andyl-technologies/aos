@@ -1,9 +1,10 @@
-//! Checks RFC-0010 determinism review policy.
+//! Checks the Crucible determinism review policy.
 //!
 //! The checklist is the human review gate for engine, scheduler, transport,
 //! and ordering-significant host-code changes. These tests keep the canonical
-//! checklist and the lightweight Nix gate aligned with RFC-0010 file 28
-//! section 6 without coupling the policy to a hosting-provider template.
+//! checklist in `docs/engineering/crucible/engineering-standards.md` and the
+//! lightweight Nix gate aligned without coupling the policy to a
+//! hosting-provider template.
 
 #![forbid(unsafe_code)]
 
@@ -16,14 +17,12 @@ use std::path::PathBuf;
 
 const DETERMINISM_CHECKLIST_COUNT: usize = 15;
 
-const RFC_TERMS: &[&str] = &[
-    "[STD-32]",
+const REVIEW_POLICY_TERMS: &[&str] = &[
     "DETERMINISM REVIEW CHECKLIST",
     "any PR touching an engine/scheduler/transport crate",
     "MUST block the PR on",
     "completed checklist is recorded in the PR description",
     "or review.",
-    "[STD-33]",
     "fix MUST be at the",
     "source",
     "never a workaround",
@@ -34,30 +33,30 @@ const RFC_TERMS: &[&str] = &[
 ];
 
 #[test]
-fn determinism_review_policy_matches_rfc() -> Result<(), Box<dyn Error>> {
+fn determinism_review_policy_matches_engineering_standards() -> Result<(), Box<dyn Error>> {
     let root = repo_root();
     let standards =
-        fs::read_to_string(root.join("docs/rfcs/0010-crucible/28-engineering-standards.md"))?;
+        fs::read_to_string(root.join("docs/engineering/crucible/engineering-standards.md"))?;
     let gate_nix = fs::read_to_string(root.join("tests/crucible/phase1-determinism-review.nix"))?;
     let default_nix = fs::read_to_string(root.join("tests/crucible/default.nix"))?;
     let mut failures = Vec::new();
 
     require_terms(
-        "28-engineering-standards.md STD-32/STD-33",
+        "engineering-standards.md review policy",
         &standards,
-        RFC_TERMS,
+        REVIEW_POLICY_TERMS,
         &mut failures,
     );
-    failures.extend(rfc_structure_failures(&standards)?);
+    failures.extend(checklist_structure_failures(&standards)?);
     require_terms(
         "phase1-determinism-review.nix",
         &gate_nix,
         &[
             "tasks=T-STD-13",
-            "review_checklist=docs/rfcs/0010-crucible/28-engineering-standards.md",
+            "review_checklist=docs/engineering/crucible/engineering-standards.md",
             "root_cause_rule=source-only",
             "expectedDeterminismChecklistItems",
-            "rfcChecklistItems = checkboxItems",
+            "checklistItems = checkboxItems",
             "checklistStructureFailures",
             "++ checklistStructureFailures",
         ],
@@ -90,10 +89,10 @@ fn determinism_review_rules_reject_missing_checklist_structure() {
     ]
     .join("\n");
 
-    let failures = rfc_structure_failures(&incomplete_standards)
-        .unwrap_or_else(|error| vec![format!("synthetic RFC checklist: {error}")]);
+    let failures = checklist_structure_failures(&incomplete_standards)
+        .unwrap_or_else(|error| vec![format!("synthetic checklist: {error}")]);
 
-    assert_contains(&failures, "expected 15 RFC checklist items");
+    assert_contains(&failures, "expected 15 determinism checklist items");
 }
 
 fn require_terms(label: &str, content: &str, terms: &[&str], failures: &mut Vec<String>) {
@@ -104,24 +103,24 @@ fn require_terms(label: &str, content: &str, terms: &[&str], failures: &mut Vec<
     }
 }
 
-fn rfc_structure_failures(standards: &str) -> Result<Vec<String>, Box<dyn Error>> {
-    let checklist_items = rfc_checklist_items(standards)?;
+fn checklist_structure_failures(standards: &str) -> Result<Vec<String>, Box<dyn Error>> {
+    let checklist_items = determinism_checklist_items(standards)?;
     if checklist_items.len() == DETERMINISM_CHECKLIST_COUNT {
         return Ok(Vec::new());
     }
 
     Ok(vec![format!(
-        "28-engineering-standards.md: expected {DETERMINISM_CHECKLIST_COUNT} RFC checklist items, found {}",
+        "engineering-standards.md: expected {DETERMINISM_CHECKLIST_COUNT} determinism checklist items, found {}",
         checklist_items.len()
     )])
 }
 
-fn rfc_checklist_items(standards: &str) -> Result<Vec<String>, Box<dyn Error>> {
+fn determinism_checklist_items(standards: &str) -> Result<Vec<String>, Box<dyn Error>> {
     let section = section_between(
         standards,
         "```text\nDETERMINISM REVIEW CHECKLIST (apply to any engine/scheduler/transport PR)",
         "\n```",
-        "RFC determinism checklist block",
+        "determinism checklist block",
     )?;
     Ok(checkbox_items(section, "[ ] "))
 }

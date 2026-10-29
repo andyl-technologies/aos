@@ -24,7 +24,7 @@
     inherit lib;
     entry = ../../crates/crucible/crucible-qemu-plugin/src/idle_loop/tests/inbound_cases.rs;
   };
-  pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
+  pluginSpec = builtins.readFile ../../docs/engineering/crucible/qemu-plugin.md;
   shmemDeliveryErrors = import ./_rust-module-source.nix {
     inherit lib;
     entry = ../../crates/crucible/crucible-qemu-shmem/src/shmem/delivery_errors.rs;
@@ -84,14 +84,14 @@
     hotPathSources;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
+    failuresFor "docs/engineering/crucible/qemu-plugin.md" pluginSpec [
       {
-        label = "inbound frame polling wording";
-        needle = "Implement inbound-frame polling/injection";
+        label = "inbound frame ring";
+        needle = "`InboundFrameRing`";
       }
       {
-        label = "already-passed failure wording";
-        needle = "fail loudly on an already-passed";
+        label = "already-passed failure";
+        needle = "`InboundFrameError::DeliveryAlreadyPassed`";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/lib.rs" pluginLib [

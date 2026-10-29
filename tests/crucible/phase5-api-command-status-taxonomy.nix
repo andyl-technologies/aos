@@ -8,8 +8,6 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  apiDoc = builtins.readFile ../../docs/rfcs/0010-crucible/21-api.md;
-  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   apiLib = import ./_crucible-control-source.nix {
     inherit lib;
     component = "exports";
@@ -41,19 +39,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/21-api.md" apiDoc [
-      {
-        label = "T-API-10 completion note";
-        needle = "Completed by `checks.crucible.phase5.apiCommandStatusTaxonomy`";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "phase5 API command status status note";
-        needle = "`T-API-10` is green through";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-control-api/src/streaming.rs" streaming [
+    failuresFor "crates/crucible/crucible-control-api/src/streaming.rs" streaming [
       {
         label = "command rejection enum";
         needle = "pub enum CommandRejectionKind";
@@ -393,7 +379,7 @@ in
     ];
 
     meta = {
-      description = "RFC-0010 phase 5 API command status taxonomy gate for ${taskList}";
+      description = "Crucible phase 5 API command status taxonomy gate for ${taskList}";
       passthru = {
         inherit attrPath taskIds dependencies;
         failureText = failureText;

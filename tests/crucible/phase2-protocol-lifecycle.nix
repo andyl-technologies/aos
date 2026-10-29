@@ -10,7 +10,6 @@
   protocolLib = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/src/lib.rs;
   lifecycleTest = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/tests/lifecycle.rs;
   layer1InjectionTest = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/tests/gate_layer1_injection.rs;
-  protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -230,12 +229,6 @@
       {
         label = "runtime data plane is shmem";
         needle = "RuntimeDataPlane::SharedMemory";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/14-protocol.md" protocolSpec [
-      {
-        label = "T-PROTO-6 live completion evidence";
-        needle = "Completed by `checks.crucible.phase2.qemuLivePluginInstall`";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

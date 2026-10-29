@@ -1,7 +1,5 @@
 //! HTTP/2 clients and transport-independent Crucible control interfaces.
 //!
-//! Spec index: RFC-0010 files 21.
-//!
 //! Module map: client owns typed request dispatch, RPC receivers, and debugger
 //! operations. Local stream traits let server-side adapters implement the same
 //! interface without pulling server or QEMU realization code into this crate.

@@ -33,7 +33,6 @@
   goldenFixture = builtins.readFile ../../crates/crucible/crucible-qemu-shmem/tests/fixtures/shmem_abi_golden.fixture;
   generatedHeader = builtins.readFile ../../crates/crucible/crucible-qemu-shmem/include/crucible_shmem_abi.h;
   interfaceManifest = builtins.readFile ../../crates/crucible/crucible-qemu-shmem/interface/crucible-shmem-abi.toml;
-  shmemSpec = builtins.readFile ../../docs/rfcs/0010-crucible/13-shmem-abi.md;
   defaultChecks = builtins.readFile ./default.nix;
   gateTargets = builtins.readFile ../../crates/crucible/crucible-test-support/src/gate_targets.rs;
   gateTargetMapping = builtins.readFile ./phase1-gate-target-mapping.nix;
@@ -906,8 +905,6 @@
                 requiredFeatures = [];
         '';
       }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/13-shmem-abi.md" shmemSpec [
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {

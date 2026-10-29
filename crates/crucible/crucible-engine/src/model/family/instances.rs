@@ -290,7 +290,7 @@ impl PinnedConfiguration {
 /// The seed is not stored as a drifting side channel: it is the embedded
 /// [`ScenarioDefForm`]'s own seed. The artifact carries only the complete
 /// validated scenario form and recorded schedule, so its identity is exactly the
-/// RFC tuple `(seed, scenario, schedule)` without a parent family or host path.
+/// tuple `(seed, scenario, schedule)` without a parent family or host path.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ReproductionArtifact {
     pub(in crate::model) id: ContentHash,

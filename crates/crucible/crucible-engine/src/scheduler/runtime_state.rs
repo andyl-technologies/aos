@@ -494,9 +494,9 @@ pub struct SingleScheduler {
     /// [`resolve_device_completions`](SingleScheduler::resolve_device_completions)
     /// stamps each I/O completion's key with the consumer's *frontier* icount
     /// instead of the completion's exact `delivery_icount`, modeling the
-    /// freeze-time / transport-timing bug RFC-0010 forbids ([IO-2], [DET-19]).
-    /// Used by `gate:layer1-injection` falsifiability tests to prove the gates go
-    /// red when delivery is not icount-exact. It is never set in production.
+    /// freeze-time / transport-timing bug the determinism contract forbids.
+    /// Used by `gate:layer1-injection` falsifiability tests to prove the gates
+    /// go red when delivery is not icount-exact. It is never set in production.
     #[cfg(test)]
     pub(super) broken_device_delivery_stamp: bool,
     pub(super) control_inbox: Vec<ControlOperation>,

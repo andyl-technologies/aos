@@ -1,6 +1,5 @@
 //! SPDX-License-Identifier: MIT OR Apache-2.0
 //! `crucible-qemu-protocol` implements the public host/plugin process protocol.
-//! Spec index: RFC-0010 files 14, 16.
 //!
 //! This dual-licensed L1 crate implements independently implementable framing,
 //! versioned codecs, and golden vectors over owned buffers, without QEMU headers,
@@ -2103,7 +2102,7 @@ fn ensure_waiting_for_setup_ack(state: ControlLifecycleState) -> Result<(), Cont
 /// Sends a `Setup` frame and its fixed-order descriptors over a Unix socket.
 ///
 /// The descriptors are attached as `SCM_RIGHTS` ancillary data using
-/// `sendmsg`, in the RFC-defined order
+/// `sendmsg`, in the fixed protocol order
 /// `[shmem_fd, wake_fd, plugin_setup_plan_fd]`.
 ///
 /// # Errors
@@ -2130,8 +2129,8 @@ pub fn send_setup_with_descriptors(
 /// Receives a `Setup` frame and its fixed-order descriptors from a Unix socket.
 ///
 /// The frame must carry exactly three `SCM_RIGHTS` descriptors. The returned
-/// descriptors are owned, marked close-on-exec, and returned in the RFC-defined
-/// order: shmem first, wake second, immutable current-version plugin plan third.
+/// descriptors are owned, marked close-on-exec, and returned in the fixed
+/// protocol order: shmem first, wake second, immutable current-version plugin plan third.
 ///
 /// # Errors
 ///

@@ -14,21 +14,17 @@
   determinismTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/event_log_determinism.rs;
   replayOracleTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/gate_replay_oracle.rs;
   e2eDeterminismTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/gate_e2e_determinism_concurrency.rs;
-  observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;
+  eventLogDoc = builtins.readFile ../../docs/engineering/crucible/event-log.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/19-observability-event-log.md" observabilityDoc [
+    failuresFor "docs/engineering/crucible/event-log.md" eventLogDoc [
       {
-        label = "T-OBS-6 completion note";
-        needle = "Completed by `checks.crucible.phase4.eventLogDeterminism`";
-      }
-      {
-        label = "causal subsequence completion note";
-        needle = "renumbered causal subsequence";
+        label = "renumbered causal subsequence";
+        needle = "renumbers the causal subsequence";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [

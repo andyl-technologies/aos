@@ -1,7 +1,5 @@
 //! Native transport-independent Crucible control contracts, encodings, and compatibility rules.
 //!
-//! Spec index: RFC-0010 files 21.
-//!
 //! Module map: lifecycle and streaming own request/response values; rpc_abi
 //! owns frozen encodings; open_set and session_mapping own capability vocabulary.
 //! The crate does not start servers, instantiate actors, or launch QEMU.

@@ -10,16 +10,16 @@
   harnessAdversarial = builtins.readFile ../../crates/crucible/crucible-test-support/src/adversarial.rs;
   harnessFixtureTest = builtins.readFile ../../crates/crucible/crucible-test-support/tests/adversarial_host_fixture.rs;
   defaultChecks = builtins.readFile ./default.nix;
-  determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
+  determinismDoc = builtins.readFile ../../docs/engineering/crucible/determinism.md;
   adversarialGateTest = builtins.readFile ../../crates/crucible/crucible-test-support/tests/gate_adversarial_determinism.rs;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
+    failuresFor "docs/engineering/crucible/determinism.md" determinismDoc [
       {
-        label = "T-DET-25 completion note";
-        needle = "Completed by `checks.crucible.phase1.adversarialHostFixture`";
+        label = "adversarial host fixture check is documented";
+        needle = "`checks.crucible.phase1.adversarialHostFixture`";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

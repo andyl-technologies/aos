@@ -8,8 +8,6 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
-  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = import ./_cli-source.nix {inherit lib;};
   cliProduction = import ./_cli-production-source.nix {inherit lib;};
   cliControl = import ./_rust-module-source.nix {
@@ -31,19 +29,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
-      {
-        label = "T-CLI-2 completion note";
-        needle = "Completed by `checks.crucible.phase5.cliThinWrapper`";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "phase5 CLI thin-wrapper status note";
-        needle = "`T-CLI-2` is green through `checks.crucible.phase5.cliThinWrapper`";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-session/src/validation.rs" sessionValidation [
+    failuresFor "crates/crucible/crucible-session/src/validation.rs" sessionValidation [
       {
         label = "session-owned checkpoint materialization";
         needle = "pub fn recorded_checkpoint_for_configuration(";
@@ -396,7 +382,7 @@ in
     ];
 
     meta = {
-      description = "RFC-0010 phase 5 CLI thin-wrapper gate for ${taskList}";
+      description = "Crucible phase 5 CLI thin-wrapper gate for ${taskList}";
       passthru = {
         inherit attrPath taskIds dependencies;
         failureText = failureText;

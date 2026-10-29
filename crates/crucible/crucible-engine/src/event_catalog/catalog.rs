@@ -1,4 +1,4 @@
-//! Versioned scheduler event-kind and RFC-dependency catalog data.
+//! Versioned scheduler event-kind and consumer-dependency catalog data.
 
 use super::*;
 

@@ -5,105 +5,53 @@
   pkgs,
   taskIds ? ["T-TRI-8"],
 }: let
-  # Substring scan by index. The regex form (builtins.match ".*needle.*")
-  # overflows the Nix regex engine's stack on large haystacks such as the CLI
-  # main.rs, so use a linear index walk instead.
-  inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
-
-  forbiddenFailuresFor = fileLabel: content: forbidden:
-    lib.concatMap (
-      requirement:
-        lib.optionals (hasInfix requirement.needle content) [
-          "${fileLabel}: forbidden ${requirement.label}: `${requirement.needle}`"
-        ]
-    )
-    forbidden;
+  inherit (import ./_lib.nix {inherit lib;}) failuresFor;
 
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  triageDoc = builtins.readFile ../../docs/rfcs/0010-crucible/34-failure-triage.md;
-  cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
-  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
+  failureTriagePage = builtins.readFile ../../docs/engineering/crucible/failure-triage.md;
   cliSource = import ./_cli-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
   taskList = builtins.concatStringsSep "," taskIds;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/34-failure-triage.md" triageDoc [
-      {
-        label = "T-TRI-8 completion note";
-        needle = "Completed by `checks.crucible.phase6.triageCliSurface`";
-      }
-      {
-        label = "forward reference resolved";
-        needle = "`crucible triage` is added to 23's CLI surface";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
-      {
-        label = "triage in closed subcommand set";
-        needle = "triage     Cluster, dedup, and minimize discovered failures (34).";
-      }
-      {
-        label = "triage command shape";
-        needle = "crucible triage <FINDINGS> [FLAGS]";
-      }
+    failuresFor "docs/engineering/crucible/failure-triage.md" failureTriagePage [
       {
         label = "policy help copy";
-        needle = "--policy <coarse|default|fine|exact>";
+        needle = "[--policy coarse|default|fine|exact]";
       }
       {
         label = "minimize help copy";
-        needle = "--minimize <none|representative|all>";
+        needle = "[--minimize none|representative|all]";
       }
       {
         label = "report help copy";
-        needle = "--report <dir>";
+        needle = "[--report <dir>]";
       }
       {
         label = "markdown format help copy";
-        needle = "--format <jsonl|json|table|markdown>";
-      }
-      {
-        label = "triage markdown scope";
-        needle = "`markdown` is reserved";
+        needle = "[--format jsonl|json|table|markdown]";
       }
       {
         label = "recompute help copy";
-        needle = "--recompute-signatures";
-      }
-      {
-        label = "compare help copy";
-        needle = "--compare <other-triage-result>";
+        needle = "[--recompute-signatures]";
       }
       {
         label = "uniform triage exit code one";
-        needle = "cluster's minimization failed its signature-preservation assertion";
+        needle = "minimization signature preservation";
       }
       {
         label = "malformed ledger exit";
-        needle = "`5` = malformed/unresolvable findings ledger or artifact";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/34-failure-triage.md" triageDoc [
-      {
-        label = "single findings path copy";
-        needle = "a content hash of a stored ledger, or one artifact/ledger file path";
+        needle = "Malformed or unresolvable ledger, artifact, store, or I/O failure";
       }
       {
         label = "jsonl default copy";
-        needle = "--format <jsonl|json|table|markdown>     Report rendering (§34.5.2). Default: jsonl.";
+        needle = "`table` on a terminal, else `jsonl`";
       }
       {
         label = "usage parse exit note";
-        needle = "parse-time usage errors";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "T-TRI-8 plan summary";
-        needle = "`T-TRI-8` is green through";
+        needle = "Usage error, including parse-time errors";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-cli/src/main.rs" cliSource [
@@ -196,26 +144,6 @@
       {
         label = "CLI skeleton dependency";
         needle = "phase5.cliSkeleton";
-      }
-    ]
-    ++ forbiddenFailuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
-      {
-        label = "stale triage file link";
-        needle = "34-triage-clustering.md";
-      }
-      {
-        label = "boolean minimize copy";
-        needle = "--minimize                Minimize";
-      }
-    ]
-    ++ forbiddenFailuresFor "docs/rfcs/0010-crucible/34-failure-triage.md" triageDoc [
-      {
-        label = "unsupported glob findings copy";
-        needle = "glob of artifact files";
-      }
-      {
-        label = "stale table default";
-        needle = "Default: table.";
       }
     ];
 in

@@ -21,25 +21,21 @@
     inherit lib;
     entry = ../../crates/crucible/crucible-qemu-shmem/tests/advance_ceiling_handoff.rs;
   };
-  schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
+  schedulingDoc = builtins.readFile ../../docs/engineering/crucible/scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/08-scheduling.md" schedulingDoc [
+    failuresFor "docs/engineering/crucible/scheduling.md" schedulingDoc [
       {
-        label = "T-SCHED-14 completion note";
-        needle = "Completed by `checks.crucible.phase3.schedulerRunCeiling`";
+        label = "single ceiling";
+        needle = "`SchedulerRunCeilingPublication` per RUN";
       }
       {
-        label = "single ceiling requirement";
-        needle = "single per-node max-advance ceiling";
-      }
-      {
-        label = "published once requirement";
-        needle = "published once per quantum";
+        label = "published once";
+        needle = "The ceiling is computed once and never recomputed mid-RUN.";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [

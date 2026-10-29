@@ -4,7 +4,7 @@
   attrPath ? "checks.crucible.phase7.cruciblePackageInventory",
   taskIds ? ["T-PKG-1"],
 }: let
-  packagingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/26-packaging-aos-integration.md;
+  packagingDoc = builtins.readFile ../../docs/engineering/crucible/packaging.md;
   pkgsDefault = builtins.readFile ../../pkgs/default.nix;
   qemuNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
   pluginNix = builtins.readFile ../../pkgs/emulation/crucible-qemu-plugin.nix;
@@ -237,11 +237,7 @@
     ]
     ++ lib.optional (cargoDepsHash != expectedCargoDepsHash) "pkgs/tools/crucible/_cargo-deps-hash.nix: expected `${expectedCargoDepsHash}`, got `${cargoDepsHash}`";
 
-  inventoryDocFailures = failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
-    {
-      label = "T-PKG-1 completion note";
-      needle = "Completed by `checks.crucible.phase7.cruciblePackageInventory`";
-    }
+  inventoryDocFailures = failuresFor "docs/engineering/crucible/packaging.md" packagingDoc [
     {
       label = "qemu package attr note";
       needle = "`pkgs.qemu-crucible`";

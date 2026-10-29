@@ -33,7 +33,8 @@ workspace member that no runtime crate may depend on. Its module map:
 | `segment_replay` | Checkpoint-segment parallel replay with ordered joining |
 | `perf` | The cost-model substrate of `gate:perf-bench` |
 | `assertion` | Test-only determinism assertion labels (`crucible-assert.v1`) |
-| `spec_index` | The crate root index consumed by the workspace lints |
+| `campaign_gates` | Executable contracts of the campaign gates |
+| `workspace_crates` | `crucible_crates()`: the Crucible crate list that workspace-wide lints iterate |
 
 ## Test layers
 

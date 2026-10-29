@@ -15,7 +15,7 @@
     inherit lib;
     entry = ../../crates/crucible/crucible-qemu-plugin/src/idle_loop.rs;
   };
-  pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
+  pluginSpec = builtins.readFile ../../docs/engineering/crucible/qemu-plugin.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -24,22 +24,22 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
+    failuresFor "docs/engineering/crucible/qemu-plugin.md" pluginSpec [
       {
-        label = "single-threaded RR TCG obligation";
-        needle = "single-threaded round-robin TCG";
+        label = "single-threaded round-robin loop";
+        needle = "single-threaded round-robin loop";
       }
       {
         label = "fixed RR quantum wording";
-        needle = "fixed, content-addressed `rr_switch_quantum`";
+        needle = "after each `rr_switch_quantum` retired instructions";
       }
       {
-        label = "fixed ascending rotation wording";
-        needle = "fixed ascending rotation";
+        label = "ascending rotation wording";
+        needle = "in ascending vCPU order";
       }
       {
         label = "all halted predicate wording";
-        needle = "only when every vCPU is halted";
+        needle = "idle only when every vCPU is halted";
       }
       {
         label = "minimum over vCPUs wording";

@@ -17,9 +17,8 @@
     + builtins.readFile ../../crates/crucible/crucible-qemu-host/tests/deterministic_launch/launch_artifacts.rs;
   deterministicLaunchCheck = builtins.readFile ./phase1-deterministic-launch.nix;
   defaultChecks = builtins.readFile ./default.nix;
-  determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
-  invariants = builtins.readFile ../../docs/rfcs/0010-crucible/01-goals-nongoals-invariants.md;
-  qemuIntegration = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
+  determinismDoc = builtins.readFile ../../docs/engineering/crucible/determinism.md;
+  qemuIntegrationDoc = builtins.readFile ../../docs/engineering/crucible/qemu-integration.md;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -229,33 +228,27 @@
         needle = "\"T-DET-21\"";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
+    ++ failuresFor "docs/engineering/crucible/determinism.md" determinismDoc [
       {
-        label = "DET-15 host-side guest non-modification";
-        needle = "content placed inside the guest";
+        label = "no required in-guest content";
+        needle = "Core operation requires no content placed";
       }
       {
-        label = "DET-16 copy-on-write overlays";
+        label = "guest writes land in copy-on-write overlays";
         needle = "copy-on-write overlays";
       }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/01-goals-nongoals-invariants.md" invariants [
       {
-        label = "INV-5 guest non-modification";
-        needle = "[INV-5] Guest non-modification.";
-      }
-      {
-        label = "INV-5 copy-on-write overlays";
-        needle = "copy-on-write overlays only";
+        label = "guest non-modification invariant";
+        needle = "Copy-on-write overlays only; no required in-guest content";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/10-qemu-integration.md" qemuIntegration [
+    ++ failuresFor "docs/engineering/crucible/qemu-integration.md" qemuIntegrationDoc [
       {
-        label = "QEMU-12 CoW disks";
-        needle = "CoW disks.** Every guest disk MUST";
+        label = "CoW disk launch requirement";
+        needle = "`CopyOnWriteOverlay` / `ByteIdenticalGenesis`";
       }
       {
-        label = "QEMU-12 byte-identical backing state";
+        label = "byte-identical backing state";
         needle = "byte-identical backing state";
       }
     ];

@@ -16,7 +16,7 @@
     inherit lib;
     entry = ../../crates/crucible/crucible-qemu-plugin/src/network_tx.rs;
   };
-  pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
+  pluginSpec = builtins.readFile ../../docs/engineering/crucible/qemu-plugin.md;
   shmemLib = import ./_crucible-shmem-source.nix {inherit lib;};
   shmemFrameNode = import ./_rust-module-source.nix {
     inherit lib;
@@ -61,14 +61,14 @@
     forbiddenCallbackApis;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
+    failuresFor "docs/engineering/crucible/qemu-plugin.md" pluginSpec [
       {
-        label = "network TX wording";
-        needle = "Implement the network TX interception callback";
+        label = "network TX callback";
+        needle = "`qemu_plugin_register_net_tx_cb` installs the TX callback";
       }
       {
-        label = "oversize/full-ring wording";
-        needle = "rejecting oversize frames and full rings loudly";
+        label = "oversize frame rejection";
+        needle = "`NetworkTxError::PayloadTooLarge`";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/lib.rs" pluginLib [

@@ -1,7 +1,7 @@
 //! Checks the Crucible crate-root safe/unsafe fence.
 //!
-//! The crate table in RFC-0010 file 27 is the source of truth for which runtime
-//! crates forbid `unsafe` entirely and which crates are explicit unsafe
+//! The crate table in `docs/engineering/crucible/crate-structure.md` records
+//! which runtime crates forbid `unsafe` entirely and which crates are explicit unsafe
 //! boundaries. This test is the first `gate:harness-lint` shape check: adding a
 //! new `crucible-*` package or changing a crate root fence must update this
 //! executable list.

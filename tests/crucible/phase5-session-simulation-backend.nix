@@ -31,8 +31,7 @@
       entry = ../../crates/crucible/crucible-qemu-host/src/node_tests.rs;
     })
   ];
-  sessionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/20-session-control-plane.md;
-  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
+  sessionPage = builtins.readFile ../../docs/engineering/crucible/session.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -41,11 +40,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/20-session-control-plane.md" sessionDoc [
-      {
-        label = "T-SESS-11 completion note";
-        needle = "Completed by `checks.crucible.phase5.sessionSimulationBackend`";
-      }
+    failuresFor "docs/engineering/crucible/session.md" sessionPage [
       {
         label = "synchronous SimulationBackend sketch";
         needle = "pub trait SimulationBackend {";
@@ -53,12 +48,6 @@
       {
         label = "actor-owned non-Send backend sketch";
         needle = "no `Send` bound is required";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "phase5 simulation backend completion note";
-        needle = "`T-SESS-11` is completed by `checks.crucible.phase5.sessionSimulationBackend`";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/backend.rs" backendLib [

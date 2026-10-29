@@ -1,4 +1,4 @@
-//! Checks the RFC-0010 per-layer gate-to-test-target map.
+//! Checks the Crucible per-layer gate-to-test-target map.
 
 #![forbid(unsafe_code)]
 
@@ -140,7 +140,7 @@ fn per_layer_gates_have_named_isolable_test_targets() -> Result<(), Box<dyn Erro
 }
 
 #[test]
-fn crate_structure_gate_targets_match_rfc_table() {
+fn crate_structure_gate_targets_match_expected_table() {
     let actual: BTreeSet<(&str, &str, &str)> = gate_targets()
         .iter()
         .map(|target| (target.gate, target.package, target.test_target))

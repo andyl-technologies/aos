@@ -11,33 +11,29 @@
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   libSource = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
   rrSubdivisionTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/scheduler_rr_subdivision.rs;
-  schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
+  schedulingDoc = builtins.readFile ../../docs/engineering/crucible/scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/08-scheduling.md" schedulingDoc [
+    failuresFor "docs/engineering/crucible/scheduling.md" schedulingDoc [
       {
-        label = "T-SCHED-28 completion note";
-        needle = "Completed by `checks.crucible.phase3.schedulerRrSubdivision`";
-      }
-      {
-        label = "fixed ascending rotation note";
+        label = "fixed ascending rotation";
         needle = "fixed ascending rotation";
       }
       {
-        label = "single ceiling note";
-        needle = "single node-level ceiling";
+        label = "single node ceiling";
+        needle = "The scheduler publishes only the node ceiling, one per RUN.";
       }
       {
-        label = "plugin internal note";
+        label = "plugin internal slices";
         needle = "plugin-internal";
       }
       {
-        label = "single-vCPU note";
-        needle = "single-vCPU";
+        label = "single-vCPU degenerate case";
+        needle = "A single-vCPU node is the degenerate case";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [

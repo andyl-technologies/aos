@@ -10,7 +10,6 @@
   protocolLib = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/src/lib.rs;
   goldenLib = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/src/golden_vectors.rs;
   goldenTest = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/tests/golden_vectors.rs;
-  protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -127,8 +126,6 @@
         label = "Quit covered";
         needle = "\"quit\"";
       }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/14-protocol.md" protocolSpec [
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {

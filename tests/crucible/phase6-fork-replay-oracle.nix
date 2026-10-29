@@ -8,7 +8,6 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  advancedDoc = builtins.readFile ../../docs/rfcs/0010-crucible/22-advanced-features.md;
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
   forkReplayGateTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/gate_fork_replay_oracle.rs;
   defaultChecks = builtins.readFile ./default.nix;
@@ -65,13 +64,7 @@
     forbidden;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/22-advanced-features.md" advancedDoc [
-      {
-        label = "T-ADV-4 completion note";
-        needle = "Completed by `checks.crucible.phase6.gates.replayOracle`";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" temporalGraph [
+    failuresFor "crates/crucible/crucible-engine/src/model.rs" temporalGraph [
       {
         label = "fork API";
         needle = "pub fn fork<I>";

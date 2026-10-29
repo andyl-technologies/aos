@@ -430,10 +430,10 @@ impl IoCore {
     /// completion past the representable nanosecond range, [`DeviceError::Clock`]
     /// or [`DeviceError::IcountOverflow`] when virtual-time conversion fails,
     /// [`DeviceError::DeliveryInPast`] when a computed `delivery_icount` lands
-    /// strictly before the sub-node's current icount (the fail-loud guard of
-    /// RFC §15.1.1, [IO-31]), and any [`DeviceError`] the device's `compute`
-    /// raises. On error the offending request and every later inbox entry remain
-    /// queued for an exact retry.
+    /// strictly before the sub-node's current icount (the fail-loud guard
+    /// against past-dated delivery), and any [`DeviceError`] the device's
+    /// `compute` raises. On error the offending request and every later inbox
+    /// entry remain queued for an exact retry.
     pub fn process_inbox<D>(&mut self, device: &mut D) -> Result<(), DeviceError>
     where
         D: IoSubNode,

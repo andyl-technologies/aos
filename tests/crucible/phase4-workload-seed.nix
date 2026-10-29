@@ -7,7 +7,7 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  workloadDoc = builtins.readFile ../../docs/rfcs/0010-crucible/33-examples-and-workloads.md;
+  workloadsDoc = builtins.readFile ../../docs/engineering/crucible/workloads.md;
   engineModel = import ./_crucible-model-source.nix {inherit lib;};
   engineLib = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
   workloadTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/workload_model.rs;
@@ -18,11 +18,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/33-examples-and-workloads.md" workloadDoc [
-      {
-        label = "T-WL-3 completion note";
-        needle = "Completed by `checks.crucible.phase4.workloadSeed`";
-      }
+    failuresFor "docs/engineering/crucible/workloads.md" workloadsDoc [
       {
         label = "black-box workload seed note";
         needle = "GuestWorkloadSeed";
@@ -33,7 +29,7 @@
       }
       {
         label = "white-box not required";
-        needle = "white-box path is never required";
+        needle = "`WORKLOAD_SEED_REQUIRES_WHITE_BOX` is `false`";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" engineModel [

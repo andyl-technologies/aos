@@ -21,7 +21,7 @@
     inherit lib;
     entry = ../../crates/crucible/crucible-engine/tests/event_graph_replay_oracle.rs;
   };
-  observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;
+  eventLogDoc = builtins.readFile ../../docs/engineering/crucible/event-log.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
@@ -67,19 +67,15 @@
     lib.concatMap (
       kind:
         lib.optionals (!(hasInfix "kind: \"${kind}\"" catalog)) [
-          "crates/crucible/crucible-engine/src/event_catalog.rs: missing required RFC kind `${kind}`"
+          "crates/crucible/crucible-engine/src/event_catalog.rs: missing required catalog kind `${kind}`"
         ]
     )
     requiredKinds;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/19-observability-event-log.md" observabilityDoc [
+    failuresFor "docs/engineering/crucible/event-log.md" eventLogDoc [
       {
-        label = "T-OBS-13 completion note";
-        needle = "Completed by `checks.crucible.phase4.eventKindCatalogFreeze`";
-      }
-      {
-        label = "catalog golden-vector completion note";
+        label = "catalog golden vector";
         needle = "golden-vector";
       }
     ]
@@ -192,8 +188,8 @@
         needle = "event_kind_catalog_is_versioned_sorted_and_single_source_for_classes";
       }
       {
-        label = "rfc required kinds test";
-        needle = "event_kind_catalog_contains_rfc_19_7_required_kinds";
+        label = "required kinds test";
+        needle = "event_kind_catalog_contains_required_kinds";
       }
       {
         label = "dependency map test";

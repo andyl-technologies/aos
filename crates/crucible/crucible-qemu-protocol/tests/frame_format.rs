@@ -21,7 +21,7 @@ fn frame_format_uses_big_endian_length_tag_and_payload() {
 }
 
 #[test]
-fn closed_tag_registry_matches_rfc_14_table() {
+fn closed_tag_registry_matches_wire_tag_table() {
     assert_eq!(
         ALL_CONTROL_TAGS,
         [

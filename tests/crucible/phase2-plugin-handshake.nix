@@ -14,8 +14,8 @@
   pluginRegistration = import ./_qemu-plugin-registration-source.nix {inherit lib;};
   protocol = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/src/lib.rs;
   shmem = import ./_crucible-shmem-source.nix {inherit lib;};
-  pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
-  protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
+  pluginSpec = builtins.readFile ../../docs/engineering/crucible/qemu-plugin.md;
+  protocolSpec = builtins.readFile ../../docs/engineering/crucible/control-protocol.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -24,31 +24,27 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
-      {
-        label = "T-PLUG-16 live completion evidence";
-        needle = "Completed by `checks.crucible.phase2.qemuLivePluginInstall`";
-      }
+    failuresFor "docs/engineering/crucible/qemu-plugin.md" pluginSpec [
       {
         label = "handshake wording";
-        needle = "Hello`/`HelloAck";
+        needle = "`Hello`/`HelloAck`";
       }
       {
         label = "slot cross-check wording";
         needle = "authoritative slot is the handshake's";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/14-protocol.md" protocolSpec [
+    ++ failuresFor "docs/engineering/crucible/control-protocol.md" protocolSpec [
       {
-        label = "Hello payload spec";
-        needle = "Hello` payload";
+        label = "Hello payload";
+        needle = "### `Hello` payload";
       }
       {
-        label = "HelloAck payload spec";
-        needle = "HelloAck` payload";
+        label = "HelloAck payload";
+        needle = "### `HelloAck` payload";
       }
       {
-        label = "slot bounds spec";
+        label = "slot bounds";
         needle = "slot_index < node_count";
       }
     ]

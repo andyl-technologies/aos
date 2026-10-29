@@ -284,10 +284,10 @@ impl Delivery {
 
 /// The policy for a reorder/jitter shift that lands in the consumer's past.
 ///
-/// RFC section 15.4.2 / [IO-34] forbids ever silently delivering late. A modeled shift
-/// that would land at or before the consumer's frontier is therefore either
-/// **clamped** up to the next deliverable future icount or it **fails loudly**
-/// via the divergence path; the link never delivers late.
+/// A link must never silently deliver late. A modeled shift that would land at
+/// or before the consumer's frontier is therefore either **clamped** up to the
+/// next deliverable future icount or it **fails loudly** via the divergence
+/// path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PastDeliveryPolicy {
     /// Fail loudly with [`DeviceError::DeliveryReorderedIntoPast`] ([INV-10]).
@@ -362,7 +362,7 @@ impl FrameDraws {
 
     /// Draws one frame's fault draws for an effective link fault table.
     ///
-    /// This is the RFC-level path used by [`NetLink::emit_with_rng_draws`]. It
+    /// This is the fault-table draw path used by [`NetLink::emit_with_rng_draws`]. It
     /// consumes one draw for each overlapping loss probability before duplicate
     /// and corruption draws, preserving the highest-first any-fires evaluation
     /// order while keeping the primary loss draw first.

@@ -14,8 +14,6 @@
     + builtins.readFile ../../crates/crucible/crucible-engine/src/tests/model_core.rs;
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
   forkGateTest = builtins.readFile ../../crates/crucible/crucible-session/tests/gate_exploration_fork.rs;
-  sessionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/20-session-control-plane.md;
-  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -23,19 +21,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/20-session-control-plane.md" sessionDoc [
-      {
-        label = "T-SESS-8 completion note";
-        needle = "Completed by `checks.crucible.phase5.sessionSaveResumeFork`";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "phase5 save-resume-fork status note";
-        needle = "`T-SESS-8` is green through `checks.crucible.phase5.sessionSaveResumeFork`";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" modelLib [
+    failuresFor "crates/crucible/crucible-engine/src/model.rs" modelLib [
       {
         label = "checkpoint configuration lookup";
         needle = "pub fn checkpoint_configuration";

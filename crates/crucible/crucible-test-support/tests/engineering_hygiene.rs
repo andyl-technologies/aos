@@ -1,8 +1,9 @@
-//! Checks the RFC-0010 file/module, layer-boundary, and commit-hygiene rules.
+//! Checks the Crucible file/module, layer-boundary, and commit-hygiene rules.
 //!
 //! The crate layer DAG is checked by `crate_layer_graph`; this test owns the
-//! adjacent source-shape and review-policy rules from RFC-0010 file 28 section
-//! 5 so drift is caught before those standards become prose-only guidance.
+//! adjacent source-shape and review-policy rules documented in
+//! `docs/engineering/crucible/engineering-standards.md` so drift is caught
+//! before those standards become prose-only guidance.
 
 #![forbid(unsafe_code)]
 
@@ -15,7 +16,7 @@ use std::fs;
 use std::io::{Error as IoError, ErrorKind};
 use std::path::{Path, PathBuf};
 
-use crucible_test_support::spec_index::crate_spec_index;
+use crucible_test_support::workspace_crates::crucible_crates;
 use sha2::{Digest, Sha256};
 
 #[path = "support/source_sections.rs"]
@@ -123,8 +124,8 @@ fn crucible_source_modules_follow_size_and_header_limits() -> Result<(), Box<dyn
     let baseline = HygieneBaseline::load(&root)?;
     let mut failures = Vec::new();
 
-    for spec in crate_spec_index() {
-        let package_dir = workspace::package_directory(&root.join("crates"), spec.package)?;
+    for member in crucible_crates() {
+        let package_dir = workspace::package_directory(&root.join("crates"), member.package)?;
         for source in rust_sources(&package_dir)? {
             let content = fs::read_to_string(&source)?;
             failures.extend(
@@ -152,24 +153,26 @@ fn non_qemu_crates_do_not_define_against_qemu_specific_boundaries() -> Result<()
     let baseline = HygieneBaseline::load(&root)?;
     let mut failures = Vec::new();
 
-    for spec in crate_spec_index() {
-        let package_dir = workspace::package_directory(&root.join("crates"), spec.package)?;
+    for member in crucible_crates() {
+        let package_dir = workspace::package_directory(&root.join("crates"), member.package)?;
         let manifest_path = package_dir.join("Cargo.toml");
         let manifest = fs::read_to_string(&manifest_path)?;
         failures.extend(
-            qemu_manifest_boundary_failures(spec.package, &manifest_path, &manifest)
+            qemu_manifest_boundary_failures(member.package, &manifest_path, &manifest)
                 .into_iter()
                 .filter(|finding| {
-                    !baseline.allows_qemu_manifest(spec.package, &manifest_path, finding)
+                    !baseline.allows_qemu_manifest(member.package, &manifest_path, finding)
                 }),
         );
 
         for source in rust_sources(&package_dir.join("src"))? {
             let content = fs::read_to_string(&source)?;
             failures.extend(
-                qemu_specific_boundary_failures(spec.package, &source, &content)
+                qemu_specific_boundary_failures(member.package, &source, &content)
                     .into_iter()
-                    .filter(|finding| !baseline.allows_qemu_token(spec.package, &source, finding)),
+                    .filter(|finding| {
+                        !baseline.allows_qemu_token(member.package, &source, finding)
+                    }),
             );
         }
     }
@@ -189,7 +192,7 @@ fn non_qemu_crates_do_not_define_against_qemu_specific_boundaries() -> Result<()
 fn engineering_hygiene_policy_is_wired_and_documented() -> Result<(), Box<dyn Error>> {
     let root = repo_root();
     let standards =
-        fs::read_to_string(root.join("docs/rfcs/0010-crucible/28-engineering-standards.md"))?;
+        fs::read_to_string(root.join("docs/engineering/crucible/engineering-standards.md"))?;
     let default_nix = fs::read_to_string(root.join("tests/crucible/default.nix"))?;
     let hygiene_nix =
         fs::read_to_string(root.join("tests/crucible/phase1-engineering-hygiene.nix"))?;
@@ -211,7 +214,7 @@ fn engineering_hygiene_policy_is_wired_and_documented() -> Result<(), Box<dyn Er
     );
     if !layer_graph_nix.is_file() {
         failures.push(format!(
-            "{}: missing crate layer-graph mirror for STD-28",
+            "{}: missing crate layer-graph mirror for the layer-boundary rule",
             display_repo_path(&layer_graph_nix)
         ));
     }
@@ -917,7 +920,7 @@ fn commit_hygiene_policy_failures(standards: &str, hygiene_nix: &str) -> Vec<Str
             require_contains(
                 standards,
                 term,
-                &format!("STD-29 must document commit hygiene term `{term}`"),
+                &format!("engineering-standards.md must document commit hygiene term `{term}`"),
                 &mut failures,
             );
         }

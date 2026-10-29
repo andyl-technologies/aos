@@ -554,7 +554,7 @@
         lib.concatMap (
           term:
             lib.optionals (!(hasInfix term standards)) [
-              "STD-29 must document commit hygiene term `${term}`"
+              "engineering-standards.md must document commit hygiene term `${term}`"
             ]
         )
         rule.terms
@@ -564,7 +564,7 @@
     )
     commitHygieneRules;
 
-  standards = builtins.readFile ../../docs/rfcs/0010-crucible/28-engineering-standards.md;
+  standards = builtins.readFile ../../docs/engineering/crucible/engineering-standards.md;
   syntheticSource = lines:
     "//! synthetic\n"
     + builtins.concatStringsSep "" (
@@ -721,7 +721,7 @@
       "tests/crucible/default.nix must keep the layer-boundary DAG check wired"
     ]
     ++ lib.optionals (!(builtins.pathExists ./phase1-crate-layer-graph.nix)) [
-      "missing crate layer-graph mirror for STD-28"
+      "missing crate layer-graph mirror for the layer-boundary rule"
     ]
     ++ lib.optionals (!(hasInfix "RESPONSIBILITY_REVIEW_LINE_THRESHOLD: usize = 1_000" hygieneRust)) [
       "engineering_hygiene.rs must publish the responsibility-review threshold"

@@ -10,9 +10,8 @@
   flake = builtins.readFile ../../flake.nix;
   defaultChecks = builtins.readFile ./default.nix;
   qemuNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
-  phasePlan = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
-  packagingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/26-packaging-aos-integration.md;
-  gateCatalog = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
+  packagingDoc = builtins.readFile ../../docs/engineering/crucible/packaging.md;
+  testingAndGatesDoc = builtins.readFile ../../docs/engineering/crucible/testing-and-gates.md;
   phasePlanRust = builtins.readFile ../../crates/crucible/crucible-test-support/src/phase_plan.rs;
   harnessLint = builtins.readFile ./phase1-harness-lint.nix;
   layer0Determinism = builtins.readFile ./phase1-layer0-determinism.nix;
@@ -170,7 +169,7 @@
     ];
 
   gateCatalogFailures = lib.concatMap (gate:
-    failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" gateCatalog [
+    failuresFor "docs/engineering/crucible/testing-and-gates.md" testingAndGatesDoc [
       {
         label = "${gate.gate} catalog entry";
         needle = "`" + gate.gate + "`";
@@ -179,13 +178,7 @@
   allClassifiedGates;
 
   phasePlanFailures = lib.concatMap (gate:
-    failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" phasePlan [
-      {
-        label = "${gate.gate} phase ladder entry";
-        needle = gate.gate;
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-test-support/src/phase_plan.rs" phasePlanRust [
+    failuresFor "crates/crucible/crucible-test-support/src/phase_plan.rs" phasePlanRust [
       {
         label = "${gate.path} canonical phase-plan target";
         needle = "\"" + gate.path + "\"";
@@ -348,11 +341,11 @@
         needle = "status=complete";
       }
       {
-        label = "qemu-inert owns completed RFC tasks";
+        label = "qemu-inert owns completed tasks";
         needle = ''taskIds ? ["T-DET-23" "T-HARN-21" "T-PATCH-3"]'';
       }
       {
-        label = "qemu-inert has no open RFC tasks";
+        label = "qemu-inert has no open tasks";
         needle = "openTaskIds ? []";
       }
     ]
@@ -694,38 +687,22 @@
       }
     ];
 
-  docFailures = failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
+  docFailures = failuresFor "docs/engineering/crucible/packaging.md" packagingDoc [
     {
-      label = "PKG-27 eval-class mapping";
-      needle = "the **pure/eval-level**";
+      label = "gate class wiring summary";
+      needle = "Eval-class, package-class, and fleet gate wiring and ordering";
     }
     {
-      label = "PKG-27 package-class mapping";
-      needle = "**QEMU-backed** gates";
+      label = "package-class QEMU checks";
+      needle = "`qemu-crucible` carries package checks";
     }
     {
-      label = "PKG-27 e2e VM/fleet mapping";
-      needle = "the **e2e** gate";
+      label = "patch microtests package check";
+      needle = "`checks.integration.qemu-crucible-patch-microtests`";
     }
     {
-      label = "T-PKG-4 completion note";
-      needle = "Completed by `checks.crucible.phase2.gates.patchMicrotests`";
-    }
-    {
-      label = "T-PKG-14 completion note";
-      needle = "Completed by `checks.crucible.phase7.crucibleGateCiWiring`";
-    }
-    {
-      label = "T-PKG-21 completion note";
-      needle = "Completed by `checks.crucible.phase7.crucibleFleetStore`";
-    }
-    {
-      label = "T-PKG-22 completion note";
-      needle = "Completed by `checks.crucible.phase7.crucibleCampaignProvenance`";
-    }
-    {
-      label = "T-PKG-23 completion note";
-      needle = "Completed by `checks.crucible.phase7.crucibleCasFleetRatchetSeam`";
+      label = "fleet check surface";
+      needle = "`checks.fleet.crucible-distributed-continuous-exploration`";
     }
   ];
 

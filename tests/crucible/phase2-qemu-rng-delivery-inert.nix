@@ -3,7 +3,7 @@
 # accelerator is OFF, so the async RNG-completion delivery icount of the
 # integrated QEMU is identical to the unpatched reference by construction.
 #
-# Why this is a proof and not a measurement: RFC-0010 §4.6 hazard E7a defines
+# Why this is a proof and not a measurement: the determinism contract treats
 # the reference's async device-completion delivery icount as host-timing
 # dependent -- the unpatched reference is *not* deterministic by contract, so a
 # runtime icount measurement of it is empirical evidence, never a proof, and

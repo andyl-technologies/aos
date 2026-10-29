@@ -10,7 +10,7 @@
   qemuLib = builtins.readFile ../../crates/crucible/crucible-qemu-host/src/lib.rs;
   crashLib = builtins.readFile ../../crates/crucible/crucible-qemu-host/src/crash_detection.rs;
   crashTest = builtins.readFile ../../crates/crucible/crucible-qemu-host/tests/crash_detection.rs;
-  qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
+  qemuSpec = builtins.readFile ../../docs/engineering/crucible/qemu-integration.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -18,10 +18,10 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/10-qemu-integration.md" qemuSpec [
+    failuresFor "docs/engineering/crucible/qemu-integration.md" qemuSpec [
       {
-        label = "QEMU-32 crash detection requirement";
-        needle = "**[QEMU-32]** The host MUST detect an unexpected child exit";
+        label = "unexpected child exit cause";
+        needle = "`UnexpectedChildExit`";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-qemu-host/src/lib.rs" qemuLib [

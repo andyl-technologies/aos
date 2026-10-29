@@ -8,7 +8,7 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  advancedDoc = builtins.readFile ../../docs/rfcs/0010-crucible/22-advanced-features.md;
+  explorationPage = builtins.readFile ../../docs/engineering/crucible/exploration.md;
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
   libRs = import ./_rust-module-source.nix {
     inherit lib;
@@ -31,18 +31,14 @@
     forbidden;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/22-advanced-features.md" advancedDoc [
+    failuresFor "docs/engineering/crucible/exploration.md" explorationPage [
       {
-        label = "T-ADV-16 completion note";
-        needle = "Completed by `checks.crucible.phase6.unifyingView`";
+        label = "single graph";
+        needle = "is an operation on the content-addressed temporal graph";
       }
       {
-        label = "ADV-32 single graph";
-        needle = "MUST all be operations on the single\n  content-addressed temporal graph";
-      }
-      {
-        label = "ADV-32 no second path";
-        needle = "There\n  MUST be no abstract specification engine";
+        label = "no second path";
+        needle = "None of\nthese features owns a private state representation or execution path";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" temporalGraph [

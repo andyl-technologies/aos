@@ -364,7 +364,7 @@ fn lifecycle_transition_model_is_total_for_representative_commands() {
 }
 
 #[test]
-fn lifecycle_transition_model_matches_rfc_section_table_cells() {
+fn lifecycle_transition_model_matches_transition_table_cells() {
     assert_eq!(
         lifecycle_transition(LifecycleStateKind::Loaded, SessionCommandKind::Start),
         LifecycleTransition::Accepted {
@@ -508,7 +508,7 @@ fn engine_transition_table_matches_lifecycle_model_for_current_commands() {
 }
 
 #[tokio::test]
-async fn rfc_command_payloads_return_replies_through_engine_boundary() {
+async fn session_command_payloads_return_replies_through_engine_boundary() {
     let scenario = generated_scenario(26);
     let config = Configuration::genesis(scenario.clone());
     let graph = graph_with_baked_genesis(&scenario);
@@ -555,13 +555,13 @@ async fn rfc_command_payloads_return_replies_through_engine_boundary() {
     }
     let (savepoint_reply, savepoint_receiver) = CommandReply::channel();
     if let Err(error) = engine.apply_command(SessionCommand::CreateSavepoint {
-        label: String::from("rfc-command-savepoint"),
+        label: String::from("session-command-savepoint"),
         reply: savepoint_reply,
     }) {
         panic!("create savepoint should materialize through the temporal graph: {error}");
     }
     let savepoint = receive_reply(savepoint_receiver).await;
-    assert_eq!(savepoint.label, "rfc-command-savepoint");
+    assert_eq!(savepoint.label, "session-command-savepoint");
     assert_eq!(savepoint.configuration, engine.configuration().id());
     assert_eq!(
         savepoint.checkpoint.configuration,
@@ -1177,7 +1177,7 @@ async fn resumed_actor_rejects_reverse_event_history_before_its_floor() {
 }
 
 #[tokio::test]
-async fn rfc_command_rejections_complete_reply_oneshots_without_side_effects() {
+async fn session_command_rejections_complete_reply_oneshots_without_side_effects() {
     let scenario = generated_scenario(27);
     let config = Configuration::genesis(scenario.clone());
     let graph = graph_with_baked_genesis(&scenario);
@@ -1204,7 +1204,7 @@ async fn rfc_command_rejections_complete_reply_oneshots_without_side_effects() {
 }
 
 #[tokio::test]
-async fn rfc_command_terminal_drain_completes_queued_replies() {
+async fn session_command_terminal_drain_completes_queued_replies() {
     let scenario = generated_scenario(28);
     let config = Configuration::genesis(scenario.clone());
     let graph = graph_with_baked_genesis(&scenario);
@@ -1272,7 +1272,7 @@ async fn rfc_command_terminal_drain_completes_queued_replies() {
 }
 
 #[tokio::test]
-async fn rfc_command_running_actor_acknowledges_local_boundary_replies_immediately() {
+async fn session_command_running_actor_acknowledges_local_boundary_replies_immediately() {
     let scenario = generated_scenario(29);
     let config = Configuration::genesis(scenario.clone());
     let graph = graph_with_baked_genesis(&scenario);

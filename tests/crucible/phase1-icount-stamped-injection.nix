@@ -15,7 +15,6 @@
     (builtins.readFile ../../crates/crucible/crucible-qemu-shmem/src/shmem/delivery_errors.rs)
   ];
   shmemTest = builtins.readFile ../../crates/crucible/crucible-qemu-shmem/tests/icount_stamped_injection.rs;
-  determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
@@ -118,8 +117,6 @@
         label = "ignored placeholder";
         needle = "#[ignore";
       }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {

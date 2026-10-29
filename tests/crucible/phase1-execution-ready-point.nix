@@ -11,29 +11,29 @@
   crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
   bakedGenesis = builtins.readFile ../../crates/crucible/crucible-daemon/src/qemu_baked_genesis.rs;
   defaultChecks = builtins.readFile ./default.nix;
-  rfc = builtins.readFile ../../docs/rfcs/0010-crucible/05-execution-model.md;
-  spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
+  executionModelDoc = builtins.readFile ../../docs/engineering/crucible/execution-model.md;
+  scenarioModelDoc = builtins.readFile ../../docs/engineering/crucible/scenario-model.md;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/05-execution-model.md" rfc [
+    failuresFor "docs/engineering/crucible/execution-model.md" executionModelDoc [
       {
-        label = "T-EXEC-9 completion note";
-        needle = "Completed by `crates/crucible/crucible-engine/src/model.rs`: `World::from_nodes` builds";
+        label = "ready-point check is documented";
+        needle = "`checks.crucible.phase1.executionReadyPoint`";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/06-spatial-graph.md" spatialGraph [
+    ++ failuresFor "docs/engineering/crucible/scenario-model.md" scenarioModelDoc [
       {
-        label = "T-SPAT-6 completion names ReadyPoint";
-        needle = "the `ReadyPoint` enum includes";
+        label = "ReadyPoint policies";
+        needle = "The `ReadyPoint` enum includes";
       }
       {
-        label = "T-SPAT-6 completion names white-box opt-in";
+        label = "AgentSignal requires white-box opt-in";
         needle = "rejects `AgentSignal` unless";
       }
       {
-        label = "T-SPAT-6 completion names ready-point gate";
+        label = "scenario model names ready-point check";
         needle = "`checks.crucible.phase1.executionReadyPoint`";
       }
     ]

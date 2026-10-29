@@ -24,7 +24,7 @@
     entry = ../../crates/crucible/crucible-qemu-host/src/spawn.rs;
     siblingTests = true;
   };
-  qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
+  qemuSpec = builtins.readFile ../../docs/engineering/crucible/qemu-integration.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -32,22 +32,18 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/10-qemu-integration.md" qemuSpec [
+    failuresFor "docs/engineering/crucible/qemu-integration.md" qemuSpec [
       {
-        label = "T-QEMU-7 completion note names Linux spawn adapter";
-        needle = "Linux-only `crucible-qemu` spawn adapter";
+        label = "Linux spawn path";
+        needle = "The Linux-only spawn path";
       }
       {
-        label = "T-QEMU-7 completion note names fixed child fds";
+        label = "fixed child fds";
         needle = "fd 3/4/5";
       }
       {
-        label = "T-QEMU-7 completion note names pdeathsig";
+        label = "pdeathsig";
         needle = "PR_SET_PDEATHSIG=SIGKILL";
-      }
-      {
-        label = "T-QEMU-7 completion note preserves later setup follow-up";
-        needle = "setup-completion tasks";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-qemu-host/src/lib.rs" qemuLib [

@@ -12,7 +12,7 @@
   pluginLib = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/lib.rs;
   pluginRegistration = import ./_qemu-plugin-registration-source.nix {inherit lib;};
   pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
-  pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
+  pluginSpec = builtins.readFile ../../docs/engineering/crucible/qemu-plugin.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -21,18 +21,18 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
+    failuresFor "docs/engineering/crucible/qemu-plugin.md" pluginSpec [
       {
-        label = "fixed registration order required by spec";
-        needle = "Registration MUST proceed in this fixed order";
+        label = "fixed registration order";
+        needle = "`CANONICAL_TIME_CONTROL_REGISTRATION_ORDER`, in this fixed order";
       }
       {
-        label = "failure aborts later registration";
-        needle = "no later step runs";
+        label = "failure blocks later registration";
+        needle = "blocks every later step";
       }
       {
-        label = "time control before guest code";
-        needle = "guest retires its first architecturally-visible instruction";
+        label = "time control before setup";
+        needle = "Time control is requested before setup";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/lib.rs" pluginLib [

@@ -10,18 +10,18 @@
   model = import ./_crucible-model-source.nix {inherit lib;};
   crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
-  spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
+  scenarioModelDoc = builtins.readFile ../../docs/engineering/crucible/scenario-model.md;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/06-spatial-graph.md" spatialGraph [
+    failuresFor "docs/engineering/crucible/scenario-model.md" scenarioModelDoc [
       {
-        label = "T-SPAT-5 completion names node launch test";
+        label = "node launch inputs test";
         needle = "`world_node_launch_inputs_are_portable_and_identity_bearing`";
       }
       {
-        label = "T-SPAT-5 completion names gate";
+        label = "node launch inputs check";
         needle = "`checks.crucible.phase1.spatialNodeLaunchInputs`";
       }
     ]

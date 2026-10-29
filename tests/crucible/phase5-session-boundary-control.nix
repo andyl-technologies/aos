@@ -16,8 +16,6 @@
   apiGateControlResponsive = builtins.readFile ../../crates/crucible/crucible-control-server/tests/gate_control_responsive.rs;
   daemonGateControlResponsive = builtins.readFile ../../crates/crucible/crucible-daemon/tests/gate_control_responsive.rs;
   schedulerLib = import ./_crucible-scheduler-source.nix {inherit lib;};
-  sessionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/20-session-control-plane.md;
-  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -25,19 +23,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/20-session-control-plane.md" sessionDoc [
-      {
-        label = "T-SESS-6 completion note";
-        needle = "Completed by `checks.crucible.phase5.sessionBoundaryControl`";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "phase5 boundary control status note";
-        needle = "`T-SESS-6` is green through `checks.crucible.phase5.sessionBoundaryControl`";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-session/src/lib.rs" sessionLib [
+    failuresFor "crates/crucible/crucible-session/src/lib.rs" sessionLib [
       {
         label = "session control log entry";
         needle = "pub struct SessionControlLogEntry";

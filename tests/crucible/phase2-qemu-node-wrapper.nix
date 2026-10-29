@@ -13,7 +13,7 @@
     entry = ../../crates/crucible/crucible-qemu-host/src/node.rs;
     siblingTests = true;
   };
-  qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
+  qemuSpec = builtins.readFile ../../docs/engineering/crucible/qemu-integration.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -21,26 +21,18 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/10-qemu-integration.md" qemuSpec [
+    failuresFor "docs/engineering/crucible/qemu-integration.md" qemuSpec [
       {
-        label = "T-QEMU-3 completion note names QemuNode";
-        needle = "Completed as the `QemuNode`";
+        label = "QemuNode backend";
+        needle = "`QemuNode` (`crates/crucible/crucible-qemu-host/src/node.rs`) implements the";
       }
       {
-        label = "T-QEMU-3 completion note names private child ownership";
-        needle = "private `std::process::Child` handle";
+        label = "private child ownership";
+        needle = "`std::process::Child` handle and is the only owner allowed to signal";
       }
       {
-        label = "T-QEMU-3 completion note names shutdown ladder";
-        needle = "runs scheduler shutdown through the existing";
-      }
-      {
-        label = "T-QEMU-3 completion note preserves fd-passing follow-up";
-        needle = "die-with-host behavior remain tracked by";
-      }
-      {
-        label = "T-QEMU-3 completion note preserves quantum-flow follow-up";
-        needle = "concrete per-quantum shmem implementation";
+        label = "shutdown ladder";
+        needle = "shutdown runs the escalation ladder against the owned";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-qemu-host/src/lib.rs" qemuLib [

@@ -22,8 +22,7 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  triageDoc = builtins.readFile ../../docs/rfcs/0010-crucible/34-failure-triage.md;
-  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
+  failureTriagePage = builtins.readFile ../../docs/engineering/crucible/failure-triage.md;
   modelSource = import ./_crucible-model-source.nix {inherit lib;};
   reportMaterial = builtins.readFile ../../crates/crucible/crucible-engine/src/model/failure/material.rs;
   reportRenderer = builtins.readFile ../../crates/crucible/crucible-engine/src/model/failure/model/reporting.rs;
@@ -39,24 +38,10 @@
   taskList = builtins.concatStringsSep "," taskIds;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/34-failure-triage.md" triageDoc [
-      {
-        label = "T-TRI-6 completion note";
-        needle = "Completed by `checks.crucible.phase6.perClusterReports`";
-      }
+    failuresFor "docs/engineering/crucible/failure-triage.md" failureTriagePage [
       {
         label = "rendering note";
         needle = "deterministic `json`, `jsonl`, `table`, and `markdown` renderings";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "T-TRI-6 plan summary";
-        needle = "checks.crucible.phase6.perClusterReports";
-      }
-      {
-        label = "downstream triage thin-driver gate";
-        needle = "checks.crucible.phase6.triageThinDriver";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" modelSource [

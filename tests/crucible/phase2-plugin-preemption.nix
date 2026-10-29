@@ -19,9 +19,9 @@
     builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/abi/tests.rs
     + builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/abi/tests/capabilities.rs;
   pluginInertness = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/inertness.rs;
-  determinismSpec = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
-  pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
-  patchSpec = builtins.readFile ../../docs/rfcs/0010-crucible/11-qemu-patches.md;
+  determinismSpec = builtins.readFile ../../docs/engineering/crucible/determinism.md;
+  pluginSpec = builtins.readFile ../../docs/engineering/crucible/qemu-plugin.md;
+  patchSpec = builtins.readFile ../../docs/engineering/crucible/qemu-patch.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -30,46 +30,46 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismSpec [
+    failuresFor "docs/engineering/crucible/determinism.md" determinismSpec [
       {
-        label = "T-DET-30 completion note names preemption check";
+        label = "preemption check listed";
         needle = "`checks.crucible.phase2.qemuPluginPreemption`";
       }
       {
-        label = "T-DET-30 completion note names fixed IPI latency";
+        label = "fixed modeled IPI latency";
         needle = "fixed modeled IPI latency";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
+    ++ failuresFor "docs/engineering/crucible/qemu-plugin.md" pluginSpec [
       {
-        label = "Decision::Preemption obligation";
-        needle = "Decision::Preemption";
+        label = "scheduler preemption mailbox";
+        needle = "`SchedulerPreemptionCommand`";
       }
       {
-        label = "commanded icount wording";
-        needle = "commanded node-icount";
+        label = "commanded count wording";
+        needle = "the commanded count";
       }
       {
         label = "authorized window wording";
-        needle = "authorized window `[deadline, ceiling]`";
+        needle = "authorized `[deadline, ceiling]` window";
       }
       {
         label = "no clamp/defer wording";
-        needle = "rather than clamp, defer, or apply it at a different";
+        needle = "never clamped, deferred, or applied at a different";
       }
       {
-        label = "live preemption completion gate";
+        label = "live preemption check listed";
         needle = "`checks.crucible.phase2.qemuPreemptionInject`";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/11-qemu-patches.md" patchSpec [
+    ++ failuresFor "docs/engineering/crucible/qemu-patch.md" patchSpec [
       {
         label = "patch preemption export";
         needle = "qemu_plugin_inject_preemption";
       }
       {
         label = "patch reject out-of-window";
-        needle = "authorized `[deadline, ceiling]` window MUST be rejected loudly";
+        needle = "window is rejected loudly, never clamped or deferred";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/lib.rs" pluginLib [

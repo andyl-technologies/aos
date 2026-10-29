@@ -13,7 +13,6 @@
     (builtins.readFile ../../crates/crucible/crucible-qemu-shmem/src/shmem/delivery_errors.rs)
   ];
   lookaheadTest = builtins.readFile ../../crates/crucible/crucible-qemu-shmem/tests/lookahead_gate.rs;
-  determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
@@ -102,8 +101,6 @@
         label = "public max advance icount field bypass";
         needle = "pub struct AdvanceCeiling {\n    current_icount: u64,\n    pub max_advance_icount: u64";
       }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {

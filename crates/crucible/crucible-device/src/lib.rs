@@ -1,7 +1,5 @@
 //! `crucible-device` owns deterministic I/O sub-node models.
 //!
-//! Spec index: RFC-0010 files 15.
-//!
 //! This L1 crate models a disk, a 9p server, and a network link as **uniform
 //! simulation sub-nodes**: each is a scheduling node with an icount-derived
 //! virtual clock, a request inbox, a response outbox, and a deterministic
@@ -49,11 +47,11 @@
 //! - [`fault`]: the seeded per-device RNG ([`fault::DeviceRng`]), exact
 //!   [`fault::Probability`], and integer-only transforms used by network effects.
 //! - [`error`]: the [`DeviceError`] taxonomy returned across the crate.
-//! - [`harness`]: the in-process device test harness (CS-IO-6, tasks
-//!   T-IO-13 / T-IO-14) — a uniform [`HarnessDevice`] adapter over all three
-//!   sub-nodes, the [`Script`]/[`run_script`] driver, the run-twice determinism
-//!   and divergence-localization helpers, and the idle-vs-busy-poll equivalence
-//!   proof plus the documented §15.8 spike conclusion ([IO-27]..[IO-30]).
+//! - [`harness`]: the in-process device test harness — a uniform
+//!   [`HarnessDevice`] adapter over all three sub-nodes, the
+//!   [`Script`]/[`run_script`] driver, the run-twice determinism and
+//!   divergence-localization helpers, and the idle-vs-busy-poll equivalence
+//!   proof plus the documented busy-poll spike conclusion.
 //!
 //! # Determinism
 //!

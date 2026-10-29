@@ -12,7 +12,7 @@
   pluginWhiteboxDoorbell = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell.rs;
   pluginWhiteboxDoorbellTests = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs;
   qemuWhiteboxSetup = builtins.readFile ../../crates/crucible/crucible-qemu-host/src/launch/whitebox_setup.rs;
-  guestHostDoc = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
+  guestHostChannelDoc = builtins.readFile ../../docs/engineering/crucible/guest-host-channel.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
@@ -20,18 +20,14 @@
   taskList = builtins.concatStringsSep "," taskIds;
   openTaskList = builtins.concatStringsSep "," openTaskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/16-guest-host-channel.md" guestHostDoc [
-      {
-        label = "T-GHC-6 live-evidence note";
-        needle = "Completed by `checks.crucible.phase4.guestHostDoorbellCollisionInertness`";
-      }
+    failuresFor "docs/engineering/crucible/guest-host-channel.md" guestHostChannelDoc [
       {
         label = "collision setup error";
-        needle = "a collision is a setup error";
+        needle = "a setup error, never a trap that is silently shared";
       }
       {
         label = "disabled inertness";
-        needle = "disabled doorbell remains uninstalled and inert";
+        needle = "uninstalled and inert";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/lib.rs" pluginLib [

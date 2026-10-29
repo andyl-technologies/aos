@@ -1,4 +1,4 @@
-##! crucible-guest — static RFC-0010 guest white-box emitter
+##! crucible-guest — static guest white-box emitter
 {
   lib,
   stdenv,

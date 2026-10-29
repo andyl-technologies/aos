@@ -6,7 +6,7 @@
   linuxCrucible ? pkgs.linux-crucible,
   anyGuestGate ? throw "crucible phase7 linux-crucible check requires checks.crucible.phase2.gates.anyGuest",
 }: let
-  packagingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/26-packaging-aos-integration.md;
+  packagingDoc = builtins.readFile ../../docs/engineering/crucible/packaging.md;
   pkgsDefault = builtins.readFile ../../pkgs/default.nix;
   linuxCrucibleNix = builtins.readFile ../../pkgs/kernel/linux-crucible.nix;
   linuxNix = builtins.readFile ../../pkgs/kernel/linux.nix;
@@ -175,11 +175,7 @@
     ++ lib.optionals (linuxCrucibleConsole != fixtureConsole) [
       "pkgs.linux-crucible: expected native console ${fixtureConsole}, got ${linuxCrucibleConsole}"
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
-      {
-        label = "T-PKG-12 completion note";
-        needle = "Completed by `checks.crucible.phase7.crucibleLinuxKernel`";
-      }
+    ++ failuresFor "docs/engineering/crucible/packaging.md" packagingDoc [
       {
         label = "linux-crucible package reference";
         needle = "`pkgs.linux-crucible`";

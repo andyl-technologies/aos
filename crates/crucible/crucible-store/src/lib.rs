@@ -1,14 +1,12 @@
 //! Content-addressed storage primitives for Crucible.
 //!
-//! `crucible-store` owns the small standalone substrate required by RFC-0010:
-//! BLAKE3 content keys, a minimal `put`/`get`/`has` store interface, local and
+//! `crucible-store` owns the small standalone substrate Crucible needs: BLAKE3
+//! content keys, a minimal `put`/`get`/`has` store interface, local and
 //! in-memory implementations, a fleet-visible shared implementation, and a
-//! dependency-gated invalidation query. The crate intentionally has
-//! no dependency on RFC-0007 `ratchet` crates; any future shared substrate must
+//! dependency-gated invalidation query. The crate intentionally has no
+//! dependency on RFC-0007 `ratchet` crates; any future shared substrate must
 //! adapt behind this crate's public interface and pass `gate:content-address`
 //! and `gate:replay-oracle` unchanged.
-//!
-//! Spec index: RFC-0010 files 35.
 //!
 //! Future RFC-0007 integration: RFC-0007 is the future home for a shared
 //! content-addressed store plus dependency-gated invalidation substrate. The
@@ -267,7 +265,7 @@ impl DagStore for MemoryDagStore {
     }
 }
 
-/// Filesystem-backed [`DagStore`] using the RFC-0010 two-level layout.
+/// Filesystem-backed [`DagStore`] using the two-level layout.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct LocalDagStore {
     root: PathBuf,

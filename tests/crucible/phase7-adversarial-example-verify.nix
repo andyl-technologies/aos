@@ -7,21 +7,17 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  exampleDoc = builtins.readFile ../../docs/rfcs/0010-crucible/33-examples-and-workloads.md;
+  workloadsDoc = builtins.readFile ../../docs/engineering/crucible/workloads.md;
   cliMain = import ./_cli-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/33-examples-and-workloads.md" exampleDoc [
-      {
-        label = "T-EX-5 completion note";
-        needle = "Completed by `checks.crucible.phase7.adversarialExampleVerify`";
-      }
+    failuresFor "docs/engineering/crucible/workloads.md" workloadsDoc [
       {
         label = "adversarial verify remains documented";
-        needle = "--runs N --adversarial";
+        needle = "`crucible verify --runs N --adversarial`";
       }
       {
         label = "divergence bisection remains documented";

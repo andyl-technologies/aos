@@ -11,7 +11,6 @@
   model = import ./_crucible-model-source.nix {inherit lib;};
   libRs = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
   serializationTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/event_graph_serialization.rs;
-  triggerDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17a-conditions-and-triggers.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
@@ -32,17 +31,7 @@
     (scrubCommentsAndStrings serializationTest)
   ];
   failures =
-    failuresFor "docs/rfcs/0010-crucible/17a-conditions-and-triggers.md" triggerDoc [
-      {
-        label = "T-TRIG-18 completion note";
-        needle = "Completed by `checks.crucible.phase4.eventGraphSerialization`";
-      }
-      {
-        label = "event graph replay gate complete";
-        needle = "Completed by `checks.crucible.phase4.gates.replayOracle`";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [
+    failuresFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [
       {
         label = "event graph builder type";
         needle = "pub struct EventGraphBuilder";
@@ -182,12 +171,6 @@
       {
         label = "phase4 exposes event graph serialization check";
         needle = "eventGraphSerialization = import ./phase4-event-graph-serialization.nix";
-      }
-    ]
-    ++ forbiddenFor "docs/rfcs/0010-crucible/17a-conditions-and-triggers.md" triggerDoc [
-      {
-        label = "stale T-TRIG-18 remaining-work prose";
-        needle = "remain T-TRIG-18";
       }
     ]
     ++ forbiddenFor "event graph serialization sources" serializationSources [

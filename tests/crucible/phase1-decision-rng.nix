@@ -7,8 +7,7 @@
   simLib = builtins.readFile ../../crates/crucible/crucible-determinism/src/lib.rs;
   decisionRngTest = builtins.readFile ../../crates/crucible/crucible-determinism/tests/decision_rng.rs;
   layer0Gate = builtins.readFile ../../crates/crucible/crucible-determinism/tests/gate_layer0_determinism.rs;
-  determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
-  patternsAndSketches = builtins.readFile ../../docs/rfcs/0010-crucible/29-patterns-and-sketches.md;
+  determinismDoc = builtins.readFile ../../docs/engineering/crucible/determinism.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
@@ -170,27 +169,25 @@
         needle = "stable_name_hash";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsAndSketches [
+    ++ failuresFor "docs/engineering/crucible/determinism.md" determinismDoc [
       {
-        label = "T-PAT-5 completion names DecisionRng";
-        needle = "`crucible_determinism::DecisionRng`";
+        label = "DecisionRng stream seed derivation";
+        needle = "`DecisionRng::stream_seed`";
       }
       {
-        label = "T-PAT-5 completion names node domain";
+        label = "node stream domain";
         needle = "`DECISION_RNG_NODE_STREAM_DOMAIN`";
       }
       {
-        label = "T-PAT-5 completion names link domain";
+        label = "link stream domain";
         needle = "`DECISION_RNG_LINK_STREAM_DOMAIN`";
       }
       {
-        label = "T-PAT-5 completion names stable domain hash";
-        needle = "`stable_domain_name_hash`";
+        label = "stable domain name hash";
+        needle = "stable_domain_name_hash(stream_domain, entity_name)";
       }
       {
-        label = "T-PAT-5 completion names decision RNG gate";
+        label = "decision RNG check is documented";
         needle = "`checks.crucible.phase1.decisionRng`";
       }
     ]

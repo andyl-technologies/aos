@@ -10,7 +10,7 @@
   model = import ./_crucible-model-source.nix {inherit lib;};
   crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
-  rfc = builtins.readFile ../../docs/rfcs/0010-crucible/05-execution-model.md;
+  executionModelDoc = builtins.readFile ../../docs/engineering/crucible/execution-model.md;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -101,10 +101,10 @@
         needle = "executionGraphOperations = import ./phase1-execution-graph-operations.nix";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/05-execution-model.md" rfc [
+    ++ failuresFor "docs/engineering/crucible/execution-model.md" executionModelDoc [
       {
-        label = "T-EXEC-13 completion note";
-        needle = "Completed by `crates/crucible/crucible-engine/src/model.rs`: `TemporalGraph::save_checkpoint`";
+        label = "save operation entry point";
+        needle = "`TemporalGraph::save_checkpoint`";
       }
     ];
 in

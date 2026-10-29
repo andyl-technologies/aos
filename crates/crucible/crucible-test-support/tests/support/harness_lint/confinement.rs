@@ -61,11 +61,11 @@ pub(super) fn workspace_confinement_findings(
 ) -> Result<Vec<String>, Box<dyn Error>> {
     let mut findings = Vec::new();
 
-    for spec in crate_spec_index() {
-        let package_dir = workspace::package_directory(root, spec.package)?;
+    for member in crucible_crates() {
+        let package_dir = workspace::package_directory(root, member.package)?;
         let manifest: Value = fs::read_to_string(package_dir.join("Cargo.toml"))?.parse()?;
         findings.extend(boundary_manifest_findings(
-            spec.package,
+            member.package,
             &manifest,
             workspace_dependencies,
         ));
@@ -79,7 +79,7 @@ pub(super) fn workspace_confinement_findings(
             sources.push((source, content));
         }
         findings.extend(package_source_confinement_findings(
-            spec.package,
+            member.package,
             &package_dir,
             &sources,
         ));

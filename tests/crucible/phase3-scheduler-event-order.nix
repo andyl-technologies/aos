@@ -12,25 +12,21 @@
   canonical = builtins.readFile ../../crates/crucible/crucible-engine/src/model/canonical.rs;
   libSource = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
   eventOrderTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/scheduler_event_order.rs;
-  schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
+  schedulingDoc = builtins.readFile ../../docs/engineering/crucible/scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/08-scheduling.md" schedulingDoc [
-      {
-        label = "T-SCHED-8 completion note";
-        needle = "Completed by `checks.crucible.phase3.schedulerEventOrder`";
-      }
+    failuresFor "docs/engineering/crucible/scheduling.md" schedulingDoc [
       {
         label = "four-field total-order key";
         needle = "(virtual_time, consumer node_id, producer node_id, sequence)";
       }
       {
-        label = "four key fields";
-        needle = "The four key fields, precisely:";
+        label = "four-field comparison";
+        needle = "`Ord for ScheduledEventKey` compares";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [
@@ -223,7 +219,7 @@
         needle = "schedulerEventOrder = import ./phase3-scheduler-event-order.nix";
       }
     ]
-    ++ forbiddenFor "docs/rfcs/0010-crucible/08-scheduling.md" schedulingDoc [
+    ++ forbiddenFor "docs/engineering/crucible/scheduling.md" schedulingDoc [
       {
         label = "stale three-field event order";
         needle = "(virtual_time, node_id, sequence)";
