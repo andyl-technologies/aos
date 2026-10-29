@@ -696,7 +696,7 @@ async fn main() -> Result<()> {
                     let qualification_keys = serde_json::from_str(&qualification_keys_source)
                         .context("parsing qualification public-key map")?;
                     app_state.release_evidence = Some(Arc::new(
-                        aos_hub_service::release_evidence::Ed25519ReleaseEvidenceAuthority::from_base64(
+                        aos_hub_service::release_receipt_signer::Ed25519ReleaseEvidenceAuthority::from_base64(
                             deployment_id,
                             key_id,
                             seed.trim(),

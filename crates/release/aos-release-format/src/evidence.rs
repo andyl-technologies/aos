@@ -273,9 +273,6 @@ pub enum Outcome {
     Failed,
 }
 
-/// Former name of [`Outcome`], kept for callers outside the release tooling.
-pub type GateResult = Outcome;
-
 /// Public result of one release test against a versioned policy.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
