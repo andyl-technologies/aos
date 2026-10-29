@@ -1,0 +1,235 @@
+# Executable fault taxonomy and the effect program that realizes each row.
+#
+# section: wired, radio, satellite, node, or storage.
+# model-tier: Core, Next, or Advanced; the tier describes model complexity,
+# not implementation status.
+# effect-program: prose whose backtick spans name registered effect keys,
+# each optionally followed by an argument list.
+#
+# section	area	fault	primary-targets-and-observable-effect	model-tier	effect-program
+wired	Physical	cable/fiber cut	Conduit or segment becomes unavailable; shared conduit fans out.	Core	`network.availability(down)` on every segment in the conduit domain
+wired	Physical	unplugged/loose connector	Link down or intermittent flap.	Core	`network.flap` or `network.availability` from connector state
+wired	Physical	connector contamination/corrosion	Signal-driven BER, loss, rate fallback, or flap.	Next	wired quality input into `network.profile_delta` + `network.detected_frame_error` + `network.negotiated_mode`
+wired	Physical	fiber bend/microbend	Attenuation drives loss/rate/availability.	Next	attenuation signal into `network.profile_delta` and `network.detected_frame_error`
+wired	Physical	water ingress	Correlated attenuation, leakage, and eventual outage.	Advanced	shared attenuation/leakage state into `network.profile_delta` + `network.flap`
+wired	Physical	transceiver failure	Port down, one-way failure, or degraded optical budget.	Core	`network.forwarder_lifecycle` for port/transceiver + directional `network.availability`
+wired	Physical	laser/receiver degradation	Signal-driven BER and negotiated-rate fallback.	Next	optical budget into `network.detected_frame_error` + `network.negotiated_mode`
+wired	Physical	repeater/amplifier failure	Segment outage or range-dependent degradation.	Next	`network.availability` or gain degradation in `network.profile_delta`
+wired	Physical	duplex mismatch	Collision/loss/throughput degradation and asymmetric behavior.	Next	`network.negotiated_mode` + shared-medium collision/throughput policy
+wired	Physical	polarity/pair fault	Link down, lane loss, or negotiated-rate fallback.	Advanced	`network.negotiated_mode` lane/rate fallback or `network.availability`
+wired	Ethernet	autonegotiation failure	No link, duplex/rate mismatch, or deterministic fallback after training.	Next	`network.negotiated_mode` state machine
+wired	Ethernet	FEC/lane degradation	Corrected-error telemetry, reduced lane/rate mode, CRC loss, or outage.	Next	`network.detected_frame_error` + `network.negotiated_mode`
+wired	Optical	wavelength/ROADM failure	Selected wavelength or route becomes unavailable or misdirected.	Advanced	`network.forwarding_mutation` on optical path + `network.availability`
+wired	Optical	amplifier saturation/noise	Optical budget drives BER, FEC corrections, fallback, or loss.	Advanced	optical budget state into `network.detected_frame_error` and profile
+wired	PON	OLT/ONU/ranging failure	Shared access loss, registration failure, or upstream timing errors.	Next	`network.association` + `network.availability` + shared-medium timing state
+wired	PON	split/shared-upstream contention	Subscriber set shares reduced service and queueing.	Next	`network.shared_medium` + `network.service_curve`
+wired	DSL	loss of synchronization	Copper access link retrains, falls back, or becomes unavailable.	Next	`network.flap` with retraining + `network.negotiated_mode`
+wired	DSL	impulse noise/crosstalk	Burst errors, retransmission, interleaving delay, or rate fallback.	Next	`network.burst_error_state` + `network.detected_frame_error` + fallback
+wired	Cable/DOCSIS	ingress and microreflections	Signal quality drives correctable errors, loss, and rate degradation.	Next	channel quality into errors, retries, and `network.negotiated_mode`
+wired	Cable/DOCSIS	CMTS/upstream contention	Shared service reduction, admission delay, and queueing.	Next	`network.shared_medium` + `network.queue_policy` + service
+wired	Power-line networking	appliance/grid interference	Shared power signal drives burst errors, fallback, or outage.	Advanced	shared interference signal into `network.burst_error_state` and fallback
+wired	Microwave/free-space optical	obstruction/misalignment	Weather, movement, or pointing drives attenuation and outage.	Next	spatial/weather signal into `network.profile_delta` + `network.availability`
+wired	Subsea cable	cut/repeater degradation	Long-haul path fails or incurs wavelength/capacity degradation.	Next	conduit-domain `network.availability` + `network.profile_delta`
+wired	Link	link down	Directed or bidirectional availability loss.	Core	`network.availability(down)`
+wired	Link	link flap	Stateful up/down transitions with training/recovery time.	Core	`network.flap`
+wired	Link	one-way failure	Receive-only or transmit-only path.	Core	directional `network.availability`
+wired	Link	negotiation failure	No link or fallback mode after deterministic training.	Next	`network.negotiated_mode`
+wired	Link	bit-error rate	CRC loss or explicit undetected corruption.	Next	`network.detected_frame_error` or explicit undetected payload transform
+wired	Link	burst errors	Correlated loss/corruption from a burst-state signal.	Next	`network.burst_error_state`
+wired	Link	frame loss	Per-frame keyed or recorded loss.	Core	`network.frame_loss`
+wired	Link	duplicate frame	Additional delivery with deterministic gap/order.	Core	`network.duplicate`
+wired	Link	frame reordering	Delivery shift past sibling frames.	Core	`network.reorder`
+wired	Link	frame corruption	Bit flip, field mutation, or truncation.	Core	`network.payload_transform`
+wired	Link	framing/CRC failure	Receiver drops frame and records link-layer error.	Next	`network.detected_frame_error`
+wired	Link	propagation change	Length/path-driven delay above minimum floor.	Next	`network.propagation_delay`
+wired	Link	latency/jitter	Fixed or signal-driven delay variation.	Core	`network.profile_delta` + `network.jitter`
+wired	Link	bandwidth restriction	Serialization/service-rate cap.	Core	`network.service_curve` or `network.token_bucket`
+wired	Link	MTU reduction	Drop, fragment, or ICMP-style modeled outcome.	Next	`network.mtu`
+wired	Link	pause/backpressure	Queue stall or reduced service.	Next	`network.pause_backpressure`
+wired	Link	broadcast/multicast loss	Recipient-subset loss with stable membership order.	Next	`network.recipient_subset`
+wired	Queue	tail drop	Drop on bounded queue overflow.	Next	`network.queue_policy(overflow=tail_drop)`
+wired	Queue	RED/early drop	Occupancy-driven keyed drop.	Advanced	`network.queue_policy(discipline=red)` with keyed occupancy hazard
+wired	Queue	bufferbloat	Load-driven queue delay.	Next	bounded `network.queue_policy` + load-driven `network.service_curve`
+wired	Queue	priority starvation	Selected class receives reduced/no service.	Next	`network.queue_policy` + class-scoped `network.service_curve`
+wired	Queue	head-of-line blocking	One blocked class delays siblings by declared rule.	Next	`network.queue_policy` dependency rule + `network.service_curve`
+wired	Queue	queue reset	Buffered frames lost or replayed according to policy.	Next	`network.forwarder_lifecycle` with queue policy
+wired	Switch	port failure	One port or line-card segment unavailable.	Core	port `network.availability`
+wired	Switch	line-card failure	Correlated port outage and queue loss.	Next	fault-domain `network.forwarder_lifecycle` across member ports/queues
+wired	Switch	supervisor restart	Control-plane interruption and convergence.	Next	`network.forwarder_lifecycle` + control-plane convergence
+wired	Switch	forwarding-table corruption	Wrong port, flood, blackhole, or loop.	Advanced	`network.forwarding_mutation`
+wired	Switch	MAC-table aging anomaly	Flooding or temporary misforwarding.	Advanced	`network.forwarding_mutation(stale_age/flood)`
+wired	Switch	switching-loop/storm	Shared capacity collapse, duplication, queue overflow.	Advanced	`network.forwarding_mutation(loop)` + `network.duplicate` + `network.service_curve` + `network.queue_policy`
+wired	Router	interface failure	Path segment unavailable.	Core	interface/segment `network.availability`
+wired	Router	route withdrawal	Path replacement or no route after convergence.	Next	`network.route_transition`
+wired	Router	route blackhole	Accepted traffic silently dropped.	Next	route transition or `network.forwarding_mutation(blackhole)`
+wired	Router	routing loop	Repeated segments until deterministic TTL/hop limit.	Next	`network.forwarding_mutation(loop)` with bounded hop limit
+wired	Router	asymmetric route	Direction-specific path replacement.	Next	directional `network.route_transition`
+wired	Router	convergence delay	Timed stale/partial forwarding state.	Next	route state machine + `network.control_plane_service`
+wired	Router	ECMP churn	Stable flow mapping changes at a boundary.	Next	`network.route_transition` with versioned flow hashing
+wired	Router	control-plane overload	Delayed/lost routing and management events.	Advanced	`network.control_plane_service`
+wired	Network function	firewall reject/drop	Typed rejection or silent loss by rule/state.	Next	`network.firewall_disposition`
+wired	Network function	connection-tracking loss	Existing flows reset/dropped after state loss.	Next	`network.connection_state(kind=conntrack)` reset
+wired	Network function	NAT exhaustion	New mappings rejected while existing state persists.	Next	bounded `network.connection_state(kind=nat)` admission failure
+wired	Network function	NAT state reset	Address/port mapping discontinuity.	Next	`network.connection_state(kind=nat)` reset
+wired	Network function	load-balancer backend loss	Membership and flow mapping transition.	Next	`network.connection_state(kind=load_balancer)` + `network.route_transition`
+wired	Network function	tunnel endpoint loss	Overlay segment outage/reconnect.	Next	`network.connection_state(kind=tunnel)` + `network.availability`
+wired	Network function	tunnel MTU mismatch	Fragmentation or blackhole behavior.	Next	tunnel state + `network.mtu`
+wired	Network function	VPN key/session expiry	Tunnel admission fails or existing state reconnects.	Next	`network.connection_state(kind=tunnel)` authentication/reconnect
+wired	Network function	MPLS label-state failure	Drop, loop, or misroute at a modeled label-switched hop.	Advanced	`network.forwarding_mutation` keyed by label stack
+wired	Network function	SD-WAN policy/controller loss	Path selection freezes, changes, or loses reachability.	Advanced	`network.route_transition` + `network.control_plane_service`
+wired	Network function	DNS service/path failure	Delay, timeout, stale answer, or wrong answer when DNS is modeled.	Advanced	`network.connection_state(kind=dns)` with delay/error/stale/wrong result
+wired	Provider	maintenance window	Scheduled path/rate transition.	Core	scheduled `network.profile_delta` + `network.availability` transition
+wired	Provider	peering/transit failure	Route/path outage or congestion.	Next	`network.route_transition` + `network.availability` + `network.service_curve`
+wired	Provider	traffic-engineering change	Latency/capacity/path transition.	Next	`network.route_transition` + `network.profile_delta` + `network.service_curve`
+wired	Physical domain	conduit cut	Correlated failure of all member links.	Core	fault-domain `network.availability` fan-out
+wired	Physical domain	rack/chassis power loss	Correlated switch, NIC, storage, and sensor effects.	Core	common signal into `network.forwarder_lifecycle` + node/storage bindings
+radio	Propagation	path loss	Distance/environment drives received power and profile.	Next	geometry into `network.rf_channel`
+radio	Propagation	shadowing/obstruction	Spatial field or zone drives attenuation.	Next	spatial attenuation field into `network.rf_channel`
+radio	Propagation	building/tunnel entry	Correlated attenuation, outage, or technology switch.	Next	zone signal into `network.rf_channel` + `network.association` + `network.route_transition`
+radio	Propagation	multipath fading	Spatiotemporal fading drives error/retry/rate.	Advanced	correlated spatiotemporal field into `network.rf_channel`
+radio	Propagation	Doppler	Relative motion drives acquisition/error/rate.	Advanced	relative-velocity signal into `network.rf_channel` + `network.association` acquisition state
+radio	Propagation	rain/weather fade	Weather trace/field drives attenuation.	Next	weather field into `network.rf_channel`
+radio	Propagation	foliage/seasonal attenuation	Spatial/environment signal drives loss/rate.	Advanced	environment/spatial field into `network.rf_channel`
+radio	RF	narrowband interference	Affected channel loses SINR/capacity.	Next	channel-scoped interference power into `network.rf_channel`
+radio	RF	broadband interference	Shared band degradation across links.	Next	fault-domain interference fan-out into `network.rf_channel`
+radio	RF	pulsed/intermittent interference	Time waveform drives burst loss.	Next	event waveform into `network.burst_error_state` + `network.rf_channel`
+radio	RF	adjacent-channel interference	Channel allocation and power drive degradation.	Advanced	allocation and spectral-mask lookup into `network.rf_channel`
+radio	RF	self-interference/desense	Co-located transmitter state degrades receiver.	Advanced	co-located transmitter state into `network.rf_channel` receiver noise
+radio	RF	intentional jamming	Shared spatial/temporal interference source.	Next	spatial/temporal interferer into `network.shared_medium` + `network.rf_channel`
+radio	RF	antenna disconnect/damage	Directional loss, reduced gain, or outage.	Next	antenna state into `network.rf_channel` + `network.availability`
+radio	RF	antenna orientation/polarization mismatch	Movement/orientation drives attenuation.	Next	orientation/antenna lookup into `network.rf_channel`
+radio	RF	oscillator drift	Frequency error drives acquisition/loss.	Next	frequency error into `network.rf_channel` + `network.association`
+radio	RF	transmit-power reduction	Battery/thermal/regulatory signal reduces range/rate.	Next	power signal into `network.rf_channel`
+radio	RF	receiver-noise increase	Temperature/component state degrades SINR.	Advanced	temperature/component noise into `network.rf_channel`
+radio	Medium	collision	Joint transmission state causes loss/retry.	Next	`network.shared_medium` collision outcome
+radio	Medium	hidden terminal	Topology/visibility-dependent collision.	Advanced	visibility graph into `network.shared_medium` collision/backoff
+radio	Medium	exposed terminal	Unnecessary deferral reduces capacity.	Advanced	visibility graph into `network.shared_medium` deferral/service
+radio	Medium	capture effect	Stronger transmission survives collision by exact rule.	Advanced	`network.shared_medium` capture rule
+radio	Medium	backoff anomaly	Excess delay, starvation, or unfair service.	Next	`network.shared_medium` backoff-state mutation
+radio	Medium	channel occupancy	Shared load trace reduces service.	Core	`network.shared_medium` admitted transmission/load state
+radio	Medium	duty-cycle restriction	Bounded transmit eligibility.	Next	`network.shared_medium` transmit eligibility/token state
+radio	Wi-Fi	AP outage/restart	Association loss and reconnect.	Core	`network.forwarder_lifecycle` + `network.association`
+radio	Wi-Fi	authentication failure	Association rejected or delayed.	Next	`network.association` authentication failure
+radio	Wi-Fi	roaming/handoff	AP/path transition with interruption and buffering policy.	Next	`network.association` transition
+radio	Wi-Fi	rate adaptation fallback	Signal quality drives lower service rate.	Next	`network.rf_channel` into `network.negotiated_mode` + `network.service_curve`
+radio	Wi-Fi	beacon loss	Association state degrades after modeled timeout.	Advanced	`network.frame_loss` into `network.association` timeout state
+radio	Cellular	no coverage	Detached/searching and access outage.	Core	`network.rf_channel` candidate set into `network.association` + `network.availability`
+radio	Cellular	cell congestion	Load reduces capacity and adds access delay.	Core	`network.shared_medium` + `network.service_curve` + `network.queue_policy` + `network.access_delay`
+radio	Cellular	cell/sector outage	Correlated access loss and reselection.	Core	fault-domain `network.forwarder_lifecycle` + `network.association`
+radio	Cellular	handover interruption	Buffered/lost/reordered traffic during transition.	Next	`network.association` transition with declared buffer/in-flight policy
+radio	Cellular	handover failure	Reconnect or outage state.	Next	`network.association` failure/reconnect state
+radio	Cellular	ping-pong handover	Repeated association transitions from hysteresis inputs.	Advanced	`network.association` hysteresis/timer state machine
+radio	Cellular	RRC idle/reconnect delay	First-traffic delay and possible timeout.	Next	`network.association` + `network.access_delay`
+radio	Cellular	core/backhaul congestion	Path delay, loss, and capacity degradation.	Next	`network.queue_policy` + `network.service_curve` + `network.profile_delta`
+radio	Cellular	SIM/authentication failure	Attach rejected or service limited.	Advanced	`network.association` authentication outcome
+radio	Cellular	modem reset	Interface/path loss and state reinitialization.	Next	`network.forwarder_lifecycle` + `network.association` reset
+radio	Bluetooth LE/Zigbee	advertising loss	Discovery/association delay.	Next	`network.frame_loss` + `network.recipient_subset` into discovery state
+radio	Bluetooth LE/Zigbee	channel-map degradation	Reduced usable channels and increased loss.	Advanced	`network.shared_medium` resource-set transition
+radio	Bluetooth LE/Zigbee	connection-interval miss	Delayed/lost operation opportunity.	Next	`network.shared_medium` + `network.control_result_transform(drop)`
+radio	UWB	ranging bias/dropout	Multipath, obstruction, or clock error corrupts or suppresses ranging.	Advanced	`network.rf_channel` + `network.control_result_transform(bias/drop)`
+radio	NFC/RFID	coupling loss/collision	Read, discovery, or transaction fails or is delayed.	Advanced	`network.shared_medium` + `network.rf_channel` + `network.control_result_transform(error)`
+radio	LoRa/LPWAN	duty-cycle exhaustion	Transmit admission denied until recovery.	Next	`network.shared_medium` transmit-admission state
+radio	LoRa/LPWAN	spreading-factor/rate change	Capacity/airtime transition.	Next	`network.negotiated_mode` + `network.service_curve`
+radio	Private/land-mobile radio	repeater/channel loss	Push-to-talk admission, coverage, or group delivery degrades.	Next	`network.forwarder_lifecycle` + `network.availability` + `network.recipient_subset`
+radio	Mesh	parent/route loss	Association and path transition.	Next	`network.association` + `network.route_transition`
+radio	Mesh	partition/merge	Dynamic path membership and buffered traffic policy.	Next	`network.association` membership + `network.route_transition`
+radio	IoT gateway	gateway outage	Correlated device reachability loss.	Core	`network.forwarder_lifecycle` + `network.availability`
+radio	IoT gateway	uplink degradation	Access network healthy but upstream path degraded.	Core	`network.profile_delta` + `network.service_curve`
+satellite	Contact	visibility-window closure	Link unavailable outside exact contact intervals.	Core	`network.contact` availability transition
+satellite	Contact	acquisition delay/failure	Delayed or failed transition into service.	Next	`network.contact` acquisition state
+satellite	Contact	antenna pointing loss	Outage or attenuation from orientation error.	Next	`network.rf_channel` + `network.contact`
+satellite	Contact	beam handover	Path/beam transition with interruption.	Next	`network.association` + `network.contact`
+satellite	Contact	gateway handover	Ground path transition and queue policy.	Next	`network.contact` + `network.route_transition`
+satellite	Propagation	range-varying delay	Position trace drives propagation delay.	Core	range trace into `network.propagation_delay`
+satellite	Propagation	Doppler acquisition error	Rate/loss/outage from relative velocity.	Advanced	`network.rf_channel` + `network.contact` acquisition state
+satellite	Propagation	rain fade	Weather drives attenuation/loss/rate.	Next	weather into `network.rf_channel`
+satellite	Propagation	ionospheric scintillation	Burst signal degradation.	Advanced	`network.burst_error_state` + `network.rf_channel`
+satellite	Propagation	solar interference	Scheduled/spatial degradation or outage.	Advanced	scheduled/spatial interferer into `network.rf_channel`
+satellite	Capacity	transponder contention	Shared service reduction and queueing.	Next	`network.shared_medium` + `network.service_curve`
+satellite	Capacity	ground-station congestion	Queue delay/loss/capacity restriction.	Next	`network.queue_policy` + `network.service_curve`
+satellite	Infrastructure	ground-station outage	Correlated contact/path loss.	Core	`network.forwarder_lifecycle` + `network.contact` + `network.route_transition`
+satellite	Infrastructure	inter-satellite link loss	Route/contact-plan transition.	Next	`network.availability` + `network.route_transition`
+satellite	DTN	contact-plan error	Missed or shortened contact opportunity.	Next	`network.contact` + `network.custody_queue` + `network.route_transition`
+satellite	DTN	custody queue overflow	Stored bundle loss or rejection.	Next	`network.custody_queue` overflow policy
+satellite	DTN	stale route/contact data	Delay, loop, or missed delivery.	Advanced	`network.contact` + `network.route_transition` state mutation
+satellite	Space environment	radiation upset	Correlated onboard memory/compute bit flip or reset.	Next	common signal into `memory.mutation` + `cpu.exception` or `node.lifecycle`; never a network approximation
+satellite	Space environment	thermal cycle	Clock/radio/battery/compute degradation signal.	Advanced	common signal into `network.rf_channel` + `cpu.service` + `clock.transform` + `storage.service`
+satellite	Space environment	power eclipse	Battery discharge, service restriction, shutdown.	Next	energy signal into `node.lifecycle` + `cpu.service` + `network.availability`
+node	Node	crash	Stop node with explicit restart policy.	Core	`node.lifecycle(powered_off/crashed)`
+node	Node	power-cycle reset	Lose volatile state and restart from declared boundary.	Next	`node.lifecycle` with declared volatile/device reset policy
+node	Node	hang	Remain running but make no modeled progress.	Core	`node.hang`
+node	Node	intermittent reset	Signal-driven repeated reset/recovery.	Next	event/state signal into repeated `node.lifecycle` transitions
+node	Node	boot failure	Start/restart transition fails or times out.	Next	`node.lifecycle` boot transition failure/timeout
+node	CPU	capacity throttle	Reduce modeled compute service/counter mapping.	Core	`cpu.service`
+node	CPU	thermal throttle	Temperature signal drives capacity throttle.	Next	temperature signal into `cpu.service`
+node	CPU	vCPU stall	Selected vCPU makes no progress for an interval.	Next	`cpu.vcpu_state(stalled)`
+node	CPU	vCPU offline	Selected vCPU unavailable with topology/capability checks.	Advanced	`cpu.vcpu_state(offline)`
+node	CPU	machine check	Guest-visible architecture-specific hardware exception.	Next	architecture `cpu.exception` with hardware-error fields
+node	CPU	reset/triple fault	Architecture-specific reset transition.	Advanced	architecture `cpu.exception` + `node.lifecycle` transition
+node	CPU	register bit flip	Impulse mutation of resolved architectural register bits.	Next	`cpu.register_transform(bit_flip)`
+node	CPU	instruction-result corruption	Mutate selected result at exact instruction opportunity.	Advanced	`cpu.instruction_transform(result_corrupt)`
+node	CPU	instruction skip/replay	Modify instruction execution semantics.	Advanced	`cpu.instruction_transform(skip/replay)`
+node	CPU	illegal/spurious exception	Inject typed exception at exact boundary.	Advanced	`cpu.exception`
+node	Interrupt	dropped interrupt	Suppress selected interrupt delivery.	Next	`interrupt.disposition(drop)`
+node	Interrupt	delayed interrupt	Shift delivery while preserving causality.	Next	`interrupt.disposition(delay)`
+node	Interrupt	duplicate/spurious interrupt	Deliver additional interrupt.	Next	`interrupt.disposition(duplicate/replace)`
+node	Interrupt	interrupt storm	Periodic/burst event sequence causes load/livelock.	Next	`interrupt.storm`
+node	Memory	transient bit flip	One-shot physical/virtual memory mutation.	Core	`memory.mutation(bit_flip)`
+node	Memory	stuck-at bit	Persistent read/write transform for selected bits.	Next	`memory.access_transform(stuck)`
+node	Memory	read corruption	Opportunity-specific returned-data mutation.	Next	`memory.access_transform(read_corrupt)`
+node	Memory	lost/torn write	Suppress or partially apply selected memory write.	Advanced	`memory.access_transform(lost_write/torn_write)` with exact write selector
+node	Memory	poison	Access produces guest-visible fatal/correctable outcome.	Next	`memory.access_transform(poison)`
+node	Memory	ECC corrected error	Telemetry/event without exposed data corruption.	Next	`memory.ecc_event(corrected)`
+node	Memory	ECC uncorrectable error	Poison, machine check, or fatal policy.	Next	`memory.ecc_event(uncorrectable)` plus architecture outcome
+node	Memory	row/region failure	Persistent range fault.	Next	`memory.region_state(failed)`
+node	Memory	retention decay	Time/refresh/temperature-controlled bit errors.	Advanced	`memory.region_state(retention)`
+node	Memory	rowhammer-style disturbance	Access-pattern-driven adjacent-row errors.	Advanced	`memory.region_state(rowhammer)`
+node	Memory	latency/bandwidth degradation	Capacity/timing restriction.	Next	`memory.service`
+node	Clock	offset/skew	Signed guest-visible time offset.	Core	`clock.transform(offset)`
+node	Clock	drift/rate error	Exact rational clock-rate change.	Core	`clock.transform(drift)`
+node	Clock	jump/step	Impulse change in offset.	Next	`clock.transform(jump)`
+node	Clock	freeze	Clock value stops while scheduler continues.	Next	`clock.transform(freeze)`
+node	Clock	jitter/wander	Signal-driven read variation with monotonicity policy.	Next	`clock.transform(jitter/wander)`
+node	Clock	source failure/fallback	RTC/TSC/paravirtual/source transition.	Advanced	`clock.source_state`
+node	Clock	synchronization loss	Drift/offset evolves until resynchronization event.	Next	`clock.source_state` + `clock.transform` evolution
+node	Accelerator	device disappearance/reset	GPU/TPU/FPGA unavailable and reinitialized.	Advanced	`accelerator.lifecycle`
+node	Accelerator	compute corruption	Typed result corruption at kernel/job boundary.	Advanced	`accelerator.result_transform`
+node	Accelerator	memory/ECC error	Corrected/uncorrectable device-memory event.	Advanced	`accelerator.memory_event`
+node	Accelerator	thermal/power throttle	Service-rate restriction.	Advanced	`accelerator.service`
+storage	Device	disappearance/offline	Admission rejection or no completion.	Core	`storage.availability(offline)`
+storage	Device	reset/reconnect	Queue treatment and reinitialization transition.	Core	`storage.controller_lifecycle`
+storage	Device	read-only transition	Writes rejected while reads continue.	Next	`storage.availability(read_only)`
+storage	Device	capacity change	Reported length changes under explicit policy.	Advanced	`storage.reported_capacity`
+storage	Timing	read latency	Fixed/signal-driven completion delay and jitter.	Core	operation-filtered `storage.latency`
+storage	Timing	write latency	Fixed/signal-driven completion delay and jitter.	Core	operation-filtered `storage.latency`
+storage	Timing	flush latency	Flush completion delay/stall.	Core	operation-filtered `storage.latency` or stall
+storage	Capacity	bandwidth cap	Exact byte/bit service limit.	Core	`storage.service(bytes_per_second)`
+storage	Capacity	IOPS cap	Operation service limit.	Next	`storage.service(iops)`
+storage	Capacity	queue-depth restriction	Admission, queueing, and backpressure change.	Next	`storage.service` queue state
+storage	Outcome	read error	Typed status/errno at opportunity.	Core	`storage.operation_failure(read)`
+storage	Outcome	write error	Typed status/errno at opportunity.	Core	`storage.operation_failure(write)`
+storage	Outcome	flush error	Typed status/errno.	Core	`storage.operation_failure(flush)`
+storage	Outcome	timeout/dropped completion	No completion before modeled timeout.	Core	`storage.stall_timeout`
+storage	Ordering	completion reorder	Delay selected completion past siblings.	Core	`storage.completion_reorder`
+storage	Multiplicity	duplicate completion	Emit duplicate completion under protocol-valid policy.	Advanced	`storage.duplicate_completion`
+storage	Data	read bit corruption	Mutate returned bytes.	Core	`storage.read_transform(bit_flip)`
+storage	Data	stale read	Return prior block/version.	Next	`storage.read_transform(stale)`
+storage	Data	misdirected read/write	Access wrong resolved block/range.	Advanced	`storage.read_transform(misdirected)` or `storage.write_disposition(misdirected)`
+storage	Write	lost write	Acknowledge or fail while suppressing persistence by policy.	Next	`storage.write_disposition(lost)`
+storage	Write	torn/partial write	Persist a deterministic subset of sectors/bytes.	Next	`storage.write_disposition(torn)`
+storage	Write	reordered persistence	Completion order differs from durable order.	Next	`storage.persistence_order`
+storage	Write	volatile-cache loss	Reset/power removes acknowledged non-durable writes.	Core	ordinary or protection-defeating `storage.volatile_cache_loss(power_loss/protection_failure)`
+storage	Flush	lying flush	Report success without satisfying durability barrier.	Next	`storage.flush_disposition(lie)`
+storage	Media	bad sector/range	Persistent range-specific error/corruption.	Next	`storage.media_range(bad)`
+storage	Media	latent sector error	Error appears after time/read-count threshold.	Advanced	`storage.media_range(latent)` with threshold state
+storage	Flash	erase-block wear	Wear state drives latency/error/read-only transition.	Next	`storage.flash_state`
+storage	Flash	program/erase failure	Operation error or partial persistence.	Next	`storage.flash_state` + `storage.write_disposition` or `storage.operation_failure`
+storage	Flash	retention error	Time/temperature/wear-driven corruption.	Advanced	`storage.flash_state` retention transition + `storage.read_transform`
+storage	Flash	read disturb	Read-count-driven neighboring corruption.	Advanced	`storage.flash_state` access-count transition + `storage.read_transform`
+storage	NVMe/SATA	controller reset	Queue loss/retry and re-enumeration.	Next	`storage.controller_lifecycle(reset)`
+storage	NVMe/SATA	namespace/path loss	Selected namespace/path unavailable.	Next	`storage.controller_lifecycle` namespace/path transition
+storage	RAID/multipath	member/path failure	Degraded service and rebuild/failover state.	Next	`storage.array_state`
+storage	RAID/multipath	rebuild load/failure	Capacity/latency and second-failure risk.	Advanced	`storage.array_state` + `storage.service` + `storage.operation_failure`
+storage	Filesystem-facing	errno injection	Typed 9p/filesystem operation error.	Core	`ninep.result(errno)`
+storage	Filesystem-facing	stale metadata/data	Return prior modeled result.	Next	`ninep.result(stale)`
+storage	Filesystem-facing	delayed visibility	Namespace/data update becomes visible later.	Advanced	`ninep.visibility`

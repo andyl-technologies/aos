@@ -1507,8 +1507,6 @@ mod tests {
 
     #[test]
     fn checkpoint_and_projection_versions_match_registry() {
-        let registry =
-            include_str!("../../../../docs/rfcs/0020-crucible-campaigns/schema-registry.tsv");
         let schemas = [
             (
                 "crucible.qemu.checkpoint-qmp",
@@ -1521,9 +1519,11 @@ mod tests {
         ];
 
         for (name, version) in schemas {
-            let row = format!("{name}\t{version}\tcrucible-qemu::qmp::");
+            let entry = crucible_test_support::schema_registry::find_schema(name)
+                .expect("schema registry parses");
             assert!(
-                registry.lines().any(|line| line.starts_with(&row)),
+                entry.is_some_and(|entry| entry.version == version
+                    && entry.owner.starts_with("crucible-qemu-host::qmp::")),
                 "missing current QMP schema {name}"
             );
         }

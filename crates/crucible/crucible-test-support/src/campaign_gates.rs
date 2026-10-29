@@ -1,8 +1,9 @@
 //! Executable gate contracts for Crucible campaign gates.
 //!
-//! Campaign gates extend the canonical determinism gate catalog.
-//! This registry records whether each campaign gate has an isolable automated
-//! target wired to a Nix check.
+//! Campaign gates extend the canonical determinism gate catalog with
+//! campaign-specific guarantees. This registry is the source of truth for
+//! campaign gate names and records the isolable automated target and Nix check
+//! behind each gate.
 
 /// The executable contract attached to a campaign gate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

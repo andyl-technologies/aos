@@ -27,7 +27,7 @@ pub struct BindingSearchChoice {
 /// Candidate identities are ordered exactly like the binding policy's
 /// canonical candidate vector. They let the campaign boundary expose Boolean
 /// outcomes and stable discrete transition or parameter alternatives while the
-/// effect adapter continues to consume the original typed signal-fault values.
+/// effect adapter continues to consume the original typed fault-model values.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BindingSearchCandidateSemantics {
     /// False/true effect outcome candidates, in that order.
