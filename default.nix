@@ -1724,6 +1724,9 @@ in rec {
     };
     eval-suites = {
       core = eval-core;
+      # Design decisions live in docs/engineering/; the retired RFC series
+      # must not return as a directory, a path, or a record citation.
+      design-record-references = import ./tests/docs/design-record-references.nix {inherit pkgs lib;};
       abilities-package-services = ability-suites.package-services;
       abilities-provider-realization = ability-suites.provider-realization;
       abilities-native-resources = ability-suites.native-resources;

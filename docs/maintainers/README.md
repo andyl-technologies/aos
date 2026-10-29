@@ -22,6 +22,10 @@ expressions, comments, tests, and embedded shell.
 [Crucible gate evidence](crucible-gate-evidence.md) distinguishes component
 tests from live QEMU evidence and explains the fingerprint gate dependencies.
 
+The [engineering documentation](../engineering/README.md) explains how each
+component is implemented and records its design decisions. Update the relevant
+engineering page in the same change that alters a design.
+
 ## Build the source tree
 
 AOS builds hermetically from its bootstrap tools and AOS packages. It does not

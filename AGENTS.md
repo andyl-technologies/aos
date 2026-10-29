@@ -376,6 +376,25 @@ and package rules above:
 Existing difficult code is context, not precedent. Feature work should leave
 the local design no worse and improve it where that is safe and proportionate.
 
+## Documentation
+
+Documentation lives in four sections: `docs/users/` for people running AOS,
+`docs/maintainers/` for people managing installation media, releases, or
+forks, `docs/engineering/` for implementation and design by component, and
+`docs/legal/` for licensing. The [engineering index](docs/engineering/README.md)
+lists every engineering page.
+
+- Record a design decision in the relevant `docs/engineering/` page as part of
+  the pull request that makes it. Describe the current design and its reasons;
+  remove superseded designs instead of keeping them as history.
+- There is no separate proposal or numbered design-record process. Do not
+  recreate the retired RFC directory under `docs/` or cite its record numbers
+  in documents, code, comments, test names, or identifiers.
+- `checks.eval` includes the `design-record-references` suite, which enforces
+  this rule. Cite external standards without leading zeros (`RFC 9110`,
+  `NixOS RFC 42`); the exact rule is in
+  [`docs/engineering/code-style.md`](docs/engineering/code-style.md#documentation).
+
 ## Testing
 
 - `nix-build -A checks.eval` — core evaluation checks

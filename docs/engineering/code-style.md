@@ -103,6 +103,25 @@ uses the derivation's shell syntax and AOS-built tools. Paragraph breaks
 separate setup, execution, validation, and publication. Comments identify
 intentional non-zero exits, cleanup ownership, and unusual sandbox assumptions.
 
+## Documentation
+
+Design decisions are recorded in the `docs/engineering/` page for the affected
+component, in the pull request that makes them. The page states the current
+design and the reasoning behind it, and changes whenever the code does; a
+superseded design is removed rather than kept beside its replacement. There is
+no separate numbered design-record series, and documents, code, and comments do
+not cite one. User procedures belong in `docs/users/`, and installation-media,
+release, and fork procedures belong in `docs/maintainers/`.
+
+The `design-record-references` evaluation suite enforces the removal of the
+former RFC series. It fails when the retired RFC directory under `docs/`
+exists, when any repository file outside version-control and build state names
+a path inside it, or when a file cites an AOS RFC number: the letters RFC, in
+any case, then an optional hyphen, underscore, or space, and a zero-padded
+four-digit number from `0000` through `0099`. External standards remain
+citable in their usual unpadded form, such as `RFC 9110`, `RFC 3339`, or
+`NixOS RFC 42`; write external numbers without leading zeros so they cannot be
+mistaken for retired AOS records.
 
 ## References
 

@@ -48,6 +48,9 @@ Check the [support-status matrix](docs/users/aos/support-status.md) before plann
   versioned [downstream flake API](docs/engineering/downstream/flake-api.md).
 - [Maintainer documentation](docs/maintainers/) covers source builds, trust and
   package security, image production, repository development, and tests.
+- [Engineering documentation](docs/engineering/README.md) explains how each
+  component is implemented and why, including build, boot, packages,
+  registries, Hub, releases, and Crucible.
 
 ## Contributing
 
