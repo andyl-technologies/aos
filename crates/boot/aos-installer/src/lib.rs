@@ -71,7 +71,6 @@ struct Input {
     install_plan: InstallPlan,
     provisioning_plan: CanonicalProvisioningPlan,
     trust_bundle: PathBuf,
-    platform: String,
     countdown_seconds: u64,
     tools: InstallerTools,
 }
@@ -157,7 +156,9 @@ fn install_from_payload(
     media_disks: &[PathBuf],
     resource: &str,
 ) -> Result<serde_json::Value> {
-    let payload = payload::verify(tools, trust, Path::new(PAYLOAD_MOUNT), &input.platform)?;
+    // Release platforms are named `<architecture>-linux`, as in Nix.
+    let platform = format!("{}-linux", std::env::consts::ARCH);
+    let payload = payload::verify(tools, trust, Path::new(PAYLOAD_MOUNT), &platform)?;
     target::require_secondary_devices(&input.provisioning_plan)?;
     let required = target::required_bytes(payload.disk_byte_size, &input.provisioning_plan)?;
     let target = target::resolve(target_path, media_disks, required)?;

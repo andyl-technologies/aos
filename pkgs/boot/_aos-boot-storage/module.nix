@@ -248,6 +248,18 @@ in {
     internal = true;
     description = "Boot package deployment scope selected by image orchestration.";
   };
+  options.aos.boot.installerMedia = lib.mkOption {
+    type = lib.types.bool;
+    default = false;
+    internal = true;
+    # Selected by the installer-media policy package.
+    extensible = true;
+    description = ''
+      Whether this initrd belongs to installer media. Such an initrd has no
+      immutable root, ESP journal, or persistent state of its own, so
+      installed-system boot effects are absent.
+    '';
+  };
 
   options.aos.boot.storageServices = {
     transactionStorageRoot = lib.mkOption {
@@ -326,7 +338,7 @@ in {
         "boot-storage.aos-sync-esps" = syncEsps // {enable = stage == "host";};
         "boot-storage.aos-stage-zfs-credential" = stageZfsCredential // {enable = stage == "initrd" && cfg.zfs.enable;};
         "boot-storage.aos-zfs-unlock" = zfsUnlock // {enable = stage == "initrd" && cfg.zfs.enable;};
-        "boot-storage.aos-boot-transaction-storage" = transactionStorageMount // {enable = stage == "initrd";};
+        "boot-storage.aos-boot-transaction-storage" = transactionStorageMount // {enable = stage == "initrd" && !config.aos.boot.installerMedia;};
       };
     }
     # The ESP backs the initrd journal. Host activation keeps its own profile

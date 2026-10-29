@@ -253,6 +253,7 @@
           lib = finalLib;
         }
       );
+    installerMedia = import ./build/installer-media.nix;
   };
 
   platformMod = import ./platform.nix;

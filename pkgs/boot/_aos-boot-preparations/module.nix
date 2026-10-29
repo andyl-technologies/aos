@@ -205,13 +205,19 @@
     "--nix-store"
     "${dependencies.nix.path}/bin/nix-store"
   ];
-  initrdController = handoffService {
-    key = "aos-ability-initrd-controller";
-    description = "Execute and release initrd-stage ability ownership";
-    activationOwner = "image";
-    readinessMechanism = "successful-exit";
-    arguments = ["apply-deployment"] ++ stageInputs "initrd" cfg.initrdStateDirectory;
-    dependencies =
+  installerMedia = config.aos.boot.installerMedia or false;
+  # Installer media has no ESP journal and never hands off to a host, so its
+  # one transaction journals in memory and needs only settled devices.
+  initrdControllerDependencies =
+    if installerMedia
+    then
+      emptyDependencies
+      // {
+        after = [deviceSettleReadiness];
+        requires = [deviceSettleReadiness];
+        implicit_dependencies = false;
+      }
+    else
       emptyDependencies
       // {
         after = [
@@ -230,6 +236,13 @@
         required_by = [initrdFilesystemsReadiness];
         implicit_dependencies = false;
       };
+  initrdController = handoffService {
+    key = "aos-ability-initrd-controller";
+    description = "Execute and release initrd-stage ability ownership";
+    activationOwner = "image";
+    readinessMechanism = "successful-exit";
+    arguments = ["apply-deployment"] ++ stageInputs "initrd" cfg.initrdStateDirectory;
+    dependencies = initrdControllerDependencies;
   };
   initrdHandoffBarrier = handoffService {
     key = "aos-ability-initrd-handoff-barrier";
@@ -611,7 +624,10 @@
     machineId
     etcOverlaySetup
   ];
-  handoffInitrdServices = [initrdController initrdHandoffBarrier initrdStoreHandoff];
+  handoffInitrdServices =
+    if installerMedia
+    then [initrdController]
+    else [initrdController initrdHandoffBarrier initrdStoreHandoff];
   handoffHostServices = [hostStoreSeed hostReceiver] ++ lib.optional (!controlPlaneEnabled) hostController;
   identityRestorationBase = handoffService {
     key = "aos-identity-restoration";
@@ -709,7 +725,10 @@ in {
   options.aos.boot.substrateServices = {
     initrdStateDirectory = lib.mkOption {
       type = lib.types.str;
-      default = "/run/aos-boot-transaction-storage/aos/initrd-stage-journal";
+      default =
+        if config.aos.boot.installerMedia or false
+        then "/run/aos-installer/initrd-stage-journal"
+        else "/run/aos-boot-transaction-storage/aos/initrd-stage-journal";
       internal = true;
       description = "Preserved durable generation and effect journals for the initrd scope.";
     };

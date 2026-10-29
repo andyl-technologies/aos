@@ -5,7 +5,8 @@
   ...
 }: {
   config.aos.boot.substrateServices = {
-    enable = lib.mkDefault (config.aos.boot.stage == "initrd");
+    # Installer media mounts no persistent state and never switches root.
+    enable = lib.mkDefault (config.aos.boot.stage == "initrd" && !(config.aos.boot.installerMedia or false));
     handoffEnabled = lib.mkDefault config.aos.boot.initrd.abilityHandoff.enable;
     verityEnabled = lib.mkDefault config.aos.security.verity.enable;
     zfsEnabled = lib.mkDefault (config.aos.boot.storage.backend == "zfs-zvol");

@@ -62,6 +62,16 @@ in {
     source = defaulted (lib.types.nullOr (lib.types.enum ["operator" "fallback"])) null "Committed configuration source.";
     marker_uuid = defaulted nullableText null "Committed durable marker UUID.";
   };
+  installerTools = record {
+    blkid = field text "Exact retained filesystem inspection executable.";
+    mount = field text "Exact retained mount executable.";
+    umount = field text "Exact retained unmount executable.";
+    openssl = field text "Exact retained digest and signature executable.";
+    zstd = field text "Exact retained image decompression executable.";
+    sgdisk = field text "Exact retained GPT backup-header relocation executable.";
+    udevadm = field text "Exact retained device synchronization executable.";
+    efibootmgr = field text "Exact retained UEFI boot-entry executable.";
+  };
   tools = record {
     systemd_repart = field text "Exact retained repart executable.";
     blkid = field text "Exact retained filesystem inspection executable.";
