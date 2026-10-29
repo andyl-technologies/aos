@@ -226,8 +226,8 @@ preserves a network-disabled final package build.
 
 Add evaluated package/check/reverse-dependency graph extraction, quick canary
 and complete final gate planning, all-target behavior, exceptional gates,
-exact-commit invalidation/evidence, and `test`, `accept`, `commit`, and
-`evidence` commands. Freeze the base controller; candidate `pkgs.aos` is tested
+exact-commit invalidation/evidence, and `test`, `accept`, and `commit`
+commands. Freeze the base controller; candidate `pkgs.aos` is tested
 as an artifact, never made the run authority.
 
 Pilot approximately 15–25 low/normal-risk units with agent disabled. Include
@@ -235,10 +235,10 @@ each enabled materializer kind plus non-writing schema/gate exercises for shared
 Linux source, concurrent Bazel majors, a composite component vector, a frozen
 bootstrap rung, and exceptional QEMU/Crucible.
 
-**Exit:** conventional/enabled generated-input updates reach `ready-for-pr` only
+**Exit:** conventional/enabled generated-input updates reach `final-gated` only
 after the exact candidate commit passes all local gates; unavailable target/KVM
-capability is visible; no pilot uses manual text replacement; dossiers capture
-review corrections and resource cost.
+capability is visible; no pilot uses manual text replacement; retained run
+evidence captures review corrections and resource cost.
 
 ## PR 10: Bounded agent repair
 
@@ -263,7 +263,8 @@ are available.
 
 ## PR 11: Git and pull-request handoff
 
-Implement offline `prepare-pr`, sanitized hook-free commit/push configuration,
+Implement offline `prepare-pr` and its verified `final-gated -> ready-for-pr`
+transition, sanitized hook-free commit/push configuration,
 author/signature/attribution/base/head validation, exact refspec and expected
 remote head, explicit confirmation, authentication isolation, create/update-
 only matching PR behavior, and partial-failure reconciliation.

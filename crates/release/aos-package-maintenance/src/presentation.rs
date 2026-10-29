@@ -5,14 +5,14 @@ use std::collections::BTreeMap;
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::MAINTENANCE_CLI_V1;
+use crate::MAINTENANCE_CLI_V2;
 use crate::agent::{AgentResultV1, AgentTaskV1};
 use crate::discovery::DiscoverySnapshotV1;
 use crate::envelope::InventoryEnvelopeV1;
 use crate::identity::RunId;
 use crate::plan::PackageUpdatePlanV1;
-use crate::remote::{PullRequestObservationV1, PullRequestPublicationV1};
-use crate::run::{GateResultsV1, PackageUpdateEvidenceV1, PackageUpdateRunV1, RepairAttemptV1};
+use crate::remote::{PullRequestObservationV1, PullRequestPublicationV2};
+use crate::run::{GateResultsV1, PackageUpdateRunV1, RepairAttemptV1};
 use crate::workflow::{DiscoveryDecision, GateOutcome, RunState, TaskStatus};
 
 /// Classifies the outcome of the requested command independently of run state.
@@ -213,15 +213,12 @@ pub struct CommandData {
     /// Accepted attempt metadata after the mutation gateway succeeds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repair_attempt: Option<RepairAttemptV1>,
-    /// Complete local candidate evidence returned by evidence/inspection.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub evidence: Option<PackageUpdateEvidenceV1>,
     /// Offline pull-request draft returned before any remote mutation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pull_request: Option<PullRequestDraft>,
     /// Completed exact remote publication, when available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub publication: Option<PullRequestPublicationV1>,
+    pub publication: Option<PullRequestPublicationV2>,
     /// Latest exact-head read-only pull-request observation, when available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote_observation: Option<PullRequestObservationV1>,
@@ -257,8 +254,11 @@ pub struct PullRequestDraft {
     pub body: String,
     /// Exact candidate commit covered by final gates.
     pub head: String,
-    /// Complete local evidence identity.
-    pub evidence_digest: aos_core::Sha256Digest,
+    /// Canonical digest of the successful final gate-results set.
+    ///
+    /// The final gate set binds the exact candidate commit, so this digest
+    /// identifies the verified candidate the draft describes.
+    pub gate_results_digest: aos_core::Sha256Digest,
 }
 
 /// Contains the single terminal result returned by a maintenance command.
@@ -298,7 +298,7 @@ impl MaintainCommandResult {
     /// Returns an error for an incompatible schema, mismatched exit code,
     /// oversized fields, too many actions, or unsafe action argument vectors.
     pub fn validate(&self) -> Result<()> {
-        if self.schema_version != MAINTENANCE_CLI_V1 {
+        if self.schema_version != MAINTENANCE_CLI_V2 {
             bail!(
                 "unsupported maintenance CLI schema: {}",
                 self.schema_version
@@ -512,7 +512,7 @@ mod tests {
     #[test]
     fn completion_rejects_mismatched_exit_and_shell_actions() -> Result<()> {
         let mut result = MaintainCommandResult {
-            schema_version: MAINTENANCE_CLI_V1.to_string(),
+            schema_version: MAINTENANCE_CLI_V2.to_string(),
             command: "status".to_string(),
             disposition: CommandDisposition::ActionRequired,
             exit_code: 0,
