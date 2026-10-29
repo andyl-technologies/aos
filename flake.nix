@@ -264,6 +264,26 @@
     # docs/engineering/downstream/flake-api.md.
     lib = genAttrs systems (system: (downstreamAosFor system).downstreamLib);
 
+    # Downstream CI runs this to fail when any AOS toolchain would build
+    # locally instead of downloading. Each copy embeds both Linux toolchain
+    # sets, so one machine can check every platform's cache coverage. It is an
+    # app rather than a package because `packages.aarch64-linux` cannot
+    # evaluate natively.
+    apps = genAttrs systems (system: let
+      downstream = (downstreamAosFor system).pkgs;
+      check = import ./tools/toolchain-cache-check {
+        pkgs = downstream;
+        inherit (downstream) lib;
+        toolchainSets = genAttrs systems (target: (downstreamAosFor target).downstreamLib.toolchains);
+      };
+    in {
+      toolchain-cache-check = {
+        type = "app";
+        program = "${check}/bin/toolchain-cache-check";
+        meta.description = "Fail when any AOS toolchain would build locally instead of downloading";
+      };
+    });
+
     templates = rec {
       downstream = {
         path = ./templates/downstream;
@@ -499,6 +519,7 @@
         }
         // flattenAttrs "eval" (builtins.removeAttrs aos.checks.eval-suites ["core"])
         // flattenAttrs "build" aos.checks.build
+        // flattenAttrs "downstream" aos.checks.downstream
         // flattenAttrs "container" aos.checks.container
         // flattenAttrs "qualification" (builtins.removeAttrs aos.checks.qualification ["inventory"])
         // {
