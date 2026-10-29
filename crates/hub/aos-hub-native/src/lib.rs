@@ -1,7 +1,6 @@
 //! AOS registry hub: a management WebUI and read index for AOS registries.
 //!
-//! This crate implements the phase-1 surface of RFC-0004
-//! (`docs/rfcs/0004-registry-hub.md`): a server that *indexes* one or more
+//! This crate is the native hub server: it *indexes* one or more
 //! AOS registries — the SHA-256 git surfaces published as static files by
 //! `apr` — and serves three audiences from one URL space:
 //!
@@ -80,22 +79,22 @@ pub mod cloudflare;
 /// `crate::crawl::…` stable for the CLI.
 pub use aos_hub_model::crawl;
 /// Config change-set staging/revert, re-exported from
-/// [`aos_hub_service::config`] (RFC-0004 Phase 5); keeps `crate::config::…` stable.
+/// [`aos_hub_service::config`]; keeps `crate::config::…` stable.
 pub use aos_hub_service::config;
 /// Native adapters from the hub's concrete types to the shared service ports
 /// ([`aos_hub_service::ratelimit::RateLimiter`],
-/// [`aos_hub_service::fetch::SurfaceProvider`]); RFC-0004 Phase 5.
+/// [`aos_hub_service::fetch::SurfaceProvider`]).
 pub mod coreports;
 pub mod db;
 pub mod egress_gateway;
 /// The tenancy/IAM domain model, re-exported from [`aos_hub_model::domain`]
-/// (RFC-0004 Phase 5) so the Worker shares it; keeps `crate::domain::…` stable.
+/// so the Worker shares it; keeps `crate::domain::…` stable.
 pub use aos_hub_model::domain;
 pub mod export;
 pub mod fetch;
 pub mod image_snapshot;
 /// Package/release listing filters, re-exported from
-/// [`aos_hub_service::filter`] (RFC-0004 Phase 5); keeps `crate::filter::…` stable.
+/// [`aos_hub_service::filter`]; keeps `crate::filter::…` stable.
 pub use aos_hub_service::filter;
 pub mod gitwrite;
 pub mod indexer;
@@ -109,7 +108,7 @@ pub mod seed;
 pub mod server;
 pub mod signing;
 /// The cache-stack node model, re-exported from [`aos_hub_service::stack`]
-/// (RFC-0004 Phase 5) so the Worker shares it; keeps `crate::stack::…` stable.
+/// so the Worker shares it; keeps `crate::stack::…` stable.
 pub use aos_hub_service::stack;
 pub mod surface;
 pub mod ui;

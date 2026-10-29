@@ -34,7 +34,7 @@ impl Database {
     /// Returns `(token_id, owner_kind, owner_id, scope, permissions_json,
     /// created_at, expires_at, last_used_at)` for every token owned by a
     /// service account in `org_id`. The `hash` column is deliberately excluded
-    /// — an export carries no usable credential (RFC-0004 offboarding).
+    /// — an export carries no usable credential.
     ///
     /// # Errors
     ///

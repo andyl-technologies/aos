@@ -1,5 +1,5 @@
 ##! aos-hub-worker-dist — the deployable Cloudflare Worker artifact, built
-##! hermetically from source (RFC-0004).
+##! hermetically from source.
 ##!
 ##! Compiles `crates/hub/aos-hub-worker` to `wasm32-unknown-unknown` and emits
 ##! the `build/worker/` bundle (the `shim.mjs` ES-module entry plus the

@@ -1,5 +1,4 @@
-//! KV-backed short-lived auth artifacts with atomic single-use (RFC-0004 ch.14
-//! Phase C6).
+//! KV-backed short-lived auth artifacts with atomic single-use.
 //!
 //! The login flows mint short-lived, single-use artifacts — OIDC/login state,
 //! magic-link tokens, device codes, WebAuthn challenges. They are pure

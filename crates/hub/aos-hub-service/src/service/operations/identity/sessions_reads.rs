@@ -4,7 +4,7 @@ use super::*;
 
 impl RpcService {
     /// Resolves a session from its cookie secret, read-through cached in KV when
-    /// a [`KvStore`](crate::kv::KvStore) is attached (RFC-0004 ch.14 Phase C).
+    /// a [`KvStore`](crate::kv::KvStore) is attached.
     ///
     /// On the hot path — the session lookup runs on **every** authenticated
     /// request — this serves the resolution from KV (sub-ms, off the database session

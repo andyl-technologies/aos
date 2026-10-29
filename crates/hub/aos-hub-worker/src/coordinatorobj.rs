@@ -1,12 +1,12 @@
 //! The Durable Object implementation of the shared [`Coordinator`] port
 //! (wasm32-only).
 //!
-//! RFC-0004 chapter 14 routes the hub's *atomic* state — fixed-window rate
-//! limits, the publish lease, channel anti-rollback floors — through a
-//! **Durable Object**, whose single global instance and serialized execution
-//! give strict serializability without a per-request SQL round-trip (and without
-//! a write on the read path). Workers KV cannot serve this (eventually
-//! consistent, ~1 write/sec/key, no atomic increment).
+//! The hub routes its *atomic* state — fixed-window rate limits, the publish
+//! lease, channel anti-rollback floors — through a **Durable Object**, whose
+//! single global instance and serialized execution give strict serializability
+//! without a per-request SQL round-trip (and without a write on the read path).
+//! Workers KV cannot serve this (eventually consistent, ~1 write/sec/key, no
+//! atomic increment).
 //!
 //! Two pieces live here:
 //!
@@ -46,8 +46,7 @@ use aos_hub_service::coordinator::Coordinator;
 /// The single DO instance every coordinator operation routes to.
 ///
 /// One instance serializes all of a deployment's rate-limit/lease/floor
-/// operations. (Per-tenant sharding — a DO per registry — is RFC-0004 ch.14
-/// Phase E, where the tenant DO also owns the tenant's SQLite state.)
+/// operations.
 const COORDINATOR_INSTANCE: &str = "global";
 
 /// A stored lease: holder and the unix-second deadline.

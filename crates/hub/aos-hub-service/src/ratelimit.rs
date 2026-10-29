@@ -21,7 +21,7 @@ use aos_hub_db::backend::BackendBounds;
 ///
 /// A steady-state complement to the per-principal [`RateClass::CreateOrg`]
 /// burst limit: even a slow creation loop cannot accumulate namespace pollution
-/// past this cap (RFC-0004 sec L-3).
+/// past this cap.
 pub const MAX_ORGS_PER_OWNER: i64 = 50;
 
 /// The metered operation classes, each with its own keying and budget.
@@ -94,7 +94,7 @@ const WINDOW_SECS: i64 = 60;
 
 /// A [`RateLimiter`] backed by the strongly-consistent [`Coordinator`] port.
 ///
-/// RFC-0004 chapter 14 routes rate limiting to a coordinator because a relational upsert was
+/// Rate limiting is routed to a coordinator because a relational upsert was
 /// a *write on every browse request* (the read-path-poisoning anti-pattern) — and
 /// onto the [`Coordinator`]'s atomic [`admit`](Coordinator::admit). On the Worker
 /// the coordinator is a Durable Object (`WorkerCoordinator`); natively it is the

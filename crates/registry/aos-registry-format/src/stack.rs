@@ -1,7 +1,6 @@
 //! Cache stacks: the nestable try/mirror expression over cache endpoints.
 //!
-//! RFC-0004 ("Cache stores, stacks, and consistency validation") models a
-//! registry's committed `[caches]` preference list as a small, nestable
+//! A registry's committed `[caches]` preference list is a small, nestable
 //! expression. A [`StackNode`] is one of:
 //!
 //! - **endpoint** — a single cache base URL.

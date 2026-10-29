@@ -1,9 +1,9 @@
 //! End-to-end: fixture surface → verified index → typed delivery + pages.
 //!
-//! The local-first loop from RFC-0004's testing story, tier 3: a complete
-//! registry surface on disk, indexed fail-closed with real signature
-//! verification, then served — machine paths byte-faithful with the right
-//! cache headers, human pages rendered from the verified index.
+//! The local-first loop: a complete registry surface on disk, indexed
+//! fail-closed with real signature verification, then served — machine paths
+//! byte-faithful with the right cache headers, human pages rendered from the
+//! verified index.
 
 mod common;
 
@@ -1021,7 +1021,7 @@ async fn connectrpc_read_path_serves_index() {
     let (status, body) = post("/aos.hub.v1.IdentityService/ListAccessTokens", "{}").await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "body: {body}");
 
-    // The RFC-0012 cutover is deliberately hard: neither the former package
+    // The topology cutover is deliberately hard: neither the former package
     // nor any of the ambiguous service names remains mounted as an alias.
     for uri in [
         "/aos.registry.v1.RegistryService/ListRegistries",

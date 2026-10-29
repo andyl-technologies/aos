@@ -39,7 +39,7 @@ impl RpcService {
     }
 
     /// A registry's trust-key roster, read-through cached in KV when one is
-    /// attached (RFC-0004 ch.14 Phase C, `roster:{registry_id}`).
+    /// attached.
     ///
     /// Each entry is `(key_id, public_key, status)` as
     /// [`Database::list_roster`](aos_hub_db::db::Database::list_roster) returns. A

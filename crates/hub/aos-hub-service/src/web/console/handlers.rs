@@ -14,12 +14,12 @@
 //! The pre-auth rate-limited paths (`login_form`, `login_submit`,
 //! `login_password`, `passkey_login_begin`, and the device-approval
 //! `activate_form`/`activate_submit` surface) live here too: instead of the
-//! native `ConnectInfo` peer socket and a reverse-proxy trust flag, they read the
-//! connecting client's IP from the runtime-neutral [`CLIENT_IP_HEADER`] each
-//! shell stamps on ingress (RFC-0004 Phase 5, console-dedup stages D and E). The
-//! per-org OIDC flow (`login_sso`, `oidc_start`, `oidc_callback`) lives
-//! here too (stage F): its token exchange and JWKS fetch go through the
-//! [`HttpClient`](super::ports::HttpClient) port, so it needs no native client.
+//! native `ConnectInfo` peer socket and a reverse-proxy trust flag, they read
+//! the connecting client's IP from the runtime-neutral [`CLIENT_IP_HEADER`]
+//! each shell stamps on ingress. The per-org OIDC flow (`login_sso`,
+//! `oidc_start`, `oidc_callback`) lives here too: its token exchange and JWKS
+//! fetch go through the [`HttpClient`](super::ports::HttpClient) port, so it
+//! needs no native client.
 //!
 //! # CSRF
 //!
@@ -1034,9 +1034,8 @@ pub(crate) struct LoginForm {
 
 /// `POST /login` — route to SSO or issue a magic link.
 ///
-/// Email-first routing (RFC-0004 "domain capture"): when the typed email's
-/// domain is captured by an org with an OIDC IdP, the response depends on the
-/// org's `enforce_sso`:
+/// Email-first routing: when the typed email's domain is captured by an org
+/// with an OIDC IdP, the response depends on the org's `enforce_sso`:
 ///
 /// - **enforced** — redirect straight into the OIDC flow (`/auth/oidc/start`);
 ///   magic links are not offered.
@@ -1383,8 +1382,7 @@ fn safe_return_path(next: Option<&str>) -> Option<&str> {
 
 // -- OIDC single sign-on ----------------------------------------------------
 //
-// The per-org OIDC authorization-code + PKCE flow (RFC-0004 Phase 5,
-// console-dedup stage F). The flow logic itself lives in
+// The per-org OIDC authorization-code + PKCE flow. The flow logic itself lives in
 // [`crate::auth::oidc`]; these handlers are its request edge. Its two network
 // calls (the token exchange and the JWKS fetch) go through the
 // [`HttpClient`](super::ports::HttpClient) port carried on [`ConsoleDeps`], so

@@ -1,4 +1,4 @@
-//! Database dialect contract tests (RFC-0004 phase 4c "Database abstraction").
+//! Database dialect contract tests.
 //!
 //! The same exercise — build the full schema, then drive a representative
 //! cross-section of [`Database`](aos_hub_native::db::Database) methods — is

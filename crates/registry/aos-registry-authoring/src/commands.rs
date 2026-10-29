@@ -989,7 +989,7 @@ pub enum CacheCommand {
 
 /// Static web-surface subcommands.
 ///
-/// The web surface is RFC-0004's on-CDN, no-JS browse tier: a registry
+/// The web surface is the registry's on-CDN, no-JS browse tier: a registry
 /// serves content-bearing `index.html`, JSON snapshots under `web/`, and
 /// `browse/<name>.html` pages from its own bucket, with zero hub in the
 /// serving path. `apr web generate` is the producer-side analogue of

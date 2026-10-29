@@ -133,7 +133,7 @@ impl RpcService {
     ///
     /// Without it, sessions/tokens/config/routing reads go straight to the
     /// database; with it, those reads are served cache-aside off KV with a short
-    /// TTL and invalidated on write (RFC-0004 ch.14 Phase C).
+    /// TTL and invalidated on write.
     #[must_use]
     pub fn with_kv(mut self, kv: Arc<dyn crate::kv::KvStore>) -> Self {
         self.kv = Some(kv);

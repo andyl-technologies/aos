@@ -1,9 +1,9 @@
 //! Per-dialect SQL translation, re-exported from [`aos_hub_db::dialect`].
 //!
-//! The translation logic moved to the runtime-agnostic core crate (RFC-0004
-//! Phase 5) so the Cloudflare Worker's HubDb backend can share it; this re-export
-//! keeps the hub's `db::dialect::…` paths stable. The tests live here because
-//! several assert against the hub's [`MIGRATIONS`](crate::db::MIGRATIONS) and
+//! The translation logic moved to the runtime-agnostic core crate so the
+//! Cloudflare Worker's HubDb backend can share it; this re-export keeps the
+//! hub's `db::dialect::…` paths stable. The tests live here because several
+//! assert against the hub's [`MIGRATIONS`](crate::db::MIGRATIONS) and
 //! [`split_statements`](crate::db::backend::split_statements).
 
 pub use aos_hub_db::dialect::*;

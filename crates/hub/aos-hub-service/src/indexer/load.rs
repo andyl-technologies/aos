@@ -12,8 +12,7 @@
 //!
 //! This module is pure logic over the [`SurfaceFetch`]
 //! port and the dependency-light surface reader; it pulls in no async runtime,
-//! filesystem, or HTTP client and compiles to `wasm32-unknown-unknown` (RFC-0004
-//! Phase 5).
+//! filesystem, or HTTP client and compiles to `wasm32-unknown-unknown`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicUsize, Ordering};

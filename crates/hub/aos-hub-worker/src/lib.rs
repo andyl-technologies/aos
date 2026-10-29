@@ -1,13 +1,12 @@
-//! The Cloudflare Workers runtime for the AOS registry hub (RFC-0004).
+//! The Cloudflare Workers runtime for the AOS registry hub.
 //!
-//! RFC-0004 specifies a Cloudflare Workers deployment of the registry hub —
-//! `wasm32-unknown-unknown` via `workers-rs`, with a colocated-SQLite system of record, R2
-//! as zero-egress storage, KV for sessions, and Cron Triggers driving the
-//! indexer ("Architecture and runtime targets"). The native hub is a sync
-//! axum + tokio + rusqlite binary that cannot compile to wasm32, so this is a
-//! **separate Worker crate** implementing the RFC's Cloudflare deployment. It
-//! deliberately reuses the pure, shared crates rather than porting the native
-//! hub:
+//! This crate is the Cloudflare Workers deployment of the registry hub —
+//! `wasm32-unknown-unknown` via `workers-rs`, with a colocated-SQLite system of
+//! record, R2 as zero-egress storage, KV for sessions, and Cron Triggers
+//! driving the indexer. The native hub is a sync axum + tokio + rusqlite binary
+//! that cannot compile to wasm32, so this is a **separate Worker crate**
+//! implementing the Cloudflare deployment. It deliberately reuses the pure,
+//! shared crates rather than porting the native hub:
 //!
 //! - [`aos_registry_format`] — the wasm-clean reader (objects, tags, refs,
 //!   Ed25519 verification) the native hub indexer and `apm` already run, reused
@@ -68,7 +67,7 @@
 //! init step), and the root admin is bootstrapped over a seal-gated endpoint.
 //! Cron and queue handlers run outside the database object and likewise keep
 //! provider or network I/O outside its serialized request turn. See `README.md`
-//! and the RFC.
+//! and `docs/engineering/hub/runtime.md`.
 //!
 //! # Module map
 //!
@@ -81,8 +80,7 @@
 //! [`RegistryRecord`](aos_hub_db::db::RegistryRecord) from the database and runs the
 //! shared [`aos_hub_service::indexer`] (the partition target checks, the
 //! channel anti-rollback floor, and the snapshot write all live there now), so
-//! the Worker's Cron index is byte-identical to the native hub's (RFC-0004
-//! Phase 5).
+//! the Worker's Cron index is byte-identical to the native hub's.
 //!
 //! Worker glue (wasm32-only, gated behind `#[cfg(target_arch = "wasm32")]`):
 //!
@@ -106,7 +104,7 @@
 //! - `coordinatorobj` — the `CoordinatorObject` Durable Object and its
 //!   `WorkerCoordinator` client: the strongly-consistent
 //!   [`aos_hub_service::coordinator::Coordinator`] backing the rate limiter and the
-//!   publish lease without a relational write (RFC-0004 ch.14).
+//!   publish lease without a relational write.
 //! - `consoleports` — the Worker's console ports: the logging mailer, the
 //!   Fetch-API OIDC [`HttpClient`](aos_hub_service::web::console::ports::HttpClient),
 //!   and the Cron-deferring [`Reindexer`](aos_hub_service::reindex::Reindexer)
@@ -1168,11 +1166,11 @@ mod entry {
             domain_probe_readiness.with_route_observer(Arc::new(route_adapters));
         drop(domain_probe_readiness);
 
-        // RFC-0004 ch.14 (corrected): rate limiting uses the **edge-local** Rate
-        // Limiting bindings — `limit({key})` increments a machine-local counter
-        // with no network round-trip, so it adds nothing to the read path (the
-        // earlier Durable Object limiter added a ~100 ms cross-region hop per
-        // request). The publish lease keeps its DO backing (a write-path concern).
+        // Rate limiting uses the **edge-local** Rate Limiting bindings —
+        // `limit({key})` increments a machine-local counter with no network
+        // round-trip, so it adds nothing to the read path (the earlier Durable
+        // Object limiter added a ~100 ms cross-region hop per request). The
+        // publish lease keeps its DO backing (a write-path concern).
         let ratelimit: Arc<dyn RateLimiter> =
             Arc::new(crate::edgeratelimit::EdgeRateLimiter::from_env(env)?);
         // The DO coordinator now backs only the cross-isolate publish lease; its
@@ -1240,10 +1238,9 @@ mod entry {
         ))
         .with_route_reservation_keyring(route_reservation_keyring)
         .with_maintenance_jobs(Arc::new(crate::workerqueue::WorkerQueue::from_env(env)?))
-        // RFC-0004 ch.14 Phase C: read-through cache hot point-key state
-        // (sessions/tokens/config/routing) off the relational read path via Workers
-        // KV (the `SESSIONS` namespace). When the binding is absent the
-        // service falls back to the database (the pre-Phase-C path).
+        // Read-through cache hot point-key state (sessions/tokens/config/routing) off
+        // the relational read path via Workers KV (the `SESSIONS` namespace). When the
+        // binding is absent the service falls back to the database.
         .with_kv(Arc::new(crate::workerkv::WorkerKv::new(
             env.kv(crate::handlers::bindings::KV_SESSIONS)?,
         )));
@@ -1509,8 +1506,7 @@ mod entry {
         }
     }
 
-    /// The Queue-trigger consumer: drain deferred post-write jobs (RFC-0004
-    /// ch.14 Phase D).
+    /// The Queue-trigger consumer: drain deferred post-write jobs.
     ///
     /// Decodes each [`Job`](aos_hub_service::jobs::Job) in the batch and runs it.
     /// Supported jobs execute network/provider work in the queue isolate and
@@ -2982,10 +2978,10 @@ mod entry {
                     return self.e2e_rescan_image_cache().await;
                 }
             }
-            // Seal-gated control-plane (RFC-0004 ch.14 Phase E). Background
-            // queue isolates use `/_internal/sql` for short database operations;
-            // the cron/job endpoints remain compatible administrative entry
-            // points. Root bootstrap uses `/_admin/bootstrap-root`. All require
+            // Seal-gated control-plane. Background queue isolates use
+            // `/_internal/sql` for short database operations; the cron/job
+            // endpoints remain compatible administrative entry points. Root
+            // bootstrap uses `/_admin/bootstrap-root`. All require
             // `x-hub-seal`, so forwarded external callers cannot reach them.
             {
                 let path = req

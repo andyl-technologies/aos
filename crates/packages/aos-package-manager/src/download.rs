@@ -120,8 +120,7 @@ pub struct DownloadRequest {
     /// `<base>/<storeHash>.narinfo` and `<base>/<narinfo.url>`. No `/nar`
     /// suffix. This is the highest-priority cache; on a narinfo/NAR
     /// not-found (404) it falls through to [`Self::fallback_mirrors`]
-    /// (RFC-0004 "Cache stores, stacks, and consistency validation":
-    /// miss-fallthrough, the flattened `[caches]` `try` stack).
+    /// (miss-fallthrough, the flattened `[caches]` `try` stack).
     pub mirror_url: String,
     /// Lower-priority cache base URLs, in descending priority, consulted in
     /// order when the primary (and earlier fallbacks) return not-found.

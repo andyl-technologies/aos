@@ -9,9 +9,9 @@
 //!
 //! The HS256 signing and verification are implemented directly over `hmac` +
 //! `sha2` (no `jsonwebtoken`/`ring`), so this compiles to
-//! `wasm32-unknown-unknown` for the Cloudflare Worker (RFC-0004 Phase 5). These
-//! access tokens are short-lived and never persisted, so the only contract is
-//! mint↔verify self-consistency.
+//! `wasm32-unknown-unknown` for the Cloudflare Worker. These access tokens are
+//! short-lived and never persisted, so the only contract is mint↔verify
+//! self-consistency.
 //!
 //! # Claim shape
 //!

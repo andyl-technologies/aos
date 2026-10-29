@@ -2,16 +2,15 @@
 //!
 //! Where the build client talks to an `aos-build-server` (cache /
 //! build / GC / auth) over ConnectRPC, this talks to an **`aos-hub`** —
-//! the multi-tenant registry control plane (RFC-0004). It is the client the
+//! the multi-tenant registry control plane. It is the client the
 //! `aos hub …` CLI subcommands use so the CLI interacts with a hub purely
 //! through its public API, never by touching the hub's database directly.
 //!
-//! RFC-0004 Phase 5 unifies the native hub and the Cloudflare Worker on one
-//! transport: **Connect-JSON** — plain JSON over HTTP. Each method is one POST
-//! route, `POST {base}/aos.hub.v1.{Service}/{Method}`, with the
-//! JSON-encoded request message as the body and the JSON-encoded response
-//! message as a `200` body. Errors are the Connect error envelope with a
-//! matching non-2xx status:
+//! The native hub and the Cloudflare Worker share one transport:
+//! **Connect-JSON** — plain JSON over HTTP. Each method is one POST route,
+//! `POST {base}/aos.hub.v1.{Service}/{Method}`, with the JSON-encoded request
+//! message as the body and the JSON-encoded response message as a `200` body.
+//! Errors are the Connect error envelope with a matching non-2xx status:
 //!
 //! ```text
 //! POST /aos.hub.v1.TopologyService/GetSurfaceTopology

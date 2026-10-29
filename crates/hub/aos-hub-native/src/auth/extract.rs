@@ -222,9 +222,8 @@ pub async fn session_allows(
 }
 
 // The CSRF synchronizer-token primitives moved to the wasm-clean
-// `aos_hub_service::web::csrf` (RFC-0004 Phase 5, console-dedup stage A) so
-// the Worker shares them; re-exported here so every
-// `crate::auth::extract::{connect_or_csrf_ok, mint_csrf_token,
+// `aos_hub_service::web::csrf` so the Worker shares them; re-exported here so
+// every `crate::auth::extract::{connect_or_csrf_ok, mint_csrf_token,
 // verify_csrf_token}` call site is unchanged.
 pub use aos_hub_service::web::csrf::{connect_or_csrf_ok, mint_csrf_token, verify_csrf_token};
 

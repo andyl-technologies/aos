@@ -12,7 +12,7 @@
 //! sequence live, so the native hub and the Cloudflare Worker share one
 //! implementation. The functions touch only the [`Database`] (whose backend is
 //! itself runtime-selected) and `axum` *types*, so the module compiles to
-//! `wasm32-unknown-unknown` (RFC-0004 Phase 5).
+//! `wasm32-unknown-unknown`.
 
 use axum::http::{header, HeaderMap};
 

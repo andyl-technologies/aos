@@ -1,7 +1,7 @@
 //! A read-only Nix Archive (NAR) lister: parse a NAR's directory tree without
 //! materializing file contents.
 //!
-//! RFC-0004 "11-caches" NAR explorer. The cache facade already serves (and
+//! Binary-cache NAR explorer. The cache facade already serves (and
 //! streams) whole NARs; this lets the native hub render a NAR's *internal* file
 //! tree — names, kinds, and sizes — for the browse UI, by walking the archive
 //! and skipping over file contents rather than buffering them. It is native-only

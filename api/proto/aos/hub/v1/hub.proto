@@ -1,12 +1,11 @@
 syntax = "proto3";
 package aos.hub.v1;
 
-// Read-path services of the registry hub (RFC-0004). Phase 1 exposes the
-// verified index — registries, packages, channels, releases — to browsers,
-// CLIs, and third parties over one schema. Write-path services
-// (RegistryConfigurationService, PublishService, …) arrive with later phases;
-// PublishService
-// mints short-lived, registry-scoped upload credentials.
+// The registry hub API. The read-path services expose the verified index —
+// registries, packages, channels, releases — to browsers, CLIs, and third
+// parties over one schema; write-path services follow the plan/apply
+// mutation protocol, and PublishService mints short-lived, registry-scoped
+// upload credentials.
 //
 // All list RPCs paginate: pass the previous response's next_page_token to
 // continue; an empty token means the listing is complete.
@@ -32,7 +31,7 @@ service RegistryService {
   rpc DeleteRegistry(ApplyDeleteTopologyResourceRequest) returns (OperationResponse);
 }
 
-// Orgs, membership, and invitations (RFC-0004 "Tenancy and IAM").
+// Orgs, membership, and invitations.
 service OrganizationService {
   rpc ListOrganizations(ListOrganizationsRequest) returns (ListOrganizationsResponse);
   rpc GetOrganization(GetOrganizationRequest) returns (OrganizationResponse);
@@ -60,7 +59,7 @@ service SigningKeyService {
   rpc SetSigningKeyUsage(ApplyTopologyPlanRequest) returns (SigningKeyUsageResponse);
 }
 
-// Project-tree CRUD (RFC-0004 "Tenancy and IAM").
+// Project-tree CRUD.
 service ProjectService {
   rpc ListProjects(ListProjectsRequest) returns (ListProjectsResponse);
   rpc GetProject(GetProjectRequest) returns (ProjectResponse);
@@ -70,7 +69,7 @@ service ProjectService {
   rpc DeleteProject(ApplyProjectMutationRequest) returns (DeleteTopologyResourceResponse);
 }
 
-// Bindings (RFC-0004 "Storage: Binding and shared buckets").
+// Bindings.
 service BindingService {
   rpc ListBindings(ListBindingsRequest) returns (ListBindingsResponse);
   rpc GetBinding(GetBindingRequest) returns (GetBindingResponse);
@@ -288,15 +287,15 @@ service BinaryCacheUploadControllerService {
   rpc ReportCacheNarinfos(ReportCacheNarinfosRequest) returns (CacheNarinfoRegistrationResponse);
 }
 
-// Append-only audit log queries (RFC-0004 "Tenancy and IAM" / "Access
-// matrix"). Reads require audit.read (admin+) on the queried scope.
+// Append-only audit log queries. Reads require audit.read (admin+) on the
+// queried scope.
 service AuditService {
   // List recent audit entries at a scope, newest first. Requires a bearer
   // JWT with audit.read on the scope.
   rpc ListAudit(ListAuditRequest) returns (ListAuditResponse);
 }
 
-// Deployment-wide instance settings (RFC-0004 "Instance administration"):
+// Deployment-wide instance settings:
 // branding, footer/legal links, identity policy, and serving defaults. The
 // same key/value surface the `/-/instance` console edits and the `aos hub
 // instance` CLI drives. Reads require iam.admin at the instance root; updates
@@ -347,11 +346,10 @@ service InstanceService {
       returns (InstanceOciRouteResponse);
 }
 
-// SQL-backed configuration change-sets (RFC-0004 "Configuration
-// management"): the append-only revision log over orgs, projects, members,
-// roles, tokens, visibility, and bindings. Reads require audit.read on the
-// scope. Durable configuration changes use the retained change-request API;
-// this service is intentionally read-only.
+// SQL-backed configuration change-sets: the append-only revision log over orgs,
+// projects, members, roles, tokens, visibility, and bindings. Reads require
+// audit.read on the scope. Durable configuration changes use the retained
+// change-request API; this service is intentionally read-only.
 service RegistryConfigurationService {
   // List change-sets at a scope, newest first. Requires audit.read.
   rpc ListChangesets(ListChangesetsRequest) returns (ListChangesetsResponse);
@@ -571,10 +569,10 @@ service PublishService {
       returns (ReleaseReceipt);
 }
 
-// Git read API for the UI and remote `apr` (RFC-0012 "API: aos.hub.v1"
-// GitService; "Configuration management" git-backed change requests). Reads of
-// the committed history and config diffs require `read` (or `audit.read` for the
-// change-request list) on the registry's scope, following registry visibility.
+// Git read API for the UI and remote `apr`, including git-backed configuration
+// change requests. Reads of the committed history and config diffs require
+// `read` (or `audit.read` for the change-request list) on the registry's scope,
+// following registry visibility.
 service GitService {
   // The committed commit log of a registry's tracked branch, newest first.
   // Requires `read` on the registry scope.
@@ -588,7 +586,7 @@ service GitService {
       returns (ListChangeRequestsResponse);
 }
 
-// Outbound webhook subscriptions (RFC-0004 phase 4 "webhooks/notifications").
+// Outbound webhook subscriptions.
 // An org subscribes an HTTP endpoint to a set of registry event types; the hub
 // HMAC-signs and delivers each matching event. Every RPC is admin-only:
 // they require members.manage on the org scope (managing notification
@@ -2028,7 +2026,7 @@ message Release {
   int64 tagged_at = 5;
 }
 
-// -- Tenancy: orgs and projects (phase 2c) ---------------------------------
+// -- Tenancy: orgs and projects --------------------------------------------
 
 // An organization: the tenant boundary.
 message Organization {
@@ -2678,7 +2676,7 @@ message PlanRegistryMirrorMutationRequest {
   string idempotency_key = 5;
 }
 
-// -- Managed registry creation (phase 2c) ----------------------------------
+// -- Managed registry creation ---------------------------------------------
 
 message PlanCreateRegistryRequest {
   reserved 5, 6;
@@ -2870,7 +2868,7 @@ message PlanSetInstanceSettingsRequest {
   // Idempotency key for creating or replaying this immutable plan.
   string idempotency_key = 4;
 }
-// -- Audit log (phase 3a) --------------------------------------------------
+// -- Audit log -------------------------------------------------------------
 
 // One append-only audit-log entry: who did what, where, and the change-set
 // and cryptographic-history cross-references.
@@ -2906,7 +2904,7 @@ message ListAuditResponse {
   string next_page_token = 2;
 }
 
-// -- Configuration change-sets (phase 3a) ----------------------------------
+// -- Configuration change-sets ---------------------------------------------
 
 // One configuration change-set summary.
 message Changeset {
@@ -3246,7 +3244,7 @@ message AdvanceReleaseChannelRequest {
   int64 ring = 9;
 }
 
-// -- Webhooks (phase 4) ----------------------------------------------------
+// -- Webhooks --------------------------------------------------------------
 
 // One webhook subscription. Signing material is never accepted or returned by
 // this API; secret_version_ref identifies an immutable operator-managed secret
@@ -3402,7 +3400,7 @@ message ListChangeRequestsResponse {
   string next_page_token = 2;
 }
 
-// -- Binary caches, integrations, retention, and GC (RFC-0012) -------------
+// -- Binary caches, integrations, retention, and GC ------------------------
 
 service BinaryCacheService {
   rpc ListBinaryCaches(ListBinaryCachesRequest) returns (ListBinaryCachesResponse);
@@ -4282,7 +4280,7 @@ message RegisterCacheNarinfosRequest {
 // IAM management: service accounts, scoped role grants, and access tokens
 // tokens — the machine API behind the producer console's settings pages, so the
 // CLI and automation administer identities over the authenticated API instead
-// of direct database access (RFC-0004 ch.14 "manage everything via the API").
+// of direct database access.
 //
 // Every method takes a bearer JWT and authorizes against the same grants the
 // console enforces: `iam.admin` at the instance root, or `registry.configure`
@@ -4776,7 +4774,7 @@ message ListAccessTokensResponse {
   string next_page_token = 2;
 }
 
-// -- Normalized storage and delivery topology (RFC-0012) -------------------
+// -- Normalized storage and delivery topology ------------------------------
 
 message TopologyPlan {
   string plan_id = 1;

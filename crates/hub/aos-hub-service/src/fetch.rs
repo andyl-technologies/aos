@@ -6,10 +6,10 @@
 //! Worker. The shared service (the facade and the `GitService` methods) reads it
 //! through two ports so the read logic is written once:
 //!
-//! - [`SurfaceFetch`] — read one surface path (the RFC's "Blobs" port, read
-//!   side: the facade streams objects through it and the git log/diff walk
-//!   commits through it), and [`list_page`](SurfaceFetch::list_page) the
-//!   surface in bounded pages for storage migration and cache re-scan.
+//! - [`SurfaceFetch`] — read one surface path (the blob port's read side: the
+//!   facade streams objects through it and the git log/diff walk commits
+//!   through it), and [`list_page`](SurfaceFetch::list_page) the surface in
+//!   bounded pages for storage migration and cache re-scan.
 //! - [`SurfaceProvider`] — open a [`SurfaceFetch`] for an explicitly selected
 //!   physical placement. The native hub resolves its binding and prefix to a
 //!   filesystem or object-store reader; the Worker resolves the same record to

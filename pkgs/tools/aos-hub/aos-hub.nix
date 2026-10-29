@@ -1,4 +1,4 @@
-##! aos-hub — multi-tenant AOS registry management hub (RFC-0004)
+##! aos-hub — multi-tenant AOS registry management hub
 ##!
 ##! Builds the `aos-hub` and `aos-hub-egress` binaries from the shared `crates/` cargo
 ##! workspace, mirroring `pkgs/tools/aos/aos.nix`. The hub is a self-contained

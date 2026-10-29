@@ -45,30 +45,28 @@ mode = "off"
 binding = "REGISTRY_BUCKET"
 bucket_name = "aos-registry-surfaces"
 
-# KV for human sessions (RFC-0004 "KV holds sessions"). The read path does not
-# require it for public registries; it is bound here for the deferred
-# private-registry auth path. The binding name matches
-# `handlers::bindings::KV_SESSIONS` (SESSIONS).
+# KV for human sessions. The read path does not require it for public
+# registries; it is bound here for the deferred private-registry auth path. The
+# binding name matches `handlers::bindings::KV_SESSIONS` (SESSIONS).
 [[kv_namespaces]]
 binding = "SESSIONS"
 id = "00000000000000000000000000000000"  # replace with your KV namespace id
 
-# The Cron trigger that drives the indexer (RFC-0004 "Cron Triggers/Queues
-# drive the indexer"). Every 15 minutes re-walks every public registry's R2
-# surface into HubDb. Fires the `scheduled` event handler.
+# The Cron trigger that drives the indexer. Every 15 minutes re-walks every
+# public registry's R2 surface into HubDb. Fires the `scheduled` event handler.
 [triggers]
 crons = ["*/15 * * * *"]
 
-# The coordinator Durable Object (RFC-0004 ch.14 Phase B): the
-# strongly-consistent rate-limit counter, publish lease, and (future) channel
-# floors. The binding name must match `handlers::bindings::COORDINATOR`; the
-# class name is the `#[durable_object]` struct `CoordinatorObject`.
+# The coordinator Durable Object: the strongly-consistent rate-limit counter,
+# publish lease, and (future) channel floors. The binding name must match
+# `handlers::bindings::COORDINATOR`; the class name is the `#[durable_object]`
+# struct `CoordinatorObject`.
 [[durable_objects.bindings]]
 name = "COORDINATOR"
 class_name = "CoordinatorObject"
 
-# The colocated-SQLite **system of record** (RFC-0004 ch.14 Phase E). Internal
-# SQL calls and administrative requests always reach this SQLite-backed DO;
+# The colocated-SQLite **system of record**. Internal SQL calls and
+# administrative requests always reach this SQLite-backed DO;
 # `HUB_REQUEST_SHARDING` controls whether public service execution runs here or
 # in the resource-affine objects below.
 [[durable_objects.bindings]]
@@ -104,10 +102,9 @@ new_sqlite_classes = ["HubDb"]
 tag = "v2"
 new_classes = ["HubControlShard", "HubTenantShard", "HubRegistryShard", "HubCacheShard"]
 
-# Edge Rate Limiting bindings (RFC-0004 ch.14, corrected): edge-local counters,
-# no network hop. One binding per budget tier (period 60); the worker routes a
-# rate class to the binding matching its budget. Names match
-# `handlers::bindings::RL_*`.
+# Edge Rate Limiting bindings: edge-local counters, no network hop. One binding
+# per budget tier (period 60); the worker routes a rate class to the binding
+# matching its budget. Names match `handlers::bindings::RL_*`.
 [[ratelimits]]
 name = "RL_BURST5"
 namespace_id = "1001"
@@ -129,9 +126,9 @@ namespace_id = "1003"
 limit = 120
 period = 60
 
-# The deferred-jobs queue (RFC-0004 ch.14 Phase D): the Worker is both a producer
-# (the write path enqueues post-write propagation) and the consumer (it drains
-# the batch in the `queue` event handler). The binding name must match
+# The deferred-jobs queue: the Worker is both a producer (the write path
+# enqueues post-write propagation) and the consumer (it drains the batch in the
+# `queue` event handler). The binding name must match
 # `handlers::bindings::QUEUE`.
 [[queues.producers]]
 binding = "JOBS"
@@ -146,6 +143,6 @@ max_concurrency = 4
 max_retries = 5
 dead_letter_queue = "aos-hub-jobs-dlq"
 
-# KV for human sessions (RFC-0004) — now also the Phase C read-through cache for
-# hot point-key state (sessions/tokens/config/routing). The binding name matches
+# KV for human sessions — also the read-through cache for hot point-key state
+# (sessions/tokens/config/routing). The binding name matches
 # `handlers::bindings::KV_SESSIONS`. (Declared above under `[[kv_namespaces]]`.)

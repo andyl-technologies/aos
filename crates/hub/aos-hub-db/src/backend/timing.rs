@@ -1,6 +1,6 @@
 //! Per-statement query timing, for diagnosing the per-request DB latency floor.
 //!
-//! RFC-0004 chapter 14 traced the deployed Worker's ~150–300 ms per-request
+//! Profiling traced the deployed Worker's ~150–300 ms per-request
 //! floor to the cost of *opening/using* the Worker database session — the
 //! first statement of a request pays ~120 ms, each later one ~10 ms — even
 //! though the engine reports <1 ms query execution. The provider's query-latency

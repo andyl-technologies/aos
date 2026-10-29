@@ -24,7 +24,7 @@
 //!
 //! # The `[caches]` cache stack
 //!
-//! The committed `[caches]` value is the unified RFC-0004 cache stack — the
+//! The committed `[caches]` value is the unified cache stack — the
 //! single source of truth for the binary caches a registry advertises. The
 //! form edits it as a simple ordered list of cache URLs (priority is the list
 //! order). On write the list is serialized back as a `[caches]` stack:

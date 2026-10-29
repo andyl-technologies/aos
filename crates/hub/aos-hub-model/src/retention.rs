@@ -1,6 +1,6 @@
 //! Deterministic cache-retention selector evaluation.
 //!
-//! RFC-0012 deliberately does not delegate retention expressions to a host
+//! The Hub deliberately does not delegate retention expressions to a host
 //! package manager or a library-specific shorthand grammar. This module owns
 //! the portable comparator-only SemVer language and the stable recent-release
 //! ordering used to materialize provenance-bearing cache roots on native Hub
@@ -170,7 +170,7 @@ pub struct RetentionSemverRequirement {
 }
 
 impl RetentionSemverRequirement {
-    /// Parses and canonicalizes the RFC-0012 SemVer selector grammar.
+    /// Parses and canonicalizes the retention SemVer selector grammar.
     ///
     /// # Errors
     ///
@@ -238,8 +238,8 @@ impl RetentionSemverRequirement {
 
     /// Reports whether a candidate satisfies the requirement.
     ///
-    /// Prerelease filtering occurs before comparator evaluation, exactly as
-    /// RFC-0012 specifies; SemVer precedence ignores build metadata.
+    /// Prerelease filtering occurs before comparator evaluation; SemVer
+    /// precedence ignores build metadata.
     #[must_use]
     pub fn matches(&self, candidate: &CanonicalSemver, include_prereleases: bool) -> bool {
         if !include_prereleases && candidate.is_prerelease() {
@@ -386,7 +386,7 @@ pub enum RecentReleaseError {
     InvalidCount,
 }
 
-/// Selects recent verified releases using RFC-0012's stable ordering tuple.
+/// Selects recent verified releases using the stable ordering tuple.
 ///
 /// Invalid/non-SemVer tags and incomplete or unverified releases are excluded.
 ///

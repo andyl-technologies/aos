@@ -6,7 +6,7 @@
 //! ([`validate_http_surface_path`]), and the filesystem-join traversal guard
 //! ([`safe_join`]). They contain no DNS resolution, no filesystem access, and
 //! no environment reads, so they compile to `wasm32-unknown-unknown` and run
-//! identically on the Cloudflare Worker (RFC-0004 Phase 5).
+//! identically on the Cloudflare Worker.
 //!
 //! The native hub layers the IO-bound parts on top in its `fetch` module: a
 //! write-time DNS pre-check and a connect-time validating resolver around

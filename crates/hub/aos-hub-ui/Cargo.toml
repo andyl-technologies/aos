@@ -10,7 +10,7 @@ description = "Shared Hub navigation, routes, and presentation values"
 test_source_inputs = [
     "crates/hub/aos-hub-console/src",
     "crates/hub/aos-hub-service/src/web/static_assets/style.css",
-    "docs/rfcs/0012-hub-surface-topology",
+    "crates/hub/aos-hub-api/contracts",
 ]
 
 [lints]

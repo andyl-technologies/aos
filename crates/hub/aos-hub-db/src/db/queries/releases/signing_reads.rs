@@ -7,8 +7,7 @@ impl Database {
     /// draft-signing key.
     ///
     /// Web edits to git-backed config are committed as change requests to
-    /// `refs/hub/changes/<change_id>`, signed by this key (RFC-0004
-    /// "Configuration management", git-backed path). The key is deliberately
+    /// `refs/hub/changes/<change_id>`, signed by this key. The key is deliberately
     /// **not** in any registry's roster — a draft never verifies for consumers
     /// until a maintainer re-signs it with a roster key (`apr change merge`) —
     /// so it carries no consumption trust; it exists only to produce a

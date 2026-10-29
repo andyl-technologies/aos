@@ -577,8 +577,7 @@ pub(in crate::registry_ops) fn git_branch_entries(dir: &Path) -> Result<Vec<serd
         .collect())
 }
 
-/// Dispatch the `apr change` subcommands (RFC-0004 "Configuration management",
-/// git-backed change requests).
+/// Dispatch the `apr change` subcommands for git-backed change requests.
 ///
 /// A hub commits web edits to committed config as change requests under
 /// `refs/hub/changes/<id>`, signed by a non-roster draft-signing key. These

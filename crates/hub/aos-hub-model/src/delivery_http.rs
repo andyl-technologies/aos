@@ -1,4 +1,4 @@
-//! Portable HTTP semantics for RFC-0012 routes.
+//! Portable HTTP semantics for Hub delivery routes.
 //!
 //! This module is the protocol kernel shared by the native Hub and the Worker.
 //! It deliberately contains no framework, clock, storage, or platform types:

@@ -135,9 +135,9 @@ fn validate_git_ref_shorthand(name: &str, kind: &str, allow_slash: bool) -> Resu
 }
 
 // Package-name validation and bucketing moved to the wasm-clean
-// `aos-registry-format` crate (RFC-0004 Phase 5) so the registry hub's indexer
-// and serving runtimes share the exact validation rules.
-// The consumer records reuse the manifest validators for consistent parsing.
+// `aos-registry-format` crate so the registry hub's indexer and serving
+// runtimes share the exact validation rules. The consumer records reuse the
+// manifest validators for consistent parsing.
 pub use crate::manifest::{package_name_bucket, validate_package_name};
 
 /// Validate a platform/system name before using it as a package TOML key.

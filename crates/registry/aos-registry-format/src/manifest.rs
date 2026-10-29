@@ -4,9 +4,9 @@
 //! `packages/<letter>/<name>.toml` documents: the `[package]` header, its
 //! `[[versions]]`, and each version's per-platform artifacts and pre-compiled
 //! images. They carry no I/O and no dependency on the package manager itself,
-//! so they live in this wasm-clean surface crate (RFC-0004 Phase 5) and are
-//! shared by `aos-registry-client` (which provides the directory
-//! parsers), the registry hub's `Database`/indexer, and the Cloudflare Worker.
+//! so they live in this wasm-clean surface crate and are shared by
+//! `aos-registry-client` (which provides the directory parsers), the registry
+//! hub's `Database`/indexer, and the Cloudflare Worker.
 //!
 //! ```toml
 //! [package]
@@ -1142,10 +1142,10 @@ tools = {store_path = "/aos/store/server-tools"}
 // Package metadata
 // ---------------------------------------------------------------------------
 //
-// These pure serde structs and their inherent helpers live in this crate so
-// the wasm-clean indexer and the Cloudflare Worker can deserialize the
-// package metadata that the producer publishes. Native readers and producers
-// import these shared types directly.
+// These pure serde structs and their inherent helpers moved here from the
+// former package monolith so the wasm-clean indexer and the Cloudflare Worker
+// can deserialize the package metadata that the producer publishes. Native
+// readers and producers import these shared types directly.
 
 /// A pre-compiled image format entry within a sysroot package version.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1216,7 +1216,7 @@ use crate::stack::{self, StackNode};
 /// The committed `registry.toml` root configuration.
 ///
 /// Lives at the repository root; carries the registry's display metadata and
-/// the unified `[caches]` cache stack (RFC-0004) — the single source of truth
+/// the unified `[caches]` cache stack — the single source of truth
 /// for which binary caches the registry advertises to consumers. A pure,
 /// deserialize-only schema with no I/O, so the wasm-clean indexer and the
 /// Cloudflare Worker share it with `aos-registry-client`'s native git path (which

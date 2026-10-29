@@ -1,11 +1,10 @@
 //! Parser-divergence guard: real-git-produced surfaces must verify.
 //!
-//! RFC-0004's testing story, tier 1: the hub's pure-Rust reader and the
-//! git toolchain `apr`/`apm` actually use must agree on the wire format.
-//! This test builds a registry surface with the *real* `git` binary —
-//! SHA-256 object format, SSH-signed commit and tags via `ssh-keygen` —
-//! exports it exactly the way `apr origin upload` lays files out, and
-//! requires the hub to verify and index it fail-closed.
+//! The hub's pure-Rust reader and the git toolchain `apr`/`apm` actually use
+//! must agree on the wire format. This test builds a registry surface with the
+//! *real* `git` binary — SHA-256 object format, SSH-signed commit and tags via
+//! `ssh-keygen` — exports it exactly the way `apr origin upload` lays files
+//! out, and requires the hub to verify and index it fail-closed.
 //!
 //! The test skips (with a notice) on hosts whose git lacks SHA-256
 //! support or where `ssh-keygen` is unavailable — e.g. inside hermetic

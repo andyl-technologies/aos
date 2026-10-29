@@ -1,5 +1,5 @@
 ##! miniflare + wrangler — Cloudflare's local Workers test tooling, vendored
-##! hermetically for the RFC-0004 registry-worker tests.
+##! hermetically for the AOS Hub Worker tests.
 ##!
 ##! This package vendors the full npm dependency closure of `wrangler` (4.x) and
 ##! `miniflare` (3.x) — including the native `better-sqlite3` addon that miniflare

@@ -1,4 +1,4 @@
-//! Registry mirroring (RFC-0004 "Mirroring other registries").
+//! Registry mirroring.
 //!
 //! A mirror cannot alter content without breaking verification: releases are
 //! signed tag objects, partitions are signed name-bound tags, objects are
@@ -501,10 +501,10 @@ async fn collect_tree_objects_capped(
 /// Collect a release's full-pack files when its `objects/info/packs` listing
 /// is present (best effort).
 ///
-/// Per `docs/registry/http-layout.md`, release `X.Y.Z[-pre][+build]` lives
-/// under `releases/<X>/<Y>/<Z[…]>/` and lists its packs in
-/// `objects/info/packs`. Each listed `pack-<hash>.idx` line names a pack whose
-/// `.pack` and `.idx` both live under `objects/pack/`.
+/// Per `docs/engineering/registry/http-layout.md`, release
+/// `X.Y.Z[-pre][+build]` lives under `releases/<X>/<Y>/<Z[…]>/` and lists its
+/// packs in `objects/info/packs`. Each listed `pack-<hash>.idx` line names a
+/// pack whose `.pack` and `.idx` both live under `objects/pack/`.
 async fn collect_release_packs(
     fetch: &dyn SurfaceFetch,
     semver_str: &str,
