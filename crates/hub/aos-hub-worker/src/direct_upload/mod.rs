@@ -59,6 +59,8 @@ mod qualification_protocol;
 pub(crate) mod storage;
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod verification;
+#[cfg(any(test, target_arch = "wasm32"))]
+mod verification_capacity;
 
 #[cfg(target_arch = "wasm32")]
 pub(crate) use broker::fetch;

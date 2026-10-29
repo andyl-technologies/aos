@@ -37,6 +37,9 @@ mod publication_export;
 #[path = "delete_cohort_tests.rs"]
 mod delete_cohort_export;
 
+#[path = "queue_runtime_tests.rs"]
+mod queue_runtime;
+
 const AUTHORITY: &str = "00000000-0000-4000-8000-000000000041";
 const EXECUTOR: &str = "qualification-executor";
 const NAMESPACE: &str = "qualification-guard-namespace";
@@ -109,6 +112,10 @@ async fn fixture_with_database(db: Database) -> Fixture {
 }
 
 async fn fixture_with_database_and_purposes(db: Database, purposes: &[&str]) -> Fixture {
+    fixture_with_material(db, purposes, MATERIAL).await
+}
+
+async fn fixture_with_material(db: Database, purposes: &[&str], material: &[u8]) -> Fixture {
     let directory = private_directory();
     let db = Arc::new(db);
     let user = db
@@ -192,7 +199,7 @@ async fn fixture_with_database_and_purposes(db: Database, purposes: &[&str]) -> 
                 purpose,
                 &format!("secret://bootstrap/{purpose}/v1"),
                 0,
-                &hex::encode(Sha256::digest(MATERIAL)),
+                &hex::encode(Sha256::digest(material)),
                 "operator",
             )
             .await

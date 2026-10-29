@@ -9,6 +9,9 @@
 //! direct_upload_observation {"version":1,"kind":"queue_start",...}
 //! ```
 
+/// Tracks admitted queue attempts and retains earlier delivery refusals.
+pub(crate) mod queue;
+
 use anyhow::{ensure, Result};
 use aos_hub_db::direct_upload::*;
 use serde::{Deserialize, Serialize};

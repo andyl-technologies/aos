@@ -5,7 +5,7 @@
 //! before acknowledgement. Queue redelivery may retry an exact immutable read;
 //! it cannot redispatch a mutation or renew the logical owner.
 
-use std::{cell::Cell, rc::Rc};
+use std::cell::Cell;
 
 use anyhow::{ensure, Result};
 use aos_hub_db::direct_upload::*;
@@ -24,14 +24,13 @@ use super::{
     storage::{self, Operation, Reply},
 };
 
+use super::observation::queue::QueueObservation;
+use super::verification_capacity::Capacity;
+
+pub(crate) use super::verification_capacity::{object_observation, ObjectObservation};
+
 pub(crate) const BULK_QUEUE: &str = "HUB_DIRECT_VERIFY_BULK";
 pub(crate) const METADATA_QUEUE: &str = "HUB_DIRECT_VERIFY_METADATA";
-
-thread_local! {
-    static BULK_ACTIVE: Rc<Cell<u32>> = Rc::new(Cell::new(0));
-    static METADATA_ACTIVE: Rc<Cell<u32>> = Rc::new(Cell::new(0));
-    static OBJECT_ACTIVE: Rc<Cell<u32>> = Rc::new(Cell::new(0));
-}
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -339,7 +338,7 @@ pub(crate) async fn close_checked_with_signal<F: Fn() -> Result<()>>(
                     env,
                     &work,
                     signal.clone(),
-                    capacity.as_ref(),
+                    capacity,
                 )
                 .await?,
             })
@@ -458,7 +457,9 @@ pub(crate) async fn run_fixture(
             && job.admission.intent.byte_size.get() <= authority.maximum_object_bytes(),
         "qualification immutable read exceeds candidate ceiling"
     );
-    let _capacity = Capacity::acquire(job.admission.intent.dependency_phase, maximum_objects)?;
+    let _capacity =
+        Capacity::acquire_waiting(job.admission.intent.dependency_phase, maximum_objects).await?;
+    authority.protected_material(env, placement).await?;
     let observed = object_observation();
     let operation_id = step_id(
         &job.admission,
@@ -489,22 +490,6 @@ pub(crate) async fn run_fixture(
     Ok((proof, observed, replayed.get()))
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct ObjectObservation {
-    pub(crate) aggregate_active: u32,
-    pub(crate) bulk_active: u32,
-    pub(crate) metadata_active: u32,
-}
-
-pub(crate) fn object_observation() -> ObjectObservation {
-    ObjectObservation {
-        aggregate_active: OBJECT_ACTIVE.with(|n| n.get()),
-        bulk_active: BULK_ACTIVE.with(|n| n.get()),
-        metadata_active: METADATA_ACTIVE.with(|n| n.get()),
-    }
-}
-
 pub(crate) async fn run(env: &Env, job: &VerificationJob) -> Result<VerifiedPlacement> {
     let qualified = QualifiedConfig::load(env).await?;
     run_qualified(env, job, &qualified, None)
@@ -516,7 +501,7 @@ async fn run_qualified(
     env: &Env,
     job: &VerificationJob,
     qualified: &QualifiedConfig,
-    observed: Option<&observation::Event>,
+    observed: Option<&QueueObservation>,
 ) -> Result<(VerifiedPlacement, bool)> {
     let deployment = env.var("HUB_DEPLOYMENT_ID")?.to_string();
     ensure!(
@@ -530,17 +515,16 @@ async fn run_qualified(
         job.admission.intent.byte_size.get() <= qualified.runtime.maximum_object_bytes.get(),
         "direct source exceeds accepted capacity"
     );
-    let _capacity = Capacity::acquire(
+    let _capacity = Capacity::acquire_waiting(
         job.admission.intent.dependency_phase,
         qualified.runtime.maximum_parallel_objects.get() as u32,
-    )?;
+    )
+    .await?;
+    // Waiting can cross the finite acceptance boundary. Recheck it before
+    // beginning verification; later provider dispatches retain their own checks.
+    qualified.protected(env, placement).await?;
     if let Some(observed) = observed {
-        let mut event = observed.clone();
-        let active = object_observation();
-        event.aggregate_active = active.aggregate_active;
-        event.bulk_active = active.bulk_active;
-        event.metadata_active = active.metadata_active;
-        observation::emit(&event);
+        observed.start();
     }
     let operation_id = step_id(
         &job.admission,
@@ -686,7 +670,7 @@ async fn verify_with_attempt(
                     &work,
                     source_dispatch,
                     fault_observation.as_ref(),
-                    &_capacity,
+                    _capacity,
                 )
                 .await;
                 #[cfg(not(feature = "do-e2e"))]
@@ -694,7 +678,7 @@ async fn verify_with_attempt(
                     env,
                     &work,
                     source_dispatch,
-                    &_capacity,
+                    _capacity,
                 )
                 .await;
                 #[cfg(feature = "do-e2e")]
@@ -798,45 +782,6 @@ pub(crate) async fn retained(
         .transpose()
 }
 
-struct Capacity {
-    active: Rc<Cell<u32>>,
-    aggregate: Rc<Cell<u32>>,
-}
-
-impl Capacity {
-    fn acquire(phase: DirectDependencyPhase, maximum: u32) -> Result<Self> {
-        let active = if phase == DirectDependencyPhase::Content {
-            BULK_ACTIVE.with(Rc::clone)
-        } else {
-            METADATA_ACTIVE.with(Rc::clone)
-        };
-        ensure!(
-            maximum >= 2,
-            "direct verification requires reserved metadata capacity"
-        );
-        let ceiling = if phase == DirectDependencyPhase::Content {
-            maximum - 1
-        } else {
-            maximum
-        };
-        let aggregate = OBJECT_ACTIVE.with(Rc::clone);
-        ensure!(
-            active.get() < ceiling && aggregate.get() < maximum,
-            "direct verification queue at accepted capacity"
-        );
-        active.set(active.get() + 1);
-        aggregate.set(aggregate.get() + 1);
-        Ok(Self { active, aggregate })
-    }
-}
-
-impl Drop for Capacity {
-    fn drop(&mut self) {
-        self.active.set(self.active.get().saturating_sub(1));
-        self.aggregate.set(self.aggregate.get().saturating_sub(1));
-    }
-}
-
 pub(crate) async fn consume(
     batch: &worker::MessageBatch<aos_hub_service::jobs::JobEnvelope>,
     env: &Env,
@@ -923,25 +868,16 @@ pub(crate) async fn consume(
                 &uuid::Uuid::new_v4().to_string(),
             );
             observed.delivery_digest = Some(observation::digest(&message.id()));
+            let observed = QueueObservation::new(observed);
             let result = run_qualified(env, &job, qualified, Some(&observed)).await;
-            observed.kind = observation::Kind::QueueFinish;
-            let active = object_observation();
-            observed.aggregate_active = active.aggregate_active;
-            observed.bulk_active = active.bulk_active;
-            observed.metadata_active = active.metadata_active;
-            observed.outcome = if result.is_ok() {
-                observation::Outcome::Positive
-            } else {
-                observation::Outcome::Refused
-            };
-            observed.replayed = result.as_ref().ok().map(|(_, replayed)| *replayed);
-            observation::emit(&observed);
+            let observed = observed.finish(
+                result.is_ok(),
+                result.as_ref().ok().map(|(_, replayed)| *replayed),
+            );
             if result.is_ok() {
                 message.ack();
-                observed.kind = observation::Kind::QueueAck;
             } else {
                 message.retry();
-                observed.kind = observation::Kind::QueueRetry;
             }
             observation::emit(&observed);
             Ok(())

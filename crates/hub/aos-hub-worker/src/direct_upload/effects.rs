@@ -187,7 +187,7 @@ pub(super) async fn begin_with_signal(
                                     env,
                                     &work,
                                     signal.clone(),
-                                    capacity.as_ref(),
+                                    capacity,
                                 ),
                             )
                             .await?,

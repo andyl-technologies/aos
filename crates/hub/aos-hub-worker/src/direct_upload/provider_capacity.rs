@@ -39,7 +39,7 @@ struct Waiter {
     id: u64,
     class: Class,
     count: u32,
-    waker: Waker,
+    waker: Rc<RefCell<Option<Waker>>>,
 }
 
 struct Pool {
@@ -49,6 +49,9 @@ struct Pool {
     by_class: [Cell<u32>; 3],
     waiters: RefCell<Vec<Waiter>>,
     next_waiter: Cell<u64>,
+    last_class: Cell<Option<usize>>,
+    // The outer None invalidates the cache; an inner None means no waiter fits.
+    selected: Cell<Option<Option<(u64, Class)>>>,
     peak: Cell<u32>,
     metadata_under_bulk: Cell<u64>,
     dispatches: Cell<u64>,
@@ -64,6 +67,8 @@ impl Pool {
             by_class: std::array::from_fn(|_| Cell::new(0)),
             waiters: RefCell::new(Vec::new()),
             next_waiter: Cell::new(0),
+            last_class: Cell::new(None),
+            selected: Cell::new(None),
             peak: Cell::new(0),
             metadata_under_bulk: Cell::new(0),
             dispatches: Cell::new(0),
@@ -86,6 +91,38 @@ impl Pool {
         aggregate.min(class)
     }
 
+    fn selected_waiter(&self, id: u64, class: Class, count: u32) -> Option<u64> {
+        let priority = |id, class: Class| {
+            let class_turn = self
+                .last_class
+                .get()
+                .map_or(0, |last| (class.index() + 3 - last - 1) % 3);
+            (class_turn, id)
+        };
+        // Every waiting invocation polls in its own runtime context. Occupancy,
+        // class turn and membership change much less often than those polls;
+        // retain their selection until one of those inputs changes.
+        let selected = match self.selected.get() {
+            Some(selected) => selected,
+            None => {
+                let selected = self
+                    .waiters
+                    .borrow()
+                    .iter()
+                    .filter(|waiter| self.available(waiter.class) >= waiter.count)
+                    .min_by_key(|waiter| priority(waiter.id, waiter.class))
+                    .map(|waiter| (waiter.id, waiter.class));
+                self.selected.set(Some(selected));
+                selected
+            }
+        };
+        selected
+            .into_iter()
+            .chain((self.available(class) >= count).then_some((id, class)))
+            .min_by_key(|(id, class)| priority(*id, *class))
+            .map(|(id, _)| id)
+    }
+
     fn wake(&self) {
         // Another Durable Object may release this isolate-wide pool. A Wasm
         // waker would resume its waiter in that object's I/O context. Each
@@ -100,7 +137,7 @@ impl Pool {
                 .waiters
                 .borrow()
                 .iter()
-                .map(|waiter| waiter.waker.clone())
+                .filter_map(|waiter| waiter.waker.borrow().clone())
                 .collect::<Vec<_>>();
             for waker in wakers {
                 waker.wake();
@@ -255,18 +292,19 @@ pub(crate) async fn acquire_class_checked<F: Fn() -> Result<()>>(
         pool: Rc::clone(&pool),
         id,
     };
+    let waker = Rc::new(RefCell::new(None::<Waker>));
+    let registered = Cell::new(false);
     let pending = futures_util::future::poll_fn(|context| {
         if let Err(error) = check() {
             return Poll::Ready(Err(error));
         }
-        // An older request that fits goes first. Skip requests that cannot fit
-        // so a queued bulk pair cannot block metadata's reserved single slot.
-        let older_eligible = pool
-            .waiters
-            .borrow()
-            .iter()
-            .any(|waiter| waiter.id < id && pool.available(waiter.class) >= waiter.count);
-        if pool.available(class) >= count && !older_eligible {
+        // Rotate between eligible classes, then preserve FIFO within each one.
+        // A large foreground fanout must not multiply each metadata delivery's
+        // wait by the number of upload tasks. Skip requests that cannot fit so
+        // a bulk pair cannot block the reserved single slot.
+        if pool.selected_waiter(id, class, count) == Some(id) {
+            pool.last_class.set(Some(class.index()));
+            pool.selected.set(None);
             pool.active.set(pool.active.get() + count);
             pool.peak.set(pool.peak.get().max(pool.active.get()));
             for peak in pool
@@ -290,10 +328,15 @@ pub(crate) async fn acquire_class_checked<F: Fn() -> Result<()>>(
             }));
         }
 
-        let mut waiters = pool.waiters.borrow_mut();
-        if let Some(waiter) = waiters.iter_mut().find(|waiter| waiter.id == id) {
-            waiter.waker = context.waker().clone();
-        } else {
+        if !waker
+            .borrow()
+            .as_ref()
+            .is_some_and(|waker| waker.will_wake(context.waker()))
+        {
+            *waker.borrow_mut() = Some(context.waker().clone());
+        }
+        if !registered.get() {
+            let mut waiters = pool.waiters.borrow_mut();
             if waiters.len() >= 256 {
                 return Poll::Ready(Err(anyhow::anyhow!(
                     "direct provider capacity wait bound reached"
@@ -303,8 +346,10 @@ pub(crate) async fn acquire_class_checked<F: Fn() -> Result<()>>(
                 id,
                 class,
                 count,
-                waker: context.waker().clone(),
+                waker: Rc::clone(&waker),
             });
+            registered.set(true);
+            pool.selected.set(None);
         }
         Poll::Pending
     });
@@ -358,6 +403,7 @@ impl Drop for Registration {
             .waiters
             .borrow_mut()
             .retain(|waiter| waiter.id != self.id);
+        self.pool.selected.set(None);
         self.pool.wake();
     }
 }
@@ -369,6 +415,7 @@ impl Drop for Permit {
             .set(self.pool.active.get().saturating_sub(self.count));
         let active = &self.pool.by_class[self.class.index()];
         active.set(active.get().saturating_sub(self.count));
+        self.pool.selected.set(None);
         self.pool.wake();
     }
 }
@@ -490,6 +537,36 @@ mod tests {
 
         drop(creation);
         drop(metadata);
+        configure(2).unwrap();
+    }
+
+    #[tokio::test]
+    async fn metadata_progress_is_bounded_under_a_foreground_fanout() {
+        configure(3).unwrap();
+        let occupied = acquire_class(3, Class::Foreground).await.unwrap();
+        let mut foreground = (0..64)
+            .map(|_| Box::pin(acquire_class(1, Class::Foreground)))
+            .collect::<Vec<_>>();
+        let mut metadata = Box::pin(acquire_class(1, Class::Metadata));
+        let waker = futures_util::task::noop_waker();
+        let mut context = Context::from_waker(&waker);
+
+        for request in &mut foreground {
+            assert!(request.as_mut().poll(&mut context).is_pending());
+        }
+        assert!(metadata.as_mut().poll(&mut context).is_pending());
+        drop(occupied);
+
+        // A queue consumer must receive a turn without waiting for all 64
+        // independently admitted foreground uploads to cross the provider.
+        let metadata = match metadata.as_mut().poll(&mut context) {
+            Poll::Ready(Ok(permit)) => permit,
+            _ => panic!("foreground fanout delayed the metadata class"),
+        };
+        assert_eq!(observation().active, 1);
+
+        drop(metadata);
+        drop(foreground);
         configure(2).unwrap();
     }
 

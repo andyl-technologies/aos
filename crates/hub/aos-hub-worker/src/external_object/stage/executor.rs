@@ -112,8 +112,9 @@ pub(crate) async fn execute_stage_with_signal(
 
 /// Executes a stage under capacity reserved before its lease preparation.
 ///
-/// The caller retains the reservation through this awaited execution. The
-/// provider boundary checks its pool identity and repeats current authority.
+/// The executor owns the reservation through the complete provider response,
+/// then releases it before acknowledging the physical journal. The provider
+/// boundary checks its pool identity and repeats current authority.
 ///
 /// # Errors
 /// Returns the unchanged executor errors or refuses incompatible capacity.
@@ -121,7 +122,7 @@ pub(crate) async fn execute_stage_with_capacity(
     env: &Env,
     work: &ExternalStageRequest,
     signal: Option<worker::web_sys::AbortSignal>,
-    held: Option<&crate::direct_upload::provider_capacity::Permit>,
+    held: Option<crate::direct_upload::provider_capacity::Permit>,
 ) -> Result<ExternalStageResult> {
     execute_stage_observed_inner(
         env,
@@ -154,7 +155,7 @@ pub(crate) async fn execute_stage_observed(
     env: &Env,
     work: &ExternalStageRequest,
     before_dispatch: &dyn Fn(),
-    held: &crate::direct_upload::provider_capacity::Permit,
+    held: crate::direct_upload::provider_capacity::Permit,
 ) -> Result<ExternalStageResult> {
     execute_stage_observed_inner(
         env,
@@ -178,7 +179,7 @@ pub(crate) async fn execute_stage_observed_with_fault(
     work: &ExternalStageRequest,
     before_dispatch: &dyn Fn(),
     observation: Option<&super::observation::Attempt>,
-    held: &crate::direct_upload::provider_capacity::Permit,
+    held: crate::direct_upload::provider_capacity::Permit,
 ) -> Result<ExternalStageResult> {
     execute_stage_observed_inner(env, work, before_dispatch, None, Some(held), observation).await
 }
@@ -188,7 +189,7 @@ async fn execute_stage_observed_inner(
     work: &ExternalStageRequest,
     before_dispatch: &dyn Fn(),
     signal: Option<worker::web_sys::AbortSignal>,
-    held: Option<&crate::direct_upload::provider_capacity::Permit>,
+    held: Option<crate::direct_upload::provider_capacity::Permit>,
     #[cfg(feature = "do-e2e")] observation: Option<&super::observation::Attempt>,
 ) -> Result<ExternalStageResult> {
     executor_key(env)?;
@@ -392,13 +393,18 @@ async fn execute_stage_observed_inner(
             direct_permission_expires_at,
             before_dispatch,
             signal,
-            held,
+            held.as_ref(),
             #[cfg(feature = "do-e2e")]
             observation,
         ),
     )
     .await
     .map_err(|error| diagnostics::at(Phase::Provider, error))?;
+
+    // Provider bytes and response owners have settled. Journal acknowledgement
+    // must not occupy a request slot needed by another original.
+    drop(held);
+
     let receipt = Receipt {
         turn,
         outcome,
