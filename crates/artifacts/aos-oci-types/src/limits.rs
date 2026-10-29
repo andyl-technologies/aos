@@ -1,4 +1,4 @@
-//! Frozen structural admission limits from RFC-0019.
+//! Frozen structural admission limits of the AOS OCI contract.
 //!
 //! Deployments may choose smaller operational blob or quota limits. They must
 //! not raise these structural constants without a compatibility review because
