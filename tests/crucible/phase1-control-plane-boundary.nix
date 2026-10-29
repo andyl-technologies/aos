@@ -198,7 +198,6 @@ in
             PASS
             check=checks.crucible.phase1.controlPlaneBoundary
             gate=gate:control-responsive
-            tasks=T-CRATE-9
             rust_test=crucible_test_support::control_plane_boundary
             RESULT
           '';

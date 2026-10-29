@@ -2,8 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.sessionSimulationBackend",
-  taskIds ? ["T-SESS-11"],
-  openTaskIds ? [],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -33,9 +31,6 @@
   ];
   sessionPage = builtins.readFile ../../docs/engineering/crucible/session.md;
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
-  openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -280,10 +275,6 @@
         needle = ''attrPath = "checks.crucible.phase5.sessionSimulationBackend"'';
       }
       {
-        label = "phase5 simulation backend completed task id";
-        needle = ''taskIds = ["T-SESS-11"]'';
-      }
-      {
         label = "phase5 simulation backend depends on lock-free observation";
         needle = "dependencies = [phase5.sessionLockFreeObservation]";
       }
@@ -400,8 +391,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
-            open_tasks=${openTaskList}
             status=partial
             component=crucible-session
             backend_trait=SimulationBackend

@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase6.coverageGuidedCorpus",
-  taskIds ? ["T-ADV-13"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -16,8 +15,6 @@
   };
   corpusTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/gate_coverage_guided_corpus.rs;
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -141,10 +138,6 @@
         needle = "coverageGuidedCorpus = greenBeforeAdvance";
       }
       {
-        label = "explicit task id";
-        needle = "taskIds = [\"T-ADV-13\"]";
-      }
-      {
         label = "fuzzing raw dependency";
         needle = "phase6.coverageGuidedFuzzing.rawGate";
       }
@@ -236,7 +229,6 @@ in
             cat > "$out/result" <<RESULT
             PASS
             check=${attrPath}
-            tasks=${taskList}
             gate=gate:coverage-guided-corpus
             corpus=dag-store-reproduction-artifacts
             admission=first-seen-coverage

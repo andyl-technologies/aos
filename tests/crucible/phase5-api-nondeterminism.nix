@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.apiNondeterminism",
-  taskIds ? ["T-API-14"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -30,7 +29,6 @@
   defaultChecks = builtins.readFile ./default.nix;
 
   apiSources = client + lifecycle + sessionMapping + streaming;
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
@@ -240,7 +238,6 @@ in
 
     CRUCIBLE_T_API_14_FAILURES = failureText;
     ATTR_PATH = attrPath;
-    TASK_IDS = taskList;
     DEPENDENCY_COUNT = toString (builtins.length dependencies);
     DEPENDENCY_PATHS = builtins.concatStringsSep ":" dependencies;
 
@@ -315,9 +312,8 @@ in
     ];
 
     meta = {
-      description = "Crucible phase 5 API nondeterminism gate for ${taskList}";
       passthru = {
-        inherit attrPath taskIds dependencies;
+        inherit attrPath dependencies;
         failureText = failureText;
       };
     };

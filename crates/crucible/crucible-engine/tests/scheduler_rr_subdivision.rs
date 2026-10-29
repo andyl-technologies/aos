@@ -1,4 +1,4 @@
-//! Checks T-SCHED-28 scheduler RR subdivision inside RUN.
+//! Checks scheduler RR subdivision inside RUN.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.

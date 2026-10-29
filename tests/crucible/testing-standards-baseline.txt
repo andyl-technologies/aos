@@ -1,5 +1,5 @@
-# Existing flaky-wording findings exposed by the workspace-scoped T-PKG-8
-# package test path.
+# Existing flaky-wording findings exposed by the workspace-scoped package
+# test path.
 #
 # Format:
 # package<TAB>test target<TAB>pattern<TAB>count

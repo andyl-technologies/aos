@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.gateCatalog",
-  taskIds ? ["T-HARN-1"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -167,7 +166,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
             canonical_gates=${toString (builtins.length catalogGates)}
             phase_gate_targets=${toString (builtins.length phaseGateTargets)}
             rust_test=crucible_test_support::gate_catalog

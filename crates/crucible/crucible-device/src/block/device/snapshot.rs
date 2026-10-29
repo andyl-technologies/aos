@@ -75,15 +75,14 @@ impl Serialize for SnapshotDirtyPagesRef<'_> {
     }
 }
 
-/// The device half of a block sub-node's `MaterializedState` ([IO-11], [IO-23]).
+/// The device half of a block sub-node's `MaterializedState`.
 ///
 /// Holds the overlay delta (dirty pages only), a full-overlay page set for
 /// self-contained restore, the dirty page set (so a mid-epoch restore preserves
-/// the next checkpoint's delta, [IO-7]), the latency model (part of the `World`,
-/// [IO-10]), the in-flight responses
-/// (inside `core`), the base hash, and the device length. It **never** holds the
-/// base image bytes ([TEMP-9]); restore re-supplies the content-addressed base
-/// and verifies its hash.
+/// the next checkpoint's delta), the latency model (part of the `World`), the
+/// in-flight responses (inside `core`), the base hash, and the device length.
+/// It **never** holds the base image bytes; restore re-supplies the
+/// content-addressed base and verifies its hash.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockSnapshot {
     /// The uniform-core snapshot: clock, rings, in-flight responses.

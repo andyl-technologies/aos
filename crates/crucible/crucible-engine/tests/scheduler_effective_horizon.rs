@@ -1,4 +1,4 @@
-//! Checks the T-SCHED-13 effective-horizon PICK/RUN projection.
+//! Checks the effective-horizon PICK/RUN projection.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.

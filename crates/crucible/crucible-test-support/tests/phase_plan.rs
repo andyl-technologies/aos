@@ -15,12 +15,12 @@ use std::fs;
 use std::path::PathBuf;
 
 use crucible_test_support::phase_plan::{
-    ADVANCED_FEATURE_TASK_ORDER, AdvancedFeatureRung, AdvancedFeatureScheduleFailureKind,
-    LAYER_GATE_PRECEDENCES, PhaseGateKind, PhaseGateOccurrence, PhasePlanInvariantFailureKind,
-    PhasePlanPhase, SIM_DOUBLE_AVAILABLE_PHASE, advanced_feature_ladder_failures,
-    advanced_feature_schedule_failures, advanced_feature_task_order, green_before_advance_failures,
-    layer_gate_precedence_failures, phase_gate_order, phase_plan_invariant_failures,
-    terminal_acceptance_gate,
+    ADVANCED_FEATURE_LADDER, AdvancedFeatureRung, AdvancedFeatureScheduleFailureKind,
+    AdvancedFeatureStep, LAYER_GATE_PRECEDENCES, PhaseGateKind, PhaseGateOccurrence,
+    PhasePlanInvariantFailureKind, PhasePlanPhase, SIM_DOUBLE_AVAILABLE_PHASE,
+    advanced_feature_ladder, advanced_feature_ladder_failures, advanced_feature_schedule_failures,
+    green_before_advance_failures, layer_gate_precedence_failures, phase_gate_order,
+    phase_plan_invariant_failures, terminal_acceptance_gate,
 };
 
 /// The engineering page that documents the phase-gate plan.
@@ -214,7 +214,7 @@ fn layer_gate_precedences_keep_lower_layer_checks_first() {
             failure.lower_attr_path == "checks.crucible.phase2.gates.layer1Injection"
                 && failure.higher_attr_path == "checks.crucible.phase2.gates.singleVmFingerprint"
         }),
-        "synthetic HARN-3 drift was not rejected: {failures:#?}"
+        "synthetic layer-precedence drift was not rejected: {failures:#?}"
     );
 }
 
@@ -225,8 +225,7 @@ fn advanced_feature_ladder_keeps_fuzzing_above_search_and_coverage() -> Result<(
     let default_checks = fs::read_to_string(root.join("tests/crucible/default.nix"))?;
 
     assert!(
-        advanced_feature_ladder_failures(phase_gate_order(), advanced_feature_task_order())
-            .is_empty()
+        advanced_feature_ladder_failures(phase_gate_order(), advanced_feature_ladder()).is_empty()
     );
     assert!(default_checks.contains("checks.crucible.phase6.gates.replayOracle"));
 
@@ -242,9 +241,9 @@ fn advanced_feature_ladder_keeps_fuzzing_above_search_and_coverage() -> Result<(
     );
 
     let mut code_entry_counts = BTreeMap::new();
-    for task in advanced_feature_task_order() {
+    for step in advanced_feature_ladder() {
         *code_entry_counts
-            .entry(task.rung.label())
+            .entry(step.rung.label())
             .or_insert(0_usize) += 1;
     }
     assert_eq!(
@@ -252,51 +251,47 @@ fn advanced_feature_ladder_keeps_fuzzing_above_search_and_coverage() -> Result<(
         code_entry_counts
     );
     let schedule_failures =
-        advanced_feature_schedule_failures(&default_checks, advanced_feature_task_order());
+        advanced_feature_schedule_failures(&default_checks, advanced_feature_ladder());
     assert!(
         schedule_failures.is_empty(),
         "advanced-feature schedule failures: {schedule_failures:#?}"
     );
 
-    let ladder_task_ids = advanced_feature_task_order()
+    // Every step names a distinct Phase 6 check.
+    let attr_paths = advanced_feature_ladder()
         .iter()
-        .map(|task| task.task_id.to_string())
-        .collect::<Vec<_>>();
+        .map(|step| step.attr_path)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(attr_paths.len(), ADVANCED_FEATURE_LADDER.len());
+    assert_eq!(attr_paths.len(), 21);
+    assert!(
+        attr_paths
+            .iter()
+            .all(|attr_path| attr_path.starts_with("checks.crucible.phase6.")),
+        "every advanced-feature step must be a Phase 6 check: {attr_paths:#?}"
+    );
 
-    let task_ids = ladder_task_ids.iter().collect::<BTreeSet<_>>();
-    assert_eq!(task_ids.len(), ADVANCED_FEATURE_TASK_ORDER.len());
-    assert_eq!(task_ids.len(), 21);
-    for index in 1..=21 {
-        let task_id = format!("T-ADV-{index}");
+    let fuzzing = ladder_step(COVERAGE_GUIDED_FUZZING)?;
+    assert_eq!(fuzzing.rung, AdvancedFeatureRung::Fuzzing);
+    for prerequisite in [
+        COVERAGE_FEEDBACK,
+        "checks.crucible.phase6.guidanceDeterminismLint",
+        "checks.crucible.phase6.appRandomBranching",
+    ] {
         assert!(
-            task_ids.contains(&task_id),
-            "{task_id} is missing from the advanced-feature ladder"
+            fuzzing.prerequisite_attr_paths.contains(&prerequisite),
+            "fuzzing must depend on {prerequisite}"
         );
     }
 
-    let fuzzing = advanced_feature_task_order()
-        .iter()
-        .find(|task| task.task_id == "T-ADV-12")
-        .ok_or("T-ADV-12 is missing")?;
-    assert_eq!(fuzzing.rung, AdvancedFeatureRung::Fuzzing);
-    assert!(fuzzing.required_task_ids.contains(&"T-ADV-11"));
-    assert!(fuzzing.required_task_ids.contains(&"T-ADV-19"));
-    assert!(fuzzing.required_task_ids.contains(&"T-ADV-21"));
-
-    let ladder = advanced_feature_task_order()
-        .iter()
-        .find(|task| task.task_id == "T-ADV-1")
-        .ok_or("T-ADV-1 is missing")?;
+    let ladder = ladder_step(ADVANCED_DEPENDENCY_LADDER)?;
     assert!(
         ladder
             .required_green_attr_paths
             .contains(&"checks.crucible.phase5.gates.controlResponsive")
     );
 
-    let coverage = advanced_feature_task_order()
-        .iter()
-        .find(|task| task.task_id == "T-ADV-11")
-        .ok_or("T-ADV-11 is missing")?;
+    let coverage = ladder_step(COVERAGE_FEEDBACK)?;
     assert_eq!(coverage.rung, AdvancedFeatureRung::CoverageFeedback);
     assert_eq!(coverage.rung.label(), "coverage-feedback");
 
@@ -307,36 +302,58 @@ fn advanced_feature_ladder_keeps_fuzzing_above_search_and_coverage() -> Result<(
 fn advanced_feature_schedule_rejects_unwrapped_default_check() {
     let default_checks = r#"
       phase6 = {
-        fuzzingSmoke = import ./phase6-fuzzing-smoke.nix {
-          attrPath = "checks.crucible.phase6.fuzzingSmoke";
-          taskIds = ["T-ADV-12"];
+        coverageGuidedFuzzing = import ./phase6-coverage-guided-fuzzing.nix {
+          attrPath = "checks.crucible.phase6.coverageGuidedFuzzing";
         };
       };
     "#;
 
-    let failures =
-        advanced_feature_schedule_failures(default_checks, advanced_feature_task_order());
+    let failures = advanced_feature_schedule_failures(default_checks, advanced_feature_ladder());
     assert!(
         failures.iter().any(|failure| {
-            failure.task_id == "T-ADV-12"
+            failure.attr_path == COVERAGE_GUIDED_FUZZING
                 && failure.kind == AdvancedFeatureScheduleFailureKind::MissingAdvanceGuard
         }),
-        "synthetic unwrapped ADV check was not rejected: {failures:#?}"
+        "synthetic unwrapped advanced check was not rejected: {failures:#?}"
     );
     assert!(
         failures.iter().any(|failure| {
-            failure.task_id == "T-ADV-12"
-                && failure.kind == AdvancedFeatureScheduleFailureKind::MissingAttrPath
-        }),
-        "unwrapped ADV metadata must not borrow a nearby attrPath: {failures:#?}"
-    );
-    assert!(
-        failures.iter().any(|failure| {
-            failure.task_id == "T-ADV-12"
-                && failure.kind == AdvancedFeatureScheduleFailureKind::MissingTaskSchedule
-                && failure.prerequisite_task_id.as_deref() == Some("T-ADV-11")
+            failure.attr_path == COVERAGE_GUIDED_FUZZING
+                && failure.kind == AdvancedFeatureScheduleFailureKind::MissingPrerequisiteDependency
+                && failure.dependency.as_deref() == Some("phase6.coverageFeedback")
         }),
         "synthetic fuzz check without coverage prerequisite was not rejected: {failures:#?}"
+    );
+    assert!(
+        failures.iter().any(|failure| {
+            failure.attr_path == COVERAGE_FEEDBACK
+                && failure.kind == AdvancedFeatureScheduleFailureKind::MissingCheck
+        }),
+        "an advanced step without a declared check was not rejected: {failures:#?}"
+    );
+}
+
+#[test]
+fn advanced_feature_schedule_rejects_check_borrowing_a_nearby_guard() {
+    let default_checks = r#"
+      phase6 = {
+        coverageFeedback = greenBeforeAdvance {
+          attrPath = "checks.crucible.phase6.coverageFeedback";
+          gate = import ./phase6-coverage-guided-fuzzing.nix {
+            attrPath = "checks.crucible.phase6.coverageGuidedFuzzing";
+          };
+          dependencies = [phase6.coverageFeedback];
+        };
+      };
+    "#;
+
+    let failures = advanced_feature_schedule_failures(default_checks, advanced_feature_ladder());
+    assert!(
+        failures.iter().any(|failure| {
+            failure.attr_path == COVERAGE_GUIDED_FUZZING
+                && failure.kind == AdvancedFeatureScheduleFailureKind::MissingAdvanceGuard
+        }),
+        "an advanced check nested in another check's guard was accepted: {failures:#?}"
     );
 }
 
@@ -348,7 +365,6 @@ fn advanced_feature_schedule_accepts_red_advance_guard() {
           attrPath = "checks.crucible.phase6.advancedDependencyLadder";
           gate = import ./phase6-advanced-dependency-ladder.nix {
             attrPath = "checks.crucible.phase6.advancedDependencyLadder";
-            taskIds = [];
           };
           dependencies = [
             phase2.gates.singleVmFingerprint
@@ -357,19 +373,17 @@ fn advanced_feature_schedule_accepts_red_advance_guard() {
           ];
           phase = "phase6";
           reason = "live evidence is pending";
-          taskIds = ["T-ADV-1"];
         };
       };
     "#;
 
-    let failures =
-        advanced_feature_schedule_failures(default_checks, advanced_feature_task_order());
+    let failures = advanced_feature_schedule_failures(default_checks, advanced_feature_ladder());
     assert!(
         !failures.iter().any(|failure| {
-            failure.task_id == "T-ADV-1"
+            failure.attr_path == ADVANCED_DEPENDENCY_LADDER
                 && failure.kind == AdvancedFeatureScheduleFailureKind::MissingAdvanceGuard
         }),
-        "red guard did not safely block ADV work: {failures:#?}"
+        "red guard did not safely block advanced work: {failures:#?}"
     );
 }
 
@@ -381,22 +395,20 @@ fn advanced_feature_schedule_rejects_missing_green_gate_dependency() {
           attrPath = "checks.crucible.phase6.advancedDependencyLadder";
           gate = import ./phase6-advanced-dependency-ladder.nix {
             attrPath = "checks.crucible.phase6.advancedDependencyLadder";
-            taskIds = ["T-ADV-1"];
           };
           dependencies = [phase2.gates.singleVmFingerprint phase4.gates.e2eDeterminism];
         };
       };
     "#;
 
-    let failures =
-        advanced_feature_schedule_failures(default_checks, advanced_feature_task_order());
+    let failures = advanced_feature_schedule_failures(default_checks, advanced_feature_ladder());
     assert!(
         failures.iter().any(|failure| {
-            failure.task_id == "T-ADV-1"
+            failure.attr_path == ADVANCED_DEPENDENCY_LADDER
                 && failure.kind == AdvancedFeatureScheduleFailureKind::MissingGateDependency
                 && failure.dependency.as_deref() == Some("phase5.gates.controlResponsive")
         }),
-        "synthetic ADV check without a green control dependency was not rejected: {failures:#?}"
+        "synthetic advanced check without a green control dependency was not rejected: {failures:#?}"
     );
 }
 
@@ -408,7 +420,6 @@ fn advanced_feature_schedule_rejects_inner_only_gate_dependency() {
           attrPath = "checks.crucible.phase6.advancedDependencyLadder";
           gate = import ./phase6-advanced-dependency-ladder.nix {
             attrPath = "checks.crucible.phase6.advancedDependencyLadder";
-            taskIds = ["T-ADV-1"];
             dependencies = [phase4.gates.e2eDeterminism.rawGate];
           };
           dependencies = [
@@ -419,70 +430,49 @@ fn advanced_feature_schedule_rejects_inner_only_gate_dependency() {
       };
     "#;
 
-    let failures =
-        advanced_feature_schedule_failures(default_checks, advanced_feature_task_order());
+    let failures = advanced_feature_schedule_failures(default_checks, advanced_feature_ladder());
     assert!(
         failures.iter().any(|failure| {
-            failure.task_id == "T-ADV-1"
+            failure.attr_path == ADVANCED_DEPENDENCY_LADDER
                 && failure.kind == AdvancedFeatureScheduleFailureKind::MissingGateDependency
                 && failure.dependency.as_deref() == Some("phase4.gates.e2eDeterminism")
         }),
-        "synthetic ADV check with only inner raw e2e dependency was not rejected: {failures:#?}"
-    );
-}
-
-#[test]
-fn advanced_feature_schedule_rejects_phase6_import_without_explicit_task_ids() {
-    let default_checks = r#"
-      phase6 = {
-        fuzzingSmoke = greenBeforeAdvance {
-          attrPath = "checks.crucible.phase6.fuzzingSmoke";
-          gate = import ./phase6-fuzzing-smoke.nix {
-            attrPath = "checks.crucible.phase6.fuzzingSmoke";
-          };
-          dependencies = [phase5.gates.controlResponsive];
-        };
-      };
-    "#;
-
-    let failures =
-        advanced_feature_schedule_failures(default_checks, advanced_feature_task_order());
-    assert!(
-        failures.iter().any(|failure| {
-            failure.task_id == "T-ADV-*"
-                && failure.kind == AdvancedFeatureScheduleFailureKind::MissingExplicitTaskIds
-                && failure.attr_path.as_deref() == Some("checks.crucible.phase6.fuzzingSmoke")
-        }),
-        "synthetic phase6 import without explicit taskIds was not rejected: {failures:#?}"
+        "synthetic advanced check with only inner raw e2e dependency was not rejected: {failures:#?}"
     );
 }
 
 #[test]
 fn advanced_feature_ladder_rejects_fuzzing_before_coverage() {
-    let mut drifted = advanced_feature_task_order().to_vec();
-    let fuzz_index = match drifted.iter().position(|task| task.task_id == "T-ADV-12") {
+    let mut drifted = advanced_feature_ladder().to_vec();
+    let fuzz_index = match drifted
+        .iter()
+        .position(|step| step.attr_path == COVERAGE_GUIDED_FUZZING)
+    {
         Some(index) => index,
-        None => panic!("fuzz task should be present"),
+        None => panic!("fuzz step should be present"),
     };
-    let coverage_index = match drifted.iter().position(|task| task.task_id == "T-ADV-11") {
+    let coverage_index = match drifted
+        .iter()
+        .position(|step| step.attr_path == COVERAGE_FEEDBACK)
+    {
         Some(index) => index,
-        None => panic!("coverage task should be present"),
+        None => panic!("coverage step should be present"),
     };
     drifted.swap(fuzz_index, coverage_index);
 
     let failures = advanced_feature_ladder_failures(phase_gate_order(), &drifted);
     assert!(
         failures.iter().any(|failure| {
-            failure.task_id == "T-ADV-12"
+            failure.attr_path == COVERAGE_GUIDED_FUZZING
                 && failure.rung == AdvancedFeatureRung::Fuzzing
-                && failure.prerequisite_task_id == Some("T-ADV-11")
+                && failure.prerequisite_attr_path == Some(COVERAGE_FEEDBACK)
         }),
         "synthetic fuzz-before-coverage drift was not rejected: {failures:#?}"
     );
 }
 
 #[test]
-fn advanced_feature_ladder_rejects_tasks_before_foundation_gates() {
+fn advanced_feature_ladder_rejects_steps_before_foundation_gates() {
     let mut drifted_plan = phase_gate_order().to_vec();
     let phase4_e2e = match drifted_plan
         .iter_mut()
@@ -493,11 +483,11 @@ fn advanced_feature_ladder_rejects_tasks_before_foundation_gates() {
     };
     phase4_e2e.phase = PhasePlanPhase::Phase6;
 
-    let failures = advanced_feature_ladder_failures(&drifted_plan, advanced_feature_task_order());
+    let failures = advanced_feature_ladder_failures(&drifted_plan, advanced_feature_ladder());
     assert!(
         failures.iter().any(|failure| {
-            failure.task_id == "T-ADV-1"
-                && failure.attr_path == Some("checks.crucible.phase4.gates.e2eDeterminism")
+            failure.attr_path == ADVANCED_DEPENDENCY_LADDER
+                && failure.gate_attr_path == Some("checks.crucible.phase4.gates.e2eDeterminism")
         }),
         "synthetic late determinism gate was not rejected: {failures:#?}"
     );
@@ -548,6 +538,15 @@ fn phase_plan_invariants_reject_synthetic_drift() -> Result<(), Box<dyn Error>> 
     Ok(())
 }
 
+/// The ladder's own scheduling check, the lowest advanced-feature step.
+const ADVANCED_DEPENDENCY_LADDER: &str = "checks.crucible.phase6.advancedDependencyLadder";
+
+/// The coverage-feedback step that fuzzing must follow.
+const COVERAGE_FEEDBACK: &str = "checks.crucible.phase6.coverageFeedback";
+
+/// The first fuzzing step.
+const COVERAGE_GUIDED_FUZZING: &str = "checks.crucible.phase6.coverageGuidedFuzzing";
+
 /// Every advanced-feature rung, lowest first.
 const ADVANCED_FEATURE_RUNGS: [AdvancedFeatureRung; 6] = [
     AdvancedFeatureRung::ExactDeterminism,
@@ -580,6 +579,14 @@ fn documented_phase_gate_order(content: &str) -> Result<Vec<(&str, &str, &str)>,
     }
 
     Ok(order)
+}
+
+/// Returns the ladder step whose check has `attr_path`.
+fn ladder_step(attr_path: &str) -> Result<&'static AdvancedFeatureStep, String> {
+    advanced_feature_ladder()
+        .iter()
+        .find(|step| step.attr_path == attr_path)
+        .ok_or_else(|| format!("{attr_path} is missing from the advanced-feature ladder"))
 }
 
 /// Parses the rung-to-entry-count table under the "Advanced-feature ladder"

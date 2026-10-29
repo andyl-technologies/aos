@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.layer1Injection",
-  taskIds ? ["T-DET-14"],
   dependencies ? [],
   campaignComposition ? null,
   testing ? import ../../lib/testing {inherit pkgs lib;},
@@ -27,10 +26,7 @@
   gateTargets = builtins.readFile ../../crates/crucible/crucible-test-support/src/gate_targets.rs;
   gateCatalog = builtins.readFile ../../crates/crucible/crucible-test-support/src/lib.rs;
   gateCatalogTest = builtins.readFile ../../crates/crucible/crucible-test-support/tests/gate_catalog.rs;
-  gateTargetMapping = builtins.readFile ./phase1-gate-target-mapping.nix;
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
@@ -171,8 +167,6 @@
         needle = "find_gate(\"gate:layer1-injection\").map(|spec| spec.status),\n        Some(GateStatus::Implemented)";
       }
     ]
-    ++ failuresFor "tests/crucible/phase1-gate-target-mapping.nix" gateTargetMapping [
-    ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
         label = "phase1 exposes layer1 injection check";
@@ -185,10 +179,6 @@
       {
         label = "phase3 gate reuses layer1 injection check";
         needle = "attrPath = \"checks.crucible.phase3.gates.layer1Injection\"";
-      }
-      {
-        label = "phase3 gate lists T-DET-14";
-        needle = "\"T-DET-14\"";
       }
     ];
   dependencyResultName =
@@ -242,7 +232,6 @@
     PASS
     check=${attrPath}
     gate=gate:layer1-injection
-    tasks=${taskList}
     owner=crucible-device
     run_model=two-vm-run-twice-and-diff
     interleavings=producer_skewed,consumer_skewed

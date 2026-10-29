@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.eventLogControlPlaneStreaming",
-  taskIds ? ["T-OBS-11"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -26,7 +25,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-  taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "docs/engineering/crucible/event-log.md" eventLogDoc [
       {
@@ -237,10 +235,6 @@
         label = "phase4 event-log control-plane streaming attr path";
         needle = "checks.crucible.phase4.eventLogControlPlaneStreaming";
       }
-      {
-        label = "phase4 event-log control-plane streaming task id";
-        needle = "taskIds = [\"T-OBS-11\"]";
-      }
     ];
 in
   if failures != []
@@ -323,7 +317,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             cursor_stream=single-log
             classes=causal,observational
             command_correlation=EventSource::Command

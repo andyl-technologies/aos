@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.executionDecisionTaxonomy",
-  taskIds ? ["T-EXEC-2"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -216,7 +215,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
             decisions=DeliveryOrder,RngDraw,Override,Preemption,Selection
             fault_outcomes=ResolvedEffectTrace
             schedule_api=prefix,appended

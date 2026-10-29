@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase9.gates.campaignFindingPortability",
-  taskIds ? ["T-CAM-9.4"],
   packagedReplay,
   dependencies ? [],
 }: let
@@ -114,7 +113,6 @@ in
           PASS
           check=${attrPath}
           gate=gate:campaign-replay
-          tasks=${builtins.concatStringsSep "," taskIds}
           portable_model_replay=true
           no_campaign_daemon=true
           no_shared_store=true

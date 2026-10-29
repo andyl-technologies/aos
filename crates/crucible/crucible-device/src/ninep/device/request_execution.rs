@@ -5,10 +5,10 @@ use super::*;
 /// The detached COMPUTE view a [`NinepDevice`] hands to [`IoCore::process_inbox`].
 ///
 /// Borrows only the device fields the COMPUTE step touches (the server and the
-/// latency model), sidestepping the `&mut self`-to-both-args borrow conflict. It
-/// is the concrete [`IoSubNode`]: every request frame is dispatched through the
-/// [`NinepServer`], which answers malformed/mutating/unknown messages with an
-/// `Rlerror` frame, never a panic ([IO-17], [IO-18]).
+/// latency model), sidestepping the `&mut self`-to-both-args borrow conflict.
+/// It is the concrete [`IoSubNode`]: every request frame is dispatched through
+/// the [`NinepServer`], which answers malformed/mutating/unknown messages with
+/// an `Rlerror` frame, never a panic.
 pub(super) struct NinepServerNode<'a> {
     pub(super) server: &'a mut NinepServer,
     pub(super) latency: &'a NinepLatency,

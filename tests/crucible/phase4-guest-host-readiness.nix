@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.guestHostReadiness",
-  taskIds ? ["T-GHC-3"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -15,7 +14,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-  taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
@@ -178,10 +176,6 @@
         label = "phase4 readiness attr path";
         needle = "checks.crucible.phase4.guestHostReadiness";
       }
-      {
-        label = "phase4 readiness task id";
-        needle = "taskIds = [\"T-GHC-3\"]";
-      }
     ]
     ++ forbiddenFor "crates/crucible/crucible-engine/tests/guest_host_readiness.rs" readinessTest [
       {
@@ -264,7 +258,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             readiness_heuristics=fixed-icount,first-network-idle,console-marker
             resolved_point=virtual-time-plus-icount
             nondeterministic_readiness=rejected

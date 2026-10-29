@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.cliTriageWorkflow",
-  taskIds ? ["T-CLI-17"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -58,7 +57,7 @@
       }
       {
         label = "thin-driver contract guard";
-        needle = "fn proves_t_tri_7";
+        needle = "fn satisfies_triage_surface";
       }
       {
         label = "triage help test";
@@ -66,7 +65,7 @@
       }
       {
         label = "triage pipeline test";
-        needle = "cli_triage_surface_parses_full_t_tri_7_flags_and_pipeline";
+        needle = "cli_triage_surface_parses_full_flags_and_pipeline";
       }
       {
         label = "triage directory blocker test";
@@ -114,7 +113,6 @@ in
       ];
 
       ATTR_PATH = attrPath;
-      TASK_IDS = builtins.concatStringsSep "," taskIds;
       DEPENDENCY_COUNT = toString (builtins.length dependencies);
       DEPENDENCY_PATHS = builtins.concatStringsSep ":" dependencies;
 
@@ -171,7 +169,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=$ATTR_PATH
-            tasks=$TASK_IDS
             component=crucible-cli
             contract=triage-workflow-complete
             dependencies=$DEPENDENCY_COUNT

@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase6.unifyingView",
-  taskIds ? ["T-ADV-16"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -16,8 +15,6 @@
   };
   unifyingTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/gate_unifying_view.rs;
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -233,10 +230,6 @@
         needle = "unifyingView = greenBeforeAdvance";
       }
       {
-        label = "explicit task id";
-        needle = "taskIds = [\"T-ADV-16\"]";
-      }
-      {
         label = "minimization raw dependency";
         needle = "phase6.minimization.rawGate";
       }
@@ -344,7 +337,6 @@ in
             cat > "$out/result" <<RESULT
             PASS
             check=${attrPath}
-            tasks=${taskList}
             gate=gate:unifying-view
             graph=single-temporal-graph
             instantiate=single-execution-model-entrypoint

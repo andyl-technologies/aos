@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.eventLogDivergenceBisect",
-  taskIds ? ["T-OBS-8"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -17,7 +16,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-  taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "docs/engineering/crucible/event-log.md" eventLogDoc [
       {
@@ -168,10 +166,6 @@
         label = "phase4 event log divergence bisect attr path";
         needle = "checks.crucible.phase4.eventLogDivergenceBisect";
       }
-      {
-        label = "phase4 event log divergence bisect task id";
-        needle = "taskIds = [\"T-OBS-8\"]";
-      }
     ]
     ++ forbiddenFor "crates/crucible/crucible-engine/tests/event_log_determinism.rs" determinismTest [
       {
@@ -270,7 +264,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             event_log_divergence_bisect=true
             first_differing_causal_entry=node-icount-source-kind
             bisection_input=event-log

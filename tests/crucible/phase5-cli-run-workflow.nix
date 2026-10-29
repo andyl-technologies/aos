@@ -2,8 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.cliRunWorkflow",
-  taskIds ? ["T-CLI-6"],
-  openTaskIds ? [],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -44,9 +42,6 @@
     component = "streaming";
   };
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
-  openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
@@ -532,7 +527,7 @@
       }
       {
         label = "self-certifying CLI run proof";
-        needle = "fn proves_t_cli_6";
+        needle = "fn satisfies_run_workflow";
       }
       {
         label = "planner-only run executor";
@@ -578,8 +573,6 @@ in
 
     CRUCIBLE_T_CLI_6_FAILURES = failureText;
     ATTR_PATH = attrPath;
-    TASK_IDS = taskList;
-    OPEN_TASK_IDS = openTaskList;
     DEPENDENCY_COUNT = toString (builtins.length dependencies);
     DEPENDENCY_PATHS = builtins.concatStringsSep ":" dependencies;
 
@@ -642,8 +635,6 @@ in
           cat > "$out/result" <<'RESULT'
           PASS
           check=$ATTR_PATH
-          tasks=$TASK_IDS
-          open_tasks=$OPEN_TASK_IDS
           status=complete
           evidence_scope=run-workflow-model-and-double
           RESULT
@@ -652,9 +643,8 @@ in
     ];
 
     meta = {
-      description = "Crucible phase 5 CLI run workflow gate for ${taskList}";
       passthru = {
-        inherit attrPath taskIds openTaskIds dependencies;
+        inherit attrPath dependencies;
         failureText = failureText;
       };
     };

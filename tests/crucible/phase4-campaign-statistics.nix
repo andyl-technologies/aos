@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.gates.campaignStatistics",
-  taskIds ? ["T-CAM-3.4" "T-CAM-4.1" "T-CAM-4.2" "T-CAM-4.3"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -17,7 +16,6 @@ in
 
     buildDeps = [pkgs.coreutils pkgs.rust pkgs.pkg-config pkgs.sqlite];
     ATTR_PATH = attrPath;
-    TASK_IDS = builtins.concatStringsSep "," taskIds;
     DEPENDENCY_PATHS = builtins.concatStringsSep ":" dependencies;
 
     phases = [
@@ -89,7 +87,6 @@ in
             printf 'PASS\n'
             printf 'gate=gate:campaign-statistics\n'
             printf 'attr_path=%s\n' "$ATTR_PATH"
-            printf 'task_ids=%s\n' "$TASK_IDS"
             printf 'scope=finite-static-p-q,bounded-smc,importance-weighting,systematic-resampling,genealogy,support,intervention-exclusion,stage-barriers,restart\n'
             printf 'open_scope=checked-statistical-service,operator-porcelain\n'
           } > "$out/result"

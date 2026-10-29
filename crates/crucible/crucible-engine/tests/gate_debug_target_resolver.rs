@@ -21,7 +21,7 @@ use crucible_engine::{
 };
 
 #[test]
-fn debug_target_resolver_accepts_all_t_dbg_7_selectors() -> Result<(), Box<dyn Error>> {
+fn debug_target_resolver_accepts_all_selectors() -> Result<(), Box<dyn Error>> {
     let world = single_node_world("debug-target-resolver")?;
     let scenario = world.scenario_def();
     let root = Configuration::genesis(scenario.clone());

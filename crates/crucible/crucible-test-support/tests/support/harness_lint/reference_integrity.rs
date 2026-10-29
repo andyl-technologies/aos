@@ -2,7 +2,7 @@
 
 use super::*;
 
-/// Returns failures for circular checklist evidence and missing named sources.
+/// Returns failures for needles that name missing sources.
 ///
 /// Needle presence is checked by the Nix check-tree evaluator against the exact
 /// content expression supplied to `failuresFor`. That distinction matters for a
@@ -22,30 +22,9 @@ pub(super) fn gate_reference_integrity_failures(
     let mut failures = Vec::new();
     for check in checks {
         let content = fs::read_to_string(&check)?;
-        failures.extend(checklist_state_needle_failures(&check, &content));
         failures.extend(missing_source_label_failures(repo, &check, &content));
-        failures.extend(task_metadata_state_failures(repo, &check, &content)?);
     }
     Ok(failures)
-}
-
-pub(super) fn checklist_state_needle_failures(path: &Path, content: &str) -> Vec<String> {
-    content
-        .lines()
-        .enumerate()
-        .filter(|(_, line)| {
-            let line = line.trim();
-            line.starts_with("needle = \"- [x] **T-") || line.starts_with("needle = \"- [ ] **T-")
-        })
-        .map(|(index, line)| {
-            format!(
-                "{}:{}: checklist state is bookkeeping, not gate evidence: {}",
-                path.display(),
-                index + 1,
-                line.trim()
-            )
-        })
-        .collect()
 }
 
 pub(super) fn terminal_outcome_construction_failures(content: &str) -> Vec<String> {
@@ -213,105 +192,6 @@ fn collect_nix_sources(dir: &Path, sources: &mut Vec<PathBuf>) -> Result<(), Box
     Ok(())
 }
 
-fn task_metadata_state_failures(
-    repo: &Path,
-    check: &Path,
-    content: &str,
-) -> Result<Vec<String>, Box<dyn Error>> {
-    let task_states = rfc_task_states(&repo.join("docs/rfcs/0014-signal-driven-fault-model"))?;
-    Ok(task_metadata_state_findings(check, content, &task_states))
-}
-
-fn task_metadata_state_findings(
-    check: &Path,
-    content: &str,
-    task_states: &BTreeMap<String, bool>,
-) -> Vec<String> {
-    let mut failures = Vec::new();
-
-    for task in parameter_task_ids(content, "taskIds") {
-        if task_states.get(&task) == Some(&false) {
-            failures.push(format!(
-                "{}: open RFC task `{task}` is listed as completed taskIds evidence",
-                check.display()
-            ));
-        }
-    }
-    for task in parameter_task_ids(content, "openTaskIds") {
-        if task_states.get(&task) == Some(&true) {
-            failures.push(format!(
-                "{}: completed RFC task `{task}` remains in openTaskIds",
-                check.display()
-            ));
-        }
-    }
-
-    failures
-}
-
-fn rfc_task_states(dir: &Path) -> Result<BTreeMap<String, bool>, Box<dyn Error>> {
-    let mut states = BTreeMap::new();
-    for entry in fs::read_dir(dir)? {
-        let path = entry?.path();
-        if path.extension().and_then(|extension| extension.to_str()) != Some("md") {
-            continue;
-        }
-        let content = fs::read_to_string(path)?;
-        let mut in_fence = false;
-        for line in content.lines() {
-            if line.trim_start().starts_with("```") {
-                in_fence = !in_fence;
-                continue;
-            }
-            if in_fence {
-                continue;
-            }
-            let (completed, prefix) = if let Some(rest) = line.strip_prefix("- [x] **") {
-                (true, rest)
-            } else if let Some(rest) = line.strip_prefix("- [ ] **") {
-                (false, rest)
-            } else {
-                continue;
-            };
-            let Some((task, _)) = prefix.split_once("**") else {
-                continue;
-            };
-            if task.starts_with("T-") {
-                states.insert(task.to_owned(), completed);
-            }
-        }
-    }
-    Ok(states)
-}
-
-fn parameter_task_ids(content: &str, parameter: &str) -> Vec<String> {
-    let marker = format!("{parameter} ? [");
-    let Some(start) = content.find(&marker) else {
-        return Vec::new();
-    };
-    let list_start = start + marker.len() - 1;
-    let Some(list_end) = matching_list_end(content, list_start) else {
-        return Vec::new();
-    };
-    parse_quoted_task_ids(&content[list_start + 1..list_end])
-}
-
-fn parse_quoted_task_ids(content: &str) -> Vec<String> {
-    let mut tasks = Vec::new();
-    let mut offset = 0;
-    while let Some(relative) = content[offset..].find('"') {
-        let start = offset + relative;
-        let Some((value, after)) = parse_double_quoted(content, start) else {
-            break;
-        };
-        if value.starts_with("T-") {
-            tasks.push(value);
-        }
-        offset = after;
-    }
-    tasks
-}
-
 fn is_repository_path(label: &str) -> bool {
     !label.contains('*')
         && !label.contains(" + ")
@@ -455,24 +335,4 @@ fn parser_decodes_literal_and_indented_needles() {
         parse_needles(&source[list_start + 1..list_end]),
         ["line one\nline two", "symbol(\"value\")"]
     );
-}
-
-#[test]
-fn task_metadata_rejects_open_completed_state_inversions() {
-    let states = BTreeMap::from([
-        (String::from("T-SYNTH-1"), true),
-        (String::from("T-SYNTH-2"), false),
-    ]);
-    let findings = task_metadata_state_findings(
-        Path::new("tests/crucible/synthetic.nix"),
-        r#"
-          taskIds ? ["T-SYNTH-2"],
-          openTaskIds ? ["T-SYNTH-1"],
-        "#,
-        &states,
-    );
-
-    assert_eq!(findings.len(), 2);
-    assert!(findings[0].contains("open RFC task `T-SYNTH-2`"));
-    assert!(findings[1].contains("completed RFC task `T-SYNTH-1`"));
 }

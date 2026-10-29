@@ -368,7 +368,6 @@ in
             PASS
             check=checks.crucible.phase1.concurrencyAbiOracleStandards
             gate=gate:layer1-injection,gate:abi-conformance,gate:replay-oracle
-            tasks=T-STD-9
             spsc=exhaustive-ordering-model
             abi=golden-vectors,round-trip,fuzz-corpus
             replay_oracle=fixed-corpus

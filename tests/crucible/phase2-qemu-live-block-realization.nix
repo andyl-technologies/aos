@@ -2,8 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuLiveBlockRealization",
-  taskIds ? [],
-  openTaskIds ? [],
   campaignComposition ? null,
   testing ? import ../../lib/testing {inherit pkgs lib;},
 }: let
@@ -11,8 +9,6 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  taskList = builtins.concatStringsSep "," taskIds;
-  openTaskList = builtins.concatStringsSep "," openTaskIds;
   runtimeInputs = [
     pkgs.sqlite
     pkgs.coreutils
@@ -23,8 +19,6 @@
   ];
   runtimeEnvironment = {
     src = crucibleSrc;
-    TASK_IDS = taskList;
-    OPEN_TASK_IDS = openTaskList;
     ATTR_PATH = attrPath;
   };
   executorPhases = [
@@ -95,8 +89,6 @@
         cp "$report" "$out/result"
         {
           printf 'attr_path=%s\n' "$ATTR_PATH"
-          printf 'task_ids=%s\n' "$TASK_IDS"
-          printf 'open_task_ids=%s\n' "$OPEN_TASK_IDS"
           printf 'scope=crucible-shmem-block-driver-runtime-realization-probe\n'
           printf 'open_interface=typed-blockdev-qapi-enum\n'
           printf 'guest_execution=frozen-at-reset-no-guest-io\n'
@@ -115,8 +107,6 @@
     runtimeDeps = [pkgs.sqlite];
 
     buildDeps = runtimeInputs;
-    TASK_IDS = taskList;
-    OPEN_TASK_IDS = openTaskList;
     ATTR_PATH = attrPath;
     phases = executorPhases;
   };

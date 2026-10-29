@@ -1,8 +1,8 @@
 //! Deterministic full-ring backpressure modeled as a bounded FIFO.
 //!
-//! When a sub-node's inbound request ring or a consumer's response ring is full,
-//! the producing side must *block at its current boundary* and resume when the
-//! consumer frees a slot — never drop, reorder, or re-time a frame ([IO-32]).
+//! When a sub-node's inbound request ring or a consumer's response ring is
+//! full, the producing side must *block at its current boundary* and resume
+//! when the consumer frees a slot — never drop, reorder, or re-time a frame.
 //! This module owns [`BoundedQueue`], a fixed-capacity FIFO whose `push`/`pop`
 //! semantics mirror the `crucible-qemu-shmem` SPSC ring
 //! ([`crucible_qemu_shmem::RingHeader`]): a power-of-two capacity, monotonic
@@ -16,14 +16,14 @@
 //! ```text
 //! capacity = power of two
 //! live     = write_idx - read_idx           (0 ..= capacity)
-//! push     -> Err(PushError{item}) when live == capacity   (block here; IO-32)
+//! push     -> Err(PushError{item}) when live == capacity   (block here)
 //! pop      -> None                  when live == 0          (nothing to deliver)
 //! state    -> Blocked when full, Runnable otherwise (the futex condition)
 //! ```
 //!
 //! A full-ring `push` hands the rejected item *back* to the producer
 //! ([`PushError`]) rather than dropping it, so a block-and-wake retry can
-//! re-push the exact same frame without cloning ([IO-32], [SHM-26]).
+//! re-push the exact same frame without cloning.
 //!
 //! The in-process queue remains the test-double backing store. The production
 //! shmem path in [`crate::subnode::IoCore::process_shmem_inbox`] and
@@ -38,7 +38,7 @@ use crate::error::DeviceError;
 
 /// Whether a producer may proceed or must block on a full ring.
 ///
-/// Mirrors the futex condition of [SHM-26]: a producer that observes
+/// Mirrors the shared-memory ring's futex condition: a producer that observes
 /// [`BackpressureState::Blocked`] parks at its current boundary and is woken
 /// when [`BoundedQueue::pop`] frees a slot and the state returns to
 /// [`BackpressureState::Runnable`].
@@ -52,9 +52,9 @@ pub enum BackpressureState {
 
 /// A full-ring `push` rejection that hands the unbuffered item back.
 ///
-/// The producer blocked at its boundary ([IO-32]): the ring was full, so the
-/// item was *not* enqueued and is returned here for a lossless re-push after a
-/// consumer frees a slot. The `capacity` records the ring size for diagnostics.
+/// The producer blocked at its boundary: the ring was full, so the item was
+/// *not* enqueued and is returned here for a lossless re-push after a consumer
+/// frees a slot. The `capacity` records the ring size for diagnostics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PushError<T> {
     /// The item that could not be enqueued, returned for a later retry.
@@ -92,7 +92,7 @@ impl<T> BoundedQueue<T> {
     ///
     /// Returns [`DeviceError::RingFull`] (re-purposed as the capacity-shape
     /// rejection) when `capacity` is zero or not a power of two, matching the
-    /// SPSC ring's capacity contract ([SHM-19]).
+    /// SPSC ring's capacity contract.
     pub fn new(capacity: u64) -> Result<Self, DeviceError> {
         if capacity == 0 || !capacity.is_power_of_two() {
             return Err(DeviceError::RingFull { capacity });
@@ -144,12 +144,12 @@ impl<T> BoundedQueue<T> {
     /// On success the entry joins the tail and `write_idx` advances. On a full
     /// ring the entry is returned inside [`PushError`] so no data is lost — the
     /// producer blocks at its boundary and re-pushes the same item after the
-    /// consumer drains ([IO-32]).
+    /// consumer drains.
     ///
     /// # Errors
     ///
     /// Returns [`PushError`] (carrying `item`) when the ring is at capacity; the
-    /// caller must wait for a [`BoundedQueue::pop`] before retrying ([IO-32]).
+    /// caller must wait for a [`BoundedQueue::pop`] before retrying.
     pub fn push(&mut self, item: T) -> Result<(), PushError<T>> {
         if self.is_full() {
             return Err(PushError {
@@ -164,9 +164,9 @@ impl<T> BoundedQueue<T> {
 
     /// Pops the head entry in FIFO order, or `None` when empty.
     ///
-    /// A successful pop advances `read_idx`, freeing a slot and (if the ring was
-    /// full) transitioning the producer's [`BackpressureState`] back to
-    /// [`BackpressureState::Runnable`] — the wake condition of [IO-32].
+    /// A successful pop advances `read_idx`, freeing a slot and (if the ring
+    /// was full) transitioning the producer's [`BackpressureState`] back to
+    /// [`BackpressureState::Runnable`] — the producer's wake condition.
     pub fn pop(&mut self) -> Option<T> {
         let item = self.items.pop_front()?;
         self.read_idx += 1;

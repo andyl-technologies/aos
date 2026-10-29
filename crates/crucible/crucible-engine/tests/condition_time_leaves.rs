@@ -1,4 +1,4 @@
-//! Checks T-TRIG-3 virtual-time condition leaves.
+//! Checks virtual-time condition leaves.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.

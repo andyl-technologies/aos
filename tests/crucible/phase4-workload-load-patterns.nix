@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.workloadLoadPatterns",
-  taskIds ? ["T-WL-4"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -12,8 +11,6 @@
   engineLib = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
   loadPatternTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/workload_load_patterns.rs;
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
@@ -198,10 +195,6 @@
         label = "phase4 workload load patterns attr path";
         needle = "checks.crucible.phase4.workloadLoadPatterns";
       }
-      {
-        label = "phase4 workload load patterns task id";
-        needle = "taskIds = [\"T-WL-4\"]";
-      }
     ];
 in
   if failures != []
@@ -310,7 +303,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             load_patterns=steady,spike,cardinality_growth,correlated_failure
             spike_modes=virtual_time_rate,start_node_burst
             load_pattern_delivery=black-box-cmdline

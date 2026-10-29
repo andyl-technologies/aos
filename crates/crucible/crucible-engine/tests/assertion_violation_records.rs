@@ -1,4 +1,4 @@
-//! Checks T-ASRT-14 deterministic assertion violation records.
+//! Checks deterministic assertion violation records.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.

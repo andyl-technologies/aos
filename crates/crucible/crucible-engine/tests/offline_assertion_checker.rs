@@ -1,4 +1,4 @@
-//! Checks T-ASRT-7 offline assertion re-grading over retained event logs.
+//! Checks offline assertion re-grading over retained event logs.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.

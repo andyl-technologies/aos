@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.guestMarkerAssertions",
-  taskIds ? ["T-ASRT-6"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -33,7 +32,6 @@
   # stack on large sources.
   scrubCommentsAndStrings = import ./_rust-scrub.nix {inherit lib;};
 
-  taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [
       {
@@ -349,7 +347,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             guest_marker_assertions_unified=true
             RESULT
           '';

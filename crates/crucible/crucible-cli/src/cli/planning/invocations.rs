@@ -17,7 +17,7 @@ pub(crate) struct DeterminismErgonomicsPlan {
 }
 
 impl DeterminismErgonomicsPlan {
-    pub(crate) fn proves_t_cli_4(&self) -> bool {
+    pub(crate) fn satisfies_determinism_ergonomics(&self) -> bool {
         self.seed_printed_at_run_start
             && self.failure_artifact_rule.self_contained_artifact
             && self.failure_artifact_rule.replay_command_copy_pasteable

@@ -164,7 +164,7 @@ impl SingleScheduler {
     /// [`crucible_device::NetLink::effective_latency_ticks`] value. The existing
     /// topology-change path then applies the new edge set at the next quantum
     /// boundary before PICK, preserving the scheduler's boundary invariant while
-    /// making live I/O fault latency changes visible to lookahead ([IO-33]).
+    /// making live I/O fault latency changes visible to lookahead.
     ///
     /// Returns `Ok(true)` when a change was queued and `Ok(false)` when the link
     /// had no pending recompute flag.
@@ -823,9 +823,9 @@ impl SingleScheduler {
             node.exact_local_event.clone(),
             &self.pending_events,
         )?;
-        // Fold the device sub-node's in-flight head into the node's exact horizon
-        // ([IO-3], [SCHED-10]): the requester is fast-forwarded EXACTLY to its next
-        // device completion, with no conservative slack. The term wins only when it
+        // Fold the device sub-node's in-flight head into the node's exact horizon:
+        // the requester is fast-forwarded EXACTLY to its next device completion,
+        // with no conservative slack. The term wins only when it
         // is at or before any timer/pending term already selected.
         if let Some(device_time) = self.device_horizons.get(&node.id.node).copied() {
             let device_event = ExactLocalEvent::IoCompletion {
@@ -1068,7 +1068,7 @@ impl SingleScheduler {
         // `horizon_source_icount_rounding` maps to exact-ceil) is a quiescence
         // point. A node held at the moving network cap keeps no `quiescent_horizon`,
         // so it stays `Runnable` and is re-PICKed for the next interval (iterative
-        // conservative-PDES advance, [SCHED-5]).
+        // conservative-PDES advance).
         //
         // The gate on a non-empty `effective_topology` mirrors the synthetic-
         // liveness exemption: when no live edge set is installed, the per-node
@@ -1616,7 +1616,7 @@ impl SingleScheduler {
 
         // Fold each device sub-node's in-flight head into its target node's exact
         // I/O-completion horizon term BEFORE PICK, so the requester's horizon is
-        // the device's real next completion ([IO-3], [SCHED-10]).
+        // the device's real next completion.
         self.refresh_device_horizons()?;
 
         // Boundary admission phase: accept control exposed by the previous STEP yield.
@@ -1697,13 +1697,13 @@ impl SingleScheduler {
             resolve_due_scheduled_events(&mut self.pending_events, &selected_node, after_time)?;
 
         // Device I/O completions are cross-node events too: drain each targeting
-        // sub-node's due completions at the exact delivery icount ([SCHED-29]),
-        // minting their sequence from the owned counter on the LIVE RESOLVE path
-        // ([SCHED-18]), and append the fault decisions they drew ([SCHED-30]).
+        // sub-node's due completions at the exact delivery icount, minting their
+        // sequence from the owned counter on the LIVE RESOLVE path, and append the
+        // fault decisions they drew.
         let (device_events, device_decisions) =
             self.resolve_device_completions(&selected_node, after.ticks)?;
         // Order (frame ++ device) deliveries by the total-order key, keeping the
-        // control events prefixed exactly as the no-device path does ([SCHED-33]).
+        // control events prefixed exactly as the no-device path does.
         resolved_events.extend(merge_node_deliveries(frame_deliveries, device_events));
 
         // EMIT phase: convert happenings into decisions and append event-log entries.
@@ -2042,7 +2042,7 @@ impl SingleScheduler {
         {
             // Don't park `Idle` if this node still owes a later device completion:
             // its next sequential completion is a fresh exact local event it must
-            // advance to, so keep it `Runnable` ([SCHED-29]). The next quantum's
+            // advance to, so keep it `Runnable`. The next quantum's
             // `refresh_device_horizons` re-activation also covers this; this guard
             // avoids a spurious one-quantum park.
             if self

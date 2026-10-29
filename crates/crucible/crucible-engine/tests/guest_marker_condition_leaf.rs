@@ -1,4 +1,4 @@
-//! Checks T-TRIG-8 optional white-box guest-marker leaves.
+//! Checks optional white-box guest-marker leaves.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.

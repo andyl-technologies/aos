@@ -167,7 +167,6 @@ in
             gate=gate:layer0-determinism
             gate=gate:single-vm-fingerprint
             gate=gate:patch-microtests
-            tasks=T-PATCH-17
             atomic_patch=${atomicPatch.file}
             patched_fixture_exercised=true
             stock_negative_control=true

@@ -1,4 +1,4 @@
-//! Checks T-TRIG-6 deterministic memory/register condition leaves.
+//! Checks deterministic memory/register condition leaves.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.

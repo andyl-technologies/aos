@@ -3,11 +3,9 @@
   lib,
   productionPluginFlight,
   attrPath ? "checks.crucible.phase7.fingerprintDigestOffload",
-  taskIds ? ["T-PERF-30"],
   campaignComposition ? null,
   testing ? import ../../lib/testing {inherit pkgs lib;},
 }: let
-  taskList = builtins.concatStringsSep "," taskIds;
   workerSource = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/runtime/live_callbacks/fingerprint_worker.rs;
   callbackSource = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/runtime/live_callbacks.rs;
   inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
@@ -72,7 +70,6 @@
     PASS
     check=${attrPath}
     gate=gate:fingerprint-digest-offload
-    tasks=${taskList}
     status=complete
     admission_class=A
     capture=exact-boundary-sealed-descriptor-preimage

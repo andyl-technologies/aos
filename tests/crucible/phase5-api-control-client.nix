@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.apiControlClient",
-  taskIds ? ["T-API-1"],
   dependencies ? [],
 }: let
   apiCargo = builtins.concatStringsSep "\n" [
@@ -23,8 +22,6 @@
     entry = ../../crates/crucible/crucible-control-client/tests/gate_control_client.rs;
   };
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -201,7 +198,6 @@ in
 
     CRUCIBLE_T_API_1_FAILURES = failureText;
     ATTR_PATH = attrPath;
-    TASK_IDS = taskList;
     DEPENDENCY_COUNT = toString (builtins.length dependencies);
     DEPENDENCY_PATHS = builtins.concatStringsSep ":" dependencies;
 
@@ -220,7 +216,6 @@ in
           {
             printf 'PASS\n'
             printf 'check=%s\n' "$ATTR_PATH"
-            printf 'tasks=%s\n' "$TASK_IDS"
             printf 'dependency_count=%s\n' "$DEPENDENCY_COUNT"
             printf 'control_client_trait=async_typed\n'
             printf 'in_process_transport=same_process_actor_no_serialization\n'

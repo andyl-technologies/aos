@@ -2,8 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.gates.layer0Determinism",
-  taskIds ? ["T-DET-10"],
-  openTaskIds ? [],
   dependencies ? [],
   campaignComposition ? null,
 }: let
@@ -13,7 +11,7 @@
   };
 in
   import ./phase9-campaign-mode-production-evidence.nix {
-    inherit pkgs lib campaignComposition attrPath taskIds openTaskIds dependencies;
+    inherit pkgs lib campaignComposition attrPath dependencies;
     authority = productionFingerprint;
     gate = "gate:layer0-determinism";
     executionFamily = "qemu-runtime";

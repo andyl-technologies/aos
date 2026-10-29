@@ -1100,7 +1100,7 @@ pub(super) fn cli_determinism_ergonomics_resolves_seed_by_flag_env_or_generated(
     assert_eq!(flag_plan.seed.source, SeedSource::Flag);
     assert_eq!(entropy.draws, 0);
     assert!(flag_plan.seed_announcement().contains("--seed"));
-    assert!(flag_plan.proves_t_cli_4());
+    assert!(flag_plan.satisfies_determinism_ergonomics());
 
     let env_cli = Cli::parse_from(["crucible", "run", TEST_SCENARIO]);
     let env_plan = plan_determinism_ergonomics(
@@ -1116,7 +1116,7 @@ pub(super) fn cli_determinism_ergonomics_resolves_seed_by_flag_env_or_generated(
     assert_eq!(env_plan.seed.source, SeedSource::Environment);
     assert_eq!(entropy.draws, 0);
     assert!(env_plan.seed_announcement().contains(CRUCIBLE_SEED_ENV));
-    assert!(env_plan.proves_t_cli_4());
+    assert!(env_plan.satisfies_determinism_ergonomics());
 
     let generated_cli = Cli::parse_from(["crucible", "run", TEST_SCENARIO]);
     let generated_plan = plan_determinism_ergonomics(
@@ -1136,7 +1136,7 @@ pub(super) fn cli_determinism_ergonomics_resolves_seed_by_flag_env_or_generated(
             .seed_announcement()
             .contains("generated seed = 0xfeedfacecafebeef")
     );
-    assert!(generated_plan.proves_t_cli_4());
+    assert!(generated_plan.satisfies_determinism_ergonomics());
 
     let mut recorder = RecordingDeterminismErgonomicsRecorder::default();
     execute_determinism_ergonomics_plan(&generated_plan, &mut recorder)?;

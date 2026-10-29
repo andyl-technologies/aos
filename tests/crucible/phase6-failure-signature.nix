@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase6.failureSignature",
-  taskIds ? ["T-TRI-1"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -20,8 +19,6 @@
     entry = ../../crates/crucible/crucible-engine/tests/gate_failure_signature.rs;
   };
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -243,10 +240,6 @@
         needle = "checks.crucible.phase6.failureSignature";
       }
       {
-        label = "explicit task id";
-        needle = "taskIds = [\"T-TRI-1\"]";
-      }
-      {
         label = "phase6 minimization raw dependency";
         needle = "phase6.minimization.rawGate";
       }
@@ -356,7 +349,6 @@ in
             cat > "$out/result" <<RESULT
             PASS
             check=${attrPath}
-            tasks=${taskList}
             gate=gate:failure-signature
             source=recorded-run-only
             key=failure-kind-property-point-coverage

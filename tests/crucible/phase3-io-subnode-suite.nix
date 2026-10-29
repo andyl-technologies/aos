@@ -2,11 +2,9 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase3.ioSubnodeSuite",
-  taskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
-  taskList = builtins.concatStringsSep "," taskIds;
 in
   pkgs.mkDerivation {
     pname = "crucible-phase3-io-subnode-suite";
@@ -82,7 +80,6 @@ in
           cat > "$out/result" <<'RESULT'
           PASS
           check=${attrPath}
-          tasks=${taskList}
           component=crucible-device
           io_subnode_trait=true
           block_overlay=true

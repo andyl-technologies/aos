@@ -1,4 +1,4 @@
-//! Checks that Crucible stays standalone from RFC-0007 crates.
+//! Checks that Crucible stays standalone from the `ratchet` crates.
 //!
 //! All content-addressing primitives Crucible needs today live in
 //! `crucible-determinism`. This lint rejects direct or workspace-inherited

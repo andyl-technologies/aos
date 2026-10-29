@@ -5,7 +5,7 @@
 //!
 //! - [`fault`]: the effective fault table ([`LinkFaults`]) and the pure,
 //!   integer-only fault transforms — bandwidth serialization, jitter/reorder
-//!   shifts, Bernoulli [`Probability`], and payload corruption ([IO-20]).
+//!   shifts, Bernoulli [`Probability`], and payload corruption.
 //! - [`ipv4`]: the bounded Ethernet/IPv4 parser and exact fragmentation and
 //!   later-hop re-fragmentation encoder.
 //! - [`response`]: portable ICMPv4, ICMPv6, TCP-reset, and exact opaque
@@ -15,8 +15,8 @@
 //!   [`SLOT_NET_ROUTER`](crucible_qemu_shmem::SLOT_NET_ROUTER) slot, enforces the
 //!   strictly-positive latency floor, clamps sub-floor latency faults, raises the
 //!   scheduler lookahead-recompute signal when the conservative minimum latency
-//!   bound changes ([IO-33]), and clamps-or-fails-loud on a reorder/jitter shift
-//!   into the consumer's past ([IO-34]).
+//!   bound changes, and clamps-or-fails-loud on a reorder/jitter shift into the
+//!   consumer's past.
 //!
 //! # Why the link is special among sub-nodes
 //!
@@ -39,11 +39,11 @@
 //! is a pure function of draw values carried in [`FrameDraws`]. The seeded
 //! per-device RNG ([`crate::fault::DeviceRng`]) forked by name-hash produces
 //! those draws in their fixed consumption order via
-//! [`FrameDraws::from_rng_for_faults`] and [`NetLink::emit_from_rng`] ([IO-21]);
-//! the snapshot captures the RNG cursor so a fork resumes the same sequence
-//! ([IO-23]). The same frame and the same draws always yield byte-identical
-//! deliveries ([IO-4], [IO-22]). No floating point, no host clock, and no
-//! default-hasher iteration appears on any delivery path ([IO-24]).
+//! [`FrameDraws::from_rng_for_faults`] and [`NetLink::emit_from_rng`]; the
+//! snapshot captures the RNG cursor so a fork resumes the same sequence. The
+//! same frame and the same draws always yield byte-identical deliveries. No
+//! floating point, no host clock, and no default-hasher iteration appears on
+//! any delivery path.
 
 pub mod fault;
 pub mod ipv4;

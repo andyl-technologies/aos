@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.gates.lazyFrontier",
-  taskIds ? ["T-CAM-4.1" "T-CAM-4.2" "T-CAM-4.3" "T-CAM-4.4" "T-CAM-4.5" "T-CAM-4.6"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -17,7 +16,6 @@ in
 
     buildDeps = [pkgs.coreutils pkgs.grep pkgs.rust pkgs.pkg-config pkgs.sqlite];
     ATTR_PATH = attrPath;
-    TASK_IDS = builtins.concatStringsSep "," taskIds;
     DEPENDENCY_PATHS = builtins.concatStringsSep ":" dependencies;
 
     phases = [
@@ -114,7 +112,6 @@ in
             printf 'PASS\n'
             printf 'gate=gate:lazy-frontier\n'
             printf 'attr_path=%s\n' "$ATTR_PATH"
-            printf 'task_ids=%s\n' "$TASK_IDS"
             printf 'scope=bounded-generated-polling,allocation-scaling,finite-backpressure,exhaustive-ceiling,frontier-pagination,feedback-recovery,restart,strict-streaming-order,daemon-control-responsiveness\n'
             cat "$TMPDIR/campaign-planner-queue-profile"
             cat "$TMPDIR/campaign-planner-queue-checkpoints"

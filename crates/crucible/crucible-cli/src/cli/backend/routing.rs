@@ -11,7 +11,7 @@ pub(in super::super) fn execute_backend_routed_command(
     save_plan: Option<&SaveInvocationPlan>,
     runner: &mut impl BackendCommandRunner,
 ) -> Result<BackendCommandOutcome, CliError> {
-    if !thin_plan.proves_t_cli_2() || !backend_plan.has_consistent_route() {
+    if !thin_plan.satisfies_thin_wrapper_contract() || !backend_plan.has_consistent_route() {
         return Err(CliError::Backend(
             "CLI command route violates the backend split".to_string(),
         ));

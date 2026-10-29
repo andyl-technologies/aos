@@ -415,7 +415,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=checks.crucible.phase1.rustdocBar
-            tasks=T-STD-1,T-STD-2
             nix_mirror=source-regressions-and-baseline-wiring
             crate_roots=14
             rustdocflags=-D warnings -D missing_docs

@@ -1,7 +1,6 @@
 {
   pkgs,
   attrPath,
-  taskIds,
   component,
   evidence,
   dependencies ? [],
@@ -23,7 +22,6 @@ pkgs.mkDerivation {
         cat > "$out/result" <<RESULT
         PASS
         check=$ATTR_PATH
-        tasks=$TASK_IDS
         component=$COMPONENT
         evidence=$EVIDENCE
         dependency_count=$DEPENDENCY_COUNT
@@ -33,7 +31,6 @@ pkgs.mkDerivation {
   ];
 
   ATTR_PATH = attrPath;
-  TASK_IDS = builtins.concatStringsSep "," taskIds;
   COMPONENT = component;
   EVIDENCE = evidence;
   DEPENDENCY_COUNT = toString (builtins.length dependencies);

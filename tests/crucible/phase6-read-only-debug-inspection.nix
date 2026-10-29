@@ -2,8 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase6.readOnlyDebugInspection",
-  taskIds ? ["T-DBG-2"],
-  openTaskIds ? [],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -20,9 +18,6 @@
     entry = ../../crates/crucible/crucible-engine/tests/gate_read_only_debug_inspection.rs;
   };
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
-  openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -214,10 +209,6 @@
         needle = "readOnlyDebugInspection = greenBeforeAdvance";
       }
       {
-        label = "explicit task id";
-        needle = "taskIds = [\"T-DBG-2\"]";
-      }
-      {
         label = "debug attach raw dependency";
         needle = "phase6.debugAttach.rawGate";
       }
@@ -313,8 +304,6 @@ in
             cat > "$out/result" <<RESULT
             PASS
             check=${attrPath}
-            tasks=${taskList}
-            open_tasks=${openTaskList}
             status=complete
             evidence_scope=read-only-debug-model
             gate=gate:read-only-debug-inspection

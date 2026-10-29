@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuExactSnapshotRestore",
-  taskIds ? ["T-QEMU-5"],
   checkpointDeltaFlight ?
     import ./phase2-qemu-checkpoint-delta-flight.nix {
       inherit pkgs lib;
@@ -39,7 +38,6 @@
     component = "vm_lifecycle";
   };
   productionConstruction = builtins.readFile ../../crates/crucible/crucible-daemon/src/vm_lifecycle/construction.rs;
-  taskList = builtins.concatStringsSep "," taskIds;
   inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
   failures =
     failuresFor "crates/crucible/crucible-qemu-host/src/checkpoint.rs" qemuCheckpoint [
@@ -211,7 +209,6 @@ in
       GUEST_FIRMWARE = "${pkgs.qemu-crucible}/share/qemu/bios-256k.bin";
       GUEST_KERNEL_APPEND = "console=ttyS0 rdinit=/init quiet nokaslr norandmaps random.trust_cpu=off net.ifnames=0 nohz=off";
       CRUCIBLE_EXACT_TIMEOUT_SECS = "240";
-      TASK_IDS = taskList;
       ATTR_PATH = attrPath;
       phases = [
         {
@@ -271,7 +268,6 @@ in
             {
               printf 'PASS\n'
               printf 'attr_path=%s\n' "$ATTR_PATH"
-              printf 'task_ids=%s\n' "$TASK_IDS"
               printf 'scope=compiled-operation-specific-exact-checkpoint-admission\n'
               printf 'proven=identity-bound-admission,live-capture-and-restore,descriptor-backed-restore\n'
             } > "$out/result"

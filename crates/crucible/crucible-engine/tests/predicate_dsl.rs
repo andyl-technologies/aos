@@ -1,4 +1,4 @@
-//! Checks T-ASRT-17 predicate DSL desugaring.
+//! Checks predicate DSL desugaring.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.

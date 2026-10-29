@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuNodeWrapper",
-  taskIds ? ["T-QEMU-3"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -15,8 +14,6 @@
   };
   qemuSpec = builtins.readFile ../../docs/engineering/crucible/qemu-integration.md;
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
@@ -355,7 +352,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             check_scope=task-level
             related_gates=gate:scheduler-liveness,gate:control-responsive,gate:abi-conformance,gate:layer1-injection
             rust_test=crucible_qemu_host::node
@@ -363,7 +359,7 @@ in
             channels=plugin-ipc-control,shmem-hot-path,qmp-machine-control
             hot_path=shared-memory-only
             backend_interface=synchronous
-            spawn_fd_passing=covered-by-T-QEMU-7
+            spawn_fd_passing=covered-by-qemuSpawnFdPassing
             per_quantum_flow=shared-memory-start-poll-finish
             child_process_tool=coreutils-sleep
             RESULT

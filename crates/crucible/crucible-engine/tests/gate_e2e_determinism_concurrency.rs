@@ -31,8 +31,8 @@
 //! so `drive_concurrent_quantum` dispatches a run set of size two (asserted). If
 //! host RUN dispatch leaked into RESOLVE/EMIT, the concurrent run's fingerprint
 //! would diverge and this gate would go red. It stays green because RUN
-//! parallelism never touches the serialized RESOLVE/EMIT order — the [SCHED-40]
-//! claim that parallelism is a speed property, never a correctness property.
+//! parallelism never touches the serialized RESOLVE/EMIT order — the claim that
+//! parallelism is a speed property, never a correctness property.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
@@ -514,7 +514,7 @@ fn assertion_outcome_signature(
 
 #[test]
 fn gate_e2e_determinism_serial_equals_concurrent_bit_identical() {
-    // T-SCHED-25 / SCHED-40,41: a serial drive (one RUN at a time) and a
+    // A serial drive (one RUN at a time) and a
     // full-budget concurrent drive (every independent RUN dispatched at once) are
     // BIT-IDENTICAL in S, the resolved-event log, and the per-delivery ticks.
     // Concurrency of RUN never changes the serialized RESOLVE/EMIT order.
@@ -697,7 +697,7 @@ fn gate_e2e_determinism_covers_assertion_online_offline_outcomes_and_verdict() {
 #[test]
 fn gate_e2e_determinism_disk_completion_lands_at_independently_computed_tick() {
     // The disk completion lands at its independently-computed exact tick under
-    // both the serial and concurrent drives ([IO-2], [DET-19]) — never the
+    // both the serial and concurrent drives — never the
     // consumer frontier, and never moved by host RUN dispatch.
     let (serial, _) = drive(DriveMode::Authoritative, Vec::new());
     let (concurrent, _) = drive(DriveMode::Concurrent, Vec::new());
@@ -729,7 +729,7 @@ fn gate_e2e_determinism_disk_completion_lands_at_independently_computed_tick() {
 
 #[test]
 fn gate_e2e_determinism_concurrent_is_anchored_to_authoritative_path() {
-    // T-SCHED-25 / SCHED-40: the REAL reference is the committed authoritative
+    // The REAL reference is the committed authoritative
     // `drive_quantum`, not another concurrent run. Driving the identical scenario
     // through the authoritative path and through the full-budget concurrent path
     // must yield the SAME fingerprint. A systematic defect in the concurrent
@@ -754,7 +754,7 @@ fn gate_e2e_determinism_concurrent_is_anchored_to_authoritative_path() {
 
 #[test]
 fn gate_e2e_determinism_authoritative_anchor_holds_with_control_op() {
-    // SCHED-33/40 regression at the gate level: a control op admitted at a boundary
+    // Regression at the gate level: a control op admitted at a boundary
     // must enter the scheduler's control-application record identically on the
     // authoritative and concurrent paths. If concurrent dispatch dropped or
     // reordered the control admission, this anchor would diverge.
@@ -779,7 +779,7 @@ fn gate_e2e_determinism_authoritative_anchor_holds_with_control_op() {
 }
 
 /// Independently computes a fault-free disk read's exact completion tick from
-/// the request tick and the modeled block latency ([IO-2]).
+/// the request tick and the modeled block latency.
 ///
 /// The default [`BlockLatency`] is authored in nanoseconds. The device converts
 /// that latency to exact ticks before adding the request tick.

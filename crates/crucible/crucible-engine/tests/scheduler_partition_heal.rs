@@ -1,4 +1,4 @@
-//! Checks T-SCHED-23 partition/heal effective-edge mutations.
+//! Checks partition/heal effective-edge mutations.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.

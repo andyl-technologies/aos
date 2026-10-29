@@ -247,8 +247,8 @@ impl DebugInvocationPlan {
         }
     }
 
-    pub(super) fn proves_t_dbg_8(&self) -> bool {
-        self.surface_contract.proves_t_dbg_8()
+    pub(super) fn satisfies_debug_surface_contract(&self) -> bool {
+        self.surface_contract.satisfies_debug_surface_contract()
             && self.proves_thin_wrapper()
             && self.proves_read_mutate_boundary()
             && !self.raw_gdb_single_step_allowed

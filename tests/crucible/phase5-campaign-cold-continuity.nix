@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.gates.campaignColdContinuity",
-  taskIds ? ["T-CAM-1.3" "T-CAM-1.4" "T-CAM-1.5" "T-CAM-5.8" "T-CAM-5.9"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -126,7 +125,6 @@ in
           cat > "$out/result" <<RESULT
           PASS
           check=${attrPath}
-          tasks=${builtins.concatStringsSep "," taskIds}
           gate=gate:campaign-cold-continuity
           tier=model
           separate_os_processes=true

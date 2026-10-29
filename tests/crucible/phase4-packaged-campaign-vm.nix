@@ -464,7 +464,7 @@
           ${pkgs.grep}/bin/grep -Fq \
             'test result: ok. 1 passed; 0 failed; 0 ignored;' "$CRUCIBLE_STORAGE_FLIGHT_LOG"
           printf '%s\n' 'gate=gate:campaign-storage-recovery' \
-            'tasks=T-CAM-5.8,T-CAM-9.3' 'tier=real-packaged-qemu-and-garage'
+            'tier=real-packaged-qemu-and-garage'
         ''
         else if policyTimeout
         then ''
@@ -533,7 +533,6 @@
             /tmp/campaign-maintenance-transfer.log
           printf '%s\n' \
             'gate=gate:campaign-exact-maintenance-transfer' \
-            'tasks=T-CAM-5.8' \
             'tier=real-packaged-qemu'
         ''
         else if hotForkFlight
@@ -657,7 +656,6 @@
             'test result: ok. 1 passed; 0 failed; 0 ignored;' "$lifecycle_log"
           printf '%s\n' \
             'gate=gate:campaign-packaged-lifecycle' \
-            'tasks=T-CAM-4.8' \
             'proven=lazy-widening,finite-branching,edge-deduplication,live-status-and-explanation,bounded-pressure,pause-restart-resume,steering,graceful-stop'
         ''
         else if guestChoice
@@ -828,8 +826,7 @@
           ${pkgs.grep}/bin/grep -Fq \
             'test result: ok. 1 passed; 0 failed; 0 ignored;' "$midpoint_log"
           printf '%s\n' \
-            'gate=gate:campaign-midpoint-debug' \
-            'tasks=T-CAM-9.3'
+            'gate=gate:campaign-midpoint-debug'
         ''
         else ''
           if ! ${flight}/bin/campaign-process-flight --ignored --list \

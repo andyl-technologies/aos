@@ -270,7 +270,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=checks.crucible.phase1.phaseGateWiring
-            tasks=T-PLAN-3
             status=complete
             phase_gate_targets=${toString (builtins.length phaseGateTargets)}
             canonical_gates=${toString (builtins.length catalogGates)}

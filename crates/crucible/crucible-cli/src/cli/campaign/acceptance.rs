@@ -41,7 +41,7 @@ pub(super) struct CampaignBranchBudgetReport {
     pub(super) maximum_attempts: u64,
 }
 
-/// Flattened CAPI-12 branch-acceptance projection.
+/// Flattened branch-acceptance projection.
 #[derive(Clone, Copy, Debug, Serialize)]
 pub(super) struct CampaignBranchAcceptanceSummaryReport {
     pub(super) validated_cardinality: CampaignAcceptanceCountReport,

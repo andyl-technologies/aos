@@ -4,33 +4,32 @@
 //! submodules and re-exports their public surface:
 //!
 //! - [`codec`]: the versioned, little-endian, bounds-checked 9p wire ABI
-//!   (message framing, [`Qid`], request decode, reply encode, [IO-16], [IO-18]).
+//!   (message framing, [`Qid`], request decode, reply encode).
 //! - [`tree`]: the deterministic in-memory [`FsTree`] — path-hashed QIDs, sorted
-//!   enumeration, and fixed/content-derived attributes ([IO-13], [IO-14],
-//!   [IO-15]).
+//!   enumeration, and fixed/content-derived attributes.
 //! - [`server`]: the [`NinepServer`] dispatcher — fid state, the `EROFS`
 //!   read-only boundary, `msize` enforcement, and snapshot/restore of the fid
-//!   table ([IO-17], [IO-19]).
+//!   table.
 //! - [`device`]: the [`NinepDevice`] [`IoSubNode`](crate::subnode::IoSubNode)
 //!   implementation, its [`NinepLatency`] completion model, and its
-//!   [`NinepSnapshot`] device-half `MaterializedState` ([IO-22], [IO-23]).
+//!   [`NinepSnapshot`] device-half `MaterializedState`.
 //! - [`errno`]: the fixed Linux errno codes returned in `Rlerror` replies.
 //!
 //! The 9p device composes the uniform [`IoCore`](crate::subnode::IoCore) of the
-//! CS-IO-1 foundation for the clock, rings, in-flight queue, and
+//! shared I/O foundation for the clock, rings, in-flight queue, and
 //! COMPUTE-then-DELIVER lifecycle; this module supplies only the 9p-specific
 //! COMPUTE (dispatch a request frame against the read-only tree) and state (the
 //! served tree, the fid table, the RNG placeholder).
 //!
 //! # Determinism by construction
 //!
-//! Every value the server returns is a pure function of the served tree's content
-//! and the request ([IO-13]): QIDs are path-hashed not inode-derived, directory
+//! Every value the server returns is a pure function of the served tree's
+//! content and the request: QIDs are path-hashed not inode-derived, directory
 //! enumeration is lexicographically sorted, attributes are a fixed epoch / root
 //! ownership / content-derived sizes, and the fid table is a
 //! [`BTreeMap`](std::collections::BTreeMap) so its iteration never depends on
-//! host hashing ([IO-24]). No host clock, host filesystem ordering, or host inode
-//! ever participates.
+//! host hashing. No host clock, host filesystem ordering, or host inode ever
+//! participates.
 //!
 //! ```text
 //! 9p message frame (little-endian) — size[4] type[1] tag[2] body...

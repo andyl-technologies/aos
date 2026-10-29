@@ -4,7 +4,6 @@
   pkgs,
   qemuPackage ? pkgs.qemu-crucible,
   attrPath ? "checks.crucible.phase6.qemuNativeSourceOwnership",
-  taskIds ? [],
 }:
 pkgs.mkDerivation {
   pname = "crucible-phase6-qemu-native-source-ownership";
@@ -31,7 +30,6 @@ pkgs.mkDerivation {
         cat > "$out/result" <<'RESULT'
         PASS
         check=${attrPath}
-        tasks=${builtins.concatStringsSep "," taskIds}
         patch=crucible-qemu-11.1.1.patch
         native_vmstate_freeze_restore=true
         exact_read_only_file_identity=true

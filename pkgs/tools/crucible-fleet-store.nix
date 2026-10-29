@@ -194,13 +194,6 @@ in
       store_interface=DagStore::put,DagStore::get,DagStore::has
       fleet_visible=true
       aos_from_source=true
-      dce_task=T-DCE-1
-      dce_claim_lease_task=T-DCE-2
-      dce_four_layer_dedup_task=T-DCE-3
-      dce_campaign_manifest_task=T-DCE-4
-      dce_campaign_seed_task=T-DCE-5
-      dce_campaign_storage_bounding_task=T-DCE-6
-      dce_campaign_continuity_task=T-DCE-9
       shared_dag_store_proof=location-independent-identity,idempotent-concurrent-put
       frontier_claim_lease=ttl-hint
       stale_claim_lock=reclaimable

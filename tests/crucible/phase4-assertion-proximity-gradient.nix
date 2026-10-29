@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.assertionProximityGradient",
-  taskIds ? ["T-ASRT-18"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -17,7 +16,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-  taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "docs/engineering/crucible/assertions.md" assertionsDoc [
       {
@@ -89,8 +87,8 @@
     ]
     ++ failuresFor "crates/crucible/crucible-engine/tests/assertion_proximity_gradient.rs" proximityTest [
       {
-        label = "T-ASRT-18 regression module";
-        needle = "Checks T-ASRT-18 assertion proximity gradient reporting.";
+        label = "assertion proximity gradient regression module";
+        needle = "assertion proximity gradient reporting.";
       }
       {
         label = "minimum threshold gap test";
@@ -223,7 +221,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             assertion_proximity=steering-only-report-projection
             distance_fold=minimum-over-event-log-trajectory
             verdict_effect=none

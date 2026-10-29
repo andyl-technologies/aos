@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.crucibleCampaignStorageBounding",
-  taskIds ? ["T-DCE-6"],
   dependencies ? [],
 }: let
   casSource =
@@ -218,10 +217,6 @@
         label = "package validates explicit retention policy";
         needle = "grep -q '^corpus_retention_authorized=explicit-policy$'";
       }
-      {
-        label = "package records DCE campaign storage bounding task";
-        needle = "dce_campaign_storage_bounding_task=T-DCE-6";
-      }
     ]
     ++ failuresFor "default.nix" rootDefault [
       {
@@ -307,7 +302,6 @@ in
             cat > "$out/result" <<RESULT
             PASS
             check=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
             fleet_store_component=${fleetStore}
             runtime_probe=crucible-fleet-store probe
             campaign_gc_roots=manifest-roots

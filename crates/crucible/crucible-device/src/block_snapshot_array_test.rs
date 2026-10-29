@@ -9,7 +9,7 @@ fn completion_is_host_timing_independent() {
     assert_eq!(a, b, "host COMPUTE skew leaked into delivery/payload");
 }
 
-// ---- coincident completion ordering (IO-10) ----
+// ---- coincident completion ordering ----
 
 #[test]
 fn coincident_completions_deliver_in_total_order() {
@@ -27,7 +27,7 @@ fn coincident_completions_deliver_in_total_order() {
     assert_eq!(second.request_id, 11);
 }
 
-// ---- snapshot / restore round-trip (IO-11,23) ----
+// ---- snapshot / restore round-trip ----
 
 #[test]
 fn snapshot_excludes_base_and_restore_round_trips() {
@@ -110,7 +110,7 @@ fn snapshot_restore_preserves_inflight_responses() {
     );
 }
 
-// ---- run-twice determinism (IO-22) ----
+// ---- run-twice determinism ----
 
 #[test]
 fn run_twice_is_byte_identical() {
@@ -136,10 +136,10 @@ fn delta_pages_are_blake3_keyed() {
 
 #[test]
 fn regression_restore_preserves_mid_epoch_dirty_set() {
-    // Write a page WITHOUT crossing a checkpoint boundary: it stays dirty,
-    // so a mid-epoch snapshot must capture and a restore must reinstate the
-    // dirty bookkeeping ([IO-7], [IO-11]). Before the fix, restore reset the
-    // dirty set empty and the next snapshot's delta was incomplete.
+    // Write a page WITHOUT crossing a checkpoint boundary: it stays dirty, so a
+    // mid-epoch snapshot must capture and a restore must reinstate the dirty
+    // bookkeeping. Before the fix, restore reset the dirty set empty and the
+    // next snapshot's delta was incomplete.
     let mut dev = device(PAGE_SIZE * 2);
     ok(dev.submit(0, &BlockRequest::write(1, 0, vec![0xCD; 16])));
     let lim = dev.core().next_exact_local_event().unwrap_or(0);
@@ -220,7 +220,7 @@ fn regression_read_over_frame_cap_returns_error_status() {
     assert!(ok(r.encode()).len() <= crucible_qemu_shmem::MAX_FRAME_DATA);
 
     // One byte over the cap: rejected with an error status, never emitting an
-    // un-transportable frame ([IO-8]).
+    // un-transportable frame.
     ok(dev.submit(lim, &BlockRequest::read(2, 0, MAX_READ_BYTES as u32 + 1)));
     let lim2 = dev.core().next_exact_local_event().unwrap_or(lim);
     ok(dev.advance_to(lim2));

@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.apiCommandStatusTaxonomy",
-  taskIds ? ["T-API-10"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -33,8 +32,6 @@
   streamingEquivalenceTest = builtins.readFile ../../crates/crucible/crucible-control-server/tests/gate_streaming_equivalence.rs;
   explorationForkTest = builtins.readFile ../../crates/crucible/crucible-session/tests/gate_exploration_fork.rs;
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -300,7 +297,6 @@ in
 
     CRUCIBLE_T_API_10_FAILURES = failureText;
     ATTR_PATH = attrPath;
-    TASK_IDS = taskList;
     DEPENDENCY_COUNT = toString (builtins.length dependencies);
     DEPENDENCY_PATHS = builtins.concatStringsSep ":" dependencies;
 
@@ -379,9 +375,8 @@ in
     ];
 
     meta = {
-      description = "Crucible phase 5 API command status taxonomy gate for ${taskList}";
       passthru = {
-        inherit attrPath taskIds dependencies;
+        inherit attrPath dependencies;
         failureText = failureText;
       };
     };

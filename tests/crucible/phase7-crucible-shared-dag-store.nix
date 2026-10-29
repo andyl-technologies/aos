@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.crucibleSharedDagStore",
-  taskIds ? ["T-DCE-1"],
   dependencies ? [],
 }: let
   distributedExplorationDoc = builtins.readFile ../../docs/engineering/crucible/distributed-exploration.md;
@@ -123,10 +122,6 @@
         needle = "grep -q '^object_file_count=1$'";
       }
       {
-        label = "package records DCE task";
-        needle = "dce_task=T-DCE-1";
-      }
-      {
         label = "package records shared store proof";
         needle = "shared_dag_store_proof=location-independent-identity,idempotent-concurrent-put";
       }
@@ -225,7 +220,6 @@ in
             cat > "$out/result" <<RESULT
             PASS
             check=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
             fleet_store_component=${fleetStore}
             runtime_probe=crucible-fleet-store probe
             shared_store_backend=SharedDagStore

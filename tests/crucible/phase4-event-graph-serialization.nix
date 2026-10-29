@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.eventGraphSerialization",
-  taskIds ? ["T-TRIG-18"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -23,7 +22,6 @@
   # stack on large sources.
   scrubCommentsAndStrings = import ./_rust-scrub.nix {inherit lib;};
 
-  taskList = builtins.concatStringsSep "," taskIds;
   serializationSources = builtins.concatStringsSep "\n" [
     (scrubCommentsAndStrings trigger)
     (scrubCommentsAndStrings model)
@@ -266,10 +264,9 @@ in
             mkdir -p "$out/nix-support"
             {
               echo "attr=${attrPath}"
-              echo "tasks=${taskList}"
               echo "gate=phase4-event-graph-serialization"
-              echo "event_graph_builder=implemented-T-TRIG-18"
-              echo "plan_component_event_graph=implemented-T-TRIG-18"
+              echo "event_graph_builder=implemented"
+              echo "plan_component_event_graph=implemented"
               echo "canonical_toml_round_trip=true"
               echo "compact_binary_round_trip=true"
               echo "component_orthogonality=true"

@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase6.explorationFork",
-  taskIds ? ["T-ADV-3"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -11,8 +10,6 @@
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
   forkGateTest = builtins.readFile ../../crates/crucible/crucible-session/tests/gate_exploration_fork.rs;
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -158,10 +155,6 @@
         needle = "checks.crucible.phase6.explorationFork";
       }
       {
-        label = "phase6 exploration fork task id";
-        needle = ''taskIds = ["T-ADV-3"]'';
-      }
-      {
         label = "phase4 replay oracle raw dependency";
         needle = "\n          phase4.gates.replayOracle.rawGate\n";
       }
@@ -267,7 +260,6 @@ in
                         cat > "$out/result" <<RESULT
                         PASS
             check=${attrPath}
-            tasks=${taskList}
             fork=temporal-graph-branch,independent-child-session
             rust_test=crucible-session::gate_exploration_fork
             RESULT

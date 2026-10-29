@@ -1,4 +1,4 @@
-//! Checks T-OBS-14 assertion-proximity event-log projection.
+//! Checks assertion-proximity event-log projection.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.

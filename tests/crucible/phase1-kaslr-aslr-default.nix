@@ -32,8 +32,8 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-  # The any-guest contract (D-31): guest entropy-suppression flags MUST NOT be
-  # baked into the shipped default cmdline or gated on by the launch layer.
+  # The any-guest contract: guest entropy-suppression flags MUST NOT be baked
+  # into the shipped default cmdline or gated on by the launch layer.
 
   # Launch-source strings that only exist under the old conservative-default
   # contract (suppression flags appended, KASLR/ASLR error variants that gate a
@@ -124,10 +124,6 @@
         label = "phase1 exposes kaslr/aslr default check";
         needle = "kaslrAslrDefault = import ./phase1-kaslr-aslr-default.nix";
       }
-      {
-        label = "layer0 gate lists T-DET-6";
-        needle = "\"T-DET-6\"";
-      }
     ];
 in
   if failures != []
@@ -150,10 +146,9 @@ in
             PASS
             check=checks.crucible.phase1.kaslrAslrDefault
             gate=gate:layer0-determinism
-            tasks=T-DET-6
             default_kernel_randomization=kaslr-enabled-stock
             default_userspace_randomization=aslr-enabled-stock
-            spike=RISK-13/T-RISK-6
+            spike=kaslr-aslr-determinism
             spike_result=randomization_reproducible_with_fully_seeded_entropy
             default_decision=stock-guest-cmdline-host-side-sealed
             global_default=stock-no-entropy-suppression

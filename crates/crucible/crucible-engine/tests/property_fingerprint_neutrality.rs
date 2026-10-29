@@ -1,4 +1,4 @@
-//! Checks T-ASRT-2 property identity and run-fingerprint neutrality.
+//! Checks property identity and run-fingerprint neutrality.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.

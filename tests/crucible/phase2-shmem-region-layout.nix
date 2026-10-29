@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.shmemRegionLayout",
-  taskIds ? ["T-SHM-1" "T-SHM-2" "T-SHM-4" "T-SHM-5" "T-SHM-12"],
 }: let
   root = ../..;
   cratesDir = root + "/crates";
@@ -22,7 +21,6 @@
   regionTest = builtins.readFile ../../crates/crucible/crucible-qemu-shmem/tests/region_layout.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
@@ -411,7 +409,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             gate=gate:abi-conformance
             gate=gate:layer1-injection
             rust_tests=crucible_qemu_shmem::region_layout

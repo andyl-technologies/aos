@@ -1,4 +1,4 @@
-//! Checks T-GHC-12 channel determinism and marker fingerprint neutrality.
+//! Checks guest/host channel determinism and marker fingerprint neutrality.
 
 #![cfg(feature = "test-double")]
 #![forbid(unsafe_code)]

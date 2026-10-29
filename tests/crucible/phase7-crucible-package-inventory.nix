@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.cruciblePackageInventory",
-  taskIds ? ["T-PKG-1"],
 }: let
   packagingDoc = builtins.readFile ../../docs/engineering/crucible/packaging.md;
   pkgsDefault = builtins.readFile ../../pkgs/default.nix;
@@ -312,7 +311,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
             inventory=pkgs.qemu,pkgs.qemu-crucible,pkgs.qemu-crucible-reference,pkgs.crucible-qemu-plugin,pkgs.linux-crucible,pkgs.crucible,pkgs.crucible-fixtures,pkgs.crucible-guest,pkgs.crucible-fleet-store
             emulation_packages=pkgs.qemu,pkgs.qemu-crucible,pkgs.qemu-crucible-reference,pkgs.crucible-qemu-plugin
             kernel_packages=pkgs.linux-crucible

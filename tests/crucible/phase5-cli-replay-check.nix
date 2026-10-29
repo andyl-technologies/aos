@@ -2,8 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.cliReplayCheck",
-  taskIds ? ["T-CLI-12"],
-  openTaskIds ? [],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -447,8 +445,6 @@ in
       ];
 
       ATTR_PATH = attrPath;
-      TASK_IDS = builtins.concatStringsSep "," taskIds;
-      OPEN_TASK_IDS = builtins.concatStringsSep "," openTaskIds;
       DEPENDENCY_COUNT = toString (builtins.length dependencies);
       DEPENDENCY_PATHS = builtins.concatStringsSep ":" dependencies;
 
@@ -610,8 +606,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=$ATTR_PATH
-            tasks=$TASK_IDS
-            open_tasks=$OPEN_TASK_IDS
             status=complete
             evidence_scope=replay-model-and-live-qemu-process-validation
             component=crucible-cli

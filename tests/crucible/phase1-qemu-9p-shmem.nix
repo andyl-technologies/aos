@@ -27,7 +27,6 @@
       qemu_package=${qemuPackage}
       qemu_package_version=${qemuPackage.version}
     '';
-  taskIds = ["T-PATCH-13" "T-PATCH-20"];
   notifierCompileFlag = "-DEXPECT_UNCONDITIONAL_9P_WAKE_REGISTRATION";
   notifierResultLine = "late_plugin_9p_wake_notifier_registered=true";
 
@@ -922,7 +921,6 @@ in
 
             cat > "$out/result" <<'RESULT'
             PASS
-            tasks=${builtins.concatStringsSep "," taskIds}
             gate=gate:patch-microtests
             atomic_patch=${atomicPatch.file}
             patched_fixture_exercised=true

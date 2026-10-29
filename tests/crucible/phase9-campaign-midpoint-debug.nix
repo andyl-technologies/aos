@@ -59,7 +59,6 @@ in
           cat > "$out/result" <<RESULT
           PASS
           gate=gate:campaign-midpoint-debug
-          tasks=T-CAM-9.3
           public_finding_midpoint_debug=true
           authenticated_exact_checkpoint=true
           authenticated_replay_violation_boundary=true

@@ -367,7 +367,7 @@
               fputs("invalid crucible_seed= on kernel cmdline\n", stderr);
               return -1;
             }
-            /* D-31: the guest cmdline is stock. Determinism is sealed host-side
+            /* The guest cmdline is stock. Determinism is sealed host-side
                (seeded fw_cfg entropy + rng-builtin, fixed -cpu without
                RDRAND/RDSEED, -icount), so the guest does not need to pin
                random.trust_* off. We only require the seed to be present. */
@@ -948,7 +948,6 @@ in
             PASS
             check=checks.crucible.phase1.guestEntropyLaunch
             gate=gate:layer0-determinism
-            tasks=T-DET-5
             guest_boot_probe=true
             firmware_entropy=fw_cfg
             fw_cfg_name=opt/crucible/seed

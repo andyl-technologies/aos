@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.executionInstantiate",
-  taskIds ? ["T-EXEC-6" "T-PAT-9"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -226,7 +225,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
             instantiate_branches=exact-snapshot,ancestor-replay,baked-genesis
             pattern_PAT_11=recursive-instantiate
             hot_loop_cold_boot=false

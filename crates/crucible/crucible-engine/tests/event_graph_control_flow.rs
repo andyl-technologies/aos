@@ -1,4 +1,4 @@
-//! Checks T-TRIG-1 event-graph control flow after fault actions moved to bindings.
+//! Checks event-graph control flow after fault actions moved to bindings.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.

@@ -1,4 +1,4 @@
-//! Exercises the complete RFC-0020 branch-point model through public APIs.
+//! Exercises the complete campaign branch-point model through public APIs.
 //!
 //! The gate covers parent-scoped branch identity, finite/generated convergence,
 //! lazy request progress, semantic-attempt deduplication, retained causes,

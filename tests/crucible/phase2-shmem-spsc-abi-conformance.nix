@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.shmemSpscAbiConformance",
-  taskIds ? ["T-SHM-15"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -10,7 +9,6 @@
   shmemGate = builtins.readFile ../../crates/crucible/crucible-qemu-shmem/tests/gate_layer1_injection.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
@@ -188,7 +186,6 @@ in
             PASS
             check=${attrPath}
             gate=gate:abi-conformance
-            tasks=${taskList}
             rust_tests=crucible_qemu_shmem::gate_layer1_injection
             queue=Lamport-SPSC
             memory_ordering=release-acquire

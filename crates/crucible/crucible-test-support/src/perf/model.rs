@@ -74,7 +74,7 @@ pub struct BenchLink {
     /// Destination node name.
     pub to: String,
     /// Modeled link latency in virtual ticks; the lookahead budget of the
-    /// consumer is the minimum inbound link latency ([SCHED-6]).
+    /// consumer is the minimum inbound link latency.
     pub latency_ticks: u64,
 }
 

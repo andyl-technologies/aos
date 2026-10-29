@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.protocolCodec",
-  taskIds ? ["T-PROTO-2"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -11,8 +10,6 @@
   codecTest = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/tests/codec.rs;
   protocolAbiGate = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/tests/gate_abi_conformance.rs;
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -148,10 +145,6 @@
         label = "canonical ABI conformance gate is implemented";
         needle = "abiConformance = import ./phase2-abi-conformance.nix";
       }
-      {
-        label = "canonical ABI conformance task list";
-        needle = "taskIds = [\"T-HARN-17\" \"T-API-11\" \"T-API-12\" \"T-PAT-8\"]";
-      }
     ];
 in
   if failures != []
@@ -219,7 +212,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             gate=gate:abi-conformance
             rust_tests=crucible_qemu_protocol::codec
             codec=pure-owned-buffer

@@ -2,8 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.crucibleGateCiWiring",
-  taskIds ? ["T-PKG-14"],
-  openTaskIds ? [],
   dependencies ? [],
 }: let
   rootDefault = builtins.readFile ../../default.nix;
@@ -340,14 +338,6 @@
         label = "qemu-inert records completed status";
         needle = "status=complete";
       }
-      {
-        label = "qemu-inert owns completed tasks";
-        needle = ''taskIds ? ["T-DET-23" "T-HARN-21" "T-PATCH-3"]'';
-      }
-      {
-        label = "qemu-inert has no open tasks";
-        needle = "openTaskIds ? []";
-      }
     ]
     ++ failuresFor "default.nix" rootDefault [
       {
@@ -388,28 +378,12 @@
         needle = ''attrPath = "checks.integration.qemu-crucible-patch-microtests";'';
       }
       {
-        label = "package patch-microtests completed task ownership";
-        needle = ''taskIds = ["T-PKG-4" "T-HARN-20" "T-PATCH-2"'';
-      }
-      {
-        label = "package patch-microtests has no open task ownership";
-        needle = "openTaskIds = [];";
-      }
-      {
         label = "package patch-microtests uses package self";
         needle = "qemuPackage = self;";
       }
       {
         label = "package qemu-inert integration attrPath";
         needle = ''attrPath = "checks.integration.qemu-crucible-qemu-inert";'';
-      }
-      {
-        label = "package qemu-inert completed task ownership";
-        needle = ''taskIds = ["T-PLAN-3" "T-DET-23" "T-HARN-21" "T-PATCH-3"]'';
-      }
-      {
-        label = "package qemu-inert has no open task ownership";
-        needle = "openTaskIds = [];";
       }
       {
         label = "package qemu-inert uses package self";
@@ -572,35 +546,35 @@
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
-        label = "T-PKG-14 wiring guard is exposed";
+        label = "wiring guard is exposed";
         needle = ''attrPath = "checks.crucible.phase7.crucibleGateCiWiring";'';
       }
       {
-        label = "T-PKG-21 fleet store guard is exposed";
+        label = "fleet store guard is exposed";
         needle = ''attrPath = "checks.crucible.phase7.crucibleFleetStore";'';
       }
       {
-        label = "T-PKG-23 CAS fleet seam guard is exposed";
+        label = "CAS fleet seam guard is exposed";
         needle = ''attrPath = "checks.crucible.phase7.crucibleCasFleetRatchetSeam";'';
       }
       {
-        label = "T-DCE-4 campaign manifest guard is exposed";
+        label = "campaign manifest guard is exposed";
         needle = ''attrPath = "checks.crucible.phase7.crucibleCampaignManifest";'';
       }
       {
-        label = "T-DCE-5 campaign seeding guard is exposed";
+        label = "campaign seeding guard is exposed";
         needle = ''attrPath = "checks.crucible.phase7.crucibleCampaignSeeding";'';
       }
       {
-        label = "T-DCE-6 campaign storage bounding guard is exposed";
+        label = "campaign storage bounding guard is exposed";
         needle = ''attrPath = "checks.crucible.phase7.crucibleCampaignStorageBounding";'';
       }
       {
-        label = "T-DCE-7 determinism guardrail guard is exposed";
+        label = "determinism guardrail guard is exposed";
         needle = ''attrPath = "checks.crucible.phase7.crucibleDeterminismGuardrail";'';
       }
       {
-        label = "T-PKG-22 campaign provenance guard is exposed";
+        label = "campaign provenance guard is exposed";
         needle = ''attrPath = "checks.crucible.phase7.crucibleCampaignProvenance";'';
       }
       {
@@ -765,8 +739,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
-            open_tasks=${builtins.concatStringsSep "," openTaskIds}
             status=complete
             evidence_scope=gate-ci-wiring-with-complete-atomic-patch-attribution
             eval_class_gates=${builtins.concatStringsSep "," (map (gate: gate.gate) evalClassGates)}

@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.qemuDiagnosticPatchesDevOnly",
-  taskIds ? ["T-PATCH-18"],
   qemuPackage ? pkgs.qemu-crucible,
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
@@ -95,7 +94,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
             gate=gate:qemu-inert
             gate=gate:patch-microtests
             patch=no-shipped-diagnostic-patch

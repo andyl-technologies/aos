@@ -2,8 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.decisionRecording",
-  taskIds ? ["T-DET-16" "T-EXEC-19" "T-EXEC-20" "T-PAT-5"],
-  openTaskIds ? [],
 }: let
   root = ../..;
   decisionRust = builtins.readFile ../../crates/crucible/crucible-engine/src/decision.rs;
@@ -330,8 +328,6 @@ in
             PASS
             check=${attrPath}
             gate=gate:layer0-determinism
-            tasks=${builtins.concatStringsSep "," taskIds}
-            open_tasks=${builtins.concatStringsSep "," openTaskIds}
             status=complete
             evidence_scope=decision-recorder-model
             crate=crucible

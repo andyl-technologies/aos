@@ -1,4 +1,4 @@
-//! Checks T-OBS-12 `tracing` bridge non-perturbation.
+//! Checks `tracing` bridge non-perturbation.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.

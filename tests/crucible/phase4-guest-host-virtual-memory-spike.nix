@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.guestHostVirtualMemorySpike",
-  taskIds ? ["T-GHC-13"],
   phase0S5 ? import ./phase0-s5.nix {inherit pkgs lib;},
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -21,15 +20,14 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-  taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "docs/engineering/crucible/guest-host-channel.md" guestHostChannelDoc [
       {
-        label = "S5 dependency named";
+        label = "virtual-memory evidence dependency named";
         needle = "`checks.crucible.phase0.s5VirtualMemory`";
       }
       {
-        label = "S5 evidence flags";
+        label = "virtual-memory evidence flags";
         needle = "paged-mmap reads, reproducible icounts and hashes";
       }
       {
@@ -57,7 +55,7 @@
     ]
     ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhitebox [
       {
-        label = "S5 check constant";
+        label = "virtual-memory evidence check constant";
         needle = "WHITEBOX_GUEST_MEMORY_VADDR_SPIKE_CHECK";
       }
       {
@@ -73,7 +71,7 @@
         needle = "pub const fn virtual_pointer_length_is_sound";
       }
       {
-        label = "S5 check identity in soundness predicate";
+        label = "virtual-memory evidence check identity in soundness predicate";
         needle = "static_str_eq(self.check, WHITEBOX_GUEST_MEMORY_VADDR_SPIKE_CHECK)";
       }
       {
@@ -89,7 +87,7 @@
         needle = "pub const fn from_default_payload_addressing";
       }
       {
-        label = "supplied S5 pass selects virtual pointer length";
+        label = "supplied virtual-memory evidence selects virtual pointer length";
         needle = "whitebox_guest_memory_addressing_uses_supplied_s5_virtual_pointer_length_evidence";
       }
       {
@@ -97,7 +95,7 @@
         needle = "whitebox_guest_memory_addressing_unresolved_default_is_physical_shared_page";
       }
       {
-        label = "non-S5 evidence falls back";
+        label = "foreign evidence falls back";
         needle = "whitebox_guest_memory_addressing_rejects_non_s5_evidence";
       }
       {
@@ -131,11 +129,7 @@
         needle = "checks.crucible.phase4.guestHostVirtualMemorySpike";
       }
       {
-        label = "phase4 virtual memory spike task id";
-        needle = "taskIds = [\"T-GHC-13\"]";
-      }
-      {
-        label = "phase4 virtual memory spike depends on S5";
+        label = "phase4 virtual memory spike depends on phase0 virtual-memory evidence";
         needle = "phase0S5 = phase0.s5VirtualMemory;";
       }
     ]
@@ -272,12 +266,11 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             spike_dependency=checks.crucible.phase0.s5VirtualMemory
             virtual_pointer_length_default=selected-by-phase0-s5-result
             unresolved_default=physical-shared-page
             app_random_reply_addressing=same-resolution-as-payload
-            physical_pinned_fallback=retained-if-S5-absent-or-invalidated
+            physical_pinned_fallback=retained-if-virtual-memory-evidence-absent-or-invalidated
             qemu_plugin_read_memory_vaddr_available=true
             virtual_address_read_result=pass
             RESULT

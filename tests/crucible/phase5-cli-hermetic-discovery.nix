@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.cliHermeticDiscovery",
-  taskIds ? ["T-CLI-5"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -13,8 +12,6 @@
   defaultChecks = builtins.readFile ./default.nix;
   cruciblePkg = builtins.readFile ../../pkgs/tools/crucible/crucible.nix;
   pluginPkg = builtins.readFile ../../pkgs/emulation/crucible-qemu-plugin.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
@@ -141,8 +138,8 @@
         needle = "plugin_abi: String";
       }
       {
-        label = "T-CLI-5 proof predicate";
-        needle = "fn proves_t_cli_5";
+        label = "hermetic discovery proof predicate";
+        needle = "fn satisfies_hermetic_discovery";
       }
       {
         label = "host PATH never used message";
@@ -256,7 +253,6 @@ in
 
     CRUCIBLE_T_CLI_5_FAILURES = failureText;
     ATTR_PATH = attrPath;
-    TASK_IDS = taskList;
     DEPENDENCY_COUNT = toString (builtins.length dependencies);
     DEPENDENCY_PATHS = builtins.concatStringsSep ":" dependencies;
 
@@ -356,9 +352,8 @@ in
     ];
 
     meta = {
-      description = "Crucible phase 5 CLI hermetic QEMU discovery gate for ${taskList}";
       passthru = {
-        inherit attrPath dependencies failureText taskIds;
+        inherit attrPath dependencies failureText;
       };
     };
   }

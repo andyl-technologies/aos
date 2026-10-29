@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.cruciblePackageHermeticDiscovery",
-  taskIds ? ["T-PKG-9"],
 }: let
   packagingDoc = builtins.readFile ../../docs/engineering/crucible/packaging.md;
   cruciblePackageNix = builtins.readFile ../../pkgs/tools/crucible/crucible.nix;
@@ -307,7 +306,6 @@ in
           {
             printf '%s\n' 'PASS'
             printf 'check=%s\n' "$ATTR_PATH"
-            printf 'tasks=%s\n' "$TASK_IDS"
             printf '%s\n' 'package=crucible'
             printf '%s\n' 'qemu_package=qemu-crucible'
             printf '%s\n' 'plugin_package=crucible-qemu-plugin'
@@ -319,5 +317,4 @@ in
         ''
       ];
       ATTR_PATH = attrPath;
-      TASK_IDS = builtins.concatStringsSep "," taskIds;
     }

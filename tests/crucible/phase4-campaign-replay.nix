@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.gates.campaignReplay.rawGate",
-  taskIds ? ["T-CAM-3.5" "T-CAM-4.7" "T-CAM-4.10" "T-CAM-8.4"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -126,7 +125,6 @@ in
           cat > "$out/result" <<RESULT
           PASS
           check=${attrPath}
-          tasks=${builtins.concatStringsSep "," taskIds}
           gate=gate:campaign-replay
           scope=portable-model,strict,production-qemu,native
           tier=automated

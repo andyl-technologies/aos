@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.guestHostOsAgnostic",
-  taskIds ? ["T-GHC-2"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -14,7 +13,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-  taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [
       {
@@ -163,10 +161,6 @@
         label = "phase4 OS-agnostic attr path";
         needle = "checks.crucible.phase4.guestHostOsAgnostic";
       }
-      {
-        label = "phase4 OS-agnostic task id";
-        needle = "taskIds = [\"T-GHC-2\"]";
-      }
     ]
     ++ forbiddenFor "crates/crucible/crucible-engine/tests/guest_host_os_agnostic.rs" osAgnosticTest [
       {
@@ -250,7 +244,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             os_agnostic_black_box=true
             guest_assumptions=none
             console_direction=output-only

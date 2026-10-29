@@ -3,7 +3,6 @@
 {
   pkgs,
   attrPath ? "checks.crucible.phase6.qemuHotForkProductAudit",
-  taskIds ? [],
   readiness,
   nativeAtomic,
   nativeEquivalence,
@@ -100,7 +99,6 @@ pkgs.mkDerivation {
         PASS
         check=${attrPath}
         gate=gate:hot-fork-product-audit
-        tasks=${builtins.concatStringsSep "," taskIds}
         representative_product=nginx,curl,block,ninep
         live_template_quiescence_and_mapping_admitted=true
         private_child_resources_and_rejection_authenticated=true

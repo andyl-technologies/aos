@@ -5,15 +5,16 @@ use super::*;
 /// The shmem slot the link carries frames over (`SLOT_NET_ROUTER`).
 ///
 /// Re-exported from `crucible-qemu-shmem` so the slot binding is referenced, never
-/// hardcoded ([IO-20]). The QEMU backend performs the concrete ring copy while
-/// this crate owns the deterministic link model.
+/// hardcoded. The QEMU backend performs the concrete ring copy while this crate
+/// owns the deterministic link model.
 pub const LINK_SLOT: usize = SLOT_NET_ROUTER;
 
 /// A frame emitted by the link's source node at a virtual-time icount.
 ///
-/// The payload is opaque bytes the link delivers (and may corrupt); `emit_icount`
-/// is the source's icount when the frame was emitted (the base for the delivery
-/// computation, [IO-20]); `frame_id` correlates the frame across the link.
+/// The payload is opaque bytes the link delivers (and may corrupt);
+/// `emit_icount` is the source's icount when the frame was emitted (the base
+/// for the delivery computation); `frame_id` correlates the frame across the
+/// link.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Frame {
     /// The source node's icount when the frame was emitted.
@@ -290,7 +291,7 @@ impl Delivery {
 /// path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PastDeliveryPolicy {
-    /// Fail loudly with [`DeviceError::DeliveryReorderedIntoPast`] ([INV-10]).
+    /// Fail loudly with [`DeviceError::DeliveryReorderedIntoPast`].
     FailLoud,
     /// Clamp the delivery up to `consumer_frontier + 1` (a deliverable future).
     ///
@@ -318,12 +319,12 @@ pub struct ResolveOutcome {
 /// Each probabilistic effect draws from this struct in the order the model
 /// applies them: jitter, reorder, loss rates, duplicate, corrupt (with
 /// `corruption_selectors` supplying draws for payload corruption strategies).
-/// Supplying the same draws and the same frame yields byte-identical deliveries
-/// ([IO-4], [IO-22]).
+/// Supplying the same draws and the same frame yields byte-identical
+/// deliveries.
 ///
 /// The seeded per-device RNG ([`DeviceRng`]) produces these draws in this exact
-/// consumption order via [`FrameDraws::from_rng_for_faults`] ([IO-21]); callers
-/// may still inject draws directly for unit tests.
+/// consumption order via [`FrameDraws::from_rng_for_faults`]; callers may still
+/// inject draws directly for unit tests.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FrameDraws {
     /// The jitter-window draw.
@@ -347,14 +348,14 @@ pub struct FrameDraws {
 }
 
 impl FrameDraws {
-    /// Draws one frame's fault draws from the seeded per-device RNG ([IO-21]).
+    /// Draws one frame's fault draws from the seeded per-device RNG.
     ///
     /// Consumes draws from `rng` in the fixed model order -- jitter, reorder,
-    /// loss, duplicate, corrupt, then `bit_flips` corruption-bit selectors -- so
-    /// two runs with the same seed and the same frames produce byte-identical
-    /// deliveries ([IO-22]). `selector_draws` is the number of selectors needed
-    /// by the link's concrete corruption strategies; supplying it here keeps
-    /// the RNG cursor aligned whether or not corruption ultimately fires.
+    /// loss, duplicate, corrupt, then `bit_flips` corruption-bit selectors --
+    /// so two runs with the same seed and the same frames produce
+    /// byte-identical deliveries. `selector_draws` is the number of selectors
+    /// needed by the link's concrete corruption strategies; supplying it here
+    /// keeps the RNG cursor aligned whether or not corruption ultimately fires.
     #[must_use]
     pub fn from_rng(rng: &mut DeviceRng, selector_draws: u32) -> Self {
         Self::from_rng_parts(rng, selector_draws, 0)

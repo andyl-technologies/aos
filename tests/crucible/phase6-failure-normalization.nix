@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase6.failureNormalization",
-  taskIds ? ["T-TRI-2"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -17,8 +16,6 @@
   };
   signatureTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/gate_failure_signature.rs;
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -170,10 +167,6 @@
         needle = "checks.crucible.phase6.failureNormalization";
       }
       {
-        label = "explicit task id";
-        needle = "taskIds = [\"T-TRI-2\"]";
-      }
-      {
         label = "failure signature raw dependency";
         needle = "phase6.failureSignature.rawGate";
       }
@@ -197,10 +190,6 @@
       }
     ]
     ++ forbiddenFailuresFor "crates/crucible/crucible-engine/src/model/failure/material.rs" failureSignatureMaterial [
-      {
-        label = "deferred causal slice";
-        needle = "until the T-TRI-2 cone normalization";
-      }
       {
         label = "whole causal projection as cone hash";
         needle = "causal_slice_hash: Some(event_log.causal_subsequence";
@@ -291,7 +280,6 @@ in
             cat > "$out/result" <<RESULT
             PASS
             check=${attrPath}
-            tasks=${taskList}
             gate=gate:failure-normalization
             source=recorded-run-only
             key=report-only-icount-symmetry-cone

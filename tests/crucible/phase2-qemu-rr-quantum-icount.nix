@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuRrQuantumIcount",
-  taskIds ? ["T-PATCH-21"],
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
   atomicPatch = import (patchDir + "/_atomic-patch.nix");
@@ -13,13 +12,12 @@
   defaultChecks = builtins.readFile ./default.nix;
 
   qemuMultiVcpuLaunch = import ./phase2-qemu-multi-vcpu-launch.nix {inherit pkgs lib;};
-  # Reuse the canonical long-horizon S11 derivation. Secondary vCPUs remain
-  # halted during the short boot prefix, so a shortened fixture cannot prove a
-  # real RR handoff even though the exported cursor is already valid.
+  # Reuse the canonical long-horizon multi-vCPU spike derivation. Secondary
+  # vCPUs remain halted during the short boot prefix, so a shortened fixture
+  # cannot prove a real RR handoff even though the exported cursor is already
+  # valid.
   simS11 = import ./phase0-s11.nix {inherit pkgs lib;};
   pauseIpiLive = import ./phase2-qemu-pause-ipi-live.nix {inherit pkgs lib;};
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -66,103 +64,103 @@
     ]
     ++ failuresFor "tests/crucible/phase0-s11.nix" phase0S11 [
       {
-        label = "S11 exercises guest PAUSE under spinlock contention";
+        label = "multi-vCPU spike exercises guest PAUSE under spinlock contention";
         needle = ''__asm__ __volatile__("pause" ::: "memory")'';
       }
       {
-        label = "S11 production sim accelerator parameter";
+        label = "multi-vCPU spike production sim accelerator parameter";
         needle = ''accelerator ? "sim,thread=single"'';
       }
       {
-        label = "S11 sim accelerator override";
+        label = "multi-vCPU spike sim accelerator override";
         needle = "ACCELERATOR = accelerator;";
       }
       {
-        label = "S11 launch uses accelerator override";
+        label = "multi-vCPU spike launch uses accelerator override";
         needle = ''-accel "$ACCELERATOR"'';
       }
       {
-        label = "S11 diffs the authoritative trace through the exact horizon";
+        label = "multi-vCPU spike diffs the authoritative trace through the exact horizon";
         needle = ''"$TMPDIR/trace-authoritative-a.jsonl"'';
       }
       {
-        label = "S11 localizes RR current-vCPU mismatches";
+        label = "multi-vCPU spike localizes RR current-vCPU mismatches";
         needle = ''rr_current_vcpu'';
       }
       {
-        label = "S11 localizes RR cursor mismatches";
+        label = "multi-vCPU spike localizes RR cursor mismatches";
         needle = ''rr_cursor_position'';
       }
       {
-        label = "S11 result records aggregate icount stream equality";
+        label = "multi-vCPU spike result records aggregate icount stream equality";
         needle = "aggregate_icount_stream_match=true";
       }
       {
-        label = "S11 extracts explicit RR switch trace";
+        label = "multi-vCPU spike extracts explicit RR switch trace";
         needle = ''select(.kind == "rr_switch")'';
       }
       {
-        label = "S11 extracts per-vCPU delta trace";
+        label = "multi-vCPU spike extracts per-vCPU delta trace";
         needle = "per_vcpu_delta";
       }
       {
-        label = "S11 records RR switch event count";
+        label = "multi-vCPU spike records RR switch event count";
         needle = ''rr_switch_events="$rr_switch_events_a"'';
       }
       {
-        label = "S11 records an explicit RR switch projection mismatch";
+        label = "multi-vCPU spike records an explicit RR switch projection mismatch";
         needle = "rr_switch_trace_match=false";
       }
       {
-        label = "S11 records a per-vCPU delta projection mismatch";
+        label = "multi-vCPU spike records a per-vCPU delta projection mismatch";
         needle = "per_vcpu_delta_trace_match=false";
       }
       {
-        label = "S11 routes raw mismatches through a shared localizer";
+        label = "multi-vCPU spike routes raw mismatches through a shared localizer";
         needle = "localize_first_difference";
       }
       {
-        label = "S11 reports the first differing node-icount";
+        label = "multi-vCPU spike reports the first differing node-icount";
         needle = "first_differing_node_icount";
       }
       {
-        label = "S11 negative-tests per-vCPU register localization";
+        label = "multi-vCPU spike negative-tests per-vCPU register localization";
         needle = "mismatch_localization_vcpu_negative_test=true";
       }
       {
-        label = "S11 negative-tests RR cursor localization";
+        label = "multi-vCPU spike negative-tests RR cursor localization";
         needle = "mismatch_localization_rr_cursor_negative_test=true";
       }
       {
-        label = "S11 result records explicit RR switch trace equality";
+        label = "multi-vCPU spike result records explicit RR switch trace equality";
         needle = "rr_switch_trace_match=true";
       }
       {
-        label = "S11 result records per-vCPU delta trace equality";
+        label = "multi-vCPU spike result records per-vCPU delta trace equality";
         needle = "per_vcpu_delta_trace_match=true";
       }
       {
-        label = "S11 bounded sim stop_at support";
+        label = "multi-vCPU spike bounded sim stop_at support";
         needle = ''run_horizon="$run_horizon"'';
       }
       {
-        label = "S11 bounds non-final periodic samples from stop_at and cadence";
+        label = "multi-vCPU spike bounds non-final periodic samples from stop_at and cadence";
         needle = ''expected_non_final_sample_count: (($stop_at / $cadence) | ceil)'';
       }
       {
-        label = "S11 fails when the observed periodic sample count drifts";
+        label = "multi-vCPU spike fails when the observed periodic sample count drifts";
         needle = ''[ "$periodic_samples_observed" -eq "$periodic_samples_expected" ]'';
       }
       {
-        label = "S11 default uses the fixed predeclared horizon";
+        label = "multi-vCPU spike default uses the fixed predeclared horizon";
         needle = "stopAt ? 8000000000";
       }
       {
-        label = "S11 static PID 1 passes the sustained workload selector";
+        label = "multi-vCPU spike static PID 1 passes the sustained workload selector";
         needle = ''"--sustain",'';
       }
       {
-        label = "S11 explicit null stop_at retains reboot completion";
+        label = "multi-vCPU spike explicit null stop_at retains reboot completion";
         needle = ''if stopAt == null'';
       }
     ]
@@ -261,7 +259,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             gate=gate:patch-microtests
             gate=gate:single-vm-fingerprint
             atomic_patch=${atomicPatch.file}

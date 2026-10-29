@@ -11,14 +11,13 @@ use crate::subnode::IoCoreSnapshotCodecError;
 use serde::ser::SerializeSeq;
 use serde::{Serialize, Serializer};
 
-/// The device half of a 9p sub-node's `MaterializedState` ([IO-19], [IO-23]).
+/// The device half of a 9p sub-node's `MaterializedState`.
 ///
 /// Holds the uniform-core snapshot (clock, rings, in-flight responses), the
 /// server's fid table and negotiated `msize`, the latency model (part of the
-/// `World`, [IO-22]), exact directives, visibility continuation, and session
-/// identity. It **never** holds
-/// the served tree bytes ([TEMP-9]); restore re-supplies the content-addressed
-/// tree, whose open caches are pure functions of it.
+/// `World`), exact directives, visibility continuation, and session identity.
+/// It **never** holds the served tree bytes; restore re-supplies the
+/// content-addressed tree, whose open caches are pure functions of it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NinepSnapshot {
     /// The uniform-core snapshot: clock, rings, in-flight responses.
@@ -26,7 +25,7 @@ pub struct NinepSnapshot {
     /// The protocol server snapshot: the fid table and negotiated `msize`.
     pub server: NinepServerSnapshot,
     /// The latency model parameters, restored so post-restore completion icounts
-    /// match an uninterrupted run ([IO-22]).
+    /// match an uninterrupted run.
     pub latency: NinepLatency,
     /// Whether every compute requires an authenticated request directive.
     pub require_fault_directives: bool,

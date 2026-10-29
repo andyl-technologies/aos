@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase6.coverageFeedback",
-  taskIds ? ["T-ADV-11"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -20,8 +19,6 @@
   searchStrategiesGate = builtins.readFile ./phase6-search-strategies.nix;
   basicBlockCoverageGate = builtins.readFile ./phase6-basic-block-coverage.nix;
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -265,10 +262,6 @@
         needle = "checks.crucible.phase6.coverageFeedback";
       }
       {
-        label = "phase6 coverage feedback task id";
-        needle = ''taskIds = ["T-ADV-11"]'';
-      }
-      {
         label = "phase2 single VM fingerprint raw dependency";
         needle = "\n          phase2.gates.singleVmFingerprint.rawGate\n";
       }
@@ -390,7 +383,6 @@ in
             cat > "$out/result" <<RESULT
             PASS
             check=${attrPath}
-            tasks=${taskList}
             gate=gate:coverage-feedback
             event_log_projection=single-source
             search_feedback=checkpoint-coverage-fingerprint

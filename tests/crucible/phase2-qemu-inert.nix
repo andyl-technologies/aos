@@ -2,8 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.gates.qemuInert",
-  taskIds ? ["T-DET-23" "T-HARN-21" "T-PATCH-3"],
-  openTaskIds ? [],
   patchMicrotests ? import ./phase2-patch-microtests.nix {inherit pkgs lib;},
   referenceQemu ? pkgs.qemu-crucible-reference,
   patchedQemu ? pkgs.qemu-crucible,
@@ -1065,8 +1063,6 @@
     cat > "$out/result" <<'RESULT'
     PASS
     check=${attrPath}
-    tasks=${builtins.concatStringsSep "," taskIds}
-    open_tasks=${builtins.concatStringsSep "," openTaskIds}
     status=complete
     evidence_scope=atomic-patch-sim-off-upstream-equivalent-corpus
     gate=gate:qemu-inert
