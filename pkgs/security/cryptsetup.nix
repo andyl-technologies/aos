@@ -38,7 +38,7 @@ in
     pname = "cryptsetup";
     module = ./_cryptsetup;
     moduleDeps = [service-management aos-cryptsetup-provider aos-storage-format-provider];
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Cryptsetup creates and recognizes the encrypted-container header.";

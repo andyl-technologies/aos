@@ -39,7 +39,7 @@ in
       role = "public-package";
     };
     pname = "perl-http-daemon";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The daemon binds loopback and reports a nonzero local port in an HTTP URL.";

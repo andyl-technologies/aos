@@ -70,7 +70,7 @@ in
       role = "public-package";
     };
     pname = "ruby";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Ruby prints the exact integer result 42.";

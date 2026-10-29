@@ -515,7 +515,7 @@ mod tests {
             .method(method)
             .uri(url.as_str())
             .extension(
-                aos_hub_service::connect::DeliveryTransportEvidence::from_verified_url(&url, "hub")
+                aos_hub_service::connect::VerifiedTransport::from_verified_url(&url, "hub")
                     .unwrap(),
             )
             .body(Body::empty())
@@ -1112,7 +1112,7 @@ mod tests {
         }
         let request = request
             .extension(
-                aos_hub_service::connect::DeliveryTransportEvidence::from_verified_url(&url, "hub")
+                aos_hub_service::connect::VerifiedTransport::from_verified_url(&url, "hub")
                     .unwrap(),
             )
             .body(Body::empty())

@@ -19,7 +19,7 @@ in
       role = "public-package";
     };
     pname = "rpcsvc-proto";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The header declares the answer structure and its XDR function.";

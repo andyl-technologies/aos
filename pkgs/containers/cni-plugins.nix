@@ -28,7 +28,7 @@ in
       role = "public-package";
     };
     pname = "cni-plugins";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The plugin returns a supportedVersions array containing CNI 1.0.0.";

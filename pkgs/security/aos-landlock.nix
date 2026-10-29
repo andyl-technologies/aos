@@ -12,7 +12,7 @@ mkDerivation {
     role = "public-package";
   };
   pname = "aos-landlock";
-  qualification.packageProbe = lib.qualification.commandProbe {
+  smokeTest = lib.qualification.commandProbe {
     "primary" = {
       "artifacts" = [];
       "expected" = "The wrapper returns success and documents its filesystem and network policy options.";

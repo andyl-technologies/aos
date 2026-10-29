@@ -13,8 +13,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::surface_write::{SurfaceDeleteOutcome, SurfaceDeletePrecondition, SurfaceWriteProvider};
 use aos_hub_db::db::{
-    Database, ObjectDeletionAttemptReceipt, ObjectDeletionJobRecord,
-    RecordObjectDeletionAttemptResponse,
+    Database, DeletionAttempt, ObjectDeletionJobRecord, RecordObjectDeletionAttemptResponse,
 };
 
 /// Aggregate result of one bounded controller pass.
@@ -160,7 +159,7 @@ impl CacheGcDeletionController {
     #[allow(clippy::type_complexity)]
     async fn perform_backend_delete(
         &self,
-        receipt: &ObjectDeletionAttemptReceipt,
+        receipt: &DeletionAttempt,
     ) -> (
         String,
         Option<String>,

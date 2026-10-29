@@ -15,7 +15,7 @@ in
       role = "public-package";
     };
     pname = "setuptools";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "strtobool accepts the value and returns integer 1.";

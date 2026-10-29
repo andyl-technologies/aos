@@ -14,7 +14,7 @@ in
       role = "public-package";
     };
     pname = "libtasn1";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "libtasn1 builds and releases the definition tree.";

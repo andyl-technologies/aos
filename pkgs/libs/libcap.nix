@@ -18,7 +18,7 @@ in
       role = "public-package";
     };
     pname = "libcap";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The rendered set contains cap_chown with effective and permitted flags.";

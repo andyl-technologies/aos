@@ -100,7 +100,7 @@ in
       role = "public-package";
     };
     pname = "qemu-crucible-source";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The upstream archive, patch series, boundary header, build expression, plugin workspace, and vendor tree are present and nonempty.";

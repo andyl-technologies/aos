@@ -80,7 +80,7 @@ impl aos_hub_service::topology_probe::StorageCredentialProbeProvider
         binding: &aos_hub_db::db::BindingRecord,
         credential: &aos_hub_db::db::BindingCredentialRevisionRecord,
         probe_token: &str,
-    ) -> Result<aos_hub_service::topology_probe::StorageCredentialProbeEvidence> {
+    ) -> Result<aos_hub_service::topology_probe::StorageCredentialProbeResult> {
         anyhow::ensure!(
             credential.binding_id == binding.id,
             "credential probe binding identity is inconsistent"
@@ -222,7 +222,7 @@ impl aos_hub_service::topology_probe::StorageCredentialProbeProvider
             )
         });
         Ok(
-            aos_hub_service::topology_probe::StorageCredentialProbeEvidence {
+            aos_hub_service::topology_probe::StorageCredentialProbeResult {
                 valid,
                 conditional_writes_supported: false,
                 error,
@@ -802,7 +802,7 @@ impl WorkerEgressClient {
         rand::rng().fill(&mut nonce_bytes);
         let nonce = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(nonce_bytes);
         let timestamp = aos_hub_model::clock::now_unix_secs();
-        let evidence = aos_hub_service::egress_protocol::RequestEvidence {
+        let evidence = aos_hub_service::egress_protocol::SignedRequestParts {
             timestamp,
             nonce: &nonce,
             target_url: target,
@@ -912,7 +912,7 @@ impl WorkerEgressClient {
         let signature = required("x-aos-egress-signature")?;
         aos_hub_service::egress_protocol::verify_response(
             key,
-            &aos_hub_service::egress_protocol::ResponseEvidence {
+            &aos_hub_service::egress_protocol::ResponseObservation {
                 timestamp,
                 nonce: &nonce,
                 final_url: &final_url,

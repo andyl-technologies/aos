@@ -55,7 +55,7 @@ in
       role = "public-package";
     };
     pname = "libbpf";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Libbpf reports Invalid argument and matches its public version constants.";

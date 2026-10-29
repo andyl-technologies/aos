@@ -106,7 +106,7 @@ in
       role = "public-package";
     };
     pname = "wget";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Wget completes the HTTP exchange and preserves the exact response body.";

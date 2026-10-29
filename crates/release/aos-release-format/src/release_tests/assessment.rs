@@ -6,9 +6,9 @@ use anyhow::{Result, bail};
 
 use super::expansion::expand;
 use super::selection::select;
-use super::{QualificationCase, QualificationObservation};
+use super::{QualificationObservation, ReleaseTest};
 use crate::digest::Sha256Digest;
-use crate::evidence::{EvidenceRecord, GateResult};
+use crate::evidence::{Outcome, TestResult};
 use crate::manifest::ReleaseManifestV1;
 use crate::plan::ReleasePlan;
 use crate::qualification::claims::{
@@ -35,7 +35,7 @@ pub fn validate_observations(
     manifest: &ReleaseManifestV1,
     destination: Option<&str>,
     phase: QualificationPhase,
-    evidence: &[EvidenceRecord],
+    evidence: &[TestResult],
     admitted_at: &str,
     effective: Option<&EffectiveProfile>,
 ) -> Result<()> {
@@ -81,7 +81,7 @@ pub fn assess_observations(
     manifest: &ReleaseManifestV1,
     destination: Option<&str>,
     phase: QualificationPhase,
-    evidence: &[EvidenceRecord],
+    evidence: &[TestResult],
     admitted_at: &str,
     effective: Option<&EffectiveProfile>,
 ) -> Result<Vec<ClaimOutcome>> {
@@ -150,10 +150,10 @@ pub fn assess_observations(
             selection.exercise_max_age_seconds
         };
         let stale = now.duration_since(finish)?.as_secs() > maximum_age;
-        let mut passed = record.result == GateResult::Passed
+        let mut passed = record.result == Outcome::Passed
             && observation.checks.values().all(|check| check.passed);
         if let Some(matrix_passed) = super::validate_matrix_for_case(case, observation)? {
-            if (record.result == GateResult::Passed) != matrix_passed {
+            if (record.result == Outcome::Passed) != matrix_passed {
                 bail!("native matrix result differs from exact cell observations");
             }
             passed &= matrix_passed;
@@ -240,7 +240,7 @@ pub fn assess_observations(
 }
 
 fn claim_outcome(
-    case: &QualificationCase,
+    case: &ReleaseTest,
     claim: &QualificationClaim,
     disposition: ClaimDisposition,
     environment_digest: Option<Sha256Digest>,
@@ -260,10 +260,7 @@ fn claim_outcome(
     }
 }
 
-fn validate_target_scope(
-    case: &QualificationCase,
-    observation: &QualificationObservation,
-) -> Result<()> {
+fn validate_target_scope(case: &ReleaseTest, observation: &QualificationObservation) -> Result<()> {
     let Some(target) = &case.target else {
         if observation.environment.is_some() || observation.assessment.is_some() {
             bail!("release/package cases cannot claim target assurance");

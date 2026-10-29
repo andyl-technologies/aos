@@ -166,7 +166,7 @@ in
       role = "public-package";
     };
     pname = "systemd";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "systemd-escape emits the canonical escaped path.";

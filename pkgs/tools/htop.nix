@@ -24,7 +24,7 @@ in
       role = "public-package";
     };
     pname = "htop";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Htop describes its delay, filter, sort, and tree options.";

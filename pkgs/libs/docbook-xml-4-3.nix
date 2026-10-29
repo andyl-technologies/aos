@@ -31,7 +31,7 @@ in
       role = "public-package";
     };
     pname = "docbook-xml";
-    qualification.packageProbe = import ./_docbook-xml-probe.nix {inherit lib version;};
+    smokeTest = import ./_docbook-xml-probe.nix {inherit lib version;};
     inherit version;
 
     src = fetchurl {

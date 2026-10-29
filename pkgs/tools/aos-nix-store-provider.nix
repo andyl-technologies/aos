@@ -76,7 +76,7 @@ in
       role = "public-package";
     };
     pname = "aos-nix-store-provider";
-    qualification.packageProbe = lib.qualification.providerExecutableProbe {
+    smokeTest = lib.qualification.providerExecutableProbe {
       name = "aos-nix-store-provider";
       entryPoint = "bin/aos-nix-store-provider";
     };

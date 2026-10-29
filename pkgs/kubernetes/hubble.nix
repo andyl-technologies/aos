@@ -15,7 +15,7 @@ in
       role = "public-package";
     };
     pname = "hubble";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Hubble returns a Bash function wired to its completion endpoint.";

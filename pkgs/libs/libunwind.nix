@@ -31,7 +31,7 @@ in
       role = "public-package";
     };
     pname = "libunwind";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "The current process stack.";
         operation = "Capture a local unwind cursor and advance to its caller.";

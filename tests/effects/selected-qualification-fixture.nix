@@ -59,7 +59,7 @@
   };
   package = base.testPackage.overrideAttrs {
     buildDeps = [probeTool];
-    qualification.packageProbe = probe;
+    smokeTest = probe;
   };
   evaluated = lib.evalPackageModules {
     packages = [package.tools];

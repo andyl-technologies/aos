@@ -4,7 +4,7 @@
   lib,
 }:
 bind.dnsutils.overrideAttrs (_: {
-  qualification.packageProbe = lib.qualification.commandProbe {
+  smokeTest = lib.qualification.commandProbe {
     "primary" = {
       "artifacts" = [];
       "expected" = "Dig identifies its BIND implementation and returns success.";

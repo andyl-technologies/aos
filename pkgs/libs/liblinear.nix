@@ -17,7 +17,7 @@ in
       role = "public-package";
     };
     pname = "liblinear";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The fitted model predicts each sample's original label.";

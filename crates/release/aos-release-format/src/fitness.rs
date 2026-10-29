@@ -27,8 +27,8 @@ use crate::artifact::require_identifier;
 use crate::digest::Sha256Digest;
 use crate::plan::{ReleasePlan, SurfaceKind};
 use crate::qualification::{FitnessBinding, FitnessKind, QualificationProfile};
-use crate::qualification_evidence::CheckObservation;
 use crate::registry::registry_policy;
+use crate::release_tests::CheckResult;
 use crate::signing::{SignerRole, TrustedEd25519Key, validate_trusted_ed25519_keys};
 
 /// Exact fitness attestation schema identifier.
@@ -56,7 +56,7 @@ pub struct FitnessReport {
     /// RFC 3339 UTC time the exercise finished.
     pub performed_at: String,
     /// Observed acceptance checks.
-    pub checks: BTreeMap<String, CheckObservation>,
+    pub checks: BTreeMap<String, CheckResult>,
     /// Operator or automation identity that performed the exercise.
     pub operator: String,
 }
@@ -111,7 +111,7 @@ pub struct FitnessAttestation {
     /// RFC 3339 UTC time the exercise finished.
     pub performed_at: String,
     /// Exactly the kind's checks, each passed with a recorded detail.
-    pub checks: BTreeMap<String, CheckObservation>,
+    pub checks: BTreeMap<String, CheckResult>,
     /// Binding name to observed identity; `null` only where the kind's
     /// binding is vacuous (Hub schema on a static surface).
     pub bindings: BTreeMap<String, Option<String>>,

@@ -72,7 +72,7 @@ in
       role = "public-package";
     };
     pname = "aos-storage-format-provider";
-    qualification.packageProbe = lib.qualification.providerExecutableProbe {
+    smokeTest = lib.qualification.providerExecutableProbe {
       name = "aos-storage-format-provider";
       entryPoint = "bin/aos-storage-format-provider";
     };

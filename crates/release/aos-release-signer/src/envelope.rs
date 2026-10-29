@@ -9,9 +9,7 @@
 use anyhow::{Context as _, Result, bail};
 use aos_release_format::canonical;
 use aos_release_format::digest::Sha256Digest;
-use aos_release_format::receipt::{
-    RECEIPT_SIGNATURE_DOMAIN, SIGNED_RECEIPT, SignedReceiptEnvelope,
-};
+use aos_release_format::receipt::{RECEIPT_SIGNATURE_DOMAIN, SIGNED_RECEIPT, SignedEnvelope};
 use base64::Engine as _;
 use ed25519_dalek::Signer as _;
 
@@ -34,7 +32,7 @@ pub fn sign_evidence(config: &SignerConfigV1, key_id: &str, payload: &[u8]) -> R
     };
 
     let digest = Sha256Digest::separated(RECEIPT_SIGNATURE_DOMAIN, payload);
-    let envelope = SignedReceiptEnvelope {
+    let envelope = SignedEnvelope {
         schema_version: SIGNED_RECEIPT.to_owned(),
         key_id: key_id.to_owned(),
         payload: value,
