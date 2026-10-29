@@ -1116,7 +1116,7 @@ impl Secrets {
                 .context("invalid Worker route reservation keyring")?;
         }
         if let Some(config) = &self.release_evidence_config {
-            aos_hub_service::release_evidence::Ed25519ReleaseEvidenceAuthority::from_json(
+            aos_hub_service::release_receipt_signer::Ed25519ReleaseEvidenceAuthority::from_json(
                 "deployment-validation",
                 config,
             )
@@ -1586,7 +1586,7 @@ async fn authenticate_gateway_contract(gateway_url: &str, shared_key: &str) -> R
     rand::rng().fill_bytes(&mut nonce_bytes);
     let nonce = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(nonce_bytes);
     let timestamp = aos_hub_model::clock::now_unix_secs();
-    let evidence = aos_hub_service::egress_protocol::ChallengeEvidence {
+    let evidence = aos_hub_service::egress_protocol::ChallengeObservation {
         timestamp,
         nonce: &nonce,
     };
@@ -1638,7 +1638,7 @@ fn verify_gateway_challenge_response(
     require_fresh_challenge_timestamp(timestamp, now)?;
     aos_hub_service::egress_protocol::verify_challenge_response(
         key,
-        &aos_hub_service::egress_protocol::ChallengeEvidence { timestamp, nonce },
+        &aos_hub_service::egress_protocol::ChallengeObservation { timestamp, nonce },
         required_challenge_header(response, "x-aos-egress-signature")?,
     )
 }

@@ -442,7 +442,6 @@ aos maintain diff <run> --patch
 aos maintain accept <run> --confirm <patch-digest>
 aos maintain commit <run> --confirm <run>
 aos maintain test <run> --final
-aos maintain evidence <run>
 aos maintain prepare-pr <run>
 aos maintain publish-pr <run> \
   --expected-remote-head absent \

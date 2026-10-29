@@ -26,7 +26,7 @@ in
       role = "public-package";
     };
     pname = "e2fsprogs";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "E2fsprogs creates a consistent filesystem image.";

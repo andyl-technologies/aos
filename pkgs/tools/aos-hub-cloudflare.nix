@@ -36,7 +36,7 @@ mkDerivation {
     role = "public-package";
   };
   pname = "aos-hub-cloudflare";
-  qualification.packageProbe = lib.qualification.commandProbe {
+  smokeTest = lib.qualification.commandProbe {
     "primary" = {
       "artifacts" = [];
       "expected" = "The command returns success and documents Usage.";

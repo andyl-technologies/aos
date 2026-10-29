@@ -173,7 +173,7 @@ pub fn recover_profile_publication(
         path.clone(),
         aos_registry_client::types::ProfileScope::System,
     )?;
-    let admission = crate::native_registry::RegistryAdmission::new(
+    let admission = crate::native_registry::VerifiedRegistryRoots::new(
         command.nix_store.clone(),
         &command.state_directory.join("registry-admissions"),
     )?;

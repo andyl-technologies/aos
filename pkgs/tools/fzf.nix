@@ -85,7 +85,7 @@ in
       done
     '';
 
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "Three history-like commands including a fuzzy match.";
         operation = "Filter commands using fzf's matcher without opening a terminal.";

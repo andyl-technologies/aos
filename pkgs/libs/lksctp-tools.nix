@@ -19,7 +19,7 @@ in
       role = "public-package";
     };
     pname = "lksctp-tools";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Lksctp reports the platform's sockaddr_in and sockaddr_in6 sizes.";

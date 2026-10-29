@@ -721,7 +721,7 @@ fn release_journal_status_runs_offline_under_maintenance() -> Result<()> {
         new_state: ReleaseState::Planned,
         destination: None,
         operation_ids: Vec::new(),
-        evidence: Vec::new(),
+        attachments: Vec::new(),
         recorded_at: "2026-10-01T00:00:00Z".to_owned(),
     };
     let mut bytes = canonical::to_vec(&entry)?;

@@ -44,7 +44,7 @@ in
       role = "public-package";
     };
     pname = "aos-recovery";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The package contains the recovery console executable used by the boot scenario.";

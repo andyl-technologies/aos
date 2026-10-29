@@ -38,9 +38,13 @@ fn catalog_nar_hash(hash: &str, artifact: &str) -> Result<Sha256Digest> {
         .with_context(|| format!("invalid {artifact} catalog NAR digest"))
 }
 
+/// Records the NAR identity of one store root and the authority that admitted it.
+///
+/// Maps of this type are persisted as private profile receipts, so field names
+/// are part of the on-disk format.
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct Evidence {
+struct RootIdentity {
     nar_hash: Sha256Digest,
     nar_size: u64,
     references: Vec<String>,
@@ -49,52 +53,58 @@ struct Evidence {
     source_authority: Option<crate::native_deployment::SourceAuthorization>,
 }
 
-/// Rechecks artifacts against previously authenticated private profile receipts.
-pub(crate) struct RegistryAdmission {
+/// Store roots covered by an authenticated registry release or image catalog.
+///
+/// Roots come from signed registry catalogs, retained profile receipts, and the
+/// image catalogs in [`TrustedRoots`](crate::native_deployment::TrustedRoots).
+/// Admission rechecks each root's NAR identity and rejects any store root that
+/// no authenticated catalog covers.
+pub(crate) struct VerifiedRegistryRoots {
     executable: PathBuf,
-    evidence: BTreeMap<String, Evidence>,
-    image: crate::native_deployment::Admission,
+    identities: BTreeMap<String, RootIdentity>,
+    image: crate::native_deployment::TrustedRoots,
     available: BTreeMap<String, available::AvailableCatalog>,
 }
 
-impl RegistryAdmission {
-    /// Exports exact admitted identity and original authority for generation evidence.
-    pub(crate) fn evidence(
+impl VerifiedRegistryRoots {
+    /// Returns the admitted NAR identity and original authority of `root` for a generation record.
+    pub(crate) fn input_identity(
         &mut self,
         root: &str,
-    ) -> Result<crate::attestation::native::InputEvidence> {
+    ) -> Result<crate::attestation::native::InputIdentity> {
         self.admit(root)?;
         let (nar_hash, nar_size) = dump_store_path_identity_in(root, Some(&self.executable))?;
         let references = query_reference_hashes_in(root, Some(&self.executable))?;
         let image = self
             .image
             .receipt_for(root)?
-            .map(|(path, digest)| crate::attestation::native::ImageAdmission { path, digest });
-        Ok(crate::attestation::native::InputEvidence {
+            .map(|(path, digest)| crate::attestation::native::ImageCatalogRef { path, digest });
+        Ok(crate::attestation::native::InputIdentity {
             store_path: root.to_owned(),
             nar_hash,
             nar_size,
             references,
             release: self
-                .evidence
+                .identities
                 .get(root)
-                .and_then(|evidence| evidence.release.clone()),
+                .and_then(|identity| identity.release.clone()),
             image,
             source_authority: self
-                .evidence
+                .identities
                 .get(root)
-                .and_then(|evidence| evidence.source_authority.clone()),
+                .and_then(|identity| identity.source_authority.clone()),
         })
     }
+
     pub(crate) fn new(executable: PathBuf, receipts: &Path) -> Result<Self> {
         ensure!(
             executable.is_absolute(),
             "native store executable must be absolute"
         );
         let mut result = Self {
-            image: crate::native_deployment::Admission::new(executable.clone())?,
+            image: crate::native_deployment::TrustedRoots::new(executable.clone())?,
             executable,
-            evidence: BTreeMap::new(),
+            identities: BTreeMap::new(),
             available: BTreeMap::new(),
         };
         result.image.load_retained(
@@ -121,7 +131,7 @@ impl RegistryAdmission {
                 "native profile receipt must be a regular file"
             );
             let bytes = crate::native_deployment::read_regular_document(&entry.path())?;
-            let evidence: BTreeMap<String, Evidence> =
+            let evidence: BTreeMap<String, RootIdentity> =
                 GRAPH_LIMITS.decode(&bytes, "retained registry admission")?;
             for (root, evidence) in evidence {
                 result.insert(root, evidence)?;
@@ -130,14 +140,14 @@ impl RegistryAdmission {
         Ok(result)
     }
 
-    fn insert(&mut self, root: String, mut evidence: Evidence) -> Result<()> {
+    fn insert(&mut self, root: String, mut evidence: RootIdentity) -> Result<()> {
         let (canonical, suffix) = aos_deployment::nix::store_root_and_suffix(Path::new(&root))?;
         ensure!(
             canonical == Path::new(&root) && suffix.as_os_str().is_empty(),
             "admission receipt must identify a canonical root"
         );
         ensure!(evidence.nar_size > 0, "admission receipt has an empty NAR");
-        if let Some(previous) = self.evidence.get(&root) {
+        if let Some(previous) = self.identities.get(&root) {
             ensure!(
                 previous.nar_hash == evidence.nar_hash
                     && previous.nar_size == evidence.nar_size
@@ -157,7 +167,7 @@ impl RegistryAdmission {
                 evidence.release = previous.release.clone();
             }
         }
-        self.evidence.insert(root, evidence);
+        self.identities.insert(root, evidence);
         Ok(())
     }
 
@@ -167,7 +177,7 @@ impl RegistryAdmission {
         let references = query_reference_hashes_in(root, Some(&self.executable))?;
         self.insert(
             root.to_owned(),
-            Evidence {
+            RootIdentity {
                 nar_hash,
                 nar_size,
                 references,
@@ -185,7 +195,7 @@ impl RegistryAdmission {
         authority.verify_integrity()?;
         self.trust_runtime_input(root)?;
         let evidence = self
-            .evidence
+            .identities
             .get_mut(root)
             .context("authorized root evidence missing")?;
         ensure!(
@@ -205,8 +215,8 @@ impl RegistryAdmission {
         authority: &crate::native_deployment::SourceAuthorization,
     ) -> bool {
         root.to_str()
-            .and_then(|root| self.evidence.get(root))
-            .and_then(|evidence| evidence.source_authority.as_ref())
+            .and_then(|root| self.identities.get(root))
+            .and_then(|identity| identity.source_authority.as_ref())
             == Some(authority)
     }
 
@@ -253,7 +263,7 @@ impl RegistryAdmission {
             );
             self.insert(
                 path,
-                Evidence {
+                RootIdentity {
                     nar_hash,
                     nar_size,
                     references,
@@ -271,7 +281,7 @@ impl RegistryAdmission {
             fs::symlink_metadata(directory)?.is_dir(),
             "native receipts must use private profile storage"
         );
-        let bytes = serde_json::to_vec(&self.evidence)?;
+        let bytes = serde_json::to_vec(&self.identities)?;
         ensure!(
             bytes.len() <= GRAPH_LIMITS.max_bytes,
             "native registry receipt exceeds its size limit"
@@ -292,9 +302,9 @@ impl RegistryAdmission {
     }
 }
 
-impl ArtifactAdmission for RegistryAdmission {
+impl ArtifactAdmission for VerifiedRegistryRoots {
     fn admit(&mut self, root: &str) -> Result<AdmittedArtifact> {
-        let Some(evidence) = self.evidence.get(root) else {
+        let Some(evidence) = self.identities.get(root) else {
             return self.image.admit(root);
         };
         if let Some(authority) = &evidence.source_authority {
@@ -313,7 +323,7 @@ impl ArtifactAdmission for RegistryAdmission {
 /// Resolves exact native envelopes from the authenticated registry selection.
 pub(crate) struct NativeRegistry<'a> {
     registries: &'a RegistrySet,
-    admission: RegistryAdmission,
+    admission: VerifiedRegistryRoots,
     envelopes: BTreeMap<(String, String, String), Envelope>,
     retained_inputs: BTreeSet<PathBuf>,
     module_envelopes: BTreeMap<(String, String, String), PathBuf>,
@@ -325,7 +335,7 @@ pub(crate) struct NativeRegistry<'a> {
 }
 
 impl<'a> NativeRegistry<'a> {
-    pub(crate) fn new(registries: &'a RegistrySet, admission: RegistryAdmission) -> Self {
+    pub(crate) fn new(registries: &'a RegistrySet, admission: VerifiedRegistryRoots) -> Self {
         Self {
             registries,
             admission,
@@ -471,7 +481,7 @@ impl<'a> NativeRegistry<'a> {
         self.admission.has_output_authority(&artifact.path)
     }
 
-    pub(crate) fn into_admission(self) -> RegistryAdmission {
+    pub(crate) fn into_admission(self) -> VerifiedRegistryRoots {
         self.admission
     }
 
@@ -852,7 +862,7 @@ impl<'a> NativeRegistry<'a> {
             .context("named native output lacks its own deployment envelope")?;
         let evidence = self
             .admission
-            .evidence
+            .identities
             .get(path)
             .context("named native output lacks an admitted signed NAR identity")?;
         ensure!(
@@ -877,7 +887,7 @@ impl<'a> NativeRegistry<'a> {
         .try_fold(0_u64, |total, root| {
             let size = self
                 .admission
-                .evidence
+                .identities
                 .get(root)
                 .context("named native output closure lacks signed NAR evidence")?
                 .nar_size;
@@ -1036,12 +1046,12 @@ mod authority_tests {
         }
     }
 
-    fn empty_admission() -> RegistryAdmission {
+    fn empty_admission() -> VerifiedRegistryRoots {
         let executable = PathBuf::from("/nix/store/pinned/bin/nix-store");
-        RegistryAdmission {
-            image: crate::native_deployment::Admission::new(executable.clone()).unwrap(),
+        VerifiedRegistryRoots {
+            image: crate::native_deployment::TrustedRoots::new(executable.clone()).unwrap(),
             executable,
-            evidence: BTreeMap::new(),
+            identities: BTreeMap::new(),
             available: BTreeMap::new(),
         }
     }
@@ -1163,10 +1173,10 @@ mod authority_tests {
     #[test]
     fn repeated_observation_preserves_original_source_authority() {
         let executable = PathBuf::from("/nix/store/pinned/bin/nix-store");
-        let mut admission = RegistryAdmission {
-            image: crate::native_deployment::Admission::new(executable.clone()).unwrap(),
+        let mut admission = VerifiedRegistryRoots {
+            image: crate::native_deployment::TrustedRoots::new(executable.clone()).unwrap(),
             executable,
-            evidence: BTreeMap::new(),
+            identities: BTreeMap::new(),
             available: BTreeMap::new(),
         };
         let root = format!("/nix/store/{}-source", "a".repeat(32));
@@ -1175,7 +1185,7 @@ mod authority_tests {
             proof: PathBuf::from(format!("/nix/store/{}-proof.json", "b".repeat(32))),
             digest: Sha256Digest::of_bytes(b"original proof"),
         };
-        let mut evidence = Evidence {
+        let mut evidence = RootIdentity {
             nar_hash: Sha256Digest::of_bytes(b"original NAR"),
             nar_size: 128,
             references: Vec::new(),

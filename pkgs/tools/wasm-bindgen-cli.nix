@@ -33,7 +33,7 @@ in
       role = "public-package";
     };
     pname = "wasm-bindgen-cli";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Wasm2es6js emits JavaScript containing the encoded WebAssembly module.";

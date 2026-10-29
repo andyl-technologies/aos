@@ -195,7 +195,7 @@ impl RpcService {
                 .map_err(|_| RpcError::invalid("declared upload size is too large"))?;
             candidates.push((
                 index,
-                aos_hub_db::db::CacheProxyWriteAdmission {
+                aos_hub_db::db::UploadTicketRequest {
                     ticket_id: uuid::Uuid::new_v4().simple().to_string(),
                     object_key: path.clone(),
                     declared_size,

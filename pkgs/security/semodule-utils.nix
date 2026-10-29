@@ -16,7 +16,7 @@ in
       role = "public-package";
     };
     pname = "semodule-utils";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The module package round trip preserves the complete compiled policy module.";

@@ -18,7 +18,7 @@ in
       role = "public-package";
     };
     pname = "libnl";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The round-tripped address remains 127.0.0.1.";

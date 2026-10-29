@@ -189,7 +189,7 @@
   controller = mkCargoPackage {
     inherit platformSupport;
     pname = "crucible-controller";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The command returns success and documents Usage.";
@@ -510,7 +510,7 @@
   suite = mkDerivation {
     inherit platformSupport;
     pname = "crucible";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The command returns success and documents its invocation contract.";

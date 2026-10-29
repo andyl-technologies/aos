@@ -46,7 +46,7 @@ in
       role = "public-package";
     };
     pname = "perl-http-message";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The serialized message contains the request line, header, and exact body.";

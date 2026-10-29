@@ -17,7 +17,7 @@ in
       role = "public-package";
     };
     pname = "ncurses";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Ncurses emits a database entry whose reconstructed capabilities match the source.";

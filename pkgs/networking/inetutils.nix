@@ -37,7 +37,7 @@ in
       role = "public-package";
     };
     pname = "inetutils";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Ping reports one transmitted and one received packet.";

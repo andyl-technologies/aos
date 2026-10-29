@@ -20,7 +20,7 @@ in
       role = "public-package";
     };
     pname = "fuse-overlayfs";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Fuse-overlayfs returns success and reports its version.";

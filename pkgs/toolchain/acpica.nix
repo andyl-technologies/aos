@@ -23,7 +23,7 @@ in
       role = "public-package";
     };
     pname = "acpica";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Iasl accepts both source and generated AML representations.";

@@ -19,7 +19,7 @@ in
       role = "public-package";
     };
     pname = "parallel";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Parallel preserves input order and prints both exact results.";

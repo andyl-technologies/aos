@@ -81,11 +81,11 @@ pub(super) fn verify(command: &NativeDeploymentCommand, number: u32) -> Result<(
     let proof: SourceAuthorization =
         aos_core::json::from_slice(&bytes, "retained boot source authority")?;
     proof.validate(&descriptor)?;
-    let mut admission = crate::native_registry::RegistryAdmission::new(
+    let mut admission = crate::native_registry::VerifiedRegistryRoots::new(
         command.nix_store.clone(),
         &command.state_directory.join("registry-admissions"),
     )?;
-    let evidence = admission.evidence(
+    let evidence = admission.input_identity(
         root.to_str()
             .context("source authority root is not UTF-8")?,
     )?;

@@ -31,7 +31,7 @@ in
       role = "public-package";
     };
     pname = "kbd";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "loadkeys accepts the mapping and emits its compiled table representation.";

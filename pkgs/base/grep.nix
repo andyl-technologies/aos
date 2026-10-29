@@ -24,7 +24,7 @@ in
         role = "public-package";
       };
       pname = "grep";
-      qualification.packageProbe = lib.qualification.commandProbe {
+      smokeTest = lib.qualification.commandProbe {
         "primary" = {
           "artifacts" = [];
           "expected" = "Grep emits exactly the two matching records.";

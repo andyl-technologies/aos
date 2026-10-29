@@ -42,14 +42,14 @@
   needsNativeZlibLink ? builtins.compareVersions version "1.79.0" >= 0 && builtins.compareVersions version "1.93.0" < 0,
   description,
   buildTool ? null,
-  qualification ? null,
+  smokeTest ? null,
 }: let
   mkRustDerivation = attrs:
     mkDerivation (attrs
       // (
-        if qualification == null
+        if smokeTest == null
         then {}
-        else {inherit qualification;}
+        else {inherit smokeTest;}
       ));
   buildTriple = stdenv.buildPlatform.config;
   buildTripleEnv = builtins.replaceStrings ["-"] ["_"] buildTriple;

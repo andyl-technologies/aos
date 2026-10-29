@@ -17,7 +17,7 @@ in
       role = "public-package";
     };
     pname = "procps-ng";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The kernel reports the exact operating-system type Linux.";

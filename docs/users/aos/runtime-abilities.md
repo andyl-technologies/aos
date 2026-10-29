@@ -809,10 +809,10 @@ Read-only journal inspection uses the same bounded replay model as activation:
 aos ability journal activation.journal --format json
 ```
 
-The public command reports `readConsistency = "observed-prefix"`. It can read
-while the controller holds its journal lock: the reader captures the opened
-descriptor's length and verifies complete frames and native state transitions
-within that prefix. Later appends do not extend the observation. An incomplete
+The public command reads an observed prefix without taking the journal lock,
+so it can read while the controller holds that lock: the reader captures the
+opened descriptor's length and verifies complete frames and native state
+transitions within that prefix. Later appends do not extend the observation. An incomplete
 final frame is reported and left unchanged.
 
 Inspection preserves the desired graph exactly as recorded, including its

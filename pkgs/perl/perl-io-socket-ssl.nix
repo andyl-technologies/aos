@@ -35,7 +35,7 @@ in
       role = "public-package";
     };
     pname = "perl-io-socket-ssl";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "IO::Socket::SSL returns an existing CA file or directory.";
