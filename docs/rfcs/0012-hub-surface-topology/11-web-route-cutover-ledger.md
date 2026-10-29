@@ -1,6 +1,6 @@
-# Web route cutover ledger
+# Web route cutover table
 
-This ledger is normative for the one-shot management Web UI cutover. A route
+This table is normative for the one-shot management Web UI cutover. A route
 class marked **remove** is absent from both native and Worker routing after
 cutover; it is not a redirect, alias, form fallback, or compatibility handler.
 

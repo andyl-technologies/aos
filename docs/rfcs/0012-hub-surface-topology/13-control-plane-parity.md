@@ -114,7 +114,7 @@ path; direct table seed helpers are compiled only into test fixtures.
 contract. Its HTTP entries identify non-Connect authentication surfaces. Its
 service entries identify the audience, owning API methods, CLI command
 families, and Web workflows for one protobuf service. Native and Worker are the
-only admitted runtimes.
+only supported runtimes.
 
 The `aos-hub-api` `contract_inventory` integration tests compare this manifest
 with the generated protobuf descriptor. API generation itself reads only the
@@ -324,12 +324,12 @@ and backlinks instead of duplicated editors. In particular:
 ## Publication uploads
 
 Connect requests remain bounded control messages. Large NAR, blob, and disk
-image bytes use upload admissions and direct or multipart object transfers.
+image bytes use upload tickets and direct or multipart object transfers.
 The Web application begins a publication, uploads immutable objects, and
 commits only after every required object and placement verifies. Cache-object
 uploads use `CreateCacheObjectUploads`; a direct-origin capability receives no
 Hub bearer, while a typed same-origin proxy receives the in-memory bearer.
-When single-request admission returns no URL, the browser uses the typed begin,
+When a single-request upload ticket carries no URL, the browser uses the typed begin,
 part, complete, and abort multipart protocol. A partial or failed registry
 publication is not discoverable.
 
@@ -337,7 +337,7 @@ The browser does not persist upload state or authorization material. Durable
 publication sessions remain discoverable from the Hub, so a user can reopen an
 exact publication and upload its remaining declared objects. An interrupted
 cache-object multipart transfer is aborted and restarted from a newly reviewed
-admission.
+upload ticket.
 
 ## Hard management cutover
 
