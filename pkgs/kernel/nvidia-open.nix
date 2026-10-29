@@ -40,7 +40,7 @@ in
       target = [];
       role = "public-package";
     };
-  qualification.packageProbe = lib.qualification.commandProbe {
+  smokeTest = lib.qualification.commandProbe {
     "primary" = {
       "artifacts" = [];
       "expected" = "All five expected x86-64 modules carry license and matching vermagic metadata.";

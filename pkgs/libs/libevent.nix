@@ -20,7 +20,7 @@ in
       role = "public-package";
     };
     pname = "libevent";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The parsed port is 42 and the rendered address is 127.0.0.1.";

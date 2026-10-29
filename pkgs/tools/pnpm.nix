@@ -77,7 +77,7 @@ in
       role = "public-package";
     };
     pname = "pnpm";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "pnpm prints the exact manifest name.";

@@ -32,7 +32,7 @@ in
       role = "public-package";
     };
     pname = "libimagequant";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "A two-by-two RGBA image with four distinct colors.";
         operation = "Quantize the image and map palette indexes back to colors.";

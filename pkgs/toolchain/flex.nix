@@ -17,7 +17,7 @@ in
       role = "public-package";
     };
     pname = "flex";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The scanner emits the expected token classes and values.";

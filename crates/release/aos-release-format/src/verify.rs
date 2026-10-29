@@ -46,8 +46,6 @@ pub struct VerificationSummary {
     pub manifest_digest: Sha256Digest,
     /// Number of exact payload files verified.
     pub artifact_count: usize,
-    /// Number of public evidence records verified.
-    pub evidence_count: usize,
     /// Number of distinct manifest signatures verified.
     pub signatures_verified: usize,
 }
@@ -138,7 +136,6 @@ pub fn verify_release(
         plan_digest,
         manifest_digest,
         artifact_count: envelope.payload.artifacts.len(),
-        evidence_count: envelope.payload.evidence.len(),
         signatures_verified,
     })
 }

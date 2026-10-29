@@ -32,7 +32,7 @@ in
       role = "public-package";
     };
     pname = "nftables";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Nft accepts the offline definition without modifying a ruleset.";

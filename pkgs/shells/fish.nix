@@ -56,7 +56,7 @@ in
       role = "public-package";
     };
     pname = "fish";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Fish prints the selected field.";

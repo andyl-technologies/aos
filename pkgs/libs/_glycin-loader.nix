@@ -7,7 +7,7 @@
   libseccomp,
   loaderName,
   loaderDeps ? [],
-  qualification,
+  smokeTest,
 }: let
   sources = callPackage ./_glycin-sources.nix {};
 in
@@ -30,7 +30,7 @@ in
       role = "public-package";
     };
     pname = loaderName;
-    inherit qualification;
+    inherit smokeTest;
     # Keep module compatibility at this release until a broader policy is reviewed.
     version = "=${sources.version}";
     inherit (sources) src cargoDeps;

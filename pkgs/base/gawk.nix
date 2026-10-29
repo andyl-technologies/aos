@@ -23,7 +23,7 @@ in
       role = "public-package";
     };
     pname = "gawk";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Awk emits the exact aggregate.";

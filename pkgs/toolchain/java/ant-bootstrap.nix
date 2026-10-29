@@ -29,7 +29,7 @@ in
       role = "public-package";
     };
     pname = "ant-bootstrap";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [
           {

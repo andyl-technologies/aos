@@ -42,7 +42,7 @@ in
       role = "public-package";
     };
     pname = "libevdev";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "An in-memory Linux input device descriptor with one key event.";
         operation = "Compile against the installed libevdev and configure the event descriptor.";

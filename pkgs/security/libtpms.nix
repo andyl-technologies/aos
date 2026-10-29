@@ -21,7 +21,7 @@ in
       role = "public-package";
     };
     pname = "libtpms";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Libtpms exposes a nonzero version and accepts TPM 2.";

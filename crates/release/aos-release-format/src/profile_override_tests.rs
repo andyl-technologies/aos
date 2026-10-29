@@ -5,7 +5,7 @@ use ed25519_dalek::{Signer as _, SigningKey};
 
 use super::*;
 use crate::plan::planned_destinations;
-use crate::receipt::{RECEIPT_SIGNATURE_DOMAIN, SIGNED_RECEIPT, SignedReceiptEnvelope};
+use crate::receipt::{RECEIPT_SIGNATURE_DOMAIN, SIGNED_RECEIPT, SignedEnvelope};
 use crate::verify::tests::{STABLE, qualification_fixture, requested};
 
 fn emergency(plan: &ReleasePlan, authority_id: &str) -> ProfileOverride {
@@ -35,7 +35,7 @@ fn signed(approval: &ProfileOverride, seed: u8) -> Vec<u8> {
     let payload = crate::canonical::to_vec(approval).unwrap();
     let signature = SigningKey::from_bytes(&[seed; 32])
         .sign(Sha256Digest::separated(RECEIPT_SIGNATURE_DOMAIN, &payload).as_bytes());
-    crate::canonical::to_vec(&SignedReceiptEnvelope {
+    crate::canonical::to_vec(&SignedEnvelope {
         schema_version: SIGNED_RECEIPT.into(),
         key_id: approval.authority_id.clone(),
         payload: serde_json::from_slice(&payload).unwrap(),

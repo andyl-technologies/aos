@@ -34,7 +34,6 @@ use aos_release_format::artifact::BundlePath;
 use aos_release_format::canonical;
 use aos_release_format::digest::Sha256Digest;
 use aos_release_format::plan::{PlannedDestination, ReleasePlan, SurfaceRole};
-use aos_release_format::qualification::QualificationPhase;
 use aos_release_format::receipt::PublicationReceipt;
 use aos_release_format::state::ReleaseState;
 use aos_release_format::tuf::{
@@ -80,15 +79,6 @@ pub(super) async fn run(args: &ReleasePublishArgs, printer: &Printer) -> Result<
     let journal = Journal::read(&args.journal, "release journal")?;
     journal.require_release(plan, manifest_digest)?;
     journal.summary.can_publish(plan, &destination.name)?;
-    aos_release_format::qualification_evidence::validate_observations(
-        plan,
-        &bundle.manifest.payload,
-        None,
-        QualificationPhase::Build,
-        &bundle.manifest.payload.evidence,
-        &journal::now_utc(),
-        None,
-    )?;
 
     let continuity = match destination.surface {
         SurfaceRole::Staging => {
@@ -920,7 +910,7 @@ fn published_staging_destination<'a>(
         .entries
         .iter()
         .filter(|entry| entry.new_state == ReleaseState::Published)
-        .filter(|entry| entry.evidence.contains(&receipt.digest))
+        .filter(|entry| entry.attachments.contains(&receipt.digest))
         .find_map(|entry| entry.destination.as_deref())
         .context("journal records no staging publication with this receipt")?;
     let destination = plan.destination(name)?;

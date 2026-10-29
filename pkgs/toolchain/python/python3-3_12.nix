@@ -43,7 +43,7 @@ in
       role = "public-package";
     };
     pname = "python3-3_12";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The interpreter prints the exact integer result 42.";

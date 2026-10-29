@@ -18,7 +18,7 @@ in
       role = "public-package";
     };
     pname = "minisign";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Minisign accepts the signature made by the corresponding public key.";

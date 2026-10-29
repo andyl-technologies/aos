@@ -16,7 +16,7 @@ in
       role = "public-package";
     };
     pname = "pip";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Pip prints the exact SHA-256 requirement fragment.";

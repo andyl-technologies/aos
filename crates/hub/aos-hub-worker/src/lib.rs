@@ -1001,7 +1001,7 @@ mod entry {
                     ))
                 })?;
                 Some(Arc::new(
-                    aos_hub_service::release_evidence::Ed25519ReleaseEvidenceAuthority::from_json(
+                    aos_hub_service::release_receipt_signer::Ed25519ReleaseEvidenceAuthority::from_json(
                         deployment_id.to_string(),
                         &config.to_string(),
                     )
@@ -1012,7 +1012,7 @@ mod entry {
                     })?,
                 )
                     as Arc<
-                        dyn aos_hub_service::release_evidence::ReleaseEvidenceAuthority,
+                        dyn aos_hub_service::release_receipt_signer::ReleaseEvidenceAuthority,
                     >)
             }
             None => None,

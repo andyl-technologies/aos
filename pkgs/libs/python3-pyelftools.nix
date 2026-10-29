@@ -22,7 +22,7 @@ in
       role = "public-package";
     };
     pname = "python3-pyelftools";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "ELFFile recognizes a 32-bit or 64-bit executable container.";

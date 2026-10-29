@@ -100,7 +100,7 @@ pub struct AppState {
     pub container_rollout: aos_hub_service::container_rollout::ContainerRollout,
     /// Deployment-owned release receipt authority.
     pub release_evidence:
-        Option<Arc<dyn aos_hub_service::release_evidence::ReleaseEvidenceAuthority>>,
+        Option<Arc<dyn aos_hub_service::release_receipt_signer::ReleaseEvidenceAuthority>>,
 }
 
 impl AppState {

@@ -27,7 +27,7 @@ in
       role = "public-package";
     };
     pname = "json-glib";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "JSON-GLib accepts the complete document.";
