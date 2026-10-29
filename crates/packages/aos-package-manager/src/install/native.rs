@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, ensure};
 
 use crate::native_deployment::EvaluationInputs;
-use crate::native_registry::{NativeRegistry, RegistryAdmission};
+use crate::native_registry::{NativeRegistry, VerifiedRegistryRoots};
 use crate::profile::deployment::ProfileDeployment;
 use crate::profile::{Generation, Profile};
 use crate::resolve::ResolvedClosure;
@@ -546,7 +546,7 @@ fn select_scope_payloads(
 pub(crate) struct Prepared {
     config: ApmConfig,
     deployment: Deployment,
-    admission: RegistryAdmission,
+    admission: VerifiedRegistryRoots,
     executable: PathBuf,
     evaluation_input: PathBuf,
     observer: serde_json::Value,
@@ -567,7 +567,7 @@ pub(crate) fn recover(profile: &Profile) -> Result<()> {
         return Ok(());
     }
     let executable = packaged_path("AOS_NIX_STORE")?;
-    let admission = RegistryAdmission::new(
+    let admission = VerifiedRegistryRoots::new(
         executable.clone(),
         &profile.path.join("deployment/registry-admissions"),
     )?;
@@ -670,7 +670,7 @@ fn prepare_with_inputs(
     let mut temporary_roots =
         aos_deployment::store::temp_roots::TemporaryRoots::open(&executable, &Default::default())?;
 
-    let mut admission = RegistryAdmission::new(
+    let mut admission = VerifiedRegistryRoots::new(
         executable.clone(),
         &profile.path.join("deployment/registry-admissions"),
     )?;
@@ -1204,7 +1204,7 @@ pub(crate) fn probe_rollback(profile: &Profile, target: &Generation) -> Result<D
             && input.packages == committed.deployment.resolved(),
         "rollback descriptor differs from its committed native deployment"
     );
-    let mut admission = RegistryAdmission::new(
+    let mut admission = VerifiedRegistryRoots::new(
         packaged_path("AOS_NIX_STORE")?,
         &profile.path.join("deployment/registry-admissions"),
     )?;
@@ -1254,7 +1254,7 @@ pub(crate) fn rollback_locked(
         &Default::default(),
     )?;
     let evaluation = EvaluationInputs::read(&target.path.join("evaluation.json"))?;
-    let mut admission = RegistryAdmission::new(
+    let mut admission = VerifiedRegistryRoots::new(
         executable.clone(),
         &profile.path.join("deployment/registry-admissions"),
     )?;
@@ -1293,7 +1293,7 @@ pub(crate) fn rollback_locked(
 /// Releases a retained native generation before its profile tree is deleted.
 pub(crate) fn prune(profile: &Profile, generation: &Generation) -> Result<()> {
     let executable = packaged_path("AOS_NIX_STORE")?;
-    let admission = RegistryAdmission::new(
+    let admission = VerifiedRegistryRoots::new(
         executable.clone(),
         &profile.path.join("deployment/registry-admissions"),
     )?;

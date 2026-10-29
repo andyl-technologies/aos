@@ -22,7 +22,7 @@ in
       role = "public-package";
     };
     pname = "coreutils";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Printf emits the exact padded record.";

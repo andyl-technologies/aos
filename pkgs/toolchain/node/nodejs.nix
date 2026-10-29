@@ -34,7 +34,7 @@ in
       role = "public-package";
     };
     pname = "nodejs";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Node.js prints the exact integer result 42.";

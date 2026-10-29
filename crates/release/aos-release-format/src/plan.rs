@@ -273,7 +273,7 @@ pub struct ReleasePlan {
     pub qualification: QualificationContract,
     /// Frozen preceding snapshot for the required update/recovery cycle.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub qualification_predecessor: Option<crate::qualification_evidence::QualificationPredecessor>,
+    pub qualification_predecessor: Option<crate::release_tests::QualificationPredecessor>,
     /// Immutable release identity.
     pub release_id: String,
     /// SemVer-compatible calendar release version.

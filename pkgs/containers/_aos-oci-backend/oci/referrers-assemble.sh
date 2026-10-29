@@ -455,6 +455,23 @@ jq -S '
   joined-inventory.json > qualification.pretty.json
 write_compact_json qualification.pretty.json "$out/qualification.json"
 
+# Publication evidence exists only for a complete closure: every runtime path
+# maps to one package whose source is retained and whose license is declared.
+# The signed release therefore carries no completeness field, and any gap is
+# reported here, where the package definitions can be fixed.
+if ! jq -e '.readyForVerifiedPublication' "$out/qualification.json" >/dev/null; then
+  echo "container evidence is incomplete; publication requires every runtime path to be covered:" >&2
+  jq -r '
+    def report($check; $entries):
+      $entries[] | "  \($check): \(.path): \(.reason)",
+        (.candidates // [] | .[] | "    candidate: \(.pname)-\(.version) (\(.derivationPath))");
+    report("mapping"; .mapping.unknownPaths),
+    report("corresponding source"; .correspondingSource.unknownPaths),
+    report("licensing"; .licensing.unknownPaths)
+  ' "$out/qualification.json" >&2
+  exit 1
+fi
+
 jq -S \
   --slurpfile subject index-descriptor.json \
   --slurpfile graph "$AOS_EVIDENCE_REFERENCE_GRAPH/inventory.json" \
@@ -706,10 +723,9 @@ jq -S -n \
   --slurpfile sbom "$out/evidence/sbom.descriptor.json" \
   --slurpfile source "$out/evidence/source.descriptor.json" \
   --slurpfile license "$out/evidence/license.descriptor.json" \
-  --slurpfile provenance "$out/evidence/provenance.descriptor.json" \
-  --slurpfile qualification "$out/qualification.json" '
+  --slurpfile provenance "$out/evidence/provenance.descriptor.json" '
     {
-      schema: "aos.container.signature-input/v1",
+      schema: "aos.container.signature-input/v2",
       identity: $spec[0].identity,
       oci: {
         index: $index[0],
@@ -732,8 +748,7 @@ jq -S -n \
         source: $source[0],
         license: $license[0],
         provenance: $provenance[0]
-      },
-      qualification: $qualification[0]
+      }
     }
   ' > signature-input.pretty.json
 write_compact_json signature-input.pretty.json "$out/signature-input.json"
@@ -749,7 +764,7 @@ jq -S -n \
   --argjson inputSize "$signature_input_size" \
   --slurpfile input "$out/signature-input.json" '
     {
-      schema: "aos.container.signing-request/v1",
+      schema: "aos.container.signing-request/v2",
       input: {
         mediaType: "application/vnd.aos.container.signature-input.v1+json",
         digest: $inputDigest,
@@ -765,12 +780,10 @@ jq -S -n \
       constraints: {
         exactInputBytesRequired: true,
         privateMaterialPermittedInNixBuild: false,
-        finalizerMustRejectUnqualifiedInput: true,
         finalizerMustVerifyEnvelope: true,
         finalizerMustAddSignatureReferrerDescriptor: true,
         releaseSurfaceMustSignFinalSidecar: true
       },
-      qualified: $input[0].qualification.readyForVerifiedPublication,
       unsignedRelease: ($input[0] | del(.schema))
     }
   ' > signing-request.pretty.json

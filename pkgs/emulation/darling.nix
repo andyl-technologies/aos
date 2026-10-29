@@ -37,7 +37,7 @@ in
       role = "public-package";
     };
     pname = "darling";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The host launchers are ELF while dyld and libSystem carry Mach-O magic.";

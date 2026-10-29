@@ -32,7 +32,7 @@ in
       role = "public-package";
     };
     pname = "perl-regexp-common";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The address matches and is captured intact.";

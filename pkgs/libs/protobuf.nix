@@ -24,7 +24,7 @@ in
       role = "public-package";
     };
     pname = "protobuf";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "protoc validates the declaration and writes its descriptor output.";

@@ -133,7 +133,7 @@ fn stage_generation(
             &nix_store,
             &cancellation,
         )?;
-        let mut admission = crate::native_registry::RegistryAdmission::new(
+        let mut admission = crate::native_registry::VerifiedRegistryRoots::new(
             nix_store.clone(),
             &profile.path.join("deployment/registry-admissions"),
         )?;
@@ -157,7 +157,7 @@ fn stage_generation(
                 &cancellation,
             )?;
             let evidence =
-                admission.evidence(root.to_str().context("runtime root is not UTF-8")?)?;
+                admission.input_identity(root.to_str().context("runtime root is not UTF-8")?)?;
             let views = SourceViews::prepare(
                 &nix_store,
                 [root.as_path()],

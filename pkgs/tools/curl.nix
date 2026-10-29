@@ -31,7 +31,7 @@ in
       role = "public-package";
     };
     pname = "curl";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Curl writes the exact resource body.";

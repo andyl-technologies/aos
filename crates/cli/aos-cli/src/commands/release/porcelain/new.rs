@@ -45,8 +45,8 @@ use aos_release_format::plan::{
 };
 use aos_release_format::platform::MatrixCell;
 use aos_release_format::qualification::QualificationContract;
-use aos_release_format::qualification_evidence::QualificationPredecessor;
 use aos_release_format::registry::registry_policy;
+use aos_release_format::release_tests::QualificationPredecessor;
 use aos_release_format::signing::SignerRole;
 use async_trait::async_trait;
 

@@ -58,7 +58,7 @@ in
       role = "public-package";
     };
     pname = "highway";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "Two vectors filled with 2 and 3.";
         operation = "Add the vectors with Highway and inspect every output lane.";

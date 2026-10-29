@@ -37,7 +37,7 @@ def isolated_network():
         (root / "etc").mkdir()
         state_path = root / "state"
         state_path.mkdir(mode=0o700)
-        # Host tests retain real file/link/receipt IO without requiring root.
+        # Host tests retain real file/link/ownership record IO without requiring root.
         # Only the private state directory's owner metadata is simulated.
         state = MagicMock(wraps=state_path)
         state.__truediv__.side_effect = state_path.__truediv__
@@ -276,8 +276,8 @@ class NativeNetworkTests(unittest.TestCase):
 
         with isolated_network() as (root, args, invocation, commands):
             handler.converge(args, invocation)
-            receipt = json.loads(next((root / "state").glob("*.json")).read_text())
-            self.assertEqual(receipt["desired"]["symlinks"][str(path).lstrip("/")], expected)
+            owned_state = json.loads(next((root / "state").glob("*.json")).read_text())
+            self.assertEqual(owned_state["desired"]["symlinks"][str(path).lstrip("/")], expected)
 
     def test_relative_and_absolute_links_apply_observe_and_remove(self):
         vendor_path, vendor_target = vendor_resolver_link()
@@ -292,17 +292,17 @@ class NativeNetworkTests(unittest.TestCase):
 
                 handler.converge(args, invocation)
                 self.assertEqual(os.readlink(path), target)
-                receipt_path = next((root / "state").glob("*.json"))
-                receipt = receipt_path.read_bytes()
-                self.assertEqual(json.loads(receipt)["desired"]["symlinks"]["etc/resolv.conf"], expected)
+                owned_state_path = next((root / "state").glob("*.json"))
+                owned_state = owned_state_path.read_bytes()
+                self.assertEqual(json.loads(owned_state)["desired"]["symlinks"]["etc/resolv.conf"], expected)
                 args.action = "observe"
                 self.assertEqual(handler.converge(args, invocation)["status"], "current")
-                self.assertEqual(receipt_path.read_bytes(), receipt)
+                self.assertEqual(owned_state_path.read_bytes(), owned_state)
 
                 args.action = invocation["action"] = "remove"
                 handler.converge(args, invocation)
                 self.assertFalse(path.is_symlink())
-                self.assertFalse(receipt_path.exists())
+                self.assertFalse(owned_state_path.exists())
 
     def test_unowned_foreign_links_and_regular_files_are_not_adopted(self):
         for target in ["/run/foreign.conf", "../../outside", None]:
@@ -323,12 +323,12 @@ class NativeNetworkTests(unittest.TestCase):
                 else:
                     self.assertEqual(os.readlink(path), target)
 
-    def test_receipted_conflicts_preserve_receipts_for_all_actions(self):
+    def test_recorded_conflicts_preserve_ownership_records_for_all_actions(self):
         for replacement in ["/run/foreign.conf", "../../outside", None]:
             with self.subTest(replacement=replacement), isolated_network() as (root, args, invocation, commands):
                 handler.converge(args, invocation)
-                receipt_path = next((root / "state").glob("*.json"))
-                before = receipt_path.read_bytes()
+                owned_state_path = next((root / "state").glob("*.json"))
+                before = owned_state_path.read_bytes()
                 path = root / "etc/resolv.conf"
                 path.unlink()
                 if replacement is None:
@@ -339,9 +339,9 @@ class NativeNetworkTests(unittest.TestCase):
 
                 for action in ["apply", "observe", "remove"]:
                     args.action = action
-                    with self.assertRaisesRegex(ValueError, "outside its receipt"):
+                    with self.assertRaisesRegex(ValueError, "outside its ownership record"):
                         handler.converge(args, invocation)
-                    self.assertEqual(receipt_path.read_bytes(), before)
+                    self.assertEqual(owned_state_path.read_bytes(), before)
                     commands.assert_not_called()
 
     def test_interrupted_symlink_apply_recovers_equivalent_relative_target(self):
@@ -349,28 +349,28 @@ class NativeNetworkTests(unittest.TestCase):
             commands.side_effect = RuntimeError("interrupted after link publication")
             with self.assertRaisesRegex(RuntimeError, "interrupted"):
                 handler.converge(args, invocation)
-            receipt_path = next((root / "state").glob("*.json"))
-            pending = receipt_path.read_bytes()
-            receipt = json.loads(pending)
-            self.assertFalse(receipt["complete"])
-            expected = receipt["desired"]["symlinks"]["etc/resolv.conf"]
+            owned_state_path = next((root / "state").glob("*.json"))
+            pending = owned_state_path.read_bytes()
+            owned_state = json.loads(pending)
+            self.assertFalse(owned_state["complete"])
+            expected = owned_state["desired"]["symlinks"]["etc/resolv.conf"]
             path = root / "etc/resolv.conf"
             path.unlink()
             path.symlink_to("../../outside")
 
-            with self.assertRaisesRegex(ValueError, "outside its receipt"):
+            with self.assertRaisesRegex(ValueError, "outside its ownership record"):
                 handler.converge(args, invocation)
-            self.assertEqual(receipt_path.read_bytes(), pending)
+            self.assertEqual(owned_state_path.read_bytes(), pending)
             path.unlink()
             path.symlink_to(os.path.relpath(expected, path.parent))
             commands.side_effect = None
             args.action = "observe"
             self.assertEqual(handler.converge(args, invocation)["status"], "retry-safe")
-            self.assertEqual(receipt_path.read_bytes(), pending)
+            self.assertEqual(owned_state_path.read_bytes(), pending)
 
             args.action = "apply"
             handler.converge(args, invocation)
-            self.assertTrue(json.loads(receipt_path.read_text())["complete"])
+            self.assertTrue(json.loads(owned_state_path.read_text())["complete"])
             args.action = "observe"
             self.assertEqual(handler.converge(args, invocation)["status"], "current")
             args.action = invocation["action"] = "remove"
@@ -398,25 +398,25 @@ class NativeNetworkTests(unittest.TestCase):
             commands.side_effect = interrupt_reload
             with self.assertRaisesRegex(RuntimeError, "interrupted resolver update"):
                 handler.converge(args, invocation)
-            receipt_path = next((root / "state").glob("*.json"))
-            pending = receipt_path.read_bytes()
-            receipt = json.loads(pending)
-            self.assertFalse(receipt["complete"])
-            self.assertTrue(receipt["previous"]["resolved"])
+            owned_state_path = next((root / "state").glob("*.json"))
+            pending = owned_state_path.read_bytes()
+            owned_state = json.loads(pending)
+            self.assertFalse(owned_state["complete"])
+            self.assertTrue(owned_state["previous"]["resolved"])
             path = root / "etc/resolv.conf"
             expected = path.read_text()
             path.write_text("foreign resolver\n")
 
-            with self.assertRaisesRegex(ValueError, "outside its receipt"):
+            with self.assertRaisesRegex(ValueError, "outside its ownership record"):
                 handler.converge(args, invocation)
-            self.assertEqual(receipt_path.read_bytes(), pending)
+            self.assertEqual(owned_state_path.read_bytes(), pending)
             path.write_text(expected)
             commands.side_effect = None
             args.action = "observe"
             self.assertEqual(handler.converge(args, invocation)["status"], "retry-safe")
             args.action = "apply"
             handler.converge(args, invocation)
-            self.assertIsNone(json.loads(receipt_path.read_text())["previous"])
+            self.assertIsNone(json.loads(owned_state_path.read_text())["previous"])
             args.action = invocation["action"] = "remove"
             handler.converge(args, invocation)
             self.assertFalse(path.exists())
@@ -523,13 +523,13 @@ class NativeNetworkTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             handler.render(configuration)
 
-    def test_replay_accepts_only_receipted_partial_files(self):
-        receipt = {"desired": {"files": {"etc/systemd/network/unit": "new"}}, "previous": {"files": {"etc/systemd/network/unit": "old"}}}
+    def test_replay_accepts_only_recorded_partial_files(self):
+        owned_state = {"desired": {"files": {"etc/systemd/network/unit": "new"}}, "previous": {"files": {"etc/systemd/network/unit": "old"}}}
         with patch.object(handler, "link_at", return_value=None), patch.object(handler, "read", return_value="old"):
-            self.assertFalse(handler.checked(receipt))
+            self.assertFalse(handler.checked(owned_state))
         with patch.object(handler, "link_at", return_value=None), patch.object(handler, "read", return_value="foreign"):
             with self.assertRaises(ValueError):
-                handler.checked(receipt)
+                handler.checked(owned_state)
 
     def test_empty_bootstrap_uses_native_invocation_and_observation(self):
         invocation = {"id": "fixture", "revision": "0" * 64, "effect": {"identity": ["fixture", "network", "bootstrap", "empty"]}, "input": {"configuration": None}, "action": "apply", "previous": None}

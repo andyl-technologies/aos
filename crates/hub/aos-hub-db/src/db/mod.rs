@@ -440,9 +440,9 @@ mod snapshot_insert_tests {
     }
 }
 
-mod cache_write_admission;
+mod cache_upload_tickets_batch;
 mod controller_leases;
-pub use cache_write_admission::*;
+pub use cache_upload_tickets_batch::*;
 pub use controller_leases::{ControllerLeaseFence, CONTROLLER_LEASE_TTL_SECONDS};
 mod delivery_identity;
 pub use delivery_identity::*;
@@ -465,7 +465,7 @@ mod oci_namespaces;
 pub use oci_namespaces::*;
 mod oci_release_projection;
 mod placement_policy;
-mod publication_admission;
+mod publication_manifest_batch;
 mod registry_delete;
 pub use registry_delete::*;
 mod registry_delete_operation;
@@ -488,7 +488,7 @@ mod signing_keys;
 mod topology;
 mod worker_jobs;
 pub use placement_policy::*;
-pub use publication_admission::*;
+pub use publication_manifest_batch::*;
 pub use registry_index_build::*;
 pub use release_publication::*;
 pub use signing_keys::*;
@@ -548,6 +548,7 @@ pub fn portable_relational_id(incarnation: uuid::Uuid) -> i64 {
 /// | 16 | `migration-0016-oidc-flow-retention.sql` | Bounded OIDC flow admission and indexed retention. |
 /// | 17 | `migration-0017-native-documentation-lookup.sql` | Indexed native documentation digest lookup. |
 /// | 18 | `migration-0018-binding-id-tombstones.sql` | Non-reusable topology binding ids. |
+/// | 19 | `migration-0019-oci-deletion-evidence-fields.sql` | OCI deletion rows without a derived digest column. |
 pub const MIGRATIONS: &[&str] = &[
     include_str!("schema.sql"),
     include_str!("release_channel_advances.sql"),
@@ -567,6 +568,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("migration-0016-oidc-flow-retention.sql"),
     include_str!("migration-0017-native-documentation-lookup.sql"),
     include_str!("migration-0018-binding-id-tombstones.sql"),
+    include_str!("migration-0019-oci-deletion-evidence-fields.sql"),
 ];
 
 /// Identifies the production migration lineage independently of its version.

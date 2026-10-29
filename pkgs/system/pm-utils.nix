@@ -26,7 +26,7 @@ in
       role = "public-package";
     };
     pname = "pm-utils";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Pm-utils documents suspend, hibernate, and hybrid suspend queries.";

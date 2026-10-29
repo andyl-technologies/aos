@@ -8,7 +8,7 @@ mkDerivation {
     role = "public-package";
   };
   pname = "aos-agent-rpc";
-  qualification.packageProbe = lib.qualification.commandProbe {
+  smokeTest = lib.qualification.commandProbe {
     "primary" = {
       "artifacts" = [];
       "expected" = "The client sends the exact command and prints the server's framed JSON response.";

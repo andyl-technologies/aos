@@ -246,11 +246,9 @@ in
             and ([.licensing.unknownPaths[].path] == ([.licensing.unknownPaths[].path] | sort | unique))
           ' ${evidence}/qualification.json >/dev/null
 
-          jq -e \
-            --slurpfile qualification ${evidence}/qualification.json '
-              .schema == "aos.container.signature-input/v1"
-              and .qualification == $qualification[0]
-              and .qualification.readyForVerifiedPublication == true
+          jq -e '
+              .schema == "aos.container.signature-input/v2"
+              and (has("qualification") | not)
               and .nix.definition.attribute == "systems.server.build.containers.aos"
               and (.nix.definition.derivationPath | test("^/nix/store/[0-9a-z]{32}-.*[.]drv$"))
               and .nix.output.name == "out"
@@ -266,22 +264,21 @@ in
             --arg digest "sha256:$input_hex" \
             --argjson size "$input_size" \
             --slurpfile input ${evidence}/signature-input.json '
-              .schema == "aos.container.signing-request/v1"
+              .schema == "aos.container.signing-request/v2"
               and .input.digest == $digest
               and .input.size == $size
               and .input.mediaType == "application/vnd.aos.container.signature-input.v1+json"
-              and .qualified == $input[0].qualification.readyForVerifiedPublication
-              and .qualified == true
+              and (has("qualified") | not)
               and .requiredOutput.finalSidecarMediaType == "application/vnd.aos.container-release.v1+json"
-              and .unsignedRelease.qualification == $input[0].qualification
+              and .unsignedRelease == ($input[0] | del(.schema))
               and .constraints.privateMaterialPermittedInNixBuild == false
-              and .constraints.finalizerMustRejectUnqualifiedInput == true
+              and (.constraints | has("finalizerMustRejectUnqualifiedInput") | not)
               and (.unsignedRelease.evidence | has("signature") | not)
             ' ${evidence}/signing-request.json >/dev/null
 
           jq -cS '
             del(.schema)
-            | .schemaVersion = 1
+            | .schemaVersion = 2
             | .mediaType = "application/vnd.aos.container-release.v1+json"
             | .evidence.signature = {
                 mediaType: "application/vnd.oci.image.manifest.v1+json",

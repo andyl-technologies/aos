@@ -59,14 +59,14 @@ class Harness(bootstrap.Bootstrap):
     def command(self, *arguments, input=None):
         return "test-nar-identity"
 
-    def recipient_receipt(self, pending=False):
+    def recipient_owned_state(self, pending=False):
         directory = Path(self.args.service_state_directory)
         directory.mkdir(exist_ok=True)
-        receipt = {"id": "service-owner", "units": {"dbus.service": self.entry["digest"]},
+        owned_state = {"id": "service-owner", "units": {"dbus.service": self.entry["digest"]},
                    "links": {}, "pending": pending, "image_units": {}}
         if pending:
-            receipt["image_units"]["dbus.service"] = {"target": self.entry["target"], "digest": self.entry["digest"]}
-        (directory / (bootstrap.digest(b"service-owner") + ".json")).write_text(json.dumps(receipt))
+            owned_state["image_units"]["dbus.service"] = {"target": self.entry["target"], "digest": self.entry["digest"]}
+        (directory / (bootstrap.digest(b"service-owner") + ".json")).write_text(json.dumps(owned_state))
 
 
 class BootstrapTests(unittest.TestCase):
@@ -118,7 +118,7 @@ class BootstrapTests(unittest.TestCase):
         path = self.handler.units / "dbus.service"
         path.unlink()
         path.write_text(self.handler.text)
-        self.handler.recipient_receipt()
+        self.handler.recipient_owned_state()
 
         self.assertEqual(self.handler.observe()["status"], "current")
         self.handler.remove()
@@ -131,7 +131,7 @@ class BootstrapTests(unittest.TestCase):
         path = self.handler.units / "dbus.service"
         path.unlink()
         path.write_text(self.handler.text)
-        self.handler.recipient_receipt(pending=True)
+        self.handler.recipient_owned_state(pending=True)
 
         with self.assertRaises(ValueError):
             self.handler.remove()
@@ -154,14 +154,14 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(path.read_text(), self.handler.text)
         self.assertEqual(len(list(self.handler.roots.iterdir())), 1)
 
-    def test_receipt_precedes_publication_and_recovers_interrupted_cutover(self):
+    def test_owned_state_precedes_publication_and_recovers_interrupted_cutover(self):
         self.handler.apply()
         replacement = Harness(self.root, "second")
         original_save = replacement.save
 
-        def fail_after_intent(receipt):
-            original_save(receipt)
-            if receipt.get("pending"):
+        def fail_after_intent(owned_state):
+            original_save(owned_state)
+            if owned_state.get("pending"):
                 raise OSError("injected publication interruption")
 
         replacement.save = fail_after_intent
@@ -182,7 +182,7 @@ class BootstrapTests(unittest.TestCase):
         path = self.handler.units / "dbus.service"
         path.unlink()
         path.write_text(self.handler.text)
-        self.handler.recipient_receipt(pending=True)
+        self.handler.recipient_owned_state(pending=True)
 
         second = Harness(self.root, "second")
         second.render = lambda: (str(second.source), "test-nar-identity", {})
@@ -196,9 +196,9 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(path.read_text(), self.handler.text)
 
         self.assertEqual(len(list(third.roots.iterdir())), 3)
-        self.assertEqual(len(third.receipt["history"]), 1)
+        self.assertEqual(len(third.owned_state["history"]), 1)
 
-        self.handler.recipient_receipt(pending=False)
+        self.handler.recipient_owned_state(pending=False)
         third.remove()
 
         self.assertEqual(list(third.roots.iterdir()), [])
@@ -209,9 +209,9 @@ class BootstrapTests(unittest.TestCase):
         replacement = Harness(self.root, "second")
         original_save = replacement.save
 
-        def fail_after_intent(receipt):
-            original_save(receipt)
-            if receipt.get("pending"):
+        def fail_after_intent(owned_state):
+            original_save(owned_state)
+            if owned_state.get("pending"):
                 raise OSError("injected publication interruption")
 
         replacement.save = fail_after_intent
@@ -283,7 +283,7 @@ class BootstrapTests(unittest.TestCase):
             return command(*arguments, input=input)
 
         handler.command = failed_import
-        handler.receipt = None
+        handler.owned_state = None
         with self.assertRaises(RuntimeError):
             handler.render()
 

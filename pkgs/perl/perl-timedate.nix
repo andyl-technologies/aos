@@ -32,7 +32,7 @@ in
       role = "public-package";
     };
     pname = "perl-timedate";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Date::Parse returns Unix epoch 784111777.";

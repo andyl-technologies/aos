@@ -38,7 +38,7 @@ in
       role = "public-package";
     };
     pname = "perl-b-cow";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "B::COW reports support and a positive reference-count limit.";

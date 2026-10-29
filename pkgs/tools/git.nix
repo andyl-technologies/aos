@@ -106,7 +106,7 @@ in
     pname = "git" + lib.optionalString minimal "-minimal";
     inherit version;
 
-    qualification.packageProbe =
+    smokeTest =
     if minimal
     then lib.qualification.commandProbe {
       "primary" = {

@@ -22,7 +22,7 @@ in
       role = "public-package";
     };
     pname = "zsh";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Zsh selects the second array value and prints the sum 42.";

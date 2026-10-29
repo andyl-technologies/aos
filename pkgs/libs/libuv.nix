@@ -16,7 +16,7 @@ in
       role = "public-package";
     };
     pname = "libuv";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The port and round-tripped host match the input.";

@@ -25,7 +25,7 @@ in
       role = "public-package";
     };
     pname = "libproxy";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The configured proxy endpoint is returned exactly.";

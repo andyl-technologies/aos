@@ -1,4 +1,4 @@
-##! Package-owned evaluated OCI package evidence.
+##! Package-owned map from AOS package outputs to package metadata and sources.
 ##!
 ##! Maps every named AOS package output to the package metadata and source
 ##! identity still available at evaluation time. A later realized-graph join

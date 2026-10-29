@@ -24,7 +24,7 @@ in
       role = "public-package";
     };
     pname = "fakeroot";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The child observes UID and GID zero without privileged filesystem operations.";

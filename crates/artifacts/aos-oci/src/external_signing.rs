@@ -17,7 +17,7 @@ use aos_oci_types::{
     Annotations, CONTAINER_DSSE_SIGNATURE_NAMESPACE, CONTAINER_RELEASE_SCHEMA_VERSION,
     CONTAINER_RELEASE_SIDECAR_PATH, CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE,
     CONTAINER_SIGNATURE_INPUT_SCHEMA, ContainerDsseEnvelope, ContainerDsseSignature,
-    ContainerRelease, ContainerReleaseEvidence, ContainerSignatureInput, Descriptor, ImageIndex,
+    ContainerReferrers, ContainerRelease, ContainerSignatureInput, Descriptor, ImageIndex,
     ImageManifest, MediaType, Sha256Digest, to_canonical_json,
 };
 use base64::Engine as _;
@@ -55,8 +55,8 @@ pub struct FinalizedContainerPublication {
 ///
 /// # Errors
 ///
-/// Returns an error when the input bundle is malformed, unqualified, changed,
-/// non-canonical, or missing any exact descriptor in its bounded OCI graph.
+/// Returns an error when the input bundle is malformed, changed, uses an
+/// unsupported schema, is non-canonical, or missing any exact descriptor in its bounded OCI graph.
 pub fn container_signature_pae(inputs: &Path) -> Result<Vec<u8>> {
     let validated = validate_publication_inputs(inputs)?;
     Ok(dsse_pae(&validated.signature_input_bytes))
@@ -112,7 +112,7 @@ pub fn write_container_signature_pae(inputs: &Path, output: &Path) -> Result<Vec
 ///
 /// # Errors
 ///
-/// Returns an error for malformed or unqualified inputs, a malformed signer,
+/// Returns an error for malformed inputs, a malformed signer,
 /// an invalid/wrong-key/wrong-namespace signature, graph corruption, an
 /// existing output, an unsafe output path, or any staging, sync, or atomic
 /// installation failure.
@@ -256,10 +256,6 @@ fn validate_publication_inputs(inputs: &Path) -> Result<ValidatedInputs> {
         CONTAINER_SIGNATURE_INPUT_SCHEMA,
         signature_input.schema
     );
-    ensure!(
-        signature_input.qualification.ready_for_verified_publication,
-        "container signature input is not ready for verified publication"
-    );
     validate_signing_request(inputs, &signature_input, &signature_input_bytes)?;
     validate_publication_roots(inputs, &signature_input)?;
 
@@ -319,12 +315,8 @@ fn validate_signing_request(
     let request: Value =
         serde_json::from_slice(&bytes).context("decoding container signing request")?;
     ensure!(
-        request["schema"] == "aos.container.signing-request/v1",
+        request["schema"] == "aos.container.signing-request/v2",
         "unexpected container signing request schema"
-    );
-    ensure!(
-        request["qualified"] == true,
-        "container signing request is not qualified"
     );
     ensure!(
         request["input"]["mediaType"] == CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE
@@ -355,7 +347,6 @@ fn validate_signing_request(
     for constraint in [
         "exactInputBytesRequired",
         "privateMaterialPermittedInNixBuild",
-        "finalizerMustRejectUnqualifiedInput",
         "finalizerMustVerifyEnvelope",
         "finalizerMustAddSignatureReferrerDescriptor",
         "releaseSurfaceMustSignFinalSidecar",
@@ -522,8 +513,7 @@ fn signed_release(
         identity: input.identity.clone(),
         oci: input.oci.clone(),
         nix: input.nix.clone(),
-        qualification: input.qualification.clone(),
-        evidence: ContainerReleaseEvidence {
+        evidence: ContainerReferrers {
             abilities: input.evidence.abilities.clone(),
             sbom: input.evidence.sbom.clone(),
             source: input.evidence.source.clone(),

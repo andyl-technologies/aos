@@ -38,7 +38,7 @@ pub struct ReleasePlanRequest {
     pub schema_version: String,
     /// Same-registry preceding snapshot, required for shared server qualification.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub qualification_predecessor: Option<crate::qualification_evidence::QualificationPredecessor>,
+    pub qualification_predecessor: Option<crate::release_tests::QualificationPredecessor>,
     /// Immutable release identity.
     pub release_id: String,
     /// SemVer-compatible calendar release version.

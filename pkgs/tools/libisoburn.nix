@@ -35,7 +35,7 @@ in
       role = "public-package";
     };
     pname = "libisoburn";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [
           {
