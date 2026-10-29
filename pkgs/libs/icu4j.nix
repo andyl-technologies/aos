@@ -33,7 +33,7 @@ in
       role = "public-package";
     };
     pname = "icu4j";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "The installed ICU4J archive and its Unicode data.";
         operation = "Inspect the archive for Java APIs and generated Unicode resources.";

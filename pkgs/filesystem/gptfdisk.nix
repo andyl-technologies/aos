@@ -23,7 +23,7 @@ in
       role = "public-package";
     };
     pname = "gptfdisk";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Sgdisk writes and validates the primary and backup GPT metadata.";

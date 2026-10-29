@@ -16,7 +16,7 @@ in
       role = "public-package";
     };
     pname = "libatomic_ops";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The operation returns the prior value 41 and stores 42.";

@@ -26,7 +26,7 @@ in
       role = "public-package";
     };
     pname = "moreutils";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [
           {

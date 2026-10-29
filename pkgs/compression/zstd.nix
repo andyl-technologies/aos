@@ -64,7 +64,7 @@ in
       role = "public-package";
     };
     pname = "zstd";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The decoded bytes exactly reproduce the original payload.";

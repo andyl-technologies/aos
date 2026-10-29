@@ -94,7 +94,7 @@ in
       role = "public-package";
     };
     pname = "krb5";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The canonical principal text round-trips unchanged.";

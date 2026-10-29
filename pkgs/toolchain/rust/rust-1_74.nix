@@ -180,7 +180,7 @@ in
         role = "public-package";
       };
       pname = "rust-1_74";
-      qualification.packageProbe = lib.qualification.commandProbe {
+      smokeTest = lib.qualification.commandProbe {
         "primary" = {
           "artifacts" = [];
           "expected" = "The compiler produces a runnable binary that prints the fixed result 42.";

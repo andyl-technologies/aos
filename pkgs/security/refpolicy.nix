@@ -40,7 +40,7 @@ in
       role = "public-package";
     };
     pname = "refpolicy";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The base policy package and refpolicy include Makefile are nonempty and identify refpolicy.";

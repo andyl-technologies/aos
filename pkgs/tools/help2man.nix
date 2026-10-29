@@ -34,7 +34,7 @@ in
       role = "public-package";
     };
     pname = "help2man";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "The installed help2man command as a documented executable.";
         operation = "Generate a manual page from its help and version output.";

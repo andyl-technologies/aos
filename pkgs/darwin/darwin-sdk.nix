@@ -788,7 +788,7 @@ in
       role = "public-package";
     };
     pname = "darwin-sdk";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The SDK exports FILE declarations and an install-name for libSystem.";

@@ -72,7 +72,7 @@
       role = "public-package";
     };
     pname = "linux-crucible";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The fixture is a bootable kernel whose required guest devices are built in and whose module tree is empty.";

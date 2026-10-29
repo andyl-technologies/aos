@@ -15,7 +15,7 @@ in
       role = "public-package";
     };
     pname = "cpio";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Cpio emits the exact archived path when reading its own archive.";

@@ -23,7 +23,7 @@ in
       role = "public-package";
     };
     pname = "libcap-ng";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The API returns the CAP_CHOWN capability number.";
