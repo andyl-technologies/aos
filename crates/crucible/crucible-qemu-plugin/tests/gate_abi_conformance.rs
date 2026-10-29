@@ -24,8 +24,8 @@ fn gate_abi_conformance_covers_plugin_io_wire_fuzzing() -> Result<(), Box<dyn Er
         fs::read_to_string(root.join("tests/crucible/phase2-protocol-codec-fuzz.nix"))?;
     let canonical_gate =
         fs::read_to_string(root.join("tests/crucible/phase2-abi-conformance.nix"))?;
-    let harness_spec =
-        fs::read_to_string(root.join("docs/rfcs/0010-crucible/24-determinism-harness-testing.md"))?;
+    let testing_doc =
+        fs::read_to_string(root.join("docs/engineering/crucible/testing-and-gates.md"))?;
 
     assert_contains(&plugin_lib, "pub mod io_wire_fuzz;");
     assert_contains(&plugin_lib, "run_io_wire_fuzz_target");
@@ -59,8 +59,8 @@ fn gate_abi_conformance_covers_plugin_io_wire_fuzzing() -> Result<(), Box<dyn Er
 
     assert_contains(&phase_check, "run-qemu-plugin-io-wire-fuzz");
     assert_contains(&phase_check, "crucible-qemu-plugin::io_wire_fuzz");
-    assert_contains(&harness_spec, "- [x] **T-HARN-19**");
-    assert_contains(&harness_spec, "filesystem semantics");
+    assert_contains(&testing_doc, "block and 9p wire handlers are fuzzed");
+    assert_contains(&testing_doc, "`crucible_qemu_plugin::io_wire_fuzz`");
 
     assert_plugin_io_wire_fuzz_unit_target_is_gate_wired(&canonical_gate);
 
@@ -85,8 +85,8 @@ fn gate_abi_conformance_covers_whitebox_doorbell_instruction_abi() -> Result<(),
         fs::read_to_string(root.join("tests/crucible/phase4-guest-host-doorbell-abi.nix"))?;
     let canonical_gate =
         fs::read_to_string(root.join("tests/crucible/phase2-abi-conformance.nix"))?;
-    let guest_host_spec =
-        fs::read_to_string(root.join("docs/rfcs/0010-crucible/16-guest-host-channel.md"))?;
+    let guest_host_doc =
+        fs::read_to_string(root.join("docs/engineering/crucible/guest-host-channel.md"))?;
 
     assert_contains(&protocol_lib, "mod doorbell_abi;");
     assert_contains(&protocol_lib, "WhiteboxDoorbellTrapAbi");
@@ -129,9 +129,8 @@ fn gate_abi_conformance_covers_whitebox_doorbell_instruction_abi() -> Result<(),
 
     assert_contains(&phase_check, "checks.crucible.phase4.guestHostDoorbellAbi");
     assert_contains(&phase_check, "gate=gate:abi-conformance");
-    assert_contains(&guest_host_spec, "- [x] **T-GHC-5**");
-    assert_contains(&guest_host_spec, "x86_64   out 0xe7,al");
-    assert_contains(&guest_host_spec, "aarch64  hint #0x4c");
+    assert_contains(&guest_host_doc, "x86_64   out 0xe7,al");
+    assert_contains(&guest_host_doc, "aarch64  hint #0x4c");
 
     assert_doorbell_abi_unit_targets_are_gate_wired(&canonical_gate);
 
