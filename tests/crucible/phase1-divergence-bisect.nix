@@ -16,9 +16,9 @@
   gateCatalogTest = builtins.readFile ../../crates/crucible/crucible-test-support/tests/gate_catalog.rs;
   gateTargetMapping = builtins.readFile ./phase1-gate-target-mapping.nix;
   defaultChecks = builtins.readFile ./default.nix;
-  harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
-  determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
-  executionModel = builtins.readFile ../../docs/rfcs/0010-crucible/05-execution-model.md;
+  testingAndGatesDoc = builtins.readFile ../../docs/engineering/crucible/testing-and-gates.md;
+  determinismDoc = builtins.readFile ../../docs/engineering/crucible/determinism.md;
+  executionModelDoc = builtins.readFile ../../docs/engineering/crucible/execution-model.md;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
@@ -275,26 +275,26 @@
         needle = "\"T-EXEC-12\"";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
+    ++ failuresFor "docs/engineering/crucible/testing-and-gates.md" testingAndGatesDoc [
       {
-        label = "T-HARN-13 completion names bisection checker";
+        label = "sampled bisection checker";
         needle = "`check_sampled_search_replay_oracle_with_bisection`";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
+    ++ failuresFor "docs/engineering/crucible/determinism.md" determinismDoc [
       {
-        label = "DET-39 requires first differing decision";
+        label = "first differing decision localized";
         needle = "first differing decision";
       }
       {
-        label = "DET-39 forbids repair and retry";
-        needle = "be smoothed over, tolerated, or retried";
+        label = "divergence is never smoothed over";
+        needle = "A divergence must never be smoothed";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/05-execution-model.md" executionModel [
+    ++ failuresFor "docs/engineering/crucible/execution-model.md" executionModelDoc [
       {
-        label = "T-EXEC-12 completion note names strict replay-oracle path";
-        needle = "strict sampled\n    replay-oracle path";
+        label = "strict replay-oracle path bisects mismatches";
+        needle = "`localize_replay_oracle_mismatch`";
       }
     ];
 in

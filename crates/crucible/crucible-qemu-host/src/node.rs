@@ -1,6 +1,6 @@
 //! Scheduler-facing QEMU node wrapper.
 //!
-//! The wrapper owns exactly one child handle and the three RFC-0010 QEMU
+//! The wrapper owns exactly one child handle and the three QEMU
 //! channels for that child: plugin IPC control, shared-memory hot path, and
 //! QMP machine control. It exposes the synchronous backend boundary while
 //! keeping per-quantum timing and frame traffic on the shared-memory channel.

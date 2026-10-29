@@ -8,8 +8,6 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  apiDoc = builtins.readFile ../../docs/rfcs/0010-crucible/21-api.md;
-  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   apiCargo = builtins.concatStringsSep "\n" [
     (builtins.readFile ../../crates/crucible/crucible-control-client/Cargo.toml)
     (builtins.readFile ../../crates/crucible/crucible-control-server/Cargo.toml)
@@ -42,23 +40,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/21-api.md" apiDoc [
-      {
-        label = "T-API-3 completion note";
-        needle = "Completed by `checks.crucible.phase5.apiLifecycleUnary`";
-      }
-      {
-        label = "T-API-5 completion note";
-        needle = "Completed by `checks.crucible.phase5.apiOpenSetPayload`";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "phase5 API lifecycle status note";
-        needle = "`T-API-3` is green through `checks.crucible.phase5.apiLifecycleUnary`";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-control-api/Cargo.toml" apiCargo [
+    failuresFor "crates/crucible/crucible-control-api/Cargo.toml" apiCargo [
       {
         label = "crucible production dependency";
         needle = ''crucible-engine = { path = "../crucible-engine" }'';

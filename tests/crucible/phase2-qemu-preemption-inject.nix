@@ -11,7 +11,7 @@
   patchSource = builtins.readFile (patchDir + "/${atomicPatch.file}");
   qemuNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
   pluginPackage = builtins.readFile ../../pkgs/emulation/crucible-qemu-plugin.nix;
-  qemuPatchSpec = builtins.readFile ../../docs/rfcs/0010-crucible/11-qemu-patches.md;
+  qemuPatchSpec = builtins.readFile ../../docs/engineering/crucible/qemu-patch.md;
   defaultChecks = builtins.readFile ./default.nix;
   livePluginSource = builtins.readFile ./phase2-qemu-exact-preemption-plugin.c;
   exactLive = import ./phase2-qemu-exact-preemption-live.nix {inherit pkgs qemuPackage;};
@@ -20,9 +20,9 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/11-qemu-patches.md" qemuPatchSpec [
+    failuresFor "docs/engineering/crucible/qemu-patch.md" qemuPatchSpec [
       {
-        label = "PATCH-47 export";
+        label = "preemption export";
         needle = "qemu_plugin_inject_preemption";
       }
     ]

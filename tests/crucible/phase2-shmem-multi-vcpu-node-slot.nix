@@ -23,9 +23,7 @@
   deadline = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/deadline.rs;
   fingerprintObservation = builtins.readFile ../../crates/crucible/crucible-test-support/src/fingerprint/observation.rs;
   timeGate = builtins.readFile ./phase1-time-multi-vcpu-aggregate-clock.nix;
-  shmemSpec = builtins.readFile ../../docs/rfcs/0010-crucible/13-shmem-abi.md;
-  timeSpec = builtins.readFile ../../docs/rfcs/0010-crucible/09-virtual-time-icount.md;
-  decisionRegister = builtins.readFile ../../docs/rfcs/0010-crucible/31-decision-register.md;
+  timeSpec = builtins.readFile ../../docs/engineering/crucible/virtual-time.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -204,7 +202,7 @@
         needle = "per_vcpu_retired";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/09-virtual-time-icount.md" timeSpec [
+    ++ failuresFor "docs/engineering/crucible/virtual-time.md" timeSpec [
       {
         label = "multi-vCPU aggregate node clock";
         needle = "retired-instruction count across all `N` vCPUs";
@@ -213,18 +211,10 @@
         label = "per-vCPU counts plugin-internal";
         needle = "Per-vCPU retired counts are";
       }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/31-decision-register.md" decisionRegister [
       {
-        label = "decision says no per-vCPU shmem slots";
-        needle = "no per-vCPU shmem";
+        label = "no per-vCPU shmem slots or clocks";
+        needle = "per-vCPU slots or clocks";
       }
-      {
-        label = "decision says no per-vCPU clocks";
-        needle = "no per-vCPU clocks";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/13-shmem-abi.md" shmemSpec [
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {

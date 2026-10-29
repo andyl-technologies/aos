@@ -1,6 +1,6 @@
-//! The SS25.1 cost model: scenario inputs and the closed-form evaluator.
+//! The cost model: scenario inputs and the closed-form evaluator.
 //!
-//! This module owns the *modeled inputs* to the RFC-0010 file 25 cost model  --  a
+//! This module owns the *modeled inputs* to the cost model  --  a
 //! [`BenchScenario`] of [`BenchNode`]s and [`BenchLink`]s plus the run-shaping
 //! [`RealizationConfig`]  --  and the deterministic closed form that turns them into
 //! a [`CostModelBreakdown`]:
@@ -9,37 +9,37 @@
 //!   wall_clock  ~=  (sum busy_i) / (IPS_tcg x P)  +  T_amortized_boot  +  T_sync_overhead
 //! ```
 //!
-//! [`evaluate_cost_model`] computes each term separately ([PERF-1]) with idle
-//! pinned to zero ([PERF-2]) and `P` from the lookahead budget attenuated by the
-//! critical path ([PERF-3], SS25.2.2). No host measurement happens here: every
+//! [`evaluate_cost_model`] computes each term separately with idle
+//! pinned to zero and `P` from the lookahead budget attenuated by the
+//! critical path. No host measurement happens here: every
 //! quantity is a modeled integer in an abstract wall-clock unit.
 
 use std::collections::BTreeSet;
 
 /// The modeled TCG slowdown floor relative to native, at the fast end
-/// ([PERF-1] cost-model fact 1: busy instructions cost ~10-20x native).
+/// (busy instructions cost ~10-20x native).
 pub const TCG_FLOOR_MIN: u64 = 10;
 
 /// The modeled TCG slowdown floor relative to native, at the slow end.
 pub const TCG_FLOOR_MAX: u64 = 20;
 
 /// The sync-overhead warning threshold as a percentage of guest busy-execution
-/// wall-clock ([PERF-7]).
+/// wall-clock.
 pub const SYNC_OVERHEAD_WARN_PCT: u64 = 5;
 
 /// The sync-overhead hard-fail threshold as a percentage of guest
-/// busy-execution wall-clock ([PERF-7]).
+/// busy-execution wall-clock.
 pub const SYNC_OVERHEAD_FAIL_PCT: u64 = 10;
 
 /// The minimum coverage-on guest-IPS ratio, as a percentage of coverage-off
-/// guest IPS, that the reference guest must sustain ([PERF-14]).
+/// guest IPS, that the reference guest must sustain.
 pub const COVERAGE_ON_MIN_PCT: u64 = 70;
 
 /// The maximum fuzzing-throughput regression tolerated without a recorded
-/// rationale, as a percentage of the stored baseline ([PERF-13]).
+/// rationale, as a percentage of the stored baseline.
 pub const THROUGHPUT_REGRESSION_MAX_PCT: u64 = 10;
 
-/// The optional per-executed-block coverage hook configuration ([PERF-14]).
+/// The optional per-executed-block coverage hook configuration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CoverageMode {
     /// Coverage extraction is disabled: the hook adds no measurable per-block
@@ -52,10 +52,10 @@ pub enum CoverageMode {
 
 /// A VM node in a benchmark scenario.
 ///
-/// Every quantity here is a *modeled* input to the SS25.1 cost model, never a
+/// Every quantity here is a *modeled* input to the cost model, never a
 /// host measurement: `busy_instructions` is the number of guest instructions
 /// the node retires over the run, and `idle_ticks` is the virtual-time idle span
-/// it fast-forwards over (which contributes zero wall-clock, [PERF-2]).
+/// it fast-forwards over (which contributes zero wall-clock).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BenchNode {
     /// Stable node name.
@@ -118,7 +118,7 @@ impl BenchScenario {
     }
 
     /// Returns the longest chain of causally dependent busy work  --  the critical
-    /// path  --  that bounds realized parallelism ([PERF-3], SS25.2.2).
+    /// path  --  that bounds realized parallelism.
     ///
     /// The chain follows links: the critical busy cost of a node is its own busy
     /// work plus the maximum critical busy cost of any node that feeds it. A
@@ -159,7 +159,7 @@ impl BenchScenario {
     }
 }
 
-/// The SS25.1.3 wall-clock cost model, decomposed into its four terms.
+/// The wall-clock cost model, decomposed into its four terms.
 ///
 /// Every field is a *modeled* quantity in the same abstract "wall-clock unit"
 /// (busy instructions divided by the TCG IPS rate), never a host measurement.
@@ -168,13 +168,13 @@ impl BenchScenario {
 pub struct CostModelBreakdown {
     /// The busy-execution term: `(sum busy_i) / (IPS_tcg x P)`.
     pub busy_term: u64,
-    /// The idle contribution, which the model pins to exactly zero ([PERF-2]).
+    /// The idle contribution, which the model pins to exactly zero.
     pub idle_term: u64,
-    /// The amortized-boot term (driven to zero under bake-once, [PERF-11]).
+    /// The amortized-boot term (driven to zero under bake-once).
     pub amortized_boot_term: u64,
-    /// The synchronization-overhead term ([PERF-7], fact 5).
+    /// The synchronization-overhead term.
     pub sync_overhead_term: u64,
-    /// The realized parallelism `P` used in the busy term ([PERF-3]).
+    /// The realized parallelism `P` used in the busy term.
     pub realized_parallelism: u64,
 }
 
@@ -189,7 +189,7 @@ impl CostModelBreakdown {
     }
 
     /// Returns the sync overhead as a percentage of the busy-execution term
-    /// ([PERF-7] measures against guest busy-execution wall-clock).
+    /// (measured against guest busy-execution wall-clock).
     #[must_use]
     pub fn sync_overhead_pct(&self) -> u64 {
         if self.busy_term == 0 {
@@ -205,10 +205,10 @@ impl CostModelBreakdown {
 pub struct RealizationConfig {
     /// The one-time cold-boot cost, in wall-clock units, paid inside `bake`.
     pub boot_cost: u64,
-    /// The number of scenarios sharing the one baked `World` ([PERF-11]).
+    /// The number of scenarios sharing the one baked `World`.
     pub scenarios_sharing_world: u64,
     /// The rendezvous frequency: how often the scheduler brings all nodes to a
-    /// common virtual time ([PERF-10]). Higher means more global bookkeeping.
+    /// common virtual time. Higher means more global bookkeeping.
     pub rendezvous_frequency: u64,
 }
 
@@ -225,12 +225,12 @@ impl RealizationConfig {
     }
 }
 
-/// Evaluates the SS25.1.3 cost model for a scenario and realization config.
+/// Evaluates the cost model for a scenario and realization config.
 ///
 /// This is the deterministic closed form of
 /// `wall ~= (sum busy_i) / (IPS_tcg x P) + amortized_boot + sync_overhead`, with the
-/// idle term pinned to zero ([PERF-2]) and `P` computed from the lookahead budget
-/// attenuated by the critical path ([PERF-3], SS25.2.2).
+/// idle term pinned to zero and `P` computed from the lookahead budget
+/// attenuated by the critical path.
 ///
 /// # Panics
 ///
@@ -270,15 +270,14 @@ pub fn evaluate_cost_model(
     }
 }
 
-/// Returns the realized parallelism `P` for a scenario ([PERF-3], SS25.2.2).
+/// Returns the realized parallelism `P` for a scenario.
 ///
 /// `P` is bounded by `min(node_count, cores)` and attenuated by the critical-path
 /// fraction: a scenario that is one long causal chain realizes `P ~= 1`, and a
 /// scenario of mostly-independent nodes realizes `P ~= min(nodes, cores)`. The
 /// realized value is proportional to the lookahead budget (the minimum link
 /// latency), which is the parallelism-is-the-lookahead-budget identity of
-/// SS25.2.1: halving the latency floor roughly halves `P` down to the floor
-/// ([PERF-4]).
+/// Halving the latency floor roughly halves `P` down to the floor.
 #[must_use]
 pub fn realized_parallelism(scenario: &BenchScenario) -> u64 {
     let node_count = scenario.nodes.len() as u64;
@@ -295,7 +294,7 @@ pub fn realized_parallelism(scenario: &BenchScenario) -> u64 {
 
     // The lookahead budget attenuates parallelism toward single-TB lockstep as
     // the minimum link latency approaches the resolution of one translation
-    // block ([PERF-4], fact 4). Model the budget as latency measured in TB units
+    // block. Model the budget as latency measured in TB units
     // and cap P by it: a below-floor latency collapses P toward 1.
     let lookahead_bound = match scenario.min_link_latency() {
         None => core_bound,
@@ -305,7 +304,7 @@ pub fn realized_parallelism(scenario: &BenchScenario) -> u64 {
     critical_bound.min(lookahead_bound).max(1)
 }
 
-/// Models the sync/determinism-overhead term of the cost model ([PERF-7]).
+/// Models the sync/determinism-overhead term of the cost model.
 fn sync_overhead_term(
     scenario: &BenchScenario,
     realization: &RealizationConfig,
@@ -314,7 +313,7 @@ fn sync_overhead_term(
     // Sync cost is the product of per-event atomic cost (fact 5) and event
     // frequency (set by the lookahead window: tighter windows and finer
     // rendezvous => more events). It is modeled as a small fraction of the busy
-    // term so the gate can assert the < few % budget ([PERF-7]); it never
+    // term so the gate can assert the < few % budget; it never
     // exceeds it for scenarios at or above the recommended operating point.
     let node_count = scenario.nodes.len().max(1) as u64;
     let latency = scenario.min_link_latency().unwrap_or(u64::from(u32::MAX));
@@ -322,7 +321,7 @@ fn sync_overhead_term(
     let frequency_factor = realization.rendezvous_frequency.max(1);
     let latency_factor = latency.max(1);
     // Per-node atomic traffic is a small constant (fact 5) and does not scale
-    // superlinearly with node count on the common path ([PERF-9]).
+    // superlinearly with node count on the common path.
     let raw = busy_term
         .saturating_mul(node_count)
         .saturating_mul(frequency_factor)

@@ -15,28 +15,24 @@
     inherit lib;
     entry = ../../crates/crucible/crucible-engine/tests/event_graph_replay_oracle.rs;
   };
-  observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;
+  eventLogDoc = builtins.readFile ../../docs/engineering/crucible/event-log.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/19-observability-event-log.md" observabilityDoc [
+    failuresFor "docs/engineering/crucible/event-log.md" eventLogDoc [
       {
-        label = "T-OBS-1 completion note";
-        needle = "Completed by `checks.crucible.phase4.eventLogUnified`";
+        label = "one log per run";
+        needle = "exactly **one** event log";
       }
       {
-        label = "one log requirement";
-        needle = "exactly **one** event log per run";
+        label = "single append path";
+        needle = "`EventLog::append_entries` is the single append path";
       }
       {
-        label = "single append path requirement";
-        needle = "single append path";
-      }
-      {
-        label = "projection requirement";
+        label = "projection consumers";
         needle = "every consumer reads a projection";
       }
     ]

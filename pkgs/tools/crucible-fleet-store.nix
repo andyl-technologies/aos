@@ -1,4 +1,4 @@
-##! crucible-fleet-store - RFC-0010 fleet-visible DAG store component
+##! crucible-fleet-store - Crucible fleet-visible DAG store component
 {
   lib,
   mkCargoPackage,

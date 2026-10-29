@@ -10,8 +10,7 @@
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   authoritativeScheduler =
     builtins.readFile ../../crates/crucible/crucible-engine/src/scheduler/single_scheduler_drive.rs;
-  patternDoc = builtins.readFile ../../docs/rfcs/0010-crucible/29-patterns-and-sketches.md;
-  schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
+  schedulingDoc = builtins.readFile ../../docs/engineering/crucible/scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
   quantumTest = import ./_rust-module-source.nix {
     inherit lib;
@@ -98,32 +97,22 @@
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternDoc [
+    failuresFor "docs/engineering/crucible/scheduling.md" schedulingDoc [
       {
-        label = "T-PAT-2 completion note";
-        needle = "Completed by `checks.crucible.phase3.schedulerQuantumPattern`";
+        label = "quantum section";
+        needle = "## The quantum";
       }
       {
-        label = "PAT-3 requirement";
-        needle = "- **[PAT-3]** The scheduler SHOULD follow the PICK / RUN / RESOLVE / EMIT / STEP";
-      }
-      {
-        label = "single ceiling pattern";
-        needle = "publish a single ceiling per RUN";
-      }
-      {
-        label = "total-order RESOLVE pattern";
-        needle = "`(virtual_time, consumer, producer, sequence)` total order";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/08-scheduling.md" schedulingDoc [
-      {
-        label = "authoritative quantum section";
-        needle = "## 8.9 The quantum: PICK / RUN / RESOLVE / EMIT / STEP";
+        label = "quantum phase order";
+        needle = "`drive_authoritative_quantum`";
       }
       {
         label = "single ceiling rule";
-        needle = "published once per RUN";
+        needle = "`SchedulerRunCeilingPublication` per RUN";
+      }
+      {
+        label = "ceiling never recomputed";
+        needle = "never recomputed mid-RUN";
       }
       {
         label = "RESOLVE ordering rule";

@@ -10,8 +10,7 @@
   model = import ./_crucible-model-source.nix {inherit lib;};
   crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
-  rfc = builtins.readFile ../../docs/rfcs/0010-crucible/05-execution-model.md;
-  patternsAndSketches = builtins.readFile ../../docs/rfcs/0010-crucible/29-patterns-and-sketches.md;
+  executionModelDoc = builtins.readFile ../../docs/engineering/crucible/execution-model.md;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -145,23 +144,17 @@
         needle = "executionInstantiate = import ./phase1-execution-instantiate.nix";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/05-execution-model.md" rfc [
+    ++ failuresFor "docs/engineering/crucible/execution-model.md" executionModelDoc [
       {
-        label = "T-EXEC-6 completion note";
-        needle = "Completed by `crates/crucible/crucible-engine/src/model.rs`: `instantiate` now resolves exact";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsAndSketches [
-      {
-        label = "T-PAT-9 completion names exact resume lifecycle";
-        needle = "atomic exact-resume lifecycle";
+        label = "instantiate is the single realization function";
+        needle = "`instantiate` (in `model/runtime.rs`) is the only function";
       }
       {
-        label = "T-PAT-9 completion names baked genesis replay catalog";
-        needle = "baked-genesis replay catalog";
+        label = "baked genesis catalog keying";
+        needle = "baked-genesis catalog is keyed by World plus scenario";
       }
       {
-        label = "T-PAT-9 completion names execution instantiate gate";
+        label = "instantiate check is documented";
         needle = "`checks.crucible.phase1.executionInstantiate`";
       }
     ];

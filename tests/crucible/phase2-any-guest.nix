@@ -14,8 +14,8 @@
   gateTargets = builtins.readFile ../../crates/crucible/crucible-test-support/src/gate_targets.rs;
   gateTargetMapping = builtins.readFile ./phase1-gate-target-mapping.nix;
   defaultChecks = builtins.readFile ./default.nix;
-  determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
-  harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
+  determinismContract = builtins.readFile ../../docs/engineering/crucible/determinism.md;
+  harnessTesting = builtins.readFile ../../docs/engineering/crucible/testing-and-gates.md;
   guestNonModification = builtins.readFile ./phase1-guest-non-modification.nix;
   whiteboxGate = import ./phase2-plugin-whitebox-doorbell.nix {inherit pkgs lib;};
 
@@ -24,28 +24,20 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
+    failuresFor "docs/engineering/crucible/determinism.md" determinismContract [
       {
-        label = "any-guest completion gate";
+        label = "any-guest gate listed";
         needle = "checks.crucible.phase2.gates.anyGuest";
       }
       {
         label = "white-box non-perturbing scope";
         needle = "enabled but unused";
       }
-      {
-        label = "white-box live-QEMU non-claim";
-        needle = "not live any-guest boot fingerprint evidence";
-      }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
+    ++ failuresFor "docs/engineering/crucible/testing-and-gates.md" harnessTesting [
       {
-        label = "any-guest real-QEMU evidence";
-        needle = "fingerprint streams match exactly";
-      }
-      {
-        label = "any-guest initial fixture matrix scope";
-        needle = "Broader off-the-shelf guest image coverage remains outside";
+        label = "any-guest deterministic fingerprints";
+        needle = "An unmodified guest fixture boots with deterministic fingerprints";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-test-support/src/lib.rs" gateCatalog [

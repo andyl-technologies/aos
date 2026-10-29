@@ -47,7 +47,7 @@
     inherit lib;
     entry = ../../crates/crucible/crucible-qemu-plugin/src/network_rx.rs;
   };
-  qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
+  qemuSpec = builtins.readFile ../../docs/engineering/crucible/qemu-integration.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -55,13 +55,13 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/10-qemu-integration.md" qemuSpec [
+    failuresFor "docs/engineering/crucible/qemu-integration.md" qemuSpec [
       {
-        label = "completion note names injection contract";
-        needle = "QEMU-level injection-contract enforcement";
+        label = "QEMU-level injection contract";
+        needle = "enforces the injection contract at the QEMU level";
       }
       {
-        label = "completion note names device I/O freeze";
+        label = "device I/O freeze observations";
         needle = "freeze observations";
       }
     ]

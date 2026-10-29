@@ -1,7 +1,7 @@
 //! Deterministic QEMU launch-profile integration tests.
 //!
 //! These tests lock the public Contract-A launch API to the deterministic
-//! launch surface required by RFC-0010 T-DET-1.
+//! launch surface.
 
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #![allow(clippy::expect_used, clippy::unwrap_used)]

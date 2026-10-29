@@ -8,8 +8,6 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  apiDoc = builtins.readFile ../../docs/rfcs/0010-crucible/21-api.md;
-  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   apiLib = import ./_crucible-control-source.nix {
     inherit lib;
     component = "exports";
@@ -39,23 +37,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/21-api.md" apiDoc [
-      {
-        label = "T-API-7 completion note";
-        needle = "Completed by `checks.crucible.phase5.apiStateUpdateStream`";
-      }
-      {
-        label = "T-API-8 completion note";
-        needle = "Completed by `checks.crucible.phase5.apiEpochGuards`";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "phase5 API state update status note";
-        needle = "`T-API-7` is green through `checks.crucible.phase5.apiStateUpdateStream`";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-control-api/src/lib.rs" apiLib [
+    failuresFor "crates/crucible/crucible-control-api/src/lib.rs" apiLib [
       {
         label = "streaming state update frame re-exported";
         needle = "StreamingStateUpdateFrame";
@@ -251,7 +233,7 @@ in
     ];
 
     meta = {
-      description = "RFC-0010 phase 5 API state update stream gate for ${taskList}";
+      description = "Crucible phase 5 API state update stream gate for ${taskList}";
       passthru = {
         inherit attrPath taskIds dependencies;
         failureText = failureText;

@@ -17,21 +17,17 @@
     inherit lib;
     entry = ../../crates/crucible/crucible-engine/tests/event_graph_replay_oracle.rs;
   };
-  observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;
+  eventLogDoc = builtins.readFile ../../docs/engineering/crucible/event-log.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/19-observability-event-log.md" observabilityDoc [
+    failuresFor "docs/engineering/crucible/event-log.md" eventLogDoc [
       {
-        label = "T-OBS-9 completion note";
-        needle = "Completed by `checks.crucible.phase4.eventLogCoverage`";
-      }
-      {
-        label = "coverage fingerprint from projection note";
-        needle = "checkpoint coverage fingerprints are derived from that coverage projection";
+        label = "coverage fingerprint from projection";
+        needle = "fingerprints are derived from that coverage projection";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [

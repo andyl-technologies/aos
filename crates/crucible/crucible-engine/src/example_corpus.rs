@@ -1,6 +1,6 @@
 //! Built-in worked-example scenario corpus.
 //!
-//! This module owns the shipped RFC-0010 example artifacts that double as
+//! This module owns the shipped example artifacts that double as
 //! determinism fixtures. Each fixture is a regular content-addressed
 //! [`ScenarioDefForm`] plus a deterministic
 //! double-backed run script that proves the scenario can pass and reproduce.
@@ -51,16 +51,16 @@ use crate::trigger::{
 /// Version label for the built-in worked-example corpus.
 pub const BUILT_IN_EXAMPLE_CORPUS_VERSION: &str = "crucible.example-corpus.v2";
 
-/// Stable corpus name for the RFC-0010 A.1 happy-path example.
+/// Stable corpus name for the happy-path example.
 pub const HAPPY_PATH_SCENARIO_NAME: &str = "happy-path.scn";
 
-/// Stable corpus name for the RFC-0010 A.2 partition-recovery example.
+/// Stable corpus name for the partition-recovery example.
 pub const PARTITION_RECOVERY_SCENARIO_NAME: &str = "partition-recovery.scn";
 
-/// Stable corpus name for the RFC-0010 A.3 crash+restart example.
+/// Stable corpus name for the crash+restart example.
 pub const CRASH_RESTART_SCENARIO_NAME: &str = "crash-restart.scn";
 
-/// Stable built-in family name for the RFC-0010 A.4 fault-campaign example.
+/// Stable built-in family name for the fault-campaign example.
 pub const FAULT_CAMPAIGN_FAMILY_NAME: &str = "fault-campaign.fam";
 
 /// Whether the built-in example corpus requires a Crucible guest-side component.
@@ -86,8 +86,6 @@ const FAULT_CAMPAIGN_VIOLATION_POINT: &str = "example-corpus/fault-campaign/viol
 pub struct ExampleScenarioFixture {
     /// Stable corpus entry name.
     pub name: String,
-    /// RFC section that defines the worked example.
-    pub rfc_section: String,
     /// Content-addressed scenario definition form.
     pub scenario: ScenarioDefForm,
     /// Whether the fixture is authored without guest-side Crucible components.
@@ -151,7 +149,7 @@ pub struct ExampleScenarioVerifyReport {
     pub fingerprint_stream: Vec<u8>,
 }
 
-/// Deterministic proof report for the RFC-0010 A.4 fault-campaign example.
+/// Deterministic proof report for the fault-campaign example.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FaultCampaignExampleReport {
     /// Stable built-in family name used by the CLI and corpus checks.
@@ -363,7 +361,7 @@ pub fn built_in_example_corpus() -> Result<Vec<ExampleScenarioFixture>, ExampleC
     ])
 }
 
-/// Builds the RFC-0010 A.1 happy-path client/server scenario fixture.
+/// Builds the happy-path client/server scenario fixture.
 ///
 /// # Errors
 ///
@@ -437,7 +435,6 @@ pub fn happy_path_scenario() -> Result<ExampleScenarioFixture, ExampleCorpusErro
     let steps = happy_path_replay_steps(&observations);
     Ok(ExampleScenarioFixture {
         name: HAPPY_PATH_SCENARIO_NAME.to_owned(),
-        rfc_section: String::from("33.A.1"),
         scenario,
         zero_guest_components: true,
         requires_white_box: false,
@@ -446,7 +443,7 @@ pub fn happy_path_scenario() -> Result<ExampleScenarioFixture, ExampleCorpusErro
     })
 }
 
-/// Builds the RFC-0010 A.2 three-node partition-recovery scenario fixture.
+/// Builds the three-node partition-recovery scenario fixture.
 ///
 /// # Errors
 ///
@@ -480,7 +477,6 @@ pub fn partition_recovery_scenario() -> Result<ExampleScenarioFixture, ExampleCo
 
     Ok(ExampleScenarioFixture {
         name: PARTITION_RECOVERY_SCENARIO_NAME.to_owned(),
-        rfc_section: String::from("33.A.2"),
         scenario,
         zero_guest_components: false,
         requires_white_box: true,
@@ -489,7 +485,7 @@ pub fn partition_recovery_scenario() -> Result<ExampleScenarioFixture, ExampleCo
     })
 }
 
-/// Builds the RFC-0010 A.3 node crash+restart scenario fixture.
+/// Builds the node crash+restart scenario fixture.
 ///
 /// # Errors
 ///
@@ -523,7 +519,6 @@ pub fn crash_restart_scenario() -> Result<ExampleScenarioFixture, ExampleCorpusE
 
     Ok(ExampleScenarioFixture {
         name: CRASH_RESTART_SCENARIO_NAME.to_owned(),
-        rfc_section: String::from("33.A.3"),
         scenario,
         zero_guest_components: false,
         requires_white_box: true,
@@ -532,7 +527,7 @@ pub fn crash_restart_scenario() -> Result<ExampleScenarioFixture, ExampleCorpusE
     })
 }
 
-/// Builds the RFC-0010 A.4 fault-campaign scenario family.
+/// Builds the fault-campaign scenario family.
 ///
 /// # Errors
 ///
@@ -555,7 +550,7 @@ pub fn fault_campaign_family() -> Result<ScenarioFamily, ExampleCorpusError> {
     )
 }
 
-/// Runs the RFC-0010 A.4 fault-campaign proof with the default fuzz budget.
+/// Runs the fault-campaign proof with the default fuzz budget.
 ///
 /// # Errors
 ///
@@ -568,7 +563,7 @@ pub fn run_fault_campaign_example_default() -> Result<FaultCampaignExampleReport
     ))
 }
 
-/// Runs the RFC-0010 A.4 fault-campaign proof.
+/// Runs the fault-campaign proof.
 ///
 /// # Errors
 ///
@@ -787,7 +782,7 @@ pub fn verify_example_scenario_runs(
     })
 }
 
-/// Verifies the happy-path example with the RFC sketch's default run count.
+/// Verifies the happy-path example with the example's default run count.
 ///
 /// # Errors
 ///
@@ -798,7 +793,7 @@ pub fn verify_happy_path_default_runs() -> Result<ExampleScenarioVerifyReport, E
     verify_example_scenario_runs(&fixture, HAPPY_PATH_RUNS)
 }
 
-/// Verifies the partition-recovery example with the RFC sketch's default count.
+/// Verifies the partition-recovery example with the default run count.
 ///
 /// # Errors
 ///
@@ -810,7 +805,7 @@ pub fn verify_partition_recovery_default_runs()
     verify_example_scenario_runs(&fixture, HAPPY_PATH_RUNS)
 }
 
-/// Verifies the crash+restart example with the RFC sketch's default count.
+/// Verifies the crash+restart example with the default run count.
 ///
 /// # Errors
 ///

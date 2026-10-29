@@ -10,7 +10,7 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  advancedDoc = builtins.readFile ../../docs/rfcs/0010-crucible/22-advanced-features.md;
+  explorationPage = builtins.readFile ../../docs/engineering/crucible/exploration.md;
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
   libRs = import ./_rust-module-source.nix {
     inherit lib;
@@ -34,12 +34,8 @@
         result = "guidance=integrated-fixed-point-coverage+rarity+assertion-proximity";
         docNeedles = [
           {
-            label = "guidance completion note";
-            needle = "Completed by `checks.crucible.phase6.guidanceSignals`";
-          }
-          {
             label = "guidance integrated search proof";
-            needle = "`TemporalGraph::search_with_guidance` applies";
+            needle = "`TemporalGraph::search_with_guidance`";
           }
         ];
         modelNeedles = [
@@ -97,10 +93,6 @@
         testFilter = "gate_adaptive_strategy_selection_is_deterministic_and_fair";
         result = "adaptive=deterministic-fixed-point-ucb+integrated-campaign+realized-credit+fairness";
         docNeedles = [
-          {
-            label = "adaptive completion note";
-            needle = "Completed by `checks.crucible.phase6.adaptiveStrategies`";
-          }
           {
             label = "adaptive integrated campaign proof";
             needle = "`TemporalGraph::search_adaptive_campaign`";
@@ -162,12 +154,8 @@
         result = "guidance_lint=actual-sources+comment-string-aware+mutation-negative";
         docNeedles = [
           {
-            label = "guidance lint completion note";
-            needle = "Completed by `checks.crucible.phase6.guidanceDeterminismLint`";
-          }
-          {
             label = "guidance actual-source lint proof";
-            needle = "comment/string-aware token scan over the actual guidance";
+            needle = "is the comment- and string-aware token scan";
           }
         ];
         modelNeedles = [
@@ -212,12 +200,8 @@
         result = "preemption=bounded-single-vcpu+partial-order-reduction+content-addressed-oracle-validated-children";
         docNeedles = [
           {
-            label = "preemption completion note";
-            needle = "Completed by `checks.crucible.phase6.preemptionBranching`";
-          }
-          {
             label = "preemption reduction proof";
-            needle = "collapsed by the explicit partial-order independence policy";
+            needle = "reduction can collapse commuting preemptions";
           }
         ];
         modelNeedles = [
@@ -268,12 +252,8 @@
         result = "app_random=lazy-typed-site+bounded-seeded-samples+prefix-replacement+no-draw-equivalence";
         docNeedles = [
           {
-            label = "app-random completion note";
-            needle = "Completed by `checks.crucible.phase6.appRandomBranching`";
-          }
-          {
             label = "app-random no-draw equivalence proof";
-            needle = "leaves the content-addressed graph unchanged";
+            needle = "A scenario without app-random draws produces no branches";
           }
         ];
         modelNeedles = [
@@ -336,7 +316,7 @@
     forbidden;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/22-advanced-features.md" advancedDoc taskSpec.docNeedles
+    failuresFor "docs/engineering/crucible/exploration.md" explorationPage taskSpec.docNeedles
     ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" temporalGraph taskSpec.modelNeedles
     ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" libRs taskSpec.libNeedles
     ++ failuresFor "crates/crucible/crucible-engine/tests/gate_guided_adaptive_exploration.rs" guidedTest taskSpec.testNeedles

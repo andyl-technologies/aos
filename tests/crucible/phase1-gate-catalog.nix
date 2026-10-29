@@ -7,16 +7,12 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
-  phasePlan = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
+  testingAndGatesDoc = builtins.readFile ../../docs/engineering/crucible/testing-and-gates.md;
   gateCatalogRust = builtins.readFile ../../crates/crucible/crucible-test-support/src/lib.rs;
   gateCatalogTest = builtins.readFile ../../crates/crucible/crucible-test-support/tests/gate_catalog.rs;
-  rfcConsistency = builtins.readFile ../../crates/crucible/crucible-test-support/tests/rfc_consistency.rs;
-  rfcConsistencyMisc = builtins.readFile ../../crates/crucible/crucible-test-support/tests/support/rfc_consistency_misc.rs;
   phaseGateWiring = builtins.readFile ./phase1-phase-gate-wiring.nix;
   defaultChecks = builtins.readFile ./default.nix;
   phaseGateWiringCheck = import ./phase1-phase-gate-wiring.nix {inherit pkgs lib;};
-  rfcConsistencyCheck = import ./phase1-rfc-consistency.nix {inherit pkgs lib;};
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -35,7 +31,7 @@
     else matched;
 
   catalogGateLines =
-    builtins.filter (line: lib.hasPrefix "| `gate:" line) (lib.splitString "\n" harnessTesting);
+    builtins.filter (line: lib.hasPrefix "| `gate:" line) (lib.splitString "\n" testingAndGatesDoc);
   catalogGates =
     builtins.sort builtins.lessThan
     (lib.unique (lib.concatMap gateNameFromCatalogLine catalogGateLines));
@@ -65,7 +61,7 @@
     ++ failuresFor "crates/crucible/crucible-test-support/tests/gate_catalog.rs" gateCatalogTest [
       {
         label = "catalog table/reference equality test";
-        needle = "canonical_gate_catalog_matches_rfc_table_and_references";
+        needle = "canonical_gate_catalog_matches_documented_table_and_references";
       }
       {
         label = "implemented table matches catalog";
@@ -78,38 +74,6 @@
       {
         label = "phase-gate CI target coverage";
         needle = "canonical_gates_have_phase_gate_ci_targets";
-      }
-      {
-        label = "doc-lint failure mode coverage";
-        needle = "gate_catalog_doc_lint_failure_modes_remain_wired";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-test-support/tests/rfc_consistency.rs" rfcConsistency [
-      {
-        label = "referenced/undefined gate failure hook";
-        needle = "failures.extend(gate_reference_failures(&gate_catalog, &referenced_gates));";
-      }
-      {
-        label = "referenced/undefined gate behavioral regression";
-        needle = "rfc_consistency_rules_reject_undefined_and_unreferenced_gates";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-test-support/tests/support/rfc_consistency_misc.rs" rfcConsistencyMisc [
-      {
-        label = "catalog table parser";
-        needle = "pub(super) fn gate_catalog";
-      }
-      {
-        label = "RFC gate reference scanner";
-        needle = "pub(super) fn referenced_gate_names";
-      }
-      {
-        label = "referenced-but-undefined gate failure";
-        needle = "referenced gate is absent from file 24 catalog";
-      }
-      {
-        label = "defined-but-unreferenced gate failure";
-        needle = "catalog gate is not referenced outside the catalog table";
       }
     ]
     ++ failuresFor "tests/crucible/phase1-phase-gate-wiring.nix" phaseGateWiring [
@@ -135,18 +99,6 @@
         label = "phase-gate wiring import";
         needle = "phaseGateWiring = import ./phase1-phase-gate-wiring.nix";
       }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" phasePlan [
-      {
-        label = "Phase 1 lists gate catalog work";
-        needle = "the gate catalog";
-      }
-      {
-        label = "Phase 1 lists harness task range";
-        needle = "T-HARN-1";
-      }
     ];
 in
   if failures != []
@@ -162,7 +114,6 @@ in
         pkgs.rust
         pkgs.sed
         phaseGateWiringCheck
-        rfcConsistencyCheck
       ];
 
       phases = [

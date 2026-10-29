@@ -4,18 +4,20 @@
   crucibleChecks,
   fleetChecks,
 }: let
-  rfcDir = ../../docs/rfcs/0010-crucible;
-  rfcEntries = builtins.readDir rfcDir;
-  rfcFiles =
+  # Every check attribute path named by the Crucible engineering pages must
+  # resolve in the check tree, so documentation cannot cite removed checks.
+  engineeringDocDir = ../../docs/engineering/crucible;
+  engineeringDocEntries = builtins.readDir engineeringDocDir;
+  engineeringDocFiles =
     lib.filter
-    (name: rfcEntries.${name} == "regular" && lib.hasSuffix ".md" name)
-    (builtins.attrNames rfcEntries);
-  rfcText = builtins.concatStringsSep "\n" (
-    map (name: builtins.readFile (rfcDir + "/${name}")) rfcFiles
+    (name: engineeringDocEntries.${name} == "regular" && lib.hasSuffix ".md" name)
+    (builtins.attrNames engineeringDocEntries);
+  engineeringDocText = builtins.concatStringsSep "\n" (
+    map (name: builtins.readFile (engineeringDocDir + "/${name}")) engineeringDocFiles
   );
 
   tokens = lib.filter builtins.isString (
-    builtins.split "[^A-Za-z0-9_.-]+" rfcText
+    builtins.split "[^A-Za-z0-9_.-]+" engineeringDocText
   );
   trimDots = token:
     if lib.hasSuffix "." token
@@ -77,13 +79,13 @@
     ++ walk "checks.fleet" fleetChecks;
 
   atomicPatch = import ../../pkgs/emulation/qemu-patches/_atomic-patch.nix;
-  patchDoc = builtins.readFile ../../docs/rfcs/0010-crucible/11-qemu-patches.md;
-  atomicPatchMarker = "The shipped integration contains **one atomic final-state patch**.";
+  patchDoc = builtins.readFile ../../docs/engineering/crucible/qemu-patch.md;
+  atomicPatchMarker = "The shipped integration contains **one atomic final-state patch**";
   patchContractFailures =
     lib.optional (!(builtins.pathExists (../../pkgs/emulation/qemu-patches + "/${atomicPatch.file}")))
     "pkgs/emulation/qemu-patches/_atomic-patch.nix: atomic patch artifact is absent"
     ++ lib.optional (!(lib.hasInfix atomicPatchMarker patchDoc))
-    "docs/rfcs/0010-crucible/11-qemu-patches.md: missing current atomic-patch marker `${atomicPatchMarker}`";
+    "docs/engineering/crucible/qemu-patch.md: missing current atomic-patch marker `${atomicPatchMarker}`";
 
   failures =
     map (reference: "unresolvable check reference `${reference}`") missingReferences

@@ -4,7 +4,6 @@
   attrPath ? "checks.crucible.phase7.crucibleQemuPluginPackage",
   taskIds ? ["T-PKG-7"],
 }: let
-  packagingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/26-packaging-aos-integration.md;
   pluginPackageNix = builtins.readFile ../../pkgs/emulation/crucible-qemu-plugin.nix;
   qemuPackageNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
   cruciblePackageNix = builtins.readFile ../../pkgs/tools/crucible/crucible.nix;
@@ -44,13 +43,7 @@
   );
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
-      {
-        label = "T-PKG-7 completion note";
-        needle = "Completed by `checks.crucible.phase7.crucibleQemuPluginPackage`";
-      }
-    ]
-    ++ failuresFor "pkgs/emulation/crucible-qemu-plugin.nix" pluginPackageNix [
+    failuresFor "pkgs/emulation/crucible-qemu-plugin.nix" pluginPackageNix [
       {
         label = "AOS cargo package builder";
         needle = "mkCargoPackage {";

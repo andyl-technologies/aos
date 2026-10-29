@@ -3,8 +3,8 @@
 //! The catalog is the single class source for open-set event payload kinds. It is
 //! intentionally data-shaped: consumers can discover the current version, the
 //! known kind strings, each kind's fixed [`SchedulerEventLogClass`], the stable
-//! typed attributes, and the RFC surfaces that structurally depend on those
-//! kinds.
+//! typed attributes, and the consumer surfaces that structurally depend on
+//! those kinds.
 
 use crate::scheduler::SchedulerEventLogClass;
 
@@ -64,7 +64,7 @@ impl EventKindCatalogEntry {
     }
 }
 
-/// One RFC consumer and the catalog kinds it depends on structurally.
+/// One consumer surface and the catalog kinds it depends on structurally.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct EventKindCatalogDependency {
     consumer: &'static str,
@@ -72,7 +72,7 @@ pub struct EventKindCatalogDependency {
 }
 
 impl EventKindCatalogDependency {
-    /// Returns the RFC file or surface that consumes catalog kinds.
+    /// Returns the surface that consumes catalog kinds.
     #[must_use]
     pub const fn consumer(&self) -> &'static str {
         self.consumer
@@ -117,7 +117,7 @@ pub fn event_kind_catalog_class(kind: &str) -> Option<SchedulerEventLogClass> {
     event_kind_catalog_entry(kind).map(EventKindCatalogEntry::class)
 }
 
-/// Returns the structural RFC dependency map for catalog consumers.
+/// Returns the structural dependency map for catalog consumers.
 #[must_use]
 pub fn event_kind_catalog_dependency_map() -> &'static [EventKindCatalogDependency] {
     EVENT_KIND_CATALOG_DEPENDENCIES

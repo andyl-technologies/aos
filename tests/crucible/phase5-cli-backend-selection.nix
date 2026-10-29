@@ -9,8 +9,6 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
-  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = import ./_cli-source.nix {inherit lib;};
   cliManifest = builtins.readFile ../../crates/crucible/crucible-cli/Cargo.toml;
   cliHelpTests = builtins.readFile ../../crates/crucible/crucible-cli/tests/help_surface.rs;
@@ -23,23 +21,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
-      {
-        label = "T-CLI-3 completion note";
-        needle = "Completed by `checks.crucible.phase5.cliBackendSelection`";
-      }
-      {
-        label = "T-CLI-20 completion note";
-        needle = "Completed by `checks.crucible.phase5.cliBackendSelection`: backend command";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "phase5 CLI backend-selection status note";
-        needle = "`T-CLI-3` is green through `checks.crucible.phase5.cliBackendSelection`";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-cli/Cargo.toml" cliManifest [
+    failuresFor "crates/crucible/crucible-cli/Cargo.toml" cliManifest [
       {
         label = "production-default feature set";
         needle = "default = []";
@@ -425,7 +407,7 @@ in
     ];
 
     meta = {
-      description = "RFC-0010 phase 5 CLI backend-selection gate for ${taskList}";
+      description = "Crucible phase 5 CLI backend-selection gate for ${taskList}";
       passthru = {
         inherit attrPath taskIds openTaskIds dependencies;
         failureText = failureText;

@@ -1,7 +1,5 @@
 //! Crucible session dispatch and authenticated HTTP/2 server integration.
 //!
-//! Spec index: RFC-0010 files 21.
-//!
 //! Module map: lifecycle owns actor registries and in-process client adapters;
 //! streaming owns actor streams; server and transport_security own HTTP/2 and
 //! TLS. Debug modules manage authorization, leases, and the standalone gateway.

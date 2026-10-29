@@ -4,7 +4,7 @@
   attrPath ? "checks.crucible.phase7.cruciblePackageAbiVersioning",
   taskIds ? ["T-PKG-10"],
 }: let
-  packagingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/26-packaging-aos-integration.md;
+  packagingDoc = builtins.readFile ../../docs/engineering/crucible/packaging.md;
   qemuPackageNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
   pluginPackageNix = builtins.readFile ../../pkgs/emulation/crucible-qemu-plugin.nix;
   cruciblePackageNix = builtins.readFile ../../pkgs/tools/crucible/crucible.nix;
@@ -146,11 +146,7 @@
     ++ lib.optionals (qemuPackageShmemHeaderInstallPath != "include/aos/crucible/crucible_shmem_abi.h") [
       "pkgs.qemu-crucible: passthru shmem header install path ${qemuPackageShmemHeaderInstallPath} is not the canonical generated header install path"
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
-      {
-        label = "T-PKG-10 completion note";
-        needle = "Completed by `checks.crucible.phase7.cruciblePackageAbiVersioning`";
-      }
+    ++ failuresFor "docs/engineering/crucible/packaging.md" packagingDoc [
       {
         label = "phase1 smoke reference";
         needle = "`checks.crucible.phase1.aosWorkspaceBuild`";

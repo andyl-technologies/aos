@@ -25,9 +25,7 @@
   allPackages = import ../../pkgs/tools/crucible/_packages.nix;
   workspaceManifest = builtins.readFile ../../crates/Cargo.toml;
   clippyConfig = builtins.readFile ../../crates/clippy.toml;
-  determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
-  harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
-  assertionProperties = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
+  assertionsDoc = builtins.readFile ../../docs/engineering/crucible/assertions.md;
   harnessLintBaseline = builtins.readFile ./harness-lint-baseline.txt;
   defaultChecks = builtins.readFile ./default.nix;
   crucibleModel = import ./_crucible-model-source.nix {inherit lib;};
@@ -974,7 +972,7 @@
   customStaticTierFailures = let
     requiredRustTierText = [
       "custom_static_analysis_tier_runs_over_crucible_sources"
-      "for spec in crate_spec_index()"
+      "for member in crucible_crates()"
       "package_dir.join(\"src\")"
       "custom_static_analysis_failures"
       "hash_container_iteration_failures"
@@ -1397,7 +1395,7 @@
       "fn clippy_tier_is_checked_in_and_wired() -> Result<(), Box<dyn Error>>"
       "clippy_tier_failures("
       "fn custom_static_analysis_tier_runs_over_crucible_sources() -> Result<(), Box<dyn Error>>"
-      "for spec in crate_spec_index()"
+      "for member in crucible_crates()"
       "custom_static_analysis_failures(&source, &content)"
       "fn harness_lint_rejects_banned_code_patterns()"
       "fn harness_lint_rejects_spaced_paths_and_grouped_imports()"
@@ -1529,10 +1527,10 @@
         needle = "fn resolve_named_predicate_dsl_for_context(";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/18-assertions-properties.md" assertionProperties [
+    ++ failuresFor "docs/engineering/crucible/assertions.md" assertionsDoc [
       {
-        label = "harness-lint gate named for predicate DSL";
-        needle = "`checks.crucible.phase1.gates.harnessLint`";
+        label = "harness-lint hook named for host assertion predicates";
+        needle = "`lint_host_assertion_harness_source` is the assertion layer's";
       }
     ];
 

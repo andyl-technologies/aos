@@ -27,7 +27,7 @@
     inherit lib;
     entry = ../../crates/crucible/crucible-qemu-shmem/src/shmem/region.rs;
   };
-  pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
+  pluginSpec = builtins.readFile ../../docs/engineering/crucible/qemu-plugin.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -59,14 +59,10 @@
     forbiddenIdlePathApis;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
+    failuresFor "docs/engineering/crucible/qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-5 narrowed live evidence gap";
-        needle = "T-PLUG-5 remains open for direct live evidence of the futex park";
-      }
-      {
-        label = "idle callback hot loop text";
-        needle = "idle (HLT/WFI) callback hot loop";
+        label = "idle hot loop type";
+        needle = "`PluginIdleHotLoop`";
       }
       {
         label = "no busy spin text";

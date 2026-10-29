@@ -16,7 +16,7 @@
   };
   lifecycle = import ./phase0-lifecycle.nix {inherit pkgs lib;};
 
-  qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
+  qemuSpec = builtins.readFile ../../docs/engineering/crucible/qemu-integration.md;
   defaultChecks = builtins.readFile ./default.nix;
   shutdownTest = builtins.readFile ../../crates/crucible/crucible-qemu-host/tests/shutdown.rs;
   lifecycleSource = builtins.readFile ./phase0-lifecycle.c;
@@ -26,14 +26,14 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/10-qemu-integration.md" qemuSpec [
+    failuresFor "docs/engineering/crucible/qemu-integration.md" qemuSpec [
       {
-        label = "QEMU-30 shutdown order requirement";
-        needle = "**[QEMU-30]** Graceful shutdown MUST follow the escalation order";
+        label = "shutdown escalation order";
+        needle = "ControlQuit -> QmpQuit -> Sigterm -> Sigkill -> Reap";
       }
       {
-        label = "QEMU-31 no-leak requirement";
-        needle = "**[QEMU-31]** The host MUST `waitpid`/reap every QEMU child";
+        label = "final reap on every path";
+        needle = "The final reap runs on every path.";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-qemu-host/tests/shutdown.rs" shutdownTest [

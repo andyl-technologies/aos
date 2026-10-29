@@ -12,8 +12,6 @@
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
   schedulerLib = import ./_crucible-scheduler-source.nix {inherit lib;};
   triggerLib = import ./_crucible-trigger-source.nix {inherit lib;};
-  sessionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/20-session-control-plane.md;
-  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -22,19 +20,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/20-session-control-plane.md" sessionDoc [
-      {
-        label = "T-SESS-7 completion note";
-        needle = "Completed by `checks.crucible.phase5.sessionBreakpoints`";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "phase5 breakpoint completion note";
-        needle = "`T-SESS-7` is completed by `checks.crucible.phase5.sessionBreakpoints`";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-session/src/lib.rs" sessionLib [
+    failuresFor "crates/crucible/crucible-session/src/lib.rs" sessionLib [
       {
         label = "breakpoint firing record";
         needle = "pub struct BreakpointFiring";

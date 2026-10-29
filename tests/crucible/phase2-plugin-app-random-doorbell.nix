@@ -13,10 +13,10 @@
   pluginWhiteboxTests = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs;
   protocolDoorbellFrame = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/src/doorbell_frame.rs;
   protocolDoorbellMarker = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/src/doorbell_marker.rs;
-  determinismSpec = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
-  pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
-  ghcSpec = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
-  execSpec = builtins.readFile ../../docs/rfcs/0010-crucible/05-execution-model.md;
+  determinismSpec = builtins.readFile ../../docs/engineering/crucible/determinism.md;
+  pluginSpec = builtins.readFile ../../docs/engineering/crucible/qemu-plugin.md;
+  ghcSpec = builtins.readFile ../../docs/engineering/crucible/guest-host-channel.md;
+  execSpec = builtins.readFile ../../docs/engineering/crucible/execution-model.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -52,35 +52,31 @@
     forbiddenCallbackApis;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismSpec [
+    failuresFor "docs/engineering/crucible/determinism.md" determinismSpec [
       {
-        label = "T-DET-31 completion note names app-random doorbell check";
+        label = "app-random doorbell check listed";
         needle = "`checks.crucible.phase2.qemuPluginAppRandomDoorbell`";
       }
       {
-        label = "T-DET-31 completion note distinguishes fw_cfg";
-        needle = "ambient `fw_cfg` entropy";
+        label = "ambient fw_cfg entropy distinguished";
+        needle = "`fw_cfg` entropy derived from the scenario seed";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
+    ++ failuresFor "docs/engineering/crucible/qemu-plugin.md" pluginSpec [
       {
-        label = "app-random task wording";
-        needle = "optional app-controlled randomness doorbell";
+        label = "app-controlled random reply";
+        needle = "app-controlled random value drawn from the seeded decision";
       }
       {
-        label = "seeded decision source requirement";
-        needle = "drawing from the seeded decision source";
+        label = "reply written at the trap count";
+        needle = "`qemu_plugin_crucible_write_memory_vaddr` at the";
       }
       {
-        label = "trap-icount injection contract";
-        needle = "replying at the trap icount under the injection contract";
-      }
-      {
-        label = "zero request requirement";
-        needle = "ensure the engine functions with zero requests";
+        label = "doorbell-free node behaves as black-box";
+        needle = "A node that never rings the doorbell behaves exactly";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/16-guest-host-channel.md" ghcSpec [
+    ++ failuresFor "docs/engineering/crucible/guest-host-channel.md" ghcSpec [
       {
         label = "random request kind table";
         needle = "5    random_request";
@@ -98,7 +94,7 @@
         needle = "decode diagnostic and dropped";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/05-execution-model.md" execSpec [
+    ++ failuresFor "docs/engineering/crucible/execution-model.md" execSpec [
       {
         label = "app-random decision payload";
         needle = "BackendRngEvidence { node, stream, request_id, width, value }";

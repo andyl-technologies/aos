@@ -5,7 +5,7 @@
   taskIds ? ["T-PKG-21"],
   dependencies ? [],
 }: let
-  packagingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/26-packaging-aos-integration.md;
+  packagingDoc = builtins.readFile ../../docs/engineering/crucible/packaging.md;
   casSource =
     builtins.readFile ../../crates/crucible/crucible-store/src/lib.rs
     + builtins.readFile ../../crates/crucible/crucible-store/src/cas/tests.rs;
@@ -27,11 +27,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
-      {
-        label = "T-PKG-21 completion note";
-        needle = "Completed by `checks.crucible.phase7.crucibleFleetStore`";
-      }
+    failuresFor "docs/engineering/crucible/packaging.md" packagingDoc [
       {
         label = "fleet store package name";
         needle = "`pkgs.crucible-fleet-store`";
@@ -40,8 +36,6 @@
         label = "distributed fleet surface name";
         needle = "`checks.fleet.crucible-distributed-continuous-exploration`";
       }
-    ]
-    ++ forbiddenFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
     ]
     ++ failuresFor "crates/crucible/crucible-store/src/lib.rs" casSource [
       {

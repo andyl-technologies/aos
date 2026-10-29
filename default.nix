@@ -1015,8 +1015,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     # surfaces and one retained evidence bundle.
     crucible-e2e-determinism = crucibleChecks.phase4.gates.e2eDeterminism.rawGate;
 
-    # The real-process performance discharge for RFC-0010 §25 ([PERF-3],
-    # [PERF-12], [PERF-13], [PERF-14], [PERF-27]): the deterministic
+    # The real-process performance discharge for Crucible: the deterministic
     # `gate:perf-bench` asserts the cost-model structure and host-independent
     # ratios; this fleet check supplies reference-host wall-clock numbers by
     # timing hermetic `crucible --backend qemu` processes. Every invocation

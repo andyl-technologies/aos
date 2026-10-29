@@ -7,8 +7,8 @@
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
   qemuNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
-  qemuPatchSpec = builtins.readFile ../../docs/rfcs/0010-crucible/11-qemu-patches.md;
-  packagingSpec = builtins.readFile ../../docs/rfcs/0010-crucible/26-packaging-aos-integration.md;
+  qemuPatchDoc = builtins.readFile ../../docs/engineering/crucible/qemu-patch.md;
+  packagingDoc = builtins.readFile ../../docs/engineering/crucible/packaging.md;
   defaultChecks = builtins.readFile ./default.nix;
   patchFiles =
     builtins.sort builtins.lessThan
@@ -47,14 +47,11 @@
     shippedDiagnosticPatchFiles
     ++ map (diagnosticName: "pkgs/emulation/qemu.nix: shipped qemu-crucible package applies diagnostic-only patch ${diagnosticName}")
     qemuNixDiagnosticNeedles
-    ++ lib.optionals (!(hasInfix "PATCH-36" qemuPatchSpec && hasInfix "MUST NOT be applied in the shipped AOS" qemuPatchSpec)) [
-      "docs/rfcs/0010-crucible/11-qemu-patches.md: PATCH-36 shipped diagnostic exclusion requirement missing"
+    ++ lib.optionals (!(hasInfix "are not applied by the shipped package" qemuPatchDoc && hasInfix "`checks.crucible.phase1.qemuDiagnosticPatchesDevOnly`" qemuPatchDoc)) [
+      "docs/engineering/crucible/qemu-patch.md: shipped diagnostic exclusion requirement missing"
     ]
-    ++ lib.optionals (!(hasInfix "PKG-11" packagingSpec && hasInfix "MUST NOT be applied in the shipped" packagingSpec)) [
-      "docs/rfcs/0010-crucible/26-packaging-aos-integration.md: PKG-11 shipped diagnostic exclusion requirement missing"
-    ]
-    ++ lib.optionals (!(hasInfix "T-PKG-6" packagingSpec && hasInfix "Keep dev-only diagnostic capabilities out" packagingSpec)) [
-      "docs/rfcs/0010-crucible/26-packaging-aos-integration.md: T-PKG-6 diagnostic exclusion task missing"
+    ++ lib.optionals (!(hasInfix "diagnostic QEMU patch ships" packagingDoc && hasInfix "diagnostic-only capabilities are absent" packagingDoc)) [
+      "docs/engineering/crucible/packaging.md: shipped diagnostic exclusion requirement missing"
     ]
     ++ lib.optionals (!(hasInfix "qemuDiagnosticPatchesDevOnly = import ./phase1-qemu-diagnostic-patches-dev-only.nix" defaultChecks)) [
       "tests/crucible/default.nix: phase1 diagnostic patch exclusion check is not exposed"

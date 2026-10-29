@@ -11,7 +11,7 @@
   libSource = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
   sessionSource = import ./_crucible-session-source.nix {inherit lib;};
   emitStepTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/scheduler_emit_step.rs;
-  schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
+  schedulingDoc = builtins.readFile ../../docs/engineering/crucible/scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
@@ -60,18 +60,18 @@
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/08-scheduling.md" schedulingDoc [
+    failuresFor "docs/engineering/crucible/scheduling.md" schedulingDoc [
       {
-        label = "T-SCHED-19 completion note";
-        needle = "Completed by `checks.crucible.phase3.schedulerEmitStep`";
+        label = "EMIT event-log append";
+        needle = "`emit_quantum_event_log` appends, in order";
       }
       {
-        label = "EMIT requirement";
-        needle = "append ordered, content-addressed event-log";
+        label = "content-addressed entries";
+        needle = "Entries are dense and content-addressed.";
       }
       {
-        label = "STEP requirement";
-        needle = "advance the frontier, then **yield**";
+        label = "STEP yield";
+        needle = "increments the quantum count, and calls `yield_to_control_inbox`";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [

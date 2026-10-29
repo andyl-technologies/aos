@@ -1,4 +1,4 @@
-//! Source-size guard for the RFC-0010 Crucible workspace.
+//! Source-size guard for the Crucible workspace.
 
 #[path = "../../crucible-test-support/tests/support/workspace.rs"]
 mod workspace;

@@ -9,8 +9,7 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
-  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
+  cliPage = builtins.readFile ../../docs/engineering/crucible/cli.md;
   cliImplementation = import ./_cli-source.nix {inherit lib;};
   cliProcessTest = builtins.readFile ../../crates/crucible/crucible-cli/tests/help_surface.rs;
   cliManifest = builtins.readFile ../../crates/crucible/crucible-cli/Cargo.toml;
@@ -19,30 +18,10 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
-      {
-        label = "T-CLI-16 task";
-        needle = "**T-CLI-16** Implement `completions`";
-      }
-      {
-        label = "T-CLI-16 completion note";
-        needle = "Completed by\n  `checks.crucible.phase5.cliCompletionsHelp`";
-      }
-      {
-        label = "T-CLI-16 process coverage note";
-        needle = "process-tests the real binary's\n  top-level and §6–§14 `--help`, exact long/short `--version`, Bash, Elvish,";
-      }
-      {
-        label = "T-CLI-16 shared Clap definition evidence";
-        needle = "rendered help and parser behavior are\n  now checked from the same Clap command definition";
-      }
-      {
-        label = "CLI help discipline";
-        needle = "**[CLI-6]** Flag and subcommand help text MUST be authored as user-facing CLI";
-      }
+    failuresFor "docs/engineering/crucible/cli.md" cliPage [
       {
         label = "completions top-level subcommand";
-        needle = "completions  Generate shell completions.";
+        needle = "`crucible completions <SHELL>`";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-cli/Cargo.toml" cliManifest [
@@ -90,11 +69,11 @@
       }
       {
         label = "help/version surface test";
-        needle = "cli_resume_help_and_version_surface_matches_rfc_copy";
+        needle = "cli_resume_help_and_version_surface_matches_expected_copy";
       }
       {
         label = "normalized exact help snapshots";
-        needle = "cli_help_surface_matches_normalized_exact_rfc_snapshots";
+        needle = "cli_help_surface_matches_normalized_exact_snapshots";
       }
       {
         label = "normative required-input parser test";
@@ -153,20 +132,6 @@
       {
         label = "hidden gate flag excluded from process help";
         needle = "--emit-mock-failure-artifact";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "phase5 CLI completions/help completion note";
-        needle = "`T-CLI-16` is green through `checks.crucible.phase5.cliCompletionsHelp`";
-      }
-      {
-        label = "phase5 CLI completions/help process progress";
-        needle = "process-level help/version/completion and missing-input coverage for the real\n  binary";
-      }
-      {
-        label = "phase5 CLI completions/help exact snapshot scope";
-        needle = "normalized exact §6–§14 subcommand usage/help";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -293,7 +258,7 @@ in
             evidence_scope=exact-help-version-all-completions-required-alternatives-and-conflicts
             component=crucible-cli
             completions=clap_complete
-            help_surface=normalized-exact-rfc-copy
+            help_surface=normalized-exact-copy
             dependencies=$DEPENDENCY_COUNT
             RESULT
           '';

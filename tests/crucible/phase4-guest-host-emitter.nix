@@ -14,8 +14,7 @@
   protocolDoorbellAbi = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/src/doorbell_abi.rs;
   guestPackage = builtins.readFile ../../pkgs/tools/crucible-guest.nix;
   gateTargets = builtins.readFile ../../crates/crucible/crucible-test-support/src/gate_targets.rs;
-  guestHostDoc = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
-  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
+  guestHostChannelDoc = builtins.readFile ../../docs/engineering/crucible/guest-host-channel.md;
   phaseGate = builtins.readFile ./phase4-guest-host-emitter.nix;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -23,20 +22,10 @@
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/16-guest-host-channel.md" guestHostDoc [
+    failuresFor "docs/engineering/crucible/guest-host-channel.md" guestHostChannelDoc [
       {
-        label = "T-GHC-10 completion note";
-        needle = "Completed by `checks.crucible.phase4.guestHostEmitter`";
-      }
-      {
-        label = "guest emitter implementation note";
+        label = "guest emitter library";
         needle = "`crucible_guest::GuestCommand`";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "guest-host phase4 task range";
-        needle = "Guest↔host channel + optional agent";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-guest/Cargo.toml" guestCargo [

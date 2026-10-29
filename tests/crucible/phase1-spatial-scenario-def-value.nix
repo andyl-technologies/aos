@@ -12,22 +12,22 @@
   planTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/event_graph_serialization.rs;
   propertiesTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/property_fingerprint_neutrality.rs;
   defaultChecks = builtins.readFile ./default.nix;
-  spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
+  scenarioModelDoc = builtins.readFile ../../docs/engineering/crucible/scenario-model.md;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/06-spatial-graph.md" spatialGraph [
+    failuresFor "docs/engineering/crucible/scenario-model.md" scenarioModelDoc [
       {
-        label = "T-SPAT-1 completion names tuple form";
+        label = "scenario definition form";
         needle = "`ScenarioDefForm` is the";
       }
       {
-        label = "T-SPAT-1 completion names test";
+        label = "four-tuple value test";
         needle = "`scenario_def_form_is_immutable_pure_four_tuple_value`";
       }
       {
-        label = "T-SPAT-1 completion names gate";
+        label = "scenario definition value check";
         needle = "`checks.crucible.phase1.spatialScenarioDefValue`";
       }
     ]

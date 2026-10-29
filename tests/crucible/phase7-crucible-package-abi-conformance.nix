@@ -10,7 +10,7 @@
     },
   gatedAbiGate ? null,
 }: let
-  packagingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/26-packaging-aos-integration.md;
+  packagingDoc = builtins.readFile ../../docs/engineering/crucible/packaging.md;
   defaultChecks = builtins.readFile ./default.nix;
   abiConformanceCheck = builtins.readFile ./phase2-abi-conformance.nix;
   shmemGateTest = import ./_rust-module-source.nix {
@@ -56,11 +56,7 @@
     requirement // {needle = normalizeCargoFormatting requirement.needle;};
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
-      {
-        label = "T-PKG-11 completion note";
-        needle = "Completed by `checks.crucible.phase7.cruciblePackageAbiConformance`";
-      }
+    failuresFor "docs/engineering/crucible/packaging.md" packagingDoc [
       {
         label = "phase2 ABI gate reference";
         needle = "`checks.crucible.phase2.gates.abiConformance`";

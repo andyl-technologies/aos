@@ -11,25 +11,21 @@
   model = import ./_crucible-model-source.nix {inherit lib;};
   libSource = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
   sharedTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/condition_vocabulary_shared.rs;
-  triggerDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17a-conditions-and-triggers.md;
-  assertionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
+  conditionsDoc = builtins.readFile ../../docs/engineering/crucible/conditions-and-triggers.md;
+  assertionsDoc = builtins.readFile ../../docs/engineering/crucible/assertions.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/17a-conditions-and-triggers.md" triggerDoc [
-      {
-        label = "T-TRIG-2 completion note";
-        needle = "Completed by `checks.crucible.phase4.sharedConditionVocabulary`";
-      }
+    failuresFor "docs/engineering/crucible/conditions-and-triggers.md" conditionsDoc [
       {
         label = "condition has exactly two consumers";
-        needle = "exactly two consumers";
+        needle = "One predicate type, two consumers";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/18-assertions-properties.md" assertionDoc [
+    ++ failuresFor "docs/engineering/crucible/assertions.md" assertionsDoc [
       {
         label = "assertion doc references single Condition type";
         needle = "The **predicate** here is not a second vocabulary";

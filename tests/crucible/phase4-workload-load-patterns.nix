@@ -7,7 +7,7 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  workloadDoc = builtins.readFile ../../docs/rfcs/0010-crucible/33-examples-and-workloads.md;
+  workloadsDoc = builtins.readFile ../../docs/engineering/crucible/workloads.md;
   engineModel = import ./_crucible-model-source.nix {inherit lib;};
   engineLib = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
   loadPatternTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/workload_load_patterns.rs;
@@ -34,22 +34,18 @@
   ];
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/33-examples-and-workloads.md" workloadDoc [
-      {
-        label = "T-WL-4 completion note";
-        needle = "Completed by `checks.crucible.phase4.workloadLoadPatterns`";
-      }
+    failuresFor "docs/engineering/crucible/workloads.md" workloadsDoc [
       {
         label = "load patterns no host-side generator";
         needle = "classic pattern        Crucible mechanism (no host-side generator)";
       }
       {
         label = "StartNode spike mapping documented";
-        needle = "StartNode a baked load-node at a chosen virtual time";
+        needle = "start_node_burst: StartNode a baked load-node";
       }
       {
         label = "fault campaign mapping documented";
-        needle = "correlated partition +";
+        needle = "a fault plan that perturbs several nodes together";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" engineModel [

@@ -12,29 +12,25 @@
     inherit lib;
     entry = ../../crates/crucible/crucible-engine/src/lib.rs;
   };
-  schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
+  schedulingDoc = builtins.readFile ../../docs/engineering/crucible/scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/08-scheduling.md" schedulingDoc [
+    failuresFor "docs/engineering/crucible/scheduling.md" schedulingDoc [
       {
-        label = "T-SCHED-11 completion note";
-        needle = "Completed by `checks.crucible.phase3.schedulerQuiescence`";
+        label = "quiescence from scheduler state";
+        needle = "scheduler-owned state only";
       }
       {
-        label = "quiescence requirement";
-        needle = "Quiescence MUST be computed from authoritative scheduler state";
-      }
-      {
-        label = "no host timeout requirement";
-        needle = "MUST NOT depend on a host timeout";
+        label = "no host timeout";
+        needle = "Quiescence never depends on a host timeout";
       }
       {
         label = "idle nodes do not constrain peers";
-        needle = "idle nodes do not constrain peers";
+        needle = "An idle node does not hold peers back.";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [

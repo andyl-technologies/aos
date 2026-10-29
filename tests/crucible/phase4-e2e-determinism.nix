@@ -19,32 +19,11 @@
 
   harnessLib = builtins.readFile ../../crates/crucible/crucible-test-support/src/lib.rs;
   nativeRunnerSource = builtins.readFile ./_e2e-determinism-native-runner.sh;
-  determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
-  assertionsDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
-  harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
 
   inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
-      {
-        label = "T-DET-26 native acceptance completion";
-        needle = "Completed by `checks.crucible.phase4.gates.e2eDeterminism.rawGate`";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/18-assertions-properties.md" assertionsDoc [
-      {
-        label = "T-ASRT-16 completion note";
-        needle = "Completed by `checks.crucible.phase4.gates.e2eDeterminism` and";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
-      {
-        label = "T-HARN-23 native acceptance completion";
-        needle = "Completed by `checks.crucible.phase4.gates.e2eDeterminism.rawGate`";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-test-support/src/lib.rs" harnessLib [
+    failuresFor "crates/crucible/crucible-test-support/src/lib.rs" harnessLib [
       {
         label = "implemented canonical e2e gate";
         needle = "name: \"gate:e2e-determinism\",\n        phase: GatePhase::Phase4,\n        owner: \"crucible-test-support\",\n        status: GateStatus::Implemented,";

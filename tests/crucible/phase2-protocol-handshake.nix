@@ -9,7 +9,6 @@
 
   protocolLib = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/src/lib.rs;
   handshakeTest = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/tests/handshake.rs;
-  protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -124,8 +123,6 @@
         label = "handshake write flush assertion";
         needle = "flush_count";
       }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/14-protocol.md" protocolSpec [
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {

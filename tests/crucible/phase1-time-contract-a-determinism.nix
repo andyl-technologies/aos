@@ -19,7 +19,6 @@
   qemuLaunch = builtins.readFile ../../crates/crucible/crucible-qemu-host/src/launch.rs;
   harnessLint = builtins.readFile ./phase1-harness-lint.nix;
   clippyConfig = builtins.readFile ../../crates/clippy.toml;
-  timeSpec = builtins.readFile ../../docs/rfcs/0010-crucible/09-virtual-time-icount.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
@@ -215,8 +214,6 @@
         label = "clippy bans SystemTime::now";
         needle = "std::time::SystemTime::now";
       }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/09-virtual-time-icount.md" timeSpec [
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {

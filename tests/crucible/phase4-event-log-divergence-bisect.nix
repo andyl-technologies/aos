@@ -12,21 +12,17 @@
   libSource = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
   determinismTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/event_log_determinism.rs;
   reproductionTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/assertion_violation_reproduction.rs;
-  observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;
+  eventLogDoc = builtins.readFile ../../docs/engineering/crucible/event-log.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/19-observability-event-log.md" observabilityDoc [
+    failuresFor "docs/engineering/crucible/event-log.md" eventLogDoc [
       {
-        label = "T-OBS-8 completion note";
-        needle = "Completed by `checks.crucible.phase4.eventLogDivergenceBisect`";
-      }
-      {
-        label = "first causal entry completion note";
-        needle = "node/logical tick, source, and kind directly from the log";
+        label = "first causal entry localization";
+        needle = "The point carries the node/logical tick, source, and kind directly";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [

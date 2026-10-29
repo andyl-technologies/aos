@@ -1,7 +1,7 @@
 //! Checks that Crucible stays standalone from RFC-0007 crates.
 //!
-//! RFC-0010 file 27 requires all content-addressing primitives needed today to
-//! live in `crucible-determinism`. This lint rejects direct or workspace-inherited
+//! All content-addressing primitives Crucible needs today live in
+//! `crucible-determinism`. This lint rejects direct or workspace-inherited
 //! dependencies on `ratchet-*` and `aos-nix-*` crates.
 
 #![forbid(unsafe_code)]

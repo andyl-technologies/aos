@@ -12,7 +12,6 @@
     inherit lib;
     entry = ../../crates/crucible/crucible-qemu-shmem/tests/snapshot_restore.rs;
   };
-  shmemSpec = builtins.readFile ../../docs/rfcs/0010-crucible/13-shmem-abi.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -117,8 +116,6 @@
         label = "placeholder panic";
         needle = "implementation is pending";
       }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/13-shmem-abi.md" shmemSpec [
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {

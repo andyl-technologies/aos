@@ -10,20 +10,13 @@
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   libSource = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
   schedulerActorTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/scheduler_actor.rs;
-  schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/08-scheduling.md" schedulingDoc [
-      {
-        label = "T-SCHED-1 completion note";
-        needle = "Completed by `checks.crucible.phase3.schedulerActor`";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [
+    failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "scheduler actor";
         needle = "pub struct SchedulerActor";

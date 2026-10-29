@@ -7,7 +7,7 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
+  schedulingDoc = builtins.readFile ../../docs/engineering/crucible/scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
   clippyConfig = builtins.readFile ../../crates/clippy.toml;
   harnessLintMain = builtins.readFile ../../crates/crucible/crucible-test-support/tests/harness_lint.rs;
@@ -68,18 +68,14 @@
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/08-scheduling.md" schedulingDoc [
+    failuresFor "docs/engineering/crucible/scheduling.md" schedulingDoc [
       {
-        label = "T-SCHED-9 completion note";
-        needle = "Completed by `checks.crucible.phase3.schedulerOrderingLint`";
-      }
-      {
-        label = "SCHED-19 default hasher requirement";
-        needle = "never the language's default randomized hasher";
+        label = "no randomized hasher ordering";
+        needle = "No ordering-significant path iterates an unordered collection";
       }
       {
         label = "gate:harness-lint routing";
-        needle = "*Gate:* `gate:harness-lint`";
+        needle = "`gate:harness-lint`";
       }
     ]
     ++ failuresFor "crates/clippy.toml" clippyConfig [

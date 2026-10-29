@@ -9,8 +9,7 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  debugDoc = builtins.readFile ../../docs/rfcs/0010-crucible/36-time-travel-debugging.md;
-  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
+  timeTravelPage = builtins.readFile ../../docs/engineering/crucible/time-travel-debugging.md;
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   engineLib = import ./_rust-module-source.nix {
@@ -35,24 +34,14 @@
     forbidden;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/36-time-travel-debugging.md" debugDoc [
-      {
-        label = "T-DBG-6 completion note";
-        needle = "Completed by `checks.crucible.phase6.debugNonCanonicalBranch`";
-      }
+    failuresFor "docs/engineering/crucible/time-travel-debugging.md" timeTravelPage [
       {
         label = "debug-edit script wording";
-        needle = "debug-edit script";
+        needle = "`DebugEditScript`";
       }
       {
         label = "non-canonical branch wording";
         needle = "non-canonical debug branch";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "T-DBG-6 plan summary";
-        needle = "`T-DBG-6` is green through `checks.crucible.phase6.debugNonCanonicalBranch`";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" temporalGraph [

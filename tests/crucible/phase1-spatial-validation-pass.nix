@@ -28,22 +28,22 @@
   replayOracleTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/gate_replay_oracle.rs;
   propertyTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/coverage_condition_leaf.rs;
   defaultChecks = builtins.readFile ./default.nix;
-  spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
+  scenarioModelDoc = builtins.readFile ../../docs/engineering/crucible/scenario-model.md;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/06-spatial-graph.md" spatialGraph [
+    failuresFor "docs/engineering/crucible/scenario-model.md" scenarioModelDoc [
       {
-        label = "T-SPAT-21 completion names matrix test";
+        label = "well-formedness matrix test";
         needle = "`scenario_def_form_rejects_well_formedness_matrix_before_hashing`";
       }
       {
-        label = "T-SPAT-21 completion names gate";
+        label = "validation pass check";
         needle = "`checks.crucible.phase1.spatialValidationPass`";
       }
       {
-        label = "T-SPAT-21 completion names model launch rows";
+        label = "world node launch rows";
         needle = "`WorldNode` carries fixed";
       }
     ]

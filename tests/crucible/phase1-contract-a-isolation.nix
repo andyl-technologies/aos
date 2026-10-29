@@ -8,7 +8,6 @@
   contractA = builtins.readFile ../../crates/crucible/crucible-determinism/src/contract_a.rs;
   contractATests = builtins.readFile ../../crates/crucible/crucible-determinism/tests/contract_a.rs;
   simCargo = builtins.readFile ../../crates/crucible/crucible-determinism/Cargo.toml;
-  determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
@@ -173,8 +172,6 @@
         label = "wall-clock dependency";
         needle = "time";
       }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {

@@ -9,7 +9,7 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  debugDoc = builtins.readFile ../../docs/rfcs/0010-crucible/36-time-travel-debugging.md;
+  timeTravelPage = builtins.readFile ../../docs/engineering/crucible/time-travel-debugging.md;
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
   engineLib = import ./_rust-module-source.nix {
     inherit lib;
@@ -36,18 +36,14 @@
     forbidden;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/36-time-travel-debugging.md" debugDoc [
-      {
-        label = "T-DBG-2 partial-evidence note";
-        needle = "Completed under `checks.crucible.phase6.readOnlyDebugInspection`";
-      }
+    failuresFor "docs/engineering/crucible/time-travel-debugging.md" timeTravelPage [
       {
         label = "canonical causal byte identity";
         needle = "canonical causal subsequence is byte-identical";
       }
       {
         label = "observational debug entries";
-        needle = "attach/inspect/detach are recorded only as observational entries";
+        needle = "recorded only as observational entries";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" temporalGraph [

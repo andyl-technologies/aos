@@ -9,25 +9,21 @@
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   resolveTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/scheduler_resolve.rs;
-  schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
+  schedulingDoc = builtins.readFile ../../docs/engineering/crucible/scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/08-scheduling.md" schedulingDoc [
+    failuresFor "docs/engineering/crucible/scheduling.md" schedulingDoc [
       {
-        label = "T-SCHED-18 completion note";
-        needle = "Completed by `checks.crucible.phase3.schedulerLateDelivery`";
+        label = "late delivery fails loudly";
+        needle = "late scheduled event";
       }
       {
-        label = "late delivery requirement";
-        needle = "Enforce the lookahead guarantee in RESOLVE";
-      }
-      {
-        label = "never deliver late requirement";
-        needle = "never deliver the event late";
+        label = "never deliver late";
+        needle = "That is never delivered late";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [

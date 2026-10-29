@@ -11,7 +11,6 @@
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   engineTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/same_icount_tie_break.rs;
   shmemTest = builtins.readFile ../../crates/crucible/crucible-qemu-shmem/tests/icount_stamped_injection.rs;
-  determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
@@ -100,8 +99,6 @@
         label = "consumer-side canonical order helper";
         needle = "deliverable_frames_at";
       }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {

@@ -6,7 +6,7 @@
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
 
-  packagingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/26-packaging-aos-integration.md;
+  packagingDoc = builtins.readFile ../../docs/engineering/crucible/packaging.md;
   cruciblePackageNix = builtins.readFile ../../pkgs/tools/crucible/crucible.nix;
   packageSetNix = builtins.readFile ../../pkgs/default.nix;
   phaseTemplatesNix = builtins.readFile ../../stdenv/phases.nix;
@@ -55,11 +55,7 @@
     extraInventoryMembers;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
-      {
-        label = "T-PKG-8 completion note";
-        needle = "Completed by `checks.crucible.phase7.crucibleWorkspacePackage`";
-      }
+    failuresFor "docs/engineering/crucible/packaging.md" packagingDoc [
       {
         label = "workspace-scoped cargo test wording";
         needle = "workspace-scoped Cargo test suite";

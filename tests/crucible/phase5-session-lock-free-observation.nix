@@ -13,8 +13,6 @@
     inherit lib;
     entry = ../../crates/crucible/crucible-session/tests/gate_control_responsive.rs;
   };
-  sessionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/20-session-control-plane.md;
-  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -22,19 +20,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/20-session-control-plane.md" sessionDoc [
-      {
-        label = "T-SESS-10 completion note";
-        needle = "Completed by `checks.crucible.phase5.sessionLockFreeObservation`";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "phase5 lock-free observation status note";
-        needle = "`T-SESS-10` is green through `checks.crucible.phase5.sessionLockFreeObservation`";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-session/src/lib.rs" sessionLib [
+    failuresFor "crates/crucible/crucible-session/src/lib.rs" sessionLib [
       {
         label = "lock-free live snapshot type";
         needle = "pub struct LiveSnapshot";

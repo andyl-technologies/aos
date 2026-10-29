@@ -12,11 +12,11 @@ fn gate_qemu_inert_plugin_half_is_backed_by_phase_check() -> Result<(), Box<dyn 
     let plugin_inertness =
         fs::read_to_string(root.join("crates/crucible/crucible-qemu-plugin/src/inertness.rs"))?;
     let phase_check = fs::read_to_string(root.join("tests/crucible/phase2-plugin-qemu-inert.nix"))?;
-    let spec = fs::read_to_string(root.join("docs/rfcs/0010-crucible/12-qemu-plugin.md"))?;
+    let plugin_doc = fs::read_to_string(root.join("docs/engineering/crucible/qemu-plugin.md"))?;
 
-    assert_contains(&spec, "- [x] **T-PLUG-23**");
-    assert_contains(&spec, "contributes plugin-half evidence for [PLUG-49]");
-    assert_contains(&spec, "full real-QEMU corpus is");
+    assert_contains(&plugin_doc, "## Inertness");
+    assert_contains(&plugin_doc, "`PluginInertnessObservation::sim_off`");
+    assert_contains(&plugin_doc, "qemu-patch.md#inertness");
     assert_contains(&plugin_inertness, "PluginInertnessObservation::sim_off");
     assert_contains(&plugin_inertness, "PluginArgumentWhenSimulationOff");
     assert_contains(

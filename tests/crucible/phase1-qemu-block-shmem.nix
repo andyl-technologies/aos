@@ -8,7 +8,6 @@
   qemuNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
   patchSource = builtins.readFile (patchDir + "/${atomicPatch.file}");
   microtestSource = builtins.readFile ./phase1-qemu-block-shmem.c;
-  qemuPatchSpec = builtins.readFile ../../docs/rfcs/0010-crucible/11-qemu-patches.md;
   defaultChecks = builtins.readFile ./default.nix;
   qemuSource =
     if qemuPackage == null
@@ -231,28 +230,6 @@
       {
         label = "discard range failure exercised";
         needle = "discard_range_checks_fail_closed=true";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/11-qemu-patches.md" qemuPatchSpec [
-      {
-        label = "block shmem patch catalog";
-        needle = "crucible-blk-shmem";
-      }
-      {
-        label = "block IO fixes patch catalog";
-        needle = "crucible-blk-shmem-io-fixes";
-      }
-      {
-        label = "write sentinel patch catalog";
-        needle = "crucible-blk-write-sentinel";
-      }
-      {
-        label = "discard patch catalog";
-        needle = "crucible-block-discard";
-      }
-      {
-        label = "transport reset patch catalog";
-        needle = "crucible-block-transport-reset";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

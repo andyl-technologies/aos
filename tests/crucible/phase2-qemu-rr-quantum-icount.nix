@@ -7,7 +7,6 @@
   patchDir = ../../pkgs/emulation/qemu-patches;
   atomicPatch = import (patchDir + "/_atomic-patch.nix");
   patchSource = builtins.readFile (patchDir + "/${atomicPatch.file}");
-  qemuPatchSpec = builtins.readFile ../../docs/rfcs/0010-crucible/11-qemu-patches.md;
   tracePluginSource = builtins.readFile ../../pkgs/emulation/crucible-qemu-trace-plugin.c;
   phase0S11 = builtins.readFile ./phase0-s11.nix;
   qemuMultiVcpuLaunchSource = builtins.readFile ./phase2-qemu-multi-vcpu-launch.nix;
@@ -25,9 +24,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/11-qemu-patches.md" qemuPatchSpec [
-    ]
-    ++ failuresFor "pkgs/emulation/qemu-patches/${atomicPatch.file}" patchSource [
+    failuresFor "pkgs/emulation/qemu-patches/${atomicPatch.file}" patchSource [
       {
         label = "RR switch quantum option";
         needle = ''qemu_opt_get_number(opts, "rr_switch_quantum", 0)'';

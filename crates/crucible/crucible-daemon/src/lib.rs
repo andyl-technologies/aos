@@ -1,6 +1,6 @@
 //! `crucible-daemon` owns the long-lived host process.
 //!
-//! Spec index: RFC-0010 files 20, 21; RFC-0020 file 04a.
+//! Spec index: RFC-0020 file 04a.
 //!
 //! This crate hosts sessions and composes production VM lifecycles over the
 //! control server and QEMU host libraries. Run-affecting choices enter through

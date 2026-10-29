@@ -4,7 +4,7 @@
   attrPath ? "checks.crucible.phase7.reproductionProvenanceTriple",
   taskIds ? ["T-PKG-20"],
 }: let
-  packagingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/26-packaging-aos-integration.md;
+  packagingDoc = builtins.readFile ../../docs/engineering/crucible/packaging.md;
   reproduction = builtins.readFile ../../crates/crucible/crucible-test-support/src/reproduction.rs;
   e2e = builtins.readFile ../../crates/crucible/crucible-test-support/src/e2e.rs;
   replayOracle = builtins.readFile ../../crates/crucible/crucible-test-support/src/replay_oracle.rs;
@@ -73,17 +73,11 @@
   rpcAbiVersion = "${rpcProtocolMajor}.${rpcProtocolMinor}.${rpcProtocolPatch}";
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
+    failuresFor "docs/engineering/crucible/packaging.md" packagingDoc [
       {
-        label = "T-PKG-20 completion note";
-        needle = "Completed by `checks.crucible.phase7.reproductionProvenanceTriple`";
+        label = "provenance triple text";
+        needle = "QEMU build identity plus atomic-patch hash, and the ABI versions";
       }
-      {
-        label = "PKG-38 provenance triple text";
-        needle = "build identity + atomic-patch hash, and the three ABI versions";
-      }
-    ]
-    ++ forbiddenFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
     ]
     ++ failuresFor "crates/crucible/crucible-test-support/src/reproduction.rs" reproduction [
       {

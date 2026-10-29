@@ -8,8 +8,7 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  triageDoc = builtins.readFile ../../docs/rfcs/0010-crucible/34-failure-triage.md;
-  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
+  failureTriagePage = builtins.readFile ../../docs/engineering/crucible/failure-triage.md;
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
   triggers = import ./_crucible-trigger-source.nix {inherit lib;};
   engineLib = import ./_rust-module-source.nix {
@@ -36,24 +35,14 @@
     forbidden;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/34-failure-triage.md" triageDoc [
-      {
-        label = "T-TRI-1 completion note";
-        needle = "Completed by `checks.crucible.phase6.failureSignature`";
-      }
+    failuresFor "docs/engineering/crucible/failure-triage.md" failureTriagePage [
       {
         label = "recorded run alone invariant";
         needle = "recorded run alone";
       }
       {
         label = "read not re-derived invariant";
-        needle = "signature is read, not re-derived";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "T-TRI-1 plan summary";
-        needle = "`T-TRI-1` is green through `checks.crucible.phase6.failureSignature`";
+        needle = "The signature is read, not re-derived";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" temporalGraph [

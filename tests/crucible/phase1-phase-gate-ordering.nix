@@ -9,7 +9,7 @@
 
   phasePlanRust = builtins.readFile ../../crates/crucible/crucible-test-support/src/phase_plan.rs;
   phasePlanTest = builtins.readFile ../../crates/crucible/crucible-test-support/tests/phase_plan.rs;
-  gateCatalog = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
+  testingAndGatesDoc = builtins.readFile ../../docs/engineering/crucible/testing-and-gates.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
@@ -47,8 +47,8 @@
     ]
     ++ failuresFor "crates/crucible/crucible-test-support/tests/phase_plan.rs" phasePlanTest [
       {
-        label = "RFC Section 13 parity test";
-        needle = "phase_gate_plan_matches_rfc_section_13_and_nix_wiring";
+        label = "documented gate-ordering parity test";
+        needle = "phase_gate_plan_matches_documented_order_and_nix_wiring";
       }
       {
         label = "green-before-advance test";
@@ -71,7 +71,7 @@
         needle = "phase_plan_invariants_reject_synthetic_drift";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" gateCatalog [
+    ++ failuresFor "docs/engineering/crucible/testing-and-gates.md" testingAndGatesDoc [
       {
         label = "green-before-advance requirement";
         needle = "green-before-advance";

@@ -9,8 +9,6 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
-  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = import ./_cli-source.nix {inherit lib;};
   cliCampaignRun = import ./_rust-module-source.nix {
     inherit lib;
@@ -28,40 +26,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
-      {
-        label = "T-CLI-9 completion";
-        needle = "[x] **T-CLI-9** Implement `save` as a Campaign-owned semantic-stop";
-      }
-      {
-        label = "portable handle identity";
-        needle = "the current v6 handle binds the";
-      }
-      {
-        label = "authenticated replay closure";
-        needle = "scenario, schedule, replay closure, exact frontier";
-      }
-      {
-        label = "no physical checkpoint in handle";
-        needle = "never
-  persists a physical QEMU checkpoint in the handle";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "phase5 CLI save completion";
-        needle = "`T-CLI-9` is completed through `checks.crucible.phase5.cliSaveWorkflow`";
-      }
-      {
-        label = "Campaign exact checkpoint";
-        needle = "Campaign-owned semantic stops capture an authenticated exact checkpoint";
-      }
-      {
-        label = "closed Campaign owner";
-        needle = "use the same fail-closed Campaign owner";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-cli/src/main.rs" cliMain [
+    failuresFor "crates/crucible/crucible-cli/src/main.rs" cliMain [
       {
         label = "save arguments";
         needle = "struct SaveArgs";

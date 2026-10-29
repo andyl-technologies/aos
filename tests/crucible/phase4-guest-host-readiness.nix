@@ -11,27 +11,13 @@
   model = import ./_crucible-model-source.nix {inherit lib;};
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
   readinessTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/guest_host_readiness.rs;
-  guestHostDoc = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
-  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/16-guest-host-channel.md" guestHostDoc [
-      {
-        label = "T-GHC-3 completion note";
-        needle = "Completed by `checks.crucible.phase4.guestHostReadiness`";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "guest-host phase4 task range";
-        needle = "Guest↔host channel + optional agent";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
+    failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "fixed icount ready point";
         needle = "ReadyPoint::FixedIcount";

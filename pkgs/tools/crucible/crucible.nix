@@ -1,4 +1,4 @@
-##! crucible — RFC-0010 Crucible Rust workspace and CLI
+##! crucible — Crucible Rust workspace and CLI
 {
   lib,
   stdenv,
@@ -282,7 +282,7 @@
     LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
 
     # The source root includes root guidance, docs/, pkgs/tools/crucible/, and
-    # tests/crucible/ so harness lints can read RFC-0010 and AOS check wiring,
+    # tests/crucible/ so harness lints can read engineering docs and check wiring,
     # while Cargo's virtual workspace remains rooted at crates/.
     postBuild = ''
       ${

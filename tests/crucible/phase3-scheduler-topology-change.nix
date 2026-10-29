@@ -18,33 +18,29 @@
     entry = ../../crates/crucible/crucible-qemu-host/src/quantum.rs;
   };
   topologyChangeTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/scheduler_topology_change.rs;
-  schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
+  schedulingDoc = builtins.readFile ../../docs/engineering/crucible/scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/08-scheduling.md" schedulingDoc [
+    failuresFor "docs/engineering/crucible/scheduling.md" schedulingDoc [
       {
-        label = "T-SCHED-22 completion note";
-        needle = "Completed by `checks.crucible.phase3.schedulerTopologyChange`";
+        label = "boundary recompute";
+        needle = "runs at the quantum boundary before PICK";
       }
       {
-        label = "boundary recompute note";
-        needle = "before the next PICK";
+        label = "send freeze";
+        needle = "send while any topology change is pending";
       }
       {
-        label = "send freeze note";
-        needle = "cross-node sends while a topology change is pending";
-      }
-      {
-        label = "runtime queue note";
+        label = "runtime queue";
         needle = "`SingleScheduler::schedule_topology_change` lets fault, heal, and latency";
       }
       {
-        label = "production adapter note";
-        needle = "SimDouble and QEMU outbound emission paths require an explicit scheduler send authorizer";
+        label = "production adapter";
+        needle = "QEMU outbound emission paths require an explicit authorizer";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [

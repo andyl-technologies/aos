@@ -5,7 +5,6 @@
   taskIds ? ["T-DCE-4"],
   dependencies ? [],
 }: let
-  dceDoc = builtins.readFile ../../docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md;
   casSource =
     builtins.readFile ../../crates/crucible/crucible-store/src/lib.rs
     + builtins.readFile ../../crates/crucible/crucible-store/src/cas/campaign_codec.rs
@@ -26,39 +25,7 @@
   campaignContinuityWrapperDependency = "dependencies = [fleetEquivalence phase7.crucibleCampaignManifest phase7.crucibleCampaignSeeding phase7.crucibleCampaignStorageBounding phase7.crucibleCampaignProvenance];";
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md" dceDoc [
-      {
-        label = "T-DCE-4 completion note";
-        needle = "Completed by `checks.crucible.phase7.crucibleCampaignManifest`";
-      }
-      {
-        label = "DCE-9 manifest text";
-        needle = "small **campaign manifest**";
-      }
-      {
-        label = "DCE-10 CAS text";
-        needle = "campaign head MUST be advanced by **compare-and-swap**";
-      }
-      {
-        label = "DCE-23 read merge retry text";
-        needle = "read-merge-retry on conflict";
-      }
-      {
-        label = "T-DCE-4 advisory CAS lock note";
-        needle = "advisory lock on that same file";
-      }
-      {
-        label = "T-DCE-4 materialized merge-root note";
-        needle = "immutable merge-root records";
-      }
-      {
-        label = "T-DCE-4 append-only head log note";
-        needle = "append-only checksummed head log";
-      }
-    ]
-    ++ forbiddenFor "docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md" dceDoc [
-    ]
-    ++ failuresFor "crates/crucible/crucible-store/src/lib.rs" casSource [
+    failuresFor "crates/crucible/crucible-store/src/lib.rs" casSource [
       {
         label = "shared campaign store type";
         needle = "pub struct SharedCampaignStore";

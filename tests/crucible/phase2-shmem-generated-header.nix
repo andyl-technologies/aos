@@ -12,7 +12,6 @@
   generatorBin = builtins.readFile ../../crates/crucible/crucible-qemu-shmem/examples/crucible-shmem-abi-header.rs;
   generatedHeader = builtins.readFile ../../crates/crucible/crucible-qemu-shmem/include/crucible_shmem_abi.h;
   headerTest = builtins.readFile ../../crates/crucible/crucible-qemu-shmem/tests/generated_abi_header.rs;
-  shmemSpec = builtins.readFile ../../docs/rfcs/0010-crucible/13-shmem-abi.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -151,8 +150,6 @@
         label = "placeholder panic";
         needle = "implementation is pending";
       }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/13-shmem-abi.md" shmemSpec [
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {

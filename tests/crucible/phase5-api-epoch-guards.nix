@@ -8,8 +8,6 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  apiDoc = builtins.readFile ../../docs/rfcs/0010-crucible/21-api.md;
-  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   lifecycle = import ./_crucible-control-source.nix {
     inherit lib;
     component = "lifecycle";
@@ -34,23 +32,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/21-api.md" apiDoc [
-      {
-        label = "T-API-8 completion note";
-        needle = "Completed by `checks.crucible.phase5.apiEpochGuards`";
-      }
-      {
-        label = "T-API-9 completion note";
-        needle = "Completed by `checks.crucible.phase5.apiReproductionContext`";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "phase5 API epoch guard status note";
-        needle = "`T-API-8` is green through `checks.crucible.phase5.apiEpochGuards`";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-control-api/src/lifecycle.rs" lifecycle [
+    failuresFor "crates/crucible/crucible-control-api/src/lifecycle.rs" lifecycle [
       {
         label = "DestroySession expected epoch field";
         needle = "pub expected_epoch: Option<u64>";
@@ -241,7 +223,7 @@ in
     ];
 
     meta = {
-      description = "RFC-0010 phase 5 API epoch guard gate for ${taskList}";
+      description = "Crucible phase 5 API epoch guard gate for ${taskList}";
       passthru = {
         inherit attrPath taskIds dependencies;
         failureText = failureText;

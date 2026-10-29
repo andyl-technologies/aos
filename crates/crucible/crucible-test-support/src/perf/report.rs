@@ -1,8 +1,8 @@
-//! The SS25.7.1 metric report, the regression baseline, and the gate error type.
+//! The perf-bench metric report, the regression baseline, and the gate error type.
 //!
 //! This module owns the data the perf-bench gate *records* and *compares*: the
-//! [`PerfBenchReport`] aggregating every SS25.7.1 metric term, the stored
-//! [`PerfBaseline`] the regression gate compares against ([PERF-19], [PERF-21]),
+//! [`PerfBenchReport`] aggregating every perf-bench metric term, the stored
+//! [`PerfBaseline`] the regression gate compares against,
 //! the [`PerfBenchInput`] pairing a corpus with its baseline, and the
 //! [`PerfBenchError`] enumerating every cost-model property the gate can find
 //! violated. The assertion logic that produces a report or an error lives in
@@ -17,11 +17,11 @@ use super::model::{
 };
 use super::sweeps::{AdvanceSyscallCount, HostProfile, SnapshotLatencyPoint};
 
-/// The SS25.7.1 metric set, one aggregate over the benchmark corpus.
+/// The perf-bench metric set, one aggregate over the benchmark corpus.
 ///
 /// Every field is *recorded* for humans and trend tracking; the gate asserts the
 /// structural/relative properties described in [`super::gate::run_perf_bench_gate`].
-/// Ratios and counts are host-independent ([PERF-20]); the wall-clock fields
+/// Ratios and counts are host-independent; the wall-clock fields
 /// (`restore_latency_units`) are recorded, never hard-asserted against an
 /// absolute threshold on a shared builder.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,15 +48,15 @@ pub struct PerfBenchReport {
     pub fork_cost_bytes: Vec<u64>,
     /// `replay_cost`: modeled replay time as a function of suffix length.
     pub replay_cost_by_suffix: Vec<u64>,
-    /// Peak host RSS over a representative search ([PERF-23]).
+    /// Peak host RSS over a representative search.
     pub peak_rss_units: u64,
-    /// Arithmetic advance-path kernel-entry accounting ([PERF-8]).
+    /// Arithmetic advance-path kernel-entry accounting.
     pub advance_syscalls: AdvanceSyscallCount,
-    /// The snapshot capture/restore latency series ([PERF-12], [PERF-17]).
+    /// The snapshot capture/restore latency series.
     pub snapshot_latency: Vec<SnapshotLatencyPoint>,
-    /// The pinned host profile the gate ran against ([PERF-20]).
+    /// The pinned host profile the gate ran against.
     pub host_profile: HostProfile,
-    /// The content-addressed corpus+baseline digest ([PERF-21]).
+    /// The content-addressed corpus+baseline digest.
     pub corpus_digest: u64,
 }
 
@@ -65,26 +65,24 @@ pub struct PerfBenchReport {
 pub enum PerfBenchError {
     /// The corpus is empty; the gate requires at least one benchmark scenario.
     EmptyCorpus,
-    /// Wall-clock scaled with idle virtual duration rather than staying flat
-    /// ([PERF-2]).
+    /// Wall-clock scaled with idle virtual duration rather than staying flat.
     IdleNotCompressed {
         /// The observed wall-clock series across the idle sweep.
         observed: Vec<u64>,
     },
-    /// Realized parallelism did not increase with the lookahead budget ([PERF-4]).
+    /// Realized parallelism did not increase with the lookahead budget.
     ParallelismNotLookaheadBounded {
         /// The latency/parallelism sweep that violated monotonicity.
         smaller_latency: u64,
         /// The realized parallelism that failed to rise.
         larger_latency: u64,
     },
-    /// Adding cores did not reduce wall-clock ([PERF-3]).
+    /// Adding cores did not reduce wall-clock.
     SpeedupNotMonotone {
         /// Core count whose wall-clock rose.
         cores: u64,
     },
-    /// A serial (`P=1`) and parallel run produced different result fingerprints
-    /// ([PERF-5]).
+    /// A serial (`P=1`) and parallel run produced different result fingerprints.
     SerialParallelDivergence {
         /// The serial fingerprint.
         serial: u64,
@@ -92,74 +90,73 @@ pub enum PerfBenchError {
         parallel: u64,
     },
     /// A low-latency scenario failed determinism instead of merely losing
-    /// parallelism ([PERF-6]).
+    /// parallelism.
     LowLatencyDeterminismLoss {
         /// The baseline fingerprint.
         baseline: u64,
         /// The low-latency fingerprint.
         low_latency: u64,
     },
-    /// Sync overhead exceeded the hard-fail threshold ([PERF-7]).
+    /// Sync overhead exceeded the hard-fail threshold.
     SyncOverheadExceeded {
         /// The observed sync overhead percentage.
         observed_pct: u64,
     },
-    /// Per-TB plugin overhead scaled with node count ([PERF-9]).
+    /// Per-TB plugin overhead scaled with node count.
     PerTbScalesWithNodes {
         /// The small-scenario per-TB atomics.
         small: u64,
         /// The large-scenario per-TB atomics.
         large: u64,
     },
-    /// A rendezvous-frequency sweep changed the result fingerprint ([PERF-10]).
+    /// A rendezvous-frequency sweep changed the result fingerprint.
     RendezvousChangedResult {
         /// The rendezvous frequency that changed the result.
         rendezvous_frequency: u64,
     },
     /// Cold boots scaled with campaign size instead of staying at one per VM
-    /// per `World` ([PERF-11]).
+    /// per `World`.
     BootNotAmortized {
         /// The observed cold-boot count.
         observed: u64,
         /// The campaign scenario count.
         campaign_size: u64,
     },
-    /// The coverage-on guest IPS fell below the configured ratio ([PERF-14]).
+    /// The coverage-on guest IPS fell below the configured ratio.
     CoverageOnBelowBudget {
         /// The observed coverage-on/off ratio percentage.
         observed_pct: u64,
     },
-    /// Coverage extraction changed the result fingerprint ([PERF-15]).
+    /// Coverage extraction changed the result fingerprint.
     CoveragePerturbedResult {
         /// The coverage-off fingerprint.
         coverage_off: u64,
         /// The coverage-on fingerprint.
         coverage_on: u64,
     },
-    /// Fork cost scaled with absolute state size rather than delta ([PERF-16]).
+    /// Fork cost scaled with absolute state size rather than delta.
     ForkCostNotDeltaBounded {
         /// The fork cost that failed to track delta size.
         delta: u64,
     },
-    /// Replay cost was not bounded by the schedule suffix length ([PERF-18]).
+    /// Replay cost was not bounded by the schedule suffix length.
     ReplayCostNotSuffixBounded {
         /// The suffix length whose replay cost fell out of order.
         suffix: u64,
     },
-    /// Fuzzing throughput regressed beyond the tolerated fraction of baseline
-    /// ([PERF-13]).
+    /// Fuzzing throughput regressed beyond the tolerated fraction of baseline.
     ThroughputRegressed {
         /// The recorded baseline throughput.
         baseline: u64,
         /// The observed throughput.
         observed: u64,
     },
-    /// Fleet throughput did not scale near-linearly to saturation ([PERF-27]).
+    /// Fleet throughput did not scale near-linearly to saturation.
     FleetThroughputNotLinear {
         /// The host count whose aggregate throughput fell out of order.
         hosts: u64,
     },
-    /// Cumulative campaign coverage decreased across CI runs ([PERF-28]).
+    /// Cumulative campaign coverage decreased across CI runs.
     CoverageRegressed {
         /// The prior cumulative coverage.
         prior: u64,
@@ -167,12 +164,12 @@ pub enum PerfBenchError {
         next: u64,
     },
     /// Peak host RSS scaled with fork count rather than with guest RAM + active
-    /// rings + sum deltas ([PERF-23]).
+    /// rings + sum deltas.
     RssScalesWithForkCount {
         /// The fork count whose RSS rose out of proportion.
         forks: u64,
     },
-    /// The advance path modeled a per-quantum socket/control round trip ([PERF-8]).
+    /// The advance path modeled a per-quantum socket/control round trip.
     PerQuantumIpcRoundTrip {
         /// The number of modeled socket/QMP/plugin-control round trips.
         round_trips: u64,
@@ -186,18 +183,17 @@ pub enum PerfBenchError {
         /// The count produced by the arithmetic bookkeeping.
         actual: u64,
     },
-    /// Snapshot capture cost scaled with total state rather than changed state
-    /// ([PERF-17]).
+    /// Snapshot capture cost scaled with total state rather than changed state.
     CaptureNotChangedStateBounded {
         /// The changed-page count whose capture cost fell out of order.
         changed_pages: u64,
     },
-    /// A required host-parallel mechanism has no admission record ([PERF-34]).
+    /// A required host-parallel mechanism has no admission record.
     MissingHostParallelismAdmission {
         /// Stable identifier of the missing mechanism.
         mechanism: String,
     },
-    /// A host-parallel admission is duplicate, empty, or lacks proof ([PERF-34]).
+    /// A host-parallel admission is duplicate, empty, or lacks proof.
     InvalidHostParallelismAdmission {
         /// Stable identifier of the invalid mechanism.
         mechanism: String,
@@ -320,7 +316,7 @@ impl fmt::Display for PerfBenchError {
 
 impl Error for PerfBenchError {}
 
-/// A stored baseline for the regression-gate comparison ([PERF-19], [PERF-21]).
+/// A stored baseline for the regression-gate comparison.
 ///
 /// The gate compares the run's throughput and coverage ratio against these
 /// stored values and fails on a regression beyond the configured threshold; a
@@ -339,13 +335,13 @@ pub struct PerfBaseline {
 /// The full input to the perf-bench gate: a corpus plus its stored baseline.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PerfBenchInput {
-    /// The benchmark corpus: a small set of hermetic scenarios ([PERF-21]).
+    /// The benchmark corpus: a small set of hermetic scenarios.
     pub corpus: Vec<BenchScenario>,
     /// The stored baseline for the regression comparison.
     pub baseline: PerfBaseline,
     /// This run's measured fuzzing throughput (scenarios / core / hour).
     pub observed_fuzz_throughput: u64,
-    /// This run's cumulative campaign coverage ([PERF-28]).
+    /// This run's cumulative campaign coverage.
     pub cumulative_coverage: u64,
     /// Admission records for every enabled or experimentally gated host-parallel mechanism.
     pub host_parallelism_admissions: Vec<HostParallelismAdmission>,

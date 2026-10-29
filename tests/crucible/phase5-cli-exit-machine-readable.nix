@@ -9,70 +9,16 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
-  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = import ./_cli-source.nix {inherit lib;};
   cliProcessTest = builtins.readFile ../../crates/crucible/crucible-cli/tests/machine_readable.rs;
   campaignProcessTest = builtins.readFile ../../crates/crucible/crucible-cli/tests/campaign_process.rs;
   packagedCampaignVm = builtins.readFile ./phase4-packaged-campaign-vm.nix;
   defaultChecks = builtins.readFile ./default.nix;
 
-  inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
+  inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
-      {
-        label = "T-CLI-15 machine-readable completion note";
-        needle = "Completed by\n  `checks.crucible.phase5.cliExitMachineReadable`";
-      }
-      {
-        label = "T-CLI-15 replay process coverage note";
-        needle = "`fuzz`, marker-resolved QEMU `save` and `resume`, `replay --check`";
-      }
-      {
-        label = "T-CLI-15 replay-to process coverage note";
-        needle = "and `replay --to <SAVEPOINT>` JSONL output with parsed";
-      }
-      {
-        label = "T-CLI-15 live-QEMU route coverage";
-        needle = "including the live-QEMU run/save/resume/search/";
-      }
-    ]
-    ++ forbiddenFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
-      {
-        label = "stale T-CLI-15 remaining gate range";
-        needle = "remaining run-capable command-behavior gates (`T-CLI-7 … T-CLI-13`)";
-      }
-      {
-        label = "stale T-CLI-15 open blocker range";
-        needle = "remaining run-capable command-behavior gates (`T-CLI-10 … T-CLI-13`)";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "phase5 T-CLI-15 partial note";
-        needle = "`T-CLI-15` is completed through `checks.crucible.phase5.cliExitMachineReadable`";
-      }
-      {
-        label = "phase5 T-CLI-15 live-QEMU route coverage";
-        needle = "regression-testing the RFC §15 exit-code classes, including the live-QEMU";
-      }
-      {
-        label = "phase5 T-CLI-15 qemu process coverage note";
-        needle = "marker-resolved QEMU `save` and `resume`,\n  `replay --check`";
-      }
-      {
-        label = "phase5 T-CLI-15 replay-to process coverage note";
-        needle = "and `replay --to <SAVEPOINT>`\n  JSONL output";
-      }
-    ]
-    ++ forbiddenFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "stale phase5 T-CLI-15 remaining gate range";
-        needle = "command-behavior gates `T-CLI-7 … T-CLI-13` so the same contract can be";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-cli/src/main.rs" cliMain [
+    failuresFor "crates/crucible/crucible-cli/src/main.rs" cliMain [
       {
         label = "machine-readable format classifier";
         needle = "fn is_machine_readable";
@@ -159,7 +105,7 @@
       }
       {
         label = "exit code mapping regression";
-        needle = "cli_exit_machine_readable_mapping_matches_rfc_15";
+        needle = "cli_exit_machine_readable_mapping_matches_exit_code_table";
       }
       {
         label = "final outcome output regression";

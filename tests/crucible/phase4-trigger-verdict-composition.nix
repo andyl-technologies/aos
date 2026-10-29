@@ -10,7 +10,6 @@
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   libRs = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
   verdictTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/trigger_verdict_composition.rs;
-  triggerDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17a-conditions-and-triggers.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
@@ -22,17 +21,7 @@
     verdictTest
   ];
   failures =
-    failuresFor "docs/rfcs/0010-crucible/17a-conditions-and-triggers.md" triggerDoc [
-      {
-        label = "T-TRIG-17 completion note";
-        needle = "Completed by `checks.crucible.phase4.triggerVerdictComposition`";
-      }
-      {
-        label = "event graph replay gate complete";
-        needle = "Completed by `checks.crucible.phase4.gates.replayOracle`";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [
+    failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "assertion run verdict type";
         needle = "pub enum AssertionRunVerdict";

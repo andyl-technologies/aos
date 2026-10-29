@@ -5,7 +5,6 @@
   taskIds ? ["T-DCE-6"],
   dependencies ? [],
 }: let
-  dceDoc = builtins.readFile ../../docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md;
   casSource =
     builtins.readFile ../../crates/crucible/crucible-store/src/lib.rs
     + builtins.readFile ../../crates/crucible/crucible-store/src/cas/campaign_codec.rs
@@ -30,23 +29,7 @@
   campaignContinuityWrapperDependency = "dependencies = [fleetEquivalence phase7.crucibleCampaignManifest phase7.crucibleCampaignSeeding phase7.crucibleCampaignStorageBounding phase7.crucibleCampaignProvenance];";
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md" dceDoc [
-      {
-        label = "T-DCE-6 completion note";
-        needle = "Completed by `checks.crucible.phase7.crucibleCampaignStorageBounding`";
-      }
-      {
-        label = "DCE-14 storage bounding text";
-        needle = "GC rooted at the manifest's";
-      }
-      {
-        label = "DCE-15 deterministic seeded retention text";
-        needle = "deterministic seeded corpus";
-      }
-    ]
-    ++ forbiddenFor "docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md" dceDoc [
-    ]
-    ++ failuresFor "crates/crucible/crucible-store/src/lib.rs" casSource [
+    failuresFor "crates/crucible/crucible-store/src/lib.rs" casSource [
       {
         label = "campaign GC root type";
         needle = "pub struct CampaignGcRoots";

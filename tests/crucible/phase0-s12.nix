@@ -22,10 +22,6 @@
       && base != ".git"
       && base != ".crucible";
   };
-  rfcDocs = builtins.path {
-    path = ../../docs/rfcs/0010-crucible;
-    name = "crucible-rfc0010-docs";
-  };
   s11MultiVcpuFingerprint = import ./phase0-s11.nix {inherit pkgs lib;};
 in
   pkgs.mkDerivation {
@@ -50,7 +46,6 @@ in
     QEMU_OUT = builtins.toString pkgs.qemu-crucible;
     QEMU_PATCH_DIR = builtins.toString qemuPatchDir;
     CRATES_SRC = builtins.toString cratesSource;
-    RFC_DOCS = builtins.toString rfcDocs;
     S11_RESULT = "${s11MultiVcpuFingerprint}/result";
 
     phases = [
@@ -84,8 +79,6 @@ in
           chmod -R u+w qemu-patches
           cp -r "$CRATES_SRC" crates
           chmod -R u+w crates
-          cp -r "$RFC_DOCS" rfc-docs
-          chmod -R u+w rfc-docs
           cp "$pluginPath" crucible-qemu-trace-plugin.c
 
           [ -x "$QEMU_OUT/bin/qemu-system-x86_64" ] \
@@ -120,22 +113,10 @@ in
           require_fixed "$S11_RESULT" "exact_horizon_authoritative=true"
 
 
-          decision_doc="rfc-docs/31-decision-register.md"
-          require_fixed "$decision_doc" "RISK-4 / RISK-5 / T-RISK-1"
-          require_fixed "$decision_doc" "checks.crucible.phase7.productionRustPluginFlight"
-          require_fixed "$decision_doc" "\`sample_target_picoseconds=2000000,2000001,2000051,4000000,8000000\`"
-          require_fixed "$decision_doc" "RISK-25 / T-RISK-17"
-          require_fixed "$decision_doc" "checks.crucible.phase0.s11MultiVcpuFingerprint"
-          require_fixed "$decision_doc" "\`s11_result_status=PASS\`"
-          require_fixed "$decision_doc" "\`s11_rr_switch_quantum=4096\`"
-          require_fixed "$decision_doc" "\`s11_horizon_icount=4000000000\`"
-          require_fixed "$decision_doc" "\`s11_aggregate_fingerprint_match=true\`"
-
           mkdir -p "$out"
           cp qemu.nix "$out/qemu.nix"
           cp -r qemu-patches "$out/qemu-patches"
           cp crucible-qemu-trace-plugin.c "$out/crucible-qemu-trace-plugin.c"
-          cp "$decision_doc" "$out/31-decision-register.md"
           cp "$S11_RESULT" "$out/s11-result"
           {
             echo PASS

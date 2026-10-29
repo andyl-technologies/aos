@@ -12,20 +12,15 @@
   bakedGenesis = builtins.readFile ../../crates/crucible/crucible-daemon/src/qemu_baked_genesis.rs;
   freshLifecycle = builtins.readFile ../../crates/crucible/crucible-daemon/src/qemu_campaign_lifecycle.rs;
   defaultChecks = builtins.readFile ./default.nix;
-  rfc = builtins.readFile ../../docs/rfcs/0010-crucible/05-execution-model.md;
-  patternsAndSketches = builtins.readFile ../../docs/rfcs/0010-crucible/29-patterns-and-sketches.md;
+  executionModelDoc = builtins.readFile ../../docs/engineering/crucible/execution-model.md;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/05-execution-model.md" rfc [
+    failuresFor "docs/engineering/crucible/execution-model.md" executionModelDoc [
       {
-        label = "T-EXEC-8 completion note";
-        needle = "Completed by `crates/crucible/crucible-engine/src/model.rs`: `bake`";
-      }
-      {
-        label = "T-EXEC-8 cold boot lint note";
-        needle = "production cold-boot lint";
+        label = "bake signature";
+        needle = "pub fn bake(world: &World) -> Result<GenesisCheckpoint, EngineError>;";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
@@ -128,13 +123,13 @@
         needle = "executionBake = import ./phase1-execution-bake.nix";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsAndSketches [
+    ++ failuresFor "docs/engineering/crucible/execution-model.md" executionModelDoc [
       {
-        label = "T-PAT-9 confines cold boot to baked capture";
-        needle = "cold boot remains inside baked";
+        label = "cold boot confined to baking";
+        needle = "the only place a guest is cold-booted";
       }
       {
-        label = "T-PAT-9 completion names execution bake gate";
+        label = "bake check is documented";
         needle = "`checks.crucible.phase1.executionBake`";
       }
     ];

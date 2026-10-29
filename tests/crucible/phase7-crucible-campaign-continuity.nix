@@ -8,8 +8,9 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  dceDoc = builtins.readFile ../../docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md;
-  harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
+  distributedExplorationDoc = builtins.readFile ../../docs/engineering/crucible/distributed-exploration.md;
+  packagingDoc = builtins.readFile ../../docs/engineering/crucible/packaging.md;
+  testingAndGatesDoc = builtins.readFile ../../docs/engineering/crucible/testing-and-gates.md;
   casSource =
     builtins.readFile ../../crates/crucible/crucible-store/src/lib.rs
     + builtins.readFile ../../crates/crucible/crucible-store/src/cas/campaign_codec.rs
@@ -38,42 +39,26 @@
   campaignContinuityWrapperDependency = "dependencies = [fleetEquivalence phase7.crucibleCampaignManifest phase7.crucibleCampaignSeeding phase7.crucibleCampaignStorageBounding phase7.crucibleCampaignProvenance];";
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md" dceDoc [
-      {
-        label = "T-DCE-9 completion note";
-        needle = "Completed by `checks.crucible.phase7.gates.campaignContinuity`";
-      }
-      {
-        label = "DCE-26 provenance keyed gating";
-        needle = "keyed to the **provenance triple**";
-      }
-      {
-        label = "DCE-27 cross-provenance refusal";
-        needle = "REFUSE reuse; FORK a fresh campaign lineage";
-      }
+    failuresFor "docs/engineering/crucible/distributed-exploration.md" distributedExplorationDoc [
       {
         label = "campaign continuity gate name";
         needle = "`gate:campaign-continuity`";
       }
     ]
-    ++ forbiddenFor "docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md" dceDoc [
+    ++ failuresFor "docs/engineering/crucible/packaging.md" packagingDoc [
       {
-        label = "stale full campaign-continuity remaining note";
-        needle = "full campaign-continuity gate remains T-DCE-9";
-      }
-      {
-        label = "stale campaign-continuity remaining note";
-        needle = "campaign-continuity gate remains T-DCE-9";
-      }
-      {
-        label = "stale campaign continuity remaining note";
-        needle = "Campaign continuity remains T-DCE-9";
+        label = "provenance keyed campaign corpora";
+        needle = "Campaigns key their corpora on this provenance";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
+    ++ failuresFor "docs/engineering/crucible/testing-and-gates.md" testingAndGatesDoc [
       {
         label = "campaign-continuity catalog entry";
         needle = "`gate:campaign-continuity`";
+      }
+      {
+        label = "cross-provenance refusal";
+        needle = "cross-provenance reuse is refused";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-store/src/lib.rs" casSource [

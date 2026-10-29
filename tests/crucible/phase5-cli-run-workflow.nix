@@ -9,8 +9,6 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
-  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliCargo = builtins.readFile ../../crates/crucible/crucible-cli/Cargo.toml;
   cliMain = import ./_cli-source.nix {inherit lib;};
   cliProduction = import ./_cli-production-source.nix {inherit lib;};
@@ -53,19 +51,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
-      {
-        label = "T-CLI-6 partial-evidence note";
-        needle = "Completed under `checks.crucible.phase5.cliRunWorkflow`";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "phase5 CLI run workflow green note";
-        needle = "`T-CLI-6` is completed through `checks.crucible.phase5.cliRunWorkflow`";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-cli/src/main.rs" cliMain [
+    failuresFor "crates/crucible/crucible-cli/src/main.rs" cliMain [
       {
         label = "run scenario argument";
         needle = "scenario: Option<String>";
@@ -529,18 +515,6 @@
         needle = "cliRunWorkflow = import ./phase5-cli-run-workflow.nix";
       }
     ]
-    ++ forbiddenFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
-      {
-        label = "stale T-CLI-6 progress note";
-        needle = "Work in progress under `checks.crucible.phase5.cliRunWorkflow`";
-      }
-    ]
-    ++ forbiddenFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "stale T-CLI-6 open note";
-        needle = "`T-CLI-6` remains open. `checks.crucible.phase5.cliRunWorkflow` currently";
-      }
-    ]
     ++ forbiddenFor "crates/crucible/crucible-control-api/src/streaming.rs" apiStreaming [
       {
         label = "ignored streaming actor-yield budget";
@@ -678,7 +652,7 @@ in
     ];
 
     meta = {
-      description = "RFC-0010 phase 5 CLI run workflow gate for ${taskList}";
+      description = "Crucible phase 5 CLI run workflow gate for ${taskList}";
       passthru = {
         inherit attrPath taskIds openTaskIds dependencies;
         failureText = failureText;

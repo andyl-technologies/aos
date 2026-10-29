@@ -10,9 +10,8 @@
   session = import ./_crucible-session-source.nix {inherit lib;};
   sessionManifest = builtins.readFile ../../crates/crucible/crucible-session/Cargo.toml;
   defaultChecks = builtins.readFile ./default.nix;
-  rfc = builtins.readFile ../../docs/rfcs/0010-crucible/05-execution-model.md;
-  sessionControlPlane = builtins.readFile ../../docs/rfcs/0010-crucible/20-session-control-plane.md;
-  patternsAndSketches = builtins.readFile ../../docs/rfcs/0010-crucible/29-patterns-and-sketches.md;
+  executionModelDoc = builtins.readFile ../../docs/engineering/crucible/execution-model.md;
+  sessionDoc = builtins.readFile ../../docs/engineering/crucible/session.md;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -135,42 +134,40 @@
         needle = "executionEngineStateMachine = import ./phase1-execution-engine-state-machine.nix";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/05-execution-model.md" rfc [
+    ++ failuresFor "docs/engineering/crucible/execution-model.md" executionModelDoc [
       {
-        label = "T-EXEC-14 completion note";
-        needle = "Completed by `crates/crucible/crucible-session/src/lib.rs`: `Engine` now owns";
+        label = "Engine owns the source-of-truth configuration";
+        needle = "source-of-truth `Configuration`";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/20-session-control-plane.md" sessionControlPlane [
+    ++ failuresFor "docs/engineering/crucible/session.md" sessionDoc [
       {
-        label = "T-SESS-2 completion names run_once";
-        needle = "`SessionActor::run`";
+        label = "session actor loop";
+        needle = "`SessionActor::run` (`.../session/actor.rs`) loops on the engine state";
       }
       {
-        label = "T-SESS-2 completion names live snapshot publication";
-        needle = "`LiveSnapshot` mirror";
-      }
-      {
-        label = "T-SESS-2 completion names command yield";
-        needle = "`tokio::task::yield_now` after every applied command or scheduler quantum";
-      }
-      {
-        label = "T-SESS-2 completion names engine state-machine gate";
-        needle = "`checks.crucible.phase1.executionEngineStateMachine`";
+        label = "actor yields after every command or quantum";
+        needle = "`tokio::task::yield_now` after every applied command or";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsAndSketches [
+    ++ failuresFor "docs/engineering/crucible/execution-model.md" executionModelDoc [
       {
-        label = "T-PAT-1 completion names closed run states";
-        needle = "`EngineState` is the\n    closed Loaded/Running/Paused/Stopped run-state enum";
+        label = "live snapshot mirror publication";
+        needle = "`LiveSnapshot` mirrors state kind";
       }
       {
-        label = "T-PAT-1 completion names bounded run_once loop";
-        needle = "`SessionActor::run`\n    delegates to bounded `run_once` iterations";
-      }
-      {
-        label = "T-PAT-1 completion names engine state-machine gate";
+        label = "engine state-machine check is documented";
         needle = "`checks.crucible.phase1.executionEngineStateMachine`";
+      }
+      {
+        label = "closed engine run states";
+        needle = "`EngineState` set: `Loaded`, `Running`, `Paused { reason }`, and";
+      }
+    ]
+    ++ failuresFor "docs/engineering/crucible/session.md" sessionDoc [
+      {
+        label = "one quantum per actor iteration";
+        needle = "One iteration drives at most one scheduler quantum.";
       }
     ];
 in

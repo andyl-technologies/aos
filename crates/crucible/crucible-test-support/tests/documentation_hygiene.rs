@@ -1,8 +1,9 @@
-//! Checks RFC-0010 documentation-pass and doc-lint hygiene.
+//! Checks Crucible documentation-pass and doc-lint hygiene.
 //!
-//! This is the executable policy anchor for RFC-0010 file 28 section 5:
-//! documentation-only work remains comments-only, while the RFC consistency
-//! lint remains wired to the gate catalog and checklist-digest rules.
+//! This is the executable anchor for the documentation rules in
+//! `docs/engineering/crucible/engineering-standards.md`: documentation-only
+//! work remains comments-only, and the gate-catalog doc-lint stays wired so
+//! documented gate names cannot drift from the canonical catalog.
 
 #![forbid(unsafe_code)]
 
@@ -40,18 +41,18 @@ fn comments_only_documentation_policy_matches_root_guidance() -> Result<(), Box<
     let root = repo_root();
     let agents = fs::read_to_string(root.join("AGENTS.md"))?;
     let standards =
-        fs::read_to_string(root.join("docs/rfcs/0010-crucible/28-engineering-standards.md"))?;
+        fs::read_to_string(root.join("docs/engineering/crucible/engineering-standards.md"))?;
     let mut failures = Vec::new();
 
     require_terms("AGENTS.md", &agents, COMMENTS_ONLY_TERMS, &mut failures);
     require_terms(
-        "28-engineering-standards.md STD-30",
+        "engineering-standards.md comments-only rule",
         &standards,
         STD_30_TERMS,
         &mut failures,
     );
     require_terms(
-        "28-engineering-standards.md STD-31",
+        "engineering-standards.md doc-lint rule",
         &standards,
         STD_31_TERMS,
         &mut failures,
@@ -69,63 +70,24 @@ fn comments_only_documentation_policy_matches_root_guidance() -> Result<(), Box<
 #[test]
 fn doc_lint_and_gate_catalog_checks_remain_wired() -> Result<(), Box<dyn Error>> {
     let root = repo_root();
-    let rfc_consistency = fs::read_to_string(
-        root.join("crates/crucible/crucible-test-support/tests/rfc_consistency.rs"),
-    )?;
-    let rfc_tasks = fs::read_to_string(
-        root.join("crates/crucible/crucible-test-support/tests/support/rfc_consistency_tasks.rs"),
-    )?;
-    let rfc_misc = fs::read_to_string(
-        root.join("crates/crucible/crucible-test-support/tests/support/rfc_consistency_misc.rs"),
-    )?;
     let gate_catalog = fs::read_to_string(
         root.join("crates/crucible/crucible-test-support/tests/gate_catalog.rs"),
     )?;
     let default_nix = fs::read_to_string(root.join("tests/crucible/default.nix"))?;
-    let rfc_consistency_nix =
-        fs::read_to_string(root.join("tests/crucible/phase1-rfc-consistency.nix"))?;
     let documentation_hygiene_nix =
         fs::read_to_string(root.join("tests/crucible/phase1-documentation-hygiene.nix"))?;
     let phase_gate_wiring_nix =
         fs::read_to_string(root.join("tests/crucible/phase1-phase-gate-wiring.nix"))?;
     let crucible_source_nix = fs::read_to_string(root.join("pkgs/tools/crucible/_source.nix"))?;
     let mut failures = Vec::new();
-    let consistency_body = function_body(&rfc_consistency, "rfc_0010_consistency_lint_is_clean")?;
-    let task_sync_body = function_body(&rfc_tasks, "task_sync_failures")?;
 
-    require_terms(
-        "rfc_0010_consistency_lint_is_clean",
-        consistency_body,
-        &[
-            "failures.extend(task_sync_failures(&docs, &tasks, &phase_plan_order));",
-            "failures.extend(gate_reference_failures(&gate_catalog, &referenced_gates));",
-            "failures.extend(banned_name_failures(&root)?);",
-        ],
-        &mut failures,
-    );
-    require_terms(
-        "task_sync_failures",
-        task_sync_body,
-        &[
-            "task_order_failures(tasks, phase_plan_order)",
-            "task_manifest_digest_failures",
-        ],
-        &mut failures,
-    );
-    require_terms(
-        "support/rfc_consistency_misc.rs",
-        &rfc_misc,
-        &[
-            "gate_catalog",
-            "referenced_gate_names",
-            "gate_reference_failures",
-        ],
-        &mut failures,
-    );
     require_terms(
         "gate_catalog.rs",
         &gate_catalog,
-        &["canonical_gate_catalog_matches_rfc_table_and_references"],
+        &[
+            "canonical_gate_catalog_matches_documented_table_and_references",
+            "fn referenced_gate_names",
+        ],
         &mut failures,
     );
     require_terms(
@@ -134,14 +96,8 @@ fn doc_lint_and_gate_catalog_checks_remain_wired() -> Result<(), Box<dyn Error>>
         &[
             "documentationHygiene = import ./phase1-documentation-hygiene.nix",
             "phaseGateWiring = import ./phase1-phase-gate-wiring.nix",
-            "rfcConsistency = import ./phase1-rfc-consistency.nix",
+            "gateCatalog = import ./phase1-gate-catalog.nix",
         ],
-        &mut failures,
-    );
-    require_terms(
-        "phase1-rfc-consistency.nix",
-        &rfc_consistency_nix,
-        &["tasks=T-PLAN-1,T-PLAN-2,T-STD-12"],
         &mut failures,
     );
     require_terms(
@@ -150,7 +106,7 @@ fn doc_lint_and_gate_catalog_checks_remain_wired() -> Result<(), Box<dyn Error>>
         &[
             "tasks=T-STD-12",
             "source_filter=AGENTS.md,documentation_hygiene.rs,phase1-documentation-hygiene.nix",
-            "rfc_consistency_check=checks.crucible.phase1.rfcConsistency",
+            "gate_catalog_check=checks.crucible.phase1.gateCatalog",
             "phase_gate_wiring_check=checks.crucible.phase1.phaseGateWiring",
         ],
         &mut failures,
@@ -337,35 +293,6 @@ fn git_output(root: &Path, args: &[&str]) -> Result<String, Box<dyn Error>> {
         )
         .into())
     }
-}
-
-fn function_body<'a>(content: &'a str, function_name: &str) -> Result<&'a str, Box<dyn Error>> {
-    let needle = format!("fn {function_name}");
-    let Some(function_start) = content.find(&needle) else {
-        return Err(format!("missing function `{function_name}`").into());
-    };
-    let after_function = &content[function_start..];
-    let Some(open_relative) = after_function.find('{') else {
-        return Err(format!("missing body for function `{function_name}`").into());
-    };
-    let open = function_start + open_relative;
-    let mut depth = 0_usize;
-
-    for (relative_index, ch) in content[open..].char_indices() {
-        match ch {
-            '{' => depth += 1,
-            '}' => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    let close = open + relative_index;
-                    return Ok(&content[open + 1..close]);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    Err(format!("unterminated body for function `{function_name}`").into())
 }
 
 fn assert_contains(findings: &[String], needle: &str) {

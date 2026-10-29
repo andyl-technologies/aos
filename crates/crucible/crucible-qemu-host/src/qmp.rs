@@ -1,14 +1,13 @@
 //! Minimal typed QMP client.
 //!
-//! RFC-0010 QEMU-19 limits QMP use to capability negotiation, typed VM
-//! status/topology, hot-fork-readiness observation, bounded QEMU-owned resource
-//! inventories, the reversible plugin callback barrier, and QEMU's retained
-//! template-preparation coordinator, plus crate-owned snapshot maintenance,
-//! snapshot job polling, bounded standard `getfd`/`closefd` transfer plus
-//! QEMU-owned authenticated private-ring retention, and graceful quit. The
-//! client parses JSON-line QMP responses internally,
-//! skips asynchronous event objects while waiting for a command response, and
-//! exposes no public arbitrary-command execution path.
+//! The host limits QMP use to capability negotiation, typed VM status/topology,
+//! hot-fork-readiness observation, bounded QEMU-owned resource inventories, the
+//! reversible plugin callback barrier, and QEMU's retained template-preparation
+//! coordinator, plus crate-owned snapshot maintenance, snapshot job polling,
+//! bounded standard `getfd`/`closefd` transfer plus QEMU-owned authenticated
+//! private-ring retention, and graceful quit. The client parses JSON-line QMP
+//! responses internally, skips asynchronous event objects while waiting for a
+//! command response, and exposes no public arbitrary-command execution path.
 
 use std::io::{self, BufReader, ErrorKind, Read, Write};
 use std::net::TcpStream;

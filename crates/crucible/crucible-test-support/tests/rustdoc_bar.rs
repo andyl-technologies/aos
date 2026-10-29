@@ -1,4 +1,4 @@
-//! Checks the RFC-0010 rustdoc standard for Crucible crates.
+//! Checks the rustdoc standard for Crucible crates.
 //!
 //! Rustdoc's own lints enforce missing public docs and broken intra-doc links.
 //! This harness lint covers the source-shape rules that rustdoc does not model:
@@ -17,7 +17,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crucible_test_support::spec_index::crate_spec_index;
+use crucible_test_support::workspace_crates::crucible_crates;
 
 #[path = "support/rustdoc_bar_clap.rs"]
 mod rustdoc_bar_clap;
@@ -57,9 +57,9 @@ fn crucible_workspace_sources_meet_rustdoc_bar() -> Result<(), Box<dyn Error>> {
 
     assert_expected_crucible_package_set(&crates_dir, &mut failures)?;
 
-    for spec in crate_spec_index() {
-        let package_dir = workspace::package_directory(&crates_dir, spec.package)?;
-        let root_path = package_dir.join(spec.root);
+    for member in crucible_crates() {
+        let package_dir = workspace::package_directory(&crates_dir, member.package)?;
+        let root_path = package_dir.join(member.root);
         let source_files = rust_source_files(&package_dir.join("src"))?;
 
         for source_path in source_files {

@@ -10,44 +10,40 @@
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   libSource = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
   rendezvousPurposeTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/scheduler_rendezvous_purpose.rs;
-  schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
+  schedulingDoc = builtins.readFile ../../docs/engineering/crucible/scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/08-scheduling.md" schedulingDoc [
+    failuresFor "docs/engineering/crucible/scheduling.md" schedulingDoc [
       {
-        label = "T-SCHED-26 completion note";
-        needle = "Completed by `checks.crucible.phase3.schedulerRendezvousPurpose`";
+        label = "assertion-drain purpose";
+        needle = "`AssertionDrain`";
       }
       {
-        label = "allowed assertion-drain note";
-        needle = "assertion-drain";
-      }
-      {
-        label = "allowed trigger-eval note";
+        label = "trigger-eval purpose";
         needle = "trigger-eval";
       }
       {
-        label = "allowed topology-swap note";
-        needle = "topology-swap";
+        label = "topology-swap purpose";
+        needle = "`TopologySwap`";
       }
       {
-        label = "allowed snapshot-control note";
-        needle = "snapshot-control";
+        label = "snapshot-control purpose";
+        needle = "`SnapshotControl`";
       }
       {
-        label = "not delivery note";
-        needle = "not an event-delivery";
+        label = "not delivery";
+        needle = "There is no event-delivery purpose";
       }
       {
-        label = "independent resumption note";
+        label = "independent resumption";
         needle = "independent horizon-bounded advancement";
       }
       {
-        label = "terminal exclusion note";
+        label = "terminal exclusion";
         needle = "active rendezvous set";
       }
     ]

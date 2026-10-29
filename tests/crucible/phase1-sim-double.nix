@@ -19,15 +19,15 @@
   ];
   protocol = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/src/lib.rs;
   defaultChecks = builtins.readFile ./default.nix;
-  harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
+  testingAndGatesDoc = builtins.readFile ../../docs/engineering/crucible/testing-and-gates.md;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
+    failuresFor "docs/engineering/crucible/testing-and-gates.md" testingAndGatesDoc [
       {
-        label = "T-HARN-3 completion note";
-        needle = "Completed by `crucible_engine::SimDouble`";
+        label = "SimDouble location";
+        needle = "`SimDouble` (`crates/crucible/crucible-engine/src/sim_backend.rs`) is the";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/Cargo.toml" cargoManifest [

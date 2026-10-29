@@ -9,20 +9,13 @@
 
   model = import ./_crucible-model-source.nix {inherit lib;};
   neutralityTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/property_fingerprint_neutrality.rs;
-  assertionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/18-assertions-properties.md" assertionDoc [
-      {
-        label = "T-ASRT-2 completion note";
-        needle = "Completed by `checks.crucible.phase4.propertyFingerprintNeutrality`";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
+    failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "scenario material helper";
         needle = "fn scenario_world_plan_properties_seed_material";

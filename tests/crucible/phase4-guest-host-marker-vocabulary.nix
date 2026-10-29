@@ -46,21 +46,16 @@
   };
   appRandomGate = builtins.readFile ./phase2-plugin-app-random-doorbell.nix;
   abiConformanceGate = builtins.readFile ./phase2-abi-conformance.nix;
-  guestHostDoc = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
-  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
+  guestHostChannelDoc = builtins.readFile ../../docs/engineering/crucible/guest-host-channel.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/16-guest-host-channel.md" guestHostDoc [
+    failuresFor "docs/engineering/crucible/guest-host-channel.md" guestHostChannelDoc [
       {
-        label = "T-GHC-8 completion note";
-        needle = "Completed by `checks.crucible.phase4.guestHostMarkerVocabulary`";
-      }
-      {
-        label = "marker module implementation note";
+        label = "marker vocabulary module";
         needle = "`crucible_qemu_protocol::doorbell_marker`";
       }
     ]
@@ -318,12 +313,6 @@
       {
         label = "phase2 ABI gate checks marker golden corpus";
         needle = "GOLDEN_WHITEBOX_MARKER_PAYLOAD_VECTORS";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "guest-host phase4 task range";
-        needle = "channel + optional agent";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

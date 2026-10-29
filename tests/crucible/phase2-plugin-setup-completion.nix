@@ -22,8 +22,8 @@
       inherit lib;
       entry = ../../crates/crucible/crucible-qemu-shmem/src/shmem/region.rs;
     };
-  pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
-  protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
+  pluginSpec = builtins.readFile ../../docs/engineering/crucible/qemu-plugin.md;
+  protocolSpec = builtins.readFile ../../docs/engineering/crucible/control-protocol.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -38,28 +38,24 @@
     ++ lib.optionals (hasInfix "prepare_setup_completion_inner" pluginSetup) [
       "crates/crucible/crucible-qemu-plugin/src/setup.rs: forbidden optional-handshake setup path: `prepare_setup_completion_inner`"
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
-      {
-        label = "T-PLUG-17 live completion evidence";
-        needle = "Completed by `checks.crucible.phase2.qemuLivePluginInstall`";
-      }
+    ++ failuresFor "docs/engineering/crucible/qemu-plugin.md" pluginSpec [
       {
         label = "descriptor setup wording";
         needle = "exactly three descriptors via";
       }
       {
         label = "ready ack wording";
-        needle = "SetupAck(status)";
+        needle = "`SETUP_ACK_STATUS_READY` (0)";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/14-protocol.md" protocolSpec [
+    ++ failuresFor "docs/engineering/crucible/control-protocol.md" protocolSpec [
       {
         label = "Setup descriptor order";
         needle = "`[shmem_fd, wake_fd, plugin_setup_plan_fd]` in fixed order";
       }
       {
         label = "SetupAck ready contract";
-        needle = "SetupAck` with `status == 0`";
+        needle = "`SetupAck` with `status == 0`";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-qemu-protocol/src/lib.rs" protocol [

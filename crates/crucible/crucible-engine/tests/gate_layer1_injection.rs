@@ -1,13 +1,13 @@
 //! Checks `gate:layer1-injection` (Contract B) on the scheduler RESOLVE path.
 //!
-//! RFC-0010 file 24 [HARN-8] / file 15 [IO-2], [IO-9]: the tick at which a
-//! cross-node injection is observed by the receiving node MUST be a pure function
-//! of `(virtual_time, node_id, sequence)`, independent of how the host interleaves
-//! producers or how finely it slices RUN into quanta. This gate drives a real
-//! scenario carrying **both** a peer-to-peer frame injection **and** a
-//! deterministic disk I/O completion (a `crucible-device` sub-node wired into the
-//! [`crucible_engine::SingleScheduler`] horizon and RESOLVE path through the LIVE quantum
-//! drivers) and asserts:
+//! The tick at which a cross-node injection is observed by the receiving node
+//! MUST be a pure function of `(virtual_time, node_id, sequence)`, independent
+//! of how the host interleaves producers or how finely it slices RUN into
+//! quanta. This gate drives a real scenario carrying **both** a peer-to-peer
+//! frame injection **and** a deterministic disk I/O completion (a
+//! `crucible-device` sub-node wired into the
+//! [`crucible_engine::SingleScheduler`] horizon and RESOLVE path through the
+//! LIVE quantum drivers) and asserts:
 //!
 //! 1. **Run-twice byte-identical.** The same scenario driven under deliberately
 //!    different host conditions — serial (`drive_quantum`) vs full-budget

@@ -10,8 +10,7 @@
 
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
   cliTerminalObservation = builtins.readFile ../../crates/crucible/crucible-cli/src/cli/control/streaming_events.rs;
-  sessionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/20-session-control-plane.md;
-  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
+  sessionPage = builtins.readFile ../../docs/engineering/crucible/session.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -19,24 +18,10 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/20-session-control-plane.md" sessionDoc [
-      {
-        label = "T-SESS-3 completion note";
-        needle = "Completed by `checks.crucible.phase5.sessionLifecycle`";
-      }
+    failuresFor "docs/engineering/crucible/session.md" sessionPage [
       {
         label = "section4 command-kind scope";
         needle = "command-kind lifecycle model";
-      }
-      {
-        label = "T-SESS-14 completion note";
-        needle = "Completed by `checks.crucible.phase5.sessionLifecycle`: `SessionEngine`";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "phase5 lifecycle status note";
-        needle = "`T-SESS-3` is green through `checks.crucible.phase5.sessionLifecycle`";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-session/src/lib.rs" sessionLib [
@@ -125,8 +110,8 @@
         needle = "lifecycle_transition_model_is_total_for_representative_commands";
       }
       {
-        label = "rfc table cell test";
-        needle = "lifecycle_transition_model_matches_rfc_section_table_cells";
+        label = "transition table cell test";
+        needle = "lifecycle_transition_model_matches_transition_table_cells";
       }
       {
         label = "no wedge command sequence test";

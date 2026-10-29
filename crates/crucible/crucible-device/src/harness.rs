@@ -1,12 +1,12 @@
 //! The in-process device test harness and the idle-vs-busy-poll proof.
 //!
-//! RFC-0010 §15.7 states that, because each I/O sub-node is a node with a
-//! request inbox and a response outbox, every device is **testable without a
-//! real QEMU**: a test constructs the node, enqueues a sequence of requests at
-//! chosen request-icounts, advances the clock to chosen limits, and asserts the
-//! resulting responses, their delivery icounts, and the device-visible state
-//! ([IO-27]). This module owns that harness and makes it reusable across the
-//! three structurally-different sub-nodes (block/9p ride
+//! Because each I/O sub-node is a node with a request inbox and a response
+//! outbox, every device is **testable without a real QEMU**: a test constructs
+//! the node, enqueues a sequence of requests at chosen request-icounts,
+//! advances the clock to chosen limits, and asserts the resulting responses,
+//! their delivery icounts, and the device-visible state ([IO-27]). This module
+//! owns that harness and makes it reusable across the three
+//! structurally-different sub-nodes (block/9p ride
 //! [`IoCore`](crate::subnode::IoCore) and answer
 //! `submit`/`advance_to`/`next_response`; the network link has its own
 //! `emit`/`advance_to`/`next_delivery`).
@@ -46,7 +46,7 @@
 //! the crate's no-`unwrap`/no-`panic` bar. Tests turn a [`Divergence`] into an
 //! assertion at their boundary.
 //!
-//! # The idle-vs-busy-poll proof (§15.8)
+//! # The idle-vs-busy-poll proof
 //!
 //! [`idle_busy_poll_equivalence`] drives the *same* script two ways — one big
 //! `advance_to(limit)` (the idle / fast-forward path, [SCHED-28]) versus many
@@ -55,7 +55,7 @@
 //! `delivery_icount` is fixed at COMPUTE and the in-flight queue drains strictly
 //! by `delivery_icount <= limit`, the two paths MUST agree: a completion lands at
 //! its exact icount regardless of how the consumer advances ([IO-29]). The
-//! documented [`BUSY_POLL_SPIKE`] records the §15.8 spike conclusion ([IO-30]).
+//! documented [`BUSY_POLL_SPIKE`] records the busy-poll spike conclusion.
 //!
 //! # Coverage note: network-link emit-after-advance
 //!
@@ -740,12 +740,12 @@ where
     Ok(())
 }
 
-/// The §15.8 busy-poll spike conclusion, recorded as a documented constant.
+/// The busy-poll spike conclusion, recorded as a documented constant.
 ///
-/// RFC-0010 §15.8 / [IO-30] asks the implementation to *characterize* guest
-/// busy-polling during a blocking I/O and to record whether a mitigation is
-/// warranted — a spike result, not a live measurement. [`BusyPollSpike`] is the
-/// data shape of that conclusion; [`BUSY_POLL_SPIKE`] is the recorded finding.
+/// The device model *characterizes* guest busy-polling during a blocking I/O
+/// and records whether a mitigation is warranted — a spike result, not a live
+/// measurement. [`BusyPollSpike`] is the data shape of that conclusion;
+/// [`BUSY_POLL_SPIKE`] is the recorded finding.
 ///
 /// The load-bearing facts the spike establishes, all proven in-process by
 /// [`idle_busy_poll_equivalence`]:
@@ -779,14 +779,13 @@ pub struct BusyPollSpike {
     pub mitigation_must_preserve_exactness: bool,
 }
 
-/// The recorded §15.8 spike conclusion ([IO-30]).
+/// The recorded busy-poll spike conclusion.
 ///
 /// Completion exactness is preserved under both the idle/fast-forward and the
 /// busy-poll consumer paths; busy-poll is a performance concern only; and any
-/// mitigation it motivates must preserve exactness. This is the documented spike
-/// result the RFC requires, not a runtime measurement — the live half of the
-/// claim is exercised by [`idle_busy_poll_equivalence`] across all three device
-/// kinds.
+/// mitigation it motivates must preserve exactness. This is a documented spike
+/// result, not a runtime measurement — the live half of the claim is exercised
+/// by [`idle_busy_poll_equivalence`] across all three device kinds.
 pub const BUSY_POLL_SPIKE: BusyPollSpike = BusyPollSpike {
     correctness_independent_of_poll_mode: true,
     busy_poll_is_performance_only: true,

@@ -12,18 +12,18 @@
   planTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/event_graph_serialization.rs;
   propertiesTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/property_fingerprint_neutrality.rs;
   defaultChecks = builtins.readFile ./default.nix;
-  spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
+  scenarioModelDoc = builtins.readFile ../../docs/engineering/crucible/scenario-model.md;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/06-spatial-graph.md" spatialGraph [
+    failuresFor "docs/engineering/crucible/scenario-model.md" scenarioModelDoc [
       {
-        label = "T-SPAT-3 completion names test";
+        label = "component addressing test";
         needle = "`spatial_components_have_independent_content_addresses_and_cross_reuse`";
       }
       {
-        label = "T-SPAT-3 completion names gate";
+        label = "component addressing check";
         needle = "`checks.crucible.phase1.spatialComponentAddressing`";
       }
     ]

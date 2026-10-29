@@ -13,14 +13,13 @@ fn gate_single_vm_fingerprint_uses_an_unmodified_guest() -> Result<(), Box<dyn E
         fs::read_to_string(root.join("tests/crucible/phase1-production-fingerprint-sample.nix"))?;
     let flight =
         fs::read_to_string(root.join("tests/crucible/phase7-production-rust-plugin-flight.nix"))?;
-    let spec =
-        fs::read_to_string(root.join("docs/rfcs/0010-crucible/24-determinism-harness-testing.md"))?;
+    let testing_doc =
+        fs::read_to_string(root.join("docs/engineering/crucible/testing-and-gates.md"))?;
 
     assert!(gate.contains("import ./phase7-production-rust-plugin-flight.nix"));
     assert!(flight.contains("${pkgs.linux}/boot/vmlinuz-*"));
     assert!(!flight.contains("pkgs.crucible-guest"));
-    assert!(spec.contains("- [x] **T-HARN-7**"));
-    assert!(spec.contains("ordinary pass boots one unmodified"));
+    assert!(testing_doc.contains("`gate:single-vm-fingerprint` boots one unmodified guest"));
 
     Ok(())
 }
