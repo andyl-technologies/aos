@@ -850,7 +850,7 @@ pub enum ChangeCommand {
     },
 }
 
-/// `store/` realisation-graph subcommands (RFC-0005).
+/// `store/` realisation-graph subcommands.
 #[derive(Subcommand)]
 pub enum StoreCommand {
     /// Bless a store path's local content (whole closure) into the graph

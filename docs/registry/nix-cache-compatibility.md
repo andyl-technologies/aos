@@ -382,7 +382,7 @@ The `NarInfo` struct itself carries no `System` / `CA` fields
 (`info.rs:5-16`), and `parse()` ignores any unknown keys (`info.rs:61`), so the
 round trip is lossless for the fields AOS uses.
 
-> **Trust note (RFC-0005):** for the AOS consumer, narinfos are **advisory
+> **Trust note:** for the AOS consumer, narinfos are **advisory
 > transport metadata** - they supply the NAR URL, compression, and sizes for
 > planning, plus the `FileHash` integrity precheck. The *trust decision* for
 > the decompressed bytes is the registry's signed `store/` realisation graph
@@ -444,7 +444,7 @@ narinfo References:    r4q1m2kp8v3x…-glibc-2.39  xr5is7by89v3q…-zlib-1.3.1
 
 > **Note for the git-metadata layer:** the *git registry* stores
 > dependency edges as **bare store-path hashes** in the `store/` realisation
-> graph (`ia:sha256:<store-hash>` lines, RFC-0005;
+> graph (`ia:sha256:<store-hash>` lines;
 > `crates/registry/aos-registry-client/src/registry/store.rs`). That bare-hash form lives in the
 > git tree and is consumed by `apm`'s closure walk; it is **independent** of the
 > narinfo-layer `References`, which the producer writes as basenames from the

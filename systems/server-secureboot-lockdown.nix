@@ -1,4 +1,4 @@
-##! systems/server-secureboot-lockdown.nix — Lockdown test fixture (RFC-0006 phase 2)
+##! systems/server-secureboot-lockdown.nix — Lockdown test fixture
 ##!
 ##! server-secureboot plus the lockdown deployment kernel: lockdown LSM,
 ##! enforced module signing (with the throwaway test module-signing key),

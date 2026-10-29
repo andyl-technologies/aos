@@ -25,7 +25,7 @@
 //! hashes = ["r4q1m2kp8v3x"]
 //! min-format = 1
 //! requires-features = ["native-package-modules-v1", "attestation-v1"]
-//! # nar_hash/nar_size may appear in pre-RFC-0005 registries; newer ones
+//! # nar_hash/nar_size may appear in registries without a store/ graph; newer ones
 //! # publish the output's content binding in the store/ graph instead.
 //! ```
 //!
@@ -54,10 +54,9 @@ type PackageMetaValidator = fn(&PackageMeta) -> Result<()>;
 // crate (RFC-0004 Phase 5) so the registry hub's `Database`/indexer and the
 // Cloudflare Worker can share them without depending on the native client (which is
 // native-only). Re-exported here so `aos_registry_client::registry::parse::{PackageToml,
-// …}` paths are unchanged. The canonical structs carry the RFC-0005 `store/`
-// graph fields (`source_drv`/`source_nar_hash`, legacy `nar_hash`/`nar_size`),
-// the RFC-0006 Secure Boot image facts (`sb_signer_cert_sha256`/`sbat`/
-// `expected_pcr11`), and authenticated package metadata (the structural
+// …}` paths are unchanged. The canonical structs carry the `store/` graph
+// fields (`source_drv`/`source_nar_hash`, legacy `nar_hash`/`nar_size`) and
+// authenticated package metadata (the structural
 // `references` gate plus BPF-LSM, attestation, documentation, and package
 // contract fields and helpers such as `PlatformEntry::attestation` and the
 // `ReferenceField` accessors).

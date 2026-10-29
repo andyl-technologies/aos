@@ -1,11 +1,11 @@
-##! secure-boot-keys — CI/test Secure Boot key hierarchy (RFC-0006)
+##! secure-boot-keys — CI/test Secure Boot key hierarchy
 ##!
 ##! Generates a self-owned PK → KEK → db hierarchy and the signed
 ##! enrollment blobs, for the secure-boot CI test ONLY. These are
 ##! ephemeral, clearly-named TEST keys with no custody — they protect
 ##! nothing real. Production deployments supply their own keys held
 ##! offline/HSM (the signing interface takes key references, never these
-##! files); see RFC-0006 key-custody.md.
+##! files).
 ##!
 ##! Output ($out):
 ##!   db.key, db.crt   — db signing key/cert; the image build signs the
@@ -16,11 +16,11 @@
 ##!                      order db → KEK → PK (setting PK exits Setup
 ##!                      Mode → User Mode → enforcing).
 ##!   modsign.pem      — combined key+cert PEM for the kernel's
-##!                      CONFIG_MODULE_SIG_KEY (RFC-0006 phase 2 lockdown
-##!                      overlay). A DISTINCT key from db — module signing
+##!                      CONFIG_MODULE_SIG_KEY (lockdown overlay). A
+##!                      DISTINCT key from db — module signing
 ##!                      is a separate trust domain from UEFI SB.
 ##!   pcr.key, pcr.pem — PCR-policy signing key (private) and public key
-##!                      (RFC-0006 phase 3). ukify signs the UKI's PCR
+##!                      for measured boot. ukify signs the UKI's PCR
 ##!                      policy with pcr.key and embeds pcr.pem; /var is
 ##!                      sealed to "any UKI signed by this key". Again
 ##!                      DISTINCT from db and the module-signing key — a
@@ -130,13 +130,13 @@ in
           sign-efi-sig-list -t "${ts}" -k PK.key  -c PK.crt  KEK KEK.esl KEK.auth
           sign-efi-sig-list -t "${ts}" -k KEK.key -c KEK.crt db  db.esl  db.auth
 
-          # --- kernel module-signing key (phase 2 lockdown) ---
+          # --- kernel module-signing key (lockdown) ---
           # Distinct from db. CONFIG_MODULE_SIG_KEY wants ONE PEM holding
           # the private key followed by the X.509 cert.
           ${mkReq "AOS Test Module Signing" "modsign.key" "modsign.crt"}
           cat modsign.key modsign.crt > modsign.pem
 
-          # --- PCR-policy signing key (phase 3 measured boot) ---
+          # --- PCR-policy signing key (measured boot) ---
           # ukify signs the UKI's PCR policy with the private key and
           # embeds the public key; systemd-cryptenroll --tpm2-public-key
           # seals /var to that public key. A plain RSA keypair (no X.509).

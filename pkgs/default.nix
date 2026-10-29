@@ -1969,7 +1969,8 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       # `linux.override { extraConfig = …; }` — for deployment kernels:
       # `extraConfig` is a linux.nix function arg consumed before
       # mkDerivation, so the inherited `.override` hook can't reach it
-      # (silent no-op). callPackage threads it directly. (RFC-0006 lockdown.)
+      # (silent no-op). callPackage threads it directly; the Secure Boot
+      # lockdown kernel is the main consumer.
       linuxWith = extraConfig:
         callPackage ./kernel/linux.nix {inherit linuxSource extraConfig;};
       # Fixture kernels may deliberately omit facilities required by deployed

@@ -616,7 +616,7 @@ impl RegistrySet {
     }
 
     /// Builds the per-transaction trust context, seeded from the **whole
-    /// graph closure** of each root (RFC-0005 §2.6).
+    /// graph closure** of each root.
     ///
     /// `roots` pairs each closure root's store-path hash with the name of the
     /// registry that resolved it. For a registry that publishes a `store/`
@@ -650,12 +650,13 @@ impl RegistrySet {
 pub use parse::store_path_hash;
 
 /// Fill a meta's `nar_hash`/`nar_size`/`references` from the realisation
-/// graph when the TOML did not carry them (post-RFC-0005 registries). A
+/// graph when the TOML did not carry them (registries that publish a
+/// `store/` graph). A
 /// blessed NAR supplies the display/verify values and the graph's edges
 /// supply `references`; verification proper checks the full blessed set and
-/// the whole graph closure, not these single values. RFC-0005 §2.8 step 1
-/// requires this backfill so sysroot containment/lock checks and size
-/// summaries keep working when the TOML omits the legacy fields.
+/// the whole graph closure, not these single values. The backfill keeps
+/// sysroot containment/lock checks and size summaries working when the TOML
+/// omits the legacy fields.
 fn enrich_meta_from_store(meta: &mut PackageMeta, store: &StoreMap) {
     let hash = store_path_hash(&meta.store_path);
     if meta.references.is_empty() {

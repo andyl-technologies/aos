@@ -474,7 +474,7 @@ fn package_platform_table(
     let mut table = toml::map::Map::new();
     table.insert("store_path".into(), toml::Value::String(info.path.clone()));
     // No nar_hash/nar_size/references here: the output's content binding and
-    // dependency edges live in the store/ realisation graph (RFC-0005), the
+    // dependency edges live in the store/ realisation graph, the
     // single authority. Sources and images keep their hashes below - they sit
     // outside the runtime closure the graph covers.
     table.insert(

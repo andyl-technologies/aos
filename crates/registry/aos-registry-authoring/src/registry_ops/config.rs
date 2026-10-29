@@ -97,7 +97,7 @@ pub fn local_registry_name(dir: &Path) -> Result<String> {
 }
 
 /// Whether a registry records content addresses in its `store/` graph
-/// (`[registry] content_addressed`, RFC-0005). Defaults to `true` when the
+/// (`[registry] content_addressed`). Defaults to `true` when the
 /// file is missing or unparsable.
 pub(in crate::registry_ops) fn registry_content_addressed(dir: &Path) -> bool {
     match read_registry_toml(dir) {

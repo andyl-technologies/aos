@@ -215,8 +215,8 @@ pub async fn generate_static_cache_with_roots(
         .map(|path| store_hash(path).to_string())
         .collect::<Vec<_>>();
 
-    // The store/ realisation graph is the authority for blessed output bytes
-    // (RFC-0005). Generation reads the local store, so guard against emitting
+    // The store/ realisation graph is the authority for blessed output bytes.
+    // Generation reads the local store, so guard against emitting
     // a narinfo+NAR for a path whose local bytes were never blessed - every
     // enforcing consumer would reject it. Paths outside the graph (sources,
     // images) are unaffected.

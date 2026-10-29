@@ -1,5 +1,5 @@
 # tests/fleet/registry-sb-catalog.nix — the registry as a Secure Boot
-# validation catalog (RFC-0006 phase 4), end to end.
+# validation catalog, end to end.
 #
 # The registry never signs boot material; it records *facts about* a
 # published image (the signer's db-cert SHA-256, the SBAT generations, the
@@ -19,8 +19,8 @@
 #      systemd-measure over the UKI's sections for PCR 11). Asserted from
 #      the publish `--json`: a signer cert, a non-empty SBAT table, and a
 #      PCR-11 digest that an INDEPENDENT objcopy+systemd-measure recompute
-#      reproduces byte-for-byte (RFC-0006 #3: the recorded value is the
-#      genuine sd-stub section measurement, not a stand-in).
+#      reproduces byte-for-byte (the recorded value is the genuine
+#      sd-stub section measurement, not a stand-in).
 #   2. REFUSE (unknown signer) — the catalog lists only a decoy db cert, so
 #      the image's real signer is not active. `apm image upgrade` must
 #      download, then REFUSE without changing either generation axis.

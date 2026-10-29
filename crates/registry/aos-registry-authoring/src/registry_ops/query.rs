@@ -655,7 +655,7 @@ pub async fn verify(
         }
     }
 
-    // The store/ realisation graph, for coverage checks below (RFC-0005). A
+    // The store/ realisation graph, for coverage checks below. A
     // malformed graph is an error; an absent one downgrades to a warning
     // (legacy registry - consumers fall back to unauthenticated narinfo).
     let store_graph = match StoreMap::load(&dir) {

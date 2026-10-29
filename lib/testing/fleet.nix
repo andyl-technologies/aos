@@ -354,7 +354,7 @@
                 transport = "qemu";
                 memory_mib = mb.memoryMiB;
                 vcpu_count = 2;
-                # vTPM (RFC-0006 phase 3): when set, the driver launches a
+                # vTPM: when set, the driver launches a
                 # per-machine swtpm and wires QEMU's tpm-tis to it.
                 tpm = mb.tpm;
                 expect_agent = mb.expectAgent;

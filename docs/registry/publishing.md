@@ -100,7 +100,7 @@ parser. It shares producer libraries with `apm` and `aos`, but neither expands
 nor dispatches through another command surface. All producer logic lives in
 [`crates/registry/aos-registry-authoring/src/registry_ops.rs`](../../crates/registry/aos-registry-authoring/src/registry_ops.rs).
 Today's tool operates on a *nested-TOML* registry (`packages/<x>/<name>.toml`)
-plus the `store/` realisation graph (RFC-0005). The sha256 object-store scaffolding, signed release tags,
+plus the `store/` realisation graph. The sha256 object-store scaffolding, signed release tags,
 channel partition commands, `update-server-info`, root `objects/info/alternates`
 refresh hooks, static Nix-cache generation/upload, and static git-origin upload
 now exist.
@@ -131,7 +131,7 @@ The commands relevant to a release, in workflow order:
 | `apr keys list/add/retire` | `run_keys` (`registry_ops.rs:2551`) | Maintains committed `keys.toml`: list active/revoked ids; add registry-bound active signing keys; retire active ids into `[[revoked]]` with an active survivor/vouching id and preserve immutable release tags; default retirement rejects lost active-key release trust, while `--no-resign` explicitly permits that revocation. `add`/`retire` modify `keys.toml`, so they require `--key`/`--key-id` and produce a **signed** commit; then commit + refresh dumb-HTTP object indexes unless `--no-commit` is passed. |
 | `apr publish <store-path> […]` | `publish` (`registry_ops.rs`) | For an ordinary package, evaluate `DerivationInventoryV1`, require `<store-path>` to be its exact primary output, and atomically author metadata, generated documentation, every named output, declared ordinary subpackages, the exact package contract and selector bindings, provenance, and the complete `store/` graph in one signed commit. No package or contract is rediscovered by basename. Manual metadata and `--no-commit` are accepted only for `--sysroot` image catalog entries. Image publication additionally enforces `[registry] require_signed_ukis = true`: primary and slot UKIs must be signed by active committed `sb-certs.toml` signers and verify against local `sb-certs/db.pem`. |
 | `apr commit <path>... --message <text> [--key <path> \| --key-id <id>]` | `commit_changes` (`registry_ops.rs`) | Commit an explicit set of registry-relative paths with the in-process SSH signer, refusing absolute/traversal paths and an already-staged index. A non-empty `keys.toml` roster requires an active maintainer key; only an empty-roster bootstrap may commit unsigned. The command refreshes the static object indexes after the commit. |
-| `apr store bless/revoke/verify/backfill [--registry <name>] [--key \| --key-id]` | `run_store` (`registry_ops.rs`) | Maintains the `store/` realisation graph (RFC-0005): `bless` records a path's closure from the local Nix store; `revoke` removes a blessed realisation (a security event - signed, reviewable diff); `verify` checks graph health + closure coverage (`--deep` recomputes local NAR hashes); `backfill` records every published closure so an existing registry becomes fully covered in one signed commit. |
+| `apr store bless/revoke/verify/backfill [--registry <name>] [--key \| --key-id]` | `run_store` (`registry_ops.rs`) | Maintains the `store/` realisation graph: `bless` records a path's closure from the local Nix store; `revoke` removes a blessed realisation (a security event - signed, reviewable diff); `verify` checks graph health + closure coverage (`--deep` recomputes local NAR hashes); `backfill` records every published closure so an existing registry becomes fully covered in one signed commit. |
 | `apr tag <name> [--message] (--key <path> \| --key-id <id>)` | `tag` (`registry_ops.rs`) | Resolves the signing key directly from `--key` or from committed `keys.toml` + local `[registry.signing_keys]`, then runs `git -c gpg.format=ssh -c user.signingkey=<key> tag -s <name> -m … HEAD`; semver tags also prepare a release object dir during the object-store refresh. |
 | `apr sign <tag> (--key <path> \| --key-id <id>)` | `sign` (`registry_ops.rs`) | Signs only nonrelease maintenance tags; existing semver refs are immutable, including unsigned/lightweight refs. |
 | `apr channel init/advance/status` | `run_channel` (`registry_ops.rs`) | Initializes or advances raw signed partition tag files under `channels/<name>/00..ff`, using the same `--key` / `--key-id` signing-key selection as release tags, updates `refs/heads/<channel>` to the frontier, and reports partition counts. |
@@ -150,9 +150,10 @@ The current Secure Boot image module signs during the Nix build, so a key path
 used there is copied into the local Nix store. That is acceptable only for
 disposable development or staging-environment identities on a controlled
 single-user builder. Do not use that path for production keys. Production requires the
-external signing/key-custody stage described by RFC-0006; until that stage is
-implemented, the release gate verifies signed artifacts but does not make the
-in-build signer a production-safe workflow.
+external signing stage (`aos.boot.secureBoot.externalFinalization`, see
+[Secure Boot](../engineering/boot/secure-boot.md)); the release gate verifies
+signed artifacts but does not make the in-build signer a production-safe
+workflow.
 
 ### 2.1 CURRENT: transport/index refresh
 

@@ -1,4 +1,4 @@
-##! systems/server-measured-boot.nix — measured-boot test fixture (RFC-0006 phase 3)
+##! systems/server-measured-boot.nix — measured-boot test fixture
 ##!
 ##! Builds on systems/server-secureboot.nix (so SB signing + enrollment
 ##! are already on) and additionally turns on measured boot: the UKI gets
@@ -9,7 +9,7 @@
 ##! and asserts /var unlocks unattended via the TPM2 token across a reboot.
 ##!
 ##! All keys are the throwaway `secure-boot-test-keys`; production points
-##! pcrPrivateKey at a release-time offline key (RFC-0006 key-custody.md).
+##! pcrPrivateKey at a release-time offline key.
 ##!
 ##! Auto-registers as `systems.server-measured-boot`.
 {

@@ -53,7 +53,7 @@ Key consequences:
   stock dumb clone never sees them.
 - **The tree binds content, not just names.** The signed commit's tree carries the
   `store/` realisation graph (blessed bytes + dependency edges + content
-  addresses for every published closure member, [`repo-layout.md`](repo-layout.md) §5, RFC-0005), so the signature vouches for the
+  addresses for every published closure member, [`repo-layout.md`](repo-layout.md) §5), so the signature vouches for the
   exact NAR bytes of the whole dependency graph - input-addressed store-path names
   alone would only bind the graph's *shape*. Cache-served narinfos are advisory
   transport metadata, never a trust source.
@@ -592,7 +592,7 @@ Registry verification uses the `registry:Ed25519:<base64>` AOS trust form and th
 | Is the frontier branch trustworthy? | `refs/heads/<channel>` — **unsigned pointer** | **no** (convenience only) |
 | Is this pointer fresh? | AOS-TUF `timestamp.json` for release metadata; low CDN TTL on `/channels` + consumer max-staleness policy + monotonic floor for rollout pointers | freshness, not forgery |
 | Could I be downgraded? | consumer **monotonic floor** (semver); abort = **fix-forward** | yes |
-| Are these NAR bytes the published bytes? | `store/` realisation graph in the signed tree: decompressed SHA-256 + size must match a blessed NAR; unmapped path = hard failure when the graph is published (RFC-0005) | yes - roots content at the tag signature |
+| Are these NAR bytes the published bytes? | `store/` realisation graph in the signed tree: decompressed SHA-256 + size must match a blessed NAR; unmapped path = hard failure when the graph is published | yes - roots content at the tag signature |
 | NAR substitution from same origin? | `store/` realisation graph (above); a separate cache-role key signs narinfo for stock-Nix consumers | yes |
 
 ---
