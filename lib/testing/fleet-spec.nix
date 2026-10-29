@@ -149,7 +149,7 @@
       };
 
       bootMode = mkOption {
-        type = types.enum ["kernel" "image"];
+        type = types.enum ["kernel" "image" "installer"];
         default = "kernel";
         description = ''
           How this machine boots. `kernel` (default) is direct kernel boot
@@ -158,7 +158,20 @@
           `system.build.image.raw` under OVMF — UEFI → sd-boot → UKI →
           systemd initrd — where systemd-repart carves swap/var from the
           trailing free space on first boot (tests/fleet/install-from-image.nix,
-          image installation tests).
+          image installation tests). `installer` boots USB installer media
+          built from the machine's system onto a blank virtio disk whose
+          stable path is `/dev/disk/by-id/virtio-aos-install-target`; the
+          machine's `host.nix` metadata rides on the media's AOS-META
+          partition (tests/fleet/install-from-usb.nix).
+        '';
+      };
+
+      installerMediaMiB = mkOption {
+        type = positiveInt;
+        default = 4096;
+        description = ''
+          Installer-boot machines only: capacity in MiB of the virtual USB
+          stick that carries the installer media.
         '';
       };
 

@@ -174,6 +174,7 @@ def _build_machine(entry: dict[str, Any], tmpdir: Path) -> Machine:
             kernel=entry.get("kernel"),
             initrd=entry.get("initrd"),
             disk=entry["disk"],
+            disk_serial=entry.get("disk_serial"),
             metadata=entry.get("metadata"),
             firmware_code=entry.get("firmware_code"),
             firmware_vars=entry.get("firmware_vars"),
