@@ -16,14 +16,14 @@
   legacyCBootstrap ? false,
   stdenv,
   description,
-  qualification ? null,
+  smokeTest ? null,
 }: let
   mkQualifiedDerivation = attrs:
     mkDerivation (attrs
       // (
-        if qualification == null
+        if smokeTest == null
         then {}
-        else {inherit qualification;}
+        else {inherit smokeTest;}
       ));
   targetOs = stdenv.hostPlatform.go.os;
   targetArch = stdenv.hostPlatform.go.arch;

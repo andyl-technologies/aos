@@ -2,11 +2,16 @@
 //!
 //! Assembly consumes only finalized, independently reviewable inputs. It
 //! copies their exact bytes into a new payload, derives the artifact graph,
-//! emits build-phase qualification evidence, and validates the resulting
-//! unsigned manifest before making the output visible.
+//! and validates the resulting unsigned manifest before making the output
+//! visible.
+//!
+//! The build checks fail assembly directly: the build report must bind the
+//! plan, its repeat-build results must satisfy the registry tier, and the
+//! advisory disposition must cover the exact SBOM with no unresolved
+//! advisories unless the tier accepts them. The manifest records no separate
+//! result for these checks, since one exists only when they all passed.
 
 mod cache;
-mod evidence;
 mod images;
 mod oci;
 mod registry;
@@ -197,13 +202,24 @@ impl ArtifactAttributes {
 
 /// Requires the build report's repeat-build results to satisfy the registry.
 ///
-/// Report validation already applies this policy; assembly restates it
-/// because it is where the release first claims repeat-build evidence.
-/// Production registries fail closed on any unreproduced output. Testing
-/// registries accept outputs recorded as not reproduced.
+/// Production registries fail closed on any output without a successful
+/// repeat build. Testing registries accept outputs recorded as not
+/// reproduced or not checked, but a report must either skip repeat builds
+/// for every output or run them for every output.
+///
+/// # Errors
+///
+/// Returns an error for an unknown registry, an output the tier does not
+/// accept, or a report that mixes skipped and executed repeat builds.
 fn require_repeat_build_policy(registry: &str, report: &BuildReportV1) -> Result<()> {
     let tier = registry_policy(registry)?.tier();
-    report.require_reproducibility_policy(tier)
+    report.require_reproducibility_policy(tier)?;
+
+    let not_checked = report.not_checked().count();
+    if not_checked > 0 && not_checked < report.outputs.len() {
+        bail!("build report mixes skipped and executed repeat builds");
+    }
+    Ok(())
 }
 
 /// Assembles finalized package, registry, image, OCI, and evidence bytes.
@@ -349,8 +365,8 @@ pub(super) fn run(args: &ReleaseAssembleArgs, nix: &NixRunner, printer: &Printer
     artifacts.append(&mut payload.artifacts);
     artifacts.sort_by(|left, right| left.id.cmp(&right.id));
 
-    let mut manifest = ReleaseManifestV1 {
-        schema_version: aos_release_format::RELEASE_MANIFEST_V1.to_owned(),
+    let manifest = ReleaseManifestV1 {
+        schema_version: aos_release_format::RELEASE_MANIFEST_V2.to_owned(),
         release_id: plan.release_id.clone(),
         version: plan.version.clone(),
         release_class: plan.release_class,
@@ -360,25 +376,7 @@ pub(super) fn run(args: &ReleaseAssembleArgs, nix: &NixRunner, printer: &Printer
         packages,
         images,
         artifacts,
-        evidence: Vec::new(),
     };
-    let evidence = evidence::build(
-        &plan,
-        &manifest,
-        &report,
-        &sbom_bytes,
-        &advisory_bytes,
-        advisory.unresolved_advisories.len(),
-        &license_bytes,
-        &authorization_bytes,
-        &args.completed_at,
-        &mut payload,
-    )?;
-    manifest.artifacts.append(&mut payload.artifacts);
-    manifest
-        .artifacts
-        .sort_by(|left, right| left.id.cmp(&right.id));
-    manifest.evidence = evidence;
     manifest.validate(&plan)?;
 
     let manifest_bytes = canonical::to_vec(&manifest)?;
@@ -401,7 +399,6 @@ pub(super) fn run(args: &ReleaseAssembleArgs, nix: &NixRunner, printer: &Printer
         "schema_version": "aos.release.assembly-result/v1",
         "release_id": plan.release_id,
         "artifacts": manifest.artifacts.len(),
-        "evidence": manifest.evidence.len(),
         "payload": args.output.join("payload"),
         "manifest_payload": args.output.join("release-manifest-payload.json"),
     })) {
@@ -515,8 +512,8 @@ fn license_inventory(
 ///
 /// Every tier requires a disposition bound to this plan and SBOM that names
 /// its advisory sources. Unresolved advisories block a production release;
-/// the testing tier accepts them and the build-integrity evidence states how
-/// many remain.
+/// the testing tier accepts them, and the disposition copied into the payload
+/// lists them.
 fn validate_advisory(
     advisory: &AdvisoryDispositionV1,
     plan_digest: Sha256Digest,
@@ -719,6 +716,32 @@ mod tests {
         require_repeat_build_policy(MAIN_REGISTRY, &report)?;
         require_repeat_build_policy(EXPERIMENTAL_REGISTRY, &report)?;
         Ok(())
+    }
+
+    #[test]
+    fn testing_registries_accept_reports_that_skip_every_repeat_build() -> Result<()> {
+        let mut report = report_with(ReproducibilityResult::NotChecked);
+        let mut second = report.outputs[0].clone();
+        second.id = "package/example/aarch64-linux".to_owned();
+        report.outputs.push(second);
+
+        require_repeat_build_policy(EXPERIMENTAL_REGISTRY, &report)?;
+        assert!(require_repeat_build_policy(MAIN_REGISTRY, &report).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn reports_mixing_skipped_and_executed_repeat_builds_are_rejected() {
+        let mut report = report_with(ReproducibilityResult::NotChecked);
+        let mut executed = report.outputs[0].clone();
+        executed.id = "package/example/aarch64-linux".to_owned();
+        executed.reproducibility = ReproducibilityResult::Reproduced;
+        report.outputs.push(executed);
+
+        let error = require_repeat_build_policy(EXPERIMENTAL_REGISTRY, &report)
+            .expect_err("a partly skipped repeat build must fail assembly");
+
+        assert!(error.to_string().contains("mixes skipped and executed"));
     }
 
     #[test]

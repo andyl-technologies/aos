@@ -32,7 +32,6 @@ ROOT = pathlib.Path.cwd()
 REQUEST = ROOT / "request.json"
 OBJECTS = ROOT / "objects.json"
 PREDECESSOR_OBJECTS = ROOT / "predecessor-objects.json"
-DOWNLOADS = ROOT / "downloads.json"
 REPORT = ROOT / "scenario-report.json"
 
 PLATFORM = os.environ["AOS_QUALIFICATION_PLATFORM"]
@@ -688,20 +687,6 @@ class Scenario:
             raise RuntimeError("staging Hub URL is not a bounded HTTPS origin")
         registry_path = urllib.parse.quote(registry_name, safe="/")
         self.staging_url = STAGING_HUB_URL.rstrip("/") + f"/{registry_path}/"
-
-        downloads = read_json(DOWNLOADS)
-        resumed = [
-            trace
-            for trace in downloads.values()
-            if trace["mode"] == "range-resume"
-        ]
-        if self.package_mode:
-            if resumed:
-                raise RuntimeError("recovery package download unexpectedly used image resume mode")
-        elif len(resumed) != 1 or [
-            request["status"] for request in resumed[0]["requests"]
-        ] != [206, 206]:
-            raise RuntimeError("public download did not exercise the exact two-range resume path")
 
         candidate_manifest = read_json(
             pathlib.Path(self.objects["control/release-manifest-envelope"])

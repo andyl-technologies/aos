@@ -32,7 +32,7 @@ in
       role = "public-package";
     };
     pname = "classpath-0_93";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The archive is valid ZIP data containing Object, String, and ArrayList classes.";

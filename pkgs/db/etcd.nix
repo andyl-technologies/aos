@@ -74,7 +74,7 @@ in
       role = "public-package";
     };
     pname = "etcd";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Etcd reports version 3.7.1 without opening a listener.";

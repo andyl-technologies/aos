@@ -1,5 +1,9 @@
 ##! Native source snapshots remain replayable after generation pruning and actual GC.
-{pkgs, systems, ...}: {
+{
+  pkgs,
+  systems,
+  ...
+}: {
   name = "config-generation-gc-roots";
   timeout = 1500;
   machines.target = {
@@ -40,7 +44,6 @@
         document = json.loads(target.succeed(
             f"{AOS} ability diagnostic {PROFILE} {number} --audience deployment"
         ))
-        assert document["liveStateVerified"] is False, document
         assert document["desired"]["schema"] == "aos.package.transaction", document
         return document["desired"]
 

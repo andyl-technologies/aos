@@ -13,7 +13,7 @@
     role = "public-package";
   };
   pname = "go-1_4";
-  qualification.packageProbe = lib.qualification.commandProbe {
+  smokeTest = lib.qualification.commandProbe {
     "primary" = {
       "artifacts" = [];
       "expected" = "The program prints the strings in lexical order.";
@@ -110,7 +110,7 @@ in
   if stdenv.hostPlatform.isDarwin
   then
     import ./_go-darwin.nix {
-      inherit mkDerivation pname version src stdenv qualification platformSupport;
+      inherit mkDerivation pname version src stdenv smokeTest platformSupport;
       nativeGo = buildPackages.go-1_4;
       nativeCc = buildPackages.cc;
       legacyCBootstrap = true;
@@ -118,7 +118,7 @@ in
     }
   else
     mkDerivation {
-      inherit pname version src qualification platformSupport;
+      inherit pname version src smokeTest platformSupport;
 
       buildDeps = [
         buildPackages.coreutils

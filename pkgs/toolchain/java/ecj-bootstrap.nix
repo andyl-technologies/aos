@@ -34,7 +34,7 @@ in
       role = "public-package";
     };
     pname = "ecj-bootstrap";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "ECJ writes Answer.class with the JVM CAFEBABE magic value.";

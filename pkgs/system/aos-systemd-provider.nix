@@ -36,7 +36,7 @@ in
       role = "public-package";
     };
     pname = "aos-systemd-provider";
-    qualification.packageProbe = lib.qualification.providerExecutableProbe {
+    smokeTest = lib.qualification.providerExecutableProbe {
       name = "aos-systemd-provider";
       entryPoint = "bin/aos-systemd-native-resource-provider";
     };
@@ -70,7 +70,7 @@ in
       "--bin aos-systemd-credential-encrypt"
       "--bin aos-systemd-boot-platform"
       "--bin aos-systemd-image-stage"
-      "--bin aos-systemd-image-evidence"
+      "--bin aos-systemd-boot-measurements"
       "--bin aos-systemd-initrd-store"
     ];
     cargoTestFlags = "-p aos-activation-systemd -p aos-boot-runtime";

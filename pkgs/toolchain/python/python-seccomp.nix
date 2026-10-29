@@ -25,7 +25,7 @@ mkDerivation {
     role = "public-package";
   };
   pname = "python-seccomp";
-  qualification.packageProbe = lib.qualification.commandProbe {
+  smokeTest = lib.qualification.commandProbe {
     primary = {
       input = "A filter allowing calls by default with one getpid rule.";
       operation = "Compile and export the rule set through the Python binding.";

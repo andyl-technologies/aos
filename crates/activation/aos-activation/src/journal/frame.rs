@@ -1,4 +1,24 @@
 //! Portable journal frame encoding and verification.
+//!
+//! Every frame is a fixed 88-byte header followed by its body. All integers
+//! are big-endian:
+//!
+//! ```text
+//! offset  field
+//! 0       magic "AOSJNL2\n"
+//! 8       u16 format version = 2
+//! 10      u16 flags = 0
+//! 12      u32 body length
+//! 16      u64 sequence
+//! 24      body digest
+//! 56      header digest
+//! 88      body
+//! ```
+//!
+//! The header digest covers every preceding header byte and the body digest
+//! covers the body, each with its own domain separation. Only this format is
+//! read. A frame carrying the magic of an earlier journal format, such as
+//! version 1 (`AOSJNL1`), fails with [`JournalError::UnsupportedFormat`].
 
 use std::fmt;
 use std::io::{self, Write};
@@ -8,13 +28,20 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use thiserror::Error;
 
-pub(super) const MAGIC: [u8; 8] = *b"AOSJNL1\n";
-pub(super) const FORMAT_VERSION: u16 = 1;
-pub(super) const HEADER_PREFIX_LENGTH: usize = 88;
-pub(super) const HEADER_LENGTH: usize = 120;
-const BODY_DIGEST_DOMAIN: &str = "aos.ability.execution.journal.body/v1";
-pub(super) const HEADER_DIGEST_DOMAIN: &str = "aos.ability.execution.journal.header/v1";
-const FRAME_DIGEST_DOMAIN: &str = "aos.ability.execution.journal.frame/v1";
+/// Length of the magic prefix that identifies the frame format.
+pub(super) const MAGIC_LENGTH: usize = 8;
+/// Complete header length, including the trailing header digest.
+pub(super) const HEADER_LENGTH: usize = 88;
+
+const MAGIC: &[u8; MAGIC_LENGTH] = b"AOSJNL2\n";
+/// Prefix shared by every journal format's magic.
+const MAGIC_FAMILY: &[u8] = b"AOSJNL";
+const FORMAT_VERSION: u16 = 2;
+const DIGEST_LENGTH: usize = 32;
+const CHECKSUMMED_LENGTH: usize = HEADER_LENGTH - DIGEST_LENGTH;
+const BODY_DIGEST_OFFSET: usize = CHECKSUMMED_LENGTH - DIGEST_LENGTH;
+const BODY_DIGEST_DOMAIN: &str = "aos.ability.execution.journal.body/v2";
+const HEADER_DIGEST_DOMAIN: &str = "aos.ability.execution.journal.header/v2";
 
 /// Resource limits enforced for every journal record body.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -76,7 +103,6 @@ pub trait JournalPayload: Serialize + DeserializeOwned {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct JournalRecord<T> {
     pub(super) sequence: u64,
-    pub(super) digest: Sha256Digest,
     pub(super) body: T,
 }
 
@@ -85,12 +111,6 @@ impl<T> JournalRecord<T> {
     #[must_use]
     pub const fn sequence(&self) -> u64 {
         self.sequence
-    }
-
-    /// Returns the digest chained into the following frame.
-    #[must_use]
-    pub const fn digest(&self) -> Sha256Digest {
-        self.digest
     }
 
     /// Returns the decoded record body.
@@ -183,19 +203,26 @@ pub enum JournalError {
     /// The journal cannot accept more records after an uncertain write.
     #[error("journal append state is uncertain; reopen and recover it before appending")]
     RequiresRecovery,
+
+    /// A frame uses a journal format this release does not read.
+    #[error(
+        "journal frame at byte {offset} uses unsupported format {format}; \
+         only AOSJNL2 journals are supported"
+    )]
+    UnsupportedFormat {
+        /// The byte offset of the frame.
+        offset: u64,
+        /// The frame's magic, rendered printably, such as `AOSJNL1`.
+        format: String,
+    },
 }
 
-pub(super) struct EncodedFrame {
-    pub bytes: Vec<u8>,
-    pub digest: Sha256Digest,
-}
-
+/// Encodes one body as a complete frame in the current layout.
 pub(super) fn encode<T>(
     body: &T,
     sequence: u64,
-    previous_digest: Sha256Digest,
     limits: JournalLimits,
-) -> Result<EncodedFrame, JournalError>
+) -> Result<Vec<u8>, JournalError>
 where
     T: JournalPayload,
 {
@@ -223,97 +250,21 @@ where
         .decode::<serde_json::Value>(&body, "journal record")
         .map_err(|error| JournalError::Limit(format!("record structure is invalid: {error}")))?;
     let body_length = u32::try_from(body.len()).map_err(|_| {
-        JournalError::Limit("record body does not fit the version 1 length field".to_string())
+        JournalError::Limit("record body does not fit the frame length field".to_string())
     })?;
-    let body_digest = Sha256Digest::separated(BODY_DIGEST_DOMAIN, &body);
 
     let mut bytes = Vec::with_capacity(HEADER_LENGTH + body.len());
-    bytes.extend_from_slice(&MAGIC);
+    bytes.extend_from_slice(MAGIC);
     bytes.extend_from_slice(&FORMAT_VERSION.to_be_bytes());
     bytes.extend_from_slice(&0_u16.to_be_bytes());
     bytes.extend_from_slice(&body_length.to_be_bytes());
     bytes.extend_from_slice(&sequence.to_be_bytes());
-    bytes.extend_from_slice(previous_digest.as_bytes());
-    bytes.extend_from_slice(body_digest.as_bytes());
+    bytes.extend_from_slice(Sha256Digest::separated(BODY_DIGEST_DOMAIN, &body).as_bytes());
     let header_digest = Sha256Digest::separated(HEADER_DIGEST_DOMAIN, &bytes);
     bytes.extend_from_slice(header_digest.as_bytes());
     bytes.extend_from_slice(&body);
 
-    let digest = Sha256Digest::separated(FRAME_DIGEST_DOMAIN, &bytes);
-    Ok(EncodedFrame { bytes, digest })
-}
-
-pub(super) struct DecodedFrame<T> {
-    pub record: JournalRecord<T>,
-    pub encoded_length: usize,
-}
-
-pub(super) fn decode<T>(
-    header: &[u8; HEADER_LENGTH],
-    body: &[u8],
-    expected_sequence: u64,
-    expected_previous: Sha256Digest,
-    offset: u64,
-    limits: JournalLimits,
-) -> Result<DecodedFrame<T>, JournalError>
-where
-    T: JournalPayload,
-{
-    validate_header(
-        header,
-        body,
-        expected_sequence,
-        expected_previous,
-        offset,
-        limits,
-    )?;
-
-    let decoded: T = limits
-        .json()
-        .decode(body, "journal record")
-        .map_err(|error| corrupt(expected_sequence, offset, format!("invalid body: {error}")))?;
-    decoded.validate_for_journal(limits).map_err(|error| {
-        corrupt(
-            expected_sequence,
-            offset,
-            format!("body invariant violation: {error}"),
-        )
-    })?;
-    preflight_encoded_size(&decoded, limits.max_body_bytes).map_err(|error| {
-        corrupt(
-            expected_sequence,
-            offset,
-            format!("decoded body exceeds bounds: {error}"),
-        )
-    })?;
-    let canonical_body = json::to_vec(&decoded).map_err(|error| {
-        corrupt(
-            expected_sequence,
-            offset,
-            format!("body cannot be canonically re-encoded: {error}"),
-        )
-    })?;
-    if canonical_body != body {
-        return Err(corrupt(
-            expected_sequence,
-            offset,
-            "body is not the exact canonical encoding of its typed schema",
-        ));
-    }
-
-    let mut frame = Vec::with_capacity(HEADER_LENGTH + body.len());
-    frame.extend_from_slice(header);
-    frame.extend_from_slice(body);
-    let digest = Sha256Digest::separated(FRAME_DIGEST_DOMAIN, frame);
-
-    Ok(DecodedFrame {
-        record: JournalRecord {
-            sequence: expected_sequence,
-            digest,
-            body: decoded,
-        },
-        encoded_length: HEADER_LENGTH + body.len(),
-    })
+    Ok(bytes)
 }
 
 #[derive(Debug)]
@@ -370,155 +321,200 @@ impl Write for LimitedWriter {
     }
 }
 
-pub(super) fn encoded_body_length(
-    header: &[u8; HEADER_LENGTH],
-    expected_sequence: u64,
-    expected_previous: Sha256Digest,
+/// A complete header that passed structural and checksum validation.
+pub(super) struct FrameHeader {
+    body_length: usize,
+    body_digest: Sha256Digest,
+}
+
+impl FrameHeader {
+    /// Returns the body length declared and checksummed by the header.
+    pub(super) const fn body_length(&self) -> usize {
+        self.body_length
+    }
+}
+
+/// Tracks the expected position and sequence while reading frames.
+pub(super) struct FrameCursor {
     offset: u64,
-    limits: JournalLimits,
-) -> Result<usize, JournalError> {
-    let recorded_header_digest = Sha256Digest::from_bytes(
-        header[HEADER_PREFIX_LENGTH..HEADER_LENGTH]
-            .try_into()
-            .map_err(|_| corrupt(expected_sequence, offset, "invalid header digest field"))?,
-    );
-    let actual_header_digest =
-        Sha256Digest::separated(HEADER_DIGEST_DOMAIN, &header[..HEADER_PREFIX_LENGTH]);
-    if recorded_header_digest != actual_header_digest {
-        return Err(corrupt(expected_sequence, offset, "header digest mismatch"));
+    next_sequence: u64,
+}
+
+impl FrameCursor {
+    /// Starts at the first frame of a journal.
+    pub(super) const fn new() -> Self {
+        Self {
+            offset: 0,
+            next_sequence: 1,
+        }
     }
 
-    if header[..MAGIC.len()] != MAGIC {
-        return Err(corrupt(expected_sequence, offset, "invalid magic"));
+    /// Returns the byte offset of the next frame.
+    pub(super) const fn offset(&self) -> u64 {
+        self.offset
     }
 
-    let version = u16::from_be_bytes([header[8], header[9]]);
-    if version != FORMAT_VERSION {
-        return Err(corrupt(
-            expected_sequence,
-            offset,
-            format!("unsupported frame version {version}"),
-        ));
+    /// Rejects a frame whose magic names another journal format.
+    ///
+    /// This runs as soon as the magic is available, before torn-tail handling,
+    /// so a journal written in an earlier format is reported rather than
+    /// truncated by recovery.
+    pub(super) fn check_magic(&self, magic: &[u8]) -> Result<(), JournalError> {
+        if magic != MAGIC && magic.starts_with(MAGIC_FAMILY) {
+            return Err(JournalError::UnsupportedFormat {
+                offset: self.offset,
+                format: String::from_utf8_lossy(magic).trim_end().to_string(),
+            });
+        }
+        Ok(())
     }
 
-    let flags = u16::from_be_bytes([header[10], header[11]]);
-    if flags != 0 {
-        return Err(corrupt(
-            expected_sequence,
-            offset,
-            format!("unknown required flags 0x{flags:04x}"),
-        ));
-    }
+    /// Validates a complete header at the cursor position.
+    pub(super) fn read_header(
+        &self,
+        header: &[u8; HEADER_LENGTH],
+        limits: JournalLimits,
+    ) -> Result<FrameHeader, JournalError> {
+        self.check_magic(&header[..MAGIC_LENGTH])?;
+        if &header[..MAGIC_LENGTH] != MAGIC {
+            return Err(self.corrupt("invalid magic"));
+        }
 
-    let sequence = u64::from_be_bytes(
-        header[16..24]
-            .try_into()
-            .map_err(|_| corrupt(expected_sequence, offset, "invalid sequence field"))?,
-    );
-    if sequence != expected_sequence {
-        return Err(corrupt(
-            expected_sequence,
-            offset,
-            format!("found sequence {sequence}"),
-        ));
-    }
+        let recorded_header_digest = self.digest_field(header, CHECKSUMMED_LENGTH)?;
+        let actual_header_digest =
+            Sha256Digest::separated(HEADER_DIGEST_DOMAIN, &header[..CHECKSUMMED_LENGTH]);
+        if recorded_header_digest != actual_header_digest {
+            return Err(self.corrupt("header digest mismatch"));
+        }
 
-    let previous = Sha256Digest::from_bytes(
-        header[24..56]
-            .try_into()
-            .map_err(|_| corrupt(expected_sequence, offset, "invalid previous digest field"))?,
-    );
-    if previous != expected_previous {
-        return Err(corrupt(
-            expected_sequence,
-            offset,
-            "previous-record digest mismatch",
-        ));
-    }
+        let version = u16::from_be_bytes([header[8], header[9]]);
+        if version != FORMAT_VERSION {
+            return Err(self.corrupt(format!("unsupported frame version {version}")));
+        }
 
-    let body_length = u32::from_be_bytes([header[12], header[13], header[14], header[15]]);
-    let body_length = usize::try_from(body_length).map_err(|_| {
-        corrupt(
-            expected_sequence,
-            offset,
-            "body length is not representable on this platform",
-        )
-    })?;
-    if body_length > limits.max_body_bytes {
-        return Err(corrupt(
-            expected_sequence,
-            offset,
-            format!(
+        let flags = u16::from_be_bytes([header[10], header[11]]);
+        if flags != 0 {
+            return Err(self.corrupt(format!("unknown required flags 0x{flags:04x}")));
+        }
+
+        let sequence = u64::from_be_bytes(
+            header[16..24]
+                .try_into()
+                .map_err(|_| self.corrupt("invalid sequence field"))?,
+        );
+        if sequence != self.next_sequence {
+            return Err(self.corrupt(format!("found sequence {sequence}")));
+        }
+
+        let body_length = u32::from_be_bytes([header[12], header[13], header[14], header[15]]);
+        let body_length = usize::try_from(body_length)
+            .map_err(|_| self.corrupt("body length is not representable on this platform"))?;
+        if body_length > limits.max_body_bytes {
+            return Err(self.corrupt(format!(
                 "body length {body_length} exceeds limit {}",
                 limits.max_body_bytes
-            ),
-        ));
+            )));
+        }
+
+        Ok(FrameHeader {
+            body_length,
+            body_digest: self.digest_field(header, BODY_DIGEST_OFFSET)?,
+        })
     }
 
-    Ok(body_length)
+    /// Verifies and decodes a complete body, then advances past its frame.
+    ///
+    /// The body must match its checksum and be the exact canonical encoding of
+    /// a schema-valid `T`.
+    pub(super) fn accept<T>(
+        &mut self,
+        header: &FrameHeader,
+        body: &[u8],
+        limits: JournalLimits,
+    ) -> Result<JournalRecord<T>, JournalError>
+    where
+        T: JournalPayload,
+    {
+        if body.len() != header.body_length {
+            return Err(self.corrupt("body length does not match the complete frame"));
+        }
+        if header.body_digest != Sha256Digest::separated(BODY_DIGEST_DOMAIN, body) {
+            return Err(self.corrupt("body digest mismatch"));
+        }
+        let decoded = self.decode_body::<T>(body, limits)?;
+
+        let record = JournalRecord {
+            sequence: self.next_sequence,
+            body: decoded,
+        };
+        let frame_length = u64::try_from(HEADER_LENGTH + body.len()).map_err(|_| {
+            JournalError::Limit("frame length is not representable as u64".to_string())
+        })?;
+        self.offset = self
+            .offset
+            .checked_add(frame_length)
+            .ok_or_else(|| JournalError::Limit("journal offset overflow".to_string()))?;
+        self.next_sequence = self
+            .next_sequence
+            .checked_add(1)
+            .ok_or_else(|| JournalError::Limit("journal sequence number exhausted".to_string()))?;
+
+        Ok(record)
+    }
+
+    fn decode_body<T>(&self, body: &[u8], limits: JournalLimits) -> Result<T, JournalError>
+    where
+        T: JournalPayload,
+    {
+        let decoded: T = limits
+            .json()
+            .decode(body, "journal record")
+            .map_err(|error| self.corrupt(format!("invalid body: {error}")))?;
+        decoded
+            .validate_for_journal(limits)
+            .map_err(|error| self.corrupt(format!("body invariant violation: {error}")))?;
+        preflight_encoded_size(&decoded, limits.max_body_bytes)
+            .map_err(|error| self.corrupt(format!("decoded body exceeds bounds: {error}")))?;
+        let canonical_body = json::to_vec(&decoded).map_err(|error| {
+            self.corrupt(format!("body cannot be canonically re-encoded: {error}"))
+        })?;
+        if canonical_body != body {
+            return Err(
+                self.corrupt("body is not the exact canonical encoding of its typed schema")
+            );
+        }
+
+        Ok(decoded)
+    }
+
+    fn digest_field(&self, header: &[u8], start: usize) -> Result<Sha256Digest, JournalError> {
+        let bytes = header
+            .get(start..start + DIGEST_LENGTH)
+            .and_then(|field| <[u8; DIGEST_LENGTH]>::try_from(field).ok())
+            .ok_or_else(|| self.corrupt("invalid digest field"))?;
+        Ok(Sha256Digest::from_bytes(bytes))
+    }
+
+    fn corrupt(&self, reason: impl fmt::Display) -> JournalError {
+        JournalError::Corrupt {
+            sequence: self.next_sequence,
+            offset: self.offset,
+            reason: reason.to_string(),
+        }
+    }
 }
 
-fn validate_header(
-    header: &[u8; HEADER_LENGTH],
-    body: &[u8],
-    expected_sequence: u64,
-    expected_previous: Sha256Digest,
-    offset: u64,
-    limits: JournalLimits,
-) -> Result<(), JournalError> {
-    let declared_length =
-        encoded_body_length(header, expected_sequence, expected_previous, offset, limits)?;
-    if declared_length != body.len() {
-        return Err(corrupt(
-            expected_sequence,
-            offset,
-            "body length does not match the complete frame",
-        ));
-    }
-
-    let sequence = u64::from_be_bytes(
-        header[16..24]
-            .try_into()
-            .map_err(|_| corrupt(expected_sequence, offset, "invalid sequence field"))?,
-    );
-    if sequence != expected_sequence {
-        return Err(corrupt(
-            expected_sequence,
-            offset,
-            format!("found sequence {sequence}"),
-        ));
-    }
-
-    let previous = Sha256Digest::from_bytes(
-        header[24..56]
-            .try_into()
-            .map_err(|_| corrupt(expected_sequence, offset, "invalid previous digest field"))?,
-    );
-    if previous != expected_previous {
-        return Err(corrupt(
-            expected_sequence,
-            offset,
-            "previous-record digest mismatch",
-        ));
-    }
-
-    let recorded_body_digest = Sha256Digest::from_bytes(
-        header[56..HEADER_PREFIX_LENGTH]
-            .try_into()
-            .map_err(|_| corrupt(expected_sequence, offset, "invalid body digest field"))?,
-    );
-    let actual_body_digest = Sha256Digest::separated(BODY_DIGEST_DOMAIN, body);
-    if recorded_body_digest != actual_body_digest {
-        return Err(corrupt(expected_sequence, offset, "body digest mismatch"));
-    }
-
-    Ok(())
+/// Recomputes the header digest of one frame header for tests.
+#[cfg(test)]
+pub(super) fn reseal_header(header: &mut [u8]) {
+    let digest = Sha256Digest::separated(HEADER_DIGEST_DOMAIN, &header[..CHECKSUMMED_LENGTH]);
+    header[CHECKSUMMED_LENGTH..HEADER_LENGTH].copy_from_slice(digest.as_bytes());
 }
 
-fn corrupt(sequence: u64, offset: u64, reason: impl fmt::Display) -> JournalError {
-    JournalError::Corrupt {
-        sequence,
-        offset,
-        reason: reason.to_string(),
-    }
+/// Recomputes body and header digests of one complete frame for tests.
+#[cfg(test)]
+pub(super) fn reseal_frame(frame: &mut [u8]) {
+    let body_digest = Sha256Digest::separated(BODY_DIGEST_DOMAIN, &frame[HEADER_LENGTH..]);
+    frame[BODY_DIGEST_OFFSET..CHECKSUMMED_LENGTH].copy_from_slice(body_digest.as_bytes());
+    reseal_header(frame);
 }

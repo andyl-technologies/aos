@@ -15,7 +15,7 @@ in
       role = "public-package";
     };
     pname = "crucible-qemu-trace-plugin";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The artifact is an ELF shared object containing qemu_plugin_install.";

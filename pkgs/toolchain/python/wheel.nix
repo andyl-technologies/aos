@@ -22,7 +22,7 @@ in
       role = "public-package";
     };
     pname = "wheel";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "WheelFile preserves the member bytes and emits the wheel RECORD metadata.";

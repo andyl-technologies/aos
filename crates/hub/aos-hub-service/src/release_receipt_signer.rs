@@ -1,4 +1,5 @@
-//! Deployment-owned signing and qualification-verification port.
+//! Deployment-owned port that signs release receipts and verifies staging
+//! test approvals.
 //!
 //! The Hub database stores only public signed envelopes. Deployment shells
 //! provide this port from restricted runtime configuration or an external KMS;
@@ -8,11 +9,9 @@ use std::collections::BTreeMap;
 
 use anyhow::{bail, Context as _, Result};
 use aos_release_format::receipt::{
-    verify_signed_receipt_with_key, ChannelReceipt, PublicationReceipt, QualificationReceipt,
+    verify_signed_receipt_with_key, ChannelReceipt, PublicationReceipt, StagingTestApproval,
 };
-use aos_release_format::receipt::{
-    SignedReceiptEnvelope, RECEIPT_SIGNATURE_DOMAIN, SIGNED_RECEIPT,
-};
+use aos_release_format::receipt::{SignedEnvelope, RECEIPT_SIGNATURE_DOMAIN, SIGNED_RECEIPT};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use ed25519_dalek::{Signer as _, SigningKey, VerifyingKey};
 use serde::Deserialize;
@@ -67,7 +66,7 @@ pub trait ReleaseEvidenceAuthority: BackendBounds {
     /// envelope that does not contain the exact receipt.
     async fn verify_qualification(
         &self,
-        receipt: &QualificationReceipt,
+        receipt: &StagingTestApproval,
         envelope_json: &str,
     ) -> Result<()>;
 
@@ -186,7 +185,7 @@ impl Ed25519ReleaseEvidenceAuthority {
             &payload_bytes,
         );
         let signature = signing_key.sign(digest.as_bytes());
-        let envelope = SignedReceiptEnvelope {
+        let envelope = SignedEnvelope {
             schema_version: SIGNED_RECEIPT.into(),
             key_id: key_id.into(),
             payload: serde_json::from_slice(&payload_bytes)?,
@@ -247,11 +246,11 @@ impl ReleaseEvidenceAuthority for Ed25519ReleaseEvidenceAuthority {
 
     async fn verify_qualification(
         &self,
-        receipt: &QualificationReceipt,
+        receipt: &StagingTestApproval,
         envelope_json: &str,
     ) -> Result<()> {
         receipt.validate()?;
-        let (key_id, verified): (String, QualificationReceipt) =
+        let (key_id, verified): (String, StagingTestApproval) =
             verify_signed_receipt_with_key(envelope_json.as_bytes(), &self.qualification_keys)?;
         if &verified != receipt {
             bail!("qualification envelope has the wrong payload");
@@ -298,7 +297,7 @@ fn decode_public_keys(
 mod tests {
     use super::*;
     use aos_release_format::digest::Sha256Digest;
-    use aos_release_format::evidence::GateResult;
+    use aos_release_format::evidence::Outcome;
     use aos_release_format::plan::{SurfaceKind, SurfaceRole};
 
     fn authority() -> Ed25519ReleaseEvidenceAuthority {
@@ -317,14 +316,14 @@ mod tests {
         .unwrap()
     }
 
-    fn qualification() -> QualificationReceipt {
-        QualificationReceipt {
+    fn qualification() -> StagingTestApproval {
+        StagingTestApproval {
             schema_version: "aos.release.qualification-receipt/v1".into(),
             staging_receipt_digest: Sha256Digest::of_bytes(b"staging"),
             manifest_digest: Sha256Digest::of_bytes(b"manifest"),
             policy_id: "production-policy-v1".into(),
             policy_digest: Sha256Digest::of_bytes(b"policy"),
-            result: GateResult::Passed,
+            result: Outcome::Passed,
             report_digest: Sha256Digest::of_bytes(b"report"),
             authority_id: "qualifier".into(),
             nonce: "a".repeat(64),
@@ -366,7 +365,7 @@ mod tests {
             .await
             .unwrap();
 
-        let mut role_confused: SignedReceiptEnvelope = serde_json::from_str(&envelope).unwrap();
+        let mut role_confused: SignedEnvelope = serde_json::from_str(&envelope).unwrap();
         role_confused.key_id = "qualifier".into();
         let payload = aos_release_format::canonical::to_vec(&receipt).unwrap();
         let digest = Sha256Digest::separated(RECEIPT_SIGNATURE_DOMAIN, payload);
@@ -404,7 +403,7 @@ mod tests {
             committed_at: "2026-03-01T00:00:00Z".into(),
         };
         let signed = authority.issue_channel(&receipt).await.unwrap();
-        let envelope: SignedReceiptEnvelope = serde_json::from_str(&signed.envelope_json).unwrap();
+        let envelope: SignedEnvelope = serde_json::from_str(&signed.envelope_json).unwrap();
         assert_eq!(envelope.key_id, "channel-receipt");
         assert_ne!(envelope.key_id, authority.publication_key_id);
     }
@@ -451,7 +450,7 @@ mod tests {
     async fn qualification_envelope_is_canonical_and_signature_bound() {
         let authority = authority();
         let receipt = qualification();
-        let mut envelope: SignedReceiptEnvelope = serde_json::from_str(
+        let mut envelope: SignedEnvelope = serde_json::from_str(
             &authority
                 .issue(
                     &receipt,

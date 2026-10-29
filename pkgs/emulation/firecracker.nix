@@ -83,7 +83,7 @@ in
       role = "public-package";
     };
     pname = "firecracker";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Firecracker returns success and reports its version.";

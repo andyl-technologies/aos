@@ -1,8 +1,8 @@
-//! Restores receipt-owned account rows from authenticated retained invocations.
+//! Restores account rows owned by ownership records from authenticated retained invocations.
 //!
 //! The package runtime supplies the checked authority across the process
-//! boundary. Durable backend receipts alone never authorize restoring a row.
-//! Every receipt and projected database is checked before any live write.
+//! boundary. Durable backend ownership records alone never authorize restoring a row.
+//! Every ownership record and projected database is checked before any live write.
 
 use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
@@ -16,9 +16,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::{
-    Account, Membership, Receipt, check_rows, database, desired, install_rows, membership_snapshot,
-    name, principal_row, read_regular, reconcile_members, replacement_target, write_database,
-    write_membership_snapshot,
+    Account, Membership, OwnedState, check_rows, database, desired, install_rows,
+    membership_snapshot, name, principal_row, read_regular, reconcile_members, replacement_target,
+    write_database, write_membership_snapshot,
 };
 
 const BATCH_LIMIT: usize = 67_108_864;
@@ -47,7 +47,7 @@ struct RetainedEffect {
 /// Restores backend-owned identities from the checked system profile export.
 ///
 /// # Errors
-/// Returns an error for invalid authority, incomplete or conflicting receipts,
+/// Returns an error for invalid authority, incomplete or conflicting ownership records,
 /// database conflicts, unavailable pinned shells, or failed durable writes.
 pub(crate) fn restore(bytes: &[u8], shells: Option<(&str, &str)>) -> Result<()> {
     super::super::private_directory(Path::new(super::super::STATE_ROOT))?;
@@ -109,7 +109,7 @@ fn restore_at(root: &Path, state: &Path, bytes: &[u8], shells: Option<(&str, &st
     );
 
     let _lock = lock(root, ".pwd.lock")?;
-    let mut receipts = Vec::new();
+    let mut owned_states = Vec::new();
     let mut identities = BTreeSet::new();
     for retained in batch.effects {
         let invocation = retained.invocation;
@@ -144,28 +144,28 @@ fn restore_at(root: &Path, state: &Path, bytes: &[u8], shells: Option<(&str, &st
             "{}-identity.json",
             super::super::key(&invocation.id)
         ));
-        let bytes =
-            read_regular(&path, 1_048_576)?.context("retained identity has no durable receipt")?;
-        let receipt: Receipt = serde_json::from_slice(&bytes)?;
+        let bytes = read_regular(&path, 1_048_576)?
+            .context("retained identity has no durable ownership record")?;
+        let owned_state: OwnedState = serde_json::from_slice(&bytes)?;
         ensure!(
-            receipt.complete
-                && receipt.previous_rows.is_empty()
-                && !receipt
+            owned_state.complete
+                && owned_state.previous_rows.is_empty()
+                && !owned_state
                     .replacement
                     .as_ref()
                     .is_some_and(|replacement| replacement.restoring
                         || !replacement.previous_members.is_empty()),
-            "retained identity receipt is incomplete"
+            "retained identity ownership record is incomplete"
         );
         ensure!(
-            receipt.owner == invocation.id
-                && receipt.revision == invocation.revision
-                && receipt.operation == operation
-                && receipt.input == invocation.input,
-            "identity receipt lacks exact retained authority"
+            owned_state.owner == invocation.id
+                && owned_state.revision == invocation.revision
+                && owned_state.operation == operation
+                && owned_state.input == invocation.input,
+            "identity ownership record lacks exact retained authority"
         );
-        validate_outputs(&receipt, &retained.outputs)?;
-        receipts.push(receipt);
+        validate_outputs(&owned_state, &retained.outputs)?;
+        owned_states.push(owned_state);
     }
 
     // A private projection preserves foreign rows while checking the complete
@@ -174,10 +174,10 @@ fn restore_at(root: &Path, state: &Path, bytes: &[u8], shells: Option<(&str, &st
     for file in DATABASES {
         write_database(projected.path(), file, &database(root, file)?)?;
     }
-    project(projected.path(), &receipts, shells)?;
+    project(projected.path(), &owned_states, shells)?;
 
     // Repeating after an interrupted database publication produces the same
-    // projection. Receipts remain unchanged and keep their original authority.
+    // projection. Ownership records remain unchanged and keep their original authority.
     publish(root, projected.path())?;
     Ok(())
 }
@@ -208,44 +208,44 @@ fn publish(root: &Path, projected: &Path) -> Result<()> {
     Ok(())
 }
 
-fn validate_outputs(receipt: &Receipt, outputs: &Value) -> Result<()> {
-    let expected = if receipt.operation == "membership" {
-        json!({"resource":format!("identity:membership:{}",super::super::key(&receipt.owner))})
+fn validate_outputs(owned_state: &OwnedState, outputs: &Value) -> Result<()> {
+    let expected = if owned_state.operation == "membership" {
+        json!({"resource":format!("identity:membership:{}",super::super::key(&owned_state.owner))})
     } else {
-        let account: Account = serde_json::from_value(receipt.input.clone())?;
-        json!({"name":account.name,"resource":format!("identity:{}:{}",receipt.operation,account.name)})
+        let account: Account = serde_json::from_value(owned_state.input.clone())?;
+        json!({"name":account.name,"resource":format!("identity:{}:{}",owned_state.operation,account.name)})
     };
     ensure!(
         *outputs == expected,
-        "retained identity result differs from receipt"
+        "retained identity result differs from ownership record"
     );
     Ok(())
 }
 
-fn project(root: &Path, receipts: &[Receipt], shells: Option<(&str, &str)>) -> Result<()> {
+fn project(root: &Path, owned_states: &[OwnedState], shells: Option<(&str, &str)>) -> Result<()> {
     let mut owners = BTreeSet::new();
     for operation in ["group", "principal"] {
-        for receipt in receipts
+        for owned_state in owned_states
             .iter()
-            .filter(|receipt| receipt.operation == operation)
+            .filter(|owned_state| owned_state.operation == operation)
         {
-            validate_rows(root, receipt, &mut owners)?;
-            check_rows(root, receipt)?;
-            install_rows(root, receipt)?;
-            let retained_shells = receipt_shells(receipt, shells)?;
+            validate_rows(root, owned_state, &mut owners)?;
+            check_rows(root, owned_state)?;
+            install_rows(root, owned_state)?;
+            let retained_shells = owned_state_shells(owned_state, shells)?;
             let expected = desired(
                 root,
-                &receipt.input,
+                &owned_state.input,
                 operation,
-                Some(receipt),
+                Some(owned_state),
                 retained_shells,
             )?;
             ensure!(
-                expected.rows == receipt.rows,
+                expected.rows == owned_state.rows,
                 "owned identity rows differ from retained input"
             );
-            if let Some(row) = receipt.rows.get("passwd") {
-                let account: Account = serde_json::from_value(receipt.input.clone())?;
+            if let Some(row) = owned_state.rows.get("passwd") {
+                let account: Account = serde_json::from_value(owned_state.input.clone())?;
                 let id = row
                     .split(':')
                     .nth(2)
@@ -258,35 +258,35 @@ fn project(root: &Path, receipts: &[Receipt], shells: Option<(&str, &str)>) -> R
             }
         }
     }
-    for receipt in receipts {
-        if receipt.operation == "membership" {
+    for owned_state in owned_states {
+        if owned_state.operation == "membership" {
             ensure!(
-                receipt.rows.is_empty(),
-                "membership receipt claims account rows"
+                owned_state.rows.is_empty(),
+                "membership ownership record claims account rows"
             );
         }
         let expected = desired(
             root,
-            &receipt.input,
-            &receipt.operation,
-            Some(receipt),
-            receipt_shells(receipt, shells)?,
+            &owned_state.input,
+            &owned_state.operation,
+            Some(owned_state),
+            owned_state_shells(owned_state, shells)?,
         )?;
         ensure!(
-            receipt.additions.is_subset(&expected.additions),
-            "receipt claims unauthored memberships"
+            owned_state.additions.is_subset(&expected.additions),
+            "ownership record claims unauthored memberships"
         );
-        if let Some(replacement) = &receipt.replacement {
-            let input: Membership = serde_json::from_value(receipt.input.clone())?;
+        if let Some(replacement) = &owned_state.replacement {
+            let input: Membership = serde_json::from_value(owned_state.input.clone())?;
             ensure!(
                 replacement.group == input.group
                     && replacement
                         .original_members
                         .keys()
                         .all(|file| matches!(file.as_str(), "group" | "gshadow")),
-                "replacement receipt differs from its retained group"
+                "replacement ownership record differs from its retained group"
             );
-            let owned_group = receipts.iter().any(|group| {
+            let owned_group = owned_states.iter().any(|group| {
                 group.operation == "group"
                     && group.rows.get("group").is_some_and(|row| {
                         row.split(':').next() == Some(replacement.group.as_str())
@@ -296,7 +296,7 @@ fn project(root: &Path, receipts: &[Receipt], shells: Option<(&str, &str)>) -> R
                 owned_group,
                 "replacement membership lacks retained group ownership"
             );
-            let target = replacement_target(receipt)?;
+            let target = replacement_target(owned_state)?;
             let current = membership_snapshot(root, &replacement.group)?;
             for (file, members) in &current {
                 ensure!(
@@ -311,20 +311,20 @@ fn project(root: &Path, receipts: &[Receipt], shells: Option<(&str, &str)>) -> R
                 .collect();
             write_membership_snapshot(root, &replacement.group, &wanted)?;
         } else {
-            reconcile_members(root, &receipt.additions, &BTreeSet::new())?;
+            reconcile_members(root, &owned_state.additions, &BTreeSet::new())?;
         }
     }
     Ok(())
 }
 
 // An older retained backend can have different packaged shell defaults. Its
-// complete receipt retains that original path; explicit authored overrides are
+// complete ownership record retains that original path; explicit authored overrides are
 // still checked by principal_shell instead of being inferred from this row.
-fn receipt_shells<'a>(
-    receipt: &'a Receipt,
+fn owned_state_shells<'a>(
+    owned_state: &'a OwnedState,
     current: Option<(&'a str, &'a str)>,
 ) -> Result<Option<(&'a str, &'a str)>> {
-    let Some(row) = receipt.rows.get("passwd") else {
+    let Some(row) = owned_state.rows.get("passwd") else {
         return Ok(current);
     };
     let shell = row
@@ -341,26 +341,26 @@ fn receipt_shells<'a>(
 
 fn validate_rows(
     root: &Path,
-    receipt: &Receipt,
+    owned_state: &OwnedState,
     owners: &mut BTreeSet<(String, String)>,
 ) -> Result<()> {
-    let allowed = if receipt.operation == "group" {
+    let allowed = if owned_state.operation == "group" {
         ["group", "gshadow"]
     } else {
         ["passwd", "shadow"]
     };
     ensure!(
-        receipt.rows.is_empty()
-            || receipt
+        owned_state.rows.is_empty()
+            || owned_state
                 .rows
                 .keys()
                 .map(String::as_str)
                 .collect::<BTreeSet<_>>()
                 == allowed.into_iter().collect(),
-        "identity receipt has incomplete or foreign database rows"
+        "identity ownership record has incomplete or foreign database rows"
     );
-    for (file, line) in &receipt.rows {
-        let input: Account = serde_json::from_value(receipt.input.clone())?;
+    for (file, line) in &owned_state.rows {
+        let input: Account = serde_json::from_value(owned_state.input.clone())?;
         let fields: Vec<_> = line.split(':').collect();
         let count = match file.as_str() {
             "passwd" => 7,

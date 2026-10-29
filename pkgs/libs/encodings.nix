@@ -45,7 +45,7 @@ in
       role = "public-package";
     };
     pname = "encodings";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "The installed X font encoding indexes and compressed encoding files.";
         operation = "Resolve every index entry and decompress its referenced encoding.";

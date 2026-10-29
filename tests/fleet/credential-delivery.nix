@@ -80,7 +80,7 @@ in {
               "${pkgs.aos}/bin/aos ability journal "
               "/var/lib/profiles/system/deployment/effects.journal --format json"
           )
-          assert json.loads(graph)["liveStateVerified"] is False
+          assert json.loads(graph)["schema"] == "aos.activation.inspection"
           for value in values:
               assert all(value not in text for text in documents.values())
               assert value not in graph, "credential bytes leaked into retained native state"

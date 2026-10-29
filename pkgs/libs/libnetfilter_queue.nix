@@ -18,7 +18,7 @@ in
       role = "public-package";
     };
     pname = "libnetfilter_queue";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The packet buffer records the replacement and its mangled state.";

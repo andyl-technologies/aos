@@ -71,7 +71,7 @@ in
       role = "public-package";
     };
     pname = "polkit";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Pkaction reports Polkit version 127.";

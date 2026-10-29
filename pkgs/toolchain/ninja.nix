@@ -43,7 +43,7 @@ in
       role = "public-package";
     };
     pname = "ninja";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [
           {

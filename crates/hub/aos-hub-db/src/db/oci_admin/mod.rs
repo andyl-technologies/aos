@@ -296,7 +296,7 @@ pub struct OciAdminProvenanceRecord {
     /// Complete signed Nix closure projection.
     pub closure_members: Vec<OciAdminClosureMemberRecord>,
     /// Complete signed evidence projection.
-    pub evidence: Vec<OciAdminEvidenceRecord>,
+    pub evidence: Vec<OciAdminRoleReferrerRecord>,
     /// Time the release root was verified.
     pub verified_at: i64,
 }
@@ -316,18 +316,18 @@ pub struct OciAdminClosureMemberRecord {
     pub direct: bool,
 }
 
-/// One mandatory signed release-evidence role.
+/// One signed release role and the OCI referrer manifest that carries it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OciAdminEvidenceRecord {
-    /// Stable evidence role.
+pub struct OciAdminRoleReferrerRecord {
+    /// Release role name.
     pub kind: String,
-    /// Evidence payload or role digest.
+    /// Digest of the role payload.
     pub digest: Sha256Digest,
-    /// Exact evidence media type.
+    /// Media type of the role payload.
     pub media_type: MediaType,
     /// Persisted verification state.
     pub verification: String,
-    /// OCI referrer manifest carrying the evidence.
+    /// Digest of the OCI referrer manifest carrying the role payload.
     pub referrer_digest: Sha256Digest,
 }
 

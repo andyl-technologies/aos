@@ -17,7 +17,7 @@ in
       role = "public-package";
     };
     pname = "libnetfilter_cttimeout";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The rendered policy contains the declared name and protocol values.";

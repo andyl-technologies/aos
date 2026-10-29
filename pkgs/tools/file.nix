@@ -17,7 +17,7 @@ in
       role = "public-package";
     };
     pname = "file";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "File identifies the payload as ASCII text.";

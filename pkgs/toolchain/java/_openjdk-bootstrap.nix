@@ -35,14 +35,14 @@
   extraBuildDeps ? [],
   extraDarwinFrameworks ? [],
   extraPatches ? [],
-  qualification ? null,
+  smokeTest ? null,
 }: let
   mkQualifiedDerivation = attrs:
     mkDerivation (attrs
       // (
-        if qualification == null
+        if smokeTest == null
         then {}
-        else {inherit qualification;}
+        else {inherit smokeTest;}
       ));
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
   isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;

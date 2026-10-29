@@ -44,7 +44,7 @@ in
       role = "public-package";
     };
     pname = "gettext";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Gettext accepts both source and compiled catalog representations.";

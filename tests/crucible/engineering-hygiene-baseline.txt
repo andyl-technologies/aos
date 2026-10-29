@@ -220,13 +220,7 @@ shape-line|crates/hub/aos-hub-service/src/filter.rs|770
 shape-line|crates/hub/aos-hub-service/src/indexer/mod.rs|2331
 shape-line|crates/hub/aos-hub-service/src/placement_read.rs|1078
 shape-line|crates/hub/aos-hub-service/src/placement_scan.rs|1467
-shape-line|crates/hub/aos-hub-model/src/retained_control/change_request.rs|1638
-shape-line|crates/hub/aos-hub-model/src/retained_control/channel.rs|1391
 shape-line|crates/hub/aos-hub-model/src/retained_control/classifier.rs|1656
-shape-line|crates/hub/aos-hub-model/src/retained_control/iam.rs|1729
-shape-line|crates/hub/aos-hub-model/src/retained_control/plan.rs|933
-shape-line|crates/hub/aos-hub-model/src/retained_control/primitives.rs|865
-shape-line|crates/hub/aos-hub-model/src/retained_control/signing.rs|1035
 shape-line|crates/hub/aos-hub-model/src/retention.rs|777
 shape-line|crates/hub/aos-hub-service/src/s3surface.rs|1027
 shape-line|crates/hub/aos-hub-service/src/service.rs|37652

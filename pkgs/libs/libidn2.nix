@@ -18,7 +18,7 @@ in
       role = "public-package";
     };
     pname = "libidn2";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "libidn2 returns xn--bcher-kva.example.";

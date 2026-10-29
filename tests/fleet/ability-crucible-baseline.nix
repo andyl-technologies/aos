@@ -74,7 +74,6 @@ in
                   }, retained
               assert recovery["after"]["pending"] is None
               assert recovery["after"]["completed"] is not None
-              assert recovery["after"]["liveStateVerified"] is False
               assert recovery["substrate"]["beforeResponse"] != recovery["substrate"]["afterResponse"]
               findings[sequence] = {
                   "schema": "aos.crucible.native-recovery-finding",
