@@ -121,7 +121,10 @@ Do not add automated-tool attribution or non-human co-author trailers.
 
 ## Crucible boundary checklist
 
-A change that touches the Crucible/QEMU boundary must demonstrate that:
+The normative boundary policy is the
+[Crucible/QEMU process boundary](docs/legal/licensing.md#crucibleqemu-process-boundary)
+section of the license map. A change that touches the Crucible/QEMU boundary
+must demonstrate that:
 
 - the host and QEMU remain separate processes;
 - socket control and shared-memory data paths use the versioned public ABI;
