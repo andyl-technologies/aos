@@ -61,13 +61,14 @@
       host_paths = [];
       permit_core_dumps = false;
     };
-    dependencies = let
-      readiness = ingress.outputs.resource;
-    in {
-      prerequisites = [readiness];
-      after = [readiness];
+    # The installed ruleset is an activation prerequisite, not a service
+    # manager unit: its resource identity cannot be named in After= or
+    # Requires=, so the native service handler rejects it there.
+    dependencies = {
+      prerequisites = [ingress.outputs.resource];
+      after = [];
       before = [];
-      requires = [readiness];
+      requires = [];
       wants = [];
     };
   };
