@@ -90,6 +90,10 @@ in {
     # root device, switch-root, or persistent-state unit is ever started.
     boot.initrd.systemd.targets.aos-installer = {
       description = "AOS unattended installation";
+      # basic.target brings up journald, module loading, and udev device
+      # enumeration, which initrd.target would otherwise have pulled in.
+      requires = ["basic.target"];
+      after = ["basic.target"];
       wants = [
         "aos-ability-initrd-controller.service"
         "aos-installer-reboot.service"

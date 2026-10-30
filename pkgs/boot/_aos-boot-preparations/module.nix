@@ -215,7 +215,7 @@
     then
       emptyDependencies
       // {
-        after = [deviceSettleReadiness];
+        after = [deviceSettleReadiness "basic.target"];
         before = [initrdFilesystemsReadiness];
         requires = [deviceSettleReadiness];
         required_by = [initrdFilesystemsReadiness];
