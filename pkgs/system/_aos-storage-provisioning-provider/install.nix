@@ -38,9 +38,9 @@
     // {
       openssl = "${dependencies.openssl}/bin/openssl";
       zstd = "${dependencies.zstd}/bin/zstd";
-      sgdisk = "${dependencies.gptfdisk}/bin/sgdisk";
+      sgdisk = "${dependencies.gptfdisk}/sbin/sgdisk";
       udevadm = "${dependencies.systemd}/bin/udevadm";
-      efibootmgr = "${dependencies.efibootmgr}/bin/efibootmgr";
+      efibootmgr = "${dependencies.efibootmgr}/sbin/efibootmgr";
     };
   # The image is written whole, so no committed marker can exist on the
   # target. Evaluation receives the same observation a blank disk produces.
