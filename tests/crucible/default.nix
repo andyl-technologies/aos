@@ -3166,7 +3166,8 @@ in rec {
         inherit campaignGateMatrixContract;
       };
       campaignServiceModuleContract = import ./phase9-campaign-service-module-contract.nix {
-        inherit pkgs mkSystem;
+        inherit pkgs;
+        baseSystem = campaignModeBaseSystem;
       };
       campaignMidpointDebug = import ./phase9-campaign-midpoint-debug.nix {
         inherit pkgs lib;

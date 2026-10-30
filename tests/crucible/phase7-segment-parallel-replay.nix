@@ -29,7 +29,7 @@
   modeDependencyAuthentication = lib.optionalString (campaignComposition != null) ''
     for binding in \
       ${lib.escapeShellArg "campaign_mode=${campaignComposition.mode}"} \
-      ${lib.escapeShellArg "campaign_configuration_identity=${campaignComposition.system.config.aos.services.crucibleCampaign._runtimeIdentity}"} \
+      ${lib.escapeShellArg "campaign_configuration_identity=${campaignComposition.system.config.aos.crucible.campaign._runtimeIdentity}"} \
       ${lib.escapeShellArg "campaign_toplevel=${campaignComposition.system.config.system.build.toplevel}"}; do
       grep -Fxq "$binding" ${divergenceResult}
       grep -Fxq "$binding" ${replayResult}

@@ -79,7 +79,7 @@
       ${lib.concatMapStringsSep "\n" (test: "install_test ${lib.escapeShellArg test.targetName} ${lib.escapeShellArg test.targetKind} ${lib.escapeShellArg test.crateDir} ${lib.escapeShellArg test.destination}") installedTests}
     '';
   };
-  expectedConfigurationIdentity = system.config.aos.services.crucibleCampaign._runtimeIdentity;
+  expectedConfigurationIdentity = system.config.aos.crucible.campaign._runtimeIdentity;
   toplevel = system.config.system.build.toplevel;
   commands =
     map (command: {
