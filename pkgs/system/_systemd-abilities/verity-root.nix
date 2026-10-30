@@ -7,7 +7,8 @@
   ...
 }: let
   serviceName = "aos-systemd-verity-root-setup";
-  initrdStage = (config.aos.boot.stage or "host") == "initrd";
+  # Installer media boots no installed system, so installed-system effects are absent.
+  initrdStage = (config.aos.boot.stage or "host") == "initrd" && !(config.aos.boot.installerMedia or false);
   units = {
     boot-identity = "aos-boot-identity-guard.service";
     device-manager = "systemd-udevd.service";

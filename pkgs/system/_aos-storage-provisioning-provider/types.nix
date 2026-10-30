@@ -52,11 +52,25 @@ in {
     arrays = defaulted (lib.types.attrsOf array) {} "Canonical validated MD array definitions.";
     partitions = field (lib.types.attrsOf partition) "Canonical validated partition definitions.";
   };
+  install = record {
+    mode = field (lib.types.enum ["disabled" "unattended"]) "Installation mode.";
+    targetDevice = defaulted nullableText null "Whole stable target disk.";
+  };
   marker = record {
     schema = field (lib.types.enum ["aos.storage.provisioning-marker-observation/v1"]) "Durable marker observation schema.";
     state = field (lib.types.enum ["absent" "completed" "pending" "indeterminate"]) "Observed transaction state.";
     source = defaulted (lib.types.nullOr (lib.types.enum ["operator" "fallback"])) null "Committed configuration source.";
     marker_uuid = defaulted nullableText null "Committed durable marker UUID.";
+  };
+  installerTools = record {
+    blkid = field text "Exact retained filesystem inspection executable.";
+    mount = field text "Exact retained mount executable.";
+    umount = field text "Exact retained unmount executable.";
+    openssl = field text "Exact retained digest and signature executable.";
+    zstd = field text "Exact retained image decompression executable.";
+    sgdisk = field text "Exact retained GPT backup-header relocation executable.";
+    udevadm = field text "Exact retained device synchronization executable.";
+    efibootmgr = field text "Exact retained UEFI boot-entry executable.";
   };
   tools = record {
     systemd_repart = field text "Exact retained repart executable.";

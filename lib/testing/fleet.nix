@@ -3,7 +3,7 @@
 # Each machine boots through the selected platform's production initrd path.
 # Per-machine identity and test transport configuration are baked into the
 # image through `extendModules`. Tests may additionally
-# attach a read-only `aos-metadata` ISO to exercise the production
+# attach a read-only `AOS-META` ISO to exercise the production
 # cloud-metadata provisioning path.
 # Inter-VM L2 is QEMU's `-netdev socket,mcast=…` transport — host-local
 # UDP multicast carrying Ethernet frames — so no host bridge or tap setup
@@ -98,6 +98,7 @@
       metadata = m.metadata or {};
       varSizeMiB = m.varSizeMiB or 256;
       imageDiskMiB = m.imageDiskMiB or 40960;
+      installerMediaMiB = m.installerMediaMiB or 4096;
       extraDisks = m.extraDisks or [];
       expectAgent = m.expectAgent or true;
       memoryMiB = m.memoryMiB or 2048;
@@ -247,8 +248,38 @@
             };
           })
           metadataNames;
+        # Installer media carries host.nix on its own AOS-META partition; a
+        # second AOS-META device would make first boot refuse both.
+        installerHostConfiguration =
+          if metadataNames == []
+          then null
+          else if metadataNames == ["host.nix"]
+          then "${pkgs.writeTextFile {
+            name = "aos-fleet-${m.name}-host-nix";
+            text = m.metadata."host.nix";
+            destination = "/host.nix";
+          }}/host.nix"
+          else
+            throw ''
+              fleet: installer machine "${m.name}" supports only host.nix
+              metadata; it is placed on the installer media.
+            '';
+        installerMedia = lib.build.installerMedia {
+          system = effectiveSystem;
+          hostConfiguration = installerHostConfiguration;
+        };
+        installerDisk = {
+          serial = "aos-installer";
+          sizeMiB = m.installerMediaMiB;
+          source = "${installerMedia}/aos-${effectiveSystem.config.aos.system.name}-installer.img";
+          interface = "usb";
+          removable = true;
+          readOnly = false;
+        };
         metadataISO =
-          if invalidMetadataNames != []
+          if m.bootMode == "installer"
+          then null
+          else if invalidMetadataNames != []
           then
             throw ''
               fleet: machine "${m.name}" has invalid metadata file names:
@@ -268,7 +299,7 @@
                 '')
                 metadataFiles}
               ${pkgs.libisoburn}/bin/xorriso -as mkisofs \
-                -V aos-metadata \
+                -V AOS-META \
                 -o "$out/metadata.iso" \
                 "$out/tree"
             '';
@@ -286,7 +317,9 @@
       in
         {
           inherit (m) name ip mac debugMac index packages bootMode tpm varProvisioning varSizeMiB memoryMiB expectAgent hostStoreMount;
-          extraDisks = resolvedExtraDisks;
+          extraDisks =
+            resolvedExtraDisks
+            ++ lib.optional (m.bootMode == "installer") installerDisk;
           inherit metadataISO;
           system = effectiveSystem;
           kernelParams = effectiveSystem.config.aos.image.platform.testKernelParams;
@@ -298,6 +331,11 @@
             image = imageDisk;
             imageName = "disk.img";
           }
+          else if m.bootMode == "installer"
+          then {
+            inherit (m) imageDiskMiB;
+            inherit installerMedia;
+          }
           else {
             kernel = effectiveSystem.config.system.build.kernel;
             initrd = effectiveSystem.config.system.build.initrd;
@@ -305,7 +343,7 @@
               system = effectiveSystem;
               inherit development;
               inherit (m) extraClosures varSizeMiB varProvisioning;
-              # The aos-metadata transport obtains operator input only from
+              # The AOS-META transport obtains operator input only from
               # host.nix; facts and signatures alone still select fallback.
               provisioningSource =
                 if m.metadata ? "host.nix"
@@ -363,7 +401,19 @@
                 swtpm_bin = "${pkgs.swtpm}/bin/swtpm";
               }
               // (
-                if mb.bootMode == "image"
+                if mb.bootMode == "installer"
+                then {
+                  boot = "image";
+                  # The installer writes this blank disk from the USB media.
+                  disk = null;
+                  disk_serial = "aos-install-target";
+                  disk_size_mib = mb.imageDiskMiB;
+                  fw_cfg = null;
+                  firmware_code = "${pkgs.edk2}/FV/OVMF_CODE.fd";
+                  firmware_vars = "${pkgs.edk2}/FV/OVMF_VARS.fd";
+                  metadata = null;
+                }
+                else if mb.bootMode == "image"
                 then {
                   boot = "image";
                   disk = "${builtins.toString mb.image}/${mb.imageName}";
@@ -535,7 +585,7 @@
     perMachineLaunch =
       lib.concatMapStringsSep "\n" (
         mb:
-          if mb.bootMode == "image"
+          if mb.bootMode != "kernel"
           then
             throw ''
               fleet '${name}': interactive mode does not support image-boot

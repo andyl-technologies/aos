@@ -112,6 +112,27 @@
   };
 in {
   options.aos.provisioning = {
+    install = {
+      mode = lib.mkOption {
+        type = lib.types.enum ["disabled" "unattended"];
+        default = "disabled";
+        description = ''
+          Whether AOS installer media booted with this host.nix may write the
+          release image without operator interaction. A normal first boot
+          ignores this setting.
+        '';
+      };
+      targetDevice = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "/dev/disk/by-id/nvme-Samsung_SSD_990_PRO_2TB_S7KHNJ0X000000";
+        description = ''
+          Whole disk the installer erases and writes, as a stable
+          /dev/disk/by-id path. It becomes the root disk, so storage partitions
+          on it omit their device.
+        '';
+      };
+    };
     storage.arrays = lib.mkOption {
       type = lib.types.attrsOf arrayType;
       default = {};

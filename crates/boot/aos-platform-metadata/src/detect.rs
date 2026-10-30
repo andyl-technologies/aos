@@ -8,7 +8,7 @@
 //!
 //! Detection order:
 //!
-//! 1. **Config-drive probe** — `blkid -L {aos-metadata,cidata,config-2}`; a hit
+//! 1. **Config-drive probe** — `blkid -t LABEL={AOS-META,cidata,config-2}`; a hit
 //!    mounts RO and returns a private acquisition directory with no network.
 //! 2. **Asset tag** — Azure writes a fixed chassis asset tag.
 //! 3. **`sys_vendor`** — the bulk of cloud platforms.

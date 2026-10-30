@@ -124,7 +124,7 @@ fn detect_config_drive_short_circuits_cloud() {
 
 #[test]
 fn config_drive_labels_priority() {
-    assert_eq!(CONFIG_DRIVE_LABELS, &["aos-metadata", "cidata", "config-2"]);
+    assert_eq!(CONFIG_DRIVE_LABELS, &["AOS-META", "cidata", "config-2"]);
 }
 
 // ---------------------------------------------------------------------------

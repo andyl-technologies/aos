@@ -431,6 +431,7 @@ in {
       system.build.recoveryBootExecutableA = lib.mkIf config.aos.boot.recovery.enable plan.recoveryBootExecutableA;
       system.build.recoveryBootExecutableB = lib.mkIf config.aos.boot.recovery.enable plan.recoveryBootExecutableB;
       system.build.recoveryBundle = lib.mkIf config.aos.boot.recovery.enable plan.recoveryBundle;
+      system.build.installerMedia = lib.mkIf config.aos.image.installer.media plan.installerMedia;
     })
   ];
 }

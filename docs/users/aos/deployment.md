@@ -57,7 +57,7 @@ the initrd; general machine policy is evaluated and activated in stage 2:
 }
 ```
 
-Choose a transport supported by the target: an `aos-metadata` drive, NoCloud
+Choose a transport supported by the target: an `AOS-META` drive, NoCloud
 `cidata`, OpenStack config drive, QEMU `fw_cfg`, or a supported native cloud
 user-data channel. Use signed trust only with a transport that also carries the
 detached signature.

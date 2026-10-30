@@ -8,6 +8,7 @@
   stdenv,
 }: let
   identitySource = ../../crates/boot/aos-boot-identity;
+  mediaSource = ../../crates/boot/aos-boot-media;
   recoverySource = ../../crates/boot/aos-recovery;
 
   # The build compiler carries the target standard library; rustc still needs
@@ -111,18 +112,31 @@ in
             ${identitySource}/src/lib.rs \
             -o libaos_boot_identity.rlib
           ${rustcCommand} --edition=2024 \
+            --crate-name aos_boot_media \
+            --crate-type rlib \
+            ${mediaSource}/src/lib.rs \
+            -o libaos_boot_media.rlib
+          ${rustcCommand} --edition=2024 --test ${mediaSource}/src/lib.rs \
+            -o aos-boot-media-tests
+          ./aos-boot-media-tests
+          ${rustcCommand} --edition=2024 \
             --crate-name aos_recovery \
             --crate-type rlib \
             ${recoverySource}/src/lib.rs \
             --extern aos_boot_identity=libaos_boot_identity.rlib \
+            --extern aos_boot_media=libaos_boot_media.rlib \
             -o libaos_recovery.rlib
+          # The binary names aos_recovery directly; rustc resolves that
+          # library's own aos_boot_media dependency from this directory.
           ${rustcCommand} --edition=2024 \
             ${recoverySource}/src/main.rs \
+            -L dependency=. \
             --extern aos_boot_identity=libaos_boot_identity.rlib \
             --extern aos_recovery=libaos_recovery.rlib \
             -o aos-recovery
           ${rustcCommand} --edition=2024 --test ${recoverySource}/src/lib.rs \
             --extern aos_boot_identity=libaos_boot_identity.rlib \
+            --extern aos_boot_media=libaos_boot_media.rlib \
             -o aos-recovery-tests
           ./aos-recovery-tests
           AOS_RECOVERY_TEST_JQ=${buildJq}/bin/jq ./aos-recovery-tests \
