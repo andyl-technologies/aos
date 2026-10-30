@@ -709,7 +709,6 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       checks = qualificationRequirementChecks "ability-native-adapter-matrix";
       inherit nativeOperationSpec;
       nativeOperationCohorts = nativeOperationRegistration.cohorts;
-      stagingHubUrl = "https://aos.staging.andyl.org";
     };
     ability-native-recovery = mkNativeAbilityScenario {
       scenarioId = "ability-native-recovery";

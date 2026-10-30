@@ -11,6 +11,14 @@
   stagingHubUrl ? "https://aos.staging.andyl.org",
 }: let
   sortedPackageNames = builtins.sort builtins.lessThan packageNames;
+
+  # A package without a smoke test still receives its package-function case.
+  # The runner fails that case because the registry has no probe for it, so
+  # release approval stays closed while the executor and the release tooling
+  # that embeds it remain evaluable.
+  probedPackageNames = builtins.filter (packageName: pkgs.${packageName} ? qualificationArtifact) sortedPackageNames;
+  unprobedPackageNames = builtins.filter (packageName: !(builtins.elem packageName probedPackageNames)) sortedPackageNames;
+
   mkPackageProbe = import ./qualification-package-probe.nix {inherit pkgs lib;};
   packageProbeSpec = import ./qualification-package-spec.nix {inherit lib;};
   nativeProbeFor = packageName: let
@@ -31,7 +39,7 @@
     else [];
   requiredHarnessNames = builtins.sort builtins.lessThan (lib.unique (builtins.concatMap (packageName:
     harnessNamesIn (nativeProbeFor packageName))
-  sortedPackageNames));
+  probedPackageNames));
   # Python drives every probe. Other tools enter the executor closure only
   # when a typed harness fragment requests them.
   optionalHarnesses = {
@@ -77,7 +85,7 @@
       name = packageName;
       value = probeFor packageName;
     })
-    sortedPackageNames);
+    probedPackageNames);
   probeNames = builtins.attrNames probes;
   probeRegistry = pkgs.writeTextFile {
     name = "${name}-probes";
@@ -168,7 +176,7 @@ in
         (executor.passthru or {})
         // {
           qualification = {
-            inherit identity packageNames stagingHubUrl trustKeys;
+            inherit identity packageNames stagingHubUrl trustKeys unprobedPackageNames;
             platform = pkgs.stdenv.hostPlatform.system;
             probes = probeNames;
             probeRegistry = "${probeRegistry}/probes.json";
