@@ -343,7 +343,8 @@ in {
     }
     # The ESP backs the initrd journal. Host activation keeps its own profile
     # journal on persistent state rather than opening a second ESP journal.
-    (lib.mkIf (stage == "initrd") {
+    # Installer media has no ESP journal; its controller journals in /run.
+    (lib.mkIf (stage == "initrd" && !config.aos.boot.installerMedia) {
       aos.abilities.bootTransactionStorage.operations.view.effects.stage = {
         input.path = "${transactionStorageRoot}/aos/initrd-stage-journal";
       };
