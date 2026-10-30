@@ -249,16 +249,21 @@ fn check_metadata(
     let delivery_size = delivery
         .get("virtualSizeBytes")
         .and_then(serde_json::Value::as_u64);
+    // Image metadata writes typed `sha256:<hex>` digests; delivery metadata
+    // writes bare hex. Compare the hex identity of both.
+    let bare = |digest: &str| digest.strip_prefix("sha256:").unwrap_or(digest).to_owned();
     let delivery_digest = delivery
         .get("logicalDiskSha256")
-        .and_then(serde_json::Value::as_str);
+        .and_then(serde_json::Value::as_str)
+        .map(bare);
     let info_digest = info
         .pointer("/disk/logical/sha256")
-        .and_then(serde_json::Value::as_str);
+        .and_then(serde_json::Value::as_str)
+        .map(bare);
     ensure!(
         delivery_size == Some(manifest.disk.byte_size)
-            && delivery_digest == Some(manifest.disk.sha256.as_str())
-            && info_digest == Some(manifest.disk.sha256.as_str()),
+            && delivery_digest.as_deref() == Some(manifest.disk.sha256.as_str())
+            && info_digest.as_deref() == Some(manifest.disk.sha256.as_str()),
         "image metadata disagrees with the signed logical disk identity"
     );
     ensure!(
@@ -332,7 +337,7 @@ mod tests {
     #[test]
     fn metadata_must_agree_with_the_signed_disk() {
         let manifest = manifest();
-        let info = json!({"disk": {"logical": {"sha256": DIGEST}}});
+        let info = json!({"disk": {"logical": {"sha256": format!("sha256:{DIGEST}")}}});
         let delivery =
             json!({"format": "raw", "virtualSizeBytes": 4096, "logicalDiskSha256": DIGEST});
         assert!(check_metadata(&manifest, &info, &delivery).is_ok());
