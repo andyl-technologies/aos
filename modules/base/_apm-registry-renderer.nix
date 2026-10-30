@@ -64,13 +64,13 @@
         type = lib.types.listOf lib.types.str;
         default = [];
         description = ''
-          Secure Boot db certificate(s) in PEM form, used by `apm` to
-          re-verify cataloged UKIs against this registry at download
-          time (RFC-0006 phase 4). Each entry is a PEM block; they are
-          concatenated into `/etc/apm/trusted-sb-certs.d/<name>.pem`.
-          Leave empty to skip the download-time UKI re-verification
-          step (the signed catalog's active-set and SBAT-floor checks
-          still apply).
+          Additional Secure Boot db certificates in PEM form, one block per
+          entry, such as the certificates of a db key rotation overlap.
+          On a Secure Boot image the recovery environment accepts a UKI or
+          signed slot manifest that the image's own db certificate or any
+          of these certificates authorizes. The entries are also
+          concatenated into `/etc/apm/trusted-sb-certs.d/<name>.pem`;
+          `apm` does not read that file.
         '';
       };
     };
