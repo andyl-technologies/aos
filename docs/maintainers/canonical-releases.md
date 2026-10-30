@@ -1225,9 +1225,8 @@ Linux platform therefore also requires a reviewed decision to stop publishing
 downstream toolchains there.
 
 `aarch64-linux` cells are planned from the `x86_64-linux` coordinator with
-`crossSystem`, and the flake's `lib.aarch64-linux` and
-`legacyPackages.aarch64-linux` use the same evaluation, so the published
-paths are the ones downstream flakes request.
+`crossSystem`. Every `aarch64-linux` flake output uses the same evaluation,
+so the published paths are the ones downstream flakes request.
 
 After a publication, prove that a clean machine downloads every toolchain
 from the surface that was just published. `toolchain-cache-check` copies only

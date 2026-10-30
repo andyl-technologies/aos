@@ -13,13 +13,16 @@
 ##!
 ##! `toolchain-release` keeps the toolchain set in the release package matrix
 ##! on both Linux platforms, and `toolchain-cache-check` exercises the
-##! downstream cache command against recorded Nix output.
+##! downstream cache command against recorded Nix output. `flake-outputs`
+##! instantiates every per-system flake output of the cross-built systems.
 {
   pkgs,
   lib,
   system,
   # Flake-shaped AOS exports: `lib.<system>` and `legacyPackages.<system>`.
   aos,
+  # The repository flake's outputs, or null to skip `flake-outputs`.
+  flakeOutputs ? null,
 }: let
   contractPath = ../../docs/engineering/downstream/flake-api.md;
   contractLines = lib.splitString "\n" (builtins.readFile contractPath);
@@ -191,41 +194,49 @@
         ];
       }
       // extra);
-in {
-  api-docs = pkgs.mkDerivation {
-    pname = "aos-downstream-api-docs-check";
-    version = "0";
-    src = null;
-    inherit report;
-    passAsFile = ["report"];
-    phases = [
-      {
-        name = "check";
-        script = ''
-          if [ -s "$reportPath" ]; then
-            echo "docs/engineering/downstream/flake-api.md does not match lib.${system}:" >&2
-            cat "$reportPath" >&2
-            exit 1
-          fi
-          mkdir -p "$out"
-          echo PASS > "$out/result"
-        '';
-      }
-    ];
-  };
+in
+  {
+    api-docs = pkgs.mkDerivation {
+      pname = "aos-downstream-api-docs-check";
+      version = "0";
+      src = null;
+      inherit report;
+      passAsFile = ["report"];
+      phases = [
+        {
+          name = "check";
+          script = ''
+            if [ -s "$reportPath" ]; then
+              echo "docs/engineering/downstream/flake-api.md does not match lib.${system}:" >&2
+              cat "$reportPath" >&2
+              exit 1
+            fi
+            mkdir -p "$out"
+            echo PASS > "$out/result"
+          '';
+        }
+      ];
+    };
 
-  # Discarding the output dependency keeps each `.drv` file as an input
-  # without realizing its outputs, so this check stays evaluation-only.
-  fixture-eval = passingCheck "aos-downstream-fixture-eval-check" {
-    fixtureDerivations = map (drv: builtins.unsafeDiscardOutputDependency drv.drvPath) (
-      fixturePackages ++ fixtureChecks ++ fixtureShells
-    );
-  };
+    # Discarding the output dependency keeps each `.drv` file as an input
+    # without realizing its outputs, so this check stays evaluation-only.
+    fixture-eval = passingCheck "aos-downstream-fixture-eval-check" {
+      fixtureDerivations = map (drv: builtins.unsafeDiscardOutputDependency drv.drvPath) (
+        fixturePackages ++ fixtureChecks ++ fixtureShells
+      );
+    };
 
-  toolchain-release = import ./toolchain-release.nix {inherit pkgs lib;};
-  toolchain-cache-check = import ./toolchain-cache-check.nix {inherit pkgs;};
+    toolchain-release = import ./toolchain-release.nix {inherit pkgs lib;};
+    toolchain-cache-check = import ./toolchain-cache-check.nix {inherit pkgs;};
 
-  fixture = passingCheck "aos-downstream-fixture-check" {
-    buildDeps = fixturePackages ++ fixtureChecks;
-  };
-}
+    # The outputs are string inputs rather than build dependencies: nothing
+    # here executes them, and cross-built outputs cannot run on the builder.
+    fixture = passingCheck "aos-downstream-fixture-check" {
+      fixtureResults = map toString (fixturePackages ++ fixtureChecks);
+    };
+  }
+  // lib.optionalAttrs (flakeOutputs != null) {
+    flake-outputs = import ./flake-outputs.nix {
+      inherit pkgs lib flakeOutputs;
+    };
+  }

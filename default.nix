@@ -1711,6 +1711,12 @@ in rec {
         lib.${hostPlatform.system} = downstreamLib;
         legacyPackages.${hostPlatform.system} = pkgs;
       };
+      # The flake's outputs cover every system, so only the coordinator's
+      # native evaluation checks them; a cross copy would repeat the work.
+      flakeOutputs =
+        if isCrossBuild
+        then null
+        else (import ./flake.nix).outputs {};
     };
     # The core remains a quick authoring gate. The public eval aggregate below
     # also reaches native policy, provider, stage and provenance coverage.

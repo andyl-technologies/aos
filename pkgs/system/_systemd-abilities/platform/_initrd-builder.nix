@@ -845,7 +845,9 @@
   initrdArtifact = mkDerivation {
     name = "aos-initrd";
     src = null;
-    buildDeps = [coreutils initrdArchive];
+    # The archive is data referenced by path. As a build dependency, a
+    # cross build would require it to execute on the builder.
+    buildDeps = [coreutils];
     allowedReferences = retainedRoots;
     dontStrip = true;
     dontNukeRefs = true;
@@ -869,6 +871,8 @@
     ];
 
     meta.description = "AOS initrd with explicit retained dependency roots";
+    # Tests inspect the archive recipe, which is no build dependency here.
+    passthru.archive = initrdArchive;
   };
 in
   initrdArtifact

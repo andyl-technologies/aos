@@ -47,21 +47,30 @@
     flattenAttrs = prefix: attrs:
       builtins.listToAttrs (flattenAttrPairs prefix attrs);
 
-    aosFor = system: import ./. {inherit system;};
+    # Every Nix builder for AOS outputs runs on this system. The bootstrap
+    # seed is an i386 executable, so a native aarch64-linux evaluation would
+    # schedule it on an aarch64-linux builder that cannot run it. Releases,
+    # containers, and every per-system flake output therefore build
+    # aarch64-linux from this coordinator as a cross package set, and
+    # downstream store paths match the published ones.
+    coordinatorSystem = "x86_64-linux";
 
-    # The package set that downstream consumers see for `system`. The
-    # bootstrap seed is an i386 executable, so a native aarch64-linux
-    # evaluation cannot start the ladder. AOS releases and containers build
-    # aarch64-linux outputs from the x86_64-linux coordinator instead; use the
-    # same evaluation so downstream store paths match the published ones.
-    downstreamAosFor = system:
-      if system == "x86_64-linux"
-      then aosFor system
-      else
-        import ./. {
-          system = "x86_64-linux";
-          crossSystem = system;
-        };
+    # Arguments to ./default.nix for the package set whose outputs run on
+    # `system`. Extra arguments are merged in by callers.
+    aosArgsFor = system:
+      if system == coordinatorSystem
+      then {inherit system;}
+      else {
+        system = coordinatorSystem;
+        crossSystem = system;
+      };
+
+    aosFor = system: import ./. (aosArgsFor system);
+
+    coordinatorOnly = system: attrs:
+      if system == coordinatorSystem
+      then attrs
+      else {};
 
     qualificationExecutorPackages = system: aos:
       {
@@ -92,7 +101,6 @@
       # x86_64→aarch64 transition at gcc4_8_cross. Post-cross target tools run
       # through the build host's configured QEMU binfmt handler while Nix keeps
       # scheduling the derivations on x86_64.
-      coordinatorSystem = "x86_64-linux";
       coordinator = aosFor coordinatorSystem;
       # The release contract and the package inventory read the same list. A
       # deferred platform is not built at all, so its container never enters
@@ -103,16 +111,7 @@
         coordinator.lib.optional (released "x86_64-linux")
         coordinator.systems.${variant}.build.defaultContainer
         ++ coordinator.lib.optional (released "aarch64-linux")
-        (import ./. {
-          system = coordinatorSystem;
-          crossSystem = "aarch64-linux";
-        })
-        .systems
-        .${
-          variant
-        }
-        .build
-        .defaultContainer;
+        (aosFor "aarch64-linux").systems.${variant}.build.defaultContainer;
       releaseTargets = [
         {
           system = "aarch64-linux";
@@ -129,6 +128,17 @@
       coordinator.pkgs.mkOciMultiPlatformContainer {
         inherit platformBuilds releaseTargets qualificationCheck deferredPlatforms;
         name = "aos";
+      };
+
+    # The script runs on `system`; the toolchain sets it embeds cover every
+    # system, so either copy checks both platforms.
+    toolchainCacheCheck = system: let
+      aosPkgs = (aosFor system).pkgs;
+    in
+      import ./tools/toolchain-cache-check {
+        pkgs = aosPkgs;
+        inherit (aosPkgs) lib;
+        toolchainSets = genAttrs systems (target: (aosFor target).downstreamLib.toolchains);
       };
 
     productionContainer = coordinatedContainer "server";
@@ -250,36 +260,110 @@
       container-aos-experimental-publication-inputs = coordinated.publicationInputs;
       container-aos-experimental-qualification = coordinated.check;
     };
+
+    # The complete gate set. Its VM, fleet, and qualification checks boot
+    # guests under KVM on the builder, so they exist only for the coordinator.
+    coordinatorChecks = let
+      system = coordinatorSystem;
+      production = productionContainer system;
+      aos = import ./. (aosArgsFor system
+        // {
+          containerPublicationInputsOverride = production.publicationInputs;
+        });
+    in
+      {
+        aos = aos.pkgs.aos;
+
+        format = aos.pkgs.mkDerivation {
+          pname = "aos-format-check";
+          version = "0";
+          src = ./.;
+          buildDeps = [aos.pkgs.alejandra];
+          phases = [
+            {
+              name = "check";
+              script = ''
+                alejandra --check $src
+                mkdir -p $out
+                echo "Format check passed" > $out/result
+              '';
+            }
+          ];
+        };
+
+        eval = aos.checks.eval;
+        rust-cargo-artifacts = aos.checks.rust.cargo-artifacts;
+        rust-aos = aos.checks.rust.aos;
+        rust-aos-test-targets = aos.checks.rust.aos-test-targets;
+        rust-crucible-controller = aos.checks.rust.crucible-controller;
+        rust-crucible-qemu-plugin = aos.checks.rust.crucible-qemu-plugin;
+        rust-crucible-guest = aos.checks.rust.crucible-guest;
+        advisories = aos.checks.advisories;
+      }
+      // flattenAttrs "eval" (builtins.removeAttrs aos.checks.eval-suites ["core"])
+      // flattenAttrs "build" aos.checks.build
+      // flattenAttrs "downstream" aos.checks.downstream
+      // flattenAttrs "container" aos.checks.container
+      // flattenAttrs "qualification" (builtins.removeAttrs aos.checks.qualification ["inventory"])
+      // {
+        container-multi-platform = production.check;
+      }
+      # Per-system module checks: server-boot-basics, edge-boot-basics, etc.
+      // flattenAttrs "server" aos.systems.server.checks
+      // flattenAttrs "edge" aos.systems.edge.checks
+      # Package integration checks
+      // flattenAttrs "integration" aos.checks.integration
+      # Fleet tests (multi-VM)
+      // flattenAttrs "fleet" aos.checks.fleet;
+
+    # Checks for a cross-built system. Every derivation in that package set
+    # is scheduled on the coordinator, so only checks whose meaning survives
+    # cross-compilation are kept. Each excluded group has its reason here:
+    #
+    # - `format` reads only the source tree; the coordinator copy covers it.
+    # - `eval` and its suites assert native evaluation fixtures whose probes
+    #   execute host packages during the build.
+    # - `rust-aos` and `rust-cargo-artifacts` execute test binaries on the
+    #   builder. `rust-aos-test-targets` still compiles every target.
+    # - `build`, `container`, `qualification`, `server`, `edge`,
+    #   `integration`, and `fleet` boot guests under KVM. Release
+    #   qualification runs aarch64-linux images and containers in a TCG
+    #   guest from the coordinator's executor instead.
+    # - `container-multi-platform` is one coordinated check for every
+    #   platform and is already a coordinator check.
+    crossChecks = system: let
+      aos = aosFor system;
+    in
+      {
+        aos = aos.pkgs.aos;
+        rust-aos-test-targets = aos.checks.rust.aos-test-targets;
+        rust-crucible-controller = aos.checks.rust.crucible-controller;
+        rust-crucible-qemu-plugin = aos.checks.rust.crucible-qemu-plugin;
+        rust-crucible-guest = aos.checks.rust.crucible-guest;
+        advisories = aos.checks.advisories;
+      }
+      // flattenAttrs "downstream" aos.checks.downstream;
   in {
     aosSystems = genAttrs systems (system: (aosFor system).systems);
 
     # The complete package set. Downstream flakes read package attributes
     # here and take builders from the `lib` output below; only the names that
     # docs/engineering/downstream/flake-api.md lists are a stable contract.
-    legacyPackages = genAttrs systems (system: (downstreamAosFor system).pkgs);
+    legacyPackages = genAttrs systems (system: (aosFor system).pkgs);
 
     # The versioned downstream builder contract. Builders close over a package
     # set built for one platform, so the output is keyed by system like
     # `packages`: `aos.lib.${system}.mkDerivation`. The contract is
     # docs/engineering/downstream/flake-api.md.
-    lib = genAttrs systems (system: (downstreamAosFor system).downstreamLib);
+    lib = genAttrs systems (system: (aosFor system).downstreamLib);
 
     # Downstream CI runs this to fail when any AOS toolchain would build
     # locally instead of downloading. Each copy embeds both Linux toolchain
-    # sets, so one machine can check every platform's cache coverage. It is an
-    # app rather than a package because `packages.aarch64-linux` cannot
-    # evaluate natively.
-    apps = genAttrs systems (system: let
-      downstream = (downstreamAosFor system).pkgs;
-      check = import ./tools/toolchain-cache-check {
-        pkgs = downstream;
-        inherit (downstream) lib;
-        toolchainSets = genAttrs systems (target: (downstreamAosFor target).downstreamLib.toolchains);
-      };
-    in {
+    # sets, so one machine can check every platform's cache coverage.
+    apps = genAttrs systems (system: {
       toolchain-cache-check = {
         type = "app";
-        program = "${check}/bin/toolchain-cache-check";
+        program = "${toolchainCacheCheck system}/bin/toolchain-cache-check";
         meta.description = "Fail when any AOS toolchain would build locally instead of downloading";
       };
     });
@@ -305,7 +389,9 @@
           pname = "aos-all-packages";
           version = "0";
           src = null;
-          buildDeps = builtins.attrValues individualPackages;
+          # String inputs build every package without running any of them;
+          # cross-built packages cannot be build dependencies.
+          packagePaths = map toString (builtins.attrValues individualPackages);
           phases = [
             {
               name = "assemble";
@@ -326,7 +412,7 @@
           };
           apm = aos.pkgs.aos.apm;
           apr = aos.pkgs.aos.apr;
-          release-tooling = aos.releaseTooling;
+          toolchain-cache-check = toolchainCacheCheck system;
           all = allPackages;
           crucible-nginx-curl-guest = import ./tests/crucible/_nginx-curl-http-200-guest.nix {
             pkgs = aos.pkgs;
@@ -335,12 +421,23 @@
             pkgs = aos.pkgs;
           };
         }
-        // qualificationExecutorPackages system aos
+        # Releases run on the coordinator only. Its tooling installs the
+        # hosted aarch64-linux executor, exported there as
+        # `qualification-executor-aarch64-linux`.
+        // coordinatorOnly system (
+          {release-tooling = aos.releaseTooling;}
+          // qualificationExecutorPackages system aos
+        )
         // systemPackages aos
         // containers
         // individualPackages
     );
 
+    # A dev shell runs on the machine that enters it. Its `system` is the
+    # shell's own platform, and every tool on its PATH, including the builder
+    # bash, comes from that platform's package set. On aarch64-linux those
+    # tools are cross-built, so they download from the cache or build on an
+    # x86_64-linux builder and then run natively.
     devShells = genAttrs systems (
       system: let
         aos = aosFor system;
@@ -448,90 +545,46 @@
                 export ${cargoHostRustflagsVar}="-C link-arg=-Wl,-rpath,${aos.pkgs.openssl}/lib -C link-arg=-Wl,-rpath,${aos.pkgs.sqlite}/lib -C link-arg=-Wl,-rpath,${aos.pkgs.libssh2}/lib -C link-arg=-Wl,-rpath,${aos.pkgs.zlib}/lib"
               '';
           };
-      in {
-        default = mkDevShell "aos-dev" ([
-            aos.pkgs.aos
-            aos.pkgs.aos.apm
-            aos.pkgs.aos.apr
-            aos.pkgs.just
-          ]
-          ++ cargoBuildPackages
-          ++ cargoTestPackages);
-        cargo = mkDevShell "aos-cargo-dev" cargoBuildPackages;
-
+      in
+        {
+          default = mkDevShell "aos-dev" ([
+              aos.pkgs.aos
+              aos.pkgs.aos.apm
+              aos.pkgs.aos.apr
+              aos.pkgs.just
+            ]
+            ++ cargoBuildPackages
+            ++ cargoTestPackages);
+          cargo = mkDevShell "aos-cargo-dev" cargoBuildPackages;
+        }
         # The operator shell for canonical releases: only the installed
         # release tooling closure, whose wrappers export AOS_RELEASE_TOOLING
         # so `aos release` binds that closure and finds its executors.
-        release = builtins.derivation {
-          name = "aos-release";
-          inherit system;
-          outputs = ["out"];
-          builder = "${aos.pkgs.bash}/bin/bash";
-          args = [
-            "-c"
-            "echo 'Use nix develop .#release, not nix build' >&2; ${aos.pkgs.coreutils}/bin/mkdir -p $out"
-          ];
-          shellHook = ''
-            export PATH="${aos.releaseTooling}/bin''${PATH:+:$PATH}"
-          '';
-        };
-      }
+        # Releases run on the coordinator only.
+        // coordinatorOnly system {
+          release = builtins.derivation {
+            name = "aos-release";
+            inherit system;
+            outputs = ["out"];
+            builder = "${aos.pkgs.bash}/bin/bash";
+            args = [
+              "-c"
+              "echo 'Use nix develop .#release, not nix build' >&2; ${aos.pkgs.coreutils}/bin/mkdir -p $out"
+            ];
+            shellHook = ''
+              export PATH="${aos.releaseTooling}/bin''${PATH:+:$PATH}"
+            '';
+          };
+        }
     );
 
     formatter = genAttrs systems (system: (aosFor system).pkgs.alejandra);
 
     checks = genAttrs systems (
-      system: let
-        production = productionContainer system;
-        aos = import ./. {
-          inherit system;
-          containerPublicationInputsOverride = production.publicationInputs;
-        };
-      in
-        {
-          aos = aos.pkgs.aos;
-
-          format = aos.pkgs.mkDerivation {
-            pname = "aos-format-check";
-            version = "0";
-            src = ./.;
-            buildDeps = [aos.pkgs.alejandra];
-            phases = [
-              {
-                name = "check";
-                script = ''
-                  alejandra --check $src
-                  mkdir -p $out
-                  echo "Format check passed" > $out/result
-                '';
-              }
-            ];
-          };
-
-          eval = aos.checks.eval;
-          rust-cargo-artifacts = aos.checks.rust.cargo-artifacts;
-          rust-aos = aos.checks.rust.aos;
-          rust-aos-test-targets = aos.checks.rust.aos-test-targets;
-          rust-crucible-controller = aos.checks.rust.crucible-controller;
-          rust-crucible-qemu-plugin = aos.checks.rust.crucible-qemu-plugin;
-          rust-crucible-guest = aos.checks.rust.crucible-guest;
-          advisories = aos.checks.advisories;
-        }
-        // flattenAttrs "eval" (builtins.removeAttrs aos.checks.eval-suites ["core"])
-        // flattenAttrs "build" aos.checks.build
-        // flattenAttrs "downstream" aos.checks.downstream
-        // flattenAttrs "container" aos.checks.container
-        // flattenAttrs "qualification" (builtins.removeAttrs aos.checks.qualification ["inventory"])
-        // {
-          container-multi-platform = production.check;
-        }
-        # Per-system module checks: server-boot-basics, edge-boot-basics, etc.
-        // flattenAttrs "server" aos.systems.server.checks
-        // flattenAttrs "edge" aos.systems.edge.checks
-        # Package integration checks
-        // flattenAttrs "integration" aos.checks.integration
-        # Fleet tests (multi-VM)
-        // flattenAttrs "fleet" aos.checks.fleet
+      system:
+        if system == coordinatorSystem
+        then coordinatorChecks
+        else crossChecks system
     );
   };
 }
