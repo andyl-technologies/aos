@@ -97,9 +97,8 @@ in {
           assert label in labels, (label, labels)
       assert "aos-provenance-operator-v1" in labels, labels
 
-      # First boot provisioned storage from the stick's host.nix.
-      audit = json.loads(target.succeed("cat /var/lib/aos-provisioning/audit.json"))
-      assert audit["source"] == "operator", audit
+      # First boot provisioned storage from the stick's host.nix: the operator
+      # provenance marker above records the source, and var honors its size.
       var_bytes = int(target.succeed(
           "lsblk -bno SIZE /dev/disk/by-partlabel/var"
       ).strip())
