@@ -247,13 +247,13 @@
     ++ failuresFor "crates/crucible/crucible-test-support/tests/gate_target_mapping.rs" gateTargetMappingTest [
       {
         label = "fleet equivalence target mapping assertion";
-        needle = "\"gate:fleet-equivalence\",\n                \"crucible\",\n                \"gate_fleet_equivalence\"";
+        needle = "\"gate:fleet-equivalence\",\n                \"crucible-engine\",\n                \"gate_fleet_equivalence\"";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-test-support/tests/testing_standards.rs" testingStandards [
       {
         label = "fleet equivalence testing standard";
-        needle = "gate: \"gate:fleet-equivalence\",\n        owner_packages: &[\"crucible\"],\n        layers: &[Layer::L3],\n        shape: TestShape::FleetEquivalence,\n        backend: TestBackend::Mixed,";
+        needle = "gate: \"gate:fleet-equivalence\",\n        owner_packages: &[\"crucible-engine\"],\n        layers: &[Layer::L3],\n        shape: TestShape::FleetEquivalence,\n        backend: TestBackend::Mixed,";
       }
       {
         label = "crucible owns fleet equivalence";
@@ -273,7 +273,7 @@
       }
       {
         label = "phase1 testing standards include fleet equivalence";
-        needle = "gate = \"gate:fleet-equivalence\";\n      ownerPackages = [\"crucible\"];\n      layers = [\"L3\"];\n      shape = \"fleet-equivalence\";\n      backend = \"mixed\";";
+        needle = "gate = \"gate:fleet-equivalence\";\n      ownerPackages = [\"crucible-engine\"];\n      layers = [\"L3\"];\n      shape = \"fleet-equivalence\";\n      backend = \"mixed\";";
       }
       {
         label = "phase1 testing ownership includes fleet equivalence";
