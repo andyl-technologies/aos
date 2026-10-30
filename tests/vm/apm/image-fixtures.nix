@@ -144,6 +144,13 @@
                 uki: {filename: $ukiFilename, espPath: $ukiEspPath,
                   byteSize: $ukiSize, sha256: $ukiSha256, signed: true, measured: false}}' \
               > "$out/image-info.json"
+
+            # The registry reads delivery facts from a separate envelope and
+            # authenticates image-info.json only as opaque provider bytes.
+            ${pkgs.jq}/bin/jq -S '{schemaVersion, name, version, architecture,
+              platform, format, filename, mediaType, compression, byteSize,
+              sha256, logicalDiskSha256, compatibleTargets}' \
+              "$out/image-info.json" > "$out/image-delivery.json"
           '';
         }
       ];
