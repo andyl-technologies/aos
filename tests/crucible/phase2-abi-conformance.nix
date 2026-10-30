@@ -21,7 +21,7 @@
   campaignRuntimeIdentity =
     if campaignSystem == null
     then null
-    else campaignSystem.config.aos.services.crucibleCampaign._runtimeIdentity;
+    else campaignSystem.config.aos.crucible.campaign._runtimeIdentity;
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 

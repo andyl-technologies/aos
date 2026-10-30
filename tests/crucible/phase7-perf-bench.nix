@@ -93,7 +93,7 @@
       ${restoreLatencyResult} \
       ${segmentReplayResult}; do
       grep -Fxq ${lib.escapeShellArg "campaign_mode=${campaignComposition.mode}"} "$result"
-      grep -Fxq ${lib.escapeShellArg "campaign_configuration_identity=${campaignComposition.system.config.aos.services.crucibleCampaign._runtimeIdentity}"} "$result"
+      grep -Fxq ${lib.escapeShellArg "campaign_configuration_identity=${campaignComposition.system.config.aos.crucible.campaign._runtimeIdentity}"} "$result"
       grep -Fxq ${lib.escapeShellArg "campaign_toplevel=${campaignComposition.system.config.system.build.toplevel}"} "$result"
     done
   '';
