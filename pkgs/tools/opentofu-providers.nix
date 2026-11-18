@@ -68,7 +68,7 @@ in
       inherit providers mkProvider mkMirror;
     };
 
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "The packaged provider mirror and its CLI configuration.";
         operation = "Inspect every mirrored provider and start each plugin outside OpenTofu.";

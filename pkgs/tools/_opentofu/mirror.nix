@@ -17,7 +17,7 @@
   description ? "Filesystem mirror of source-built OpenTofu providers",
   passthru ? {},
   checks ? null,
-  qualification ? null,
+  smokeTest ? null,
   # Published mirrors declare their platform policy; private ones may omit it.
   platformSupport ? null,
 }: let
@@ -69,5 +69,5 @@ in
       };
     }
     // lib.optionalAttrs (checks != null) {inherit checks;}
-    // lib.optionalAttrs (qualification != null) {inherit qualification;}
+    // lib.optionalAttrs (smokeTest != null) {inherit smokeTest;}
     // lib.optionalAttrs (platformSupport != null) {inherit platformSupport;})

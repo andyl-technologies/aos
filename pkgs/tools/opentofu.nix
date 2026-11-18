@@ -96,7 +96,7 @@ in
       cp LICENSE "$out/share/licenses/opentofu/"
     '';
 
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "A configuration with a local value and an output, using no providers.";
         operation = "Initialize the working directory and apply the configuration.";
