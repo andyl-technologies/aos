@@ -37,7 +37,7 @@ in
       role = "public-package";
     };
     pname = "leangz";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "leantar reports its packaged release.";

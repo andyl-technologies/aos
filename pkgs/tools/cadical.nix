@@ -29,7 +29,7 @@ in
       role = "public-package";
     };
     pname = "cadical";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "CaDiCaL reports the formula satisfiable with SAT competition exit status 10.";

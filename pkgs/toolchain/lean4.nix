@@ -45,7 +45,7 @@ in
       role = "public-package";
     };
     pname = "lean4";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Lean elaborates the module and evaluates the definition.";
