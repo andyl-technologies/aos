@@ -59,7 +59,13 @@ aos_dev_target_attr() {
     images)
       local variant=${name%%:*} format=${name#*:}
       [[ $variant != "$format" ]] || aos_dev_error "image name must be VARIANT:FORMAT; see 'list images'"
-      printf 'systems.%s.build.image.%s' "$variant" "$format"
+      # Installer media is a function of an optional host.nix, which nix-build
+      # supplies with --arg hostConfiguration PATH.
+      if [[ $format == installer ]]; then
+        printf 'systems.%s.installerMedia' "$variant"
+      else
+        printf 'systems.%s.build.image.%s' "$variant" "$format"
+      fi
       ;;
     containers)
       local variant=${name%%:*} kind=${name#*:}

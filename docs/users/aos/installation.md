@@ -196,12 +196,13 @@ partitions, so it never collides with the installed disk.
 
 Build the media from a locally signed Secure Boot system. Pass the `host.nix`
 to bake it in, or leave it out and copy `host.nix` onto the FAT `AOS-META`
-partition from any workstation after writing the stick:
+partition from any workstation after writing the stick. Inside the
+development shell, `aos-dev list images installer` lists the systems that can
+build media, and `aos-dev build image my-server:installer` accepts the same
+`--arg hostConfiguration` flag:
 
 ```sh
-nix-build -E '(import ./. {}).systems.my-server.installerMedia {
-  hostConfiguration = ./host.nix;
-}'
+nix-build -A systems.my-server.installerMedia --arg hostConfiguration ./host.nix
 sudo dd if=result/aos-aos-installer.img \
   of=/dev/disk/by-id/REPLACE_WITH_USB_STICK bs=16M oflag=direct status=progress
 ```
