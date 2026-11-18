@@ -6,12 +6,13 @@
 //! constants against this registry in their own tests, and the campaign gate
 //! traceability test checks that every row names cataloged compatibility gates.
 //!
-//! The file is tab separated. Lines that are empty or start with `#` are
-//! comments; every other line has exactly five fields:
+//! The file is tab separated; the example below shows the tabs as spaces.
+//! Lines that are empty or start with `#` are comments; every other line has
+//! exactly five fields:
 //!
 //! ```text
-//! # schema-name	version	owner	object-kind	compatibility-gates
-//! crucible.content-envelope	1	crucible-store::content_envelope	envelope	gate:content-address,gate:campaign-store-equivalence
+//! # schema-name    version    owner    object-kind    compatibility-gates
+//! crucible.content-envelope    1    crucible-store::content_envelope    envelope    gate:content-address,gate:campaign-store-equivalence
 //! ```
 //!
 //! - `schema-name` is the stable dotted schema identity.

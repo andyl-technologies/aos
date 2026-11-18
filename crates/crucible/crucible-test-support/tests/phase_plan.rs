@@ -557,9 +557,13 @@ const ADVANCED_FEATURE_RUNGS: [AdvancedFeatureRung; 6] = [
     AdvancedFeatureRung::Fuzzing,
 ];
 
+/// One documented gate-ordering line: the phase, gate name, and Nix attribute
+/// path.
+type DocumentedGate<'a> = (&'a str, &'a str, &'a str);
+
 /// Parses the `phase gate attr-path` lines of the first text block under the
 /// page's "Gate ordering" heading.
-fn documented_phase_gate_order(content: &str) -> Result<Vec<(&str, &str, &str)>, Box<dyn Error>> {
+fn documented_phase_gate_order(content: &str) -> Result<Vec<DocumentedGate<'_>>, Box<dyn Error>> {
     let section = section_after_heading(content, "## Gate ordering")?;
     let mut order = Vec::new();
 
