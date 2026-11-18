@@ -80,7 +80,7 @@ in
       cp LICENSE "$out/share/licenses/age/"
     '';
 
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "A short plaintext and a newly generated X25519 identity.";
         operation = "Generate an identity, encrypt to its recipient, and decrypt the result.";

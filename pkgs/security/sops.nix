@@ -91,7 +91,7 @@ in
       cp LICENSE "$out/share/licenses/sops/"
     '';
 
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "A YAML document and a fixed age identity.";
         operation = "Encrypt the document to the identity's recipient and decrypt it again.";
