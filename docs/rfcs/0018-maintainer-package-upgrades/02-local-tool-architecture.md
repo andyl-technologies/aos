@@ -72,7 +72,7 @@ commands/maintain/mutation.rs
 commands/maintain/materialize.rs
 commands/maintain/agent.rs
 commands/maintain/validation.rs
-commands/maintain/evidence.rs
+commands/maintain/readiness.rs
 commands/maintain/git.rs
 commands/maintain/state.rs
 commands/maintain/presentation.rs
@@ -140,8 +140,7 @@ expressions require a typed contract instead.
 | `aos maintain diff RUN` | Exact worktree and semantic inventory diff |
 | `aos maintain accept RUN` | Record maintainer acceptance of the current candidate edit |
 | `aos maintain commit RUN` | Commit the accepted tree using reviewed text and maintainer Git identity |
-| `aos maintain evidence RUN` | Generate and verify the final local dossier |
-| `aos maintain prepare-pr RUN` | Render title/body/checklist without network mutation |
+| `aos maintain prepare-pr RUN` | Verify the final-gated candidate, record `ready-for-pr`, and render title/body/checklist without network mutation |
 | `aos maintain publish-pr RUN` | Explicitly push the branch and create/update its PR |
 | `aos maintain observe-pr RUN` | Explicitly refresh exact-head PR/check/review/authorization observations with read-only credentials |
 | `aos maintain abandon RUN` | Mark the run abandoned without deleting its evidence or worktree |
@@ -216,7 +215,6 @@ ${XDG_STATE_HOME:-$HOME/.local/state}/aos/maintain/
         gates.json
         evidence.json
         logs/
-      final-evidence.json
     worktrees/<run-id>/
 ```
 
@@ -340,9 +338,13 @@ review and create the signed-off commit, then adopts and retests that commit.
 
 ## Git and PR handoff
 
-`prepare-pr` is fully offline. It renders a branch name, title, body, evidence
-summary, review requirements, and exact commands/effects that publication would
-perform.
+`prepare-pr` is fully offline. For a `final-gated` run it first reads the
+retained materialization, accepted repair lineage, and quick and final gate
+results, verifies that they bind one plan, the accepted patch, and the exact
+candidate commit with every gate successful, and records `ready-for-pr`. It
+then renders a branch name, title, body, evidence summary, review requirements,
+and exact commands/effects that publication would perform. Repeating it on a
+`ready-for-pr` run re-verifies the same records and renders the same draft.
 
 `publish-pr` is intentionally separate from update execution. It:
 
@@ -376,7 +378,8 @@ when every required result is affirmative.
 The generated PR body contains campaign and unit/component current/target
 identities, upstream evidence, source/artifact changes, impact/risk,
 deterministic and agent repair summary, exact final head, gates, warnings, and
-local evidence digest. It does not claim that RFC-0017 publication has
+final gate-results digest: the canonical digest of the final gate results,
+which binds the candidate commit. It does not claim that RFC-0017 publication has
 occurred.
 
 ## Agent adapter

@@ -1,8 +1,8 @@
 //! Retains journal-owned store objects across immutable initrd replacements.
 //!
-//! A compressed Nix export lives beside the durable paired journals. Its
-//! manifest is published last, so interrupted staging leaves the previous
-//! snapshot readable. The export restores transport bytes and registration;
+//! A compressed Nix export lives in the initrd state directory beside the
+//! durable paired journals. Its manifest is published last, so interrupted
+//! staging leaves the previous snapshot readable. The export restores transport bytes and registration;
 //! the normal journal admission and NAR checks remain authoritative.
 
 use std::collections::BTreeSet;
@@ -42,11 +42,15 @@ struct Payload {
     export_bytes: u64,
 }
 
-/// Resolves the sealed journal through its validated writable ESP mount.
+/// Resolves the sealed initrd state directory through its validated writable ESP mount.
 ///
 /// # Errors
 /// Returns an error for noncanonical paths, unrelated mounts, or aliased state.
-pub(crate) fn writable_journal(state: &Path, storage: &Path, boot: &Path) -> Result<PathBuf> {
+pub(crate) fn writable_state_directory(
+    state: &Path,
+    storage: &Path,
+    boot: &Path,
+) -> Result<PathBuf> {
     for path in [state, storage, boot] {
         ensure!(
             path.is_absolute()
@@ -54,20 +58,20 @@ pub(crate) fn writable_journal(state: &Path, storage: &Path, boot: &Path) -> Res
                     .components()
                     .all(|part| matches!(part, Component::RootDir | Component::Normal(_)))
                 && fs::canonicalize(path)? == path,
-            "initrd journal storage path is not canonical"
+            "initrd state directory storage path is not canonical"
         );
     }
     let relative = state
         .strip_prefix(storage)
-        .context("initrd journal is outside its storage mount")?;
+        .context("initrd state directory is outside its storage mount")?;
     ensure!(
         relative.components().count() > 0,
-        "initrd journal cannot own the mount root"
+        "initrd state directory cannot own the mount root"
     );
     let destination = boot.join(relative);
     ensure!(
         fs::canonicalize(&destination)? == destination,
-        "writable initrd journal traverses an alias"
+        "writable initrd state directory traverses an alias"
     );
     let selected = fs::metadata(state)?;
     let writable = fs::metadata(&destination)?;
@@ -77,7 +81,7 @@ pub(crate) fn writable_journal(state: &Path, storage: &Path, boot: &Path) -> Res
             && selected.dev() == writable.dev()
             && selected.ino() == writable.ino()
             && fs::metadata(storage)?.dev() == fs::metadata(boot)?.dev(),
-        "writable ESP path differs from the selected initrd journal"
+        "writable ESP path differs from the selected initrd state directory"
     );
     Ok(destination)
 }
@@ -89,18 +93,18 @@ pub(crate) fn writable_journal(state: &Path, storage: &Path, boot: &Path) -> Res
 /// exceeded transport bounds, or failed export and durable publication.
 pub(crate) fn preserve(
     nix_store: &Path,
-    journal: &Path,
+    state_directory: &Path,
     retained: &[String],
     running: &BTreeSet<PathBuf>,
     candidate: &BTreeSet<PathBuf>,
 ) -> Result<()> {
     let mut command = Command::new(nix_store);
-    preserve_with(&mut command, journal, retained, running, candidate)
+    preserve_with(&mut command, state_directory, retained, running, candidate)
 }
 
 fn preserve_with(
     command: &mut Command,
-    journal: &Path,
+    state_directory: &Path,
     retained: &[String],
     running: &BTreeSet<PathBuf>,
     candidate: &BTreeSet<PathBuf>,
@@ -132,7 +136,7 @@ fn preserve_with(
         .difference(&common)
         .cloned()
         .collect::<BTreeSet<_>>();
-    let directory = owned_directory(journal)?;
+    let directory = owned_directory(state_directory)?;
     let previous = read_manifest(&directory)?;
     if let Some(previous) = &previous {
         verify_payload(&directory, previous)?;
@@ -214,17 +218,17 @@ fn preserve_with(
     Ok(())
 }
 
-/// Restores a published snapshot before the initrd journal opens.
+/// Restores a published snapshot before the initrd journals open.
 ///
 /// # Errors
 /// Returns an error for malformed or changed snapshots, unavailable references,
 /// exceeded bounds, or a failed Nix import or registration check.
-pub(crate) fn restore(nix_store: &Path, journal: &Path) -> Result<()> {
-    restore_with(&mut Command::new(nix_store), journal)
+pub(crate) fn restore(nix_store: &Path, state_directory: &Path) -> Result<()> {
+    restore_with(&mut Command::new(nix_store), state_directory)
 }
 
-fn restore_with(command: &mut Command, journal: &Path) -> Result<()> {
-    let directory = journal.join(DIRECTORY);
+fn restore_with(command: &mut Command, state_directory: &Path) -> Result<()> {
+    let directory = state_directory.join(DIRECTORY);
     let Some(manifest) = read_manifest(&directory)? else {
         return Ok(());
     };
@@ -298,15 +302,15 @@ fn base_command(command: &Command) -> Command {
     cloned
 }
 
-fn owned_directory(journal: &Path) -> Result<PathBuf> {
+fn owned_directory(state_directory: &Path) -> Result<PathBuf> {
     ensure!(
-        fs::canonicalize(journal)? == journal,
-        "initrd journal traverses an alias"
+        fs::canonicalize(state_directory)? == state_directory,
+        "initrd state directory traverses an alias"
     );
-    let directory = journal.join(DIRECTORY);
+    let directory = state_directory.join(DIRECTORY);
     match fs::create_dir(&directory) {
         Ok(()) => {
-            File::open(journal)?.sync_all()?;
+            File::open(state_directory)?.sync_all()?;
         }
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
         Err(error) => return Err(error.into()),

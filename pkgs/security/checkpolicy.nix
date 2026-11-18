@@ -19,7 +19,7 @@ in
       role = "public-package";
     };
     pname = "checkpolicy";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Checkmodule accepts the declarations and emits binary policy.";

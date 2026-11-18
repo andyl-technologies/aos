@@ -37,7 +37,7 @@ in
       role = "public-package";
     };
     pname = "giflib";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "A valid one-pixel GIF89a image.";
         operation = "Decode the image with the installed giftext utility.";

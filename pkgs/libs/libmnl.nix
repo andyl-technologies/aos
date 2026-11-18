@@ -15,7 +15,7 @@ in
       role = "public-package";
     };
     pname = "libmnl";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "libmnl recognizes the complete header as a valid message.";

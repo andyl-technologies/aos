@@ -17,7 +17,7 @@ mkDerivation {
     role = "public-package";
   };
   pname = "workerd";
-  qualification.packageProbe = lib.qualification.commandProbe {
+  smokeTest = lib.qualification.commandProbe {
     "primary" = {
       "artifacts" = [];
       "expected" = "The Worker computes and returns the JSON result 42 with HTTP status 200.";

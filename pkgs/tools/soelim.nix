@@ -20,7 +20,7 @@ in
       role = "public-package";
     };
     pname = "soelim";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Soelim replaces the include request with the referenced file's exact contents.";

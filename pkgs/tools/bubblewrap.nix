@@ -29,7 +29,7 @@ in
       role = "public-package";
     };
     pname = "bubblewrap";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "The signed Bubblewrap package closure.";
         operation = "Start a user and mount namespace containing only that closure.";

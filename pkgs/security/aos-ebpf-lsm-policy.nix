@@ -86,7 +86,7 @@ in
       role = "public-package";
     };
     pname = "aos-ebpf-lsm-policy";
-    qualification.packageProbe = lib.qualification.providerExecutableProbe {
+    smokeTest = lib.qualification.providerExecutableProbe {
       name = "aos-ebpf-lsm-provider";
       entryPoint = "bin/aos-ebpf-lsm-provider";
     };

@@ -18,7 +18,7 @@ in
       role = "public-package";
     };
     pname = "libgpg-error";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The decoder returns the exact two decoded bytes.";

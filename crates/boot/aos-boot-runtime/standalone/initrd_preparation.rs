@@ -106,32 +106,35 @@ fn run_deployment(
     }
     // The verified image retains the original immutable bundle and its member
     // aliases. Resolve this member only to its canonical store identity.
-    let digest_path = fs::canonicalize(bundle.join("admission-sha256"))
-        .map_err(|error| PreparationError::io("resolving image admission digest", error))?;
+    let digest_path = fs::canonicalize(bundle.join("admission-sha256")).map_err(|error| {
+        PreparationError::io("resolving trusted artifact manifest digest", error)
+    })?;
     if !digest_path.starts_with("/nix/store") {
         return Err(PreparationError::message(
-            "image admission digest is outside the immutable store",
+            "trusted artifact manifest digest is outside the immutable store",
         ));
     }
-    let metadata = fs::symlink_metadata(&digest_path)
-        .map_err(|error| PreparationError::io("inspecting image admission digest", error))?;
+    let metadata = fs::symlink_metadata(&digest_path).map_err(|error| {
+        PreparationError::io("inspecting trusted artifact manifest digest", error)
+    })?;
     if !metadata.is_file() || metadata.len() > 128 {
         return Err(PreparationError::message(
-            "image admission digest is not a bounded regular file",
+            "trusted artifact manifest digest is not a bounded regular file",
         ));
     }
     let digest = fs::read_to_string(&digest_path)
-        .map_err(|error| PreparationError::io("reading image admission digest", error))?;
+        .map_err(|error| PreparationError::io("reading trusted artifact manifest digest", error))?;
     let digest = digest.trim_end_matches('\n');
-    validate_admission_digest(digest)?;
+    validate_manifest_digest(digest)?;
 
     let bundle_text = bundle
         .to_str()
         .ok_or_else(|| PreparationError::message("bundle path is not UTF-8"))?;
-    let admission = bundle.join("admission.json");
-    let admission_text = admission
+    // The trusted artifact manifest keeps its original bundle member name.
+    let manifest = bundle.join("admission.json");
+    let manifest_text = manifest
         .to_str()
-        .ok_or_else(|| PreparationError::message("admission path is not UTF-8"))?;
+        .ok_or_else(|| PreparationError::message("trusted artifact manifest path is not UTF-8"))?;
     let mut arguments = vec![
         operation,
         "--input",
@@ -141,7 +144,7 @@ fn run_deployment(
         "--nix-store",
         nix_store,
         "--admission",
-        admission_text,
+        manifest_text,
         "--admission-sha256",
         digest,
     ];
@@ -172,10 +175,10 @@ fn run_deployment(
     }
 }
 
-fn validate_admission_digest(digest: &str) -> Result<()> {
+fn validate_manifest_digest(digest: &str) -> Result<()> {
     let Some(hex) = digest.strip_prefix("sha256:") else {
         return Err(PreparationError::message(
-            "image admission digest has an unsupported algorithm",
+            "trusted artifact manifest digest has an unsupported algorithm",
         ));
     };
     if hex.len() != 64
@@ -184,7 +187,7 @@ fn validate_admission_digest(digest: &str) -> Result<()> {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     {
         return Err(PreparationError::message(
-            "image admission digest is not canonical SHA-256",
+            "trusted artifact manifest digest is not canonical SHA-256",
         ));
     }
     Ok(())
@@ -272,8 +275,8 @@ mod tests {
     }
 
     #[test]
-    fn admission_digest_accepts_only_canonical_sha256() {
-        assert!(validate_admission_digest(&format!("sha256:{}", "a".repeat(64))).is_ok());
+    fn manifest_digest_accepts_only_canonical_sha256() {
+        assert!(validate_manifest_digest(&format!("sha256:{}", "a".repeat(64))).is_ok());
         for digest in [
             "",
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -281,7 +284,7 @@ mod tests {
             "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
             "sha512:abc",
         ] {
-            assert!(validate_admission_digest(digest).is_err());
+            assert!(validate_manifest_digest(digest).is_err());
         }
     }
 

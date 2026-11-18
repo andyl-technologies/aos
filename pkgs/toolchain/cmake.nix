@@ -51,7 +51,7 @@ in
       role = "public-package";
     };
     pname = "cmake";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "CMake evaluates the language constructs and emits the fixed result.";

@@ -41,7 +41,7 @@ mkDerivation {
     role = "public-package";
   };
   pname = "test-static-cache-server";
-  qualification.packageProbe = lib.qualification.commandProbe {
+  smokeTest = lib.qualification.commandProbe {
     "primary" = {
       "artifacts" = [];
       "expected" = "The server honors AOS_STATIC_CACHE_ROOT and returns the exact object bytes.";

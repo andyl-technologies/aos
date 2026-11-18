@@ -130,7 +130,7 @@ in
       role = "public-package";
     };
     pname = "aos-hub-console-dist";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "All three deployable console assets are nonempty and the binary is WebAssembly.";

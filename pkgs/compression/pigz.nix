@@ -23,7 +23,7 @@ in
       role = "public-package";
     };
     pname = "pigz";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The decompressed bytes exactly equal the original text.";

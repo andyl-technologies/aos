@@ -8,7 +8,8 @@
 }: let
   packageDependencies = dependencies;
   cfg = config.aos.security.bootIdentityServices;
-  initrdStage = config.aos.boot.stage == "initrd";
+  # Installer media boots no installed system, so installed-system effects are absent.
+  initrdStage = config.aos.boot.stage == "initrd" && !(config.aos.boot.installerMedia or false);
   units = {
     device-settle = "systemd-udev-settle.service";
     initrd-filesystems = "initrd-fs.target";

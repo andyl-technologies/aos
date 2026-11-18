@@ -47,7 +47,7 @@ in
       role = "public-package";
     };
     pname = "gdb";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "GDB decodes the debug object and emits the exact integer value.";

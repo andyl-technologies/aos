@@ -25,7 +25,7 @@ in
       role = "public-package";
     };
     pname = "docker-compose";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Compose emits a model containing the declared service image and command.";

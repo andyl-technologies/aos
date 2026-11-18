@@ -100,7 +100,6 @@ class NativeCohortTests(unittest.TestCase):
         }
         before = {
             "schema": "aos.activation.inspection",
-            "liveStateVerified": False,
             "incompleteTailBytes": 0,
             "transaction": "candidate",
             "pending": dispatch,
@@ -722,7 +721,7 @@ class NativeCohortTests(unittest.TestCase):
 
     def test_readonly_inspection_never_supplies_live_authority(self):
         self.flight["journalAfter"]["liveStateVerified"] = True
-        with self.assertRaisesRegex(RuntimeError, "checked native"):
+        with self.assertRaisesRegex(RuntimeError, "unexpected fields"):
             self.run_cohort()
 
     def test_missing_observation_return_rejects_pending_recovery(self):

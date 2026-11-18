@@ -34,7 +34,7 @@ in
       role = "public-package";
     };
     pname = "tzdata";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The zone reports UTC-08:00 in January and UTC-07:00 in July.";

@@ -1,6 +1,6 @@
 //! Installs an immutable upstream unit and an owned augmentation without starting it.
 //!
-//! A private receipt records both definitions before replacing files. A reference
+//! A private ownership record records both definitions before replacing files. A reference
 //! operation never stops a template's instances or removes another owner's drop-ins.
 
 use std::fs;
@@ -38,7 +38,7 @@ struct Definition {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct Receipt {
+struct OwnedState {
     owner: String,
     desired: Definition,
     previous: Option<Definition>,
@@ -134,27 +134,33 @@ fn owned_or_missing(
     if let Some(bytes) = &actual {
         ensure!(
             bytes == desired || previous.is_some_and(|old| bytes == old),
-            "packaged unit file differs from ownership receipt"
+            "packaged unit file differs from ownership record"
         );
     }
     Ok(actual)
 }
 
-fn check(receipt: &Receipt) -> Result<bool> {
-    let (unit, drop_in) = paths(&receipt.desired);
+fn check(owned_state: &OwnedState) -> Result<bool> {
+    let (unit, drop_in) = paths(&owned_state.desired);
     let current_unit = owned_or_missing(
         &unit,
-        &receipt.desired.contents,
-        receipt.previous.as_ref().map(|old| old.contents.as_slice()),
+        &owned_state.desired.contents,
+        owned_state
+            .previous
+            .as_ref()
+            .map(|old| old.contents.as_slice()),
     )?;
     let current_drop = owned_or_missing(
         &drop_in,
-        &receipt.desired.drop_in,
-        receipt.previous.as_ref().map(|old| old.drop_in.as_slice()),
+        &owned_state.desired.drop_in,
+        owned_state
+            .previous
+            .as_ref()
+            .map(|old| old.drop_in.as_slice()),
     )?;
     Ok(
-        current_unit.as_deref() == Some(receipt.desired.contents.as_slice())
-            && current_drop.as_deref() == Some(receipt.desired.drop_in.as_slice()),
+        current_unit.as_deref() == Some(owned_state.desired.contents.as_slice())
+            && current_drop.as_deref() == Some(owned_state.desired.drop_in.as_slice()),
     )
 }
 
@@ -176,30 +182,30 @@ fn directory(path: &Path) -> Result<()> {
 pub(super) async fn execute(invocation: &Invocation, action: &str) -> Result<Value> {
     let desired = definition(invocation)?;
     let path = state_path(invocation, "packaged-unit");
-    let previous: Option<Receipt> = read_regular(&path, 1_048_576)?
+    let previous: Option<OwnedState> = read_regular(&path, 1_048_576)?
         .map(|bytes| serde_json::from_slice(&bytes))
         .transpose()?;
-    if let Some(receipt) = &previous {
+    if let Some(owned_state) = &previous {
         ensure!(
-            receipt.owner == invocation.id && receipt.desired.unit == desired.unit,
+            owned_state.owner == invocation.id && owned_state.desired.unit == desired.unit,
             "packaged unit ownership or basename changed"
         );
-        check(receipt)?;
+        check(owned_state)?;
     } else {
         let (unit, drop_in) = paths(&desired);
         ensure!(
             read_regular(&unit, LIMIT)?.is_none() && read_regular(&drop_in, LIMIT)?.is_none(),
-            "packaged unit exists without receipt"
+            "packaged unit exists without ownership record"
         );
     }
     if action == "observe" {
         let status = match &previous {
             None if invocation.action == Action::Remove => "absent",
-            Some(receipt)
+            Some(owned_state)
                 if invocation.action == Action::Apply
-                    && receipt.complete
-                    && receipt.desired == desired
-                    && check(receipt)? =>
+                    && owned_state.complete
+                    && owned_state.desired == desired
+                    && check(owned_state)? =>
             {
                 "current"
             }
@@ -213,8 +219,8 @@ pub(super) async fn execute(invocation: &Invocation, action: &str) -> Result<Val
     }
     let manager = PinnedSystemdManager::connect().await?;
     if action == "remove" {
-        if let Some(receipt) = previous {
-            let (unit, drop_in) = paths(&receipt.desired);
+        if let Some(owned_state) = previous {
+            let (unit, drop_in) = paths(&owned_state.desired);
             for file in [unit, drop_in] {
                 if read_regular(&file, LIMIT)?.is_some() {
                     fs::remove_file(file)?;
@@ -225,37 +231,37 @@ pub(super) async fn execute(invocation: &Invocation, action: &str) -> Result<Val
         }
         return Ok(json!({}));
     }
-    let mut receipt = match previous {
-        Some(receipt) if receipt.desired == desired => receipt,
-        Some(receipt) => {
+    let mut owned_state = match previous {
+        Some(owned_state) if owned_state.desired == desired => owned_state,
+        Some(owned_state) => {
             ensure!(
-                receipt.previous.is_none() && receipt.complete,
+                owned_state.previous.is_none() && owned_state.complete,
                 "finish prior packaged unit update first"
             );
-            Receipt {
+            OwnedState {
                 owner: invocation.id.clone(),
                 desired: desired.clone(),
-                previous: Some(receipt.desired),
+                previous: Some(owned_state.desired),
                 complete: false,
             }
         }
-        None => Receipt {
+        None => OwnedState {
             owner: invocation.id.clone(),
             desired: desired.clone(),
             previous: None,
             complete: false,
         },
     };
-    atomic_write(&path, &serde_json::to_vec(&receipt)?, 0o600)?;
+    atomic_write(&path, &serde_json::to_vec(&owned_state)?, 0o600)?;
     let (unit, drop_in) = paths(&desired);
     directory(Path::new(UNIT_ROOT))?;
     directory(drop_in.parent().context("drop-in has no parent")?)?;
     atomic_write(&unit, &desired.contents, 0o644)?;
     atomic_write(&drop_in, &desired.drop_in, 0o644)?;
     manager.daemon_reload().await?;
-    receipt.complete = true;
-    receipt.previous = None;
-    atomic_write(&path, &serde_json::to_vec(&receipt)?, 0o600)?;
+    owned_state.complete = true;
+    owned_state.previous = None;
+    atomic_write(&path, &serde_json::to_vec(&owned_state)?, 0o600)?;
     Ok(json!({"resource":desired.unit}))
 }
 
@@ -264,7 +270,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn partial_replacement_accepts_only_the_two_receipted_definitions() {
+    fn partial_replacement_accepts_only_the_two_recorded_definitions() {
         let temporary = tempfile::tempdir().unwrap();
         let path = temporary.path().join("unit");
         fs::write(&path, b"old").unwrap();

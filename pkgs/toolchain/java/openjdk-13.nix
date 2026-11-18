@@ -59,7 +59,7 @@ in
       target = [{abi = ["gnu"]; cpu = ["x86_64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64"]; os = ["darwin"];}];
       role = "public-package";
     };
-  qualification.packageProbe = lib.qualification.commandProbe {
+  smokeTest = lib.qualification.commandProbe {
     "primary" = {
       "artifacts" = [];
       "expected" = "The packaged toolchain produces runnable bytecode that prints 42.";

@@ -39,7 +39,7 @@ in
       role = "public-package";
     };
     pname = "perl-clone";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The clone is independent and the source array remains unchanged.";

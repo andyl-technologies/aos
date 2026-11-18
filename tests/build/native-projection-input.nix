@@ -212,7 +212,7 @@
     buildDeps = [qualificationTool];
     runtimeDeps = [dependency];
     outputs = ["out" "vmlinux"];
-    qualification.packageProbe = lib.qualification.packageProbe {
+    smokeTest = lib.qualification.packageProbe {
       primary = qualificationOperation false;
       badInput = qualificationOperation true;
     };

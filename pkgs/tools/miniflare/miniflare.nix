@@ -120,7 +120,7 @@ in
       role = "public-package";
     };
     pname = "miniflare";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Wrangler reads the configuration and emits declarations for the Worker module.";

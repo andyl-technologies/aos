@@ -7,6 +7,7 @@ description = "Recovery boot validation and emergency recovery runtime"
 
 [dependencies]
 aos-boot-identity = { path = "../aos-boot-identity" }
+aos-boot-media = { path = "../aos-boot-media" }
 
 [lib]
 path = "src/lib.rs"

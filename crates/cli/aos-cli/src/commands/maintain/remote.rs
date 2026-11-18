@@ -7,11 +7,11 @@ use std::process::Command;
 use anyhow::{Context as _, Result, bail};
 use aos_core::Sha256Digest;
 use aos_package_maintenance::PACKAGE_UPDATE_PR_OBSERVATION_V1;
-use aos_package_maintenance::PACKAGE_UPDATE_PR_PUBLICATION_V1;
+use aos_package_maintenance::PACKAGE_UPDATE_PR_PUBLICATION_V2;
 use aos_package_maintenance::envelope::GitObjectId;
 use aos_package_maintenance::presentation::PullRequestDraft;
 use aos_package_maintenance::remote::{
-    PullRequestObservationV1, PullRequestPublicationV1, RemoteCheck,
+    PullRequestObservationV1, PullRequestPublicationV2, RemoteCheck,
 };
 use aos_package_maintenance::run::PackageUpdateRunV1;
 use base64::Engine as _;
@@ -36,7 +36,7 @@ pub(super) struct PublicationRequest<'a> {
     base_branch: &'a str,
     head: &'a str,
     expected_remote_head: Option<&'a str>,
-    evidence_digest: Sha256Digest,
+    gate_results_digest: Sha256Digest,
     title: &'a str,
     body: &'a str,
     token_environment: &'a str,
@@ -51,19 +51,19 @@ pub(super) fn publication_request_digest(
 ) -> Result<Sha256Digest> {
     validate_environment_name(token_environment)?;
     let request = PublicationRequest {
-        schema: "aos.package-update-publication-request/v1",
+        schema: "aos.package-update-publication-request/v2",
         run_id: run.run_id.as_str(),
         remote: &coordinates.canonical_remote,
         branch: &draft.branch,
         base_branch: &draft.base_branch,
         head: &draft.head,
         expected_remote_head,
-        evidence_digest: draft.evidence_digest,
+        gate_results_digest: draft.gate_results_digest,
         title: &draft.title,
         body: &draft.body,
         token_environment,
     };
-    Sha256Digest::of_canonical("aos.package-update-publication-request/v1", &request)
+    Sha256Digest::of_canonical("aos.package-update-publication-request/v2", &request)
 }
 
 pub(super) fn default_branch(coordinates: &RepositoryCoordinates) -> Result<String> {
@@ -91,7 +91,7 @@ pub(super) async fn publish(
     draft: &PullRequestDraft,
     expected_remote_head: Option<&str>,
     token_environment: &str,
-) -> Result<PullRequestPublicationV1> {
+) -> Result<PullRequestPublicationV2> {
     validate_environment_name(token_environment)?;
     let token = secret_from_environment(token_environment)?;
     verify_candidate(run, draft, token_environment)?;
@@ -154,15 +154,15 @@ pub(super) async fn publish(
         .map(str::to_string)
         .map(|value| git_object(run, value))
         .transpose()?;
-    let publication = PullRequestPublicationV1 {
-        schema: PACKAGE_UPDATE_PR_PUBLICATION_V1.to_string(),
+    let publication = PullRequestPublicationV2 {
+        schema: PACKAGE_UPDATE_PR_PUBLICATION_V2.to_string(),
         run_id: run.run_id.clone(),
         remote: coordinates.canonical_remote.clone(),
         branch: run.branch.clone(),
         base_branch: draft.base_branch.clone(),
         head,
         previous_remote_head,
-        evidence_digest: draft.evidence_digest,
+        gate_results_digest: draft.gate_results_digest,
         pull_request_number: pull.number,
         pull_request_url: pull.html_url,
         published_at_unix: state::now_unix()?,
@@ -172,7 +172,7 @@ pub(super) async fn publish(
 }
 
 pub(super) async fn observe(
-    publication: &PullRequestPublicationV1,
+    publication: &PullRequestPublicationV2,
     authorization_check: &str,
     token_environment: &str,
 ) -> Result<PullRequestObservationV1> {

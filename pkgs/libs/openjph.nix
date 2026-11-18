@@ -44,7 +44,7 @@ in
       role = "public-package";
     };
     pname = "openjph";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "A deterministic 64-by-64 RGB bitmap.";
         operation = "Encode it as a reversible JPEG 2000 codestream and expand it.";

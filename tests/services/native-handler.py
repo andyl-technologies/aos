@@ -60,18 +60,18 @@ def invocation(ability, operation, value, revision="first", previous=None):
 
 
 class ConfigurationProcess:
-    """Exercises the installed provider using test-only receipt fixtures."""
+    """Exercises the installed provider using test-only ownership record fixtures."""
 
     def __init__(self, document, state_directory):
         self.invocation = document
         self.state_directory = Path(state_directory)
-        self.receipt_path = self.state_directory / (handler_module.digest(document["id"].encode()) + ".json")
+        self.owned_state_path = self.state_directory / (handler_module.digest(document["id"].encode()) + ".json")
 
-    def save(self, receipt):
+    def save(self, owned_state):
         self.state_directory.mkdir(parents=True, exist_ok=True)
-        receipt = dict(receipt, id=self.invocation["id"], revision=self.invocation["revision"])
-        receipt["owned_paths"] = sorted({receipt["path"], *([receipt["previous_path"]] if receipt.get("previous_path") else [])})
-        self.receipt_path.write_text(json.dumps(receipt))
+        owned_state = dict(owned_state, id=self.invocation["id"], revision=self.invocation["revision"])
+        owned_state["owned_paths"] = sorted({owned_state["path"], *([owned_state["previous_path"]] if owned_state.get("previous_path") else [])})
+        self.owned_state_path.write_text(json.dumps(owned_state))
 
     def file(self, action):
         if configuration_wrapper is None:
@@ -232,12 +232,12 @@ class NativeHandlerTests(unittest.TestCase):
             instance.service("apply")
 
             self.assertEqual(instance.service("observe")["status"], "current")
-            self.assertEqual(instance.receipt["image_units"], {})
+            self.assertEqual(instance.owned_state["image_units"], {})
             for name in rendered["units"]:
                 self.assertFalse((instance.unit_directory / name).is_symlink())
                 self.assertEqual((instance.unit_directory / name).read_bytes(), originals[name])
-            self.assertEqual(instance.receipt["id"], instance.invocation["id"])
-            self.assertEqual(instance.receipt["revision"], "first")
+            self.assertEqual(instance.owned_state["id"], instance.invocation["id"])
+            self.assertEqual(instance.owned_state["revision"], "first")
             self.assertTrue(instance.links_match(rendered["links"]))
 
             instance.service("remove")
@@ -246,7 +246,7 @@ class NativeHandlerTests(unittest.TestCase):
                 self.assertFalse((instance.unit_directory / name).exists())
                 self.assertFalse((instance.unit_directory / name).is_symlink())
             self.assertEqual(originals, {name: (projected_service_units / name).read_bytes() for name in originals})
-            self.assertFalse(instance.receipt_path.exists())
+            self.assertFalse(instance.owned_state_path.exists())
             instance.invocation["action"] = "remove"
             self.assertEqual(instance.service("observe")["status"], "absent")
 
@@ -271,12 +271,12 @@ class NativeHandlerTests(unittest.TestCase):
 
             recovered = handler_module.Handler(document, "unused", initial.unit_directory, initial.state_directory)
             recovered.manager = active_bus_manager(calls)
-            self.assertTrue(recovered.receipt["pending"])
+            self.assertTrue(recovered.owned_state["pending"])
             self.assertEqual(recovered.service("observe")["status"], "retry-safe")
             recovered.service("apply")
 
             self.assertEqual(recovered.service("observe")["status"], "current")
-            self.assertFalse(recovered.receipt["pending"])
+            self.assertFalse(recovered.owned_state["pending"])
             main = rendered["resource"]
             self.assertFalse((recovered.unit_directory / main).is_symlink())
             self.assertIn("Changed authenticated service", (recovered.unit_directory / main).read_text())
@@ -300,10 +300,10 @@ class NativeHandlerTests(unittest.TestCase):
 
             recovered = handler_module.Handler(instance.invocation, "unused", instance.unit_directory, instance.state_directory)
             recovered.manager = active_bus_manager(calls)
-            self.assertTrue(recovered.receipt["pending"])
+            self.assertTrue(recovered.owned_state["pending"])
             for name in rendered["units"]:
                 self.assertTrue((instance.unit_directory / name).is_symlink())
-                self.assertEqual(recovered.receipt["image_units"][name], {
+                self.assertEqual(recovered.owned_state["image_units"][name], {
                     "target": str(projected_service_units / name),
                     "digest": handler_module.digest(originals[name]),
                 })
@@ -314,7 +314,7 @@ class NativeHandlerTests(unittest.TestCase):
             self.assertEqual(recovered.service("observe")["status"], "retry-safe")
             recovered.service("apply")
             self.assertEqual(recovered.service("observe")["status"], "current")
-            self.assertEqual(recovered.receipt["image_units"], {})
+            self.assertEqual(recovered.owned_state["image_units"], {})
 
     def test_owned_projection_no_longer_depends_on_original_store_target(self):
         with tempfile.TemporaryDirectory() as root:
@@ -342,8 +342,8 @@ class NativeHandlerTests(unittest.TestCase):
                 value, rendered, initial, calls, originals = self.projected_service(root)
                 value.update(activation_owner=owner, bootstrap=bootstrap)
                 initial.service("apply")
-                self.assertFalse(initial.receipt["pending"])
-                self.assertEqual(initial.receipt["image_units"], {})
+                self.assertFalse(initial.owned_state["pending"])
+                self.assertEqual(initial.owned_state["image_units"], {})
 
                 for name in rendered["units"]:
                     leaf = initial.unit_directory / name
@@ -362,7 +362,7 @@ class NativeHandlerTests(unittest.TestCase):
                 for name in rendered["units"]:
                     self.assertFalse((recovered.unit_directory / name).is_symlink())
                     self.assertEqual((recovered.unit_directory / name).read_bytes(), originals[name])
-                self.assertEqual(recovered.receipt["image_units"], {})
+                self.assertEqual(recovered.owned_state["image_units"], {})
                 self.assertEqual(recovered.service("observe")["status"], "current")
 
     def retained_service_with_new_image_projection(self, root, owner="image", bootstrap=False):
@@ -400,8 +400,8 @@ class NativeHandlerTests(unittest.TestCase):
                 recovered.service("apply")
 
                 self.assertEqual(recovered.service("observe")["status"], "current")
-                self.assertFalse(recovered.receipt["pending"])
-                self.assertEqual(recovered.receipt["image_units"], {})
+                self.assertFalse(recovered.owned_state["pending"])
+                self.assertEqual(recovered.owned_state["image_units"], {})
                 for unit_name, text in retained["units"].items():
                     leaf = recovered.unit_directory / unit_name
                     self.assertFalse(leaf.is_symlink())
@@ -416,7 +416,7 @@ class NativeHandlerTests(unittest.TestCase):
                     for unit_name in originals
                 })
 
-    def test_new_image_projection_requires_selected_target_and_completed_receipt(self):
+    def test_new_image_projection_requires_selected_target_and_completed_owned_state(self):
         for change in ("missing-selection", "wrong-directory", "foreign-target", "pending", "removing", "dispatching", "receipt-kind", "receipt-hash", "ineligible"):
             with self.subTest(change=change), tempfile.TemporaryDirectory() as root:
                 initial, retained, rendered, calls, originals = self.retained_service_with_new_image_projection(root)
@@ -433,14 +433,14 @@ class NativeHandlerTests(unittest.TestCase):
                     leaf.unlink()
                     leaf.symlink_to(projected_service_input)
                 elif change in {"pending", "removing", "dispatching"}:
-                    initial.save(dict(initial.receipt, **{change: True}))
+                    initial.save(dict(initial.owned_state, **{change: True}))
                 elif change == "receipt-kind":
-                    initial.save(dict(initial.receipt, kind="not-service"))
+                    initial.save(dict(initial.owned_state, kind="not-service"))
                 elif change == "receipt-hash":
-                    initial.save(dict(initial.receipt, units=dict(initial.receipt["units"], **{name: "0" * 64})))
+                    initial.save(dict(initial.owned_state, units=dict(initial.owned_state["units"], **{name: "0" * 64})))
                 else:
                     initial.value.update(activation_owner="ability", bootstrap=False)
-                saved_receipt = initial.receipt_path.read_bytes()
+                saved_owned_state = initial.owned_state_path.read_bytes()
                 before = list(calls)
                 recovered = handler_module.Handler(
                     initial.invocation, "unused", initial.unit_directory, initial.state_directory,
@@ -452,7 +452,7 @@ class NativeHandlerTests(unittest.TestCase):
                 with self.assertRaises((ValueError, OSError)):
                     recovered.service("apply")
 
-                self.assertEqual(recovered.receipt_path.read_bytes(), saved_receipt)
+                self.assertEqual(recovered.owned_state_path.read_bytes(), saved_owned_state)
                 self.assertTrue(leaf.is_symlink())
                 self.assertEqual(calls, before)
                 self.assertEqual(originals, {
@@ -460,7 +460,7 @@ class NativeHandlerTests(unittest.TestCase):
                     for unit_name in originals
                 })
 
-    def test_completed_projection_refuses_unproven_receipt_or_alias(self):
+    def test_completed_projection_refuses_unproven_owned_state_or_alias(self):
         for change in ("pending", "pending-target", "removing", "dispatching", "receipt-kind", "receipt-hash", "ineligible", "foreign-target", "desired-hash"):
             with self.subTest(change=change), tempfile.TemporaryDirectory() as root:
                 value, rendered, initial, calls, originals = self.projected_service(root)
@@ -471,18 +471,18 @@ class NativeHandlerTests(unittest.TestCase):
                 leaf.symlink_to(projected_service_units / name)
 
                 if change in {"pending", "removing", "dispatching"}:
-                    initial.save(dict(initial.receipt, **{change: True}))
+                    initial.save(dict(initial.owned_state, **{change: True}))
                 elif change == "pending-target":
-                    initial.save(dict(initial.receipt, pending=True, image_units={name: {
+                    initial.save(dict(initial.owned_state, pending=True, image_units={name: {
                         "target": str(projected_service_units / name),
-                        "digest": initial.receipt["units"][name],
+                        "digest": initial.owned_state["units"][name],
                     }}))
                     leaf.unlink()
                     leaf.symlink_to(projected_service_units / "different.service")
                 elif change == "receipt-kind":
-                    initial.save(dict(initial.receipt, kind="not-service"))
+                    initial.save(dict(initial.owned_state, kind="not-service"))
                 elif change == "receipt-hash":
-                    initial.save(dict(initial.receipt, units=dict(initial.receipt["units"], **{name: "0" * 64})))
+                    initial.save(dict(initial.owned_state, units=dict(initial.owned_state["units"], **{name: "0" * 64})))
                 elif change == "ineligible":
                     value.update(bootstrap=False, activation_owner="ability")
                 elif change == "desired-hash":
@@ -492,12 +492,12 @@ class NativeHandlerTests(unittest.TestCase):
                     foreign.write_bytes(originals[name])
                     leaf.unlink()
                     leaf.symlink_to(foreign)
-                saved_receipt = initial.receipt_path.read_bytes()
+                saved_owned_state = initial.owned_state_path.read_bytes()
 
                 self.assertEqual(initial.service("observe")["status"], "indeterminate")
                 with self.assertRaises((ValueError, OSError)):
                     initial.service("apply")
-                self.assertEqual(initial.receipt_path.read_bytes(), saved_receipt)
+                self.assertEqual(initial.owned_state_path.read_bytes(), saved_owned_state)
                 self.assertTrue(leaf.is_symlink())
 
     def test_image_projection_rejects_unselected_mutable_and_changed_aliases(self):
@@ -509,7 +509,7 @@ class NativeHandlerTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValueError, "no authenticated image projection"):
                 unselected.service("apply")
-            self.assertIsNone(unselected.receipt)
+            self.assertIsNone(unselected.owned_state)
 
             mismatched = dict(value, lifecycle=dict(value["lifecycle"], description="Different authenticated content"))
             mismatch = handler_module.Handler(
@@ -517,7 +517,7 @@ class NativeHandlerTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValueError, "conflicts with authenticated rendered content"):
                 mismatch.service("apply")
-            self.assertIsNone(mismatch.receipt)
+            self.assertIsNone(mismatch.owned_state)
 
             main = rendered["resource"]
             mutable = Path(root) / "mutable.service"
@@ -527,23 +527,23 @@ class NativeHandlerTests(unittest.TestCase):
             leaf.symlink_to(mutable)
             with self.assertRaisesRegex(ValueError, "canonical immutable store member"):
                 initial.service("apply")
-            self.assertIsNone(initial.receipt)
+            self.assertIsNone(initial.owned_state)
             self.assertEqual(calls, [])
 
             leaf.unlink()
             leaf.symlink_to(projected_service_units / main)
             initial.service("apply")
-            saved_receipt = initial.receipt_path.read_bytes()
+            saved_owned_state = initial.owned_state_path.read_bytes()
             leaf.unlink()
             leaf.symlink_to(projected_service_units / main)
             # Ordinary services cannot adopt even a matching immutable alias
-            # over a definition already owned by their completed receipt.
+            # over a definition already owned by their completed ownership record.
             initial.value = dict(initial.value, bootstrap=False, activation_owner="ability")
             for action in ["apply", "remove"]:
                 with self.subTest(action=action), self.assertRaisesRegex(ValueError, "no authenticated image projection"):
                     initial.service(action)
             self.assertEqual(initial.service("observe")["status"], "indeterminate")
-            self.assertEqual(initial.receipt_path.read_bytes(), saved_receipt)
+            self.assertEqual(initial.owned_state_path.read_bytes(), saved_owned_state)
             self.assertEqual(originals, {name: (projected_service_units / name).read_bytes() for name in originals})
 
     def test_workload_profiles_preserve_master_syscall_filters(self):
@@ -631,8 +631,8 @@ class NativeHandlerTests(unittest.TestCase):
             result = instance.service("apply")
 
             self.assertEqual(result["resource"], "dbus.service")
-            self.assertEqual(instance.receipt["owner"], "ability")
-            self.assertFalse(instance.receipt["pending"])
+            self.assertEqual(instance.owned_state["owner"], "ability")
+            self.assertFalse(instance.owned_state["pending"])
             self.assertEqual(before, {name: (units / name).read_bytes() for name in rendered["units"]})
             self.assertTrue(instance.links_match(rendered["links"]))
             self.assertFalse(any(call[0] in {"restart", "reload-or-restart", "stop"} for call in calls))
@@ -681,7 +681,7 @@ class NativeHandlerTests(unittest.TestCase):
                 instance.service("apply")
 
             self.assertEqual(calls, [])
-            self.assertIsNone(instance.receipt)
+            self.assertIsNone(instance.owned_state)
             self.assertEqual(instance.service("observe")["status"], "indeterminate")
 
     def test_bootstrap_bus_interrupted_dispatch_retains_uncertainty(self):
@@ -707,14 +707,14 @@ class NativeHandlerTests(unittest.TestCase):
                 instance.service("apply")
 
             recovered = handler_module.Handler(document, "unused", units, state)
-            self.assertTrue(recovered.receipt["pending"])
-            self.assertTrue(recovered.receipt["dispatching"])
+            self.assertTrue(recovered.owned_state["pending"])
+            self.assertTrue(recovered.owned_state["dispatching"])
             calls.clear()
             recovered.manager = active_bus_manager(calls)
 
             self.assertEqual(recovered.service("observe")["status"], "indeterminate")
             self.assertTrue(all(call[0] == "show" for call in calls))
-            self.assertTrue(recovered.receipt["pending"])
+            self.assertTrue(recovered.owned_state["pending"])
 
     def test_required_character_device_is_present(self):
         with tempfile.TemporaryDirectory() as root:
@@ -922,7 +922,7 @@ class NativeHandlerTests(unittest.TestCase):
 
                 self.assertFalse((Path(root) / "example.service").exists())
 
-    def test_removal_guard_refusal_preserves_service_and_receipt(self):
+    def test_removal_guard_refusal_preserves_service_and_owned_state(self):
         with tempfile.TemporaryDirectory() as root:
             value = service()
             value["lifecycle"]["removal_guard"] = [{
@@ -935,12 +935,12 @@ class NativeHandlerTests(unittest.TestCase):
             with patch.object(handler_module.subprocess, "run") as guard:
                 instance.service("apply")
                 guard.assert_not_called()
-                before = dict(instance.receipt)
+                before = dict(instance.owned_state)
                 calls.clear()
                 guard.return_value = subprocess.CompletedProcess([], 1, "", "workers remain")
                 with self.assertRaisesRegex(ValueError, "workers remain"):
                     instance.service("remove")
-                self.assertEqual(instance.receipt, before)
+                self.assertEqual(instance.owned_state, before)
                 self.assertTrue((Path(root) / "example.service").exists())
                 self.assertEqual(calls, [])
 
@@ -1027,7 +1027,7 @@ class NativeHandlerTests(unittest.TestCase):
             first.manager = active_bus_manager(calls)
             first.service("apply")
             original_unit = (units / "example.service").read_bytes()
-            original_links = dict(first.receipt["links"])
+            original_links = dict(first.owned_state["links"])
 
             changed = dict(value, configurationGeneration="/var/lib/aos/configuration-lowers/second/etc.erofs")
             second = handler_module.Handler(
@@ -1039,10 +1039,10 @@ class NativeHandlerTests(unittest.TestCase):
             second.service("apply")
 
             self.assertEqual((units / "example.service").read_bytes(), original_unit)
-            self.assertEqual(second.receipt["links"], original_links)
+            self.assertEqual(second.owned_state["links"], original_links)
             self.assertFalse(any(call[0] in {"start", "restart", "reload", "reload-or-restart"} for call in calls))
-            self.assertFalse(second.receipt["pending"])
-            self.assertEqual(second.receipt["revision"], "dependency-changed")
+            self.assertFalse(second.owned_state["pending"])
+            self.assertEqual(second.owned_state["revision"], "dependency-changed")
             self.assertEqual(second.service("observe")["status"], "current")
 
     def test_restart_token_requests_one_lifecycle_dispatch_without_unit_changes(self):
@@ -1099,7 +1099,7 @@ class NativeHandlerTests(unittest.TestCase):
             with patch.object(handler_module, "durable_write", side_effect=interrupted_write):
                 with self.assertRaisesRegex(RuntimeError, "publication reply unavailable"):
                     changed.service("apply")
-            self.assertTrue(changed.receipt["pending"])
+            self.assertTrue(changed.owned_state["pending"])
             self.assertFalse(any(call[0] in {"start", "restart", "reload", "reload-or-restart"} for call in calls))
 
             recovered = handler_module.Handler(changed_invocation, "unused", units, state)
@@ -1108,7 +1108,7 @@ class NativeHandlerTests(unittest.TestCase):
             recovered.service("apply")
 
             self.assertEqual(calls.count(("reload-or-restart", "example.service")), 1)
-            self.assertFalse(recovered.receipt["pending"])
+            self.assertFalse(recovered.owned_state["pending"])
             self.assertEqual(recovered.service("observe")["status"], "current")
 
     def test_interrupted_configuration_only_update_retains_one_required_reload(self):
@@ -1126,7 +1126,7 @@ class NativeHandlerTests(unittest.TestCase):
                 first.manager = active_bus_manager(calls)
                 first.service("apply")
                 original_unit = (units / "example.service").read_bytes()
-                original_configuration = dict(first.receipt["configuration"])
+                original_configuration = dict(first.owned_state["configuration"])
 
                 if mutation == "restart_token":
                     value["lifecycle"]["restart_token"] = "second"
@@ -1148,19 +1148,19 @@ class NativeHandlerTests(unittest.TestCase):
                         changed.service("apply")
 
                 self.assertEqual((units / "example.service").read_bytes(), original_unit)
-                self.assertTrue(changed.receipt["pending"])
-                self.assertEqual(changed.receipt["previous_configuration"], original_configuration)
-                self.assertNotEqual(changed.receipt["configuration"], original_configuration)
+                self.assertTrue(changed.owned_state["pending"])
+                self.assertEqual(changed.owned_state["previous_configuration"], original_configuration)
+                self.assertNotEqual(changed.owned_state["configuration"], original_configuration)
                 self.assertFalse(any(call[0] in {"start", "restart", "reload", "reload-or-restart"} for call in calls))
 
                 recovered = handler_module.Handler(changed_invocation, "unused", units, state)
                 recovered.manager = active_bus_manager(calls)
-                self.assertEqual(recovered.receipt["previous_configuration"], original_configuration)
+                self.assertEqual(recovered.owned_state["previous_configuration"], original_configuration)
                 self.assertEqual(recovered.service("observe")["status"], "retry-safe")
                 recovered.service("apply")
 
                 self.assertEqual([call for call in calls if call[0] in {"start", "restart", "reload", "reload-or-restart"}], [("reload-or-restart", "example.service")])
-                self.assertFalse(recovered.receipt["pending"])
+                self.assertFalse(recovered.owned_state["pending"])
                 self.assertEqual(recovered.service("observe")["status"], "current")
 
     def test_inactive_ordinary_service_restores_with_start_without_configuration_restart(self):
@@ -1232,7 +1232,7 @@ class NativeHandlerTests(unittest.TestCase):
             first.service("apply")
 
             self.assertIn(("start", "--no-block", "example.service"), calls)
-            self.assertFalse(first.receipt["pending"])
+            self.assertFalse(first.owned_state["pending"])
             before = list(calls)
             self.assertEqual(first.service("observe")["status"], "current")
             self.assertEqual(calls, before)
@@ -1250,7 +1250,7 @@ class NativeHandlerTests(unittest.TestCase):
                 before_dispatches,
             )
             self.assertEqual(unchanged.service("observe")["status"], "current")
-            self.assertFalse(unchanged.receipt["pending"])
+            self.assertFalse(unchanged.owned_state["pending"])
 
             value["lifecycle"]["description"] = "Updated advisory report"
             changed = handler_module.Handler(
@@ -1360,7 +1360,7 @@ class NativeHandlerTests(unittest.TestCase):
                 )
                 recovered.manager = lost_reply
                 self.assertEqual(recovered.service("observe")["status"], "indeterminate")
-                self.assertTrue(recovered.receipt["pending"])
+                self.assertTrue(recovered.owned_state["pending"])
                 self.assertEqual(sum(call[0] == "start" for call in calls), 1)
 
                 recovered.manager = lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, (
@@ -1370,7 +1370,7 @@ class NativeHandlerTests(unittest.TestCase):
                 ), "")
                 expected = "current" if start_mode == "enqueue" else "indeterminate"
                 self.assertEqual(recovered.service("observe")["status"], expected)
-                self.assertEqual(recovered.receipt["pending"], start_mode == "wait")
+                self.assertEqual(recovered.owned_state["pending"], start_mode == "wait")
 
     def test_invalid_service_start_mode_fails_before_manager_dispatch(self):
         with tempfile.TemporaryDirectory() as root:
@@ -1965,7 +1965,7 @@ class NativeHandlerTests(unittest.TestCase):
         second = dict(service(), service="", instance="second.main")
         self.assertNotEqual(handler_module.service_identity(first), handler_module.service_identity(second))
 
-    def test_configuration_receipts_reject_other_scope_ownership(self):
+    def test_configuration_owned_states_reject_other_scope_ownership(self):
         with tempfile.TemporaryDirectory() as root:
             path = Path(root) / "file"
             value = {"path": str(path), "content": "shared", "mode": "0644"}
@@ -2130,7 +2130,7 @@ class NativeHandlerTests(unittest.TestCase):
 
             self.assertFalse(old_path.exists())
             self.assertFalse(new_path.exists())
-            self.assertFalse(instance.receipt_path.exists())
+            self.assertFalse(instance.owned_state_path.exists())
 
     def test_remove_observation_retries_owned_configuration_then_proves_absence(self):
         with tempfile.TemporaryDirectory() as root:
@@ -2214,7 +2214,7 @@ class NativeHandlerTests(unittest.TestCase):
                 self.assertEqual(public.stat().st_ino, original.st_ino)
                 self.assertEqual(stat.S_IMODE(public.stat().st_mode), 0o750)
                 self.assertFalse(backing.exists())
-                self.assertFalse(case.handler.receipt_path.exists())
+                self.assertFalse(case.handler.owned_state_path.exists())
 
     def test_private_storage_retirement_moves_nested_mounts_once(self):
         with tempfile.TemporaryDirectory() as root:
@@ -2224,7 +2224,7 @@ class NativeHandlerTests(unittest.TestCase):
                 nested = backing / "www/site"
                 nested.mkdir(parents=True)
                 (nested / "index").write_text("site data")
-                self.assertEqual(case.handler.receipt["private_storage"], ["/var/lib/example"])
+                self.assertEqual(case.handler.owned_state["private_storage"], ["/var/lib/example"])
 
                 case.handler.service("remove")
 
@@ -2249,7 +2249,7 @@ class NativeHandlerTests(unittest.TestCase):
                 self.assertEqual((foreign / "data").read_text(), "foreign data")
                 self.assertEqual((backing / "retained-data").read_text(), "preserved service data")
                 self.assertTrue((Path(root) / "units/example.service").exists())
-                self.assertTrue(case.handler.receipt_path.exists())
+                self.assertTrue(case.handler.owned_state_path.exists())
 
     def test_private_storage_retirement_recovers_before_rename_without_repeating_stop(self):
         with tempfile.TemporaryDirectory() as root:
@@ -2261,8 +2261,8 @@ class NativeHandlerTests(unittest.TestCase):
                         case.handler.service("remove")
                 self.assertFalse(public.exists())
                 self.assertTrue(backing.exists())
-                self.assertTrue(case.handler.receipt["removal_stopped"])
-                self.assertEqual(len(case.handler.receipt["storage_handoffs"]), 1)
+                self.assertTrue(case.handler.owned_state["removal_stopped"])
+                self.assertEqual(len(case.handler.owned_state["storage_handoffs"]), 1)
 
                 removal = dict(case.request, action="remove")
                 recovered = handler_module.Handler(removal, "unused", Path(root) / "units", Path(root) / "receipts")
@@ -2270,12 +2270,12 @@ class NativeHandlerTests(unittest.TestCase):
                 # Even absent units cannot acknowledge an incomplete handoff.
                 (Path(root) / "units/example.service").unlink()
                 self.assertEqual(recovered.service("observe")["status"], "retry-safe")
-                self.assertTrue(recovered.receipt_path.exists())
+                self.assertTrue(recovered.owned_state_path.exists())
                 recovered.service("remove")
 
                 self.assertEqual((public / "retained-data").read_text(), "preserved service data")
                 self.assertEqual(sum(call[0] == "stop" for call in case.calls), 1)
-                self.assertFalse(recovered.receipt_path.exists())
+                self.assertFalse(recovered.owned_state_path.exists())
 
     def test_private_storage_retirement_recovers_after_rename(self):
         with tempfile.TemporaryDirectory() as root:
@@ -2299,7 +2299,7 @@ class NativeHandlerTests(unittest.TestCase):
                 self.assertEqual(recovered.service("observe")["status"], "retry-safe")
                 recovered.service("remove")
 
-                self.assertFalse(recovered.receipt_path.exists())
+                self.assertFalse(recovered.owned_state_path.exists())
                 self.assertEqual(sum(call[0] == "stop" for call in case.calls), 1)
                 self.assertEqual((public / "retained-data").read_text(), "preserved service data")
 
@@ -2325,7 +2325,7 @@ class NativeHandlerTests(unittest.TestCase):
                 self.assertFalse(public.exists())
                 self.assertEqual((backing / "foreign").read_text(), "foreign")
                 self.assertEqual((original / "retained-data").read_text(), "preserved service data")
-                self.assertTrue(recovered.receipt_path.exists())
+                self.assertTrue(recovered.owned_state_path.exists())
 
     def test_private_storage_retirement_rechecks_backing_after_alias_unlink_sync(self):
         with tempfile.TemporaryDirectory() as root:
@@ -2356,7 +2356,7 @@ class NativeHandlerTests(unittest.TestCase):
                 self.assertEqual((backing / "foreign").read_text(), "foreign data")
                 self.assertEqual((original / "retained-data").read_text(), "preserved service data")
                 self.assertTrue((Path(root) / "units/example.service").exists())
-                self.assertTrue(case.handler.receipt_path.exists())
+                self.assertTrue(case.handler.owned_state_path.exists())
 
     def test_private_storage_retirement_never_replaces_competing_public_directory(self):
         with tempfile.TemporaryDirectory() as root:
@@ -2376,7 +2376,7 @@ class NativeHandlerTests(unittest.TestCase):
                 self.assertTrue(public.is_dir())
                 self.assertEqual(list(public.iterdir()), [])
                 self.assertEqual((backing / "retained-data").read_text(), "preserved service data")
-                self.assertTrue(case.handler.receipt_path.exists())
+                self.assertTrue(case.handler.owned_state_path.exists())
 
     def test_private_storage_retirement_rejects_intermediate_symlink(self):
         with tempfile.TemporaryDirectory() as root:

@@ -43,7 +43,7 @@ in
       role = "public-package";
     };
     pname = "tailscale";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The client reports a nonempty semantic release version and its Go toolchain.";

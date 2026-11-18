@@ -16,7 +16,7 @@ assert builtins.elem (binutils.version or "") ["2.41" "2.41.0"];
     };
     pname = "pe-tools";
     version = "2.41";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "The target-hosted objcopy executable's nonempty text section.";
         operation = "Extract its text section into a raw binary file.";

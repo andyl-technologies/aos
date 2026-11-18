@@ -9,12 +9,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::envelope::GitObjectId;
 use crate::identity::RunId;
-use crate::{PACKAGE_UPDATE_PR_OBSERVATION_V1, PACKAGE_UPDATE_PR_PUBLICATION_V1};
+use crate::{PACKAGE_UPDATE_PR_OBSERVATION_V1, PACKAGE_UPDATE_PR_PUBLICATION_V2};
 
 /// Records the exact branch and matching pull request created by publication.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct PullRequestPublicationV1 {
+pub struct PullRequestPublicationV2 {
     /// Selects the exact closed publication schema.
     pub schema: String,
     /// Run whose reviewed candidate was published.
@@ -30,8 +30,8 @@ pub struct PullRequestPublicationV1 {
     /// Remote branch value compared before the atomic update.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous_remote_head: Option<GitObjectId>,
-    /// Digest of the complete local evidence dossier.
-    pub evidence_digest: Sha256Digest,
+    /// Canonical digest of the successful final gate-results set published.
+    pub gate_results_digest: Sha256Digest,
     /// GitHub pull-request number.
     pub pull_request_number: u64,
     /// Canonical public pull-request URL.
@@ -40,7 +40,7 @@ pub struct PullRequestPublicationV1 {
     pub published_at_unix: u64,
 }
 
-impl PullRequestPublicationV1 {
+impl PullRequestPublicationV2 {
     /// Validates identities, bounds, and public URLs.
     ///
     /// # Errors
@@ -48,7 +48,7 @@ impl PullRequestPublicationV1 {
     /// Returns an error for an incompatible schema, malformed Git identity,
     /// unsafe branch, non-GitHub URL, or absent pull-request number.
     pub fn validate(&self) -> Result<()> {
-        if self.schema != PACKAGE_UPDATE_PR_PUBLICATION_V1
+        if self.schema != PACKAGE_UPDATE_PR_PUBLICATION_V2
             || self.pull_request_number == 0
             || self.branch.is_empty()
             || self.branch.len() > 160
@@ -218,15 +218,15 @@ mod tests {
 
     #[test]
     fn publication_contains_no_credential_surface() {
-        let publication = PullRequestPublicationV1 {
-            schema: PACKAGE_UPDATE_PR_PUBLICATION_V1.to_string(),
+        let publication = PullRequestPublicationV2 {
+            schema: PACKAGE_UPDATE_PR_PUBLICATION_V2.to_string(),
             run_id: RunId::parse("run-remote-fixture").unwrap(),
             remote: "https://github.com/andyl-technologies/aos".to_string(),
             branch: "dplecki/upgrade-zlib-1-3".to_string(),
             base_branch: "main".to_string(),
             head: object('a'),
             previous_remote_head: None,
-            evidence_digest: Sha256Digest::separated("fixture", "evidence"),
+            gate_results_digest: Sha256Digest::separated("fixture", "gate-results"),
             pull_request_number: 42,
             pull_request_url: "https://github.com/andyl-technologies/aos/pull/42".to_string(),
             published_at_unix: 1,

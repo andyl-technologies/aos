@@ -45,7 +45,7 @@ in
       role = "public-package";
     };
     pname = "zfs";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Zgenhostid writes the identifier as the four native-order bytes 78 56 34 12.";

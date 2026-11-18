@@ -42,9 +42,6 @@ pub struct PackageUpdateRunV1 {
     /// Exact local candidate commit created with maintainer Git identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub candidate_commit: Option<GitObjectId>,
-    /// Canonical final local evidence digest, when complete.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub evidence_digest: Option<Sha256Digest>,
     /// Exact commit from which the worktree was created.
     pub base_commit: GitObjectId,
     /// Current attempt number, starting with deterministic attempt zero.
@@ -496,7 +493,6 @@ mod tests {
             worktree_cleaned: false,
             accepted_candidate: None,
             candidate_commit: None,
-            evidence_digest: None,
             base_commit: GitObjectId {
                 algorithm: crate::envelope::GitObjectFormat::Sha1,
                 value: "0123456789012345678901234567890123456789".to_string(),
@@ -506,109 +502,6 @@ mod tests {
             updated_at_unix: 1,
         };
         assert!(run.validate().is_err());
-        Ok(())
-    }
-}
-
-/// Contains the complete verified local evidence for one ready candidate.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-pub struct PackageUpdateEvidenceV1 {
-    /// Selects the exact closed evidence schema.
-    pub schema: String,
-    /// Durable run represented by this dossier.
-    pub run_id: RunId,
-    /// Immutable plan represented by this dossier.
-    pub plan_id: PlanId,
-    /// Final accepted candidate attempt.
-    pub attempt: u32,
-    /// Plan digest carried by the run journal.
-    pub plan_digest: Sha256Digest,
-    /// Exact protected base commit.
-    pub base_commit: GitObjectId,
-    /// Exact maintainer-authored candidate commit.
-    pub candidate_commit: GitObjectId,
-    /// Accepted textual candidate patch identity.
-    pub patch_digest: Sha256Digest,
-    /// Complete deterministic source materialization evidence.
-    pub materialization: MaterializationRecordV1,
-    /// Ordered accepted repair lineage after deterministic attempt zero.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub repair_attempts: Vec<RepairAttemptV1>,
-    /// Successful quick gate execution.
-    pub quick_gates: GateResultsV1,
-    /// Successful exact-commit final gate execution.
-    pub final_gates: GateResultsV1,
-    /// Digest of the verified journal tip at evidence construction time.
-    pub journal_tip: Sha256Digest,
-    /// Observation time in Unix seconds.
-    pub completed_at_unix: u64,
-}
-
-impl PackageUpdateEvidenceV1 {
-    /// Validates cross-object identities and completion claims.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when schemas, run/plan identities, candidate inputs,
-    /// or gate outcomes disagree.
-    pub fn validate(&self) -> Result<()> {
-        if self.schema != crate::PACKAGE_UPDATE_EVIDENCE_V1 {
-            bail!("unsupported package update evidence schema");
-        }
-        self.base_commit.validate()?;
-        self.candidate_commit.validate()?;
-        self.materialization.validate()?;
-        for repair in &self.repair_attempts {
-            repair.validate()?;
-        }
-        self.quick_gates.validate()?;
-        self.final_gates.validate()?;
-        let repair_lineage_valid = if self.attempt == 0 {
-            self.repair_attempts.is_empty()
-                && self.materialization.patch_digest == self.patch_digest
-        } else {
-            self.repair_attempts.len() == self.attempt as usize
-                && self
-                    .repair_attempts
-                    .iter()
-                    .enumerate()
-                    .all(|(index, repair)| {
-                        let attempt = u32::try_from(index)
-                            .ok()
-                            .and_then(|value| value.checked_add(1));
-                        repair.run_id == self.run_id
-                            && repair.plan_id == self.plan_id
-                            && Some(repair.attempt) == attempt
-                            && repair.parent_attempt.checked_add(1) == Some(repair.attempt)
-                    })
-                && self
-                    .repair_attempts
-                    .last()
-                    .is_some_and(|repair| repair.candidate_digest == self.patch_digest)
-        };
-        if self.materialization.run_id != self.run_id
-            || self.quick_gates.run_id != self.run_id
-            || self.final_gates.run_id != self.run_id
-            || self.materialization.plan_id != self.plan_id
-            || self.quick_gates.plan_id != self.plan_id
-            || self.final_gates.plan_id != self.plan_id
-            || self.quick_gates.attempt != self.attempt
-            || self.final_gates.attempt != self.attempt
-            || !repair_lineage_valid
-            || self.quick_gates.candidate_digest != self.patch_digest
-            || self.final_gates.candidate_digest
-                != Sha256Digest::separated(
-                    "aos.package-update-commit/v1",
-                    self.candidate_commit.value.as_bytes(),
-                )
-            || self.quick_gates.phase != "quick"
-            || self.final_gates.phase != "final"
-            || !self.quick_gates.all_succeeded()
-            || !self.final_gates.all_succeeded()
-        {
-            bail!("package update evidence objects do not form one completed candidate");
-        }
         Ok(())
     }
 }

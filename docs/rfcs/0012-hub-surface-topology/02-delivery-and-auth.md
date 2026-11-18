@@ -421,16 +421,16 @@ response, redirect, connect, and total-request limits are closed constants.
 
 The gateway rebuilds the response header set rather than forwarding it. It
 signs the request nonce, final URL, connected peer IP, upstream status, and
-timestamp. The Worker accepts bytes only when that evidence is fresh, signed,
-nonce-bound, status-consistent, and names a global peer. Missing configuration,
-an unavailable gateway, stale evidence, an unknown peer, or a signature failure
-fails closed. Gateway failures and logs never include target URLs, presigned
+timestamp. The Worker accepts bytes only when that signed response record is
+fresh, nonce-bound, status-consistent, and names a global peer. Missing
+configuration, an unavailable gateway, a stale record, an unknown peer, or a
+signature failure fails closed. Gateway failures and logs never include target URLs, presigned
 queries, authorization values, or bodies.
 
 After authenticating the envelope and checking its timestamp, the gateway
 atomically inserts the nonce into a durable strongly-consistent database before
 starting the upstream request. Every replica uses that same database, so the
-nonce primary key gives one admission across replicas and process restarts.
+nonce primary key accepts each nonce once across replicas and process restarts.
 Replicated deployments use PostgreSQL; file-backed SQLite is valid only for a
 singleton gateway process. Expired rows may be reclaimed, but a live conflict
 always fails before an upstream side effect.
@@ -468,7 +468,7 @@ The CLI uses the resumable `BeginRegistryPublicationManifest`,
 protocol. Begin fixes the generation, canonical manifest digest, and total
 object count without sending the object inventory. Append accepts at most 256
 objects in strict chunk order under a renewable ownership lease. Every accepted
-chunk has a durable digest receipt, so retrying a lost response is exact while a
+chunk has a durable digest record, so retrying a lost response is exact while a
 conflicting or out-of-order retry fails closed. Seal re-derives the complete
 manifest digest from the durable declarations and atomically freezes the
 required placement set. The legacy one-request `BeginRegistryPublication`
@@ -480,8 +480,8 @@ media type, byte size, and SHA-256 while streaming the same bytes to every
 required placement. A failed upload aborts unfinished backend multipart
 sessions and leaves the publication undiscoverable.
 
-`CommitRegistryPublication` is accepted only after exact presence evidence
-exists for every declared object on every frozen placement. It writes and
+`CommitRegistryPublication` is accepted only after exact presence observations
+exist for every declared object on every frozen placement. It writes and
 verifies mutable pointers across that placement set before publishing the
 generation and release/channel discovery state. `AbortRegistryPublication`
 terminalizes any non-committed transaction; clients call it best-effort after
@@ -496,9 +496,9 @@ signed release metadata and all required placement copies are available.
 
 ### Cache object uploads
 
-`CreateCacheObjectUploads` admits one or up to 256 unique, exact
-cache-relative paths. Bound-R2 proxy admission resolves topology once, reads
-all active same-key slots in one query, and creates every unoccupied ticket in
+`CreateCacheObjectUploads` accepts one or up to 256 unique, exact
+cache-relative paths. Bound-R2 proxy ticket creation resolves topology once,
+reads all active same-key slots in one query, and creates every unoccupied ticket in
 one checked transaction. Exact retries return the durable ticket already
 occupying that key; incompatible or stale slots remain fenced and return no
 URL until recovery settles them.

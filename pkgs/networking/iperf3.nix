@@ -17,7 +17,7 @@ in
       role = "public-package";
     };
     pname = "iperf3";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Iperf3 documents its client, server, port, and duration options.";

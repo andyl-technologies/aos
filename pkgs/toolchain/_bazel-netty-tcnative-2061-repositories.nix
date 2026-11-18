@@ -10,9 +10,21 @@
   version ? "2.0.61.Final",
 }: let
   repositoryVersion = builtins.replaceStrings ["."] ["_"] version;
-  linuxArmPackages = import ../../default.nix {crossSystem = "aarch64-linux";};
-  darwinX64Packages = import ../../default.nix {crossSystem = "x86_64-darwin";};
-  darwinArmPackages = import ../../default.nix {crossSystem = "aarch64-darwin";};
+  # The cross splices start from the build machine. Naming it keeps pure
+  # flake evaluation, which has no builtins.currentSystem, working.
+  coordinatorSystem = buildPackages.stdenv.buildPlatform.system;
+  linuxArmPackages = import ../../default.nix {
+    system = coordinatorSystem;
+    crossSystem = "aarch64-linux";
+  };
+  darwinX64Packages = import ../../default.nix {
+    system = coordinatorSystem;
+    crossSystem = "x86_64-darwin";
+  };
+  darwinArmPackages = import ../../default.nix {
+    system = coordinatorSystem;
+    crossSystem = "aarch64-darwin";
+  };
 
   boringsslFor = targetMkDerivation: targetStdenv:
     import ./_bazel-netty-boringssl-2061.nix {

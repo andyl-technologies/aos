@@ -32,7 +32,7 @@ in
       role = "public-package";
     };
     pname = "perl-lwp-mediatypes";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "LWP::MediaTypes identifies application/x-tar with gzip encoding.";

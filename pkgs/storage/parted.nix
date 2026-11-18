@@ -28,7 +28,7 @@ in
       role = "public-package";
     };
     pname = "parted";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Parted accepts the image geometry and writes the partition table.";

@@ -24,7 +24,7 @@ in
       role = "public-package";
     };
     pname = "libarchive";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The recovered entry has the declared pathname and size.";

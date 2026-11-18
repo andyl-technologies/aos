@@ -15,7 +15,7 @@ in
       role = "public-package";
     };
     pname = "libmd";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The hexadecimal digest matches the standard SHA-256 vector.";

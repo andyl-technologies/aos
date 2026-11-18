@@ -1,4 +1,4 @@
-//! Executes bounded native ancillary resource invocations using systemd ownership receipts.
+//! Executes bounded native ancillary resource invocations using systemd ownership records.
 
 #[path = "../resource_effects/mod.rs"]
 mod resource_effects;

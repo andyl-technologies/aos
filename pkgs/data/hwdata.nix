@@ -15,7 +15,7 @@ in
       role = "public-package";
     };
     pname = "hwdata";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The database maps the identifier to Intel Corporation.";

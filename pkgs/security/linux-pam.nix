@@ -36,7 +36,7 @@ in
       role = "public-package";
     };
     pname = "linux-pam";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Linux-PAM preserves the exact environment value.";
