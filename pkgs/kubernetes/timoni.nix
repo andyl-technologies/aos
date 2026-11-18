@@ -82,7 +82,7 @@ in
       cp -RL examples/minimal "$out/share/timoni/examples/"
     '';
 
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "The packaged minimal example module and its default values.";
         operation = "Render an instance of the module offline.";

@@ -85,7 +85,7 @@ in
       cp LICENSE "$out/share/licenses/cue/"
     '';
 
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "A CUE schema unified with concrete data.";
         operation = "Export the unified value as JSON.";
