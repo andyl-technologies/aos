@@ -55,7 +55,7 @@ in
       role = "public-package";
     };
     pname = "librsvg";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "A two-by-two red SVG rectangle.";
         operation = "Render it to PNG and export its drawing as SVG.";

@@ -83,7 +83,7 @@ in
       role = "public-package";
     };
     pname = "nerdctl";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Nerdctl returns a Bash function wired to its completion endpoint.";

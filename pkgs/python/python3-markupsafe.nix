@@ -19,7 +19,7 @@ in
       role = "public-package";
     };
     pname = "python3-markupsafe";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "MarkupSafe emits the exact entity-escaped representation.";

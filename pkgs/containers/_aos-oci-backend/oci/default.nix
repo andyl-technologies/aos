@@ -32,7 +32,7 @@ in rec {
   inherit mkReferenceGraph;
 
   layerAbi = "aos.container.layer/v2";
-  evidencePlatformsScript = ./evidence-platforms.sh;
+  evidencePlatformsScript = ./referrers-platforms.sh;
   archivePolicy = {
     tar = "GNU tar 1.35";
     gzip = "gzip 1.14";
@@ -47,10 +47,10 @@ in rec {
   mkImageLayout = import ./image-layout.nix baseDependencies;
   mkMultiPlatformIndex = import ./multi-platform-index.nix baseDependencies;
   mkDockerArchive = import ./docker-archive.nix baseDependencies;
-  mkEvidenceSourceGraph = import ./evidence-source-graph.nix {
+  mkEvidenceSourceGraph = import ./referrers-source-graph.nix {
     inherit lib mkDerivation coreutils jq;
   };
-  mkEvidenceLayout = import ./evidence-layout.nix baseDependencies;
+  mkEvidenceLayout = import ./referrers-layout.nix baseDependencies;
   mkDeploymentArtifact = import ./deployment-artifact.nix {
     inherit lib runArtifact jq common deploymentChecker;
   };

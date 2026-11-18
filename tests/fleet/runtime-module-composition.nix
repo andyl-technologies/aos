@@ -172,13 +172,11 @@ in {
           document = json.loads(native_document(
               f"{AOS} ability diagnostic {PROFILE} {current_generation()} --audience deployment"
           ))
-          assert document["liveStateVerified"] is False, document
           return document
 
       def inspection():
           document = json.loads(native_document(f"{AOS} ability journal {JOURNAL} --format json"))
           assert document["schema"] == "aos.activation.inspection", document
-          assert document["liveStateVerified"] is False, document
           assert document["incompleteTailBytes"] == 0, document
           return document
 

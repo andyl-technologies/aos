@@ -62,7 +62,7 @@ in
       role = "public-package";
     };
     pname = "libusb1";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Libusb creates the isolated context without accessing USB devices.";

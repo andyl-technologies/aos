@@ -66,7 +66,7 @@ in
       role = "public-package";
     };
     pname = "libglycin";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "RGBA, premultiplied RGBA, and RGB memory-format values.";
         operation = "Classify alpha and premultiplication through the public C ABI.";

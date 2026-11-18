@@ -17,7 +17,7 @@ in
       role = "public-package";
     };
     pname = "bash-completion";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Bash loads the engine and exposes its command and word completion functions.";

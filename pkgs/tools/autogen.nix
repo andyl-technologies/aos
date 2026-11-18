@@ -48,7 +48,7 @@ in
       role = "public-package";
     };
     pname = "autogen";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "AutoGen expands the template to the fixed qualification line.";

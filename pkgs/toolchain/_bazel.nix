@@ -44,16 +44,16 @@
   platformSupport,
   source ? null,
   update ? null,
-  qualification ? null,
+  smokeTest ? null,
   # Major version string for the version check test (e.g. "7.7", "8.6", "9.0")
   versionCheck ? builtins.substring 0 3 version,
 }: let
   mkQualifiedDerivation = attrs:
     mkDerivation (attrs
       // (
-        if qualification == null
+        if smokeTest == null
         then {}
-        else {inherit qualification;}
+        else {inherit smokeTest;}
       ));
   isCross = stdenv.isCross;
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;

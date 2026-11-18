@@ -52,7 +52,7 @@ in
     mkDerivation {
       inherit pname platformSupport;
       inherit (k3s) version;
-      qualification.packageProbe = lib.qualification.commandProbe {
+      smokeTest = lib.qualification.commandProbe {
         primary = {
           input = "The installed ${pname} role entry points.";
           operation = "Verify the role launcher and K3s payload are executable.";

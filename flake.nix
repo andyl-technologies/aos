@@ -49,6 +49,20 @@
 
     aosFor = system: import ./. {inherit system;};
 
+    # The package set that downstream consumers see for `system`. The
+    # bootstrap seed is an i386 executable, so a native aarch64-linux
+    # evaluation cannot start the ladder. AOS releases and containers build
+    # aarch64-linux outputs from the x86_64-linux coordinator instead; use the
+    # same evaluation so downstream store paths match the published ones.
+    downstreamAosFor = system:
+      if system == "x86_64-linux"
+      then aosFor system
+      else
+        import ./. {
+          system = "x86_64-linux";
+          crossSystem = system;
+        };
+
     qualificationExecutorPackages = system: aos:
       {
         qualification-executor = aos.releaseQualificationExecutor;
@@ -239,10 +253,44 @@
   in {
     aosSystems = genAttrs systems (system: (aosFor system).systems);
 
-    # The complete package set, including its builders (mkDerivation,
-    # mkCargoPackage, mkGoPackage, callPackage, mkShell) and `lib`, for
-    # downstream flakes that take AOS as their only input.
-    legacyPackages = genAttrs systems (system: (aosFor system).pkgs);
+    # The complete package set. Downstream flakes read package attributes
+    # here and take builders from the `lib` output below; only the names that
+    # docs/engineering/downstream/flake-api.md lists are a stable contract.
+    legacyPackages = genAttrs systems (system: (downstreamAosFor system).pkgs);
+
+    # The versioned downstream builder contract. Builders close over a package
+    # set built for one platform, so the output is keyed by system like
+    # `packages`: `aos.lib.${system}.mkDerivation`. The contract is
+    # docs/engineering/downstream/flake-api.md.
+    lib = genAttrs systems (system: (downstreamAosFor system).downstreamLib);
+
+    # Downstream CI runs this to fail when any AOS toolchain would build
+    # locally instead of downloading. Each copy embeds both Linux toolchain
+    # sets, so one machine can check every platform's cache coverage. It is an
+    # app rather than a package because `packages.aarch64-linux` cannot
+    # evaluate natively.
+    apps = genAttrs systems (system: let
+      downstream = (downstreamAosFor system).pkgs;
+      check = import ./tools/toolchain-cache-check {
+        pkgs = downstream;
+        inherit (downstream) lib;
+        toolchainSets = genAttrs systems (target: (downstreamAosFor target).downstreamLib.toolchains);
+      };
+    in {
+      toolchain-cache-check = {
+        type = "app";
+        program = "${check}/bin/toolchain-cache-check";
+        meta.description = "Fail when any AOS toolchain would build locally instead of downloading";
+      };
+    });
+
+    templates = rec {
+      downstream = {
+        path = ./templates/downstream;
+        description = "A minimal repository that builds with AOS as its only flake input";
+      };
+      default = downstream;
+    };
 
     packages = genAttrs systems (
       system: let
@@ -471,6 +519,7 @@
         }
         // flattenAttrs "eval" (builtins.removeAttrs aos.checks.eval-suites ["core"])
         // flattenAttrs "build" aos.checks.build
+        // flattenAttrs "downstream" aos.checks.downstream
         // flattenAttrs "container" aos.checks.container
         // flattenAttrs "qualification" (builtins.removeAttrs aos.checks.qualification ["inventory"])
         // {

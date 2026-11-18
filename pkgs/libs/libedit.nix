@@ -16,7 +16,7 @@ in
       role = "public-package";
     };
     pname = "libedit";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The tokenizer returns three arguments and preserves the quoted space.";

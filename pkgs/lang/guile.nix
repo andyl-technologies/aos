@@ -30,7 +30,7 @@ in
       role = "public-package";
     };
     pname = "guile";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Guile prints the computed value.";

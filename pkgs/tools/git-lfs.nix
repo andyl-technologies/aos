@@ -25,7 +25,7 @@ in
       role = "public-package";
     };
     pname = "git-lfs";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Git LFS emits the exact canonical pointer document.";

@@ -75,7 +75,7 @@ in
       role = "public-package";
     };
     pname = "imath";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "An invertible matrix and a half-precision number.";
         operation = "Invert the matrix and convert the half value through Imath.";

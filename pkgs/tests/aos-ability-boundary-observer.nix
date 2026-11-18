@@ -54,7 +54,7 @@ in
     version = "0.1.0";
     src = null;
 
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         artifacts = [];
         expected = "The installed boundary controller reports its package protocol version.";

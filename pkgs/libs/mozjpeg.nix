@@ -43,7 +43,7 @@ in
       role = "public-package";
     };
     pname = "mozjpeg";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "A two-by-two red PPM bitmap.";
         operation = "Encode it as JPEG and decode it back to PPM.";

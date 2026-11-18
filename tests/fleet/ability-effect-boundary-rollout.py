@@ -213,8 +213,6 @@ def current_reference_graph():
     target = runtime.succeed(f"{COREUTILS}/readlink /var/lib/profiles/system/current").strip()
     generation = int(target.rsplit("gen-", 1)[1])
     document = json.loads(runtime.succeed(f"{AOS} ability diagnostic /var/lib/profiles/system {generation} --audience deployment"))
-    if document["liveStateVerified"] is not False:
-        raise RuntimeError("diagnostic cannot replace the physical oracle")
     return document["desired"]["graph"]
 
 

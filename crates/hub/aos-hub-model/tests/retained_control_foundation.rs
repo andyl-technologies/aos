@@ -1,4 +1,4 @@
-//! Executable entry point for the isolated retained-control contracts.
+//! Checks the Hub API method classification and hard-cut symbol manifests.
 
 #[path = "../src/retained_control/classifier.rs"]
 mod classifier;

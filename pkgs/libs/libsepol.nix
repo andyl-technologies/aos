@@ -16,7 +16,7 @@ in
       role = "public-package";
     };
     pname = "libsepol";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Libsepol accepts the kernel policy type and supported version.";

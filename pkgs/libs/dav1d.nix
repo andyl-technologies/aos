@@ -33,7 +33,7 @@ in
       role = "public-package";
     };
     pname = "dav1d";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "A known-good, single-frame AV1 IVF bitstream.";
         operation = "Decode it to YUV 4:2:0 pixels.";

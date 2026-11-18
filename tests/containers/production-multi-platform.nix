@@ -133,20 +133,19 @@ in
           jq -e \
             --slurpfile descriptor ${primaryIndex}/index-descriptor.json \
             --slurpfile index ${primaryIndex}/image-index.json '
-              .schema == "aos.container.signature-input/v1"
+              .schema == "aos.container.signature-input/v2"
               and .oci.index == $descriptor[0]
               and .oci.platformManifests == $index[0].manifests
               and (.oci.platformManifests | length) == ${toString (builtins.length architectures)}
               and .evidence.deployment.artifactType
                 == "application/vnd.aos.artifact.deployment.v1+json"
-              and .qualification.readyForVerifiedPublication == true
+              and (has("qualification") | not)
             ' ${evidence}/signature-input.json >/dev/null \
             || fail "signature input does not bind the coordinated production index"
 
           jq -e \
             --slurpfile input ${evidence}/signature-input.json '
-              .schema == "aos.container.signing-request/v1"
-              and .qualified == true
+              .schema == "aos.container.signing-request/v2"
               and .unsignedRelease.oci == $input[0].oci
               and .requiredOutput.finalSidecarPath == "containers/v1/index.json"
               and .requiredOutput.finalSidecarMediaType

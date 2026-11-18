@@ -40,7 +40,7 @@ in
       role = "public-package";
     };
     pname = "jbigkit";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "A two-row, eight-pixel monochrome PBM image.";
         operation = "Compress the bitmap to JBIG and decode it back to PBM.";

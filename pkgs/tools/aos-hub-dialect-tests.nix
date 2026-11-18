@@ -30,7 +30,7 @@ in
       role = "build-input";
     };
     pname = "aos-hub-dialect-tests";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The libtest harness returns success and exposes dialect contract tests.";

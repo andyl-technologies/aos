@@ -71,7 +71,7 @@ in
       role = "public-package";
     };
     pname = "aos-boot-transaction-storage-provider";
-    qualification.packageProbe = lib.qualification.providerExecutableProbe {
+    smokeTest = lib.qualification.providerExecutableProbe {
       name = "aos-boot-transaction-storage-provider";
       entryPoint = "bin/aos-boot-transaction-storage-provider";
     };

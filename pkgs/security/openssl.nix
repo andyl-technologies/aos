@@ -28,7 +28,7 @@ in
       role = "public-package";
     };
     pname = "openssl";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The headers report 4.0.3 and the digest matches the standard SHA-256 vector.";

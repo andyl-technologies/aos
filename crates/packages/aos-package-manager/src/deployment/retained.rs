@@ -18,7 +18,7 @@ use aos_core::{Sha256Digest, limits::BoundedWriter};
 use aos_module_format::graph::{GRAPH_LIMITS, Handler};
 use serde::Serialize;
 
-use crate::native_registry::RegistryAdmission;
+use crate::native_registry::VerifiedRegistryRoots;
 use aos_deployment::retention::{ArtifactAdmission, generation_roots, verify_retained_handlers};
 use aos_deployment::transaction::{Snapshot, inspect, journal_limits};
 
@@ -57,7 +57,7 @@ impl RetainedStoreRoots {
 
         let snapshot = inspect(&directory, journal_limits())?;
         crate::profile::deployment::current_committed_generation(profile)?;
-        let mut admission = RegistryAdmission::new(
+        let mut admission = VerifiedRegistryRoots::new(
             executable.to_owned(),
             &directory.join("registry-admissions"),
         )?;
@@ -92,7 +92,7 @@ impl RetainedStoreRoots {
         );
 
         let snapshot = inspect(directory, journal_limits())?;
-        let mut admission = crate::native_deployment::Admission::new(executable.to_owned())?;
+        let mut admission = crate::native_deployment::TrustedRoots::new(executable.to_owned())?;
         admission.load_retained(&directory.join("admissions"))?;
         let mut roots = retained_store_roots(&snapshot, &directory.join("roots"), &mut admission)?;
         // Native preparation reads every retained catalog before opening the
@@ -206,7 +206,7 @@ pub(crate) fn export(profile: &Path) -> Result<Vec<u8>> {
     if !retained.is_empty() {
         let executable = crate::install::native::packaged_path("AOS_NIX_STORE")?;
         let mut admission =
-            RegistryAdmission::new(executable, &directory.join("registry-admissions"))?;
+            VerifiedRegistryRoots::new(executable, &directory.join("registry-admissions"))?;
         let effects = retained
             .iter()
             .map(|effect| &effect.invocation.effect)

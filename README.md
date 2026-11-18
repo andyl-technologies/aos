@@ -43,6 +43,9 @@ Check the [support-status matrix](docs/users/aos/support-status.md) before plann
   signing, publishing, staged rollouts, and incident response.
 - [Crucible documentation](docs/users/crucible/) covers deterministic
   exploration, reproduction, debugging, and CI.
+- [Downstream flake guide](docs/engineering/downstream/quickstart.md) shows how
+  another repository builds with AOS as its only flake input, under the
+  versioned [downstream flake API](docs/engineering/downstream/flake-api.md).
 - [Maintainer documentation](docs/maintainers/) covers source builds, trust and
   package security, image production, repository development, and tests.
 

@@ -84,7 +84,7 @@ in
     pname = "linux";
     module = ./_linux-abilities;
     moduleDeps = [kernel-interface];
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The outputs form one architecture-consistent bootable kernel release with valid ELF modules.";

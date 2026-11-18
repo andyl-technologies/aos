@@ -78,7 +78,7 @@
 in
   callPackage ./_glycin-loader.nix {
     loaderName = "glycin-image-rs";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "The generated PNG and JPEG registrations and a private D-Bus socket.";
         operation = "Start the loader and negotiate its process protocol.";

@@ -33,7 +33,7 @@ in
       role = "public-package";
     };
     pname = "perl-http-date";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "HTTP::Date returns 784111777.";

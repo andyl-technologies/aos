@@ -17,7 +17,7 @@ in
       role = "public-package";
     };
     pname = "ipset";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "IpSet documents IPv4 and IPv6 hash entries and their create options.";

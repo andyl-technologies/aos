@@ -16,7 +16,7 @@ in
       role = "public-package";
     };
     pname = "lowdown";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Lowdown emits the exact heading and paragraph elements.";

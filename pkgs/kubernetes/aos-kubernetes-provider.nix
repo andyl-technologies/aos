@@ -47,7 +47,7 @@ in
       role = "public-package";
     };
     pname = "aos-kubernetes-provider";
-    qualification.packageProbe = lib.qualification.providerExecutableProbe {
+    smokeTest = lib.qualification.providerExecutableProbe {
       name = "aos-kubernetes-provider";
       entryPoint = "bin/aos-kubernetes-provider";
     };

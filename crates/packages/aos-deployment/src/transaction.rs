@@ -221,7 +221,7 @@ impl<S: DeploymentStore> Transactions<S> {
         for record in opened.recovery.records() {
             result.state.replay(record.body())?;
         }
-        let completed = result.activation.completed_receipt();
+        let completed = result.activation.completed_transaction_record();
         let active = result
             .activation
             .active_transaction()
@@ -969,7 +969,7 @@ impl Snapshot {
 /// Returns an error for missing or insecure journals, lock contention, corrupt
 /// complete frames, exceeded limits, or invalid generation/activation history.
 pub fn inspect(directory: &Path, limits: JournalLimits) -> Result<Snapshot> {
-    let journal = FileJournal::<Event>::read_only(directory.join("generations.journal"), limits)?;
+    let journal = FileJournal::<Event>::read_locked(directory.join("generations.journal"), limits)?;
     let mut state = GenerationState::default();
     for record in journal.snapshot().records() {
         state.replay(record.body())?;
@@ -1049,7 +1049,8 @@ fn verify_journal_pair(
     check_receipt(desired, &completed.outputs, &completed.deferred, policy)?;
     ensure!(
         completed.policy == policy
-            && completed.content == policy.content_identity(desired.graph(), desired.retire())?,
+            && completed.content
+                == policy.content_fingerprint(desired.graph(), desired.retire())?,
         "activation receipt differs from package content or policy"
     );
     if let Some(outputs) = outputs {
