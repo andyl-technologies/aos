@@ -177,7 +177,7 @@ in
         }
       ];
 
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "A local playbook that templates a file from inventory variables.";
         operation = "Run the playbook against localhost with the local connection.";

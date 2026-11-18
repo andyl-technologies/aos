@@ -88,7 +88,7 @@ in
       }
     ];
 
-    qualification.packageProbe = let
+    smokeTest = let
       # A two-package index: "app" needs any "lib" release in [1, 3).
       provider = ''
         import glob, sys
