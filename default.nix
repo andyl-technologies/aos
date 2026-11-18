@@ -456,6 +456,13 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
           # `environment.etc`) can overlay a fragment without rebuilding the
           # module list. Retains this variant's native stage sources.
           inherit (evaluated) extendModules;
+          # Installer media for writing to a USB stick; pass hostConfiguration
+          # to place a host.nix on its AOS-META partition.
+          installerMedia = {hostConfiguration ? null}:
+            lib.build.installerMedia {
+              system = evaluated;
+              inherit hostConfiguration;
+            };
           build = {
             toplevel = evaluated.config.system.build.toplevel;
             kernel = evaluated.config.system.build.kernel;

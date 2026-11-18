@@ -88,19 +88,19 @@ mkDerivation {
   src = null;
 
   buildDeps = [];
-  # Both installed scripts execute through this shell. Declaring it as a
-  # runtime dependency keeps reference scrubbing from erasing the interpreter
-  # path, which would make the initrd unlocker fail to exec.
-  runtimeDeps = [
-    bash
-    coreutils
-    cryptsetup
-    e2fsprogs
-    xfsprogs
-    jq
-    systemd
-    util-linux
-  ];
+  runtimeDeps =
+    # The installed scripts execute through their bash shebang. Declaring the
+    # shell keeps reference scrubbing from replacing it on every platform.
+    [
+      bash
+      coreutils
+      cryptsetup
+      e2fsprogs
+      xfsprogs
+      jq
+      systemd
+      util-linux
+    ];
   propagatedDeps = [];
 
   phases = [

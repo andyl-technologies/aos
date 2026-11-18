@@ -10,12 +10,13 @@ use std::error::Error;
 use std::ffi::OsStr;
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read};
-use std::os::unix::fs::{FileTypeExt, OpenOptionsExt};
+use std::io;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 use aos_boot_identity::{BootSlot, parse_normal, parse_recovery};
+use aos_boot_media::{MediaError, Tools, block, digest};
 
 use crate::device::{HostLayout, discover_host_layout, discover_recovery_media};
 use crate::maintenance::RestoreAuthorization;
@@ -513,32 +514,15 @@ fn extract_uki_section(uki: &Path, section: &str, id: &str) -> Result<String, Re
 }
 
 fn write_block_component(component: &Component, destination: &Path) -> Result<(), RestoreError> {
-    let resolved = fs::canonicalize(destination)?;
-    if !resolved.starts_with("/dev") {
-        return Err(RestoreError::Destination(format!(
-            "{} resolves outside /dev",
-            destination.display()
-        )));
-    }
-    let mut output = OpenOptions::new().write(true).open(destination)?;
-    if !output.metadata()?.file_type().is_block_device() {
-        return Err(RestoreError::Destination(format!(
-            "{} is not a block device",
-            destination.display()
-        )));
-    }
     let mut input = File::open(&component.path)?;
-    let copied = io::copy(&mut input, &mut output)?;
-    if copied != component.byte_size {
-        return Err(RestoreError::Destination("short block write".into()));
-    }
-    output.sync_all()?;
-    if sha256_prefix(destination, component.byte_size)? != component.sha256 {
-        return Err(RestoreError::Destination(
-            "block-device read-back digest mismatch".into(),
-        ));
-    }
-    Ok(())
+    block::write_verified(
+        &Tools::initrd(),
+        &mut input,
+        destination,
+        component.byte_size,
+        &component.sha256,
+    )
+    .map_err(destination_error)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -907,61 +891,26 @@ fn verify_installed(component: &Component, destination: &Path) -> Result<(), Res
 }
 
 fn bounded_regular(path: &Path, maximum: u64) -> Result<(), RestoreError> {
-    let metadata = fs::symlink_metadata(path)?;
-    if !metadata.file_type().is_file() || metadata.len() == 0 || metadata.len() > maximum {
-        return Err(RestoreError::Component(format!(
-            "{} is not a regular file within its bound",
-            path.display()
-        )));
-    }
-    Ok(())
+    digest::bounded_regular(path, maximum).map_err(component_error)
 }
 
 fn sha256(path: &Path) -> Result<String, RestoreError> {
-    let output = Command::new("/bin/openssl")
-        .args(["dgst", "-sha256", "-r"])
-        .arg(path)
-        .output()?;
-    parse_digest(&output)
+    digest::sha256_file(&Tools::initrd(), path).map_err(component_error)
 }
 
-fn sha256_prefix(path: &Path, length: u64) -> Result<String, RestoreError> {
-    let mut input = File::open(path)?.take(length);
-    let mut child = Command::new("/bin/openssl")
-        .args(["dgst", "-sha256", "-r"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| RestoreError::Helper("openssl stdin was not created".into()))?;
-    let copied = io::copy(&mut input, &mut stdin)?;
-    drop(stdin);
-    if copied != length {
-        return Err(RestoreError::Destination("short block read-back".into()));
+fn component_error(error: MediaError) -> RestoreError {
+    match error {
+        MediaError::Io(error) => RestoreError::Io(error),
+        MediaError::Helper(reason) => RestoreError::Helper(reason),
+        other => RestoreError::Component(other.to_string()),
     }
-    parse_digest(&child.wait_with_output()?)
 }
 
-fn parse_digest(output: &std::process::Output) -> Result<String, RestoreError> {
-    if !output.status.success() {
-        return Err(RestoreError::Helper(stderr_reason(output)));
-    }
-    let text = String::from_utf8(output.stdout.clone())
-        .map_err(|error| RestoreError::Helper(error.to_string()))?;
-    let digest = text.split_ascii_whitespace().next().unwrap_or_default();
-    if digest.len() == 64
-        && digest
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    {
-        Ok(digest.to_string())
-    } else {
-        Err(RestoreError::Helper(
-            "openssl returned a malformed SHA-256 digest".into(),
-        ))
+fn destination_error(error: MediaError) -> RestoreError {
+    match error {
+        MediaError::Io(error) => RestoreError::Io(error),
+        MediaError::Helper(reason) => RestoreError::Helper(reason),
+        other => RestoreError::Destination(other.to_string()),
     }
 }
 

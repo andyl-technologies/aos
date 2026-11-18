@@ -20,47 +20,7 @@
   dbCertificate = sb._effectiveDbCert;
   verityEnabled = config.aos.security.verity.enable;
 
-  activeRegistryDbCerts = lib.concatLists (
-    map
-    (registry: registry.sbDbCerts)
-    (builtins.attrValues config.aos.apm.registries)
-  );
-  activeRegistryDbCertFiles =
-    lib.imap
-    (index: certificate:
-      pkgs.writeTextFile {
-        name = "aos-recovery-active-db-${toString index}";
-        destination = "/certificate.pem";
-        text = certificate;
-      })
-    activeRegistryDbCerts;
-  activeImageDbCerts =
-    if sb.enable
-    then
-      pkgs.mkDerivation {
-        pname = "aos-recovery-active-db-certs";
-        version = "1";
-        src = null;
-        buildDeps = [pkgs.coreutils];
-        runtimeDeps = [];
-        propagatedDeps = [];
-        phases = [
-          {
-            name = "install";
-            script = ''
-              mkdir -p $out
-              cp ${dbCertificate} $out/active-db-certs.pem
-              chmod u+w $out/active-db-certs.pem
-              ${lib.concatMapStringsSep "\n" (certificate: ''
-                  printf '\n' >> $out/active-db-certs.pem
-                  cat ${certificate}/certificate.pem >> $out/active-db-certs.pem
-                '')
-                activeRegistryDbCertFiles}
-            '';
-          }
-        ];
-      }
-    else null;
+  activeImageDbCerts = import ./_active-db-certs.nix {inherit pkgs lib config;};
 
   rootfs = import ./_rootfs-builder.nix ({
       inherit pkgs lib system kernel managerConfiguration managerRootfsPlan closureInfoFor runtimeClosureAudit;

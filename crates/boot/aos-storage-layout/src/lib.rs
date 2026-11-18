@@ -8,6 +8,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod install;
 pub mod topology;
 
 use std::collections::{BTreeMap, BTreeSet};
