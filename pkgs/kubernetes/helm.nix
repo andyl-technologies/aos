@@ -114,7 +114,7 @@ in
       cp LICENSE "$out/share/licenses/helm/"
     '';
 
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "A minimal local chart with one templated ConfigMap.";
         operation = "Lint the chart and render it offline with an overridden value.";
