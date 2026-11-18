@@ -42,7 +42,7 @@ in
       role = "public-package";
     };
     pname = "aos-boot-identity";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The parser accepts the complete fail-closed normal-boot identity.";

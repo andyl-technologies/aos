@@ -15,7 +15,7 @@ in
       role = "public-package";
     };
     pname = "publicsuffix-list";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The public suffix is co.uk and the registrable domain is example.co.uk.";

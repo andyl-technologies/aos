@@ -22,7 +22,7 @@ in
     };
     pname = "esbuild";
     inherit version src;
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "A JavaScript module that prints a fixed value.";
         operation = "Bundle the module into a single output file.";

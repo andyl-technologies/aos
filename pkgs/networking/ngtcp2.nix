@@ -19,7 +19,7 @@ in
       role = "public-package";
     };
     pname = "ngtcp2";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The linked library reports the compiled ngtcp2 version.";

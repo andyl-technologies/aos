@@ -19,7 +19,7 @@ in
       role = "public-package";
     };
     pname = "lvm2";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "LVM lists its configuration, physical-volume, volume-group, and logical-volume commands.";

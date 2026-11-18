@@ -2,7 +2,7 @@
 //! release-receipt read-back.
 
 use super::*;
-use crate::release_evidence::Ed25519ReleaseEvidenceAuthority;
+use crate::release_receipt_signer::Ed25519ReleaseEvidenceAuthority;
 use aos_hub_db::db::NewRegistryPublication;
 use aos_hub_db::value::ToValue as _;
 use aos_release_format::digest::Sha256Digest;

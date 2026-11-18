@@ -19,7 +19,7 @@ in
       role = "public-package";
     };
     pname = "ant";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [
           {

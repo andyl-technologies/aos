@@ -36,7 +36,7 @@ in
       role = "public-package";
     };
     pname = "libaom";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "A single 16-by-16 YUV 4:2:0 frame.";
         operation = "Encode it losslessly as AV1 and decode the result.";

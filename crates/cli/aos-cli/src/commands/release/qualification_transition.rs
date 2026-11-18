@@ -28,10 +28,10 @@ use aos_release_format::manifest::ReleaseManifestV1;
 use aos_release_format::plan::{PlannedDestination, ReleasePlan};
 use aos_release_format::qualification::QualificationPhase;
 use aos_release_format::qualification_admission::{
-    QUALIFICATION_ADMISSION, QualificationAdmission, QualificationRolloutIntent,
+    QUALIFICATION_ADMISSION, QualificationRolloutIntent, RingApproval,
 };
 use aos_release_format::receipt::{
-    QualificationReceipt, RECEIPT_SIGNATURE_DOMAIN, SIGNED_RECEIPT, SignedReceiptEnvelope,
+    RECEIPT_SIGNATURE_DOMAIN, SIGNED_RECEIPT, SignedEnvelope, StagingTestApproval,
     verify_signed_receipt_with_key,
 };
 use aos_release_format::signing::{
@@ -86,13 +86,10 @@ pub(super) fn phase_has_cases(
     destination: &str,
     phase: QualificationPhase,
 ) -> Result<bool> {
-    Ok(!aos_release_format::qualification_evidence::cases(
-        plan,
-        manifest,
-        Some(destination),
-        phase,
-    )?
-    .is_empty())
+    Ok(
+        !aos_release_format::release_tests::cases(plan, manifest, Some(destination), phase)?
+            .is_empty(),
+    )
 }
 
 /// Inputs of one rollout or completion admission signature.
@@ -166,7 +163,7 @@ pub(super) async fn sign(signing: AdmissionSigning<'_>, printer: &Printer) -> Re
         .split_once('=')
         .context("authority key must be KEY_ID=PATH")?;
     let plan_digest = Sha256Digest::of_bytes(&canonical::to_vec(plan)?);
-    let admission = QualificationAdmission {
+    let admission = RingApproval {
         schema_version: QUALIFICATION_ADMISSION.into(),
         phase,
         destination: destination.name.clone(),
@@ -231,14 +228,14 @@ pub(super) async fn sign(signing: AdmissionSigning<'_>, printer: &Printer) -> Re
             &args.authority_verification_identity,
         )
         .await?;
-    let envelope = SignedReceiptEnvelope {
+    let envelope = SignedEnvelope {
         schema_version: SIGNED_RECEIPT.into(),
         key_id: key_id.to_owned(),
         payload: serde_json::to_value(&admission)?,
         signature_base64: response.signature_base64.clone(),
     };
     let signed = canonical::to_vec(&envelope)?;
-    let (_, verified): (String, QualificationAdmission) = verify_signed_receipt_with_key(
+    let (_, verified): (String, RingApproval) = verify_signed_receipt_with_key(
         &signed,
         &BTreeMap::from([(key_id.to_owned(), key.public_key)]),
     )?;
@@ -312,8 +309,7 @@ pub(super) fn verify_admission(check: AdmissionCheck<'_>) -> Result<Option<Sha25
         "signed hold-point qualification",
     )?;
     let keys = surface::key_map(check.key_specs)?;
-    let (key, admission): (String, QualificationAdmission) =
-        verify_signed_receipt_with_key(&signed, &keys)?;
+    let (key, admission): (String, RingApproval) = verify_signed_receipt_with_key(&signed, &keys)?;
     let now = super::journal::now_utc();
     admission.validate(check.plan, &now)?;
     if admission.authority_id != key
@@ -386,7 +382,7 @@ pub(super) fn verify_staging_evidence(
         "signed qualification receipt",
     )?;
     let keys = surface::key_map(qualification_keys)?;
-    let (key_id, receipt): (String, QualificationReceipt) =
+    let (key_id, receipt): (String, StagingTestApproval) =
         verify_signed_receipt_with_key(&signed, &keys)?;
     receipt.validate()?;
     let role = plan

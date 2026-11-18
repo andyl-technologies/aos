@@ -3,10 +3,8 @@ mod common;
 use anyhow::{Context, Result};
 use aos_nix_cache::AuthOptions;
 use aos_oci_types::{
-    Annotations, CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA, CONTAINER_RELEASE_SCHEMA_VERSION,
-    ContainerEvidenceMappingQualification, ContainerEvidenceQualification,
-    ContainerEvidenceQualificationCheck, ContainerNixProvenance, ContainerOciRelease,
-    ContainerRelease, ContainerReleaseEvidence, ContainerReleaseIdentity, Descriptor, MediaType,
+    Annotations, CONTAINER_RELEASE_SCHEMA_VERSION, ContainerNixProvenance, ContainerOciRelease,
+    ContainerReferrers, ContainerRelease, ContainerReleaseIdentity, Descriptor, MediaType,
     NixDefinitionIdentity, NixOutputIdentity, Platform, Sha256Digest, to_canonical_json,
 };
 use aos_registry_authoring::registry::static_upload;
@@ -73,23 +71,7 @@ fn container_release_attachment(version: &str) -> Result<ContainerReleaseAttachm
             },
             closure: evidence_descriptor(MediaType::AosNixClosure, "closure"),
         },
-        qualification: ContainerEvidenceQualification {
-            schema: CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA.to_string(),
-            mapping: ContainerEvidenceMappingQualification {
-                complete: true,
-                unknown_paths: Vec::new(),
-            },
-            corresponding_source: ContainerEvidenceQualificationCheck {
-                complete: true,
-                unknown_paths: Vec::new(),
-            },
-            licensing: ContainerEvidenceQualificationCheck {
-                complete: true,
-                unknown_paths: Vec::new(),
-            },
-            ready_for_verified_publication: true,
-        },
-        evidence: ContainerReleaseEvidence {
+        evidence: ContainerReferrers {
             abilities: evidence_descriptor(MediaType::AosContainerStaticAbilities, "abilities"),
             sbom: evidence_descriptor(MediaType::SpdxJson, "sbom"),
             source: evidence_descriptor(MediaType::AosSourceClosure, "source"),

@@ -50,7 +50,7 @@ pub(super) fn run(args: &ReleaseStatusArgs, printer: &Printer) -> Result<()> {
         "plan_digest": latest.plan_digest,
         "manifest_digest": latest.manifest_digest,
         "operation_ids": latest.operation_ids,
-        "evidence": latest.evidence,
+        "evidence": latest.attachments,
         "recorded_at": latest.recorded_at,
     })) {
         return Ok(());

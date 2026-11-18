@@ -45,7 +45,7 @@
   zstd,
   buildPackages,
   pname ? "qemu",
-  qualification ? null,
+  smokeTest ? null,
   enablePlugins ? false,
   applyCruciblePatch ? false,
   enableLinuxUser ? pname == "qemu" && stdenv.hostPlatform.isLinux,
@@ -574,9 +574,9 @@ in
           target = [];
           role = "build-input";
         };
-      qualification.packageProbe =
-        if qualification != null
-        then qualification.packageProbe
+      smokeTest =
+        if smokeTest != null
+        then smokeTest
         else
           lib.qualification.commandProbe {
             "primary" = {

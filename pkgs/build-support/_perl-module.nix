@@ -15,14 +15,14 @@
   description,
   homepage,
   license,
-  qualification ? null,
+  smokeTest ? null,
 }: let
   mkQualifiedDerivation = attrs:
     mkDerivation (attrs
       // (
-        if qualification == null
+        if smokeTest == null
         then {}
-        else {inherit qualification;}
+        else {inherit smokeTest;}
       ));
   runtimeClosure = [perl] ++ dependencies;
   # The Linux builder cannot execute target Perl or load target XS extensions.

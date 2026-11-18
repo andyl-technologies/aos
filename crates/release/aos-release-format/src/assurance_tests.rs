@@ -3,16 +3,16 @@
 use anyhow::Result;
 
 use crate::digest::Sha256Digest;
-use crate::evidence::{EvidenceRecord, GateResult, QualificationReport};
+use crate::evidence::{Outcome, QualificationReport, TestResult};
 use crate::qualification::QualificationPhase;
 use crate::qualification::claims::{AssuranceLevel, ClaimDisposition};
 use crate::qualification::environment::{Accelerator, Backend};
-use crate::qualification_evidence::{assess_observations, validate_observations};
+use crate::release_tests::{assess_observations, validate_observations};
 use crate::verify::tests::{STABLE, observations, qualification_fixture, rebind};
 
 const NOW: &str = "2026-09-01T00:00:02Z";
 
-fn image_record(records: &mut [EvidenceRecord]) -> &mut EvidenceRecord {
+fn image_record(records: &mut [TestResult]) -> &mut TestResult {
     records
         .iter_mut()
         .find(|record| {
@@ -88,17 +88,14 @@ fn actual_environment_must_match_every_required_dimension() -> Result<()> {
 #[test]
 fn cpu_family_scope_and_exact_sku_scope_have_distinct_membership() -> Result<()> {
     let (plan, manifest) = qualification_fixture()?;
-    let case = crate::qualification_evidence::cases(
-        &plan,
-        &manifest,
-        Some(STABLE),
-        QualificationPhase::Staging,
-    )?
-    .into_iter()
-    .find(|case| {
-        case.platform == Some(crate::platform::Platform::X86_64Linux) && case.target.is_some()
-    })
-    .unwrap();
+    let case =
+        crate::release_tests::cases(&plan, &manifest, Some(STABLE), QualificationPhase::Staging)?
+            .into_iter()
+            .find(|case| {
+                case.platform == Some(crate::platform::Platform::X86_64Linux)
+                    && case.target.is_some()
+            })
+            .unwrap();
     let mut scope = case.target.as_ref().unwrap().environment.clone();
     let mut inventory = crate::test_support::qualification::environment(&case)?.unwrap();
     let required = &mut scope.layers.last_mut().unwrap().cpu;
@@ -125,19 +122,15 @@ fn cpu_family_scope_and_exact_sku_scope_have_distinct_membership() -> Result<()>
 #[test]
 fn cloud_instance_and_region_are_recorded_scope_dimensions() -> Result<()> {
     let (plan, manifest) = qualification_fixture()?;
-    let case = crate::qualification_evidence::cases(
-        &plan,
-        &manifest,
-        Some(STABLE),
-        QualificationPhase::Staging,
-    )?
-    .into_iter()
-    .find(|case| {
-        case.target
-            .as_ref()
-            .is_some_and(|target| target.kind == crate::qualification::TargetKind::Image)
-    })
-    .unwrap();
+    let case =
+        crate::release_tests::cases(&plan, &manifest, Some(STABLE), QualificationPhase::Staging)?
+            .into_iter()
+            .find(|case| {
+                case.target
+                    .as_ref()
+                    .is_some_and(|target| target.kind == crate::qualification::TargetKind::Image)
+            })
+            .unwrap();
     let mut scope = case.target.as_ref().unwrap().environment.clone();
     let mut inventory = crate::test_support::qualification::environment(&case)?.unwrap();
     scope.layers.remove(0);
@@ -317,7 +310,7 @@ fn optional_assessments_preserve_missing_and_failed_results_without_awarding_exe
     rebind(&mut plan)?;
     plan.validate()?;
     let records = observations(&plan, &manifest, Some(STABLE), QualificationPhase::Staging)?;
-    let outcome = |records: &[EvidenceRecord]| -> Result<_> {
+    let outcome = |records: &[TestResult]| -> Result<_> {
         validate_observations(
             &plan,
             &manifest,
@@ -351,7 +344,7 @@ fn optional_assessments_preserve_missing_and_failed_results_without_awarding_exe
         .iter_mut()
         .find(|record| record.policy_id == "claim-optional-reviewed-scope")
         .unwrap()
-        .result = GateResult::Failed;
+        .result = Outcome::Failed;
     let failure = outcome(&failed)?;
     assert_eq!(failure.disposition, ClaimDisposition::Failed);
     assert_eq!(failure.achieved_assurance, AssuranceLevel::A0);
@@ -430,15 +423,11 @@ fn report_assurance_is_recomputed_and_cannot_be_self_promoted_or_downgraded() ->
 #[test]
 fn cases_hash_only_under_their_own_schema() -> Result<()> {
     let (plan, manifest) = qualification_fixture()?;
-    let mut case = crate::qualification_evidence::cases(
-        &plan,
-        &manifest,
-        Some(STABLE),
-        QualificationPhase::Staging,
-    )?
-    .into_iter()
-    .find(|case| case.claim.is_some())
-    .unwrap();
+    let mut case =
+        crate::release_tests::cases(&plan, &manifest, Some(STABLE), QualificationPhase::Staging)?
+            .into_iter()
+            .find(|case| case.claim.is_some())
+            .unwrap();
     case.digest()?;
     case.schema_version = "unknown".into();
     assert!(case.digest().is_err());

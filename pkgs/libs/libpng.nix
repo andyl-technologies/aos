@@ -17,7 +17,7 @@ in
       role = "public-package";
     };
     pname = "libpng";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The public API reports the same nonzero version encoded by the header.";

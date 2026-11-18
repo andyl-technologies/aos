@@ -86,7 +86,7 @@ in
       role = "public-package";
     };
     pname = "zlib";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The recovered bytes equal the original bytes and the consumer prints the fixed success line.";

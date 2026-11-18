@@ -52,7 +52,7 @@ in
       role = "public-package";
     };
     pname = "aos-release-signer";
-    qualification.packageProbe = lib.qualification.providerExecutableProbe {
+    smokeTest = lib.qualification.providerExecutableProbe {
       name = "aos-release-signer";
       entryPoint = "bin/aos-release-signer";
     };

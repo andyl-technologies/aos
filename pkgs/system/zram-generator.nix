@@ -83,7 +83,7 @@ in
       role = "public-package";
     };
     pname = "zram-generator";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The generator emits the zram setup drop-in, swap unit, and swap target link.";

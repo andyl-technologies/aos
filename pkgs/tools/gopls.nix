@@ -28,7 +28,7 @@ in
       role = "public-package";
     };
     pname = "gopls";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Gopls accepts the module without diagnostics.";

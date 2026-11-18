@@ -176,7 +176,7 @@ aos maintain select
 aos maintain materialize
 aos maintain repair
 aos maintain test
-aos maintain evidence
+aos maintain prepare-pr
 ```
 
 The commands do not need to remain running between stages. State survives shell

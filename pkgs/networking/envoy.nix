@@ -1112,7 +1112,7 @@ in
       role = "public-package";
     };
     pname = "envoy";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Envoy accepts the complete offline configuration.";

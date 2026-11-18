@@ -60,7 +60,7 @@ in
       role = "public-package";
     };
     pname = "oniguruma";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The search matches the complete answer=42 string.";

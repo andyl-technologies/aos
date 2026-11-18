@@ -18,7 +18,7 @@ in
       role = "public-package";
     };
     pname = "libmpc";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Libmpc preserves both integer components exactly.";

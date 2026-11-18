@@ -61,7 +61,7 @@ in
       role = "public-package";
     };
     pname = "lz4";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The recovered bytes equal the original string.";

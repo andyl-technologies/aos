@@ -66,7 +66,7 @@ in
       role = "public-package";
     };
     pname = "pyrefly";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Pyrefly accepts the consistent assignment.";

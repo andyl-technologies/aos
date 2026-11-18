@@ -41,14 +41,14 @@
   needsGccIteratorCompat ? false,
   extraRuntimeDeps ? [],
   extraCmakeFlags ? [],
-  qualification ? null,
+  smokeTest ? null,
 }: let
   mkLlvmDerivation = attrs:
     mkDerivation (attrs
       // (
-        if qualification == null
+        if smokeTest == null
         then {}
-        else {inherit qualification;}
+        else {inherit smokeTest;}
       ));
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
   versionMatch = builtins.match "([0-9]+)\\..*" version;

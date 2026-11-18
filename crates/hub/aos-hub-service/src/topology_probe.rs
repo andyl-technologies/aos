@@ -89,7 +89,7 @@ struct GrantRevocationTarget {
 
 /// Typed measurements produced by the shared domain controller.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DomainProbeEvidence {
+pub struct DomainProbeResult {
     /// Typed, canonical DNS answers observed across A, AAAA, and CNAME queries.
     pub dns_records: Vec<DnsProbeRecord>,
     /// Whether the runtime completed a verified TLS handshake for the hostname.
@@ -108,7 +108,7 @@ pub struct DomainProbeEvidence {
 
 /// Exact active observation returned by a controller-owned route adapter.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RouteProbeEvidence {
+pub struct RouteProbeResult {
     /// Stable route identity.
     pub route_id: String,
     /// Exact desired route generation.
@@ -152,12 +152,12 @@ pub trait RouteObservationProvider: aos_hub_db::backend::BackendBounds {
     async fn observe(
         &self,
         target: &aos_hub_db::db::RouteReconciliationTarget,
-    ) -> Result<RouteProbeEvidence>;
+    ) -> Result<RouteProbeResult>;
 }
 
-/// Purpose-specific evidence from a controller-owned storage credential probe.
+/// Outcome of a controller-owned, purpose-specific storage credential probe.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StorageCredentialProbeEvidence {
+pub struct StorageCredentialProbeResult {
     /// Whether the exact credential generation exercised its declared purpose.
     pub valid: bool,
     /// Whether a write probe proved create-if-absent semantics.
@@ -185,7 +185,7 @@ pub trait StorageCredentialProbeProvider: aos_hub_db::backend::BackendBounds {
         binding: &aos_hub_db::db::BindingRecord,
         credential: &aos_hub_db::db::BindingCredentialRevisionRecord,
         probe_token: &str,
-    ) -> Result<StorageCredentialProbeEvidence>;
+    ) -> Result<StorageCredentialProbeResult>;
 }
 
 struct UnavailableStorageCredentialProbeProvider;
@@ -198,7 +198,7 @@ impl StorageCredentialProbeProvider for UnavailableStorageCredentialProbeProvide
         _binding: &aos_hub_db::db::BindingRecord,
         _credential: &aos_hub_db::db::BindingCredentialRevisionRecord,
         _probe_token: &str,
-    ) -> Result<StorageCredentialProbeEvidence> {
+    ) -> Result<StorageCredentialProbeResult> {
         anyhow::bail!("no controller-owned storage credential probe adapter is configured")
     }
 }
@@ -220,7 +220,7 @@ pub trait ExternalRouteControlPlane: aos_hub_db::backend::BackendBounds {
     async fn observe_external(
         &self,
         target: &aos_hub_db::db::RouteReconciliationTarget,
-    ) -> Result<RouteProbeEvidence>;
+    ) -> Result<RouteProbeResult>;
 }
 
 /// Authenticated transport for the fixed Cloudflare v4 control-plane API.
@@ -264,7 +264,7 @@ impl ExternalRouteControlPlane for CloudflareRouteControlPlane {
     async fn observe_external(
         &self,
         target: &aos_hub_db::db::RouteReconciliationTarget,
-    ) -> Result<RouteProbeEvidence> {
+    ) -> Result<RouteProbeResult> {
         anyhow::ensure!(
             target.external_provider_kind.as_deref() == Some("cloudflare"),
             "Cloudflare adapter cannot observe another provider"
@@ -341,7 +341,7 @@ impl ExternalRouteControlPlane for CloudflareRouteControlPlane {
             hex::encode(Sha256::digest(&body)) == field("aos_liveness_sha256")?,
             "Cloudflare edge bytes do not match authenticated control-plane metadata"
         );
-        Ok(RouteProbeEvidence {
+        Ok(RouteProbeResult {
             route_id: target.id.clone(),
             configuration_generation: target.configuration_generation,
             configuration_digest: target.configuration_digest.clone(),
@@ -403,7 +403,7 @@ impl RouteObservationProvider for ControllerOwnedRouteObservationProvider {
     async fn observe(
         &self,
         target: &aos_hub_db::db::RouteReconciliationTarget,
-    ) -> Result<RouteProbeEvidence> {
+    ) -> Result<RouteProbeResult> {
         if target.mode == "direct" {
             return self
                 .direct
@@ -433,7 +433,7 @@ impl RouteObservationProvider for UnavailableRouteObservationProvider {
     async fn observe(
         &self,
         _target: &aos_hub_db::db::RouteReconciliationTarget,
-    ) -> Result<RouteProbeEvidence> {
+    ) -> Result<RouteProbeResult> {
         anyhow::bail!("no controller-owned delivery-route observation adapter is configured")
     }
 }
@@ -575,7 +575,7 @@ impl RouteObservationProvider for SignedManifestRouteObservationProvider {
     async fn observe(
         &self,
         target: &aos_hub_db::db::RouteReconciliationTarget,
-    ) -> Result<RouteProbeEvidence> {
+    ) -> Result<RouteProbeResult> {
         anyhow::ensure!(
             target.mode == "direct",
             "signed publication adapter only observes direct routes"
@@ -609,7 +609,7 @@ impl RouteObservationProvider for SignedManifestRouteObservationProvider {
             hex::encode(Sha256::digest(&body)) == route.liveness_sha256,
             "live edge bytes do not match the signed publication manifest"
         );
-        Ok(RouteProbeEvidence {
+        Ok(RouteProbeResult {
             route_id: route.route_id.clone(),
             configuration_generation: route.configuration_generation,
             configuration_digest: route.configuration_digest.clone(),
@@ -657,7 +657,7 @@ fn validated_route_liveness_url(canonical_url: &str, liveness_url: &str) -> Resu
 
 fn validate_route_evidence(
     target: &aos_hub_db::db::RouteReconciliationTarget,
-    evidence: &RouteProbeEvidence,
+    evidence: &RouteProbeResult,
 ) -> Result<()> {
     anyhow::ensure!(
         evidence.route_id == target.id
@@ -1707,7 +1707,7 @@ impl DomainProbeController {
                 .cloned()
                 .context("credential probe checkpoint has no evidence")?;
             (
-                StorageCredentialProbeEvidence {
+                StorageCredentialProbeResult {
                     valid,
                     conditional_writes_supported,
                     error,
@@ -2441,7 +2441,7 @@ impl DomainProbeController {
         generation: i64,
         domain_id: i64,
         hostname: &str,
-    ) -> Result<DomainProbeEvidence> {
+    ) -> Result<DomainProbeResult> {
         let (endpoint_id, endpoint_generation, signing_identity) =
             self.db.domain_probe_signing_identity(domain_id).await?;
         let mut last_error = None;
@@ -2549,7 +2549,7 @@ async fn measure_domain_once(
     signing_identity: &aos_hub_db::db::EndpointProbeSigningIdentity,
     dns_json_endpoint: &str,
     probe_location: &str,
-) -> Result<DomainProbeEvidence> {
+) -> Result<DomainProbeResult> {
     let mut tls_url = url::Url::parse(&format!("https://{hostname}/.well-known/aos-domain-probe"))?;
     tls_url.query_pairs_mut().append_pair("nonce", nonce);
     let (a, aaaa, cname, tls) = futures_util::join!(
@@ -2590,7 +2590,7 @@ async fn measure_domain_once(
         signing_identity,
         now,
     )?;
-    Ok(DomainProbeEvidence {
+    Ok(DomainProbeResult {
         dns_records,
         tls_handshake_valid: true,
         responder_endpoint_id: tls.endpoint_id,
@@ -2914,8 +2914,8 @@ mod tests {
         }
     }
 
-    fn route_evidence() -> RouteProbeEvidence {
-        RouteProbeEvidence {
+    fn route_evidence() -> RouteProbeResult {
+        RouteProbeResult {
             route_id: "route:test".to_string(),
             configuration_generation: 4,
             configuration_digest: "a".repeat(64),

@@ -34,7 +34,7 @@ SUPPORTED_POSTCONDITIONS = {
     "foreign-attempt-rejected-before-mutation", "prerequisite-failure-recorded",
 }
 INSPECTION_FIELDS = {
-    "schema", "liveStateVerified", "incompleteTailBytes", "transaction",
+    "schema", "incompleteTailBytes", "transaction",
     "pending", "completed", "desired", "retainedOutputs", "retiredEffects", "records",
 }
 
@@ -92,7 +92,7 @@ def inspect(value: Any) -> list[dict[str, Any]]:
     """Rechecks the native projection's ordering and pending intent state."""
     require(isinstance(value, dict) and set(value) == INSPECTION_FIELDS,
             "native inspection has unexpected fields")
-    require(value["schema"] == "aos.activation.inspection" and value["liveStateVerified"] is False,
+    require(value["schema"] == "aos.activation.inspection",
             "qualification requires a checked native journal reader")
     require(type(value["incompleteTailBytes"]) is int and value["incompleteTailBytes"] == 0,
             "qualification requires a complete journal prefix")

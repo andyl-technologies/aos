@@ -57,7 +57,7 @@ in
       role = "public-package";
     };
     pname = "garage";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Garage returns success and reports its version.";

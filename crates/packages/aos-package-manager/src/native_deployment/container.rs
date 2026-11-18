@@ -74,7 +74,7 @@ pub(crate) fn prepare_profile(
     let profile = Profile::open_at(path, ProfileScope::User)?;
     let directory = profile.path.join("deployment");
     persist_receipt(&directory.join("admissions"), &receipt)?;
-    let admission = crate::native_registry::RegistryAdmission::new(
+    let admission = crate::native_registry::VerifiedRegistryRoots::new(
         executable.clone(),
         &directory.join("registry-admissions"),
     )?;
@@ -191,7 +191,7 @@ mod tests {
     #[test]
     fn image_authority_retains_the_original_receipt_identity() {
         let profile = tempfile::tempdir().unwrap();
-        let receipt = super::super::Receipt {
+        let receipt = super::super::ImageCatalogDocument {
             path: "/nix/store/00000000000000000000000000000000-image-admission".into(),
             digest: Sha256Digest::of_bytes(b"original image admission"),
         };
@@ -205,7 +205,7 @@ mod tests {
             .collect::<std::io::Result<Vec<_>>>()
             .unwrap();
         assert_eq!(entries.len(), 1);
-        let retained: super::super::Receipt =
+        let retained: super::super::ImageCatalogDocument =
             serde_json::from_slice(&fs::read(entries[0].path()).unwrap()).unwrap();
         assert_eq!(retained.path, receipt.path);
         assert_eq!(retained.digest, receipt.digest);

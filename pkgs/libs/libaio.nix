@@ -15,7 +15,7 @@ in
       role = "public-package";
     };
     pname = "libaio";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The kernel-backed context is created and released successfully.";

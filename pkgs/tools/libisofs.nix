@@ -1,7 +1,7 @@
 ##! libisofs — ISO9660 filesystem reader/writer
 ##!
 ##! Companion to libburn; together with libisoburn provides the xorriso
-##! CLI. AOS uses xorriso to produce the `aos-metadata` ISO consumed
+##! CLI. AOS uses xorriso to produce the `AOS-META` ISO consumed
 ##! by the VM test harness and bare-metal operators via IPMI virtual
 ##! media.
 {
@@ -25,7 +25,7 @@ in
       role = "public-package";
     };
     pname = "libisofs";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Libisofs returns an image with the requested volume identifier.";
