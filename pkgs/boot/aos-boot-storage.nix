@@ -35,7 +35,7 @@ in
     inherit version;
     src = null;
 
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "The installed boot-storage helper package.";
         operation = "Verify every package-owned helper is executable.";

@@ -548,7 +548,6 @@ mod connect_path_tests {
                 outcome: "deleted".to_string(),
                 provider_request_id: "provider-request".to_string(),
                 conditional_etag: "\"strong\"".to_string(),
-                evidence_digest: "sha256:evidence".to_string(),
                 confirmed_at: 42,
             }),
             ..Default::default()
@@ -563,7 +562,8 @@ mod connect_path_tests {
         assert_eq!(encoded["deleteCredentialGeneration"], "3");
         assert_eq!(encoded["deleteCapabilityFingerprint"], "sha256:capability");
         assert_eq!(encoded["evidence"]["outcome"], "deleted");
-        assert_eq!(encoded["evidence"]["evidenceDigest"], "sha256:evidence");
+        assert_eq!(encoded["evidence"]["conditionalEtag"], "\"strong\"");
+        assert_eq!(encoded["evidence"]["providerRequestId"], "provider-request");
         assert_eq!(encoded["evidence"]["confirmedAt"], "42");
     }
 

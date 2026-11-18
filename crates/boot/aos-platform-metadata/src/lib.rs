@@ -15,7 +15,7 @@
 //!   adapter (with the `tokio::time::timeout` shim) and the recorded mock.
 //! - [`mount`] — the config-drive mount helper (`blkid -L` + `mount -o ro`),
 //!   behind a mockable trait.
-//! - [`offline`] — the offline fetchers (aos-metadata ISO, NoCloud,
+//! - [`offline`] — the offline fetchers (AOS-META drive, NoCloud,
 //!   config-drive, qemu fw_cfg).
 //! - [`aws`] — AWS IMDSv2; [`cloud`] — the other native cloud fetchers.
 //! - [`staticnet`] — DHCP-less network parsing + networkd render.

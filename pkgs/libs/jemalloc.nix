@@ -61,7 +61,7 @@ in
       role = "public-package";
     };
     pname = "jemalloc";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The allocation succeeds and its usable size is at least 64 bytes.";

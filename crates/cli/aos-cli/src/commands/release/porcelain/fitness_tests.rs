@@ -5,7 +5,7 @@ use std::time::{Duration, SystemTime};
 
 use aos_release_format::fitness::FITNESS_ATTESTATION;
 use aos_release_format::plan::{PlannedDestination, RolloutRing, SurfaceKind, SurfaceRole};
-use aos_release_format::qualification_evidence::CheckObservation;
+use aos_release_format::release_tests::CheckResult;
 
 use super::*;
 use crate::commands::release::porcelain::testing::contract;
@@ -48,7 +48,7 @@ fn attestation(
             .map(|check| {
                 (
                     check.clone(),
-                    CheckObservation {
+                    CheckResult {
                         passed: true,
                         detail: "observed".to_owned(),
                     },

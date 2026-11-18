@@ -34,7 +34,7 @@ pub fn run_image_stage() -> Result<()> {
 ///
 /// Returns an error for invalid arguments, mismatched measurements, unavailable
 /// verifier tools, or a failed read or output operation.
-pub fn run_image_evidence() -> Result<()> {
+pub fn run_boot_measurements() -> Result<()> {
     crate::measurement_index::run(&std::env::args().skip(1).collect::<Vec<_>>())
 }
 
@@ -42,7 +42,7 @@ pub fn run_image_evidence() -> Result<()> {
 ///
 /// # Errors
 ///
-/// Returns an error for invalid arguments, unsafe tool or journal paths,
+/// Returns an error for invalid arguments, unsafe tool or state directory paths,
 /// invalid retained transport, or failed store restoration.
 pub fn run_initrd_store() -> Result<()> {
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
@@ -50,16 +50,16 @@ pub fn run_initrd_store() -> Result<()> {
         arguments.len() == 4
             && arguments[0] == "--nix-store"
             && arguments[2] == "--state-directory",
-        "initrd store restoration requires the selected Nix tool and journal directory"
+        "initrd store restoration requires the selected Nix tool and state directory"
     );
 
     let nix_store = PathBuf::from(&arguments[1]);
     aos_nix::executable::validate_store_executable(&nix_store, "--nix-store")?;
-    let journal = PathBuf::from(&arguments[3]);
+    let state_directory = PathBuf::from(&arguments[3]);
     ensure!(
-        journal.is_absolute(),
-        "initrd journal directory is not absolute"
+        state_directory.is_absolute(),
+        "initrd state directory is not absolute"
     );
 
-    crate::initrd_store::restore(&nix_store, &journal)
+    crate::initrd_store::restore(&nix_store, &state_directory)
 }

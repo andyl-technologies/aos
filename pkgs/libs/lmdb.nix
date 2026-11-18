@@ -20,7 +20,7 @@ in
       role = "public-package";
     };
     pname = "lmdb";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "LMDB returns the exact committed two-byte value.";

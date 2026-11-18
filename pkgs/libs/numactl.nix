@@ -60,7 +60,7 @@ in
       role = "public-package";
     };
     pname = "numactl";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Libnuma reports exactly two selected bits at the requested positions.";

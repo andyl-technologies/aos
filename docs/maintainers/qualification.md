@@ -1,25 +1,25 @@
-# Release qualification
+# Release testing
 
-AOS uses one versioned system contract for experimental and production. The
-authoritative inputs are [`qualification/`](../../qualification/default.nix).
+AOS uses one versioned release-test contract for experimental and production.
+The authoritative inputs are [`qualification/`](../../qualification/default.nix).
 A release is published to one or more **destinations**. Each destination
-selects a named **profile**, and the profile states everything the release
-must prove before that destination may be published: gates, selected claims,
+selects a named **profile**, and the profile states every check the release
+must pass before that destination may be published: gates, selected claims,
 soak, review, matrix completeness, environment fitness, and rollout rings.
 Operators cannot remove individual gates from a plan; the only permitted
 relaxation is a signed [profile override](#profile-overrides) of the fields a
 profile marks overridable.
 
-Environment recovery is not proven per release. Backup restore, authority
+Environment recovery is not tested per release. Backup restore, authority
 recovery, Hub restore, key rotation, and alert delivery are **fitness
 exercises** performed on their own cadence. Each produces a signed, dated
-[fitness attestation](#fitness-attestations) bound to the identities it
-covered, and a profile requires attestations no older than its stated maximum
-age.
+[fitness record](#fitness-attestations) bound to the identities it covered,
+and a profile requires fitness records no older than its stated maximum age.
 
 Start with the [release checklist](release-checklist.md), which gives the order
 of operations and the fitness exercise cadence. This page specifies the
-contract and evidence formats; the [command reference](canonical-releases.md)
+contract and the formats of test results and approvals; the
+[command reference](canonical-releases.md)
 documents command arguments.
 
 ## Destinations and profiles
@@ -53,7 +53,7 @@ destination, and plan validation rejects it.
 `andyl/main` carries `edge`, `candidate`, and `stable`. Experimental registries
 carry the `edge` channel only. A channel kind selects the same profile on every
 tier that carries it: the tier describes the key custody and pipeline behind a
-registry, not what a release must prove. A per-train channel such as
+registry, not what a release must pass. A per-train channel such as
 `stable-2026.3` has the kind of the prefix before its first `-` and selects
 that kind's destination.
 
@@ -71,7 +71,7 @@ staging destination of the same release is already published.
 
 ### Profiles
 
-A profile is a closed obligation bundle. The shipped values are in
+A profile is a closed set of release requirements. The shipped values are in
 [`qualification/modules/profiles.nix`](../../qualification/modules/profiles.nix):
 
 | Profile | Requirements | Claims | Change scoped | Soak | Reviews | Complete matrix | Transaction review | Fitness (max age) | Rings (cumulative partitions @ observation) |
@@ -93,12 +93,13 @@ The fields mean:
   changed relative to the predecessor. See [change scoping](#change-scoping).
 - **Soak** is the minimum observed window for A3 claims and
   `rollout-observation`.
-- **Reviews** is the number of distinct release-evidence reviewer signatures
-  required over each report the destination admits.
+- **Reviews** is the number of distinct reviewer signatures, made with
+  `release-evidence` keys, required over each test report the destination
+  accepts.
 - **Complete matrix** rejects a plan with any blocked package/platform cell.
 - **Transaction review** stops the pipeline after `prepare-registry` until an
   operator accepts the isolated registry transaction.
-- **Fitness** names the attestation kinds that must be fresh and
+- **Fitness** names the fitness record kinds that must be fresh and
   binding-matched when the destination is published or advanced.
 - **Rings** are ordered cumulative partition counts. Each ring must be observed
   for its stated time before the next ring advances. The last ring is always
@@ -117,7 +118,7 @@ contract type:
 - fitness kinds must be declared in the contract; and
 - a candidate or stable destination whose profile selects claims requires at
   least one reviewer, on every tier. Edge makes no support promise, so its
-  automated A2 evidence is published without a review.
+  automated A2 test results are published without a review.
 
 A reviewed contract revision may change shipped values with `mkForce`, within
 those floors. Record the frozen plan's values; the plan binds each
@@ -138,7 +139,8 @@ follow from its profile:
 The staging phase always tests the public bytes on the staging surface. Rollout
 and complete phases test the destination's own surface. Only a profile that
 selects `qualified` claims (`soak`) has a complete phase: its destination
-needs a complete-phase report and the release-evidence completion approvals. A
+needs a complete-phase report and the completion approvals signed with
+`release-evidence` keys. A
 destination of any other profile records `complete` automatically when its
 final ring's channel advance and public read-back succeed.
 
@@ -158,7 +160,7 @@ per-cell package artifact digests with the predecessor manifest.
 `step qualify-run` and publication recompute the scope from the finalized
 manifest and reject any disagreement. When the predecessor manifest is
 unavailable or the predecessor is a qualification snapshot, everything is
-affecting. Uncertainty never narrows a campaign.
+affecting. Uncertainty never narrows the set of tests.
 
 ```json
 {
@@ -174,10 +176,13 @@ affecting. Uncertainty never narrows a campaign.
 Non-scoped profiles ignore the change scope and exercise every target and
 every published cell.
 
-### Fitness attestations
+<a id="fitness-attestations"></a>
 
-A fitness attestation proves that the release environment can recover. It
-replaces the per-release operator recovery exercises of earlier contracts:
+### Fitness records
+
+A fitness record shows that the release environment can recover. Its schema
+is `aos.release.fitness-attestation/v1`. Fitness exercises replace the
+per-release operator recovery exercises of earlier contracts:
 nothing about a single release is observed by restoring a backup, and a quarterly
 exercise bound to the identities it covered says more than a rushed one before
 every publication.
@@ -197,13 +202,13 @@ report on standard input, after performing the exercise in the
 [release checklist](release-checklist.md#fitness-exercises). The input is an
 `aos.release.fitness-report/v1` exercise report: `performed_at`, `operator`,
 and a `checks` map giving each of the kind's checks as `{passed, detail}`. The
-command copies those fields into the attestation below, adds the live
+command copies those fields into the fitness record below, adds the live
 bindings, and records the report's SHA-256 as `evidence_digest`.
-Profiles accept automated attestations for at most 14 days and operator
-attestations for at most 90 days.
+Profiles accept automated fitness records for at most 14 days and operator
+fitness records for at most 90 days.
 
-A binding names an identity the attestation carries and publication compares
-with the live value:
+A binding names an identity the fitness record carries and publication
+compares with the live value:
 
 | Binding | Live value |
 | --- | --- |
@@ -213,16 +218,16 @@ with the live value:
 | `tooling` | Digest of the installed release tooling closure's store path |
 | `alert-config` | Digest of the maintainer configuration's `[alert]` section |
 
-A binding mismatch makes an attestation unusable regardless of its age. A new
-signer roster therefore requires fresh `authority-recovery` and `key-rotation`
-attestations; a new production surface requires fresh `hub-restore` and
-`key-rotation` attestations for that surface; a new `aos` tooling closure
+A binding mismatch makes a fitness record unusable regardless of its age. A
+new signer roster therefore requires fresh `authority-recovery` and
+`key-rotation` records; a new production surface requires fresh `hub-restore`
+and `key-rotation` records for that surface; a new `aos` tooling closure
 requires the next restore check to run before a `functional` or `soak`
 destination can be published.
 
-An attestation is canonical JSON signed with the standard receipt envelope by a
-release-evidence key, stored under the maintainer configuration's
-`fitness_root` as `<kind>/<performed_at>.json`:
+A fitness record is canonical JSON signed with the standard signed-record
+envelope by a `release-evidence` key, stored under the maintainer
+configuration's `fitness_root` as `<kind>/<performed_at>.json`:
 
 ```json
 {
@@ -243,17 +248,17 @@ release-evidence key, stored under the maintainer configuration's
 ```
 
 `checks` contains exactly the kind's checks, all passed. `evidence_digest`
-binds the retained restricted report; the attestation itself carries no
-secret, provider account, or internal address. Attestations are
-maintainer-wide, not per release: one fresh attestation serves every release
-that publishes while it remains valid.
+binds the retained restricted report; the fitness record itself carries no
+secret, provider account, or internal address. Fitness records are
+maintainer-wide, not per release: one fresh record serves every release that
+publishes while it remains valid.
 
 ### Profile overrides
 
 A profile override is the only way to relax a destination's obligations. It is
 how AOS handles an emergency; no release class relaxes obligations. An
 override is an `aos.release.profile-override/v1` document, threshold-signed by
-release-evidence keys (one envelope per signer, reaching the role threshold),
+`release-evidence` keys (one envelope per signer, reaching the role threshold),
 that names one release, one destination, and an incident record:
 
 ```json
@@ -289,7 +294,8 @@ instead.
 
 ## Target support matrix
 
-The support matrix records compatibility claims and the evidence supporting them.
+The support matrix records compatibility claims and the test results supporting
+them.
 Each claim identifies an artifact, a function, an environment scope, and an
 assurance level. Release policy specifies the minimum assurance required for
 selected claims. The destination's profile selects which claims apply and sets
@@ -297,33 +303,34 @@ their observation window and review obligations.
 
 ### Assurance levels
 
-| Level | Evidence required | Permitted claim |
+| Level | Results required | Permitted claim |
 | --- | --- | --- |
-| A0: unassessed | No accepted compatibility assessment or applicable execution evidence | Compatibility is unknown |
+| A0: unassessed | No accepted compatibility assessment or applicable test results | Compatibility is unknown |
 | A1: assessed | Reviewed CPU/ABI requirements, firmware and device interfaces, enabled kernel drivers, required firmware, and known exclusions | Expected to work within the documented compatibility scope; no direct execution claim |
 | A2: exercised | A1 assessment plus direct tests of the exact artifact and stated functions on recorded configurations, with expected and observed results | The listed functions passed on the tested configurations |
-| A3: qualified | A2 evidence plus all applicable acceptance checks, update/recovery transitions, the profile's soak window and required review | The complete stated contract passed qualification on the tested configurations |
+| A3: qualified | A2 results plus all applicable acceptance checks, update/recovery transitions, the profile's soak window and required review | The complete stated contract passed its tests on the tested configurations |
 
-Levels express evidence strength, not statistical reliability or certification.
-Successful artifact builds establish availability, but do not establish A1
-hardware compatibility by themselves. Failed checks, expired evidence and known
-incompatibilities are recorded separately from assurance; none may be hidden by
-assigning a lower level. Published artifacts always require signatures, complete
-closures and corresponding source, regardless of hardware assurance.
-Mark a known failing scope incompatible even if historical evidence reached A3.
+Levels express how much testing backs a claim, not statistical reliability or
+certification. Successful artifact builds establish availability, but do not
+establish A1 hardware compatibility by themselves. Failed checks, expired
+results and known incompatibilities are recorded separately from assurance;
+none may be hidden by assigning a lower level. Published artifacts always
+require signatures, complete closures and corresponding source, regardless of
+hardware assurance. Mark a known failing scope incompatible even if historical
+results reached A3.
 
 A2 and A3 apply to the recorded configuration set. A broader compatibility claim
 requires its own A1 assessment. For example, a reviewed CPU-family claim may be
 A1 while a subset of specific CPU SKUs and platform configurations is A3. The
-family retains A1 outside that tested subset. A CPU result alone does not qualify
+family retains A1 outside that tested subset. A CPU result alone does not cover
 a motherboard, NIC, storage controller or their combined installation.
 
-### Qualification axes
+### Test axes
 
 Use one row for each distinct claim and scope. Multiple rows may cover the same
 architecture at different assurance levels.
 
-| Axis | Required scope and evidence fields |
+| Axis | Required scope and result fields |
 | --- | --- |
 | Artifact and function | Release/manifest and image or package digest, variant, kernel build and configuration digest, claimed functions, exclusions, predecessor for update claims |
 | Architecture and CPU | x86_64 or aarch64; ISA baseline and required features; vendor, family/model/stepping or implementer/part/revision; exact CPU SKU and microcode/firmware revision when observable |
@@ -342,7 +349,7 @@ and image are unchanged.
 ### Required release coverage
 
 The following matrix specifies minimum assurance, not achieved results. Retain
-the actual tested configurations and evidence separately for each release.
+the actual tested configurations and results separately for each release.
 
 | Environment | Architecture | Accelerator/runtime | Minimum assurance | Required configuration |
 | --- | --- | --- | --- | --- |
@@ -350,7 +357,7 @@ the actual tested configurations and evidence separately for each release.
 | QEMU | aarch64 | TCG | A3, functional contract | `disk-aarch64-linux`: `virt`, persistent UEFI/TPM, virtio disk/NIC; record emulated CPU model/features |
 | OCI container | x86_64 | containerd/runc, native host | A3 | `container-x86_64-linux`: persistent network workload and recorded host configuration |
 | OCI container | aarch64 | containerd/runc inside a QEMU TCG `virt` guest on x86_64 Linux | A3, emulated functional contract | `container-aarch64-linux`: persistent network workload; record the physical host, guest and container layers |
-| QEMU | x86_64 / aarch64 | Other architecture/accelerator combinations | Set per additional claim | Separate machine/CPU/device configuration and evidence |
+| QEMU | x86_64 / aarch64 | Other architecture/accelerator combinations | Set per additional claim | Separate machine/CPU/device configuration and results |
 | Physical hardware | x86_64 / aarch64 | Native | Set per claim | CPU SKU set, chipset/SoC, firmware, device/driver combinations |
 | Cloud VM | x86_64 / aarch64 | Provider virtualization | Set per claim | Provider/service, exact instance SKU, region and virtual device profile |
 
@@ -370,7 +377,7 @@ Each required target has a release-blocking A2 claim at staging and an A3 claim
 at completion. A profile with `claims = "functional"` selects only the A2
 claims; `claims = "qualified"` selects both. A3 requires the complete
 functional and recovery checks and the profile's soak window on that same
-recorded configuration. Staging evidence does not award A3 before observation
+recorded configuration. Staging results do not award A3 before observation
 completes, and a destination whose profile selects no A3 claim never awards it.
 
 A2 and A3 outcomes cover the exact inventory identified by their environment
@@ -378,7 +385,7 @@ digest. Declare separate required targets for the CPU, board, device and runtime
 combinations that must each be exercised. A target's compatibility predicates
 define which configurations may satisfy its case.
 
-### Release evidence matrix
+### Release results matrix
 
 Retain this matrix with the release records and include the approved claims in
 release support information. Every row must contain:
@@ -389,12 +396,12 @@ release support information. Every row must contain:
 | Compatibility scope | Explicit architecture, CPU/features, platform and device predicates; runtime/accelerator or provider/SKU where applicable |
 | Tested configurations | Inventory IDs for the exact combinations exercised; an empty set for assessment-only claims |
 | Required assurance | A1, A2 or A3, plus whether failing this obligation blocks release |
-| Achieved assurance and result | Highest currently supported level; pass, fail, missing or stale evidence; known incompatibilities |
-| Evidence | Artifact/plan/case digests, assessment references, test reports, dates, operation counts, observation window and reviewer |
-| Maintenance | Owner, evidence expiry and changes that invalidate the claim |
+| Achieved assurance and result | Highest currently supported level; pass, fail, missing or stale results; known incompatibilities |
+| Results | Artifact/plan/case digests, assessment references, test reports, dates, operation counts, observation window and reviewer |
+| Maintenance | Owner, result expiry and changes that invalidate the claim |
 
 The matrix is a reviewed release record. Required executor cases and signed
-reports remain the admission mechanism; matrix entries cannot replace missing
+reports remain what approves a release; matrix entries cannot replace missing
 observations or change a frozen gate. Before approval, reconcile every mandatory
 case with its matrix row and inspect the retained environment inventories.
 
@@ -415,8 +422,8 @@ load, interruption and recovery checks as part of the claimed system contract.
 
 Reassess claims after changes to artifacts, kernel configuration, CPU feature
 baseline, firmware, drivers, QEMU machine/CPU model, accelerator, runtime or cloud
-profile. Preserve historical results, mark invalidated evidence stale, and obtain
-fresh evidence before retaining the affected assurance claim. A shared defect
+profile. Preserve historical results, mark invalidated results stale, and obtain
+fresh results before retaining the affected assurance claim. A shared defect
 blocks every release obligation whose scope includes it.
 
 ### Images, packages and optional hardware features
@@ -428,7 +435,7 @@ needs the functional checks below, with additional obligations inherited from it
 system-integrity or workload role.
 
 Record optional features such as redundant storage, GPU acceleration, watchdogs
-and server management with their own functions, configuration scope and evidence.
+and server management with their own functions, configuration scope and results.
 An A3 base-image result covers only the features included in that contract.
 A profile with `require_complete_matrix` (`soak`) rejects a plan with any
 blocked package/platform cell.
@@ -467,9 +474,9 @@ host binfmt user-mode emulation is outside this reference scope.
 Record the physical x86_64 host, QEMU `virt` guest and ARM64 container as three
 ordered layers for the ARM64 target, including the host and guest kernels,
 QEMU version/machine/CPU model, runtime versions and CPU identities. This
-qualifies the recorded emulated workload; it makes no native ARM64 hardware
+covers the recorded emulated workload; it makes no native ARM64 hardware
 or performance claim. The same topology must cover staging and observation.
-Native ARM64 coverage requires its own explicit target and evidence.
+Native ARM64 coverage requires its own explicit target and results.
 
 Existing fleet tests provide regression coverage; the same checks against the
 exact published artifacts are required before a public release can pass this gate.
@@ -490,9 +497,9 @@ Physical image-lifecycle claims require UEFI, Secure Boot, persistent TPM 2.0,
 supported storage/network drivers, and a console/recovery path. Record capability
 requirements and known exclusions in the support record. The base contract
 covers headless operation; graphical desktop, GPU acceleration and suspend
-require separate feature qualification.
+require separate feature tests.
 
-A3 physical-image qualification requires the disk-image checks on each selected
+An A3 physical-image claim requires the disk-image checks on each selected
 configuration. Choose CPU SKU, chipset/SoC, firmware and device combinations to
 cover the claim's scope. Record CPU identities, board revisions, PCI/USB device
 IDs, bound drivers and firmware versions. Verify storage and network drivers are
@@ -504,12 +511,12 @@ storage read/write checksums agree under load, link loss/reconnection recovers,
 and shutdown powers off. Perform the 3 cold boots by removing/restoring power;
 exercise interrupted writes only on expendable test storage. Monitor machine
 checks, storage errors and thermal behavior during the profile's soak window; unexplained
-hardware/driver faults block the affected qualification pending diagnosis.
-Requalify affected coverage after kernel, driver, firmware or boot/security changes.
+hardware/driver faults block the affected claim pending diagnosis.
+Retest affected coverage after kernel, driver, firmware or boot/security changes.
 
 ### Cloud-VM acceptance
 
-Qualify each cloud claim against its provider, service, exact instance SKU,
+Test each cloud claim against its provider, service, exact instance SKU,
 architecture, region and device profile. Record image import format,
 boot/security capabilities, exposed CPU features, storage/NIC drivers and
 provisioning interface. Retain each tested configuration in the environment
@@ -567,7 +574,7 @@ path.
 ```sh
 aos maintain release step contract --registry andyl/experimental
 aos maintain release step contract --registry andyl/main --to production/stable
-aos --json release step contract --registry andyl/main --to production/candidate \
+aos --json maintain release step contract --registry andyl/main --to production/candidate \
   --output qualification-contract.json
 aos maintain release step contract --registry andyl/main --input qualification-contract.json
 ```
@@ -592,19 +599,19 @@ public releases use the restricted, non-public
 [qualification snapshot workflow](canonical-releases.md#create-a-first-qualification-predecessor)
 as their predecessor. A descriptor alone is insufficient: retain the signed
 bundle and verification keys for the image update executor and for change
-scoping. A experimental-to-main transition is a new main release and installation
+scoping. An experimental-to-main transition is a new main release and installation
 unless a separate authenticated migration contract has been implemented and
-qualified.
+tested.
 
 Every destination requires authentic artifacts, complete closures, source and
-license evidence, and a reproduced build through `build-integrity`. Durations
+license metadata, and a reproduced build through `build-integrity`. Durations
 are engineering policy, not statistical failure-rate claims. Record machines,
 workload, attempts, successes, failures, and recovery operations for every
 observation window.
 
-## Requirements, subjects, and evidence
+## Requirements, subjects, and results
 
-The qualification catalog uses the AOS `lib.evalModules` fixed point. Feature
+The release-test catalog uses the AOS `lib.evalModules` fixed point. Feature
 modules under `qualification/modules/` own their options, configuration and
 assertions. The module registry discovers feature files automatically and
 excludes `_`-prefixed implementation files. `qualification/default.nix` accepts
@@ -643,7 +650,7 @@ records (including byte digests and sizes). Reusing logical artifact names
 cannot reuse an observation for changed bytes. An observation records each acceptance
 condition, immutable executor identity, actual environment identity, execution
 times, operation counts, and the predecessor exercised. Missing, failed,
-unknown, duplicated, future-dated, expired, or incorrectly scoped evidence
+unknown, duplicated, future-dated, expired, or incorrectly scoped results
 cannot satisfy a required case. Preserve failed attempts; a later pass does not
 erase them from the operational record.
 
@@ -653,7 +660,7 @@ report relies on expires after 30 days. A3 cases additionally require
 observation at least as long as the destination's soak, or the soak of an
 accepted override.
 
-Cases use `aos.release.qualification-case/v1`. Every target observation
+Cases use `aos.release.qualification-case/v2`. Every target observation
 includes a reviewed assessment bound to the canonical environment-profile digest. A1 contains the
 reviewer's rationale and exact retained references, without execution times or
 operation counts. A2 and A3 additionally contain a typed
@@ -676,16 +683,19 @@ binding are separate requirements.
 `aos.release.qualification-report/v1` records coordinator-derived claim outcomes
 alongside the observations. Consumers recompute those outcomes; an executor
 cannot assign its own assurance. Missing, failed and stale optional claims remain
-visible and do not block admission. Malformed or incorrectly bound evidence is
+visible and do not block approval. A malformed or incorrectly bound result is
 rejected even for an optional claim. A complete functional run with insufficient
 observation duration can establish A2 but cannot satisfy an A3 obligation. Reports
 require the configured authority signatures and the destination's review
 threshold before they authorize release operations.
 
-Build observations belong in the immutable manifest. Staging observations
-refer to that finished manifest and its staging publication receipt. Rollout
-and completion observations are later records; never mutate the original
-manifest to add evidence that did not exist when it was signed.
+Build checks run during assembly: the build report binding and the
+repeat-build and advisory tier policies fail assembly directly, so a validated
+manifest satisfies `build-integrity` and carries no separate build results.
+Staging observations refer to that finished manifest and its signed staging
+publication record. Rollout and completion observations are later records;
+never mutate the original manifest to add results that did not exist when it
+was signed.
 
 ### Scoped gate digests
 
@@ -699,14 +709,14 @@ Each gate identity is digested over only what it depends on, under the domain
 Each planned destination additionally carries a `profile_digest` over its
 profile under `aos.release.qualification-profile/v1`. Soak, review, fitness,
 and ring changes therefore change the destination's binding without
-invalidating case evidence for unrelated targets. Each gate records whether it
+invalidating case results for unrelated targets. Each gate records whether it
 is `blocking`: requirement gates always block, and a claim gate blocks when its
 claim does.
 
 A plan's destinations each carry their own gate list, equal to
 `contract.gates(destination, change_scope)`. There is no plan-wide gate union.
 
-## Release journal and admissions
+## Release journal and approvals
 
 Each release keeps an append-only, hash-chained journal
 (`aos.release.journal-entry/v1`). It records three global states and then one
@@ -733,18 +743,18 @@ any non-terminal state -> failed
   release bytes. The release succeeds when every planned destination is
   `complete`.
 
-There is no separate qualified state. The signed staging-phase qualification of
-a production destination is attached, by digest, to that destination's
-published entry. Rollout and completion qualifications are attached to the
-rolling and complete entries they authorize. The admissions of one release are
-therefore independent per destination: a failure to qualify
+There is no separate tested state. The signed staging-phase test approval of a
+production destination is attached, by digest, to that destination's
+published entry. Rollout and completion approvals are attached to the rolling
+and complete entries they authorize. The approvals of one release are
+therefore independent per destination: a test failure for
 `production/stable` does not undo `production/candidate`.
 
 ## Collect, review, and sign
 
 `aos maintain release advance` performs this section's steps for each destination and
 stops at every human decision. The underlying leaf commands are documented here
-because their inputs and outputs are the evidence.
+because their inputs and outputs are the test results and approvals.
 
 Inspect the actual case population before allocating machines:
 
@@ -763,8 +773,9 @@ public anchors for verification. `aos maintain release explain --to <destination
 prints the same population with the current status of every case.
 
 Run `aos maintain release step qualify-run --to <destination> --phase staging
---prepare-only` with the bundle, the staging publication receipt, applicable
-executor mappings, and `--qualified-at now` described in
+--prepare-only` with the bundle, the signed staging publication record
+(`--publication-receipt`), applicable executor mappings, and
+`--qualified-at now` described in
 [the runbook](canonical-releases.md#run-the-native-qualification-matrix).
 For staging image update cases, also supply the retained snapshot through an
 absolute `--predecessor-bundle` path.
@@ -782,14 +793,14 @@ key, either through `aos maintain release review` or directly:
 }
 ```
 
-Use the existing signed-receipt envelope: Ed25519 signs the SHA-256 of
+Use the existing signed-record envelope: Ed25519 signs the SHA-256 of
 `aos.hub.release-evidence-signature/v1`, a NUL byte, then the canonical payload.
 This is `RECEIPT_SIGNATURE_DOMAIN` in `crates/release/aos-release-format/src/receipt.rs`.
 Keep review signing under the configured authority provider, outside the Nix
 store. The destination's profile sets the review threshold: `functional` and
 `soak` require one reviewer, `smoke` and `build` none. A reviewer may be added
 voluntarily where none is required. Human independence and custody are
-confirmed in the maintainer checklist; separate key IDs alone do not prove it.
+confirmed in the maintainer checklist; separate key IDs alone do not establish it.
 A rejected review (`"accepted": false`) stops the destination; the report must
 be recollected.
 
@@ -802,20 +813,20 @@ recheck the original report directory, including its bodies and reviews; a
 copied aggregate JSON file alone is insufficient.
 
 For rollout, use `--phase rollout --ring N --prior-generation G` with the
-destination's current publication receipt (`--publication-receipt`) and the
-current journal. The command derives the ring's partition range from the
+destination's current signed publication record (`--publication-receipt`) and
+the current journal. The command derives the ring's partition range from the
 planned rings; `G` is the channel generation observed on the live surface.
 Rings are numbered from 1 in profile order.
 
-For completion, use `--phase complete` with the destination's publication
-receipt and rolling journal. These authority signatures bind the exact report,
-policy, manifest, publication receipt, entire journal, and next ring where
-applicable. Channel commands require the signed rollout qualification when the
-profile has a rollout-phase gate; observations and approvals at rollout must be
+For completion, use `--phase complete` with the destination's signed
+publication record and rolling journal. These authority signatures bind the
+exact report, policy, manifest, publication record, entire journal, and next
+ring where applicable. Channel commands require the signed rollout approval
+when the profile has a rollout-phase gate; observations and approvals at rollout must be
 at most ten minutes old. Recollect health for each new ring. A completion
 approval must also be fresh, while its workload report covers the full soak
 window. Campaigns lasting days run outside a single bounded executor process;
-import their retained observations for review and admission.
+import their retained observations for review and approval.
 
 ## Native executors
 
@@ -832,16 +843,17 @@ The RFC-0022 native ability gates are `ability-native-activation`,
 `ability-native-adapter-matrix`. They use release scope so each staging case
 binds the complete finalized non-control artifact set, including the exact
 package, native transaction, handler, and image records carried by the release.
-A change to the case subjects, qualification policy, executor, or environment
+A change to the case subjects, release-test policy, executor, or environment
 invalidates its observation.
 
-Native package qualification uses the signed `aos.package.qualification`
-companion. Its closed probe declarations name exact package/output selectors;
-the frozen artifact bindings select immutable payload roots. Release admission
-validates the companion's exact bytes and retained store identity, rather than
-reconstructing an interface or provider catalog. A package probe proves only
-its declared package-function claim. It does not establish a whole-system
-activation or recovery claim.
+Native package tests use the signed `aos.package.qualification` companion,
+which carries each package's smoke test (the `smokeTest` recipe argument). Its
+closed probe declarations name exact package/output selectors; the frozen
+artifact bindings select immutable payload roots. Release approval validates
+the companion's exact bytes and retained store identity, rather than
+reconstructing an interface or provider catalog. A package smoke test covers
+only its declared package-function claim. It does not establish a
+whole-system activation or recovery claim.
 
 The release policy carries `aos.qualification.native-operation-spec`, with an
 explicit required operation set and independently checked cohorts. Each cohort
@@ -854,7 +866,7 @@ A scenario retains the original authored modules and its immutable evaluation
 descriptor. The configured executor registry commits the exact fixture archive,
 original store inventory, and evaluation selections at build time. Its executor
 identity binds those commitments. The runner verifies them before replaying the
-scenario against admitted candidate inputs. These are executor-authorized
+scenario against authenticated candidate inputs. These are executor-authorized
 scenario inputs; they are distinct from the candidate's signed boot baseline.
 Ambient store paths or a fixture's self-reported inventory do not supply that
 authority.
@@ -866,31 +878,31 @@ attempt. An observation for another revision, backend, action, or sequence
 cannot satisfy its cell.
 
 Live flights retain checked native journal inspection alongside independent
-substrate and backend receipt ownership inventories and foreign-state
+ownership records from the host system and backend, and foreign-state
 snapshots. Pending intent, completed outcomes, and committed output mappings
-are distinct evidence. Interruption and recovery cases must show dependent
+are distinct results. Interruption and recovery cases must show dependent
 nonexecution after failure, safe handling of incomplete tails, and the exact
 ownership and foreign-state results required by the cell. Removal decisions
 come from the transaction's explicit `retire` list and target retained or
 already durably retired effects; omission from a desired graph does not
 authorize retirement.
 
-Native rejection evidence must identify the selected graph and the rejected
+A native rejection result must identify the selected graph and the rejected
 attempt, and independently establish that no prohibited dispatch or external
 mutation occurred. Schema checks, mocked callbacks, and a successful source
 regression cannot substitute for live domain observations. The source-built
 `aos.qualification.native-runtime-audit` checks generic runtime boundaries
-separately; passing it does not qualify Kubernetes, storage, services, boot, or
+separately; passing it does not cover Kubernetes, storage, services, boot, or
 any other domain.
 
 Source-candidate regression derivations and release staging cases remain
-separate. Release admission requires fresh executor observations for the exact
-frozen subjects and acceptance checks. Whole-system native fleet qualification
-is incomplete until every applicable domain operation and recovery case has
-produced its required evidence. An unfinished scenario must leave the gate
+separate. Release approval requires fresh executor observations for the exact
+frozen subjects and acceptance checks. Whole-system native fleet testing is
+incomplete until every applicable domain operation and recovery case has
+produced its required results. An unfinished scenario must leave the gate
 unsatisfied. An x86 fleet does not establish direct aarch64 execution.
 
-Kubernetes qualification requires actual native package modules, authenticated
+Kubernetes testing requires actual native package modules, authenticated
 APM deployment, observed readiness and exact object revisions, and verified
 replacement and removal behavior. A package-function probe or a fabricated
 companion cannot impersonate the finalized Kubernetes or system manager
@@ -905,12 +917,12 @@ slot-A UKI, metadata, unsigned assembly, and finalized-set objects from the
 downloaded release case.
 It verifies their byte identities and cross-bindings, extracts the UKI's initrd,
 and checks the published native host and initrd transaction, package, evaluation,
-and admission roots before booting that QCOW2 with
-KVM, UEFI Secure Boot, and a software TPM. It then confirms through the guest's
-recorded running generation, booted UKI digest, kernel, root hash, and host
-native admission and retained transaction identities that execution stayed on
-those published subjects. A checked desired graph alone does not prove that its
-effects ran.
+and trusted artifact manifest (`admission.json`) roots before booting that
+QCOW2 with KVM, UEFI Secure Boot, and a software TPM. It then confirms through
+the guest's recorded running generation, booted UKI digest, kernel, root hash,
+and host trusted artifact manifest and retained transaction identities that
+execution stayed on those published subjects. A checked desired graph alone
+does not show that its effects ran.
 
 The production-only image-rollout scenario additionally requires the frozen
 predecessor manifest and its downloaded object bundle. It rejects a missing or
@@ -921,7 +933,7 @@ retaining the image's baked authenticated registry trust anchor, redirecting it
 to the bounded HTTPS staging Hub origin, and replacing its channel with the
 exact finalized release-version tag. The healthy flight independently observes
 the health hook and native journal before allowing physical boot commit, then
-proves expiry retires both rollout roots and retained UKIs. The failed-health
+checks that expiry retires both rollout roots and retained UKIs. The failed-health
 flight observes the exact candidate boot before releasing the failure hook,
 then checks the exact predecessor boot, retained roots, native journal, and
 terminal fallback before allowing physical commit. A missing predecessor,
@@ -939,16 +951,17 @@ Their immutable artifacts and candidate runtime selection must be retained and
 bound to the observation. They cannot replace a signed package companion or
 alter published subjects to manufacture a passing production claim.
 
-Native boot evidence binds the image-owned host and initrd transaction,
-packages, evaluation snapshot, and admission roots to the published assembly.
-Read-only inspection of the native effects journal distinguishes desired
-configuration, pending durable dispatch intent, and committed output mappings.
-It does not repair incomplete tails or treat graph digests as live-state proof.
-Live operation evidence records the exact transaction, effect, revision, action,
-and journal sequence alongside independently observed backend ownership and
-foreign-state snapshots. A source-built native runtime audit is separate from
-domain qualification; its success does not qualify a fleet scenario that has
-not completed its own native operation and recovery checks.
+Native boot results bind the image-owned host and initrd transaction,
+packages, evaluation snapshot, and trusted artifact manifest roots to the
+published assembly. Read-only inspection of the native effects journal
+distinguishes desired configuration, pending durable dispatch intent, and
+committed output mappings. It does not repair incomplete tails or treat graph
+digests as a check of live state. Live operation results record the exact
+transaction, effect, revision, action, and journal sequence alongside
+independently observed backend ownership and foreign-state snapshots. A
+source-built native runtime audit is separate from domain tests; its success
+does not satisfy a fleet scenario that has not completed its own native
+operation and recovery checks.
 
 After provisioning through the published `apm`, implemented native fleet
 scenarios drive
@@ -971,7 +984,7 @@ serial/SSH interfaces.
 
 The scenario emits `QualificationExecutorResponse`. Its observation must
 contain the exact case digest, acceptance checks, numeric measurements, assessment
-and applicable environment/capability evidence. Include the predecessor for update
+and applicable environment/capability results. Include the predecessor for update
 claims. Set
 `executor_digest` to the SHA-256 of the retained scenario registry bytes;
 its store paths bind the executable closures. Include the actual non-sensitive
@@ -999,8 +1012,8 @@ aos maintain release step qualification respond \
 Linux disk scenarios run QEMU and their other executables from the AOS build-host
 package set while using firmware from the image's target package set. ARM64 TCG
 images can therefore run on an x86_64 Linux host, and their inventory records
-that outer host separately from the ARM64 guest. x86_64 disk qualification still
-requires an x86_64 host with KVM.
+that outer host separately from the ARM64 guest. x86_64 disk tests still
+require an x86_64 host with KVM.
 
 The x86_64 Linux executor includes a native program for its staging
 container claim. It reconstructs an OCI layout only from the anonymously
@@ -1016,14 +1029,14 @@ TCG guest on the recorded x86_64 host, execute the same lifecycle checks with
 the exact downloaded candidate, and retain a report containing all three
 observed layers. Build `mkQualificationContainerScenario` with `reportOnly = true`
 for the guest-side collector. It writes the raw `scenario-report.json` after
-all lifecycle checks and does not issue a qualification response. The host
+all lifecycle checks and does not issue an executor response. The host
 collector must attach its observed physical and QEMU inventory, then bind and
 validate the combined report through `qualification respond`. A guest-local two-layer report cannot satisfy this profile;
-report import does not synthesize the missing outer host or QEMU evidence.
+report import does not synthesize the missing outer host or QEMU results.
 Missing reports fail closed. Automated guest provisioning and collection of
 this combined inventory remain operator setup work before release readiness.
 The topology change alters the contract digest: regenerate requests, plans,
-assessments and case-bound reports; do not reuse earlier native-only evidence.
+assessments and case-bound reports; do not reuse earlier native-only results.
 
 Before running the native program, place the reviewed compatibility assessment for
 each target at
@@ -1045,7 +1058,7 @@ instead use `--report-root DIR`. The CLI selects
 `DIR/<case-digest-without-sha256-prefix>.json` from the exact case in the
 request. The report producer obtains that digest from `qualification cases` and
 must create a new canonical file for every case; a report for another release,
-manifest, receipt, or case is rejected.
+manifest, publication record, or case is rejected.
 
 The report uses the common fields below and may retain additional
 scenario-specific measurements and diagnostics. `checks` must contain every and
@@ -1078,7 +1091,7 @@ A1 reports omit `environment`.
 
 `qualification respond` derives the request, executor, environment, report,
 subject, predecessor, authority and nonce bindings. It verifies the report's
-registry, release, publication receipt, manifest, and case identities first. It
+registry, release, publication record, manifest, and case identities first. It
 also rejects an unknown registry mapping, wrong check set, empty check details,
 malformed UTC times, an observation longer than its execution interval, or an
 environment shape that does not match the case.
@@ -1094,31 +1107,32 @@ canonical report at
 `/run/aos-release/qualification-reports/<platform>/<case-digest>.json`.
 The staging container and native ability lifecycle cases execute directly and
 do not read this report directory. Environment recovery exercises are not
-executor cases; they are [fitness attestations](#fitness-attestations). Each
+executor cases; they are [fitness records](#fitness-attestations). Each
 report-backed adapter
 drains the coordinator request, captures the selected report without following
 links, and binds it through `qualification respond`. A missing, changing,
 stale, malformed, incorrectly identified, or case-incomplete report fails the
 attempt.
 
-A fixture gate proves regression behavior only. The native Hub fleet uses
-visibly synthetic observations and timing to test admission mechanics; those
-records cannot establish release workload duration or physical reliability.
+A fixture gate covers regression behavior only. The native Hub fleet uses
+visibly synthetic observations and timing to test the approval mechanics;
+those records cannot establish release workload duration or physical
+reliability.
 The same acceptance conditions govern real automated and operator adapters.
 
 ## Static surfaces
 
-Qualification does not require an AOS Hub. A surface may be a static origin
+Release testing does not require an AOS Hub. A surface may be a static origin
 (filesystem, S3, or SFTP, read back over HTTPS or `file://`), and every
 requirement above applies unchanged. The differences are confined to identity
-and receipts:
+and signed publication records:
 
 - executors download the staging-phase subjects from the staging surface's
   read-back origin, exactly as they would from a Hub route;
 - the surface identity is the string served at `<readback>/.aos-surface`
   rather than a Hub deployment ID, and `staging-delivery` and `rollout-health`
   check it before and after publication;
-- publication and channel receipts on a static surface are
+- signed publication and channel records on a static surface are
   `aos.release.publication-receipt/v1` documents signed by the plan's
   `surface-receipt` role instead of a Hub receipt key; and
 - the `hub-schema` fitness binding is recorded as `null`.
@@ -1129,7 +1143,7 @@ isolated origin and read it back anonymously. The supported surface pairs and
 upload mechanics are in
 [static surfaces](canonical-releases.md#static-surfaces).
 
-## Qualification roles and public status
+## Package roles and public status
 
 Package roles describe consequences: `system-integrity`, `qualified-workload`,
 or `general-catalog`. Dependencies inherit the obligations of the root that
@@ -1147,7 +1161,7 @@ builds and `--version` checks do not establish complete functionality.
 
 ## Test execution and reuse
 
-Package qualification expands every published package/platform cell into a
+Package testing expands every published package/platform cell into a
 separate case. A package published for both `x86_64-linux` and `aarch64-linux`
 requires successful observations for both; a local check on one architecture
 does not satisfy the other. Package publication support policy determines
@@ -1167,20 +1181,20 @@ signing, rather than waiting for staging case expansion.
 
 `qualify-run` routes each case to its platform's `--executor` mapping. The
 package executor runs natively and validates the requested platform; it does
-not create a VM itself. To qualify packages in Linux VMs, provision an executor
+not create a VM itself. To test packages in Linux VMs, provision an executor
 inside each architecture's VM and route the corresponding mapping to it.
 Installing both executor closures on a coordinator does not establish that
 either ran inside a VM. Retain the execution environment with the resulting
-evidence. Image qualification separately boots the exact published image.
+test results. Image tests separately boot the exact published image.
 
 Nix derivations own hermetic evaluation, build, and fixture/fleet regression
 tests. Nix-packaged executors own fresh public-download and live-environment
-qualification. Physical equipment and operator observations use the same
-acceptance/evidence model. Do not put deployment credentials or private
-attestations in Nix inputs, the store, or public reports.
+release tests. Physical equipment and operator observations use the same
+acceptance checks and result model. Do not put deployment credentials or
+private signed records in Nix inputs, the store, or public reports.
 
 The existing fleet tests may add agents or controlled fault hooks. Their
-results describe those fixtures. Exact-artifact qualification boots the
+results describe those fixtures. Exact-artifact release testing boots the
 published immutable image using its supported provisioning and serial/SSH
 interfaces; it must not rebuild the image to insert a test agent.
 
@@ -1194,19 +1208,19 @@ The Rust policy fixture is generated by evaluating `qualification/default.nix`
 with package names `aos`, `nginx`, `containerd`, and `runc`. The Nix check compares
 that fixture with the authoritative data so schema tests cannot drift silently.
 
-Evidence is reusable only for unchanged subjects, policy, executor, and
-environment under its age limit. New update pairs need new transition evidence.
+A test result is reusable only for unchanged subjects, policy, executor, and
+environment under its age limit. New update pairs need new transition results.
 Firmware, kernel, bootloader, initrd, storage, updater, and harness changes
 invalidate dependent results. Live surface health always needs a fresh
 observation. Uncertain impact selects the broader campaign. Scoped gate digests
 keep this rule honest: a claim gate changes only when its claim, target, or
-referenced requirements change, so evidence for an unrelated target survives a
+referenced requirements change, so results for an unrelated target survive a
 policy edit elsewhere in the contract.
 
 ## Release-train support
 
-Support is a forward-looking promise, separate from the evidence that a release
-passed its gates, and it is reviewed with the rest of the contract.
+Support is a forward-looking promise, separate from the results showing that a
+release passed its gates, and it is reviewed with the rest of the contract.
 [`qualification/modules/support.nix`](../../qualification/modules/support.nix)
 declares it:
 
@@ -1239,18 +1253,18 @@ branch followed by that branch's next release, never a surface setting.
 
 ## Public release record
 
-Registry finalization precedes qualification, so the qualification outcome
-cannot live in the registry tree. After the staging-phase report for a
-production destination is signed, `aos maintain release step record` composes
+Registry finalization precedes release testing, so the test outcome cannot
+live in the registry tree. After the staging-phase report for a production
+destination is signed, `aos maintain release step record` composes
 `aos.release-record/v1` from the frozen plan, the final manifest, the signed
-qualification, and the public report, and the TUF and compose-surface steps
+test approval, and the public report, and the TUF and compose-surface steps
 authorize and serve it beside the release manifest on that destination's
 surface. The
-record carries the result, policy, authority, and admission time; each claim's
-required and achieved assurance and disposition; the train's support
-statement; provenance digests; and the exact signed envelope. Achieved
-assurance describes the evidence at admission; later invalidation is recorded
-in a subsequent release, not by editing the record. See
+record carries the result, policy, authority, and approval time
+(`qualified_at`); each claim's required and achieved assurance and
+disposition; the train's support statement; provenance digests; and the exact
+signed envelope. Achieved assurance describes the results at approval; later
+invalidation is recorded in a subsequent release, not by editing the record. See
 [`canonical-releases.md`](canonical-releases.md#compose-the-public-release-record).
 
 ## Policy changes and standards

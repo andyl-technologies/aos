@@ -47,7 +47,7 @@ in
       role = "public-package";
     };
     pname = "pkg-config";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "pkg-config accepts the metadata without diagnostics.";

@@ -21,8 +21,10 @@ change dependency identity. The authoritative membership is
 | `aos-activation-sysctl` | [activation/aos-activation-sysctl](../../crates/activation/aos-activation-sysctl/Cargo.toml) | Native Linux kernel-tunable operations with durable baseline restoration |
 | `aos-activation-systemd` | [activation/aos-activation-systemd](../../crates/activation/aos-activation-systemd/Cargo.toml) | Durable systemd unit installation and service activation |
 | `aos-boot-identity` | [boot/aos-boot-identity](../../crates/boot/aos-boot-identity/Cargo.toml) | Parses and validates the AOS security-relevant kernel command line |
+| `aos-boot-media` | [boot/aos-boot-media](../../crates/boot/aos-boot-media/Cargo.toml) | Dependency-free block-device, digest, and db-trust primitives for boot-time media handling |
 | `aos-boot-runtime` | [boot/aos-boot-runtime](../../crates/boot/aos-boot-runtime/Cargo.toml) | Retained boot preparation, image staging, boot selection, and initrd store operations |
 | `aos-configuration-image` | [boot/aos-configuration-image](../../crates/boot/aos-configuration-image/Cargo.toml) | Owns native OS configuration lower images and their verified boot mounting |
+| `aos-installer` | [boot/aos-installer](../../crates/boot/aos-installer/Cargo.toml) | Unattended installation of a signed AOS release image from boot media |
 | `aos-platform-metadata` | [boot/aos-platform-metadata](../../crates/boot/aos-platform-metadata/Cargo.toml) | Host and instance metadata, bootstrap networking, and metadata executables |
 | `aos-recovery` | [boot/aos-recovery](../../crates/boot/aos-recovery/Cargo.toml) | Implements the bounded local interface for the AOS recovery initrd |
 | `aos-storage-layout` | [boot/aos-storage-layout](../../crates/boot/aos-storage-layout/Cargo.toml) | Portable validation and canonicalization of evaluated storage layouts |

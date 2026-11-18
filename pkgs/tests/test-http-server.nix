@@ -41,7 +41,7 @@ mkDerivation {
     role = "public-package";
   };
   pname = "test-http-server";
-  qualification.packageProbe = lib.qualification.commandProbe {
+  smokeTest = lib.qualification.commandProbe {
     "primary" = {
       "artifacts" = [];
       "expected" = "The server adopts the supplied listener and returns HTTP 404 for the absent path.";

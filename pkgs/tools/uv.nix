@@ -25,7 +25,7 @@ in
       role = "public-package";
     };
     pname = "uv";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Uv creates a pyproject contract with the requested name and initial version.";

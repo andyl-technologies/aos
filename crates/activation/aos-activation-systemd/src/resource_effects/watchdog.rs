@@ -1,7 +1,7 @@
-//! Owns hardware watchdog configuration and manager re-execution receipts.
+//! Owns hardware watchdog configuration and manager re-execution ownership records.
 //!
-//! The private receipt precedes every file mutation and retains both sides of
-//! an update. A foreign configuration or edited receipt never grants authority.
+//! The private ownership record precedes every file mutation and retains both sides of
+//! an update. A foreign configuration or edited ownership record never grants authority.
 
 use std::fs::{self, File};
 use std::os::unix::fs::MetadataExt;
@@ -61,7 +61,7 @@ impl Settings {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct Receipt {
+struct OwnedState {
     owner: String,
     revision: String,
     settings: Settings,
@@ -70,20 +70,23 @@ struct Receipt {
     removing: bool,
 }
 
-fn check_configuration(receipt: Option<&Receipt>, configuration: Option<&[u8]>) -> Result<()> {
+fn check_configuration(
+    owned_state: Option<&OwnedState>,
+    configuration: Option<&[u8]>,
+) -> Result<()> {
     let Some(bytes) = configuration else {
         return Ok(());
     };
-    let receipt = receipt.context("watchdog configuration has no ownership receipt")?;
-    let desired = receipt.settings.render()?;
-    let retiring = receipt
+    let owned_state = owned_state.context("watchdog configuration has no ownership record")?;
+    let desired = owned_state.settings.render()?;
+    let retiring = owned_state
         .retiring
         .as_ref()
         .map(Settings::render)
         .transpose()?;
     ensure!(
         bytes == desired || retiring.as_deref() == Some(bytes),
-        "watchdog configuration differs from its ownership receipt"
+        "watchdog configuration differs from its ownership record"
     );
     Ok(())
 }
@@ -119,47 +122,48 @@ pub(super) async fn execute(invocation: &Invocation, action: &str) -> Result<Val
     let settings: Settings = serde_json::from_value(invocation.input.clone())?;
     let desired = settings.render()?;
     // The manager has one watchdog configuration. A singleton ownership
-    // receipt prevents equal bytes from authorizing two independent effects.
+    // ownership record prevents equal bytes from authorizing two independent effects.
     let path = Path::new(STATE_ROOT).join("manager-watchdog.json");
-    let previous: Option<Receipt> = read_regular(&path, 65_536)?
+    let previous: Option<OwnedState> = read_regular(&path, 65_536)?
         .map(|bytes| serde_json::from_slice(&bytes))
         .transpose()?;
-    if let Some(receipt) = &previous {
+    if let Some(owned_state) = &previous {
         ensure!(
-            receipt.owner == invocation.id,
-            "watchdog receipt owner differs"
+            owned_state.owner == invocation.id,
+            "watchdog ownership record owner differs"
         );
     }
     let configuration = read_regular(Path::new(CONFIGURATION), 65_536)?;
     check_configuration(previous.as_ref(), configuration.as_deref())?;
 
     if action == "observe" {
-        let Some(receipt) = previous else {
+        let Some(owned_state) = previous else {
             return Ok(
                 json!({"status": if invocation.action == Action::Remove {"absent"} else {"retry-safe"}}),
             );
         };
-        if receipt.revision != invocation.revision && invocation.action == Action::Apply {
+        if owned_state.revision != invocation.revision && invocation.action == Action::Apply {
             let prior = invocation
                 .previous
                 .as_ref()
                 .context("watchdog observation has no prior authority")?;
             ensure!(
-                prior.revision == receipt.revision
-                    && serde_json::from_value::<Settings>(prior.input.clone())? == receipt.settings
-                    && !receipt.removing
-                    && receipt.retiring.is_none(),
+                prior.revision == owned_state.revision
+                    && serde_json::from_value::<Settings>(prior.input.clone())?
+                        == owned_state.settings
+                    && !owned_state.removing
+                    && owned_state.retiring.is_none(),
                 "watchdog observation cannot authorize update replay"
             );
             return Ok(json!({"status":"retry-safe"}));
         }
         ensure!(
-            receipt.revision == invocation.revision && receipt.settings == settings,
-            "watchdog receipt differs from requested revision"
+            owned_state.revision == invocation.revision && owned_state.settings == settings,
+            "watchdog ownership record differs from requested revision"
         );
-        if invocation.action == Action::Remove || !receipt.complete {
+        if invocation.action == Action::Remove || !owned_state.complete {
             ensure!(
-                invocation.action == Action::Remove || !receipt.removing,
+                invocation.action == Action::Remove || !owned_state.removing,
                 "watchdog removal remains unfinished"
             );
             return Ok(json!({"status":"retry-safe"}));
@@ -172,16 +176,16 @@ pub(super) async fn execute(invocation: &Invocation, action: &str) -> Result<Val
     }
 
     if action == "remove" {
-        let Some(mut receipt) = previous else {
+        let Some(mut owned_state) = previous else {
             return Ok(json!({}));
         };
         ensure!(
-            receipt.revision == invocation.revision && receipt.settings == settings,
+            owned_state.revision == invocation.revision && owned_state.settings == settings,
             "watchdog removal revision differs"
         );
-        receipt.removing = true;
-        receipt.complete = false;
-        atomic_write(&path, &serde_json::to_vec(&receipt)?, 0o600)?;
+        owned_state.removing = true;
+        owned_state.complete = false;
+        atomic_write(&path, &serde_json::to_vec(&owned_state)?, 0o600)?;
         if configuration.is_some() {
             fs::remove_file(CONFIGURATION)?;
             File::open(
@@ -197,41 +201,41 @@ pub(super) async fn execute(invocation: &Invocation, action: &str) -> Result<Val
         return Ok(json!({}));
     }
 
-    let mut receipt = match previous {
-        Some(mut receipt) => {
-            ensure!(!receipt.removing, "watchdog removal remains unfinished");
-            if receipt.revision != invocation.revision {
+    let mut owned_state = match previous {
+        Some(mut owned_state) => {
+            ensure!(!owned_state.removing, "watchdog removal remains unfinished");
+            if owned_state.revision != invocation.revision {
                 let prior = invocation
                     .previous
                     .as_ref()
                     .context("watchdog update has no prior authority")?;
                 ensure!(
-                    prior.revision == receipt.revision
+                    prior.revision == owned_state.revision
                         && serde_json::from_value::<Settings>(prior.input.clone())?
-                            == receipt.settings,
+                            == owned_state.settings,
                     "watchdog update prior revision differs"
                 );
                 ensure!(
-                    receipt.retiring.is_none(),
+                    owned_state.retiring.is_none(),
                     "watchdog prior update remains unfinished"
                 );
-                receipt.retiring = Some(receipt.settings.clone());
-                receipt.settings = settings;
-                receipt.revision = invocation.revision.clone();
-                receipt.complete = false;
+                owned_state.retiring = Some(owned_state.settings.clone());
+                owned_state.settings = settings;
+                owned_state.revision = invocation.revision.clone();
+                owned_state.complete = false;
             } else {
                 ensure!(
-                    receipt.settings == settings,
+                    owned_state.settings == settings,
                     "watchdog revision settings differ"
                 );
-                if receipt.complete && configuration.as_deref() == Some(desired.as_slice()) {
+                if owned_state.complete && configuration.as_deref() == Some(desired.as_slice()) {
                     return Ok(json!({"resource":CONFIGURATION}));
                 }
-                receipt.complete = false;
+                owned_state.complete = false;
             }
-            receipt
+            owned_state
         }
-        None => Receipt {
+        None => OwnedState {
             owner: invocation.id.clone(),
             revision: invocation.revision.clone(),
             settings,
@@ -240,7 +244,7 @@ pub(super) async fn execute(invocation: &Invocation, action: &str) -> Result<Val
             removing: false,
         },
     };
-    atomic_write(&path, &serde_json::to_vec(&receipt)?, 0o600)?;
+    atomic_write(&path, &serde_json::to_vec(&owned_state)?, 0o600)?;
     let parent = Path::new(CONFIGURATION)
         .parent()
         .context("watchdog path has no parent")?;
@@ -253,9 +257,9 @@ pub(super) async fn execute(invocation: &Invocation, action: &str) -> Result<Val
     );
     atomic_write(Path::new(CONFIGURATION), &desired, 0o644)?;
     reexecute().await?;
-    receipt.complete = true;
-    receipt.retiring = None;
-    atomic_write(&path, &serde_json::to_vec(&receipt)?, 0o600)?;
+    owned_state.complete = true;
+    owned_state.retiring = None;
+    atomic_write(&path, &serde_json::to_vec(&owned_state)?, 0o600)?;
     Ok(json!({"resource":CONFIGURATION}))
 }
 
@@ -286,7 +290,7 @@ mod tests {
 
     #[test]
     fn foreign_and_edited_configuration_fail_closed() {
-        let receipt = Receipt {
+        let owned_state = OwnedState {
             owner: "owner".into(),
             revision: "revision".into(),
             settings: settings(true),
@@ -295,12 +299,14 @@ mod tests {
             removing: false,
         };
         assert!(check_configuration(None, Some(b"foreign")).is_err());
-        assert!(check_configuration(Some(&receipt), Some(b"foreign")).is_err());
+        assert!(check_configuration(Some(&owned_state), Some(b"foreign")).is_err());
         assert!(
-            check_configuration(Some(&receipt), Some(&settings(true).render().unwrap())).is_ok()
+            check_configuration(Some(&owned_state), Some(&settings(true).render().unwrap()))
+                .is_ok()
         );
         assert!(
-            check_configuration(Some(&receipt), Some(&settings(false).render().unwrap())).is_ok()
+            check_configuration(Some(&owned_state), Some(&settings(false).render().unwrap()))
+                .is_ok()
         );
     }
 }

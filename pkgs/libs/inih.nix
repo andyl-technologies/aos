@@ -63,7 +63,7 @@ in
       role = "public-package";
     };
     pname = "inih";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "inih invokes the callback with the exact mapping and returns success.";

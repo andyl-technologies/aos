@@ -15,7 +15,7 @@ in
       role = "public-package";
     };
     pname = "distlib";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Distlib converts runs of punctuation to the canonical hyphenated lowercase name.";

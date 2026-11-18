@@ -30,7 +30,7 @@ mkDerivation {
     role = "public-package";
   };
   pname = "python3-smartypants";
-  qualification.packageProbe = lib.qualification.commandProbe {
+  smokeTest = lib.qualification.commandProbe {
     primary = {
       input = "Quoted text with a double hyphen.";
       operation = "Transform the text through the installed smartypants module.";

@@ -12,7 +12,7 @@ mkGoPackage {
     role = "public-package";
   };
   pname = "kubectl";
-  qualification.packageProbe = lib.qualification.commandProbe {
+  smokeTest = lib.qualification.commandProbe {
     "primary" = {
       "artifacts" = [];
       "expected" = "Kubectl prints the created ConfigMap resource name without contacting a cluster.";

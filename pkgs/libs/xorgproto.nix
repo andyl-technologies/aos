@@ -46,7 +46,7 @@ in
       role = "public-package";
     };
     pname = "xorgproto";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "The installed X11 protocol request and key-symbol headers.";
         operation = "Compile and run assertions against published protocol constants.";

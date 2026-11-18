@@ -22,7 +22,7 @@ in
       role = "public-package";
     };
     pname = "lsof";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Lsof reports its revision and compiler identity.";

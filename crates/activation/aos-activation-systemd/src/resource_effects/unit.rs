@@ -1,6 +1,6 @@
 //! Realizes mount, swap, timer, and package slice units with pinned manager jobs.
 //!
-//! Private JSON receipts retain both sides of interrupted transitions:
+//! Private JSON ownership records retain both sides of interrupted transitions:
 //!
 //! ```json
 //! {"owner":"effect-id","desired":{"unit":"dev-swap.swap","text":"...",
@@ -43,13 +43,13 @@ struct Definition {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct Receipt {
+struct OwnedState {
     owner: String,
     desired: Definition,
     retiring: Option<Definition>,
     complete: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    image: Option<resource_group::ImageCustody>,
+    image: Option<resource_group::AdoptedImageAlias>,
 }
 
 #[derive(Deserialize)]
@@ -207,7 +207,7 @@ fn path_unit(path: &str, suffix: &str) -> Result<String> {
     Ok(unit)
 }
 
-fn receipt_uri(unit: &str, revision: &str) -> String {
+fn revision_uri(unit: &str, revision: &str) -> String {
     let encoded: String = unit
         .bytes()
         .map(|byte| {
@@ -362,7 +362,7 @@ fn definition_for(id: &str, revision: &str, ability: &str, input: &Value) -> Res
     let text = format!(
         "[Unit]\nDescription={}\nDocumentation={}\n\n{body}",
         scalar(&title)?,
-        scalar(&receipt_uri(&unit, &format!("sha256:{revision}")))?
+        scalar(&revision_uri(&unit, &format!("sha256:{revision}")))?
     );
     Ok(Definition {
         unit,
@@ -394,7 +394,7 @@ fn owned_file_at(path: &Path, definition: &Definition) -> Result<bool> {
         Some(bytes) => {
             ensure!(
                 bytes == definition.text.as_bytes(),
-                "installed unit differs from ownership receipt"
+                "installed unit differs from ownership record"
             );
             Ok(true)
         }
@@ -487,7 +487,7 @@ async fn retire(manager: &PinnedSystemdManager, definition: &Definition) -> Resu
                             )
                             .await?
                             == aos_systemd_client::UnitActiveState::Inactive,
-                    "missing unit remains active or differs from receipt"
+                    "missing unit remains active or differs from ownership record"
                 );
                 manager.daemon_reload().await?;
                 return Ok(());
@@ -522,11 +522,14 @@ async fn retire(manager: &PinnedSystemdManager, definition: &Definition) -> Resu
 pub(super) async fn execute(invocation: &Invocation, action: &str, ability: &str) -> Result<Value> {
     let desired = definition(invocation, ability)?;
     let path = state_path(invocation, "unit");
-    let previous: Option<Receipt> = read_regular(&path, 1_048_576)?
+    let previous: Option<OwnedState> = read_regular(&path, 1_048_576)?
         .map(|bytes| serde_json::from_slice(&bytes))
         .transpose()?;
-    if let Some(receipt) = &previous {
-        ensure!(receipt.owner == invocation.id, "unit receipt owner differs");
+    if let Some(owned_state) = &previous {
+        ensure!(
+            owned_state.owner == invocation.id,
+            "unit ownership record owner differs"
+        );
     }
     let manager = PinnedSystemdManager::connect().await?;
     let group = if ability == "resourceGroup" {
@@ -537,19 +540,20 @@ pub(super) async fn execute(invocation: &Invocation, action: &str, ability: &str
         None
     };
     let seed = group.as_ref().map(resource_group::seed_text).transpose()?;
-    if let Some(receipt) = &previous {
-        if let Some(image) = &receipt.image {
+    if let Some(owned_state) = &previous {
+        if let Some(image) = &owned_state.image {
             ensure!(
-                !receipt.complete
-                    && receipt.retiring.is_none()
-                    && receipt.desired == desired
+                !owned_state.complete
+                    && owned_state.retiring.is_none()
+                    && owned_state.desired == desired
                     && group.as_ref().is_some_and(|input| input.bootstrap),
                 "finish pending image group conversion before changing policy"
             );
             resource_group::alias_at(
                 &unit_path(&desired),
                 image,
-                seed.as_deref().context("image custody is not a group")?,
+                seed.as_deref()
+                    .context("adopted image alias is not a group")?,
                 &desired.text,
                 resource_group::read_member,
             )?;
@@ -572,7 +576,7 @@ pub(super) async fn execute(invocation: &Invocation, action: &str, ability: &str
     if initial_image.is_some()
         || previous
             .as_ref()
-            .is_some_and(|receipt| receipt.image.is_some())
+            .is_some_and(|owned_state| owned_state.image.is_some())
     {
         image_manager_owned(&manager, &desired).await?;
     }
@@ -581,7 +585,7 @@ pub(super) async fn execute(invocation: &Invocation, action: &str, ability: &str
         if initial_image.is_some()
             || previous
                 .as_ref()
-                .is_some_and(|receipt| receipt.image.is_some())
+                .is_some_and(|owned_state| owned_state.image.is_some())
         {
             return Ok(json!({"status":"retry-safe"}));
         }
@@ -593,8 +597,8 @@ pub(super) async fn execute(invocation: &Invocation, action: &str, ability: &str
         );
     }
     if action == "remove" {
-        if let Some(receipt) = previous {
-            if let Some(image) = &receipt.image {
+        if let Some(owned_state) = previous {
+            if let Some(image) = &owned_state.image {
                 let enabled = check_link(&desired)?;
                 let identity = image_manager_owned(&manager, &desired).await?;
                 let job = manager.stop_unit_exact(&desired.unit, &identity).await?;
@@ -618,19 +622,19 @@ pub(super) async fn execute(invocation: &Invocation, action: &str, ability: &str
                 fs::remove_file(path)?;
                 return Ok(json!({}));
             }
-            if let Some(retiring) = &receipt.retiring {
+            if let Some(retiring) = &owned_state.retiring {
                 retire(&manager, retiring).await?;
             }
-            retire(&manager, &receipt.desired).await?;
+            retire(&manager, &owned_state.desired).await?;
             fs::remove_file(path)?;
         } else {
             ensure!(
                 read_regular(&unit_path(&desired), 262_144)?.is_none() && !check_link(&desired)?,
-                "resource exists without ownership receipt"
+                "resource exists without ownership record"
             );
             ensure!(
                 manager_absent(&manager, &desired).await?,
-                "manager resource exists without ownership receipt"
+                "manager resource exists without ownership record"
             );
         }
         return Ok(json!({}));
@@ -640,19 +644,19 @@ pub(super) async fn execute(invocation: &Invocation, action: &str, ability: &str
         // A deferred service result is canonical; aliases must not redirect a timer.
         manager.unit_identity(trigger).await?;
     }
-    let parent = path.parent().context("receipt has no parent")?;
+    let parent = path.parent().context("ownership record has no parent")?;
     private_directory(parent)?;
-    let mut receipt = match previous {
-        Some(receipt) if receipt.desired == desired => receipt,
-        Some(receipt) => {
+    let mut owned_state = match previous {
+        Some(owned_state) if owned_state.desired == desired => owned_state,
+        Some(owned_state) => {
             ensure!(
-                receipt.retiring.is_none(),
+                owned_state.retiring.is_none(),
                 "finish interrupted prior transition before changing desired state"
             );
-            Receipt {
+            OwnedState {
                 owner: invocation.id.clone(),
                 desired: desired.clone(),
-                retiring: Some(receipt.desired),
+                retiring: Some(owned_state.desired),
                 complete: false,
                 image: None,
             }
@@ -671,7 +675,7 @@ pub(super) async fn execute(invocation: &Invocation, action: &str, ability: &str
             } else {
                 ensure!(!check_link(&desired)?, "image group has unowned enablement");
             }
-            Receipt {
+            OwnedState {
                 owner: invocation.id.clone(),
                 desired: desired.clone(),
                 retiring: None,
@@ -680,8 +684,8 @@ pub(super) async fn execute(invocation: &Invocation, action: &str, ability: &str
             }
         }
     };
-    atomic_write(&path, &serde_json::to_vec(&receipt)?, 0o600)?;
-    if let Some(image) = &receipt.image {
+    atomic_write(&path, &serde_json::to_vec(&owned_state)?, 0o600)?;
+    if let Some(image) = &owned_state.image {
         if resource_group::alias_at(
             &unit_path(&desired),
             image,
@@ -689,16 +693,16 @@ pub(super) async fn execute(invocation: &Invocation, action: &str, ability: &str
             &desired.text,
             resource_group::read_member,
         )? {
-            // Pending custody is durable before the alias disappears. A crash
+            // The adopted alias is recorded durably before the alias disappears. A crash
             // in this gap is recoverable; installing uses no-clobber below.
             fs::remove_file(unit_path(&desired))?;
             fs::File::open(UNIT_ROOT)?.sync_all()?;
         }
     }
-    if let Some(retiring) = &receipt.retiring {
+    if let Some(retiring) = &owned_state.retiring {
         retire(&manager, retiring).await?;
-        receipt.retiring = None;
-        atomic_write(&path, &serde_json::to_vec(&receipt)?, 0o600)?;
+        owned_state.retiring = None;
+        atomic_write(&path, &serde_json::to_vec(&owned_state)?, 0o600)?;
     }
     if !owned_file(&desired)? {
         let mut temporary = tempfile::NamedTempFile::new_in(UNIT_ROOT)?;
@@ -727,9 +731,9 @@ pub(super) async fn execute(invocation: &Invocation, action: &str, ability: &str
     manager.daemon_reload().await?;
     manager.load_unit(&desired.unit).await?;
     let identity = owned_identity(&manager, &desired).await?;
-    if receipt.image.take().is_some() {
+    if owned_state.image.take().is_some() {
         fs::File::open(UNIT_ROOT)?.sync_all()?;
-        atomic_write(&path, &serde_json::to_vec(&receipt)?, 0o600)?;
+        atomic_write(&path, &serde_json::to_vec(&owned_state)?, 0o600)?;
     }
     let source_missing = optional_mount_source_missing(&desired)?;
     let job = if desired.enabled && !source_missing {
@@ -761,8 +765,8 @@ pub(super) async fn execute(invocation: &Invocation, action: &str, ability: &str
         resource_converged(&desired, &active, source_missing),
         "owned resource did not reach its requested availability"
     );
-    receipt.complete = true;
-    atomic_write(&path, &serde_json::to_vec(&receipt)?, 0o600)?;
+    owned_state.complete = true;
+    atomic_write(&path, &serde_json::to_vec(&owned_state)?, 0o600)?;
     Ok(resource_outputs(&desired, &active))
 }
 
@@ -814,9 +818,9 @@ async fn observe(
     manager: &PinnedSystemdManager,
     invocation: &Invocation,
     desired: &Definition,
-    receipt: Option<&Receipt>,
+    owned_state: Option<&OwnedState>,
 ) -> Result<Value> {
-    let Some(receipt) = receipt else {
+    let Some(owned_state) = owned_state else {
         ensure!(
             read_regular(&unit_path(desired), 262_144)?.is_none() && !check_link(desired)?,
             "unowned unit exists"
@@ -830,14 +834,14 @@ async fn observe(
         );
     };
     let mut needs_reload = false;
-    let same_unit_transition = receipt
+    let same_unit_transition = owned_state
         .retiring
         .as_ref()
-        .is_some_and(|old| old.unit == receipt.desired.unit);
-    for definition in receipt
+        .is_some_and(|old| old.unit == owned_state.desired.unit);
+    for definition in owned_state
         .retiring
         .iter()
-        .chain((!same_unit_transition).then_some(&receipt.desired))
+        .chain((!same_unit_transition).then_some(&owned_state.desired))
     {
         if owned_file(definition)? {
             if manager_absent(manager, definition).await? {
@@ -848,7 +852,7 @@ async fn observe(
         } else {
             ensure!(!check_link(definition)?, "orphan enablement link");
             if manager_absent(manager, definition).await? {
-                // Unit files live in the volatile /etc upper. A retained receipt
+                // Unit files live in the volatile /etc upper. A retained ownership record
                 // can outlive them across boot; proven manager absence permits
                 // recreating the exact definition rather than claiming current.
                 needs_reload = true;
@@ -876,9 +880,9 @@ async fn observe(
         }
     }
     if invocation.action == aos_activation::activation::Action::Remove
-        || receipt.retiring.is_some()
-        || receipt.desired != *desired
-        || !receipt.complete
+        || owned_state.retiring.is_some()
+        || owned_state.desired != *desired
+        || !owned_state.complete
         || needs_reload
     {
         return Ok(json!({"status":"retry-safe"}));
@@ -1011,7 +1015,7 @@ mod tests {
     }
 
     #[test]
-    fn resource_group_receipt_requires_exact_owned_definition() {
+    fn resource_group_owned_state_requires_exact_owned_definition() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("aos-pkg-nginx.slice");
         let desired = definition(&group_invocation("aos-pkg-nginx"), "resourceGroup").unwrap();
@@ -1087,7 +1091,7 @@ mod tests {
     }
 
     #[test]
-    fn unit_receipt_rejects_foreign_replacements_and_recognizes_missing_owned_files() {
+    fn unit_owned_state_rejects_foreign_replacements_and_recognizes_missing_owned_files() {
         let temporary = tempfile::tempdir().unwrap();
         let path = temporary.path().join("owned.swap");
         let desired = definition_for(
@@ -1226,7 +1230,7 @@ mod tests {
         assert!(scalar("/continuation\\").is_err());
         assert_eq!(scalar("%n\"").unwrap(), "%%n\"");
         assert_eq!(
-            receipt_uri("dev-a\\x2db.swap", &format!("sha256:{}", "a".repeat(64))),
+            revision_uri("dev-a\\x2db.swap", &format!("sha256:{}", "a".repeat(64))),
             format!(
                 "file:/etc/aos/ability-revisions/dev-a%5Cx2db.swap/sha256/{}",
                 "a".repeat(64)

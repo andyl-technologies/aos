@@ -27,7 +27,7 @@ in
       then "sqlite-static"
       else "sqlite";
 
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "SQLite evaluates the query and prints 42.";

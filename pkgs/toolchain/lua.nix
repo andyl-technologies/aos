@@ -19,7 +19,7 @@ in
       role = "public-package";
     };
     pname = "lua";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Lua prints the exact integer result 42.";

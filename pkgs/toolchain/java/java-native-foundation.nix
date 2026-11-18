@@ -198,7 +198,7 @@ in
     inherit platformSupport;
     pname = "java-native-foundation";
     inherit version;
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = probeOperation {
         mode = "primary";
         input = "An Objective-C receiver, its record: selector, and the integer 42.";

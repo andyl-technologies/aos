@@ -20,7 +20,7 @@ in
       role = "public-package";
     };
     pname = "libpsl";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "co.uk is public while example.co.uk is not itself a public suffix.";

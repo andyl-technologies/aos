@@ -26,16 +26,16 @@
   useBootstrapToml ? false,
   disableLld ? false,
   disableDarwinLld ? disableLld,
-  qualification ? null,
+  smokeTest ? null,
 }: let
   # Compiler launchers are noninteractive and use the completed build shell.
   compilerBash = stdenv.bash;
   mkRustDerivation = attrs:
     mkDerivation (attrs
       // (
-        if qualification == null
+        if smokeTest == null
         then {}
-        else {inherit qualification;}
+        else {inherit smokeTest;}
       ));
   configFileName =
     if useBootstrapToml
@@ -70,7 +70,7 @@ in
         openssl
         zlib
         needsDownloadRustc
-        qualification
+        smokeTest
         platformSupport
         ;
       disableLld = disableDarwinLld;
@@ -85,7 +85,7 @@ in
   else if stdenv.isCross && stdenv.hostPlatform.isLinux
   then
     import ./_rust-linux-hosted.nix {
-      inherit mkDerivation pname version src changeId configFileName qualification platformSupport;
+      inherit mkDerivation pname version src changeId configFileName smokeTest platformSupport;
       inherit buildPackages stdenv curl openssl zlib needsDownloadRustc disableLld;
       nativeRust = buildPackages.${prevRust.pname};
       nativeLlvm = buildPackages.${"llvm-${llvmMajor}"};

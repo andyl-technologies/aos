@@ -14,7 +14,7 @@
   };
 in
   package.overrideAttrs (_: {
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "The installed ISO-8859-11 font encoding database.";
         operation = "Find the encoding and map its first Thai character to Unicode.";

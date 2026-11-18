@@ -41,7 +41,7 @@ in
       role = "public-package";
     };
     pname = "efitools";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Efitools preserves the exact certificate through the ESL round trip.";

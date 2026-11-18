@@ -1,6 +1,6 @@
-//! Delivers bounded credentials into private views without exposing plaintext in receipts.
+//! Delivers bounded credentials into private views without exposing plaintext in ownership records.
 //!
-//! Private JSON receipts retain hashes rather than credential bytes:
+//! Private JSON ownership records retain hashes rather than credential bytes:
 //!
 //! ```json
 //! {"owner":"effect-id","revision":"...","source":"/run/credentials/@system/name",
@@ -51,7 +51,7 @@ fn system() -> String {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct Receipt {
+struct OwnedState {
     owner: String,
     revision: String,
     source: PathBuf,
@@ -126,24 +126,24 @@ fn view(invocation: &Invocation) -> PathBuf {
         .join("credential")
 }
 
-fn owned_digest(receipt: &Receipt, bytes: &[u8]) -> bool {
+fn owned_digest(owned_state: &OwnedState, bytes: &[u8]) -> bool {
     let actual = digest(bytes);
-    actual == receipt.view_digest
-        || (!receipt.complete && receipt.previous_view_digest.as_ref() == Some(&actual))
+    actual == owned_state.view_digest
+        || (!owned_state.complete && owned_state.previous_view_digest.as_ref() == Some(&actual))
 }
 
-fn validate_receipt(invocation: &Invocation, receipt: &Receipt) -> Result<()> {
+fn validate_owned_state(invocation: &Invocation, owned_state: &OwnedState) -> Result<()> {
     ensure!(
-        receipt.owner == invocation.id && receipt.view == view(invocation),
-        "credential receipt ownership differs"
+        owned_state.owner == invocation.id && owned_state.view == view(invocation),
+        "credential ownership record owner differs"
     );
-    if let Some(bytes) = read_regular(&receipt.view, LIMIT)? {
-        let metadata = fs::symlink_metadata(&receipt.view)?;
+    if let Some(bytes) = read_regular(&owned_state.view, LIMIT)? {
+        let metadata = fs::symlink_metadata(&owned_state.view)?;
         ensure!(
             metadata.uid() == 0
                 && metadata.permissions().mode() & 0o777 == 0o600
-                && owned_digest(receipt, &bytes),
-            "credential view differs from receipt"
+                && owned_digest(owned_state, &bytes),
+            "credential view differs from ownership record"
         );
     }
     Ok(())
@@ -200,25 +200,25 @@ fn decrypt(program: Option<&str>, source_bytes: &[u8], input: &Input) -> Result<
 pub(super) fn execute(invocation: &Invocation, action: &str, creds: Option<&str>) -> Result<Value> {
     let input: Input = serde_json::from_value(invocation.input.clone())?;
     let path = state_path(invocation, "credential");
-    let previous: Option<Receipt> = read_regular(&path, LIMIT)?
+    let previous: Option<OwnedState> = read_regular(&path, LIMIT)?
         .map(|bytes| serde_json::from_slice(&bytes))
         .transpose()?;
-    if let Some(receipt) = &previous {
-        validate_receipt(invocation, receipt)?;
+    if let Some(owned_state) = &previous {
+        validate_owned_state(invocation, owned_state)?;
     }
     let destination = view(invocation);
     let outputs = json!({"path":destination,"resource":destination});
 
     if action == "remove" {
-        if let Some(receipt) = previous {
-            if read_regular(&receipt.view, LIMIT)?.is_some() {
-                fs::remove_file(&receipt.view)?;
+        if let Some(owned_state) = previous {
+            if read_regular(&owned_state.view, LIMIT)?.is_some() {
+                fs::remove_file(&owned_state.view)?;
             }
             fs::remove_file(path)?;
         } else {
             ensure!(
                 read_regular(&destination, LIMIT)?.is_none(),
-                "credential view exists without ownership receipt"
+                "credential view exists without ownership record"
             );
         }
         return Ok(json!({}));
@@ -239,7 +239,7 @@ pub(super) fn execute(invocation: &Invocation, action: &str, creds: Option<&str>
     } else {
         source_bytes.clone()
     };
-    let mut receipt = Receipt {
+    let mut owned_state = OwnedState {
         owner: invocation.id.clone(),
         revision: invocation.revision.clone(),
         source,
@@ -251,7 +251,7 @@ pub(super) fn execute(invocation: &Invocation, action: &str, creds: Option<&str>
         previous_view_digest: read_regular(&destination, LIMIT)?.map(|bytes| digest(&bytes)),
         complete: false,
     };
-    private_directory(path.parent().context("receipt parent missing")?)?;
+    private_directory(path.parent().context("ownership record parent missing")?)?;
     private_directory(
         destination
             .parent()
@@ -260,28 +260,28 @@ pub(super) fn execute(invocation: &Invocation, action: &str, creds: Option<&str>
     if previous.is_none() {
         ensure!(
             read_regular(&destination, LIMIT)?.is_none(),
-            "credential view already exists without ownership receipt"
+            "credential view already exists without ownership record"
         );
     }
 
     // An interrupted replacement recognizes either exact owned byte generation.
-    atomic_write(&path, &serde_json::to_vec(&receipt)?, 0o600)?;
+    atomic_write(&path, &serde_json::to_vec(&owned_state)?, 0o600)?;
     atomic_write(&destination, &bytes, 0o600)?;
-    receipt.view_digest = digest(&bytes);
-    receipt.previous_view_digest = None;
-    receipt.complete = true;
-    atomic_write(&path, &serde_json::to_vec(&receipt)?, 0o600)?;
+    owned_state.view_digest = digest(&bytes);
+    owned_state.previous_view_digest = None;
+    owned_state.complete = true;
+    atomic_write(&path, &serde_json::to_vec(&owned_state)?, 0o600)?;
     Ok(outputs)
 }
 
 fn observe(
     invocation: &Invocation,
     input: &Input,
-    receipt: Option<&Receipt>,
+    owned_state: Option<&OwnedState>,
     destination: &Path,
     outputs: Value,
 ) -> Result<Value> {
-    let Some(receipt) = receipt else {
+    let Some(owned_state) = owned_state else {
         ensure!(
             read_regular(destination, LIMIT)?.is_none(),
             "unowned credential view exists"
@@ -291,17 +291,17 @@ fn observe(
         );
     };
     if invocation.action == Action::Remove
-        || !receipt.complete
-        || receipt.revision != invocation.revision
+        || !owned_state.complete
+        || owned_state.revision != invocation.revision
         || read_regular(destination, LIMIT)?.is_none()
     {
         return Ok(json!({"status":"retry-safe"}));
     }
     let source = source(input)?;
     let bytes = read_regular(&source, LIMIT)?.context("credential source disappeared")?;
-    if source != receipt.source
-        || input.encrypted != receipt.encrypted
-        || digest(&bytes) != receipt.source_digest
+    if source != owned_state.source
+        || input.encrypted != owned_state.encrypted
+        || digest(&bytes) != owned_state.source_digest
     {
         return Ok(json!({"status":"retry-safe"}));
     }
@@ -314,7 +314,7 @@ mod tests {
 
     #[test]
     fn interrupted_credential_rotation_recognizes_only_retained_generations() {
-        let mut receipt = Receipt {
+        let mut owned_state = OwnedState {
             owner: "effect".into(),
             revision: "a".repeat(64),
             source: "/run/credentials/@system/source".into(),
@@ -325,13 +325,13 @@ mod tests {
             previous_view_digest: Some(digest(b"old")),
             complete: false,
         };
-        assert!(owned_digest(&receipt, b"old"));
-        assert!(owned_digest(&receipt, b"new"));
-        assert!(!owned_digest(&receipt, b"foreign"));
-        receipt.complete = true;
-        assert!(!owned_digest(&receipt, b"old"));
-        assert!(owned_digest(&receipt, b"new"));
-        let serialized = serde_json::to_string(&receipt).unwrap();
+        assert!(owned_digest(&owned_state, b"old"));
+        assert!(owned_digest(&owned_state, b"new"));
+        assert!(!owned_digest(&owned_state, b"foreign"));
+        owned_state.complete = true;
+        assert!(!owned_digest(&owned_state, b"old"));
+        assert!(owned_digest(&owned_state, b"new"));
+        let serialized = serde_json::to_string(&owned_state).unwrap();
         assert!(!serialized.contains("\"new\""));
         assert!(!serialized.contains("\"old\""));
     }

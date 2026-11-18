@@ -189,7 +189,6 @@ in {
           diagnostic = json.loads(native_document(
               f"{AOS} ability diagnostic {PROFILE} {generation} --audience deployment"
           ))
-          assert diagnostic["liveStateVerified"] is False, diagnostic
           return diagnostic["desired"]["graph"]
 
 

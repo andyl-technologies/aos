@@ -66,11 +66,16 @@ class QemuMachine(Machine):
     - ``boot="image"``: boot a self-bootable raw disk image under OVMF
       (two pflash drives).
 
-    Either shape may attach an ``aos-metadata`` ISO as a SCSI CD-ROM. Image
+    Either shape may attach an ``AOS-META`` ISO as a SCSI CD-ROM. Image
     tests use that channel to exercise native first-boot provisioning before
     repartitioning. The per-run disk copy is grown to ``disk_size_mib`` and
     its GPT backup header relocated (``sgdisk -e``) so systemd-repart sees the
     complete target capacity.
+
+    An image-boot machine may instead start from a blank primary disk
+    (``disk=None``) of ``disk_size_mib``, for example to boot installer media
+    attached as an extra USB disk. ``disk_serial`` gives the primary disk a
+    stable ``/dev/disk/by-id/virtio-<serial>`` identity.
     """
 
     transport: ClassVar[Driver] = "qemu"
@@ -78,7 +83,8 @@ class QemuMachine(Machine):
     boot: str
     kernel_pkg: str | None
     initrd_path: str | None
-    disk_src: str
+    disk_src: str | None
+    disk_serial: str | None
     metadata_src: str | None
     firmware_code: str | None
     firmware_vars_src: str | None
@@ -113,7 +119,7 @@ class QemuMachine(Machine):
         self,
         *,
         name: str,
-        disk: str,
+        disk: str | None,
         memory_mib: int,
         vcpu_count: int,
         mac: str,
@@ -133,11 +139,15 @@ class QemuMachine(Machine):
         tpm: bool = False,
         swtpm_bin: str | None = None,
         kernel_params: list[str] | None = None,
+        disk_serial: str | None = None,
     ) -> None:
+        if disk is None and (boot != "image" or disk_size_mib is None):
+            raise RuntimeError(f"[{name}] a blank primary disk requires image boot and disk_size_mib")
         self.boot = boot
         self.kernel_pkg = kernel
         self.initrd_path = initrd
         self.disk_src = disk
+        self.disk_serial = disk_serial
         self.metadata_src = metadata
         self.firmware_code = firmware_code
         self.firmware_vars_src = firmware_vars
@@ -220,7 +230,12 @@ class QemuMachine(Machine):
         # otherwise. The metadata ISO is per-machine already; its local
         # copy isolates the run from any read-side caching quirks with
         # store files on certain filesystems.
-        reflinked = clone_or_copy(self.disk_src, self.disk_copy)
+        if self.disk_src is None:
+            with open(self.disk_copy, "wb") as blank:
+                blank.truncate((self.disk_size_mib or 0) * 1024 * 1024)
+            reflinked = False
+        else:
+            reflinked = clone_or_copy(self.disk_src, self.disk_copy)
         os.chmod(self.disk_copy, 0o644)
         self.extra_disk_copies = []
         for index, disk in enumerate(self.extra_disks):
@@ -260,7 +275,7 @@ class QemuMachine(Machine):
             # the GPT backup header to the new end of disk. Without the
             # relocation systemd-repart cannot allocate partitions past the
             # image's original boundary.
-            if self.disk_size_mib is not None:
+            if self.disk_src is not None and self.disk_size_mib is not None:
                 os.truncate(self.disk_copy, self.disk_size_mib * 1024 * 1024)
                 subprocess.run(
                     ["sgdisk", "-e", self.disk_copy],
@@ -322,7 +337,7 @@ class QemuMachine(Machine):
                 log.info("  Metadata: %s", self.metadata_copy)
 
         # The metadata ISO rides on a SCSI CD-ROM so the guest sees
-        # /dev/sr0 with ISO9660 volume label `aos-metadata` — exactly
+        # /dev/sr0 with ISO9660 volume label `AOS-META` — exactly
         # what the initrd metadata detector probes for.
         #
         # `localaddr=127.0.0.1` on the mcast netdev binds the multicast
@@ -451,8 +466,15 @@ class QemuMachine(Machine):
                 "-drive",
                 f"if=pflash,unit=0,format=raw,readonly=on,file={self.firmware_code}",
                 "-drive", f"if=pflash,unit=1,format=raw,file={self.vars_copy}",
-                "-drive", f"file={self.disk_copy},format=raw,if=virtio",
             ]
+            if self.disk_serial is None:
+                argv += ["-drive", f"file={self.disk_copy},format=raw,if=virtio"]
+            else:
+                # -drive no longer accepts a serial; the device carries it.
+                argv += [
+                    "-drive", f"id=primary,file={self.disk_copy},format=raw,if=none",
+                    "-device", f"virtio-blk-pci,drive=primary,serial={self.disk_serial}",
+                ]
             if self.fw_cfg_path is not None:
                 argv += [
                     "-fw_cfg", f"name=opt/org.andyl/provisioning,file={self.fw_cfg_path}",
@@ -546,7 +568,7 @@ class QemuMachine(Machine):
             ]
 
         # Attach native provisioning input for either boot shape. The initrd
-        # probes the `aos-metadata` filesystem label before cloud DMI routing.
+        # probes the `AOS-META` filesystem label before cloud DMI routing.
         if self.metadata_src is not None:
             argv += [
                 "-drive",

@@ -21,7 +21,7 @@ in
       role = "public-package";
     };
     pname = "setools";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The API returns the inclusive numeric range from 16 through 18.";

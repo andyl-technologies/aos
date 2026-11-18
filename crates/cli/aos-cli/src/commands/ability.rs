@@ -31,6 +31,8 @@ pub async fn run(command: &AbilityCommand, printer: &Printer) -> Result<()> {
         AbilityCommand::Evaluate(args) => evaluate::run(args),
         AbilityCommand::CheckCompat(args) => check_compat::run(args, printer),
         AbilityCommand::Journal(args) => {
+            // An unlocked prefix read: it works while the controller runs and
+            // reports only what the journal records, never live resource state.
             let inspection = aos_activation::activation::observe(
                 &args.journal,
                 aos_deployment::transaction::journal_limits(),
@@ -173,6 +175,8 @@ pub async fn run(command: &AbilityCommand, printer: &Printer) -> Result<()> {
                 args.generation,
             )?;
             let desired = RuntimeDocument::from_json(&generation.deployment.canonical_bytes()?)?;
+            // Retained outputs are the committed generation's recorded handler
+            // results, not observations of the live resources they describe.
             let value = match args.audience {
                 AbilityDiagnosticAudience::Redacted => {
                     serde_json::json!({
@@ -183,7 +187,6 @@ pub async fn run(command: &AbilityCommand, printer: &Printer) -> Result<()> {
                         "desiredEffectCount": desired.transaction_graph().map(|graph| graph.graph().nodes.len()),
                         "retainedOutputCount": generation.outputs.len(),
                         "audience": "redacted",
-                        "liveStateVerified": false,
                     })
                 }
                 AbilityDiagnosticAudience::Deployment => {
@@ -195,7 +198,6 @@ pub async fn run(command: &AbilityCommand, printer: &Printer) -> Result<()> {
                         "desired": desired.value(),
                         "retainedOutputs": generation.outputs,
                         "audience": "deployment",
-                        "liveStateVerified": false,
                     })
                 }
             };

@@ -17,7 +17,7 @@ in
       role = "public-package";
     };
     pname = "python3-pygments";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The tokens include the name answer and integer literal 42.";

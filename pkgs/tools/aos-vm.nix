@@ -33,7 +33,7 @@ in
       role = "public-package";
     };
     pname = "aos-vm";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The wrapper returns success and describes its VM operations.";

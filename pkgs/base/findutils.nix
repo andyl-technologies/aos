@@ -23,7 +23,7 @@ in
       role = "public-package";
     };
     pname = "findutils";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Find emits only the matching file name.";
