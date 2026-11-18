@@ -16,7 +16,7 @@ in
       role = "public-package";
     };
     pname = "bridge-utils";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Brctl returns a bridge table headed by bridge name and bridge ID fields.";

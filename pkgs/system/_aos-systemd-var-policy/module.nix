@@ -6,7 +6,8 @@
   ...
 }: let
   cfg = config.aos.security.measuredVar;
-  initrdStage = config.aos.boot.stage == "initrd";
+  # Installer media boots no installed system, so installed-system effects are absent.
+  initrdStage = config.aos.boot.stage == "initrd" && !(config.aos.boot.installerMedia or false);
   measuredBoot = config.aos.boot.secureBoot.measuredBoot;
   units = {
     bootIdentity = "aos-boot-identity-guard.service";

@@ -373,7 +373,7 @@ in {
               result = json.loads(stdout)
           except json.JSONDecodeError as error:
               raise AssertionError((arguments, status, stdout, stderr)) from error
-          assert result["schemaVersion"] == "aos.maintain.cli/v1", result
+          assert result["schemaVersion"] == "aos.maintain.cli/v2", result
           assert result["disposition"] == expected, (arguments, result, stderr)
           assert result["exitCode"] == status, (arguments, result, stderr)
           return result
@@ -461,24 +461,32 @@ in {
           for gate in final_gates[0]["results"]
       ), final_inspection
 
-      evidence = invoke("evidence " + shlex.quote(run_id))
-      evidence_digest = primary(evidence, "evidenceDigest")
-      dossier = evidence["data"]["evidence"]
-      assert evidence["data"]["run"]["evidenceDigest"] == evidence_digest, evidence
-      assert dossier["materialization"]["sources"][0]["finalUrl"] == \
-          "https://aos.andyl.org/_assets/style.css", dossier
-      assert dossier["materialization"]["confinement"]["nixSandboxVerified"], dossier
-      assert dossier.get("repairAttempts", []) == [], dossier
+      materialization = json.loads(maintainer.succeed(
+          "find " + shlex.quote(STATE)
+          + " -path '*/attempts/0/materialization.json' -exec cat {} +"
+      ))
+      assert materialization["sources"][0]["finalUrl"] == \
+          "https://aos.andyl.org/_assets/style.css", materialization
+      assert materialization["confinement"]["nixSandboxVerified"], materialization
+      assert final_inspection["data"]["run"]["attempt"] == 0, final_inspection
 
       prepared = invoke("prepare-pr " + shlex.quote(run_id))
+      gate_results_digest = primary(prepared, "gateResultsDigest")
+      assert prepared["data"]["run"]["state"] == "ready-for-pr", prepared
+      assert "evidence" not in prepared["data"], prepared
       draft = prepared["data"]["pullRequest"]
       assert draft["baseBranch"] == "main", draft
       assert draft["head"], draft
-      assert draft["evidenceDigest"] == evidence_digest, draft
+      assert draft["gateResultsDigest"] == gate_results_digest, draft
       assert "maintain-fixture-1" in draft["title"], draft
 
+      # Repeating preparation re-verifies the same records without a new
+      # transition and renders the identical draft.
+      reprepared = invoke("prepare-pr " + shlex.quote(run_id))
+      assert reprepared["data"]["pullRequest"] == draft, reprepared
+
       inspected = invoke("inspect " + shlex.quote(run_id))
-      assert inspected["data"]["run"]["evidenceDigest"] == evidence_digest, inspected
+      assert inspected["data"]["run"]["state"] == "ready-for-pr", inspected
       active = invoke("status --active")
       assert len(active["data"]["runs"]) == 1, active
       assert active["data"]["runs"][0]["runId"] == run_id, active

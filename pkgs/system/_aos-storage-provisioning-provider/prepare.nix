@@ -42,6 +42,8 @@ in {
     enable = lib.mkOption {
       type = lib.types.bool;
       default = (config.aos.boot.stage or "host") == "initrd";
+      # Installer media replaces provisioning through its policy package.
+      extensible = true;
       description = "Enable the authorized one-time native provisioning transaction in the selected initrd.";
     };
     evaluationContext = lib.mkOption {

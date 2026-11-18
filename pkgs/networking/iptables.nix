@@ -23,7 +23,7 @@ in
       role = "public-package";
     };
     pname = "iptables";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Iptables emits the equivalent nft add-rule command.";

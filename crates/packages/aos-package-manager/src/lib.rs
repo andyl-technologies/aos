@@ -25,8 +25,8 @@ pub mod clean;
 use aos_registry_client::config;
 pub mod config_eval;
 pub mod config_trust;
-pub mod container_admission;
 mod container_environment;
+pub mod container_init_sync;
 mod container_runtime;
 pub(crate) mod credential;
 pub mod deployment;
@@ -2337,7 +2337,7 @@ fn verify_generation_attestation_cli(
     if !matches!(quote_trust, AttestationQuoteTrust::IdentityPinned { .. }) {
         bail!("native generation verification requires an enrolled quote identity");
     }
-    let record: attestation::native::GenerationEvidence =
+    let record: attestation::native::GenerationRecord =
         serde_json::from_slice(&native_deployment::read_regular_document(record_path)?)?;
     let policy: attestation::native_cli::Policy =
         serde_json::from_slice(&native_deployment::read_regular_document(policy_path)?)?;

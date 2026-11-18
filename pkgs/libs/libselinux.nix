@@ -18,7 +18,7 @@ in
       role = "public-package";
     };
     pname = "libselinux";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Libselinux returns the declared user, role, type, range, and canonical context.";

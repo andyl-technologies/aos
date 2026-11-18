@@ -20,7 +20,7 @@ in
       role = "public-package";
     };
     pname = "docker";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The Docker client returns success and reports its version.";

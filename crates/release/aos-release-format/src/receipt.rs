@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::artifact::require_identifier;
 use crate::digest::Sha256Digest;
-use crate::evidence::GateResult;
+use crate::evidence::Outcome;
 use crate::registry::registry_policy;
 
 mod surface;
@@ -33,10 +33,12 @@ pub const COMPLETION_RECEIPT: &str = "aos.release.completion-receipt/v1";
 /// Schema for an explicitly approved empty Hub registry bootstrap.
 pub const REGISTRY_BOOTSTRAP_INTENT: &str = "aos.release.registry-bootstrap-intent/v1";
 
-/// Canonical Ed25519 envelope for a release evidence payload.
+/// Canonical Ed25519 signed envelope around one release payload.
+///
+/// The serialized schema remains `aos.hub.signed-release-evidence/v1`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct SignedReceiptEnvelope {
+pub struct SignedEnvelope {
     /// Exact envelope schema identifier.
     pub schema_version: String,
     /// Pinned public key identity.
@@ -80,7 +82,7 @@ pub fn verify_signed_receipt_with_key<T>(
 where
     T: DeserializeOwned + Serialize,
 {
-    let envelope: SignedReceiptEnvelope =
+    let envelope: SignedEnvelope =
         crate::canonical::from_slice(envelope_bytes, "signed release receipt")?;
     if envelope.schema_version != SIGNED_RECEIPT
         || crate::canonical::to_vec(&envelope)? != envelope_bytes
@@ -170,10 +172,14 @@ impl RegistryBootstrapIntent {
     }
 }
 
-/// Signed qualification over exact staged public bytes.
+/// Signed approval that the staged release passed its staging tests.
+///
+/// It binds the exact staged public bytes through the staging publication
+/// receipt. The serialized schema remains
+/// `aos.release.qualification-receipt/v1`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct QualificationReceipt {
+pub struct StagingTestApproval {
     /// Exact receipt schema identifier.
     pub schema_version: String,
     /// Digest of the staging publication receipt.
@@ -185,7 +191,7 @@ pub struct QualificationReceipt {
     /// Digest of exact qualification policy bytes.
     pub policy_digest: Sha256Digest,
     /// Public qualification result.
-    pub result: GateResult,
+    pub result: Outcome,
     /// Digest of the complete public qualification report.
     pub report_digest: Sha256Digest,
     /// Public qualification authority identity.
@@ -196,7 +202,7 @@ pub struct QualificationReceipt {
     pub qualified_at: String,
 }
 
-impl QualificationReceipt {
+impl StagingTestApproval {
     /// Validates qualification identity, policy, result, nonce, and time.
     ///
     /// # Errors
@@ -217,7 +223,7 @@ impl QualificationReceipt {
         {
             bail!("qualification nonce must be 32 bytes of lowercase hexadecimal");
         }
-        if self.result != GateResult::Passed {
+        if self.result != Outcome::Passed {
             bail!("qualification receipt is not passing");
         }
         if !self.qualified_at.ends_with('Z')
@@ -325,7 +331,7 @@ mod tests {
         let receipt = channel_receipt("edge");
         let payload = crate::canonical::to_vec(&receipt).unwrap();
         let digest = Sha256Digest::separated(RECEIPT_SIGNATURE_DOMAIN, &payload);
-        let envelope = SignedReceiptEnvelope {
+        let envelope = SignedEnvelope {
             schema_version: SIGNED_RECEIPT.into(),
             key_id: "receipt-key".into(),
             payload: serde_json::from_slice(&payload).unwrap(),

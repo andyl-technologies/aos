@@ -49,7 +49,7 @@ in
       role = "public-package";
     };
     pname = "chrony";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Chronyd accepts and normalizes all directives.";

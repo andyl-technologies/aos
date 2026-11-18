@@ -15,7 +15,7 @@ in
       role = "public-package";
     };
     pname = "autoconf-archive";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The archive supplies a nonempty AX_PTHREAD definition that tests pthread_create.";

@@ -7,7 +7,7 @@
 //!
 //! ```json
 //! {
-//!   "schemaVersion": 1,
+//!   "schemaVersion": 2,
 //!   "mediaType": "application/vnd.aos.container-release.v1+json",
 //!   "identity": {
 //!     "release": "1.0.0",
@@ -26,13 +26,6 @@
 //!     "output": { "name": "out", "storePath": "/nix/store/...-aos-container" },
 //!     "closure": { "mediaType": "application/vnd.oci.image.manifest.v1+json", "artifactType": "application/vnd.aos.nix-closure.v1+json", "digest": "sha256:...", "size": 640 }
 //!   },
-//!   "qualification": {
-//!     "schema": "aos.container.evidence-qualification/v1",
-//!     "mapping": { "complete": true, "unknownPaths": [] },
-//!     "correspondingSource": { "complete": true, "unknownPaths": [] },
-//!     "licensing": { "complete": true, "unknownPaths": [] },
-//!     "readyForVerifiedPublication": true
-//!   },
 //!   "evidence": {
 //!     "abilities": { "mediaType": "application/vnd.oci.image.manifest.v1+json", "artifactType": "application/vnd.aos.container.static-abilities.v1+json", "digest": "sha256:...", "size": 640 },
 //!     "sbom": { "mediaType": "application/vnd.oci.image.manifest.v1+json", "artifactType": "application/spdx+json", "digest": "sha256:...", "size": 640 },
@@ -43,6 +36,11 @@
 //!   }
 //! }
 //! ```
+//!
+//! The Nix referrer build fails unless every runtime closure path maps to one
+//! package with retained corresponding source and license metadata, so a
+//! sidecar exists only for a complete closure and carries no completeness
+//! field.
 //!
 //! Unlike generic OCI projections, this AOS-owned signed schema rejects
 //! unknown fields at every nested object. Descriptors still retain standard
@@ -61,7 +59,6 @@ use crate::error::{Error, Result};
 use crate::limits::{
     MAX_CONTAINER_RELEASE_IDENTITY_BYTES, MAX_JSON_BYTES, MAX_NIX_DEFINITION_ATTRIBUTE_BYTES,
     MAX_NIX_OUTPUT_NAME_BYTES, MAX_NIX_STORE_PATH_BYTES, MAX_PLATFORMS_PER_INDEX,
-    MAX_REACHABLE_DESCRIPTORS,
 };
 use crate::media_type::MediaType;
 use crate::model::{Descriptor, Platform};
@@ -69,11 +66,11 @@ use crate::model::{Descriptor, Platform};
 /// Stable registry-relative location of the first container-release sidecar.
 pub const CONTAINER_RELEASE_SIDECAR_PATH: &str = "containers/v1/index.json";
 
-/// Schema version carried by signed [`ContainerRelease`] values.
-pub const CONTAINER_RELEASE_SCHEMA_VERSION: u32 = 1;
+/// Schema version written in new signed [`ContainerRelease`] values.
+pub const CONTAINER_RELEASE_SCHEMA_VERSION: u32 = 2;
 
-/// Schema identifier carried by signed [`ContainerSignatureInput`] values.
-pub const CONTAINER_SIGNATURE_INPUT_SCHEMA: &str = "aos.container.signature-input/v1";
+/// Schema identifier written in new signed [`ContainerSignatureInput`] values.
+pub const CONTAINER_SIGNATURE_INPUT_SCHEMA: &str = "aos.container.signature-input/v2";
 
 /// DSSE payload type used for exact AOS container signature-input bytes.
 pub const CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE: &str =
@@ -81,9 +78,6 @@ pub const CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE: &str =
 
 /// SSHSIG namespace used when an AOS trust key signs container DSSE PAE bytes.
 pub const CONTAINER_DSSE_SIGNATURE_NAMESPACE: &str = "aos-container-signature-dsse-v1";
-
-/// Schema identifier carried by [`ContainerEvidenceQualification`].
-pub const CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA: &str = "aos.container.evidence-qualification/v1";
 
 /// Returns whether a Nix definition attribute names the exact logical image.
 ///
@@ -118,14 +112,12 @@ pub struct ContainerRelease {
     pub oci: ContainerOciRelease,
     /// Nix definition, realized output, and closure-manifest identity.
     pub nix: ContainerNixProvenance,
-    /// Full-closure mapping, source, and licensing qualification.
-    pub qualification: ContainerEvidenceQualification,
     /// Required source, compliance, provenance, and signature evidence.
     ///
     /// Static ability evidence is retained as an opaque OCI descriptor here.
     /// Launch admission must parse its payload, verify the image binding, and
     /// discharge every external obligation before granting runtime authority.
-    pub evidence: ContainerReleaseEvidence,
+    pub evidence: ContainerReferrers,
 }
 
 impl ContainerRelease {
@@ -145,9 +137,9 @@ impl ContainerRelease {
     ///
     /// # Errors
     ///
-    /// Returns an error for the wrong schema or media type, invalid or
-    /// overlong identities, malformed descriptors, duplicate platforms,
-    /// invalid Nix paths, or a missing/mistyped evidence role.
+    /// Returns an error for an unsupported schema version or the wrong media
+    /// type, invalid or overlong identities, malformed descriptors, duplicate
+    /// platforms, invalid Nix paths, or a missing/mistyped evidence role.
     pub fn validate(&self) -> Result<()> {
         if self.schema_version != CONTAINER_RELEASE_SCHEMA_VERSION {
             return Err(Error::invalid(
@@ -172,13 +164,6 @@ impl ContainerRelease {
         self.identity.validate()?;
         self.oci.validate()?;
         self.nix.validate()?;
-        self.qualification.validate()?;
-        if !self.qualification.ready_for_verified_publication {
-            return Err(Error::invalid(
-                "container release qualification",
-                "readyForVerifiedPublication must be true",
-            ));
-        }
         self.evidence.validate()?;
         validate_unique_release_descriptors(self)?;
         to_canonical_json(self).map(|_| ())
@@ -216,8 +201,6 @@ pub struct ContainerSignatureInput {
     pub nix: ContainerNixProvenance,
     /// Unsigned evidence roots emitted by the hermetic Nix build.
     pub evidence: ContainerSignatureInputEvidence,
-    /// Full-closure qualification emitted by the hermetic Nix build.
-    pub qualification: ContainerEvidenceQualification,
 }
 
 impl ContainerSignatureInput {
@@ -250,15 +233,11 @@ impl ContainerSignatureInput {
         Ok(input)
     }
 
-    /// Validates the versioned identity, roots, evidence, and qualification.
-    ///
-    /// This structural check permits an explicitly unqualified input so tools
-    /// can diagnose it. Verified publication must additionally use
-    /// [`Self::validate_final_release`], which fails closed unless it is ready.
+    /// Validates the versioned identity, roots, and evidence.
     ///
     /// # Errors
     ///
-    /// Returns an error for the wrong schema or for invalid nested contracts.
+    /// Returns an error for an unsupported schema or invalid nested contracts.
     pub fn validate(&self) -> Result<()> {
         if self.schema != CONTAINER_SIGNATURE_INPUT_SCHEMA {
             return Err(Error::invalid(
@@ -273,30 +252,23 @@ impl ContainerSignatureInput {
         self.oci.validate()?;
         self.nix.validate()?;
         self.evidence.validate()?;
-        self.qualification.validate()?;
         validate_unique_signature_input_descriptors(self)?;
         to_canonical_json(self).map(|_| ())
     }
 
-    /// Requires a ready input and an exact final-sidecar binding.
+    /// Requires an exact final-sidecar binding.
     ///
     /// The final sidecar may add only the DSSE signature descriptor. Every
-    /// unsigned identity, OCI, Nix, evidence, and qualification field must be
-    /// byte-model equal to the externally authorized signature input.
+    /// unsigned identity, OCI, Nix, and evidence field must be byte-model
+    /// equal to the externally authorized signature input.
     ///
     /// # Errors
     ///
-    /// Returns an error when either contract is invalid or unqualified, or
-    /// when any unsigned field differs.
+    /// Returns an error when either contract is invalid or when any unsigned
+    /// field differs.
     pub fn validate_final_release(&self, release: &ContainerRelease) -> Result<()> {
         self.validate()?;
         release.validate()?;
-        if !self.qualification.ready_for_verified_publication {
-            return Err(Error::invalid(
-                "container signature input qualification",
-                "readyForVerifiedPublication must be true",
-            ));
-        }
         if self.identity != release.identity {
             return Err(Error::invalid(
                 "container signature input identity",
@@ -319,12 +291,6 @@ impl ContainerSignatureInput {
             return Err(Error::invalid(
                 "container signature input evidence",
                 "final sidecar unsigned evidence differs from the unsigned input",
-            ));
-        }
-        if self.qualification != release.qualification {
-            return Err(Error::invalid(
-                "container signature input qualification",
-                "final sidecar qualification differs from the unsigned input",
             ));
         }
         Ok(())
@@ -551,302 +517,12 @@ impl ContainerSignatureInputEvidence {
         )
     }
 
-    fn matches(&self, evidence: &ContainerReleaseEvidence) -> bool {
+    fn matches(&self, evidence: &ContainerReferrers) -> bool {
         self.abilities == evidence.abilities
             && self.sbom == evidence.sbom
             && self.source == evidence.source
             && self.license == evidence.license
             && self.provenance == evidence.provenance
-    }
-}
-
-/// Full-closure evidence gate shared by Nix, APR, the CLI, and Hub.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ContainerEvidenceQualification {
-    /// Required exact qualification schema identifier.
-    pub schema: String,
-    /// Mapping coverage for every runtime closure path.
-    pub mapping: ContainerEvidenceMappingQualification,
-    /// Corresponding-source coverage for every mapped runtime path.
-    pub corresponding_source: ContainerEvidenceQualificationCheck,
-    /// License-metadata coverage for every mapped runtime path.
-    pub licensing: ContainerEvidenceQualificationCheck,
-    /// Whether all three mandatory qualification gates are complete.
-    pub ready_for_verified_publication: bool,
-}
-
-impl ContainerEvidenceQualification {
-    /// Validates the schema, bounded diagnostics, and derived ready state.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when a check is internally inconsistent, diagnostic
-    /// paths are duplicated or unsorted, or the ready bit is not exactly the
-    /// conjunction of the three completeness bits.
-    pub fn validate(&self) -> Result<()> {
-        if self.schema != CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA {
-            return Err(Error::invalid(
-                "container evidence qualification schema",
-                format!(
-                    "expected {CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA}, got {}",
-                    self.schema
-                ),
-            ));
-        }
-        self.mapping.validate()?;
-        self.corresponding_source
-            .validate("container corresponding-source qualification")?;
-        self.licensing
-            .validate("container licensing qualification")?;
-        let expected =
-            self.mapping.complete && self.corresponding_source.complete && self.licensing.complete;
-        if self.ready_for_verified_publication != expected {
-            return Err(Error::invalid(
-                "container evidence qualification readyForVerifiedPublication",
-                "value must equal mapping.complete && correspondingSource.complete && licensing.complete",
-            ));
-        }
-        Ok(())
-    }
-}
-
-/// Closure-to-package mapping qualification and its bounded diagnostics.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ContainerEvidenceMappingQualification {
-    /// Whether every runtime closure path maps to exactly one package.
-    pub complete: bool,
-    /// Sorted diagnostics for paths without one unambiguous package mapping.
-    pub unknown_paths: Vec<ContainerEvidenceMappingUnknownPath>,
-}
-
-impl ContainerEvidenceMappingQualification {
-    /// Validates completeness, path ordering, and candidate bounds.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when completeness disagrees with the diagnostic list,
-    /// paths are unsorted or duplicated, or a diagnostic is invalid.
-    pub fn validate(&self) -> Result<()> {
-        validate_item_count(
-            self.unknown_paths.len(),
-            "container mapping qualification unknownPaths",
-            MAX_REACHABLE_DESCRIPTORS,
-        )?;
-        if self.complete != self.unknown_paths.is_empty() {
-            return Err(Error::invalid(
-                "container mapping qualification complete",
-                "complete must be true exactly when unknownPaths is empty",
-            ));
-        }
-        validate_sorted_unique_paths(
-            self.unknown_paths.iter().map(|entry| entry.path.as_str()),
-            "container mapping qualification unknownPaths",
-        )?;
-        for entry in &self.unknown_paths {
-            entry.validate()?;
-        }
-        Ok(())
-    }
-}
-
-/// One path whose evaluated package mapping is missing or ambiguous.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ContainerEvidenceMappingUnknownPath {
-    /// Exact realized Nix store path that could not be mapped uniquely.
-    pub path: String,
-    /// Stable qualification reason emitted by the evidence builder.
-    pub reason: String,
-    /// Deterministically ordered package candidates for an ambiguous path.
-    pub candidates: Vec<ContainerEvidencePackageCandidate>,
-}
-
-impl ContainerEvidenceMappingUnknownPath {
-    fn validate(&self) -> Result<()> {
-        validate_store_path(
-            &self.path,
-            "container mapping qualification unknown path",
-            false,
-        )?;
-        validate_diagnostic_text(
-            &self.reason,
-            "container mapping qualification unknown reason",
-        )?;
-        validate_item_count(
-            self.candidates.len(),
-            "container mapping qualification candidates",
-            MAX_PLATFORMS_PER_INDEX,
-        )?;
-        for candidate in &self.candidates {
-            candidate.validate()?;
-        }
-        Ok(())
-    }
-}
-
-/// One evaluated AOS package candidate for an ambiguous closure path.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ContainerEvidencePackageCandidate {
-    /// Exact derivation store path for the package definition.
-    pub derivation_path: String,
-    /// Evaluated package name.
-    pub pname: String,
-    /// Evaluated package version.
-    pub version: String,
-    /// Evaluated license identifiers.
-    pub licenses: Vec<String>,
-    /// Evaluated source identities.
-    pub sources: Vec<ContainerEvidenceSourceIdentity>,
-    /// Runtime dependency output paths used during evidence selection.
-    pub runtime_dependencies: Vec<String>,
-    /// Candidate output name and realized path.
-    pub output: ContainerEvidencePackageOutput,
-}
-
-impl ContainerEvidencePackageCandidate {
-    fn validate(&self) -> Result<()> {
-        validate_store_path(
-            &self.derivation_path,
-            "container mapping candidate derivationPath",
-            true,
-        )?;
-        validate_diagnostic_text(&self.pname, "container mapping candidate pname")?;
-        validate_diagnostic_text(&self.version, "container mapping candidate version")?;
-        validate_item_count(
-            self.licenses.len(),
-            "container mapping candidate licenses",
-            MAX_PLATFORMS_PER_INDEX,
-        )?;
-        validate_item_count(
-            self.sources.len(),
-            "container mapping candidate sources",
-            MAX_PLATFORMS_PER_INDEX,
-        )?;
-        validate_item_count(
-            self.runtime_dependencies.len(),
-            "container mapping candidate runtimeDependencies",
-            MAX_REACHABLE_DESCRIPTORS,
-        )?;
-        for license in &self.licenses {
-            validate_diagnostic_text(license, "container mapping candidate license")?;
-        }
-        for source in &self.sources {
-            source.validate()?;
-        }
-        for dependency in &self.runtime_dependencies {
-            validate_store_path(
-                dependency,
-                "container mapping candidate runtime dependency",
-                false,
-            )?;
-        }
-        self.output.validate()
-    }
-}
-
-/// Evaluated source identity retained for one package candidate.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ContainerEvidenceSourceIdentity {
-    /// Realized source store path.
-    pub path: String,
-    /// Source derivation path, when the source exposes one.
-    pub derivation_path: Option<String>,
-    /// Declared upstream source URLs.
-    pub urls: Vec<String>,
-    /// Declared fixed-output content hash, when available.
-    pub content_hash: Option<String>,
-}
-
-impl ContainerEvidenceSourceIdentity {
-    fn validate(&self) -> Result<()> {
-        validate_store_path(&self.path, "container evidence source path", false)?;
-        if let Some(derivation_path) = &self.derivation_path {
-            validate_store_path(
-                derivation_path,
-                "container evidence source derivationPath",
-                true,
-            )?;
-        }
-        validate_item_count(
-            self.urls.len(),
-            "container evidence source URLs",
-            MAX_PLATFORMS_PER_INDEX,
-        )?;
-        for url in &self.urls {
-            validate_long_text(url, "container evidence source URL")?;
-        }
-        if let Some(content_hash) = &self.content_hash {
-            validate_long_text(content_hash, "container evidence source contentHash")?;
-        }
-        Ok(())
-    }
-}
-
-/// Evaluated name and realized path for one package candidate output.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ContainerEvidencePackageOutput {
-    /// Named Nix output, such as `out`.
-    pub name: String,
-    /// Exact realized Nix store path.
-    pub path: String,
-}
-
-impl ContainerEvidencePackageOutput {
-    fn validate(&self) -> Result<()> {
-        validate_nix_output_name(&self.name)?;
-        validate_store_path(&self.path, "container mapping candidate output path", false)
-    }
-}
-
-/// One source or license coverage diagnostic for a runtime closure path.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ContainerEvidenceUnknownPath {
-    /// Exact realized Nix store path that failed the coverage check.
-    pub path: String,
-    /// Stable qualification reason emitted by the evidence builder.
-    pub reason: String,
-}
-
-impl ContainerEvidenceUnknownPath {
-    fn validate(&self, field: &'static str) -> Result<()> {
-        validate_store_path(&self.path, field, false)?;
-        validate_diagnostic_text(&self.reason, field)
-    }
-}
-
-/// One boolean qualification gate and its sorted failure diagnostics.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ContainerEvidenceQualificationCheck {
-    /// Whether every path passed this evidence gate.
-    pub complete: bool,
-    /// Sorted diagnostics for paths that failed this gate.
-    pub unknown_paths: Vec<ContainerEvidenceUnknownPath>,
-}
-
-impl ContainerEvidenceQualificationCheck {
-    fn validate(&self, field: &'static str) -> Result<()> {
-        validate_item_count(self.unknown_paths.len(), field, MAX_REACHABLE_DESCRIPTORS)?;
-        if self.complete != self.unknown_paths.is_empty() {
-            return Err(Error::invalid(
-                field,
-                "complete must be true exactly when unknownPaths is empty",
-            ));
-        }
-        validate_sorted_unique_paths(
-            self.unknown_paths.iter().map(|entry| entry.path.as_str()),
-            field,
-        )?;
-        for entry in &self.unknown_paths {
-            entry.validate(field)?;
-        }
-        Ok(())
     }
 }
 
@@ -1045,10 +721,10 @@ impl NixOutputIdentity {
     }
 }
 
-/// Required evidence referrers for a signed AOS container release.
+/// Referrer descriptors required for a signed AOS container release.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct ContainerReleaseEvidence {
+pub struct ContainerReferrers {
     /// OCI referrer manifest retaining static abilities and launch obligations.
     ///
     /// This descriptor is archival evidence. It does not itself grant an
@@ -1072,7 +748,7 @@ pub struct ContainerReleaseEvidence {
     pub signature: Descriptor,
 }
 
-impl ContainerReleaseEvidence {
+impl ContainerReferrers {
     /// Validates all mandatory evidence descriptor roles.
     ///
     /// # Errors
@@ -1283,64 +959,6 @@ fn validate_unique_signature_input_descriptors(input: &ContainerSignatureInput) 
                 ),
             ));
         }
-    }
-    Ok(())
-}
-
-fn validate_item_count(actual: usize, field: &'static str, limit: usize) -> Result<()> {
-    if actual > limit {
-        return Err(Error::TooManyItems {
-            field,
-            limit,
-            actual,
-        });
-    }
-    Ok(())
-}
-
-fn validate_sorted_unique_paths<'a>(
-    paths: impl Iterator<Item = &'a str>,
-    field: &'static str,
-) -> Result<()> {
-    let mut previous = None;
-    for path in paths {
-        if previous.is_some_and(|value| value >= path) {
-            return Err(Error::invalid(
-                field,
-                "unknownPaths must be sorted by path without duplicates",
-            ));
-        }
-        previous = Some(path);
-    }
-    Ok(())
-}
-
-fn validate_diagnostic_text(value: &str, field: &'static str) -> Result<()> {
-    validate_text(value, field, MAX_CONTAINER_RELEASE_IDENTITY_BYTES)
-}
-
-fn validate_long_text(value: &str, field: &'static str) -> Result<()> {
-    validate_text(value, field, MAX_NIX_STORE_PATH_BYTES)
-}
-
-fn validate_text(value: &str, field: &'static str, limit: usize) -> Result<()> {
-    if value.is_empty() {
-        return Err(Error::invalid(field, "value must not be empty"));
-    }
-    if value.len() > limit {
-        return Err(Error::invalid(
-            field,
-            format!("value is {} bytes; the limit is {limit}", value.len()),
-        ));
-    }
-    if value
-        .chars()
-        .any(|character| character.is_control() && character != '\t')
-    {
-        return Err(Error::invalid(
-            field,
-            "value must not contain control characters",
-        ));
     }
     Ok(())
 }
@@ -1626,25 +1244,6 @@ mod tests {
         }
     }
 
-    fn qualification_fixture() -> ContainerEvidenceQualification {
-        ContainerEvidenceQualification {
-            schema: CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA.to_string(),
-            mapping: ContainerEvidenceMappingQualification {
-                complete: true,
-                unknown_paths: Vec::new(),
-            },
-            corresponding_source: ContainerEvidenceQualificationCheck {
-                complete: true,
-                unknown_paths: Vec::new(),
-            },
-            licensing: ContainerEvidenceQualificationCheck {
-                complete: true,
-                unknown_paths: Vec::new(),
-            },
-            ready_for_verified_publication: true,
-        }
-    }
-
     fn release_fixture() -> ContainerRelease {
         let mut platform_manifest = descriptor(MediaType::OciImageManifest, "amd64-manifest");
         platform_manifest.platform = Some(Platform::linux_amd64());
@@ -1674,8 +1273,7 @@ mod tests {
                 },
                 closure: evidence_descriptor(MediaType::AosNixClosure, "closure"),
             },
-            qualification: qualification_fixture(),
-            evidence: ContainerReleaseEvidence {
+            evidence: ContainerReferrers {
                 abilities: evidence_descriptor(MediaType::AosContainerStaticAbilities, "abilities"),
                 sbom: evidence_descriptor(MediaType::SpdxJson, "sbom"),
                 source: evidence_descriptor(MediaType::AosSourceClosure, "source"),
@@ -1700,7 +1298,6 @@ mod tests {
                 license: release.evidence.license,
                 provenance: release.evidence.provenance,
             },
-            qualification: release.qualification,
         }
     }
 
@@ -1832,12 +1429,12 @@ mod tests {
     #[test]
     fn reports_exact_schema_identity_and_media_errors() {
         let mut release = release_fixture();
-        release.schema_version = 2;
+        release.schema_version = 3;
         assert_eq!(
             release.validate(),
             Err(Error::InvalidValue {
                 field: "container release schemaVersion",
-                reason: "expected 1, got 2".to_string(),
+                reason: "expected 2, got 3".to_string(),
             })
         );
 

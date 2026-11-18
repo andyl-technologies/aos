@@ -20,7 +20,7 @@ in
       role = "public-package";
     };
     pname = "socat";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Socat preserves the payload exactly.";

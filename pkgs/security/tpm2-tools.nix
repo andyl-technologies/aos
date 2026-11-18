@@ -22,7 +22,7 @@ in
       role = "public-package";
     };
     pname = "tpm2-tools";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Tpm2-rc-decode identifies parameter one as an out-of-range value.";

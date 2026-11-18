@@ -25,7 +25,7 @@ in
       role = "public-package";
     };
     pname = "bat";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Bat preserves the exact file bytes.";

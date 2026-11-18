@@ -37,7 +37,7 @@ in
       role = "public-package";
     };
     pname = "openexr";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "A two-by-two OpenEXR image with four half-float channels.";
         operation = "Validate the image and inspect its declared pixel window and channels.";

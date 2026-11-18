@@ -16,7 +16,7 @@ in
       role = "public-package";
     };
     pname = "zip";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The archive contains one member whose bytes exactly match the source payload.";

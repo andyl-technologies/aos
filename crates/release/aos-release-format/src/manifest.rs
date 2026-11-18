@@ -9,10 +9,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::RELEASE_MANIFEST_V1;
+use crate::RELEASE_MANIFEST_V2;
 use crate::artifact::{ArtifactKind, ArtifactRecord, require_identifier};
 use crate::digest::Sha256Digest;
-use crate::evidence::EvidenceRecord;
 use crate::plan::{PlatformCell, ReleaseClass, ReleasePlan};
 use crate::platform::{
     MatrixCell, require_complete_image_platforms, require_complete_package_platforms,
@@ -78,8 +77,6 @@ pub struct ReleaseManifestV1 {
     pub images: Vec<ImageResult>,
     /// Exact regular payload files in the bundle.
     pub artifacts: Vec<ArtifactRecord>,
-    /// Public gate and qualification evidence.
-    pub evidence: Vec<EvidenceRecord>,
 }
 
 impl ReleaseManifestV1 {
@@ -95,10 +92,10 @@ impl ReleaseManifestV1 {
     ///
     /// Returns an error for identity drift, malformed or incomplete matrices,
     /// unresolved or mismatched artifacts, extra/missing planned cells,
-    /// duplicate ids/paths, dangling relationships, failed required evidence,
-    /// or a missing exact `release-plan.json` artifact.
+    /// duplicate ids/paths, dangling relationships, or a missing exact
+    /// `release-plan.json` artifact.
     pub fn validate(&self, plan: &ReleasePlan) -> Result<()> {
-        if self.schema_version != RELEASE_MANIFEST_V1 {
+        if self.schema_version != RELEASE_MANIFEST_V2 {
             bail!(
                 "unsupported release manifest schema: {}",
                 self.schema_version
@@ -162,63 +159,9 @@ impl ReleaseManifestV1 {
             validate_final_cells(&image.platforms, &planned.platforms, true, &artifacts)?;
         }
 
-        // Plans carry gates per destination; build evidence must satisfy the
-        // union, since one bundle serves every destination.
-        let planned_gates = plan.all_gates();
-        let required_gates: BTreeSet<_> = planned_gates
-            .iter()
-            .filter(|gate| {
-                plan.qualification.requirements.iter().any(|requirement| {
-                    requirement.id == gate.policy_id
-                        && requirement.phase == crate::qualification::QualificationPhase::Build
-                })
-            })
-            .map(|gate| (&gate.policy_id, gate.policy_digest))
-            .collect();
-        let mut seen_evidence = BTreeSet::new();
-        let mut passed_gates = BTreeSet::new();
-        for evidence in &self.evidence {
-            evidence.validate()?;
-            if !seen_evidence.insert(&evidence.id) {
-                bail!("duplicate evidence id {}", evidence.id);
-            }
-            let report_found = self.artifacts.iter().any(|artifact| {
-                artifact.kind == ArtifactKind::Evidence
-                    && artifact.sha256 == evidence.report_digest
-                    && evidence
-                        .subjects
-                        .iter()
-                        .all(|subject| artifacts.contains_key(subject.as_str()))
-            });
-            if !report_found {
-                bail!("evidence {} lacks its exact report or subject", evidence.id);
-            }
-            if evidence.result == crate::evidence::GateResult::Passed {
-                passed_gates.insert((&evidence.policy_id, evidence.policy_digest));
-            }
-        }
-        if !required_gates.is_subset(&passed_gates) {
-            bail!("manifest lacks passing evidence for every selected required gate");
-        }
-
-        let admitted_at = self
-            .evidence
-            .iter()
-            .map(|record| record.finished_at.as_str())
-            .max()
-            .ok_or_else(|| anyhow::anyhow!("missing build evidence"))?;
-        crate::qualification_evidence::validate_observations(
-            plan,
-            self,
-            None,
-            crate::qualification::QualificationPhase::Build,
-            &self.evidence,
-            admitted_at,
-            None,
-        )?;
         // Expanding staging cases also rejects absent required image/OCI
         // subjects before signing, without demanding future staging results.
-        crate::qualification_evidence::cases(
+        crate::release_tests::cases(
             plan,
             self,
             None,

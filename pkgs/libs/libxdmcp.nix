@@ -73,7 +73,7 @@ in
       role = "public-package";
     };
     pname = "libxdmcp";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "A two-byte X display manager protocol field.";
         operation = "Write and read it through libXdmcp's buffer API.";

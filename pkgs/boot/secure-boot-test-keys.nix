@@ -49,7 +49,7 @@ in
       role = "public-package";
     };
     pname = "secure-boot-test-keys";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Every documented trust domain is present, nonempty, and backed by a distinct private key.";

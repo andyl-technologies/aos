@@ -119,7 +119,7 @@ in
       role = "build-input";
     };
     pname = "crucible-fixtures";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The root image matches its manifest digest and the entropy seed is exactly 32 bytes.";

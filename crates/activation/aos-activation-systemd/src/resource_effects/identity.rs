@@ -1,8 +1,8 @@
 //! Establishes local accounts and owned additive or replacement memberships.
 //!
-//! Receipts retain exact created database rows and membership deltas. Existing
+//! Ownership records retain exact created database rows and membership deltas. Existing
 //! accounts are never adopted for deletion. The standard password-database lock
-//! serializes edits with system account tools; pending receipts precede writes.
+//! serializes edits with system account tools; pending ownership records precede writes.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
@@ -85,7 +85,7 @@ struct MembershipReplacement {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct Receipt {
+struct OwnedState {
     owner: String,
     revision: String,
     operation: String,
@@ -176,16 +176,16 @@ fn owned_row(file: &str, row: &[String]) -> String {
     }
 }
 
-fn check_rows(root: &Path, receipt: &Receipt) -> Result<bool> {
+fn check_rows(root: &Path, owned_state: &OwnedState) -> Result<bool> {
     let mut present = true;
-    for (file, expected) in &receipt.rows {
+    for (file, expected) in &owned_state.rows {
         let rows = database(root, file)?;
         let account = expected.split(':').next().context("owned row lacks name")?;
         if let Some(row) = rows.iter().find(|row| row[0] == account) {
             ensure!(
                 owned_row(file, row) == *expected
-                    || (!receipt.complete
-                        && receipt.previous_rows.get(file) == Some(&owned_row(file, row))),
+                    || (!owned_state.complete
+                        && owned_state.previous_rows.get(file) == Some(&owned_row(file, row))),
                 "owned account database row has changed"
             );
         } else {
@@ -264,30 +264,30 @@ fn membership_snapshot(root: &Path, group: &str) -> Result<BTreeMap<String, BTre
     Ok(result)
 }
 
-fn replacement_target(receipt: &Receipt) -> Result<BTreeSet<String>> {
-    let input: Membership = serde_json::from_value(receipt.input.clone())?;
+fn replacement_target(owned_state: &OwnedState) -> Result<BTreeSet<String>> {
+    let input: Membership = serde_json::from_value(owned_state.input.clone())?;
     ensure!(
         input.mode == "replace",
-        "replacement receipt has additive input"
+        "replacement ownership record has additive input"
     );
     Ok(input.members.into_iter().collect())
 }
 
-fn replacement_state_current(root: &Path, receipt: &Receipt) -> Result<bool> {
-    let Some(replacement) = &receipt.replacement else {
+fn replacement_state_current(root: &Path, owned_state: &OwnedState) -> Result<bool> {
+    let Some(replacement) = &owned_state.replacement else {
         return Ok(true);
     };
-    let target = replacement_target(receipt)?;
+    let target = replacement_target(owned_state)?;
     Ok(membership_snapshot(root, &replacement.group)?
         .values()
         .all(|names| names == &target))
 }
 
-fn validate_replacement_state(root: &Path, receipt: &Receipt) -> Result<()> {
-    let Some(replacement) = &receipt.replacement else {
+fn validate_replacement_state(root: &Path, owned_state: &OwnedState) -> Result<()> {
+    let Some(replacement) = &owned_state.replacement else {
         return Ok(());
     };
-    let target = replacement_target(receipt)?;
+    let target = replacement_target(owned_state)?;
     let actual = membership_snapshot(root, &replacement.group)?;
     ensure!(
         actual.keys().eq(replacement.original_members.keys()),
@@ -296,7 +296,8 @@ fn validate_replacement_state(root: &Path, receipt: &Receipt) -> Result<()> {
     for (file, names) in actual {
         ensure!(
             names == target
-                || (!receipt.complete && replacement.previous_members.get(&file) == Some(&names))
+                || (!owned_state.complete
+                    && replacement.previous_members.get(&file) == Some(&names))
                 || (replacement.restoring
                     && replacement.original_members.get(&file) == Some(&names)),
             "owned replacement membership has changed"
@@ -328,21 +329,21 @@ fn write_membership_snapshot(
 
 // A replacement policy can consume a managed group, never adopt an external
 // group merely because its name or numeric ID happens to match.
-fn managed_group_current(root: &Path, group: &str, receipt: &Receipt) -> Result<bool> {
-    Ok(receipt.complete
-        && receipt.operation == "group"
-        && receipt
+fn managed_group_current(root: &Path, group: &str, owned_state: &OwnedState) -> Result<bool> {
+    Ok(owned_state.complete
+        && owned_state.operation == "group"
+        && owned_state
             .input
             .get("allocation")
             .and_then(Value::as_str)
             .unwrap_or("managed")
             == "managed"
-        && receipt.input.get("name").and_then(Value::as_str) == Some(group)
-        && receipt
+        && owned_state.input.get("name").and_then(Value::as_str) == Some(group)
+        && owned_state
             .rows
             .get("group")
             .is_some_and(|row| row.split(':').next() == Some(group))
-        && check_rows(root, receipt)?)
+        && check_rows(root, owned_state)?)
 }
 
 fn require_managed_group(root: &Path, state_directory: &Path, group: &str) -> Result<()> {
@@ -352,7 +353,7 @@ fn require_managed_group(root: &Path, state_directory: &Path, group: &str) -> Re
         entries += 1;
         ensure!(
             entries <= 4096,
-            "identity receipt inventory exceeds its bound"
+            "identity ownership record inventory exceeds its bound"
         );
         let filename = entry.file_name();
         if !filename
@@ -362,14 +363,14 @@ fn require_managed_group(root: &Path, state_directory: &Path, group: &str) -> Re
             continue;
         }
         let bytes = read_regular(&entry.path(), 1_048_576)?
-            .context("managed identity receipt disappeared")?;
-        let receipt: Receipt = serde_json::from_slice(&bytes)?;
+            .context("managed identity ownership record disappeared")?;
+        let owned_state: OwnedState = serde_json::from_slice(&bytes)?;
         ensure!(
             filename.to_str()
-                == Some(format!("{}-identity.json", super::key(&receipt.owner)).as_str()),
-            "identity receipt filename differs from its owner"
+                == Some(format!("{}-identity.json", super::key(&owned_state.owner)).as_str()),
+            "identity ownership record filename differs from its owner"
         );
-        if managed_group_current(root, group, &receipt)? {
+        if managed_group_current(root, group, &owned_state)? {
             return Ok(());
         }
     }
@@ -397,10 +398,10 @@ fn desired(
     root: &Path,
     input: &Value,
     operation: &str,
-    prior: Option<&Receipt>,
+    prior: Option<&OwnedState>,
     shells: Option<(&str, &str)>,
-) -> Result<Receipt> {
-    let mut receipt = Receipt {
+) -> Result<OwnedState> {
+    let mut owned_state = OwnedState {
         owner: String::new(),
         revision: String::new(),
         operation: operation.into(),
@@ -413,7 +414,7 @@ fn desired(
     };
     if operation != "membership" {
         if let Some(old) = prior.filter(|old| old.input == *input) {
-            receipt.rows = old.rows.clone();
+            owned_state.rows = old.rows.clone();
         }
     }
     let mut wanted = BTreeSet::new();
@@ -498,7 +499,7 @@ fn desired(
                     .get(file)
                     .is_some_and(|line| line.split(':').next() == Some(value.name.as_str()))
                 {
-                    receipt.rows = prior.rows.clone();
+                    owned_state.rows = prior.rows.clone();
                 }
             }
         } else {
@@ -506,23 +507,23 @@ fn desired(
                 value.allocation == "managed",
                 "existing-only account does not exist"
             );
-            let id = if receipt.rows.is_empty() {
+            let id = if owned_state.rows.is_empty() {
                 numeric_id(&rows, value.requested_id)?
             } else {
-                receipt
+                owned_state
                     .rows
                     .get(file)
-                    .context("pending account receipt lacks identity row")?
+                    .context("pending account ownership record lacks identity row")?
                     .split(':')
                     .nth(2)
                     .context("pending account has no numeric ID")?
                     .parse()?
             };
             if operation == "group" {
-                receipt
+                owned_state
                     .rows
                     .insert("group".into(), format!("{}:x:{id}", value.name));
-                receipt
+                owned_state
                     .rows
                     .insert("gshadow".into(), format!("{}:!:", value.name));
             } else {
@@ -552,14 +553,14 @@ fn desired(
                     "invalid account database field"
                 );
                 let shell = principal_shell(&value, login, nologin)?;
-                receipt.rows.insert(
+                owned_state.rows.insert(
                     "passwd".into(),
                     format!(
                         "{}:x:{id}:{gid}:{}:{}:{shell}",
                         value.name, value.description, value.home_directory
                     ),
                 );
-                receipt
+                owned_state
                     .rows
                     .insert("shadow".into(), format!("{}:!:0:0:99999:7:::", value.name));
             }
@@ -567,7 +568,7 @@ fn desired(
         if owns && operation == "principal" && existing.is_some() {
             let row = existing.context("owned principal is missing during update")?;
             let id: u32 = row[2].parse()?;
-            receipt
+            owned_state
                 .rows
                 .insert("passwd".into(), principal_row(root, &value, id, shells)?);
         }
@@ -594,10 +595,10 @@ fn desired(
             || !members(row).contains(&pair.1)
             || prior.is_some_and(|old| old.additions.contains(&pair))
         {
-            receipt.additions.insert(pair);
+            owned_state.additions.insert(pair);
         }
     }
-    Ok(receipt)
+    Ok(owned_state)
 }
 
 // Explicit shells are immutable inputs, never mutable host PATH selections.
@@ -660,14 +661,14 @@ fn principal_row(
     ))
 }
 
-fn install_rows(root: &Path, receipt: &Receipt) -> Result<()> {
-    for (file, line) in &receipt.rows {
+fn install_rows(root: &Path, owned_state: &OwnedState) -> Result<()> {
+    for (file, line) in &owned_state.rows {
         let mut rows = database(root, file)?;
         let account = line.split(':').next().context("owned row lacks name")?;
         if let Some(row) = rows.iter_mut().find(|row| row[0] == account) {
             let actual = owned_row(file, row);
             ensure!(
-                actual == *line || receipt.previous_rows.get(file) == Some(&actual),
+                actual == *line || owned_state.previous_rows.get(file) == Some(&actual),
                 "created account row has drifted"
             );
             if actual != *line {
@@ -695,11 +696,11 @@ fn install_rows(root: &Path, receipt: &Receipt) -> Result<()> {
     Ok(())
 }
 
-fn remove_rows(root: &Path, receipt: &Receipt) -> Result<()> {
-    check_rows(root, receipt)?;
+fn remove_rows(root: &Path, owned_state: &OwnedState) -> Result<()> {
+    check_rows(root, owned_state)?;
     // Validate every row before deleting any account. Foreign memberships and
     // primary users keep a group alive, even if its original creator leaves.
-    if let Some(principal) = receipt.rows.get("passwd") {
+    if let Some(principal) = owned_state.rows.get("passwd") {
         let account = principal
             .split(':')
             .next()
@@ -714,7 +715,7 @@ fn remove_rows(root: &Path, receipt: &Receipt) -> Result<()> {
             "owned principal still has external group membership"
         );
     }
-    if let Some(group) = receipt.rows.get("group") {
+    if let Some(group) = owned_state.rows.get("group") {
         let account = group.split(':').next().context("group lacks name")?;
         let groups = database(root, "group")?;
         let shadow_groups = database(root, "gshadow")?;
@@ -737,7 +738,7 @@ fn remove_rows(root: &Path, receipt: &Receipt) -> Result<()> {
             );
         }
     }
-    for (file, line) in &receipt.rows {
+    for (file, line) in &owned_state.rows {
         let account = line.split(':').next().context("owned row lacks name")?;
         let mut rows = database(root, file)?;
         rows.retain(|row| row[0] != account);
@@ -749,7 +750,7 @@ fn remove_rows(root: &Path, receipt: &Receipt) -> Result<()> {
 /// Converges or observes a checked native local identity operation.
 ///
 /// # Errors
-/// Returns an error for missing existing accounts, identity conflicts, database drift, or failed receipt and account writes.
+/// Returns an error for missing existing accounts, identity conflicts, database drift, or failed ownership record and account writes.
 pub(super) fn execute(
     invocation: &Invocation,
     action: &str,
@@ -776,13 +777,13 @@ fn execute_at(
         .open(root.join(".pwd.lock"))?;
     rustix::fs::fcntl_lock(&lock, rustix::fs::FlockOperation::LockExclusive)?;
     let path = state_path(invocation, "identity");
-    let prior: Option<Receipt> = read_regular(&path, 1_048_576)?
+    let prior: Option<OwnedState> = read_regular(&path, 1_048_576)?
         .map(|bytes| serde_json::from_slice(&bytes))
         .transpose()?;
     if let Some(old) = &prior {
         ensure!(
             old.owner == invocation.id && old.operation == operation,
-            "identity receipt differs"
+            "identity ownership record differs"
         );
         check_rows(root, old)?;
         validate_replacement_state(root, old)?;
@@ -820,7 +821,7 @@ fn execute_at(
                 let replacement = old
                     .replacement
                     .as_ref()
-                    .context("missing restoration receipt")?;
+                    .context("missing restoration ownership record")?;
                 write_membership_snapshot(root, &replacement.group, &replacement.original_members)?;
             } else {
                 reconcile_members(root, &BTreeSet::new(), &old.additions)?;
@@ -1039,9 +1040,9 @@ mod tests {
     }
 
     #[test]
-    fn managed_group_receipts_still_require_their_shadow_rows() {
+    fn managed_group_ownership_records_still_require_their_shadow_rows() {
         let root = fixture();
-        let mut receipt = desired(
+        let mut owned_state = desired(
             root.path(),
             &json!({"name":"owned","requested_id":51}),
             "group",
@@ -1049,30 +1050,30 @@ mod tests {
             None,
         )
         .unwrap();
-        install_rows(root.path(), &receipt).unwrap();
-        receipt.complete = true;
-        assert!(managed_group_current(root.path(), "owned", &receipt).unwrap());
+        install_rows(root.path(), &owned_state).unwrap();
+        owned_state.complete = true;
+        assert!(managed_group_current(root.path(), "owned", &owned_state).unwrap());
 
         fs::write(root.path().join("gshadow"), "staff:!::external\n").unwrap();
 
-        assert!(!managed_group_current(root.path(), "owned", &receipt).unwrap());
+        assert!(!managed_group_current(root.path(), "owned", &owned_state).unwrap());
     }
 
-    fn replacement_receipt(root: &Path, members: &[&str]) -> Receipt {
+    fn replacement_owned_state(root: &Path, members: &[&str]) -> OwnedState {
         let input = json!({"group":"staff","members":members,"mode":"replace"});
-        let mut receipt = desired(root, &input, "membership", None, None).unwrap();
+        let mut owned_state = desired(root, &input, "membership", None, None).unwrap();
         let original = membership_snapshot(root, "staff").unwrap();
-        receipt.replacement = Some(MembershipReplacement {
+        owned_state.replacement = Some(MembershipReplacement {
             group: "staff".into(),
             original_members: original.clone(),
             previous_members: original,
             restoring: false,
         });
-        receipt
+        owned_state
     }
 
     #[test]
-    fn replacement_mode_requires_a_managed_group_receipt() {
+    fn replacement_mode_requires_a_managed_group_owned_state() {
         let root = fixture();
         let mut existing = desired(
             root.path(),
@@ -1104,8 +1105,8 @@ mod tests {
     fn replacement_shrinks_membership_without_deleting_reserved_principals() {
         let root = fixture();
         let before_accounts = fs::read(root.path().join("passwd")).unwrap();
-        let mut receipt = replacement_receipt(root.path(), &[]);
-        let replacement = receipt.replacement.as_ref().unwrap();
+        let mut owned_state = replacement_owned_state(root.path(), &[]);
+        let replacement = owned_state.replacement.as_ref().unwrap();
         let empty = replacement
             .original_members
             .keys()
@@ -1113,9 +1114,9 @@ mod tests {
             .collect();
 
         write_membership_snapshot(root.path(), "staff", &empty).unwrap();
-        receipt.complete = true;
+        owned_state.complete = true;
 
-        assert!(replacement_state_current(root.path(), &receipt).unwrap());
+        assert!(replacement_state_current(root.path(), &owned_state).unwrap());
         assert!(
             membership_snapshot(root.path(), "staff")
                 .unwrap()
@@ -1129,7 +1130,7 @@ mod tests {
         write_membership_snapshot(
             root.path(),
             "staff",
-            &receipt.replacement.unwrap().original_members,
+            &owned_state.replacement.unwrap().original_members,
         )
         .unwrap();
         assert_eq!(
@@ -1141,28 +1142,28 @@ mod tests {
     #[test]
     fn replacement_observation_and_removal_reject_foreign_membership_drift() {
         let root = fixture();
-        let mut receipt = replacement_receipt(root.path(), &["external"]);
-        receipt.complete = true;
+        let mut owned_state = replacement_owned_state(root.path(), &["external"]);
+        owned_state.complete = true;
         let foreign = BTreeSet::from([("staff".into(), "foreign".into())]);
 
         reconcile_members(root.path(), &foreign, &BTreeSet::new()).unwrap();
 
-        assert!(!replacement_state_current(root.path(), &receipt).unwrap());
-        assert!(validate_replacement_state(root.path(), &receipt).is_err());
+        assert!(!replacement_state_current(root.path(), &owned_state).unwrap());
+        assert!(validate_replacement_state(root.path(), &owned_state).is_err());
         assert!(members(&database(root.path(), "group").unwrap()[0]).contains("foreign"));
     }
 
     #[test]
     fn interrupted_replacement_recognizes_both_database_states() {
         let root = fixture();
-        let receipt = replacement_receipt(root.path(), &[]);
+        let owned_state = replacement_owned_state(root.path(), &[]);
         let mut group = database(root.path(), "group").unwrap();
         group[0][3].clear();
         write_database(root.path(), "group", &group).unwrap();
 
-        assert!(validate_replacement_state(root.path(), &receipt).is_ok());
-        assert!(!replacement_state_current(root.path(), &receipt).unwrap());
-        let desired = receipt
+        assert!(validate_replacement_state(root.path(), &owned_state).is_ok());
+        assert!(!replacement_state_current(root.path(), &owned_state).unwrap());
+        let desired = owned_state
             .replacement
             .as_ref()
             .unwrap()
@@ -1171,30 +1172,30 @@ mod tests {
             .map(|file| (file.clone(), BTreeSet::new()))
             .collect();
         write_membership_snapshot(root.path(), "staff", &desired).unwrap();
-        assert!(replacement_state_current(root.path(), &receipt).unwrap());
+        assert!(replacement_state_current(root.path(), &owned_state).unwrap());
     }
 
     #[test]
     fn interrupted_restoration_recognizes_original_and_owned_members() {
         let root = fixture();
-        let mut receipt = replacement_receipt(root.path(), &[]);
-        receipt.complete = true;
-        receipt.replacement.as_mut().unwrap().restoring = true;
+        let mut owned_state = replacement_owned_state(root.path(), &[]);
+        owned_state.complete = true;
+        owned_state.replacement.as_mut().unwrap().restoring = true;
         let mut group = database(root.path(), "group").unwrap();
         group[0][3].clear();
         write_database(root.path(), "group", &group).unwrap();
 
-        assert!(validate_replacement_state(root.path(), &receipt).is_ok());
-        let replacement = receipt.replacement.as_ref().unwrap();
+        assert!(validate_replacement_state(root.path(), &owned_state).is_ok());
+        let replacement = owned_state.replacement.as_ref().unwrap();
         write_membership_snapshot(root.path(), "staff", &replacement.original_members).unwrap();
-        assert!(validate_replacement_state(root.path(), &receipt).is_ok());
+        assert!(validate_replacement_state(root.path(), &owned_state).is_ok());
     }
 
     #[test]
     fn principal_has_disabled_login_and_locked_password() {
         let root = fixture();
         let input = json!({"name":"owned","primary_group":"staff","requested_id":27});
-        let receipt = desired(
+        let owned_state = desired(
             root.path(),
             &input,
             "principal",
@@ -1205,7 +1206,7 @@ mod tests {
             )),
         )
         .unwrap();
-        install_rows(root.path(), &receipt).unwrap();
+        install_rows(root.path(), &owned_state).unwrap();
         assert_eq!(
             lookup(&database(root.path(), "passwd").unwrap(), "owned").unwrap()[6],
             "/nix/store/hash-util/sbin/nologin"
@@ -1214,7 +1215,7 @@ mod tests {
             lookup(&database(root.path(), "shadow").unwrap(), "owned").unwrap()[1],
             "!"
         );
-        remove_rows(root.path(), &receipt).unwrap();
+        remove_rows(root.path(), &owned_state).unwrap();
         assert_eq!(database(root.path(), "passwd").unwrap().len(), 1);
     }
 
@@ -1231,19 +1232,19 @@ mod tests {
             "requested_id": 27,
             "home_directory": "/"
         });
-        let mut prior: Option<Receipt> = None;
+        let mut prior: Option<OwnedState> = None;
 
         for home in ["/", "/var/lib/owned", "/"] {
             let mut input = input.clone();
             input["home_directory"] = json!(home);
-            let mut receipt =
+            let mut owned_state =
                 desired(root.path(), &input, "principal", prior.as_ref(), shells).unwrap();
             if let Some(previous) = &prior {
-                receipt.previous_rows = previous.rows.clone();
+                owned_state.previous_rows = previous.rows.clone();
             }
-            install_rows(root.path(), &receipt).unwrap();
-            receipt.complete = true;
-            receipt.previous_rows.clear();
+            install_rows(root.path(), &owned_state).unwrap();
+            owned_state.complete = true;
+            owned_state.previous_rows.clear();
 
             let rows = database(root.path(), "passwd").unwrap();
             let row = lookup(&rows, "owned").unwrap();
@@ -1255,8 +1256,8 @@ mod tests {
                 lookup(&database(root.path(), "shadow").unwrap(), "owned").unwrap()[1],
                 "!"
             );
-            assert!(check_rows(root.path(), &receipt).unwrap());
-            prior = Some(receipt);
+            assert!(check_rows(root.path(), &owned_state).unwrap());
+            prior = Some(owned_state);
         }
     }
 
@@ -1268,9 +1269,9 @@ mod tests {
             "/nix/store/hash-util/sbin/nologin",
         ));
         let input = json!({"name": "owned", "primary_group": "staff", "requested_id": 27});
-        let mut receipt = desired(root.path(), &input, "principal", None, shells).unwrap();
-        install_rows(root.path(), &receipt).unwrap();
-        receipt.complete = true;
+        let mut owned_state = desired(root.path(), &input, "principal", None, shells).unwrap();
+        install_rows(root.path(), &owned_state).unwrap();
+        owned_state.complete = true;
         let files = ["passwd", "shadow", "group", "gshadow"];
         let before = files.map(|file| fs::read(root.path().join(file)).unwrap());
 
@@ -1282,7 +1283,7 @@ mod tests {
             "/var//lib",
             "/var/lib/",
         ] {
-            for prior in [None, Some(&receipt)] {
+            for prior in [None, Some(&owned_state)] {
                 let mut invalid = input.clone();
                 invalid["home_directory"] = json!(home);
                 if prior.is_none() {
@@ -1391,7 +1392,7 @@ mod tests {
     fn external_membership_keeps_owned_principal_alive() {
         let root = fixture();
         let input = json!({"name":"owned","primary_group":"staff","requested_id":27});
-        let receipt = desired(
+        let owned_state = desired(
             root.path(),
             &input,
             "principal",
@@ -1402,21 +1403,21 @@ mod tests {
             )),
         )
         .unwrap();
-        install_rows(root.path(), &receipt).unwrap();
+        install_rows(root.path(), &owned_state).unwrap();
         reconcile_members(
             root.path(),
             &BTreeSet::from([("staff".into(), "owned".into())]),
             &BTreeSet::new(),
         )
         .unwrap();
-        assert!(remove_rows(root.path(), &receipt).is_err());
+        assert!(remove_rows(root.path(), &owned_state).is_err());
         assert!(lookup(&database(root.path(), "passwd").unwrap(), "owned").is_ok());
     }
 
     #[test]
     fn foreign_account_row_blocks_removal() {
         let root = fixture();
-        let mut receipt = desired(
+        let mut owned_state = desired(
             root.path(),
             &json!({"name":"owned","requested_id":27}),
             "group",
@@ -1424,9 +1425,9 @@ mod tests {
             None,
         )
         .unwrap();
-        install_rows(root.path(), &receipt).unwrap();
-        receipt.rows.insert("group".into(), "owned:x:28".into());
-        assert!(remove_rows(root.path(), &receipt).is_err());
+        install_rows(root.path(), &owned_state).unwrap();
+        owned_state.rows.insert("group".into(), "owned:x:28".into());
+        assert!(remove_rows(root.path(), &owned_state).is_err());
         assert_eq!(database(root.path(), "group").unwrap().len(), 2);
     }
 }

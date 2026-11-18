@@ -9,14 +9,13 @@
 //! The kernel owns method admission, entity-tag conditions, second-precision
 //! date conditions, one-range byte serving, response metadata derivation,
 //! origin-header filtering, sanitized origin failure classification, and the
-//! fixed redirect/direct-miss responses. HTTP-date parsing and formatting are
+//! fixed terminal responses. HTTP-date parsing and formatting are
 //! implemented here without platform dependencies, so both adapters accept the
 //! same three wire formats and emit identical IMF-fixdate bytes.
 
 use std::fmt;
 
 use thiserror::Error;
-use url::Url;
 
 use crate::delivery::RouteAdvertisementPath;
 
@@ -26,8 +25,6 @@ pub const PUBLIC_IMMUTABLE_CACHE_CONTROL: &str = "public, max-age=31536000, immu
 pub const PUBLIC_MUTABLE_CACHE_CONTROL: &str = "public, max-age=60, must-revalidate";
 /// Cache policy for a response whose authorization is private to the client.
 pub const PRIVATE_CACHE_CONTROL: &str = "private, no-store";
-/// Referrer policy for responses that disclose a temporary bearer capability.
-pub const REDIRECT_REFERRER_POLICY: &str = "no-referrer";
 /// Cache policy for a public terminal/error response with no reusable body.
 pub const PUBLIC_TERMINAL_CACHE_CONTROL: &str = "no-store";
 
@@ -775,8 +772,8 @@ pub enum ResponsePrivacy {
 /// Route/request response policy independent of representation existence.
 ///
 /// This value is selected before object lookup, so private 404, 412, 416, 421,
-/// redirect, and origin-failure outcomes cannot accidentally inherit a public
-/// default from absent representation metadata.
+/// and origin-failure outcomes cannot accidentally inherit a public default
+/// from absent representation metadata.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResponsePolicy {
     privacy: ResponsePrivacy,
@@ -1921,9 +1918,9 @@ impl PlacementAuthBoundary {
 ///
 /// Native and Worker adapters must obtain this value after route mapping,
 /// placement selection, exact-presence lookup, and publication-watermark
-/// validation. Every origin request and redirect attestation consumes this
-/// single context, preventing placement A, capability B, object C, or metadata
-/// D from being combined after independent lookups.
+/// validation. Every origin request consumes this single context, preventing
+/// placement A, capability B, object C, or metadata D from being combined
+/// after independent lookups.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeliveryObjectContext {
     request_path: RouteAdvertisementPath,
@@ -1931,16 +1928,6 @@ pub struct DeliveryObjectContext {
     authorization: PlacementAuthBoundary,
     eligibility: ExactPublicationEligibility,
     representation: VerifiedRepresentation,
-    redirect_boundary: RedirectBoundaryRequirement,
-}
-
-/// The external network policy a redirect capability must preserve.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RedirectBoundaryRequirement {
-    /// No private-network proof is required for this route.
-    Unrestricted,
-    /// The capability must remain inside this exact private-network revision.
-    PrivateNetwork(PrivateNetworkPolicyRequirement),
 }
 
 impl DeliveryObjectContext {
@@ -1952,7 +1939,6 @@ impl DeliveryObjectContext {
         authorization: PlacementAuthBoundary,
         eligibility: ExactPublicationEligibility,
         representation: VerifiedRepresentation,
-        redirect_boundary: RedirectBoundaryRequirement,
     ) -> Self {
         Self {
             request_path,
@@ -1960,7 +1946,6 @@ impl DeliveryObjectContext {
             authorization,
             eligibility,
             representation,
-            redirect_boundary,
         }
     }
 
@@ -1992,12 +1977,6 @@ impl DeliveryObjectContext {
     #[must_use]
     pub const fn representation(&self) -> &VerifiedRepresentation {
         &self.representation
-    }
-
-    /// Returns the redirect network-boundary requirement selected by the route.
-    #[must_use]
-    pub const fn redirect_boundary(&self) -> &RedirectBoundaryRequirement {
-        &self.redirect_boundary
     }
 }
 
@@ -2222,397 +2201,6 @@ pub fn classify_client_request_header(
         );
     };
     ClientRequestHeaderDisposition::Parse(field)
-}
-
-/// A canonical, header-safe presigned HTTPS `Location` value.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CanonicalPresignedLocation(String);
-
-impl CanonicalPresignedLocation {
-    /// Parses a canonical absolute HTTPS capability URL.
-    ///
-    /// URL parsing libraries can discard C0 whitespace or normalize input. This
-    /// constructor rejects every C0/DEL byte and requires the parser's canonical
-    /// serialization to equal the original byte-for-byte, so the value checked
-    /// here is exactly the value emitted in `Location` and signed by the origin.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CanonicalPresignedLocationError`] for unsafe bytes, any
-    /// normalization discrepancy, non-HTTPS/userinfo/fragment/port-zero URLs,
-    /// or an absent host.
-    pub fn parse(value: impl Into<String>) -> Result<Self, CanonicalPresignedLocationError> {
-        let value = value.into();
-        if value.bytes().any(|byte| byte <= 0x1f || byte == 0x7f) {
-            return Err(CanonicalPresignedLocationError::UnsafeByte);
-        }
-        let parsed = Url::parse(&value).map_err(|_| CanonicalPresignedLocationError::InvalidUrl)?;
-        if parsed.scheme() != "https"
-            || parsed.host().is_none()
-            || parsed.port() == Some(0)
-            || !parsed.username().is_empty()
-            || parsed.password().is_some()
-            || parsed.fragment().is_some()
-        {
-            return Err(CanonicalPresignedLocationError::InvalidUrl);
-        }
-        if parsed.as_str() != value {
-            return Err(CanonicalPresignedLocationError::NonCanonical);
-        }
-        Ok(Self(value))
-    }
-
-    /// Returns the exact canonical header value.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-/// An invalid presigned `Location` value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
-pub enum CanonicalPresignedLocationError {
-    /// A C0 control, CR/LF, or DEL byte was present.
-    #[error("presigned Location contains an unsafe control byte")]
-    UnsafeByte,
-    /// The URL was not a safe absolute HTTPS URL.
-    #[error("presigned Location is not a safe absolute HTTPS URL")]
-    InvalidUrl,
-    /// URL canonicalization would change the original header bytes.
-    #[error("presigned Location must already be in canonical URL form")]
-    NonCanonical,
-}
-
-/// A required private-network policy revision for a redirect capability.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PrivateNetworkPolicyRequirement {
-    boundary_id: String,
-    revision: u64,
-}
-
-impl PrivateNetworkPolicyRequirement {
-    /// Constructs a required stable boundary/revision pair.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PrivateNetworkPolicyError`] for an invalid id or revision zero.
-    pub fn new(
-        boundary_id: impl Into<String>,
-        revision: u64,
-    ) -> Result<Self, PrivateNetworkPolicyError> {
-        let boundary_id = boundary_id.into();
-        if !is_stable_reference(&boundary_id) {
-            return Err(PrivateNetworkPolicyError::InvalidId);
-        }
-        if revision == 0 {
-            return Err(PrivateNetworkPolicyError::ZeroRevision);
-        }
-        Ok(Self {
-            boundary_id,
-            revision,
-        })
-    }
-
-    /// Returns the stable boundary id.
-    #[must_use]
-    pub fn boundary_id(&self) -> &str {
-        &self.boundary_id
-    }
-
-    /// Returns the exact required boundary revision.
-    #[must_use]
-    pub const fn revision(&self) -> u64 {
-        self.revision
-    }
-}
-
-/// Evidence reported by the presigner/private-network reconciler.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PrivateNetworkPolicyEvidence {
-    /// The observed stable boundary id.
-    pub boundary_id: String,
-    /// The observed immutable boundary revision.
-    pub revision: u64,
-    /// Whether reconciliation verified the exact revision.
-    pub verified: bool,
-    /// The time through which the observation remains valid.
-    pub valid_through: HttpTimestamp,
-}
-
-/// An invalid private-network policy requirement or proof.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
-pub enum PrivateNetworkPolicyError {
-    /// The stable boundary id is invalid.
-    #[error("private-network policy id is invalid")]
-    InvalidId,
-    /// Revision zero is not an observed immutable revision.
-    #[error("private-network policy revision must be nonzero")]
-    ZeroRevision,
-}
-
-/// Untrusted claims returned by a presigner before shared verification.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PresignedCapabilityEvidence {
-    /// The candidate canonical location.
-    pub location: CanonicalPresignedLocation,
-    /// The claimed expiry.
-    pub expires_at: HttpTimestamp,
-    /// The claimed exact method.
-    pub method: DeliveryMethod,
-    /// The claimed exact canonical inbound request path.
-    pub request_path: RouteAdvertisementPath,
-    /// The claimed mapped origin object path.
-    pub origin_object_path: CanonicalOriginObjectPath,
-    /// The claimed placement binding capability and revision.
-    pub authorization: PlacementAuthBoundary,
-    /// The claimed unchanged conditional contract.
-    pub preconditions: RequestPreconditions,
-    /// The claimed effective range contract.
-    pub range: Option<SingleByteRange>,
-    /// Whether the provider completed presigning successfully.
-    pub presign_succeeded: bool,
-    /// Whether the returned capability signature was verified.
-    pub signature_verified: bool,
-    /// The observed private-network proof, when one is required.
-    pub private_network: Option<PrivateNetworkPolicyEvidence>,
-}
-
-/// A private proof that a presigned capability matches one evaluated object.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PresignedCapabilityAttestation {
-    location: CanonicalPresignedLocation,
-    expires_at: HttpTimestamp,
-    method: DeliveryMethod,
-    request_path: RouteAdvertisementPath,
-    origin_object_path: CanonicalOriginObjectPath,
-    authorization: PlacementAuthBoundary,
-    eligibility: ExactPublicationEligibility,
-    representation: VerifiedRepresentation,
-    preconditions: RequestPreconditions,
-    range: Option<SingleByteRange>,
-    private_network: Option<PrivateNetworkPolicyRequirement>,
-    status: PresignedCapabilityStatus,
-}
-
-/// The only status carried by a successfully verified capability attestation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PresignedCapabilityStatus {
-    /// Presigning succeeded and the resulting signature was verified.
-    PresignedAndSignatureVerified,
-}
-
-impl PresignedCapabilityAttestation {
-    /// Verifies presigner claims against one opaque evaluated object response.
-    ///
-    /// HEAD's effective range is always `None`, regardless of a client Range
-    /// field. A private-network requirement additionally needs an exact verified
-    /// boundary revision whose observation remains valid through capability
-    /// expiry.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PresignedCapabilityAttestationError`] for terminal/absent
-    /// responses, expired or overlong capability lifetimes, unsuccessful or
-    /// unverified presigning, any object/method/placement/conditional/range
-    /// claim mismatch, or missing/stale private-network proof.
-    pub fn verify(
-        evidence: PresignedCapabilityEvidence,
-        response: &EvaluatedResponse<'_>,
-        now: HttpTimestamp,
-    ) -> Result<Self, PresignedCapabilityAttestationError> {
-        if !matches!(
-            response.decision(),
-            RequestDecision::ServeFull { .. } | RequestDecision::ServePartial { .. }
-        ) {
-            return Err(PresignedCapabilityAttestationError::TerminalRequest);
-        }
-        let context = response
-            .context()
-            .ok_or(PresignedCapabilityAttestationError::MissingObjectContext)?;
-        let ttl = evidence
-            .expires_at
-            .unix_seconds()
-            .checked_sub(now.unix_seconds())
-            .ok_or(PresignedCapabilityAttestationError::InvalidExpiry)?;
-        if !(1..=300).contains(&ttl) {
-            return Err(PresignedCapabilityAttestationError::InvalidExpiry);
-        }
-        if !evidence.presign_succeeded {
-            return Err(PresignedCapabilityAttestationError::PresignFailed);
-        }
-        if !evidence.signature_verified {
-            return Err(PresignedCapabilityAttestationError::SignatureUnverified);
-        }
-        if evidence.method != response.method()
-            || &evidence.request_path != context.request_path()
-            || &evidence.origin_object_path != context.origin_object_path()
-            || &evidence.authorization != context.authorization()
-            || evidence.preconditions != *response.preconditions()
-            || evidence.range != response.effective_range()
-        {
-            return Err(PresignedCapabilityAttestationError::ClaimMismatch);
-        }
-        let verified_network = match (context.redirect_boundary(), evidence.private_network) {
-            (RedirectBoundaryRequirement::Unrestricted, None) => None,
-            (RedirectBoundaryRequirement::PrivateNetwork(required), Some(observed))
-                if observed.verified
-                    && observed.boundary_id == required.boundary_id
-                    && observed.revision == required.revision
-                    && observed.valid_through >= evidence.expires_at =>
-            {
-                Some(required.clone())
-            }
-            _ => return Err(PresignedCapabilityAttestationError::PrivateNetworkMismatch),
-        };
-        Ok(Self {
-            location: evidence.location,
-            expires_at: evidence.expires_at,
-            method: evidence.method,
-            request_path: context.request_path().clone(),
-            origin_object_path: evidence.origin_object_path,
-            authorization: evidence.authorization,
-            eligibility: context.eligibility(),
-            representation: context.representation().clone(),
-            preconditions: evidence.preconditions,
-            range: evidence.range,
-            private_network: verified_network,
-            status: PresignedCapabilityStatus::PresignedAndSignatureVerified,
-        })
-    }
-
-    /// Returns the canonical header-safe `Location` value.
-    #[must_use]
-    pub const fn location(&self) -> &CanonicalPresignedLocation {
-        &self.location
-    }
-
-    /// Returns the exact capability expiry.
-    #[must_use]
-    pub const fn expires_at(&self) -> HttpTimestamp {
-        self.expires_at
-    }
-
-    /// Returns the exact signed method.
-    #[must_use]
-    pub const fn method(&self) -> DeliveryMethod {
-        self.method
-    }
-
-    /// Returns the exact canonical inbound request path.
-    #[must_use]
-    pub const fn request_path(&self) -> &RouteAdvertisementPath {
-        &self.request_path
-    }
-
-    /// Returns the exact mapped origin object path.
-    #[must_use]
-    pub const fn origin_object_path(&self) -> &CanonicalOriginObjectPath {
-        &self.origin_object_path
-    }
-
-    /// Returns the exact placement binding capability/revision pin.
-    #[must_use]
-    pub const fn authorization(&self) -> &PlacementAuthBoundary {
-        &self.authorization
-    }
-
-    /// Returns the exact presence/publication proof used for selection.
-    #[must_use]
-    pub const fn eligibility(&self) -> ExactPublicationEligibility {
-        self.eligibility
-    }
-
-    /// Returns the exact verified representation metadata used for evaluation.
-    #[must_use]
-    pub const fn representation(&self) -> &VerifiedRepresentation {
-        &self.representation
-    }
-
-    /// Returns the unchanged parsed conditional contract.
-    #[must_use]
-    pub const fn preconditions(&self) -> &RequestPreconditions {
-        &self.preconditions
-    }
-
-    /// Returns the effective signed range; HEAD is always `None`.
-    #[must_use]
-    pub const fn range(&self) -> Option<SingleByteRange> {
-        self.range
-    }
-
-    /// Returns the exact verified private-network requirement, when applicable.
-    #[must_use]
-    pub const fn private_network(&self) -> Option<&PrivateNetworkPolicyRequirement> {
-        self.private_network.as_ref()
-    }
-
-    /// Returns proof that presigning and signature verification both succeeded.
-    #[must_use]
-    pub const fn status(&self) -> PresignedCapabilityStatus {
-        self.status
-    }
-}
-
-/// A failed presigned capability attestation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
-pub enum PresignedCapabilityAttestationError {
-    /// Hub had already selected a terminal response.
-    #[error("terminal request cannot produce a redirect capability")]
-    TerminalRequest,
-    /// The response was not coupled to an eligible object context.
-    #[error("redirect capability requires an eligible object context")]
-    MissingObjectContext,
-    /// Expiry was not 1 through 300 seconds after verification time.
-    #[error("redirect capability expiry must be 1 through 300 seconds in the future")]
-    InvalidExpiry,
-    /// The provider did not complete presigning.
-    #[error("origin presigning did not succeed")]
-    PresignFailed,
-    /// The returned capability signature was not verified.
-    #[error("origin capability signature was not verified")]
-    SignatureUnverified,
-    /// A method/object/placement/condition/range claim differed from evaluation.
-    #[error("presigned capability claims do not match the evaluated request")]
-    ClaimMismatch,
-    /// The required private-network revision was absent, stale, or mismatched.
-    #[error("presigned capability lacks a valid private-network policy proof")]
-    PrivateNetworkMismatch,
-}
-
-/// A validated Hub-authorized redirect built only from an attestation.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AuthorizedRedirectDecision(PresignedCapabilityAttestation);
-
-impl AuthorizedRedirectDecision {
-    /// Constructs a redirect from an already verified capability attestation.
-    #[must_use]
-    pub const fn from_attestation(attestation: PresignedCapabilityAttestation) -> Self {
-        Self(attestation)
-    }
-
-    /// Returns the complete verified attestation.
-    #[must_use]
-    pub const fn attestation(&self) -> &PresignedCapabilityAttestation {
-        &self.0
-    }
-
-    /// Returns HTTP status 307.
-    #[must_use]
-    pub const fn status_code(&self) -> u16 {
-        307
-    }
-
-    /// Returns `private, no-store` for every bearer-capability response.
-    #[must_use]
-    pub const fn cache_control(&self) -> &'static str {
-        PRIVATE_CACHE_CONTROL
-    }
-
-    /// Returns the fixed no-referrer policy.
-    #[must_use]
-    pub const fn referrer_policy(&self) -> &'static str {
-        REDIRECT_REFERRER_POLICY
-    }
 }
 
 fn trim_ows(value: &str) -> &str {
@@ -3085,7 +2673,6 @@ mod tests {
                 .expect("test authorization must be valid"),
             ExactPublicationEligibility::new(1, 1).expect("test eligibility must be valid"),
             representation,
-            RedirectBoundaryRequirement::Unrestricted,
         )
     }
 
@@ -3978,7 +3565,6 @@ mod tests {
             boundary.clone(),
             ExactPublicationEligibility::new(3, 4).expect("eligibility must parse"),
             representation("\"current\"", Some(784_111_777), 100),
-            RedirectBoundaryRequirement::Unrestricted,
         );
         let response = context.evaluate(
             DeliveryMethod::Get,
@@ -4065,7 +3651,6 @@ mod tests {
             PlacementAuthBoundary::new("placement", "capability", 2).expect("boundary must parse"),
             eligibility,
             representation("\"object\"", Some(784_111_777), 100),
-            RedirectBoundaryRequirement::Unrestricted,
         );
         assert_eq!(
             classify_origin_status(200, OriginBodyExpectation::Full, &context),
@@ -4102,214 +3687,6 @@ mod tests {
                 "origin status {status}"
             );
         }
-    }
-
-    #[test]
-    fn redirect_capability_and_direct_miss_metadata_is_safe() {
-        let boundary = PlacementAuthBoundary::new("placement-1", "binding:capability-2", 7)
-            .expect("boundary must be valid");
-        let path = RouteAdvertisementPath::parse_raw_target("/cache/nar/object.nar.zst")
-            .expect("path must be canonical");
-        let origin_path = CanonicalOriginObjectPath::parse("nar/object.nar.zst")
-            .expect("origin path must be canonical");
-        let eligibility =
-            ExactPublicationEligibility::new(8, 9).expect("eligibility must be valid");
-        let preconditions = RequestPreconditions {
-            if_none_match: Some(
-                EntityTagCondition::parse("\"different\"").expect("condition must parse"),
-            ),
-            if_range: Some(IfRangeCondition::EntityTag(tag("\"current\""))),
-            ..RequestPreconditions::default()
-        };
-        let range = Some(SingleByteRange::Closed { start: 10, end: 19 });
-        let network = PrivateNetworkPolicyRequirement::new("corp-vpn", 12)
-            .expect("network requirement must be valid");
-        let context = DeliveryObjectContext::new(
-            path.clone(),
-            origin_path.clone(),
-            boundary.clone(),
-            eligibility,
-            representation("\"current\"", Some(784_111_777), 100),
-            RedirectBoundaryRequirement::PrivateNetwork(network.clone()),
-        );
-        let response = context.evaluate(
-            DeliveryMethod::Get,
-            &preconditions,
-            range,
-            ResponsePolicy::new(ResponsePrivacy::Private),
-        );
-        let now = timestamp(784_111_777);
-        let expires_at = timestamp(784_112_077);
-        let evidence_for = |expires_at: HttpTimestamp,
-                            presign_succeeded: bool,
-                            signature_verified: bool,
-                            network_valid_through: HttpTimestamp| {
-            PresignedCapabilityEvidence {
-                location: CanonicalPresignedLocation::parse(
-                    "https://objects.example/object?signature=unchanged%2Bbytes",
-                )
-                .expect("location must be canonical"),
-                expires_at,
-                method: DeliveryMethod::Get,
-                request_path: path.clone(),
-                origin_object_path: origin_path.clone(),
-                authorization: boundary.clone(),
-                preconditions: preconditions.clone(),
-                range,
-                presign_succeeded,
-                signature_verified,
-                private_network: Some(PrivateNetworkPolicyEvidence {
-                    boundary_id: "corp-vpn".to_string(),
-                    revision: 12,
-                    verified: true,
-                    valid_through: network_valid_through,
-                }),
-            }
-        };
-        let evidence = evidence_for(expires_at, true, true, expires_at);
-        let attestation = PresignedCapabilityAttestation::verify(evidence, &response, now)
-            .expect("capability evidence must match");
-        let decision = AuthorizedRedirectDecision::from_attestation(attestation);
-        assert_eq!(decision.status_code(), 307);
-        assert_eq!(decision.cache_control(), "private, no-store");
-        assert_eq!(decision.referrer_policy(), "no-referrer");
-        let attestation = decision.attestation();
-        assert_eq!(
-            attestation.location().as_str(),
-            "https://objects.example/object?signature=unchanged%2Bbytes"
-        );
-        assert_eq!(attestation.expires_at(), expires_at);
-        assert_eq!(attestation.method(), DeliveryMethod::Get);
-        assert_eq!(attestation.request_path(), &path);
-        assert_eq!(attestation.origin_object_path(), &origin_path);
-        assert_eq!(attestation.authorization(), &boundary);
-        assert_eq!(attestation.eligibility(), eligibility);
-        assert_eq!(attestation.representation(), context.representation());
-        assert_eq!(attestation.preconditions(), &preconditions);
-        assert_eq!(attestation.range(), range);
-        assert_eq!(attestation.private_network(), Some(&network));
-        assert_eq!(
-            attestation.status(),
-            PresignedCapabilityStatus::PresignedAndSignatureVerified
-        );
-        assert_eq!(
-            PresignedCapabilityAttestation::verify(
-                evidence_for(expires_at, false, true, expires_at),
-                &response,
-                now,
-            ),
-            Err(PresignedCapabilityAttestationError::PresignFailed)
-        );
-        assert_eq!(
-            PresignedCapabilityAttestation::verify(
-                evidence_for(expires_at, true, false, expires_at),
-                &response,
-                now,
-            ),
-            Err(PresignedCapabilityAttestationError::SignatureUnverified)
-        );
-        assert_eq!(
-            PresignedCapabilityAttestation::verify(
-                evidence_for(
-                    expires_at,
-                    true,
-                    true,
-                    timestamp(expires_at.unix_seconds() - 1),
-                ),
-                &response,
-                now,
-            ),
-            Err(PresignedCapabilityAttestationError::PrivateNetworkMismatch)
-        );
-        assert_eq!(
-            PresignedCapabilityAttestation::verify(
-                evidence_for(timestamp(now.unix_seconds() + 301), true, true, expires_at),
-                &response,
-                now,
-            ),
-            Err(PresignedCapabilityAttestationError::InvalidExpiry)
-        );
-
-        for url in [
-            "http://objects.example/object",
-            "https://user@objects.example/object",
-            "https://objects.example/object#fragment",
-            "HTTPS://objects.example/object",
-            "https://OBJECTS.example/object",
-            "https://objects.example",
-            "\thttps://objects.example/object",
-            "https://objects.example/object\0suffix",
-            "https://objects.example/object\r\nlocation: https://evil.example/",
-        ] {
-            assert!(
-                CanonicalPresignedLocation::parse(url).is_err(),
-                "accepted {url:?}"
-            );
-        }
-
-        let head_response = context.evaluate(
-            DeliveryMethod::Head,
-            &RequestPreconditions::default(),
-            range,
-            ResponsePolicy::new(ResponsePrivacy::Private),
-        );
-        assert_eq!(head_response.effective_range(), None);
-        let head_evidence = PresignedCapabilityEvidence {
-            location: CanonicalPresignedLocation::parse("https://objects.example/object")
-                .expect("location must be canonical"),
-            expires_at: timestamp(now.unix_seconds() + 30),
-            method: DeliveryMethod::Head,
-            request_path: path.clone(),
-            origin_object_path: origin_path.clone(),
-            authorization: boundary.clone(),
-            preconditions: RequestPreconditions::default(),
-            range: None,
-            presign_succeeded: true,
-            signature_verified: true,
-            private_network: Some(PrivateNetworkPolicyEvidence {
-                boundary_id: "corp-vpn".to_string(),
-                revision: 12,
-                verified: true,
-                valid_through: timestamp(now.unix_seconds() + 30),
-            }),
-        };
-        let mut head_with_range = head_evidence.clone();
-        head_with_range.range = range;
-        assert_eq!(
-            PresignedCapabilityAttestation::verify(head_with_range, &head_response, now),
-            Err(PresignedCapabilityAttestationError::ClaimMismatch)
-        );
-        let head_attestation =
-            PresignedCapabilityAttestation::verify(head_evidence, &head_response, now)
-                .expect("HEAD ignores the client Range and attests no range");
-        assert_eq!(head_attestation.range(), None);
-
-        let mismatched_evidence = PresignedCapabilityEvidence {
-            location: CanonicalPresignedLocation::parse("https://objects.example/object")
-                .expect("location must be canonical"),
-            expires_at: timestamp(now.unix_seconds() + 30),
-            method: DeliveryMethod::Get,
-            request_path: path,
-            origin_object_path: origin_path,
-            authorization: boundary,
-            preconditions,
-            range: None,
-            presign_succeeded: true,
-            signature_verified: true,
-            private_network: None,
-        };
-        assert_eq!(
-            PresignedCapabilityAttestation::verify(mismatched_evidence, &response, now),
-            Err(PresignedCapabilityAttestationError::ClaimMismatch)
-        );
-        assert_eq!(
-            TerminalResponse::new(
-                TerminalResponseKind::MisdirectedRequest,
-                ResponsePolicy::new(ResponsePrivacy::Private),
-            )
-            .cache_control(),
-            PRIVATE_CACHE_CONTROL
-        );
     }
 }
 

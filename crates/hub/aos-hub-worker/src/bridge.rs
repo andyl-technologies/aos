@@ -50,7 +50,7 @@ pub async fn to_axum(
     let ingress_kind = crate::delivery_ingress::ingress_kind(&url, layer7_delivery_hosts)
         .map_err(|message| worker::Error::RustError(message.into()))?;
     let transport =
-        aos_hub_service::connect::DeliveryTransportEvidence::from_verified_url(&url, ingress_kind)
+        aos_hub_service::connect::VerifiedTransport::from_verified_url(&url, ingress_kind)
             .ok_or_else(|| {
                 worker::Error::RustError("request URL is not an HTTP(S) origin".into())
             })?;
@@ -177,7 +177,7 @@ pub async fn dispatch(
     svc: &aos_hub_service::service::RpcService,
     console_deps: aos_hub_service::web::console::ConsoleDeps,
     delivery_attestation_verifier: Option<
-        &aos_hub_service::delivery_attestation::DeliveryAttestationVerifier,
+        &aos_hub_service::delivery_attestation::IngressAssertionVerifier,
     >,
     layer7_delivery_hosts: Option<&str>,
     req: Request,

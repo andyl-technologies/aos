@@ -495,14 +495,15 @@ binds:
 - logical container name, initially only `aos`;
 - OCI index and per-platform manifest descriptors;
 - Nix definition and output provenance;
-- full-closure package mapping, corresponding-source, and license
-  qualification, with `readyForVerifiedPublication = true`;
 - required static ability and launch-obligation evidence;
 - closure manifest and SBOM descriptors;
 - source, license, signature, and attestation referrers.
 
-The signature input, DSSE payload type, signed release sidecar, and static
-ability evidence each use their single `/v1` contract. The static ability
+The build fails unless every runtime closure path maps to one package with
+retained corresponding source and license metadata, so a sidecar exists only
+for a complete closure and carries no completeness field. The sidecar is
+schema version 2 and the signature input is `aos.container.signature-input/v2`;
+the DSSE payload type and static ability evidence use their `/v1` contracts. The static ability
 descriptor is required in both the signature input and the final release, so
 every parser, verifier, Hub indexer, and graph traversal sees the same signed
 evidence set.
@@ -531,7 +532,7 @@ runs `aos container publish
 control-plane mutation. The paired `apr release --container-release
 FINAL_BUNDLE/container-release.json --container-signature-input
 FINAL_BUNDLE/signature-input.json`
-arguments then validate their exact unsigned identity and qualification and
+arguments then validate their exact unsigned identity and evidence and
 commit the canonical sidecar under the release lock before creating the signed
 release tag. Resume proves the tagged commit contains the exact same sidecar.
 Once the Hub indexer has authenticated it, rerunning `aos container publish`

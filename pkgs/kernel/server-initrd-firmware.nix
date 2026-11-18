@@ -14,7 +14,7 @@ in
       role = "public-package";
     };
     pname = "server-initrd-firmware";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "All four server-adapter families contain nonempty files and are described by WHENCE.";

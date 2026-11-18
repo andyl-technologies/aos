@@ -22,7 +22,7 @@ in
     # private library paths can be redirected without changing string offsets.
     pname = "sd-pcr";
     inherit version;
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "A fixed kernel payload with a known SHA-256 PCR-11 policy.";
         operation = "Calculate the boot phase measurements without a TPM device.";

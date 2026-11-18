@@ -28,7 +28,6 @@ from typing import Any, BinaryIO
 ROOT = pathlib.Path.cwd()
 REQUEST = ROOT / "request.json"
 OBJECTS = ROOT / "objects.json"
-DOWNLOADS = ROOT / "downloads.json"
 REPORT = ROOT / "scenario-report.json"
 
 PLATFORM = os.environ["AOS_QUALIFICATION_PLATFORM"]
@@ -161,18 +160,6 @@ def write_canonical(path: pathlib.Path, value: Any) -> None:
     """Writes canonical JSON with the repository's required trailing newline."""
 
     path.write_bytes(canonical(value) + b"\n")
-
-
-def hash_file(path: pathlib.Path) -> tuple[int, str]:
-    """Returns an exact file's length and SHA-256 identity."""
-
-    size = 0
-    hashed = hashlib.sha256()
-    with path.open("rb") as source:
-        while block := source.read(8 * 1024 * 1024):
-            size += len(block)
-            hashed.update(block)
-    return size, "sha256:" + hashed.hexdigest()
 
 
 def canonical_sha256(value: str) -> str:
@@ -335,7 +322,6 @@ class PackageScenario:
         self.request = read_json(REQUEST)
         self.case = self.request["qualification_case"]
         self.objects: dict[str, str] = read_json(OBJECTS)
-        self.downloads = read_json(DOWNLOADS)
         self.manifest = read_json(pathlib.Path(self.objects[MANIFEST_OBJECT]))
         manifest_artifacts = self.manifest["payload"]["artifacts"]
         self.artifacts = {
@@ -377,7 +363,6 @@ class PackageScenario:
 
         self.validate_inputs()
         self.started_at, self.started_seconds = timestamp()
-        self.validate_downloads()
         self.resolve_closure()
         self.import_closure()
         self.validate_store_graph()
@@ -545,30 +530,6 @@ class PackageScenario:
             raise RuntimeError("staging Hub URL is not a bounded HTTPS origin")
         registry_path = urllib.parse.quote(self.request["registry"], safe="/")
         self.staging_url = STAGING_HUB_URL.rstrip("/") + f"/{registry_path}/"
-
-    def validate_downloads(self) -> None:
-        """Rechecks every exact anonymously downloaded staging object."""
-
-        request_objects = {
-            entry["artifact_id"]: entry for entry in self.request["objects"]
-        }
-        if len(request_objects) != len(self.request["objects"]):
-            raise RuntimeError("request repeats a downloaded object identity")
-        if set(request_objects) != set(self.objects) or set(self.objects) != set(
-            self.downloads
-        ):
-            raise RuntimeError("downloaded object inventory differs from the request")
-
-        for artifact_id, expected in request_objects.items():
-            path = pathlib.Path(self.objects[artifact_id])
-            if path.is_symlink() or not path.is_file():
-                raise RuntimeError(f"downloaded object {artifact_id} is not a regular file")
-            size, sha256 = hash_file(path)
-            if size != expected["size_bytes"] or sha256 != expected["sha256"]:
-                raise RuntimeError(f"downloaded object {artifact_id} changed after capture")
-            trace = self.downloads[artifact_id]
-            if trace != {"mode": "full", "requests": [{"status": 200}]}:
-                raise RuntimeError(f"object {artifact_id} was not anonymously downloaded once")
 
     def resolve_closure(self) -> None:
         """Resolves signed NAR identities and their exact Contains graph."""

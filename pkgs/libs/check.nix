@@ -16,7 +16,7 @@ in
       role = "public-package";
     };
     pname = "check";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Check records no failures and the consumer prints the fixed success line.";

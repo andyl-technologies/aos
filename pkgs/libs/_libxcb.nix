@@ -76,7 +76,7 @@ in
       role = "public-package";
     };
     pname = packageName;
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "An X display address with a host, display, and screen.";
         operation = "Parse the address through libxcb.";

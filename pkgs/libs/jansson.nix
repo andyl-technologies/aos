@@ -54,7 +54,7 @@ in
       role = "public-package";
     };
     pname = "jansson";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The parser returns an object whose answer member is the integer 42.";

@@ -42,7 +42,7 @@ in
       role = "public-package";
     };
     pname = "libtiff";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "A two-by-two RGB bitmap.";
         operation = "Encode it as TIFF, copy it with a different compression, and compare decoded pixels.";

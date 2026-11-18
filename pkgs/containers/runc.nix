@@ -19,7 +19,7 @@ in
       role = "public-package";
     };
     pname = "runc";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Runc emits a rootless process configuration using rootfs as the root path.";

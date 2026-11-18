@@ -21,7 +21,7 @@ in
         role = "public-package";
       };
       pname = "gnumake";
-      qualification.packageProbe = lib.qualification.commandProbe {
+      smokeTest = lib.qualification.commandProbe {
         "primary" = {
           "artifacts" = [
             {

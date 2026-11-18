@@ -17,7 +17,7 @@ in
       role = "public-package";
     };
     pname = "cmocka";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Cmocka returns a zero failure count and the consumer prints the fixed success line.";

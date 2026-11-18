@@ -37,7 +37,7 @@ in
       role = "public-package";
     };
     pname = "perl-parallel-forkmanager";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Both child processes finish and both completion files contain their task number.";

@@ -27,7 +27,7 @@ mkAosCargoPackage {
     OPENSSL_NO_VENDOR = "1";
     OPENSSL_STATIC = "0";
   };
-  qualification.packageProbe = lib.qualification.commandProbe {
+  smokeTest = lib.qualification.commandProbe {
     primary = {
       input = "The native deployment validator executable.";
       operation = "Read its version without activation.";

@@ -30,7 +30,7 @@ mkDerivation {
   pname = "aos-verity-root-guard";
   module = ./_aos-verity-root-guard;
   moduleDeps = [service-management aos-boot-storage];
-  qualification.packageProbe = lib.qualification.commandProbe {
+  smokeTest = lib.qualification.commandProbe {
     "primary" = {
       "artifacts" = [];
       "expected" = "Bash accepts the installed root-verification program's syntax.";

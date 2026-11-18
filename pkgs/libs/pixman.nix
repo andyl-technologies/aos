@@ -19,7 +19,7 @@ in
       role = "public-package";
     };
     pname = "pixman";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The destination becomes the exact source pixel.";

@@ -24,7 +24,7 @@ in
       role = "public-package";
     };
     pname = "swig";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "SWIG emits a wrapper containing the function and module initialization symbols.";

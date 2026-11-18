@@ -78,7 +78,7 @@ in
       role = "public-package";
     };
     pname = "dosfstools";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Both filesystem construction and consistency checking succeed.";

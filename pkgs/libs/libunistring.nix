@@ -16,7 +16,7 @@ in
       role = "public-package";
     };
     pname = "libunistring";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "libunistring returns a null error pointer for valid UTF-8.";

@@ -36,7 +36,7 @@ in
       role = "public-package";
     };
     pname = "vala";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "A Vala program printing a formatted number.";
         operation = "Compile it to C with the installed valac compiler.";
