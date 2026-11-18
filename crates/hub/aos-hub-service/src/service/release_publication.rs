@@ -17,8 +17,8 @@ use aos_release_format::canonical;
 use aos_release_format::digest::Sha256Digest;
 use aos_release_format::plan::{SurfaceKind, SurfaceRole};
 use aos_release_format::receipt::{
-    ChannelReceipt, PublicationReceipt, QualificationReceipt, SignedReceiptEnvelope,
-    CHANNEL_RECEIPT, PUBLICATION_RECEIPT,
+    ChannelReceipt, PublicationReceipt, SignedEnvelope, StagingTestApproval, CHANNEL_RECEIPT,
+    PUBLICATION_RECEIPT,
 };
 
 use aos_hub_db::db::{
@@ -154,7 +154,7 @@ impl RpcService {
             .authorize_release(auth, &req.registry, &req.bundle_digest)
             .await?;
         let receipt_bytes = req.qualification_receipt_json.as_bytes();
-        let receipt: QualificationReceipt =
+        let receipt: StagingTestApproval =
             canonical::from_slice(receipt_bytes, "qualification receipt").map_err(invalid)?;
         receipt.validate().map_err(invalid)?;
         if canonical::to_vec(&receipt).map_err(RpcError::internal)? != receipt_bytes
@@ -218,7 +218,7 @@ impl RpcService {
         let staging_bytes = req.signed_staging_receipt_json.as_bytes();
         let staging: PublicationReceipt =
             canonical::from_slice(staging_bytes, "staging receipt envelope")
-                .and_then(|envelope: SignedReceiptEnvelope| {
+                .and_then(|envelope: SignedEnvelope| {
                     canonical::from_slice(
                         &canonical::to_vec(&envelope.payload)?,
                         "staging receipt payload",
@@ -248,7 +248,7 @@ impl RpcService {
             .map_err(failed_precondition)?;
 
         let qualification_bytes = req.qualification_receipt_json.as_bytes();
-        let qualification: QualificationReceipt =
+        let qualification: StagingTestApproval =
             canonical::from_slice(qualification_bytes, "qualification receipt").map_err(invalid)?;
         qualification.validate().map_err(invalid)?;
         if canonical::to_vec(&qualification).map_err(RpcError::internal)? != qualification_bytes
@@ -482,7 +482,7 @@ impl RpcService {
         {
             let committed: ChannelReceipt =
                 canonical::from_slice(existing.receipt_json.as_bytes(), "channel receipt envelope")
-                    .and_then(|envelope: SignedReceiptEnvelope| {
+                    .and_then(|envelope: SignedEnvelope| {
                         canonical::from_slice(
                             &canonical::to_vec(&envelope.payload)?,
                             "channel receipt payload",
@@ -618,7 +618,7 @@ impl RpcService {
     fn release_authority(
         &self,
         expected_deployment_id: &str,
-    ) -> Result<&dyn crate::release_evidence::ReleaseEvidenceAuthority, RpcError> {
+    ) -> Result<&dyn crate::release_receipt_signer::ReleaseEvidenceAuthority, RpcError> {
         let authority = self
             .release_evidence
             .as_deref()

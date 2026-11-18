@@ -32,7 +32,7 @@ in
       role = "public-package";
     };
     pname = "perl-time-duration";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The module reports one hour, one minute, and one second.";

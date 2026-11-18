@@ -17,7 +17,7 @@ in
       role = "public-package";
     };
     pname = "mandoc";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Mandoc accepts the document without diagnostics.";

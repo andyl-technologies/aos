@@ -16,7 +16,7 @@ in
       role = "public-package";
     };
     pname = "tini";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Tini supervises the child and preserves its output and successful status.";

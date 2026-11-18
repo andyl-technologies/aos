@@ -22,7 +22,7 @@ in
       role = "public-package";
     };
     pname = "autoconf";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Autoconf generates a runnable script that accepts the declared option.";

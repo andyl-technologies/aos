@@ -13,7 +13,7 @@ use aos_release_format::qualification::claims::{AssessmentReference, Compatibili
 use aos_release_format::qualification::environment::{
     Backend, CpuIdentity, DeviceInventory, EnvironmentInventory, LayerInventory,
 };
-use aos_release_format::qualification_evidence::{NativeAdapterMatrixSpec, QualificationCase};
+use aos_release_format::release_tests::{NativeAdapterMatrixSpec, ReleaseTest};
 use serde_json::{Value, json};
 
 mod contract;
@@ -177,7 +177,7 @@ pub fn metadata() -> Result<Value> {
     )
 }
 
-pub fn capabilities(case: &QualificationCase) -> Result<Option<CapabilityEvidence>> {
+pub fn capabilities(case: &ReleaseTest) -> Result<Option<CapabilityEvidence>> {
     if !case
         .target
         .as_ref()
@@ -196,7 +196,7 @@ pub fn capabilities(case: &QualificationCase) -> Result<Option<CapabilityEvidenc
         .transpose()
 }
 
-pub fn environment(case: &QualificationCase) -> Result<Option<EnvironmentInventory>> {
+pub fn environment(case: &ReleaseTest) -> Result<Option<EnvironmentInventory>> {
     let Some(scope) = case.target.as_ref().map(|target| &target.environment) else {
         return Ok(None);
     };
@@ -292,7 +292,7 @@ pub fn measurements() -> BTreeMap<String, u64> {
     .collect()
 }
 
-pub fn assessment(case: &QualificationCase) -> Result<Option<CompatibilityAssessment>> {
+pub fn assessment(case: &ReleaseTest) -> Result<Option<CompatibilityAssessment>> {
     case.target
         .as_ref()
         .map(|target| &target.environment)
@@ -316,34 +316,40 @@ pub fn assessment(case: &QualificationCase) -> Result<Option<CompatibilityAssess
 
 /// Builds an authored one-cohort qualification specification for protocol tests.
 pub(crate) fn native_operation_spec()
--> aos_release_format::qualification_evidence::NativeOperationQualificationSpec {
+-> aos_release_format::release_tests::NativeOperationQualificationSpec {
     let matrix_spec = native_adapter_matrix_spec();
-    aos_release_format::qualification_evidence::NativeOperationQualificationSpec {
+    aos_release_format::release_tests::NativeOperationQualificationSpec {
         schema: "aos.qualification.native-operation-spec".into(),
         required_operations: matrix_spec.required_operations.clone(),
-        cohorts: vec![aos_release_format::qualification_evidence::NativeOperationCohortSpec {
-            id: "synthetic-cohort".into(),
-            matrix_spec,
-            selected_evaluation: aos_release_format::qualification_evidence::NativeSelectedEvaluation {
-                role: aos_release_format::qualification_evidence::NativeEvaluationRole::CandidateBaseline,
-                locator: "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-synthetic-evaluation".into(),
-                scenario_sources: Vec::new(),
+        cohorts: vec![
+            aos_release_format::release_tests::NativeOperationCohortSpec {
+                id: "synthetic-cohort".into(),
+                matrix_spec,
+                selected_evaluation: aos_release_format::release_tests::NativeSelectedEvaluation {
+                    role:
+                        aos_release_format::release_tests::NativeEvaluationRole::CandidateBaseline,
+                    locator: "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-synthetic-evaluation"
+                        .into(),
+                    scenario_sources: Vec::new(),
+                },
+                adoption_evaluation: aos_release_format::release_tests::NativeSelectedEvaluation {
+                    role:
+                        aos_release_format::release_tests::NativeEvaluationRole::CandidateBaseline,
+                    locator: "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-synthetic-evaluation"
+                        .into(),
+                    scenario_sources: Vec::new(),
+                },
             },
-            adoption_evaluation: aos_release_format::qualification_evidence::NativeSelectedEvaluation {
-                role: aos_release_format::qualification_evidence::NativeEvaluationRole::CandidateBaseline,
-                locator: "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-synthetic-evaluation".into(),
-                scenario_sources: Vec::new(),
-            },
-        }],
+        ],
     }
 }
 
 /// Retains an observation in its exact synthetic authored cohort context.
 pub(crate) fn native_cohort_observation(
-    authored: &aos_release_format::qualification_evidence::NativeOperationCohortSpec,
-    cells: Vec<aos_release_format::qualification_evidence::NativeAdapterCellObservation>,
-) -> aos_release_format::qualification_evidence::NativeOperationCohortObservation {
-    aos_release_format::qualification_evidence::NativeOperationCohortObservation {
+    authored: &aos_release_format::release_tests::NativeOperationCohortSpec,
+    cells: Vec<aos_release_format::release_tests::NativeAdapterCellObservation>,
+) -> aos_release_format::release_tests::NativeOperationCohortObservation {
+    aos_release_format::release_tests::NativeOperationCohortObservation {
         id: authored.id.clone(),
         matrix_spec: authored.matrix_spec.clone(),
         selected_evaluation: authored.selected_evaluation.clone(),

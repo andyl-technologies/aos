@@ -64,7 +64,7 @@
     version = "1";
     outputs = ["out" "dev"];
     src = null;
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "The selected payload and development header.";
         operation = "Read both exact retained output files.";

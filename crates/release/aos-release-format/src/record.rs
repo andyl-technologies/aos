@@ -42,12 +42,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::canonical;
 use crate::digest::Sha256Digest;
-use crate::evidence::{GateResult, QualificationReport};
+use crate::evidence::{Outcome, QualificationReport};
 use crate::manifest::ReleaseManifestV1;
 use crate::plan::{ReleaseClass, ReleasePlan};
 use crate::qualification::QualificationPhase;
 use crate::qualification::claims::ClaimOutcome;
-use crate::receipt::QualificationReceipt;
+use crate::receipt::StagingTestApproval;
 
 /// Exact record schema identifier.
 pub const RECORD_V1: &str = "aos.release-record/v1";
@@ -70,7 +70,7 @@ pub struct QualificationSummaryV1 {
     /// Digest of the exact policy bytes.
     pub policy_digest: Sha256Digest,
     /// Public gate result.
-    pub result: GateResult,
+    pub result: Outcome,
     /// RFC 3339 UTC admission time bound by the authority's signature.
     pub qualified_at: String,
     /// Qualification authority identity.
@@ -146,7 +146,7 @@ impl ReleaseRecordV1 {
         plan: &ReleasePlan,
         manifest: &ReleaseManifestV1,
         manifest_digest: Sha256Digest,
-        receipt: &QualificationReceipt,
+        receipt: &StagingTestApproval,
         signed_qualification: &[u8],
         report: &QualificationReport,
     ) -> Result<Self> {
@@ -203,7 +203,7 @@ impl ReleaseRecordV1 {
     /// Returns an error for an unknown schema, a version that is not in the
     /// stated train, an envelope whose digest or payload disagrees with the
     /// summary, or a summary whose class does not match its served path.
-    pub fn validate(&self) -> Result<QualificationReceipt> {
+    pub fn validate(&self) -> Result<StagingTestApproval> {
         if self.schema_version != RECORD_V1 {
             bail!("unsupported release record schema");
         }
@@ -215,9 +215,9 @@ impl ReleaseRecordV1 {
         if Sha256Digest::of_bytes(envelope_bytes) != self.qualification.receipt_digest {
             bail!("release record envelope digest does not match its summary");
         }
-        let envelope: crate::receipt::SignedReceiptEnvelope =
+        let envelope: crate::receipt::SignedEnvelope =
             canonical::from_slice(envelope_bytes, "signed qualification envelope")?;
-        let receipt: QualificationReceipt = serde_json::from_value(envelope.payload)
+        let receipt: StagingTestApproval = serde_json::from_value(envelope.payload)
             .context("decoding qualification receipt payload")?;
         receipt.validate()?;
         if receipt.manifest_digest != self.manifest_digest
@@ -244,7 +244,7 @@ impl ReleaseRecordV1 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::receipt::{RECEIPT_SIGNATURE_DOMAIN, SIGNED_RECEIPT, SignedReceiptEnvelope};
+    use crate::receipt::{RECEIPT_SIGNATURE_DOMAIN, SIGNED_RECEIPT, SignedEnvelope};
     use base64::Engine as _;
     use ed25519_dalek::{Signer as _, SigningKey};
 
@@ -275,13 +275,13 @@ mod tests {
             manifest_digest,
             evidence: Vec::new(),
         };
-        let receipt = QualificationReceipt {
+        let receipt = StagingTestApproval {
             schema_version: crate::receipt::QUALIFICATION_RECEIPT.into(),
             staging_receipt_digest: Sha256Digest::of_bytes(b"staging"),
             manifest_digest,
             policy_id: "full-release-qualification".into(),
             policy_digest: plan.public_evidence_policy_digest,
-            result: GateResult::Passed,
+            result: Outcome::Passed,
             report_digest: Sha256Digest::of_bytes(canonical::to_vec(&report)?),
             authority_id: "qualification-authority".into(),
             nonce: "a".repeat(64),
@@ -291,7 +291,7 @@ mod tests {
         let payload = canonical::to_vec(&receipt)?;
         let signature =
             key.sign(Sha256Digest::separated(RECEIPT_SIGNATURE_DOMAIN, &payload).as_bytes());
-        let envelope = canonical::to_vec(&SignedReceiptEnvelope {
+        let envelope = canonical::to_vec(&SignedEnvelope {
             schema_version: SIGNED_RECEIPT.into(),
             key_id: "qualification-authority".into(),
             payload: serde_json::from_slice(&payload)?,
@@ -323,7 +323,7 @@ mod tests {
         assert_eq!(decoded, record);
 
         let mut tampered = record.clone();
-        tampered.qualification.result = GateResult::Failed;
+        tampered.qualification.result = Outcome::Failed;
         assert!(
             tampered.validate().is_err(),
             "summary must match the signed receipt"

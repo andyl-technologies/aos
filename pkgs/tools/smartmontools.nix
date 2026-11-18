@@ -43,7 +43,7 @@ in
       role = "public-package";
     };
     pname = "smartmontools";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Smartctl reports its version and bundled drive database release.";

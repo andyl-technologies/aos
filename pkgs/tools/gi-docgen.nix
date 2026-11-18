@@ -52,7 +52,7 @@ in
       role = "public-package";
     };
     pname = "gi-docgen";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "A minimal introspection repository with one documented function.";
         operation = "Generate its HTML reference.";

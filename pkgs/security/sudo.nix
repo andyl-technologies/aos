@@ -37,7 +37,7 @@ in
       role = "public-package";
     };
     pname = "sudo";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Visudo accepts the syntactically valid policy.";

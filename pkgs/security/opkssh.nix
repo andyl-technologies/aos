@@ -50,7 +50,7 @@ in
       role = "public-package";
     };
     pname = "opkssh";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The command returns success and documents its invocation contract.";

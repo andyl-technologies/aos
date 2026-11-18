@@ -147,8 +147,8 @@ independently claim to be a complete surface. An **archive** is a retention or
 recovery copy excluded from ordinary reads, but may be restored or used as a
 repair source.
 
-Desired state is operator intent. Observation is evidence reported by probes,
-replication, and publication. A complete placement may therefore be observed
+Desired state is operator intent. Observation is what probes, replication, and
+publication report. A complete placement may therefore be observed
 as partial or unknown while it is provisioning; kind does not manufacture a
 claim that bytes are present. Observation changes remain possible when a
 placement is the writer, including reporting that it has degraded or gone

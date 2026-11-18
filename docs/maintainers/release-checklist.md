@@ -185,6 +185,20 @@ Complete this section before starting builds or requesting signatures.
   (not below one day) and rings (ending at 256), and every signature verifies.
   An emergency does not waive any other check in this list.
 
+- [ ] **Confirm downstream toolchain coverage.** From the clean source
+  checkout, run:
+
+  ```sh
+  nix-build -A checks.downstream.toolchain-release --no-out-link
+  ```
+
+  **Check when:** the check passes, so every member of the
+  [downstream toolchain set](canonical-releases.md#publish-the-downstream-toolchain-closures)
+  is an eligible public package on both Linux platforms and enters the frozen
+  package matrix. A failure stops the release until the toolchain set, the
+  package's platform support, or the platform deferral is fixed in a reviewed
+  change.
+
 - [ ] **Freeze the plan.** Write the reviewed Linux image decisions for this
   release to a JSON file, then from the clean source checkout run:
 
@@ -313,6 +327,15 @@ so only the channel moves.
   `aos maintain release status` reports the staging destination `complete`. This checks
   delivery; functional testing comes next. Repeat for `staging/stable` when
   planned.
+
+- [ ] **Download the downstream toolchains from staging.** Run
+  [`toolchain-cache-check`](canonical-releases.md#publish-the-downstream-toolchain-closures)
+  with `--realise` and a fresh `--store`, using only the staging surface's
+  cache and its cache public key.
+
+  **Check when:** the command exits zero for both Linux platforms. A
+  derivation that would be built locally means the staging cache lacks part
+  of a toolchain closure; stop the release.
 
 ## 4. Publish to production
 
@@ -515,6 +538,13 @@ Repeat the next two items for **each** ring, keeping separate results:
   verified, and named maintainers have accepted renewal, monitoring, and
   recovery responsibilities. Main also needs its compatibility/support
   obligations recorded.
+
+- [ ] **Download the downstream toolchains from production.** For each
+  production surface the release published, repeat the staging toolchain
+  download with only that surface's cache and public key.
+
+  **Check when:** the command exits zero for both Linux platforms on every
+  production surface. Save its output with the release evidence.
 
 - [ ] **Confirm every destination is complete.** Run:
 

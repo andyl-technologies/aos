@@ -31,7 +31,7 @@ Primary actions express an outcome: add a delivery destination, connect a
 cache, add a replica, or retire infrastructure. Resource inventories remain
 directly accessible. Advanced inspection follows actual resource edges and
 shows ownership, grants, exact generations, configuration digests, and
-controller evidence. It never substitutes category links for live topology.
+controller observations. It never substitutes category links for live topology.
 
 Guided workflows and advanced editors use the same resources, validation,
 authorization, and plan/apply protocol. An advanced edit is immediately part of
@@ -80,8 +80,8 @@ reload can recover the workflow from the authorized surface inventory.
 
 External operations cannot share a transaction with SQLite. Their durable
 state distinguishes pending prerequisites, work in progress, verified work,
-and failures requiring action. An HTTP success alone is not permission,
-ownership, or configuration evidence.
+and failures requiring action. An HTTP success alone does not establish
+permission, ownership, or configuration.
 
 ## Subsequent workflows
 

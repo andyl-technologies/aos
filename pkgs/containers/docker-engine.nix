@@ -68,7 +68,7 @@ in
       role = "public-package";
     };
     pname = "docker-engine";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Dockerd accepts the complete JSON configuration and exits after validation.";

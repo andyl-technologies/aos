@@ -37,7 +37,7 @@ in
       role = "public-package";
     };
     pname = "perl-locale-gettext";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "A catalog domain with no installed translations and a plural count of two.";
         operation = "Bind the domain and resolve singular and plural messages.";

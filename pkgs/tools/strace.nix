@@ -18,7 +18,7 @@ in
       role = "public-package";
     };
     pname = "strace";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Strace records the successful exit_group call.";

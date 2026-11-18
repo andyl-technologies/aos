@@ -17,7 +17,7 @@ in
       role = "public-package";
     };
     pname = "longhorn-instance-manager";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The command describes its supported invocation contract.";

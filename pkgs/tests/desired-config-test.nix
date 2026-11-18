@@ -35,7 +35,7 @@ in
       role = "build-input";
     };
     pname = "desired-config-test";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The package contains its exact desired-config-test marker.";

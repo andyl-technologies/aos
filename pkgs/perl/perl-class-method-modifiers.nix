@@ -32,7 +32,7 @@ in
       role = "public-package";
     };
     pname = "perl-class-method-modifiers";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Class::Method::Modifiers preserves the return value and runs the modifier once.";

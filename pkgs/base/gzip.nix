@@ -24,7 +24,7 @@ in
       role = "public-package";
     };
     pname = "gzip";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The decompressed bytes exactly reproduce the original payload.";

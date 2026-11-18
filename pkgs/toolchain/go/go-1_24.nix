@@ -52,7 +52,7 @@ in
         role = "public-package";
       };
       pname = "go-1_24";
-      qualification.packageProbe = lib.qualification.commandProbe {
+      smokeTest = lib.qualification.commandProbe {
         "primary" = {
           "artifacts" = [];
           "expected" = "The program prints the strings in lexical order.";

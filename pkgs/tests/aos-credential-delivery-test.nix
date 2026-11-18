@@ -55,7 +55,7 @@ in
       role = "build-input";
     };
     pname = "aos-credential-delivery-test";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The consumer is valid Bash and references the declared join-token credential and state files.";

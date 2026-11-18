@@ -26,7 +26,7 @@ mkGoPackage {
     role = "public-package";
   };
   pname = "kubelet";
-  qualification.packageProbe = lib.qualification.commandProbe {
+  smokeTest = lib.qualification.commandProbe {
     "primary" = {
       "artifacts" = [];
       "expected" = "Kubelet returns a Bash function wired to its completion endpoint.";

@@ -15,7 +15,7 @@ in
       role = "public-package";
     };
     pname = "liburcu";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The stack returns the nodes in last-in, first-out order.";

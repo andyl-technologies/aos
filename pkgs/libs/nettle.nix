@@ -17,7 +17,7 @@ in
       role = "public-package";
     };
     pname = "nettle";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The digest matches the standard SHA-256 vector.";

@@ -121,18 +121,18 @@ impl TransportFixture {
         }
     }
 
-    fn journal(&self) -> PathBuf {
-        let journal = self.directory.path().join("journal");
-        fs::create_dir(&journal).unwrap();
-        journal
+    fn state_directory(&self) -> PathBuf {
+        let state_directory = self.directory.path().join("journal");
+        fs::create_dir(&state_directory).unwrap();
+        state_directory
     }
 
-    fn preserve(&mut self, journal: &Path) {
+    fn preserve(&mut self, state_directory: &Path) {
         let old = BTreeSet::from([self.common.clone(), self.old.clone()]);
         let new = BTreeSet::from([self.common.clone(), self.new.clone()]);
         preserve_with(
             &mut self.source,
-            journal,
+            state_directory,
             &[self.old.to_string_lossy().into_owned()],
             &old,
             &new,
@@ -144,9 +144,11 @@ impl TransportFixture {
 #[test]
 fn symmetric_image_delta_restores_both_directions_with_exact_references_and_retry() {
     let mut fixture = TransportFixture::new();
-    let journal = fixture.journal();
-    fixture.preserve(&journal);
-    let manifest = read_manifest(&journal.join(DIRECTORY)).unwrap().unwrap();
+    let state_directory = fixture.state_directory();
+    fixture.preserve(&state_directory);
+    let manifest = read_manifest(&state_directory.join(DIRECTORY))
+        .unwrap()
+        .unwrap();
     assert_eq!(
         manifest.roots,
         BTreeSet::from([fixture.old.clone(), fixture.new.clone()])
@@ -163,8 +165,8 @@ fn symmetric_image_delta_restores_both_directions_with_exact_references_and_retr
             &receiver,
             &BTreeSet::from([fixture.common.clone(), installed.clone()]),
         );
-        restore_with(&mut receiver, &journal).unwrap();
-        restore_with(&mut receiver, &journal).unwrap();
+        restore_with(&mut receiver, &state_directory).unwrap();
+        restore_with(&mut receiver, &state_directory).unwrap();
         let expected = BTreeSet::from([
             fixture.common.clone(),
             fixture.old.clone(),
@@ -209,9 +211,9 @@ fn symmetric_image_delta_restores_both_directions_with_exact_references_and_retr
 #[test]
 fn changed_truncated_or_aliased_capsules_are_refused_without_rewriting_manifest() {
     let mut fixture = TransportFixture::new();
-    let journal = fixture.journal();
-    fixture.preserve(&journal);
-    let directory = journal.join(DIRECTORY);
+    let state_directory = fixture.state_directory();
+    fixture.preserve(&state_directory);
+    let directory = state_directory.join(DIRECTORY);
     let manifest_bytes = fs::read(directory.join(MANIFEST)).unwrap();
     let manifest = read_manifest(&directory).unwrap().unwrap();
     let payload = payload_path(&directory, manifest.payload.as_ref().unwrap()).unwrap();
@@ -225,26 +227,26 @@ fn changed_truncated_or_aliased_capsules_are_refused_without_rewriting_manifest(
     changed[0] ^= 1;
     for bytes in [&changed[..], &original[..original.len() - 1]] {
         fs::write(&payload, bytes).unwrap();
-        assert!(restore_with(&mut receiver, &journal).is_err());
+        assert!(restore_with(&mut receiver, &state_directory).is_err());
         assert_eq!(fs::read(directory.join(MANIFEST)).unwrap(), manifest_bytes);
     }
     fs::remove_file(&payload).unwrap();
     let outside = fixture.directory.path().join("outside-payload");
     fs::write(&outside, &original).unwrap();
     symlink(&outside, &payload).unwrap();
-    assert!(restore_with(&mut receiver, &journal).is_err());
+    assert!(restore_with(&mut receiver, &state_directory).is_err());
     assert_eq!(fs::read(&outside).unwrap(), original);
     fs::remove_file(&payload).unwrap();
     fs::create_dir(&payload).unwrap();
-    assert!(restore_with(&mut receiver, &journal).is_err());
+    assert!(restore_with(&mut receiver, &state_directory).is_err());
 }
 
 #[test]
 fn failed_export_preserves_previous_manifest_and_payload() {
     let mut fixture = TransportFixture::new();
-    let journal = fixture.journal();
-    fixture.preserve(&journal);
-    let directory = journal.join(DIRECTORY);
+    let state_directory = fixture.state_directory();
+    fixture.preserve(&state_directory);
+    let directory = state_directory.join(DIRECTORY);
     let before = fs::read(directory.join(MANIFEST)).unwrap();
     let manifest = read_manifest(&directory).unwrap().unwrap();
     let path = payload_path(&directory, manifest.payload.as_ref().unwrap()).unwrap();
@@ -257,7 +259,7 @@ fn failed_export_preserves_previous_manifest_and_payload() {
     assert!(
         preserve_with(
             &mut empty,
-            &journal,
+            &state_directory,
             &[fixture.old.to_string_lossy().into_owned()],
             &BTreeSet::new(),
             &BTreeSet::new()
@@ -271,20 +273,20 @@ fn failed_export_preserves_previous_manifest_and_payload() {
 #[test]
 fn empty_delta_does_not_dispatch_nix_and_aliases_cannot_own_transport() {
     let directory = tempfile::tempdir().unwrap();
-    let journal = directory.path().join("journal");
-    fs::create_dir(&journal).unwrap();
+    let state_directory = directory.path().join("journal");
+    fs::create_dir(&state_directory).unwrap();
     let mut unavailable = Command::new(directory.path().join("no-executable"));
     preserve_with(
         &mut unavailable,
-        &journal,
+        &state_directory,
         &[],
         &BTreeSet::new(),
         &BTreeSet::new(),
     )
     .unwrap();
-    restore_with(&mut unavailable, &journal).unwrap();
+    restore_with(&mut unavailable, &state_directory).unwrap();
     assert!(
-        read_manifest(&journal.join(DIRECTORY))
+        read_manifest(&state_directory.join(DIRECTORY))
             .unwrap()
             .unwrap()
             .payload
@@ -292,7 +294,7 @@ fn empty_delta_does_not_dispatch_nix_and_aliases_cannot_own_transport() {
     );
 
     let alias = directory.path().join("alias");
-    symlink(&journal, &alias).unwrap();
+    symlink(&state_directory, &alias).unwrap();
     assert!(
         preserve_with(
             &mut unavailable,
@@ -304,17 +306,17 @@ fn empty_delta_does_not_dispatch_nix_and_aliases_cannot_own_transport() {
         .is_err()
     );
     assert!(restore_with(&mut unavailable, &alias).is_err());
-    let manifest = journal.join(DIRECTORY).join(MANIFEST);
+    let manifest = state_directory.join(DIRECTORY).join(MANIFEST);
     let bytes = fs::read(&manifest).unwrap();
     fs::remove_file(&manifest).unwrap();
     let outside = directory.path().join("outside-manifest");
     fs::write(&outside, &bytes).unwrap();
     symlink(&outside, &manifest).unwrap();
-    assert!(restore_with(&mut unavailable, &journal).is_err());
+    assert!(restore_with(&mut unavailable, &state_directory).is_err());
     assert_eq!(fs::read(outside).unwrap(), bytes);
     fs::remove_file(&manifest).unwrap();
     symlink(directory.path().join("missing-manifest"), &manifest).unwrap();
-    assert!(restore_with(&mut unavailable, &journal).is_err());
+    assert!(restore_with(&mut unavailable, &state_directory).is_err());
     assert!(
         fs::symlink_metadata(&manifest)
             .unwrap()
@@ -343,15 +345,15 @@ fn writable_journal_requires_same_inode_and_rejects_foreign_and_alias_paths() {
     let state = root.path().join("aos/journal");
     fs::create_dir_all(&state).unwrap();
     assert_eq!(
-        writable_journal(&state, root.path(), root.path()).unwrap(),
+        writable_state_directory(&state, root.path(), root.path()).unwrap(),
         state
     );
 
     let foreign = tempfile::tempdir().unwrap();
     fs::create_dir_all(foreign.path().join("aos/journal")).unwrap();
-    assert!(writable_journal(&state, root.path(), foreign.path()).is_err());
+    assert!(writable_state_directory(&state, root.path(), foreign.path()).is_err());
     let alias = root.path().join("alias");
     symlink(&state, &alias).unwrap();
-    assert!(writable_journal(&alias, root.path(), root.path()).is_err());
-    assert!(writable_journal(root.path(), root.path(), root.path()).is_err());
+    assert!(writable_state_directory(&alias, root.path(), root.path()).is_err());
+    assert!(writable_state_directory(root.path(), root.path(), root.path()).is_err());
 }

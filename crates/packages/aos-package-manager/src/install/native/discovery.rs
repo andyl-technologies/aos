@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 
-use crate::native_registry::{NativeRegistry, RegistryAdmission};
+use crate::native_registry::{NativeRegistry, VerifiedRegistryRoots};
 use crate::profile::Profile;
 use aos_deployment_format::input::EvaluationInput;
 use aos_deployment_format::inventory::InstalledPackageRecord;
@@ -22,7 +22,7 @@ pub(super) struct RetainedDiscovery {
     pub(super) descriptor: EvaluationInput,
     deployment: Deployment,
     executable: PathBuf,
-    admission: RegistryAdmission,
+    admission: VerifiedRegistryRoots,
 }
 
 /// Carries authenticated catalogs available for subsequent companion discovery.
@@ -67,7 +67,7 @@ impl RetainedDiscovery {
         let committed =
             crate::profile::deployment::committed_generation(&profile.path, generation.number)?;
         let executable = super::packaged_path("AOS_NIX_STORE")?;
-        let admission = RegistryAdmission::new(
+        let admission = VerifiedRegistryRoots::new(
             executable.clone(),
             &profile.path.join("deployment/registry-admissions"),
         )?;

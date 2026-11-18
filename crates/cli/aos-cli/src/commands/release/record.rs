@@ -20,7 +20,7 @@ use aos_release_format::digest::Sha256Digest;
 use aos_release_format::evidence::QualificationReport;
 use aos_release_format::manifest::ManifestEnvelopeV1;
 use aos_release_format::plan::ReleasePlan;
-use aos_release_format::receipt::{QualificationReceipt, verify_signed_receipt_with_key};
+use aos_release_format::receipt::{StagingTestApproval, verify_signed_receipt_with_key};
 use aos_release_format::record::ReleaseRecordV1;
 
 use super::{capture, verify};
@@ -78,7 +78,7 @@ pub(super) fn run(args: &ReleaseRecordArgs, printer: &Printer) -> Result<()> {
     let qualification_bytes =
         capture::control_file(&args.signed_qualification, "signed qualification receipt")?;
     let qualification_keys = key_map(&args.qualification_keys)?;
-    let (qualification_key_id, qualification): (String, QualificationReceipt) =
+    let (qualification_key_id, qualification): (String, StagingTestApproval) =
         verify_signed_receipt_with_key(&qualification_bytes, &qualification_keys)?;
     qualification.validate()?;
     let report_bytes = capture::control_file(&args.qualification_report, "qualification report")?;

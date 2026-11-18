@@ -52,7 +52,7 @@ in
       role = "public-package";
     };
     pname = "nlohmann-json";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The answer field has integer value 42.";

@@ -1,7 +1,7 @@
-"""Renders and converges native network policy with exact file ownership receipts.
+"""Renders and converges native network policy with exact file ownership records.
 
 The image renderer and runtime handler share the same networkd/resolved lowering.
-Receipts retain both sides of an interrupted update before any managed file changes.
+Ownership records retain both sides of an interrupted update before any managed file changes.
 """
 
 import argparse
@@ -251,22 +251,22 @@ def link_at(path):
     return None
 
 
-def checked(receipt):
-    current = receipt["desired"]["files"]
-    previous = receipt.get("previous") or {}
+def checked(owned_state):
+    current = owned_state["desired"]["files"]
+    previous = owned_state.get("previous") or {}
     old = previous.get("files", {})
-    links = receipt["desired"].get("symlinks", {})
+    links = owned_state["desired"].get("symlinks", {})
     old_links = previous.get("symlinks", {})
     complete = True
     for path in current.keys() | old.keys() | links.keys() | old_links.keys():
         target = Path("/") / path
         link = link_at(target)
         if link is not None:
-            require(link in (links.get(path), old_links.get(path)), "managed resolver link changed outside its receipt")
+            require(link in (links.get(path), old_links.get(path)), "managed resolver link changed outside its ownership record")
             complete = complete and link == links.get(path)
         else:
             content = read(target)
-            require(content is None or content in (current.get(path), old.get(path)), "managed network file changed outside its receipt")
+            require(content is None or content in (current.get(path), old.get(path)), "managed network file changed outside its ownership record")
             complete = complete and content == current.get(path) and path not in links
     return complete
 
@@ -318,12 +318,12 @@ def converge(args, invocation):
     lock = os.open(STATE / ".lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     try:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        receipt_path = STATE / (hashlib.sha256(invocation["id"].encode()).hexdigest() + ".json")
-        previous_text = read(receipt_path)
-        receipt = json.loads(previous_text) if previous_text else None
-        if receipt:
-            require(receipt["owner"] == invocation["id"], "network receipt owner mismatch")
-            complete = checked(receipt)
+        owned_state_path = STATE / (hashlib.sha256(invocation["id"].encode()).hexdigest() + ".json")
+        previous_text = read(owned_state_path)
+        owned_state = json.loads(previous_text) if previous_text else None
+        if owned_state:
+            require(owned_state["owner"] == invocation["id"], "network ownership record owner mismatch")
+            complete = checked(owned_state)
         else:
             # The verified image may have seeded exactly the same policy.
             # Adoption cannot replace a differing administrator-owned file.
@@ -334,22 +334,22 @@ def converge(args, invocation):
                 require(actual == target or (actual is None and read(Path("/") / path) is None), "unowned resolver path exists")
             complete = False
         if action == "observe":
-            if receipt is None and invocation["action"] == "remove":
+            if owned_state is None and invocation["action"] == "remove":
                 return {"status": "absent"}
-            if receipt and complete and receipt["complete"] and receipt["desired"] == desired and invocation["action"] == "apply":
+            if owned_state and complete and owned_state["complete"] and owned_state["desired"] == desired and invocation["action"] == "apply":
                 command([args.systemctl, "is-active", "--quiet", "systemd-networkd.service"])
                 if desired["resolved"]:
                     command([args.systemctl, "is-active", "--quiet", "systemd-resolved.service"])
                 return {"status": "current", "outputs": {"resource": "systemd-networkd.service"}}
             return {"status": "retry-safe"}
         if action == "remove":
-            if receipt:
+            if owned_state:
                 if not bootstrap:
                     command([args.systemctl, "stop", "systemd-networkd.service", "systemd-networkd.socket"])
-                if receipt["desired"]["resolved"] or (receipt.get("previous") or {}).get("resolved"):
+                if owned_state["desired"]["resolved"] or (owned_state.get("previous") or {}).get("resolved"):
                     command([args.systemctl, "stop", "systemd-resolved.service"])
-                paths = receipt["desired"]["files"].keys() | (receipt.get("previous") or {}).get("files", {}).keys()
-                paths |= receipt["desired"].get("symlinks", {}).keys() | (receipt.get("previous") or {}).get("symlinks", {}).keys()
+                paths = owned_state["desired"]["files"].keys() | (owned_state.get("previous") or {}).get("files", {}).keys()
+                paths |= owned_state["desired"].get("symlinks", {}).keys() | (owned_state.get("previous") or {}).get("symlinks", {}).keys()
                 for path in paths:
                     target = Path("/") / path
                     if link_at(target) is not None or read(target) is not None:
@@ -357,15 +357,15 @@ def converge(args, invocation):
                 command([args.systemctl, "daemon-reload"])
                 if bootstrap:
                     command([args.systemctl, "reload-or-restart", "systemd-networkd.service"])
-                receipt_path.unlink()
+                owned_state_path.unlink()
             return {}
-        if receipt and receipt["desired"] != desired:
-            require(receipt["complete"] and receipt.get("previous") is None, "finish interrupted networking update before changing policy")
-            receipt = {"owner": invocation["id"], "desired": desired, "previous": receipt["desired"], "complete": False}
-        if receipt is None:
-            receipt = {"owner": invocation["id"], "desired": desired, "previous": None, "complete": False}
-        write(receipt_path, json.dumps(receipt, sort_keys=True), 0o600)
-        old = receipt.get("previous") or {}
+        if owned_state and owned_state["desired"] != desired:
+            require(owned_state["complete"] and owned_state.get("previous") is None, "finish interrupted networking update before changing policy")
+            owned_state = {"owner": invocation["id"], "desired": desired, "previous": owned_state["desired"], "complete": False}
+        if owned_state is None:
+            owned_state = {"owner": invocation["id"], "desired": desired, "previous": None, "complete": False}
+        write(owned_state_path, json.dumps(owned_state, sort_keys=True), 0o600)
+        old = owned_state.get("previous") or {}
         if old.get("resolved") and not desired["resolved"]:
             command([args.systemctl, "stop", "systemd-resolved.service"])
         for path in old.get("symlinks", {}):
@@ -390,9 +390,9 @@ def converge(args, invocation):
         command([args.systemctl, "reload-or-restart", "systemd-networkd.service"])
         if desired["resolved"]:
             command([args.systemctl, "restart", "systemd-resolved.service"])
-        receipt["previous"] = None
-        receipt["complete"] = True
-        write(receipt_path, json.dumps(receipt, sort_keys=True), 0o600)
+        owned_state["previous"] = None
+        owned_state["complete"] = True
+        write(owned_state_path, json.dumps(owned_state, sort_keys=True), 0o600)
         return {"resource": "systemd-networkd.service"}
     finally:
         os.close(lock)

@@ -389,7 +389,7 @@ dependencies, expected content hash/ETag and inventory generation, attempt
 count, next retry, and terminal result. Retries use bounded exponential backoff
 with jitter. Backend not-found is success only when the expected object version
 has not been republished; an ETag or generation mismatch is stale, not deleted.
-A failed deletion retains evidence that bytes may exist. Administrative
+A failed deletion keeps a record that bytes may exist. Administrative
 abandonment records leaked bytes and permits tombstone lifecycle completion,
 but never reports them as reclaimed. Database state must not claim storage was
 freed until the backend confirms it.
@@ -495,10 +495,10 @@ support for the action's exact placement without requiring that placement to be
 the reconciled writer. It never falls back from conditional deletion to an
 unconditional ordinary delete.
 
-Each attempt has a durable request/response receipt. Claiming a job and writing
+Each attempt has a durable request/response record. Claiming a job and writing
 its deterministic backend request are atomic. The backend response is persisted
 before presence, byte accounting, or operation state can change; applying that
-response finalizes the receipt and job in one checked batch. A controller crash
+response finalizes the record and job in one checked batch. A controller crash
 at either boundary resumes the same request, and an already-absent object is the
 idempotent successful response to a delete that reached the backend before its
 response was recorded.
@@ -623,7 +623,7 @@ becomes `completed_uncovered` and continues to fence topology. Only an index
 pass that read the ticket's exact placement, started after the uncertain write,
 and completed successfully may release that fence. Private registries are
 indexed on the same production schedule as public registries because serving
-visibility does not weaken retention or GC evidence.
+visibility does not weaken retention or GC observations.
 
 Promotion, confirmation, and removal of write authority all reject while the
 surface has an active or completed-uncovered write ticket. Native filesystem

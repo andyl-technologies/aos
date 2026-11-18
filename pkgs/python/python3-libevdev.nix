@@ -51,7 +51,7 @@ in
       role = "public-package";
     };
     pname = "python3-libevdev";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "An in-memory input device with one enabled key.";
         operation = "Use the installed Python binding to configure and inspect the device.";

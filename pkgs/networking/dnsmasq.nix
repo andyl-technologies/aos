@@ -39,7 +39,7 @@ in
       role = "public-package";
     };
     pname = "dnsmasq";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Dnsmasq accepts the configuration without starting a daemon.";

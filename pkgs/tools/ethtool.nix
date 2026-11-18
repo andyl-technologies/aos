@@ -17,7 +17,7 @@ in
       role = "public-package";
     };
     pname = "ethtool";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Ethtool identifies itself and returns success.";

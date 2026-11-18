@@ -18,7 +18,7 @@ in
       role = "public-package";
     };
     pname = "python3-mako";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The rendered output is the exact string answer=42.";

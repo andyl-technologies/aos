@@ -32,7 +32,7 @@ use aos_release_format::digest::Sha256Digest;
 use aos_release_format::plan::{PlannedSurface, ReleasePlan, SurfaceKind, SurfaceRole};
 use aos_release_format::receipt::{
     ChannelReceipt, PUBLICATION_RECEIPT, PublicationReceipt, RECEIPT_SIGNATURE_DOMAIN,
-    SIGNED_RECEIPT, SignedReceiptEnvelope, verify_signed_receipt_with_key,
+    SIGNED_RECEIPT, SignedEnvelope, verify_signed_receipt_with_key,
 };
 use aos_release_format::signing::{
     SIGNING_REQUEST_DOMAIN, SignatureAlgorithm, SignerRole, SigningContext, SigningOperation,
@@ -225,7 +225,7 @@ impl StaticSurface {
                 &key.verification_identity,
             )
             .await?;
-        let envelope = SignedReceiptEnvelope {
+        let envelope = SignedEnvelope {
             schema_version: SIGNED_RECEIPT.to_owned(),
             key_id: key.key.key_id.clone(),
             payload: serde_json::to_value(receipt)?,

@@ -1,4 +1,4 @@
-//! Renders early package slices and checks their initial immutable image custody.
+//! Renders early package slices and checks image aliases adopted from the initial image.
 
 use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
@@ -12,9 +12,10 @@ use serde::{Deserialize, Serialize};
 use super::{ResourceGroup, resource_group_name, scalar};
 use crate::resource_effects::{digest, normalized_path, read_regular, reject_symlink_ancestors};
 
+/// Records an image-provided unit alias adopted before its first replacement.
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct ImageCustody {
+pub(super) struct AdoptedImageAlias {
     target: PathBuf,
     seed_digest: String,
 }
@@ -136,7 +137,7 @@ pub(super) fn initial_at(
     path: &Path,
     input: &ResourceGroup,
     read: impl Fn(&Path) -> Result<Vec<u8>>,
-) -> Result<Option<ImageCustody>> {
+) -> Result<Option<AdoptedImageAlias>> {
     reject_symlink_ancestors(path)?;
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
@@ -157,24 +158,24 @@ pub(super) fn initial_at(
         read(&target)? == seed.as_bytes(),
         "image group seed differs from selected policy"
     );
-    Ok(Some(ImageCustody {
+    Ok(Some(AdoptedImageAlias {
         target,
         seed_digest: digest(seed.as_bytes()),
     }))
 }
 
-/// Checks pending custody without granting authority to any replacement path.
+/// Checks a pending adopted alias without granting authority to any replacement path.
 pub(super) fn alias_at(
     path: &Path,
-    custody: &ImageCustody,
+    alias: &AdoptedImageAlias,
     seed: &str,
     desired: &str,
     read: impl Fn(&Path) -> Result<Vec<u8>>,
 ) -> Result<bool> {
     reject_symlink_ancestors(path)?;
-    canonical_member(&custody.target)?;
+    canonical_member(&alias.target)?;
     ensure!(
-        custody.seed_digest == digest(seed.as_bytes()),
+        alias.seed_digest == digest(seed.as_bytes()),
         "pending image group seed differs"
     );
     match fs::symlink_metadata(path) {
@@ -182,11 +183,11 @@ pub(super) fn alias_at(
         Err(error) => Err(error.into()),
         Ok(metadata) if metadata.file_type().is_symlink() => {
             ensure!(
-                fs::read_link(path)? == custody.target,
+                fs::read_link(path)? == alias.target,
                 "pending image group alias was replaced"
             );
             ensure!(
-                read(&custody.target)? == seed.as_bytes(),
+                read(&alias.target)? == seed.as_bytes(),
                 "pending image group member changed"
             );
             Ok(true)
@@ -258,10 +259,10 @@ mod tests {
             Ok(seed.as_bytes().to_vec())
         };
 
-        let custody = initial_at(&path, &input(true), read).unwrap().unwrap();
+        let alias = initial_at(&path, &input(true), read).unwrap().unwrap();
 
-        assert_eq!(custody.target, target());
-        assert_eq!(custody.seed_digest, digest(seed.as_bytes()));
+        assert_eq!(alias.target, target());
+        assert_eq!(alias.seed_digest, digest(seed.as_bytes()));
         assert!(initial_at(&path, &input(false), read).is_err());
         assert!(initial_at(&path, &input(true), |_| Ok(b"foreign seed".to_vec())).is_err());
         for foreign in [
@@ -284,9 +285,9 @@ mod tests {
         std::os::unix::fs::symlink(target(), &path).unwrap();
         let seed = seed_text(&input(true)).unwrap();
         let read = |_: &Path| Ok(seed.as_bytes().to_vec());
-        let custody = initial_at(&path, &input(true), read).unwrap().unwrap();
-        let bytes = serde_json::to_vec(&custody).unwrap();
-        let retained: ImageCustody = serde_json::from_slice(&bytes).unwrap();
+        let alias = initial_at(&path, &input(true), read).unwrap().unwrap();
+        let bytes = serde_json::to_vec(&alias).unwrap();
+        let retained: AdoptedImageAlias = serde_json::from_slice(&bytes).unwrap();
         let desired = "[Unit]\nDescription=owned\nDocumentation=file:revision\n\n[Slice]\n";
 
         assert!(alias_at(&path, &retained, &seed, desired, read).unwrap());
@@ -305,7 +306,7 @@ mod tests {
         .unwrap();
         assert!(alias_at(&path, &retained, &seed, desired, read).is_err());
         assert_eq!(serde_json::to_vec(&retained).unwrap(), bytes);
-        // Completed receipts use the normal regular-file reader, never custody.
+        // Completed ownership records use the normal regular-file reader, never adopted aliases.
         assert!(read_regular(&path, 262_144).is_err());
     }
 

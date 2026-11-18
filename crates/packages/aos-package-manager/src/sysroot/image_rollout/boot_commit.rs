@@ -79,9 +79,9 @@ fn parse_command(arguments: &[String]) -> Result<BootCommand> {
             "--require-attestation-quote" if !require_attestation_quote => {
                 require_attestation_quote = true
             }
-            "--image-evidence-executable" if executable.is_none() => {
+            "--boot-measurements-executable" if executable.is_none() => {
                 executable = Some(PathBuf::from(
-                    remaining.next().context("evidence executable is missing")?,
+                    remaining.next().context("boot measurements executable is missing")?,
                 ));
             }
             "--pcr-public-key" if key.is_none() => {

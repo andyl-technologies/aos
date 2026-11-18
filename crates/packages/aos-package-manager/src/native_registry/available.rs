@@ -11,7 +11,7 @@ use anyhow::{Context, Result, ensure};
 use aos_core::Sha256Digest;
 use serde::{Deserialize, Serialize};
 
-use super::{Evidence, RegistryAdmission};
+use super::{RootIdentity, VerifiedRegistryRoots};
 use aos_deployment::store::temp_roots::TemporaryRoots;
 use aos_registry_client::registry::store::{StoreMap, TrustContext, parse_entry, serialize_entry};
 use aos_registry_client::registry::{Registry, ReleaseTrustReceipt, store_path_hash};
@@ -61,7 +61,7 @@ impl AvailableCatalog {
     }
 }
 
-impl RegistryAdmission {
+impl VerifiedRegistryRoots {
     pub(super) fn load_available(&mut self, directory: &Path) -> Result<()> {
         let entries = match std::fs::read_dir(directory) {
             Ok(entries) => entries,
@@ -157,7 +157,7 @@ impl RegistryAdmission {
     /// # Errors
     /// Returns an error for an invalid retained image receipt or release graph.
     pub(crate) fn has_output_authority(&self, root: &str) -> Result<bool> {
-        if self.evidence.contains_key(root) || self.image.receipt_for(root)?.is_some() {
+        if self.identities.contains_key(root) || self.image.receipt_for(root)?.is_some() {
             return Ok(true);
         }
         for catalog in self
@@ -184,7 +184,7 @@ impl RegistryAdmission {
         cancellation: &aos_activation::adapter::CancellationToken,
     ) -> Result<()> {
         for root in aos_deployment::retention::generation_roots(deployment) {
-            if self.evidence.contains_key(root) || self.image.receipt_for(root)?.is_some() {
+            if self.identities.contains_key(root) || self.image.receipt_for(root)?.is_some() {
                 self.admit_input(root)?;
                 continue;
             }
@@ -253,7 +253,7 @@ async fn realize(
     temporary_roots: &mut TemporaryRoots,
     cancellation: &aos_activation::adapter::CancellationToken,
     executable: &Path,
-) -> Result<BTreeMap<String, Evidence>> {
+) -> Result<BTreeMap<String, RootIdentity>> {
     let transport = config
         .enabled_registries()
         .into_iter()
@@ -344,7 +344,7 @@ async fn realize(
         )?;
         evidence.insert(
             result.store_path.clone(),
-            Evidence {
+            RootIdentity {
                 nar_hash,
                 nar_size,
                 references,

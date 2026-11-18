@@ -16,7 +16,7 @@ in
       role = "public-package";
     };
     pname = "unzip";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Unzip emits the member bytes exactly.";

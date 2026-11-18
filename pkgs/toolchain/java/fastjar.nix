@@ -19,7 +19,7 @@ in
       role = "public-package";
     };
     pname = "fastjar";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Fastjar reports the manifest and exact payload member.";

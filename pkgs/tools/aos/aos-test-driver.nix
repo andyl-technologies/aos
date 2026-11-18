@@ -51,7 +51,7 @@ mkDerivation {
     role = "public-package";
   };
   pname = "aos-test-driver";
-  qualification.packageProbe = lib.qualification.commandProbe {
+  smokeTest = lib.qualification.commandProbe {
     "primary" = {
       "artifacts" = [];
       "expected" = "The driver returns success and documents manifest and test inputs.";

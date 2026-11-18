@@ -44,7 +44,7 @@ in
       role = "public-package";
     };
     pname = "graphviz";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "A directed graph containing source and target nodes.";
         operation = "Render the graph to SVG with the installed dot engine.";
