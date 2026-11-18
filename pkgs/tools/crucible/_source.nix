@@ -53,6 +53,8 @@ in
         || pathString == "${repoRootString}/modules/base/build.nix"
         || pathString == "${repoRootString}/modules/profiles"
         || pathString == "${repoRootString}/modules/profiles/ability-crucible.nix"
+        || pathString == "${repoRootString}/systems"
+        || pathString == "${repoRootString}/systems/_kernel.nix"
         || pathString == "${repoRootString}/tests"
         || lib.hasPrefix "${repoRootString}/tests/crucible" pathString
       );
