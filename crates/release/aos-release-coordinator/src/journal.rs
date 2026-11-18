@@ -65,7 +65,7 @@ impl Journal {
     pub fn contains_evidence(&self, evidence: Sha256Digest) -> bool {
         self.entries
             .iter()
-            .any(|entry| entry.evidence.contains(&evidence))
+            .any(|entry| entry.attachments.contains(&evidence))
     }
 }
 
@@ -114,7 +114,7 @@ pub fn append(entries: &[JournalEntry], transition: Transition<'_>) -> Result<Ve
         new_state: transition.new_state,
         destination: transition.destination.map(str::to_owned),
         operation_ids: transition.operation_ids,
-        evidence,
+        attachments: evidence,
         recorded_at: transition.recorded_at,
     };
     let mut complete = entries.to_vec();
@@ -217,7 +217,7 @@ mod tests {
             new_state: ReleaseState::Planned,
             destination: None,
             operation_ids: Vec::new(),
-            evidence: Vec::new(),
+            attachments: Vec::new(),
             recorded_at: "2026-09-03T00:00:00Z".to_owned(),
         }
     }

@@ -71,7 +71,7 @@ in
       role = "public-package";
     };
     pname = "aos-cryptsetup-provider";
-    qualification.packageProbe = lib.qualification.providerExecutableProbe {
+    smokeTest = lib.qualification.providerExecutableProbe {
       name = "aos-cryptsetup-provider";
       entryPoint = "bin/aos-cryptsetup-provider";
     };

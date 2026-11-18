@@ -1,4 +1,4 @@
-//! Public release evidence and target qualification results.
+//! Public release test results and qualification reports.
 
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
@@ -73,7 +73,7 @@ pub struct QualificationExecutorRequest {
     /// Exact request schema identifier.
     pub schema_version: String,
     /// Applicable shared-contract execution case.
-    pub qualification_case: crate::qualification_evidence::QualificationCase,
+    pub qualification_case: crate::release_tests::ReleaseTest,
     /// Canonical registry identity.
     pub registry: String,
     /// Immutable release identity.
@@ -256,28 +256,30 @@ pub struct QualificationExecutorResponse {
     /// Digest of the exact canonical request read by the executor.
     pub request_digest: Sha256Digest,
     /// Closed public evidence record derived by the executor.
-    pub evidence: EvidenceRecord,
+    pub evidence: TestResult,
     /// Public machine-readable gate report retained by the coordinator.
     pub report: serde_json::Value,
 }
 
-/// Closed result of a release gate.
+/// Whether a release test passed.
+///
+/// Serialized as `"passed"` or `"failed"`.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum GateResult {
+pub enum Outcome {
     /// The selected policy passed.
     Passed,
     /// The selected policy failed and blocks the relevant transition.
     Failed,
 }
 
-/// Public, non-sensitive result of one versioned release gate.
+/// Public result of one release test against a versioned policy.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct EvidenceRecord {
+pub struct TestResult {
     /// Structured observations for shared-contract evidence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub qualification: Option<crate::qualification_evidence::QualificationObservation>,
+    pub qualification: Option<crate::release_tests::QualificationObservation>,
     /// Stable evidence identity unique within the release.
     pub id: String,
     /// Versioned gate or qualification policy identifier.
@@ -289,7 +291,7 @@ pub struct EvidenceRecord {
     /// Artifact identities covered by the result.
     pub subjects: Vec<String>,
     /// Closed gate result.
-    pub result: GateResult,
+    pub result: Outcome,
     /// Digest of the public report file in the release bundle.
     pub report_digest: Sha256Digest,
     /// Public executor or authority identity.
@@ -302,7 +304,7 @@ pub struct EvidenceRecord {
     pub finished_at: String,
 }
 
-impl EvidenceRecord {
+impl TestResult {
     /// Validates stable identifiers and nonempty subject/time fields.
     ///
     /// # Errors
@@ -353,7 +355,7 @@ pub struct QualificationReport {
     /// Final release-manifest payload digest.
     pub manifest_digest: Sha256Digest,
     /// Public executor records in stable evidence-id order.
-    pub evidence: Vec<EvidenceRecord>,
+    pub evidence: Vec<TestResult>,
 }
 
 impl QualificationReport {
@@ -387,7 +389,7 @@ impl QualificationReport {
             bail!("report admission time is in the future");
         }
 
-        let derived = crate::qualification_evidence::assess_observations(
+        let derived = crate::release_tests::assess_observations(
             plan,
             manifest,
             Some(destination),
@@ -399,7 +401,7 @@ impl QualificationReport {
         if self.claims != derived {
             bail!("reported assurance differs from independently validated evidence");
         }
-        crate::qualification_evidence::validate_observations(
+        crate::release_tests::validate_observations(
             plan,
             manifest,
             Some(destination),
@@ -456,7 +458,7 @@ pub struct GateRequirement {
 mod tests {
     use super::*;
     use crate::qualification::{QualificationMethod, QualificationPhase};
-    use crate::qualification_evidence::QualificationCase;
+    use crate::release_tests::ReleaseTest;
 
     fn digest(label: &str) -> Sha256Digest {
         Sha256Digest::of_bytes(label.as_bytes())
@@ -466,8 +468,8 @@ mod tests {
     fn executor_request_closes_public_objects_and_subjects() {
         let subjects = vec!["package/example/aarch64-darwin".to_owned()];
         let request = QualificationExecutorRequest {
-            qualification_case: QualificationCase {
-                schema_version: crate::qualification_evidence::QUALIFICATION_CASE.to_owned(),
+            qualification_case: ReleaseTest {
+                schema_version: crate::release_tests::QUALIFICATION_CASE.to_owned(),
                 claim: None,
                 measurements: std::collections::BTreeMap::new(),
                 minimum_observed_seconds: None,

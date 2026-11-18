@@ -34,7 +34,7 @@ in
       role = "public-package";
     };
     pname = "lcms2";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "A generated sRGB ICC profile and one RGB pixel.";
         operation = "Serialize and reload the profile, then transform the pixel between matching profiles.";

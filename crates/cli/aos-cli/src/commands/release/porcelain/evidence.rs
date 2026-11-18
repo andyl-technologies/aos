@@ -20,7 +20,7 @@ use anyhow::{Result, bail};
 use aos_release_format::canonical;
 use aos_release_format::digest::Sha256Digest;
 use aos_release_format::receipt::{
-    RECEIPT_SIGNATURE_DOMAIN, SIGNED_RECEIPT, SignedReceiptEnvelope, verify_signed_receipt_with_key,
+    RECEIPT_SIGNATURE_DOMAIN, SIGNED_RECEIPT, SignedEnvelope, verify_signed_receipt_with_key,
 };
 use aos_release_format::signing::{
     SIGNING_REQUEST_DOMAIN, SignatureAlgorithm, SignerRole, SigningContext, SigningOperation,
@@ -98,7 +98,7 @@ pub(super) async fn sign<T: Serialize>(
         )
         .await?;
 
-    let envelope = SignedReceiptEnvelope {
+    let envelope = SignedEnvelope {
         schema_version: SIGNED_RECEIPT.to_owned(),
         key_id: key.key_id.clone(),
         payload: serde_json::to_value(payload)?,

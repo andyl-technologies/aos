@@ -44,7 +44,7 @@ in
       role = "public-package";
     };
     pname = "crucible-fleet-store";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The probe reports the SharedDagStore backend and location-independent identity.";

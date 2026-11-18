@@ -15,7 +15,7 @@ in
       role = "public-package";
     };
     pname = "ca-certificates";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "OpenSSL accepts the complete PEM stream and loads multiple trust anchors.";

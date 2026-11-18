@@ -220,6 +220,21 @@
       if externalFinalization
       then null
       else imageBuild.artifacts.recoveryBundle;
+    # Only the installer-media evaluation of a system builds media; its own
+    # initrd is the installer initrd, and the release image comes from the
+    # original evaluation.
+    installerMedia = let
+      installer = config.aos.image.installer;
+    in
+      if installer.media && !externalFinalization
+      then
+        import ./_installer-media.nix {
+          pkgs = imagePackages;
+          inherit config kernel lib name targetPlatform;
+          releaseImage = installer.releaseImage;
+          hostConfiguration = installer.hostConfiguration;
+        }
+      else null;
   };
 
   authoredPlatform = {

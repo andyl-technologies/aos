@@ -456,6 +456,13 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
           # `environment.etc`) can overlay a fragment without rebuilding the
           # module list. Retains this variant's native stage sources.
           inherit (evaluated) extendModules;
+          # Installer media for writing to a USB stick; pass hostConfiguration
+          # to place a host.nix on its AOS-META partition.
+          installerMedia = {hostConfiguration ? null}:
+            lib.build.installerMedia {
+              system = evaluated;
+              inherit hostConfiguration;
+            };
           build = {
             toplevel = evaluated.config.system.build.toplevel;
             kernel = evaluated.config.system.build.kernel;
@@ -515,55 +522,6 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     })
     pkgs.platformSupport.platforms
   );
-  qualificationPackageNames =
-    pkgs.platformSupport.publicationEligibleNamesAny pkgs.allPackageNames;
-  # Native probes belong to package artifacts, so coverage follows the same
-  # documents consumed by the package executor instead of a second registry.
-  hasNativeQualificationProbe = name: let
-    package = pkgs.${name};
-    document = package.qualificationDocument or null;
-  in
-    document
-    != null
-    && package ? qualificationArtifact
-    && document.schema == "aos.package.qualification"
-    && document ? probe;
-  qualificationPackageCoverageFor = packageNames: let
-    implementedPackages = builtins.filter hasNativeQualificationProbe packageNames;
-    missingPackages = builtins.filter (name: !(builtins.elem name implementedPackages)) packageNames;
-  in {
-    complete = missingPackages == [];
-    implemented = builtins.length implementedPackages;
-    total = builtins.length packageNames;
-    inherit implementedPackages missingPackages;
-  };
-  qualificationPackageCoverageReport =
-    qualificationPackageCoverageFor qualificationPackageNames
-    // {
-      schema_version = "aos.release.package-probe-coverage/v1";
-      platforms = lib.mapAttrs (_: names: qualificationPackageCoverageFor names) qualificationPackageNamesByPlatform;
-      neverPublicationEligiblePackages =
-        builtins.filter (
-          name: !(builtins.elem name qualificationPackageNames)
-        )
-        pkgs.allPackageNames;
-    };
-  qualificationCoveragePartitionMatches = names: coverage:
-    coverage.total
-    == builtins.length names
-    && coverage.implemented == builtins.length coverage.implementedPackages
-    && coverage.total == coverage.implemented + builtins.length coverage.missingPackages
-    && builtins.sort builtins.lessThan (coverage.implementedPackages ++ coverage.missingPackages) == names;
-  qualificationPackageCoverageCheck = assert qualificationCoveragePartitionMatches qualificationPackageNames qualificationPackageCoverageReport;
-  assert builtins.all (platform:
-    qualificationCoveragePartitionMatches qualificationPackageNamesByPlatform.${platform} qualificationPackageCoverageReport.platforms.${platform})
-  pkgs.platformSupport.platforms;
-  assert builtins.all (name: !(builtins.elem name qualificationPackageNames)) qualificationPackageCoverageReport.neverPublicationEligiblePackages;
-    pkgs.writeTextFile {
-      name = "aos-qualification-package-probe-coverage";
-      destination = "/package-probe-coverage.json";
-      text = builtins.toJSON qualificationPackageCoverageReport;
-    };
   nativeAdapterMatrix = import ./qualification/modules/_native-adapter-matrix.nix {
     inherit lib;
     projection = serverSystemState.qualificationProjection;
@@ -1611,6 +1569,12 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     };
 in rec {
   inherit lib pkgs stdenv buildStdenv buildPackages modules mkSystem mkAbilityQualificationProjection containerImages containerDefinitions releaseQualificationExecutor releaseTooling allPackages;
+
+  # The versioned builder contract for downstream flakes. The flake exports it
+  # per system as `lib.<system>`; docs/engineering/downstream/flake-api.md
+  # documents every name.
+  downstreamLib = import ./lib/downstream-api.nix {inherit pkgs;};
+
   # nix-build does not descend through arbitrary nested check attrsets. An
   # explicit list reaches every gate while stopping at derivations, whose
   # passthru attributes are metadata rather than additional checks.
@@ -1620,7 +1584,6 @@ in rec {
       systems = lib.mapAttrs (_: system: system.checks) discoverSystems;
     }
   );
-  packageQualificationCoverage = qualificationPackageCoverageReport;
 
   # Pure, fail-closed release eligibility data. The release coordinator reads
   # this value with strict JSON evaluation before resolving any derivation.
@@ -1711,19 +1674,10 @@ in rec {
       ];
     };
     image-assertions = import ./lib/testing/image-assertions.nix {inherit pkgs lib;};
-    qualification = let
-      nativeChecks = import ./tests/qualification {
-        inherit pkgs lib build fleet container nativeAdapterMatrix nativeOperationSpec;
-        inherit releaseQualificationScenarios releaseQualificationCaseScenarios;
-      };
-    in
-      nativeChecks
-      // {
-        package-probe-coverage = qualificationPackageCoverageCheck;
-        all = nativeChecks.all.overrideAttrs (previous: {
-          buildDeps = previous.buildDeps ++ [qualificationPackageCoverageCheck];
-        });
-      };
+    qualification = import ./tests/qualification {
+      inherit pkgs lib build fleet container nativeAdapterMatrix nativeOperationSpec;
+      inherit releaseQualificationScenarios releaseQualificationCaseScenarios;
+    };
     rust = {
       cargo-artifacts = import ./tests/cargo-artifacts {inherit pkgs;};
       aos = pkgs.aos.passthru.tests;
@@ -1754,6 +1708,17 @@ in rec {
       ];
     };
     package-maintenance = import ./tests/packages/maintenance.nix {inherit pkgs lib;};
+    # The flake exports `downstreamLib` as `lib.<system>` and `pkgs` as
+    # `legacyPackages.<system>`; the checks receive the same values in that
+    # shape without evaluating the flake.
+    downstream = import ./tests/downstream {
+      inherit pkgs lib;
+      system = hostPlatform.system;
+      aos = {
+        lib.${hostPlatform.system} = downstreamLib;
+        legacyPackages.${hostPlatform.system} = pkgs;
+      };
+    };
     # The core remains a quick authoring gate. The public eval aggregate below
     # also reaches native policy, provider, stage and provenance coverage.
     eval-core = pkgs.mkDerivation {
@@ -1784,6 +1749,10 @@ in rec {
       abilities-system-packages = ability-suites.system-packages;
       effects = effects;
       baseline-policy = import ./tests/abilities/baseline-policy.nix {inherit pkgs lib;};
+      downstream-api = downstream.api-docs;
+      downstream-fixture = downstream.fixture-eval;
+      downstream-toolchain-release = downstream.toolchain-release;
+      downstream-toolchain-cache-check = downstream.toolchain-cache-check;
       config-provenance = configProvenanceChecks.suites;
       rendered-evaluation = builtins.removeAttrs renderedEvalSuites ["rendered-system"];
     };

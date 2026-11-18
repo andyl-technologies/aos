@@ -32,7 +32,7 @@ in
       role = "public-package";
     };
     pname = "xxhash";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "The three-byte message abc.";
         operation = "Hash the message from standard input with XXH64.";

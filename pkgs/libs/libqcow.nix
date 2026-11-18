@@ -19,7 +19,7 @@ in
       role = "public-package";
     };
     pname = "libqcow";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Libqcow reports its package version and returns a usable handle.";

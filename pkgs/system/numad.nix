@@ -15,7 +15,7 @@ in
       role = "public-package";
     };
     pname = "numad";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Numad documents its interval, logging, and process-placement options.";

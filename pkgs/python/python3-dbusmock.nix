@@ -18,7 +18,7 @@ in
       role = "public-package";
     };
     pname = "python3-dbusmock";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The private daemon accepts a connection and owns the standard D-Bus service name.";

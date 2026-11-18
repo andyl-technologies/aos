@@ -4,7 +4,7 @@ use base64::Engine as _;
 use ed25519_dalek::{Signer as _, SigningKey};
 
 use super::*;
-use crate::receipt::{RECEIPT_SIGNATURE_DOMAIN, SIGNED_RECEIPT, SignedReceiptEnvelope};
+use crate::receipt::{RECEIPT_SIGNATURE_DOMAIN, SIGNED_RECEIPT, SignedEnvelope};
 use crate::verify::tests::{STABLE, qualification_fixture, release_fixture};
 
 const PERFORMED: &str = "2026-09-01T00:00:00Z";
@@ -19,7 +19,7 @@ fn report(kind: &FitnessKind) -> FitnessReport {
             .map(|check| {
                 (
                     check.clone(),
-                    CheckObservation {
+                    CheckResult {
                         passed: true,
                         detail: "exercised".into(),
                     },
@@ -180,7 +180,7 @@ fn attestations_require_exact_passing_checks_and_planned_signers() -> anyhow::Re
     let payload = crate::canonical::to_vec(&attestation)?;
     let signature = SigningKey::from_bytes(&[7_u8; 32])
         .sign(Sha256Digest::separated(RECEIPT_SIGNATURE_DOMAIN, &payload).as_bytes());
-    let envelope = crate::canonical::to_vec(&SignedReceiptEnvelope {
+    let envelope = crate::canonical::to_vec(&SignedEnvelope {
         schema_version: SIGNED_RECEIPT.into(),
         key_id: fixture.key.key_id.clone(),
         payload: serde_json::from_slice(&payload)?,

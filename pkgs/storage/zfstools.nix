@@ -35,7 +35,7 @@ in
       role = "public-package";
     };
     pname = "zfstools";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Zfs-auto-snapshot prints its interval, retention, dry-run, pool, and UTC controls.";

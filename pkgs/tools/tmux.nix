@@ -27,7 +27,7 @@ in
       role = "public-package";
     };
     pname = "tmux";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Tmux preserves and reports the exact session option value.";

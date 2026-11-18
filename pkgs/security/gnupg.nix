@@ -31,7 +31,7 @@ in
       role = "public-package";
     };
     pname = "gnupg";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [
           {

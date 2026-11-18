@@ -32,7 +32,7 @@ in
       role = "public-package";
     };
     pname = "libtool";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Libtool invokes the harness compiler and creates answer.lo.";

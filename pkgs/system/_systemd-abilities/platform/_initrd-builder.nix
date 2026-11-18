@@ -23,7 +23,7 @@
 ##!      `boot.initrd.systemd.services` etc. resolved through the stage-1
 ##!      ToUnit renderers.
 ##!   9. The exact native initrd transaction, selected package closure, and
-##!      admission receipt authenticated by the verified image.
+##!      trusted artifact manifest authenticated by the verified image.
 ##! Arguments:
 ##!   pkgs          — AOS package set
 ##!   lib           — AOS library

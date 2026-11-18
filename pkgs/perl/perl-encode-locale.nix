@@ -32,7 +32,7 @@ in
       role = "public-package";
     };
     pname = "perl-encode-locale";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Encode::Locale preserves the decoded qualification argument.";

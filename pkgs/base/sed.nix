@@ -20,7 +20,7 @@ in
       role = "public-package";
     };
     pname = "sed";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Sed writes the transformed line exactly.";

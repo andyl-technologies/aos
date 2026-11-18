@@ -31,7 +31,7 @@ in
       role = "public-package";
     };
     pname = "jamvm-1_5";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "JamVM executes the bytecode and returns the fixed answer.";

@@ -21,8 +21,8 @@ fn fixture() -> (tempfile::TempDir, tempfile::TempDir) {
     (root, state)
 }
 
-fn receipt(operation: &str, input: Value, rows: &[(&str, &str)]) -> Receipt {
-    Receipt {
+fn owned_state(operation: &str, input: Value, rows: &[(&str, &str)]) -> OwnedState {
+    OwnedState {
         owner: format!("owned-{operation}"),
         revision: "a".repeat(64),
         operation: operation.into(),
@@ -38,13 +38,13 @@ fn receipt(operation: &str, input: Value, rows: &[(&str, &str)]) -> Receipt {
     }
 }
 
-fn owned() -> Vec<Receipt> {
-    let group = receipt(
+fn owned() -> Vec<OwnedState> {
+    let group = owned_state(
         "group",
         json!({"name":"reserved","requested_id":30000}),
         &[("group", "reserved:x:30000"), ("gshadow", "reserved:!:")],
     );
-    let principal = receipt(
+    let principal = owned_state(
         "principal",
         json!({"name":"builder","requested_id":30001,"primary_group":"reserved"}),
         &[
@@ -55,7 +55,7 @@ fn owned() -> Vec<Receipt> {
             ("shadow", "builder:!:0:0:99999:7:::"),
         ],
     );
-    let mut membership = receipt(
+    let mut membership = owned_state(
         "membership",
         json!({"group":"reserved","members":["builder"]}),
         &[],
@@ -66,52 +66,52 @@ fn owned() -> Vec<Receipt> {
     vec![membership, principal, group]
 }
 
-fn batch(state: &Path, receipts: &[Receipt]) -> Vec<u8> {
-    let effects: Vec<_> = receipts
+fn batch(state: &Path, owned_states: &[OwnedState]) -> Vec<u8> {
+    let effects: Vec<_> = owned_states
         .iter()
-        .map(|receipt| {
+        .map(|owned_state| {
             let filename = format!(
                 "{}-identity.json",
-                super::super::super::key(&receipt.owner)
+                super::super::super::key(&owned_state.owner)
             );
             fs::write(
                 state.join(filename),
-                serde_json::to_vec(receipt).unwrap(),
+                serde_json::to_vec(owned_state).unwrap(),
             )
             .unwrap();
 
-            let outputs = if receipt.operation == "membership" {
+            let outputs = if owned_state.operation == "membership" {
                 json!({
                     "resource": format!(
                         "identity:membership:{}",
-                        super::super::super::key(&receipt.owner)
+                        super::super::super::key(&owned_state.owner)
                     )
                 })
             } else {
-                let account = receipt.input["name"].as_str().unwrap();
+                let account = owned_state.input["name"].as_str().unwrap();
                 json!({
                     "name": account,
-                    "resource": format!("identity:{}:{account}", receipt.operation)
+                    "resource": format!("identity:{}:{account}", owned_state.operation)
                 })
             };
 
             json!({
                 "invocation": {
-                    "id": receipt.owner,
-                    "revision": receipt.revision,
-                    "input": receipt.input,
+                    "id": owned_state.owner,
+                    "revision": owned_state.revision,
+                    "input": owned_state.input,
                     "action": "apply",
                     "previous": null,
                     "effect": {
-                        "identity": ["profile", "system", "identity", receipt.operation, "reserved"],
+                        "identity": ["profile", "system", "identity", owned_state.operation, "reserved"],
                         "owner": "systemd",
-                        "input": receipt.input,
+                        "input": owned_state.input,
                         "inputs": {},
                         "input_type": {"kind": "json"},
                         "after": [],
                         "results": {},
                         "dependencies": [],
-                        "revision": receipt.revision,
+                        "revision": owned_state.revision,
                         "handler": {
                             "kind": "process",
                             "artifact": "/nix/store/00000000000000000000000000000000-systemd",
@@ -161,24 +161,24 @@ fn reserved_rows_restore_in_dependency_order_and_preserve_foreign_accounts() {
 fn numeric_collision_in_last_principal_rejects_the_whole_batch() {
     let (root, state) = fixture();
     let before = snapshot(root.path());
-    let mut receipts = owned();
-    receipts[1].rows.insert(
+    let mut owned_states = owned();
+    owned_states[1].rows.insert(
         "passwd".into(),
         format!("builder:x:1000:30000::/var/empty:{NOLOGIN}"),
     );
-    let bytes = batch(state.path(), &receipts);
+    let bytes = batch(state.path(), &owned_states);
 
     assert!(restore_at(root.path(), state.path(), &bytes, Some((LOGIN, NOLOGIN))).is_err());
     assert_eq!(snapshot(root.path()), before);
 }
 
 #[test]
-fn incomplete_or_mismatched_receipt_cannot_authorize_rows() {
+fn incomplete_or_mismatched_owned_state_cannot_authorize_rows() {
     for incomplete in [true, false] {
         let (root, state) = fixture();
         let before = snapshot(root.path());
-        let receipts = owned();
-        let bytes = batch(state.path(), &receipts);
+        let owned_states = owned();
+        let bytes = batch(state.path(), &owned_states);
         let mut altered = owned().remove(2);
         if incomplete {
             altered.complete = false;
@@ -203,11 +203,11 @@ fn incomplete_or_mismatched_receipt_cannot_authorize_rows() {
 fn duplicate_row_owners_and_foreign_name_drift_fail_before_publication() {
     for duplicate in [true, false] {
         let (root, state) = fixture();
-        let mut receipts = owned();
+        let mut owned_states = owned();
         if duplicate {
             let mut extra = owned().remove(2);
             extra.owner = "other-group-owner".into();
-            receipts.push(extra);
+            owned_states.push(extra);
         } else {
             fs::write(
                 root.path().join("group"),
@@ -216,7 +216,7 @@ fn duplicate_row_owners_and_foreign_name_drift_fail_before_publication() {
             .unwrap();
         }
         let before = snapshot(root.path());
-        let bytes = batch(state.path(), &receipts);
+        let bytes = batch(state.path(), &owned_states);
 
         assert!(restore_at(root.path(), state.path(), &bytes, Some((LOGIN, NOLOGIN))).is_err());
         assert_eq!(snapshot(root.path()), before);
@@ -271,14 +271,14 @@ fn retained_shell_defaults_survive_backend_upgrade_and_foreign_memberships_remai
 }
 
 #[test]
-fn missing_receipt_is_not_recreated_from_graph_input() {
+fn missing_owned_state_is_not_recreated_from_graph_input() {
     let (root, state) = fixture();
     let before = snapshot(root.path());
-    let receipts = owned();
-    let bytes = batch(state.path(), &receipts);
+    let owned_states = owned();
+    let bytes = batch(state.path(), &owned_states);
     fs::remove_file(state.path().join(format!(
         "{}-identity.json",
-        super::super::super::key(&receipts[2].owner)
+        super::super::super::key(&owned_states[2].owner)
     )))
     .unwrap();
 

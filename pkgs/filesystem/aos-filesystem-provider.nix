@@ -26,7 +26,7 @@ in
       role = "public-package";
     };
     pname = "aos-filesystem-provider";
-    qualification.packageProbe = lib.qualification.providerExecutableProbe {
+    smokeTest = lib.qualification.providerExecutableProbe {
       name = "aos-filesystem-provider";
       entryPoint = "bin/aos-filesystem-provider";
     };

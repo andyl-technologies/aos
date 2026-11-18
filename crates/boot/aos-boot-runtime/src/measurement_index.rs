@@ -42,7 +42,7 @@ pub(crate) fn run(arguments: &[String]) -> Result<()> {
     ] = arguments
     else {
         bail!(
-            "usage: aos-systemd-image-evidence --openssl PATH --objcopy PATH --pcr-public-key PATH"
+            "usage: aos-systemd-boot-measurements --openssl PATH --objcopy PATH --pcr-public-key PATH"
         );
     };
     ensure!(
@@ -151,7 +151,7 @@ fn verified_evidence(public_key: &Path, openssl: &Path, objcopy: &Path) -> Resul
     // parsing sections. The ESP can be writable during image maintenance.
     fs::create_dir_all("/run/aos")?;
     let stage = tempfile::Builder::new()
-        .prefix("image-evidence-")
+        .prefix("boot-measurements-")
         .tempdir_in("/run/aos")?;
     let captured = stage.path().join("uki.efi");
     let source = rustix::fs::open(

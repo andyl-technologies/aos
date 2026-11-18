@@ -31,7 +31,7 @@ in
       role = "public-package";
     };
     pname = "xcb-proto";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       primary = {
         input = "The installed core XCB protocol description.";
         operation = "Register and resolve the protocol with its installed xcbgen module.";

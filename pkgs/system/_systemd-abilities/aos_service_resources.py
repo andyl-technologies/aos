@@ -1,6 +1,6 @@
 """Durable resource ownership and IO for systemd service handlers.
 
-Receipts claim absolute resource paths across all cooperating native handlers.
+Ownership records claim absolute resource paths across all cooperating native handlers.
 Pending writes retain prior destination evidence until cleanup is synchronized.
 """
 
@@ -98,10 +98,10 @@ class ResourceHandler:
         self.invocation = invocation
         self.value = invocation["input"]
         self.state_directory = Path(state_directory)
-        self.receipt_path = self.state_directory / (digest(invocation["id"].encode()) + ".json")
-        self.receipt = json.loads(self.receipt_path.read_text()) if self.receipt_path.exists() else None
-        if self.receipt and self.receipt["id"] != invocation["id"]:
-            raise ValueError("native ownership receipt identity differs")
+        self.owned_state_path = self.state_directory / (digest(invocation["id"].encode()) + ".json")
+        self.owned_state = json.loads(self.owned_state_path.read_text()) if self.owned_state_path.exists() else None
+        if self.owned_state and self.owned_state["id"] != invocation["id"]:
+            raise ValueError("native ownership record identity differs")
 
     def save(self, value):
         self.state_directory.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -109,21 +109,21 @@ class ResourceHandler:
         for path in value["owned_paths"]:
             owned_path(path)
         value = dict(value, id=self.invocation["id"], revision=self.invocation["revision"])
-        durable_write(self.receipt_path, json.dumps(value, sort_keys=True).encode(), 0o600)
-        self.receipt = value
+        durable_write(self.owned_state_path, json.dumps(value, sort_keys=True).encode(), 0o600)
+        self.owned_state = value
 
     def finish_remove(self):
-        durable_unlink(self.receipt_path)
+        durable_unlink(self.owned_state_path)
         return {}
 
     def claim_paths(self, paths):
         paths = set(paths)
         if not self.state_directory.exists():
             return
-        for receipt_path in self.state_directory.glob("*.json"):
-            if receipt_path == self.receipt_path:
+        for owned_state_path in self.state_directory.glob("*.json"):
+            if owned_state_path == self.owned_state_path:
                 continue
-            other = json.loads(receipt_path.read_text())
+            other = json.loads(owned_state_path.read_text())
             if paths.intersection(other["owned_paths"]):
                 raise ValueError("native resource is owned by another installation effect")
 

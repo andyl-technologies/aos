@@ -91,7 +91,7 @@ pub enum Observation {
     Indeterminate,
 }
 
-/// Implements admitted, bounded operations against the actual host.
+/// Implements authenticated, bounded operations against the actual host.
 ///
 /// Implementations authenticate the selected artifact and retain its closure
 /// until release. Calls must honor `effect.timeout_ms`; errors after dispatch
@@ -141,7 +141,7 @@ pub trait ActivationAdapter {
         cancellation: &CancellationToken,
     ) -> Result<Observation>;
 
-    /// Executes one admitted invocation and returns its named results.
+    /// Executes one allowed invocation and returns its named results.
     ///
     /// # Errors
     /// Returns an error for handler failure, timeout, or indeterminate completion.
@@ -182,11 +182,13 @@ pub struct ActivationOutcome {
 }
 
 impl ExecutionPolicy {
-    /// Computes the receipt identity for a checked graph, retirement, and policy.
+    /// Computes the content fingerprint for a checked graph, retirement, and policy.
+    ///
+    /// A completed transaction records this fingerprint as its `content`.
     ///
     /// # Errors
-    /// Returns an error if canonical graph or receipt encoding fails.
-    pub fn content_identity(
+    /// Returns an error if canonical graph or fingerprint encoding fails.
+    pub fn content_fingerprint(
         self,
         graph: &aos_module_format::graph::CheckedModuleGraph,
         retire: &BTreeSet<String>,

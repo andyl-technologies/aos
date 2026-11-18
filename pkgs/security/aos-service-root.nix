@@ -14,7 +14,7 @@ mkDerivation {
     role = "public-package";
   };
   pname = "aos-service-root";
-  qualification.packageProbe = lib.qualification.commandProbe {
+  smokeTest = lib.qualification.commandProbe {
     "primary" = {
       "artifacts" = [];
       "expected" = "The helper accepts the tokens and reports successful no-op cleanup.";

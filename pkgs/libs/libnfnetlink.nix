@@ -15,7 +15,7 @@ in
       role = "public-package";
     };
     pname = "libnfnetlink";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Libnfnetlink appends the aligned attribute and increases the message length.";

@@ -34,7 +34,7 @@ in
       role = "public-package";
     };
     pname = "icu";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "ICU returns the two expected Unicode code units.";

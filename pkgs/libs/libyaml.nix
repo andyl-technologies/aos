@@ -15,7 +15,7 @@ in
       role = "public-package";
     };
     pname = "libyaml";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "The parser reaches stream end after observing the answer and 42 scalars.";

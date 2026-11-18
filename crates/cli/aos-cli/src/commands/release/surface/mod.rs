@@ -407,7 +407,7 @@ fn require_role_key(plan: &ReleasePlan, role: SignerRole, key_id: &str) -> Resul
 /// # Errors
 /// Returns an error for a malformed envelope or payload.
 pub(super) fn receipt_payload<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T> {
-    let envelope: aos_release_format::receipt::SignedReceiptEnvelope =
+    let envelope: aos_release_format::receipt::SignedEnvelope =
         aos_release_format::canonical::from_slice(bytes, "signed receipt")?;
     serde_json::from_value(envelope.payload).context("decoding signed receipt payload")
 }

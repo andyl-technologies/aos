@@ -20,7 +20,7 @@ in
       role = "public-package";
     };
     pname = "valgrind";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Memcheck accepts the valid memory lifecycle and the program prints 42.";

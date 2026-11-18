@@ -26,7 +26,7 @@ in
       role = "public-package";
     };
     pname = "composefs";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Mkcomposefs creates a nonempty image that composefs-info accepts.";

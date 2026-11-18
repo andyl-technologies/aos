@@ -17,7 +17,7 @@ in
       role = "public-package";
     };
     pname = "mpfr";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "MPFR stores a value exactly equal to 42.5.";

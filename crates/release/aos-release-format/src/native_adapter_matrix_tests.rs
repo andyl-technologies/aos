@@ -6,16 +6,15 @@ use anyhow::{Context as _, Result};
 use aos_module_format::graph::Lifetime;
 
 use crate::digest::Sha256Digest;
-use crate::evidence::GateResult;
+use crate::evidence::Outcome;
 use crate::qualification::{QualificationMethod, QualificationPhase};
-use crate::qualification_evidence::{
-    CheckObservation, NATIVE_ADAPTER_MATRIX_OBSERVATION_V1, NATIVE_ADAPTER_MATRIX_REQUIREMENT,
+use crate::release_tests::{
+    CheckResult, NATIVE_ADAPTER_MATRIX_OBSERVATION_V1, NATIVE_ADAPTER_MATRIX_REQUIREMENT,
     NativeAdapterCellObservation, NativeAdapterMatrixComponentIdentity,
     NativeAdapterMatrixEnvironment, NativeAdapterMatrixEnvironmentStatus,
-    NativeAdapterMatrixObservation, NativeAdapterPostconditionProbe, QualificationCase,
-    QualificationObservation, QualificationPredecessor, native_adapter_matrix_check,
-    validate_matrix_for_case, validate_native_adapter_matrix_observation,
-    validate_native_adapter_matrix_spec,
+    NativeAdapterMatrixObservation, NativeAdapterPostconditionProbe, QualificationObservation,
+    QualificationPredecessor, ReleaseTest, native_adapter_matrix_check, validate_matrix_for_case,
+    validate_native_adapter_matrix_observation, validate_native_adapter_matrix_spec,
 };
 
 use crate::verify::tests::{STABLE, observations, qualification_fixture};
@@ -24,9 +23,7 @@ fn digest(label: &str) -> Sha256Digest {
     Sha256Digest::of_bytes(label)
 }
 
-fn matrix_spec(
-    case: &QualificationCase,
-) -> &crate::qualification_evidence::NativeAdapterMatrixSpec {
+fn matrix_spec(case: &ReleaseTest) -> &crate::release_tests::NativeAdapterMatrixSpec {
     &case
         .native_operation_spec
         .as_ref()
@@ -35,9 +32,7 @@ fn matrix_spec(
         .matrix_spec
 }
 
-fn matrix_spec_mut(
-    case: &mut QualificationCase,
-) -> &mut crate::qualification_evidence::NativeAdapterMatrixSpec {
+fn matrix_spec_mut(case: &mut ReleaseTest) -> &mut crate::release_tests::NativeAdapterMatrixSpec {
     &mut case
         .native_operation_spec
         .as_mut()
@@ -46,11 +41,7 @@ fn matrix_spec_mut(
         .matrix_spec
 }
 
-fn fixture() -> Result<(
-    QualificationCase,
-    Sha256Digest,
-    NativeAdapterMatrixObservation,
-)> {
+fn fixture() -> Result<(ReleaseTest, Sha256Digest, NativeAdapterMatrixObservation)> {
     let spec = crate::test_support::qualification::native_adapter_matrix_spec();
     let component =
         |name: &str, component_digest: Sha256Digest| NativeAdapterMatrixComponentIdentity {
@@ -96,10 +87,8 @@ fn fixture() -> Result<(
             let cohort_subject_digest =
                 Sha256Digest::of_bytes(crate::canonical::to_vec(&cohort_subject)?);
             let disposition = match &cell.disposition {
-                crate::qualification_evidence::NativeAdapterDispositionPolicy::Exact {
-                    value,
-                } => value,
-                crate::qualification_evidence::NativeAdapterDispositionPolicy::CancellationRoute {
+                crate::release_tests::NativeAdapterDispositionPolicy::Exact { value } => value,
+                crate::release_tests::NativeAdapterDispositionPolicy::CancellationRoute {
                     ..
                 } => panic!("semantic fixture does not declare a cancellation route"),
             };
@@ -141,7 +130,7 @@ fn fixture() -> Result<(
                     .map(|name| {
                         (
                             name.clone(),
-                            CheckObservation {
+                            CheckResult {
                                 passed: true,
                                 detail: "observed by the production fixture".into(),
                             },
@@ -152,8 +141,8 @@ fn fixture() -> Result<(
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    let case = QualificationCase {
-        schema_version: crate::qualification_evidence::QUALIFICATION_CASE.into(),
+    let case = ReleaseTest {
+        schema_version: crate::release_tests::QUALIFICATION_CASE.into(),
         claim: None,
         measurements: BTreeMap::new(),
         minimum_observed_seconds: None,
@@ -168,7 +157,7 @@ fn fixture() -> Result<(
         package_role: None,
         target: None,
         subjects: vec!["candidate".into()],
-        checks: vec![crate::qualification_evidence::NATIVE_ADAPTER_MATRIX_CHECK.into()],
+        checks: vec![crate::release_tests::NATIVE_ADAPTER_MATRIX_CHECK.into()],
         method: QualificationMethod::Automated,
         predecessor: Some(QualificationPredecessor {
             registry: "main".into(),
@@ -193,7 +182,7 @@ fn fixture() -> Result<(
 }
 
 fn complete_observation(
-    case: &QualificationCase,
+    case: &ReleaseTest,
     environment_digest: Sha256Digest,
     matrix: NativeAdapterMatrixObservation,
 ) -> Result<QualificationObservation> {
@@ -210,7 +199,7 @@ fn complete_observation(
         .map(|name| {
             (
                 name.clone(),
-                CheckObservation {
+                CheckResult {
                     passed: true,
                     detail: "fixture check".into(),
                 },
@@ -220,7 +209,7 @@ fn complete_observation(
     let matrix_check = case
         .checks
         .iter()
-        .find(|name| name.as_str() == crate::qualification_evidence::NATIVE_ADAPTER_MATRIX_CHECK)
+        .find(|name| name.as_str() == crate::release_tests::NATIVE_ADAPTER_MATRIX_CHECK)
         .context("matrix fixture case lacks its policy check")?;
     checks.insert(matrix_check.clone(), check);
     let postcondition_count = matrix.cohorts[0]
@@ -251,7 +240,7 @@ fn complete_observation(
 }
 
 fn recommit(
-    case: &mut QualificationCase,
+    case: &mut ReleaseTest,
     observation: &mut NativeAdapterMatrixObservation,
 ) -> Result<Sha256Digest> {
     let authored = &case
@@ -358,7 +347,7 @@ fn committed_identities_and_postconditions_are_exact() -> Result<()> {
         .postconditions
         .insert(
             "coarse-regression-passed".into(),
-            CheckObservation {
+            CheckResult {
                 passed: true,
                 detail: "source regression".into(),
             },
@@ -684,8 +673,7 @@ fn unknown_status_and_regression_fields_are_rejected() -> Result<()> {
         .expect("fixture surface must be an object")
         .insert("surface_claim".into(), serde_json::json!("unbound"));
     assert!(
-        serde_json::from_value::<crate::qualification_evidence::NativeAdapterMatrixSpec>(value)
-            .is_err()
+        serde_json::from_value::<crate::release_tests::NativeAdapterMatrixSpec>(value).is_err()
     );
 
     let mut value = serde_json::to_value(&observation)?;
@@ -707,8 +695,7 @@ fn unknown_status_and_regression_fields_are_rejected() -> Result<()> {
             }),
         );
     assert!(
-        serde_json::from_value::<crate::qualification_evidence::NativeAdapterMatrixSpec>(value)
-            .is_err()
+        serde_json::from_value::<crate::release_tests::NativeAdapterMatrixSpec>(value).is_err()
     );
     Ok(())
 }
@@ -754,12 +741,10 @@ fn specification_order_and_partition_are_enforced() -> Result<()> {
     matrix_spec_mut(&mut case)
         .applicability
         .inapplicable_cells
-        .push(
-            crate::qualification_evidence::NativeAdapterInapplicableCell {
-                cell_id: forged_cell,
-                reason: "non-persistent-lifetime".into(),
-            },
-        );
+        .push(crate::release_tests::NativeAdapterInapplicableCell {
+            cell_id: forged_cell,
+            reason: "non-persistent-lifetime".into(),
+        });
     assert!(validate_native_adapter_matrix_spec(matrix_spec(&case)).is_err());
 
     let (mut case, _, mut observation) = fixture()?;
@@ -797,29 +782,28 @@ fn configured_lifetime_changes_are_identity_bearing_without_rust_reexpansion() -
 
 #[test]
 fn referential_validation_rejects_matrix_drift() -> Result<()> {
-    let assert_rejected =
-        |mutate: fn(&mut crate::qualification_evidence::NativeAdapterMatrixSpec)| {
-            let (mut case, _, mut observation) = fixture()?;
-            mutate(matrix_spec_mut(&mut case));
-            let environment = recommit(&mut case, &mut observation)?;
-            assert!(
-                validate_native_adapter_matrix_observation(
-                    &case,
-                    environment,
-                    digest("executor"),
-                    &observation,
-                )
-                .is_err()
-            );
-            Ok::<_, anyhow::Error>(())
-        };
+    let assert_rejected = |mutate: fn(&mut crate::release_tests::NativeAdapterMatrixSpec)| {
+        let (mut case, _, mut observation) = fixture()?;
+        mutate(matrix_spec_mut(&mut case));
+        let environment = recommit(&mut case, &mut observation)?;
+        assert!(
+            validate_native_adapter_matrix_observation(
+                &case,
+                environment,
+                digest("executor"),
+                &observation,
+            )
+            .is_err()
+        );
+        Ok::<_, anyhow::Error>(())
+    };
 
     assert_rejected(|spec| {
         spec.surface.adapters[0].operation.name = "changed-operation".into();
     })?;
     assert_rejected(|spec| {
         spec.surface.adapters[0].actions =
-            vec![crate::qualification_evidence::NativeOperationAction::Remove];
+            vec![crate::release_tests::NativeOperationAction::Remove];
     })?;
     assert_rejected(|spec| {
         spec.surface.scenarios[0].candidate = "replacement".into();
@@ -840,7 +824,7 @@ fn aggregate_check_and_operation_denominators_are_derived() -> Result<()> {
     let matrix_check = case
         .checks
         .iter()
-        .find(|name| name.as_str() == crate::qualification_evidence::NATIVE_ADAPTER_MATRIX_CHECK)
+        .find(|name| name.as_str() == crate::release_tests::NATIVE_ADAPTER_MATRIX_CHECK)
         .context("matrix fixture case lacks its policy check")?;
     arbitrary_detail
         .checks
@@ -905,9 +889,9 @@ fn central_phase_rejects_failed_cells_and_prepared_environment_mutation() -> Res
         .clone();
     let failed_check = native_adapter_matrix_check(failed_matrix, false)?;
     failed_observation.checks.insert(check_name, failed_check);
-    failed_record.result = GateResult::Failed;
+    failed_record.result = Outcome::Failed;
     assert!(
-        crate::qualification_evidence::assess_observations(
+        crate::release_tests::assess_observations(
             &plan,
             &manifest,
             Some(STABLE),
@@ -928,7 +912,7 @@ fn central_phase_rejects_failed_cells_and_prepared_environment_mutation() -> Res
         .expect("production matrix fixture has QEMU identity")
         .version = "mutated-after-observation".into();
     assert!(
-        crate::qualification_evidence::assess_observations(
+        crate::release_tests::assess_observations(
             &plan,
             &manifest,
             Some(STABLE),
@@ -945,7 +929,7 @@ fn central_phase_rejects_failed_cells_and_prepared_environment_mutation() -> Res
 #[test]
 fn native_subject_rejects_foreign_executable_and_forged_effect_identity() -> Result<()> {
     let (mut case, _, _) = fixture()?;
-    let crate::qualification_evidence::NativeOperationHandler::Process { executable, .. } =
+    let crate::release_tests::NativeOperationHandler::Process { executable, .. } =
         &mut matrix_spec_mut(&mut case).surface.adapters[0].handler;
     *executable = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-foreign/bin/handler".into();
     assert!(validate_native_adapter_matrix_spec(matrix_spec(&case)).is_err());
@@ -972,8 +956,7 @@ fn native_wire_rejects_undeclared_handler_claims() -> Result<()> {
     let mut value = serde_json::to_value(matrix_spec(&case))?;
     value["surface"]["adapters"][0]["handler"]["guarantees"] = serde_json::json!(["safe"]);
     assert!(
-        serde_json::from_value::<crate::qualification_evidence::NativeAdapterMatrixSpec>(value)
-            .is_err()
+        serde_json::from_value::<crate::release_tests::NativeAdapterMatrixSpec>(value).is_err()
     );
     Ok(())
 }
@@ -1029,8 +1012,7 @@ fn required_operation_selection_is_closed_nonempty_and_ordered() -> Result<()> {
         .expect("fixture is an object")
         .remove("required_operations");
     assert!(
-        serde_json::from_value::<crate::qualification_evidence::NativeAdapterMatrixSpec>(missing)
-            .is_err()
+        serde_json::from_value::<crate::release_tests::NativeAdapterMatrixSpec>(missing).is_err()
     );
     Ok(())
 }
@@ -1042,9 +1024,7 @@ fn adoption_evaluation_is_mandatory_and_separate_from_target_custody() -> Result
         .adoption_evaluation
         .locator
         .push_str("-inactive");
-    assert!(
-        crate::qualification_evidence::validate_native_operation_qualification_spec(&spec).is_ok()
-    );
+    assert!(crate::release_tests::validate_native_operation_qualification_spec(&spec).is_ok());
 
     let mut missing = serde_json::to_value(&spec)?;
     missing["cohorts"][0]
@@ -1052,16 +1032,12 @@ fn adoption_evaluation_is_mandatory_and_separate_from_target_custody() -> Result
         .expect("fixture cohort is an object")
         .remove("adoption_evaluation");
     assert!(
-        serde_json::from_value::<crate::qualification_evidence::NativeOperationQualificationSpec>(
-            missing
-        )
-        .is_err()
+        serde_json::from_value::<crate::release_tests::NativeOperationQualificationSpec>(missing)
+            .is_err()
     );
 
     spec.cohorts[0].adoption_evaluation.locator = "/tmp/untrusted-baseline".into();
-    assert!(
-        crate::qualification_evidence::validate_native_operation_qualification_spec(&spec).is_err()
-    );
+    assert!(crate::release_tests::validate_native_operation_qualification_spec(&spec).is_err());
     Ok(())
 }
 

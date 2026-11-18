@@ -20,7 +20,7 @@ in
       role = "public-package";
     };
     pname = "libpciaccess";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "Libpciaccess discovers the platform without an initialization error.";

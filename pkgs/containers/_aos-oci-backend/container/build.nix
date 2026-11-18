@@ -295,7 +295,7 @@
     };
   referenceName = "${container.publication.repository}:${container.publication.referenceTag}";
 
-  payloadEvidence = import ./package-evidence.nix {
+  payloadEvidence = import ./package-source-map.nix {
     inherit lib pkgs;
     # Build-only fixtures are not public target roots and may be specific to
     # the coordinator architecture. Evidence qualification still rejects any

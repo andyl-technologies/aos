@@ -17,7 +17,7 @@ in
       role = "public-package";
     };
     pname = "openpam";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "OpenPAM returns the three logical arguments without the comment.";

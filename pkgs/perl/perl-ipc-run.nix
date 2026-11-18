@@ -34,7 +34,7 @@ in
       role = "public-package";
     };
     pname = "perl-ipc-run";
-    qualification.packageProbe = lib.qualification.commandProbe {
+    smokeTest = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
         "expected" = "IPC::Run reports success and captures the exact line.";
