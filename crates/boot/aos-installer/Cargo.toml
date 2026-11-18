@@ -1,0 +1,28 @@
+[package]
+name = "aos-installer"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Unattended installation of a signed AOS release image from boot media"
+
+[dependencies]
+anyhow.workspace = true
+aos-activation.workspace = true
+aos-boot-media.workspace = true
+aos-module-format.workspace = true
+aos-storage-layout.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "aos-installer"
+path = "src/bin/aos-installer.rs"
+
+[lints]
+workspace = true
