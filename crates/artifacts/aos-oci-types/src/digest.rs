@@ -1,6 +1,6 @@
 //! Canonical SHA-256 content digests.
 //!
-//! RFC-0019 deliberately accepts only this exact wire form:
+//! The AOS OCI contract deliberately accepts only this exact wire form:
 //!
 //! ```text
 //! sha256:<64 lowercase hexadecimal digits>
@@ -36,7 +36,7 @@ impl Sha256Digest {
         Self(aos_core::Sha256Digest::from_bytes(bytes))
     }
 
-    /// Parses the exact RFC-0019 digest spelling.
+    /// Parses the exact canonical digest spelling.
     ///
     /// # Errors
     ///

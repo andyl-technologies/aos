@@ -24,3 +24,13 @@ is; when the code changes, the page changes with it.
   GCC tiers, per-tier stdenv, and producer validation rules.
 - [Rust builds](build/rust-builds.md) covers reusable Cargo dependency
   artifacts, their compatibility contract, development caches, and nextest.
+
+## OCI containers
+
+- [OCI containers](oci-containers/README.md) gives the build and distribution
+  pipeline, code map, and container checks.
+- [Image build](oci-containers/image-build.md) covers container definitions,
+  closure layers, the layer archive ABI, and runtime initialization.
+- [Distribution and publication](oci-containers/distribution.md) covers the
+  shared OCI contract, Hub's Distribution data plane, verified publication, and
+  garbage collection.
