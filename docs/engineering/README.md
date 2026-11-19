@@ -34,3 +34,9 @@ is; when the code changes, the page changes with it.
 - [Distribution and publication](oci-containers/distribution.md) covers the
   shared OCI contract, Hub's Distribution data plane, verified publication, and
   garbage collection.
+
+## Packages
+
+- [Package documentation](package-documentation.md) covers generation of
+  package reference documents, their signed publication, Hub verification and
+  search projections, and the shared readers.

@@ -168,7 +168,7 @@ This RFC composes rather than replaces:
 - Hub surface and placement topology in
   [RFC-0012](../0012-hub-surface-topology/README.md);
 - authenticated package documentation in
-  [RFC-0016](../0016-package-documentation/README.md); and
+  [package documentation](../../engineering/package-documentation.md); and
 - the existing manual Hub Worker deployment procedure in
   [`docs/maintainers/aos-hub-deployment.md`](../../maintainers/aos-hub-deployment.md).
 
