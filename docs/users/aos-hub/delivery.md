@@ -6,17 +6,23 @@ reviewed workflow. An existing CDN attachment and storage placement are
 prerequisites. The Hub does not create a provider account or provision an
 arbitrary CDN attachment for you.
 
-Open the surface's **Delivery** settings to see the destinations currently
-selected for clients and start setup. Choose storage, an existing endpoint or
-a hostname and provider attachment, access policy, and client audiences.
-Review setup before applying it. You can leave the page and resume the saved
-workflow later as the operator who reviewed it.
+A surface is one registry or one binary cache. An audience is a class of
+client: `web`, `git`, or `nix_cache`.
 
-Preparation creates a route that can be probed. It does not replace the
-currently advertised destination. Complete provider configuration, inspect
-linked verification operations, and resolve the workflow's blockers. When
-verification succeeds, review activation and apply that separate plan. All
-selected audiences switch together.
+## Use the console
+
+1. Open the surface's **Delivery** settings. The page lists the destinations
+   currently selected for clients.
+2. Start setup and choose storage, an existing endpoint or a hostname and
+   provider attachment, an access policy, and the client audiences.
+3. Review the setup plan, then apply it. Preparation creates a route that can
+   be probed; it does not replace the currently advertised destination.
+4. Complete the provider configuration, inspect the linked verification
+   operations, and resolve the blockers the workflow reports. You can leave
+   the page and resume the saved workflow later as the operator who reviewed
+   it.
+5. When verification succeeds, review activation and apply that separate plan.
+   All selected audiences switch together.
 
 ## Ownership and shared infrastructure
 
@@ -37,7 +43,9 @@ new setup plan.
 The `aos hub delivery` commands use the same workflow as the console. This
 example selects an existing endpoint generation for a cache. Replace the
 scope, endpoint, and placement with identities from your Hub; the scope is
-the immutable owner scope, not an organization slug.
+the immutable owner scope, not an organization slug. `aos hub whoami` prints
+canonical scopes, `aos hub endpoint list` lists endpoints, and
+`aos hub placement list cache:acme/builds` lists the surface's placements.
 
 ```json
 {

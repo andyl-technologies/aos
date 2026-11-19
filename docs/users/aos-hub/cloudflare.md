@@ -97,9 +97,10 @@ convention.
 Attaching a custom domain to the R2 bucket does not implicitly configure Hub
 delivery. Record that infrastructure through the Hub API: create the domain,
 endpoint, gateway, and route resources, then select the route independently for
-the `git`, `web`, and `nix_cache` audiences. The same topology is visible and
-mutable through the CLI, API, and Web console; deploy flags never create hidden
-delivery state.
+the `git`, `web`, and `nix_cache` audiences. The
+[delivery workflow](delivery.md) coordinates those steps. The same topology is
+visible and mutable through the CLI, API, and console; deploy flags never
+create hidden delivery state.
 
 Rate-limit namespace IDs are account-wide. The installer reserves three
 consecutive IDs above `--rate-limit-namespace-base`; its default base of `1000`
@@ -113,9 +114,11 @@ supply them. They are printed once. Record both in your secret store.
 
 - `HUB_JWT_SECRET` signs bearer access tokens. Rotating it invalidates issued
   JWTs; browser sessions are opaque records in Durable Object SQLite.
-- `HUB_SEAL_KEY` protects stored credentials and signing material. Replacing
-  it without migrating sealed data can make that data unreadable. It is also
-  needed for an out-of-band root bootstrap or reset.
+- `HUB_SEAL_KEY` protects stored OIDC credentials, storage credentials, and
+  hosted signing keys. Replacing it without migrating sealed data can make
+  that data unreadable. It is also needed for an out-of-band root bootstrap or
+  reset and for the database bookmark commands in
+  [Back up a Worker deployment](production.md#back-up-a-worker-deployment).
 
 An ordinary redeploy without secret flags preserves the deployed values. Do
 not pass newly generated values to routine updates.
@@ -152,8 +155,9 @@ selects a different, initially empty database for a restore or cutover; after a
 cutover, pass the same name on every subsequent deployment. Switching the name
 does not migrate accounts, tokens, topology, or publication state.
 
-Worker state is administered through the web console and API. Local
-`aos-hub --root ...` commands do not open the Durable Object database.
+Worker state is administered through the console, the API, and the remote
+`aos hub` client. Local `aos-hub --root ...` commands do not open the Durable
+Object database.
 
 To create the root account after a deploy, or reset its password later, call
 the idempotent seal-gated bootstrap endpoint through the installer:

@@ -207,7 +207,7 @@ apr store verify --registry acme
 ```
 
 Then release and upload the correction at a higher registry version. For a
-channel rollout, advance affected buckets forward to that release:
+channel rollout, advance affected partitions forward to that release:
 
 ```sh
 apr release 2026.8.2 \
@@ -219,7 +219,7 @@ apr release 2026.8.2 \
   --upload-url s3://acme-packages/registry
 ```
 
-Do not delete old release objects or move channel buckets backward. Existing
+Do not delete old release objects or move channel partitions backward. Existing
 hosts may need an explicit package or OS upgrade, and incident responders may
 need the immutable release for forensics. Publish a fixed package version,
 advance to a higher registry release, and verify the deployed state.

@@ -15,7 +15,7 @@ nix build .#pkg-aos-hub
 ```
 
 The first run creates demo data and prints a one-time publish token. Record the
-token if you plan to continue into producer workflows. Leave the server running
+token if you plan to publish to this Hub afterwards. Leave the server running
 while you work through the rest of the tutorial.
 
 Open <http://127.0.0.1:8420/demo/cdn/>. Sign in with:
@@ -51,5 +51,12 @@ Stop the server with Ctrl-C. The Hub state is under `./hub-demo`; remove that
 directory when you no longer need it.
 
 `--dev` is deliberately not a production mode. It uses development-only secret
-sealing and writes sign-in links to the process log. Use the
-[native deployment guide](native.md) for a persistent instance.
+sealing and writes sign-in links to the process log.
+
+## Next steps
+
+- [Use the web interface](web.md) to explore the console you just signed in
+  to.
+- [Host a registry on AOS Hub](../registry/hosting.md#aos-hub) to publish a
+  release of your own.
+- [Deploy AOS Hub as a native service](native.md) for a persistent instance.
