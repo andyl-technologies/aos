@@ -1,7 +1,7 @@
 # tests/abilities/systemd-credentials.nix — systemd credential substrate check.
 #
-# Verifies the static systemd pieces RFC-0001's TPM2-sealed credential path
-# needs before package-level provisioning work can depend on them.
+# Verifies the static systemd pieces that TPM2-sealed service credentials
+# depend on.
 {
   pkgs,
   lib,

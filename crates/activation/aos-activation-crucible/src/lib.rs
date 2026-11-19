@@ -1,6 +1,7 @@
 //! Baseline Crucible instrumentation for the native AOS ability executor.
 //!
-//! This crate owns the optional AOS side of RFC-0022's guest integration. It
+//! This crate owns the optional AOS side of the ability executor's Crucible
+//! guest integration. It
 //! consumes the production executor's protected boundary-observer protocol and
 //! translates validated observations into existing generic [`crucible_guest`]
 //! lifecycle, event, coverage, and assertion markers. It introduces no choice,

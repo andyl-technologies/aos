@@ -1,4 +1,4 @@
-# tests/fleet/package-attestation-quote.nix — TPM quote smoke test for RFC-0001.
+# tests/fleet/package-attestation-quote.nix — package attestation TPM quote smoke test.
 {
   pkgs,
   systems,

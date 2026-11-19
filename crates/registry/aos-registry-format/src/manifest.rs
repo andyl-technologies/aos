@@ -1139,13 +1139,13 @@ tools = {store_path = "/aos/store/server-tools"}
 }
 
 // ---------------------------------------------------------------------------
-// RFC-0001 package metadata
+// Package metadata
 // ---------------------------------------------------------------------------
 //
-// These pure serde structs and their inherent helpers moved here from
-// the former package monolith (RFC-0004 Phase 5) so the wasm-clean indexer
-// and the Cloudflare Worker can deserialize the RFC-0001 package metadata
-// that the producer publishes. Native readers and producers import these shared types directly.
+// These pure serde structs and their inherent helpers live in this crate so
+// the wasm-clean indexer and the Cloudflare Worker can deserialize the
+// package metadata that the producer publishes. Native readers and producers
+// import these shared types directly.
 
 /// A pre-compiled image format entry within a sysroot package version.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -180,12 +180,13 @@ Measured boot and package admission answer different questions:
 - PCR 7 records Secure Boot policy state;
 - PCR 11 records UKI measurements and signed boot phases;
 - PCR 12 records external boot inputs; and
-- PCR 15 records activated exposed-package tuples and configuration
-  generations.
+- PCR 15 records committed native package generations.
 
-The package event binds its name, version, root digest, and permission-manifest
-digest. The configuration event binds the evaluated manifest and authenticated
-inputs to the running image. A remote verifier must replay the event log and
+The generation event binds the committed desired deployment, its evaluation
+inputs, and their original admission evidence to the running image. A package
+event binds a package's name, version, root digest, and native companion
+digest. The [package attestation](../engineering/packages/attestation.md) notes
+describe the event log and record formats. A remote verifier must replay the event log and
 check each tuple against the signed registry and image catalog; a PCR value
 without its event log and authorization policy is not meaningful evidence.
 

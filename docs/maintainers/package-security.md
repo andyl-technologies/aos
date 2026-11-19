@@ -31,8 +31,9 @@ deferred transaction are derived from that configuration; package metadata must
 not maintain a second unit, permission, credential, or dependency catalog.
 
 See the [native runtime guide](../users/aos/runtime-abilities.md) for the current
-API. Consumer migration is in progress, so the old `abilities` recipe field and
-static provider/request maps are not the target for new code.
+API. The removed `abilities` and `configModule` recipe arguments fail once the
+package's native artifacts are evaluated, and there are no static provider or
+request maps.
 
 For each declaration, verify:
 
@@ -74,5 +75,7 @@ bash ./aos-dev build check effects --no-out-link
 bash ./aos-dev build package PACKAGE --no-out-link
 ```
 
-The relevant RFCs retain historical design context. Current package and module
-code remains the authority for shipped behavior.
+The [service sandbox](../engineering/packages/service-sandbox.md) and
+[package attestation](../engineering/packages/attestation.md) notes describe how
+declarations become unit directives and measured evidence. Current package and
+module code remains the authority for shipped behavior.

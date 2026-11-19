@@ -1,4 +1,4 @@
-//! Package-set TPM measurement for RFC-0001 runtime attestation.
+//! Package-set TPM measurement for runtime attestation.
 //!
 //! Activation writes an AOS package event log at
 //! `/run/log/aos-packages.cel` and, on the live system root, extends PCR 15

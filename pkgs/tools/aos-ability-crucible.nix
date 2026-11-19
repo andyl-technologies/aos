@@ -1,4 +1,4 @@
-##! aos-ability-crucible - optional RFC-0022 baseline guest adapter
+##! aos-ability-crucible - optional baseline Crucible guest adapter for native abilities
 {
   service-management,
   aos-filesystem-provider,

@@ -3,8 +3,8 @@
 ##! Produces canonical evidence for one exact realized artifact use: ELF startup
 ##! linkage, plugin loading, helper execution, build-tool execution, or a data
 ##! read. Artifact identities use the same content, NAR and closure digests as
-##! RFC-0022 `ArtifactReference`. The audit inspects realized outputs; dependency
-##! metadata alone cannot satisfy it.
+##! the native ability graph's `ArtifactReference`. The audit inspects realized
+##! outputs; dependency metadata alone cannot satisfy it.
 {
   pkgs,
   lib,
@@ -68,7 +68,7 @@
     else if builtins.match artifactPathPattern providerPath == null || hasDotComponent providerPath
     then throw "artifact consumption audit: providerPath must be absolute within the provider artifact"
     else if !(builtins.isAttrs targetPlatform && builtins.attrNames targetPlatform == ["architecture" "system"])
-    then throw "artifact consumption audit: targetPlatform must use the RFC-0022 platform identity"
+    then throw "artifact consumption audit: targetPlatform must use the native ability platform identity"
     else if pathMechanism && !(builtins.isList arguments && builtins.all builtins.isString arguments)
     then throw "artifact consumption audit: arguments must be a list of strings"
     else if pathMechanism && !(builtins.isString expectedOutputSha256 && builtins.match "sha256:[0-9a-f]{64}" expectedOutputSha256 != null)
