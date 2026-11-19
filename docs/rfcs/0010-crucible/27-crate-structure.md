@@ -24,8 +24,8 @@ that crate.
 > layout. Architectural requirements and qualification remain governed by the
 > phased plan in [`32-implementation-plan.md`](32-implementation-plan.md).
 > A package's presence does not establish that its layer's determinism gates pass;
-> see the [validation record](../../architecture/crate-migration-validation.md)
-> for completed checks and remaining qualification.
+> see the [Rust workspace guide](../../engineering/rust-workspace.md)
+> for the current package map.
 
 ## 1. The crate map (L0–L4)
 

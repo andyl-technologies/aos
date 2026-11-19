@@ -8,7 +8,7 @@
 - **PR:** [#100](https://github.com/andyl-technologies/aos/pull/100)
 - **Audience:** anyone working on `pkgs/boot/`, `lib/testing/`,
   `modules/services/ignition.nix`, `tests/fleet/`, or the operator docs
-  under `docs/boot/`.
+  under `docs/maintainers/`.
 
 ## Problem
 
@@ -36,7 +36,7 @@ wires the complete stage pipeline (fetch → disks → mount → files →
 umount) into the systemd initrd, with `sgdisk`/`wipefs`/`mkfs.ext4`
 available to the stages, a GPT backup-header fixup before
 `ignition-disks` (for images dd'd onto larger volumes), and
-`aos-growfs` growing `root-a` afterward. `docs/boot/qemu-uefi.md`
+`aos-growfs` growing `root-a` afterward. `docs/maintainers/source-build-quickstart.md`
 documents the whole flow by hand: build `server-image-raw`
 (self-bootable, sd-boot + UKI), oversize the disk, boot under OVMF, and
 deliver an Ignition config over `-fw_cfg` that grows `root-a`, creates
@@ -90,7 +90,7 @@ A two-node fleet test modeled on `tests/fleet/apm-registry-upgrade.nix`:
   UEFI firmware → sd-boot → UKI → initrd → Ignition — with an Ignition
   config delivered over `-fw_cfg name=opt/com.coreos/config`, no
   metadata ISO attached. The config is the one from
-  `docs/boot/qemu-uefi.md`: resize `root-a`, create
+  `docs/maintainers/source-build-quickstart.md`: resize `root-a`, create
   `root-b`/`swap`/`var`, format filesystems, plus the registry trust
   anchor and hostname via the files stage.
 
@@ -102,7 +102,7 @@ porcelain sequence: `apm update` → `apm install <pkg>` →
 ### Work items
 
 **1. EDK2/OVMF as an AOS package** — the one large item. The hermetic
-rule forbids the host-nixpkgs OVMF that `docs/boot/qemu-uefi.md` uses
+rule forbids the host-nixpkgs OVMF that `docs/maintainers/source-build-quickstart.md` uses
 for development. Prerequisites `nasm` and `acpica` (for `iasl`) are not
 yet in `pkgs/`; both are small autotools/make builds. Then
 `pkgs/boot/edk2.nix` builds BaseTools (C + the existing `python3`) and
@@ -154,7 +154,7 @@ without changing the test's shape.
 
 **6. Docs alignment.** Promote the flow to an operator install guide
 whose command sequence matches the test script one-for-one; note in
-`docs/boot/qemu-uefi.md` that the flow is CI-enforced.
+`docs/maintainers/source-build-quickstart.md` that the flow is CI-enforced.
 
 ### Sequencing
 

@@ -3,7 +3,7 @@
 - **Status:** Architectural specification with implemented workspace components.
   Requirements describe the target guarantees; implementation and qualification
   are tracked in [`32-implementation-plan.md`](32-implementation-plan.md) and the
-  [validation record](../../architecture/crate-migration-validation.md). The current
+  [Rust workspace guide](../../engineering/rust-workspace.md). The current
   package map does not claim that every phase's gate is green.
 - **Date:** 2026-06-18
 - **PR:** [#112](https://github.com/andyl-technologies/aos/pull/112) (draft)

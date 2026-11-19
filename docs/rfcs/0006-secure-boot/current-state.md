@@ -164,7 +164,7 @@ rather than re-deriving it.
   baked anchor, in-band roster). The catalog work in
   [`registry-catalog.md`](registry-catalog.md) extends this, it does not
   restate it.
-- `docs/boot/qemu-uefi.md` — operator UEFI boot flow; will gain a SB section.
+- `docs/maintainers/source-build-quickstart.md` — operator UEFI boot flow; will gain a SB section.
 - `modules/security/verity.nix` — dm-verity exists, default off; relevant to
   the "what protects the rootfs" question but distinct from SB (block
   integrity vs boot-binary authenticity).
