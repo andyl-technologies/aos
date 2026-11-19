@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.qemuHostParallel",
-  taskIds ? ["T-PERF-29"],
   productionPluginFlight,
   campaignComposition ? null,
   testing ? import ../../lib/testing {inherit pkgs lib;},
@@ -15,7 +14,6 @@
   lifecycleConfig = builtins.readFile ../../crates/crucible/crucible-daemon/src/vm_lifecycle/config.rs;
   nodeSet = builtins.readFile ../../crates/crucible/crucible-qemu-host/src/node_set.rs;
   concurrentNodeSet = builtins.readFile ../../crates/crucible/crucible-qemu-host/src/node_set/concurrent.rs;
-  taskList = builtins.concatStringsSep "," taskIds;
   inherit (import ./_lib.nix {inherit lib;}) failuresFor hasInfix;
 
   failures =
@@ -126,7 +124,6 @@
     PASS
     check=${attrPath}
     gate=gate:qemu-host-parallel
-    tasks=${taskList}
     status=complete
     scheduler_commit=after-all-fixed-runs-complete
     backend=qemu-node-set

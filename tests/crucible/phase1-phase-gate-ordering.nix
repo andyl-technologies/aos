@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.phaseGateOrdering",
-  taskIds ? ["T-HARN-26"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -63,7 +62,7 @@
         needle = "sim_double_is_available_before_dependent_gate_occurrences";
       }
       {
-        label = "HARN-3 layer precedence test";
+        label = "layer precedence test";
         needle = "layer_gate_precedences_keep_lower_layer_checks_first";
       }
       {
@@ -201,7 +200,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
             rust_test=crucible_test_support::phase_plan
             phase_gate_ordering=green-before-advance
             terminal_gate=gate:signal-fault-system

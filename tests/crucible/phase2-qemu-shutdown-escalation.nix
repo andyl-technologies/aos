@@ -2,17 +2,14 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuShutdownEscalation",
-  taskIds ? ["T-QEMU-8"],
 }: let
   protocolShutdown = import ./phase2-protocol-shutdown-escalation.nix {
     inherit pkgs lib;
     attrPath = "${attrPath}.protocol";
-    taskIds = ["T-QEMU-8" "T-PROTO-7"];
   };
   setupFailure = import ./phase2-qemu-production-setup-failure.nix {
     inherit pkgs lib;
     attrPath = "checks.crucible.phase2.qemuProductionSetupFailure";
-    taskIds = ["T-PROTO-8"];
   };
   lifecycle = import ./phase0-lifecycle.nix {inherit pkgs lib;};
 
@@ -21,7 +18,6 @@
   shutdownTest = builtins.readFile ../../crates/crucible/crucible-qemu-host/tests/shutdown.rs;
   lifecycleSource = builtins.readFile ./phase0-lifecycle.c;
 
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -151,7 +147,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             gate=gate:control-responsive
             shutdown_order=Quit,QMP-quit,SIGTERM,SIGKILL,reap
             bounded_rungs=control-quit,qmp-quit,sigterm,sigkill,reap

@@ -1,7 +1,6 @@
 {
   pkgs,
   attrPath ? "checks.crucible.phase9.gates.campaignReleaseAcceptanceContract",
-  taskIds ? [],
   dependencies ? [],
 }: let
   contractPath = ./campaign-release-acceptance-contract.toml;
@@ -20,16 +19,6 @@
     == "aos.crucible.campaign-release-acceptance-contract.v2"
     && contract.gate == "gate:campaign-release-acceptance"
     && contract.acceptance_state == "automated-evidence-required"
-    && contract.implementation_tasks
-    == [
-      "T-CAM-9.1"
-      "T-CAM-9.2"
-      "T-CAM-9.3"
-      "T-CAM-9.4"
-      "T-CAM-9.5"
-      "T-CAM-9.6"
-      "T-CAM-9.7"
-    ]
     && contract.executable_evidence.required_gates == expectedExecutableGates
     && builtins.elem "gate:campaign-performance" contract.executable_evidence.required_claim_gates
     && builtins.elem "gate:campaign-envoy-known-finding" contract.executable_evidence.required_claim_gates
@@ -395,7 +384,6 @@ in
             CONTRACT_VALIDATED
             check=${attrPath}
             gate=gate:campaign-release-acceptance-contract
-            tasks=${builtins.concatStringsSep "," taskIds}
             schema=aos.crucible.campaign-release-acceptance-contract.v2
             automated_evidence=required
             e2e_evidence=local-live-qemu-required

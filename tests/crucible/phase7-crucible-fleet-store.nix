@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.crucibleFleetStore",
-  taskIds ? ["T-PKG-21"],
   dependencies ? [],
 }: let
   packagingDoc = builtins.readFile ../../docs/engineering/crucible/packaging.md;
@@ -146,10 +145,6 @@
         label = "fleet visibility marker";
         needle = "fleet_visible=true";
       }
-      {
-        label = "DCE shared store task marker";
-        needle = "dce_task=T-DCE-1";
-      }
     ]
     ++ (
       if hasNativeGrepBuildDep
@@ -226,7 +221,7 @@
     ]
     ++ forbiddenFor "default.nix" rootDefault [
       {
-        label = "KVM requirement on T-PKG-21 fleet surface";
+        label = "KVM requirement on fleet-store surface";
         needle = ''requiredSystemFeatures = [ "kvm" ]'';
       }
     ]
@@ -294,7 +289,6 @@ in
             cat > "$out/result" <<RESULT
             PASS
             check=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
             package=pkgs.crucible-fleet-store
             fleet_check_surface=checks.fleet.crucible-distributed-continuous-exploration
             dag_store_backend=SharedDagStore

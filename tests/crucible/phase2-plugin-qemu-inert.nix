@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginQemuInert",
-  taskIds ? ["T-PLUG-23"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -13,8 +12,6 @@
   pluginSpec = builtins.readFile ../../docs/engineering/crucible/qemu-plugin.md;
   harnessSpec = builtins.readFile ../../docs/engineering/crucible/testing-and-gates.md;
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -272,9 +269,8 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             gate=gate:qemu-inert
-            plugin_half=contributes-to-PLUG-49-sim-off-no-plugin-arg-no-load-no-effects
+            plugin_half=sim-off-no-plugin-arg-no-load-no-effects
             full_PLUG49_gate=complete-with-live-corpus
             full_real_qemu_corpus=checks.crucible.phase2.gates.qemuInert
             RESULT

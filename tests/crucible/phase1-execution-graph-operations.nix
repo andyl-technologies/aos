@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.executionGraphOperations",
-  taskIds ? ["T-EXEC-13"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -177,7 +176,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
             save=fat-checkpoint-keyed-by-configuration-id
             replay=on-demand-thin-replay-oracle
             search=frontier-step-enumeration

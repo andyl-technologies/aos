@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.crucibleDceIntegration",
-  taskIds ? ["T-DCE-10"],
   dependencies ? [],
 }: let
   distributedExplorationDoc = builtins.readFile ../../docs/engineering/crucible/distributed-exploration.md;
@@ -176,7 +175,7 @@
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
-        label = "T-DCE-10 integration guard imported";
+        label = "DCE integration guard imported";
         needle = "crucibleDceIntegration = import ./phase7-crucible-dce-integration.nix";
       }
       {
@@ -230,8 +229,8 @@
         needle = "shared_seam=SharedDagStore+InvalidationQuery::evaluate";
       }
       {
-        label = "no RFC-0007 dependency";
-        needle = "no_rfc_0007_dependency=true";
+        label = "no ratchet dependency";
+        needle = "no_ratchet_dependency=true";
       }
     ]
     ++ failuresFor "tests/crucible/phase7-crucible-fleet-equivalence.nix" fleetEquivalenceGate [
@@ -352,7 +351,6 @@ in
             cat > "$out/result" <<RESULT
             PASS
             check=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
             canonical_gates=gate:fleet-equivalence,gate:campaign-continuity
             canonical_catalog=docs/engineering/crucible/testing-and-gates.md
             phase_plan=crates/crucible/crucible-test-support/src/phase_plan.rs

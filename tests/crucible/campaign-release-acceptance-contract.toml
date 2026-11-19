@@ -1,7 +1,6 @@
 schema = "aos.crucible.campaign-release-acceptance-contract.v2"
 gate = "gate:campaign-release-acceptance"
 acceptance_state = "automated-evidence-required"
-implementation_tasks = ["T-CAM-9.1", "T-CAM-9.2", "T-CAM-9.3", "T-CAM-9.4", "T-CAM-9.5", "T-CAM-9.6", "T-CAM-9.7"]
 
 [executable_evidence]
 required_gates = [
@@ -39,7 +38,6 @@ required_claim_gates = [
   "gate:abi-conformance",
   "gate:control-responsiveness",
   "gate:campaign-mutation-scaling",
-  "gate:campaign-rfc-traceability",
   "gate:campaign-exact-maintenance-transfer",
   "gate:campaign-policy-timeout-real-qemu",
   "gate:campaign-finding-exact-read-only",

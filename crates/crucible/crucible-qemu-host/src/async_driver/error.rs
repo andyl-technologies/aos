@@ -40,8 +40,8 @@ impl QemuAsyncDriverRuntimeError {
         Self {
             operation: "reserve fault preparation result",
             // This constructor is itself used after allocation refusal. Keep
-            // its diagnostic storage empty so propagating typed LIMIT-2 never
-            // attempts another heap allocation.
+            // its diagnostic storage empty so propagating the typed resource
+            // limit never attempts another heap allocation.
             message: String::new(),
             detail: QemuAsyncDriverRuntimeErrorDetail::FaultResultStorage(
                 u32::try_from(requested).unwrap_or(u32::MAX),

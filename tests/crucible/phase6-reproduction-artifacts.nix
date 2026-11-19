@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase6.reproductionArtifacts",
-  taskIds ? ["T-ADV-14"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -16,8 +15,6 @@
   };
   artifactTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/gate_reproduction_artifacts.rs;
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -149,10 +146,6 @@
         needle = "reproductionArtifacts = greenBeforeAdvance";
       }
       {
-        label = "explicit task id";
-        needle = "taskIds = [\"T-ADV-14\"]";
-      }
-      {
         label = "corpus raw dependency";
         needle = "phase6.coverageGuidedCorpus.rawGate";
       }
@@ -244,7 +237,6 @@ in
             cat > "$out/result" <<RESULT
             PASS
             check=${attrPath}
-            tasks=${taskList}
             gate=gate:reproduction-artifacts
             artifact=self-contained-seed-scenario-schedule
             paths=campaign-fork,state-space-search,coverage-guided-fuzzing,retained-corpus

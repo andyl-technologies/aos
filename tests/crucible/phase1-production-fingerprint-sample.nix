@@ -2,8 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.singleVmFingerprint",
-  taskIds ? [],
-  openTaskIds ? [],
   dependencies ? [],
   campaignComposition ? null,
 }: let
@@ -99,8 +97,6 @@ in
           PASS
           check=${attrPath}
           gate=gate:single-vm-fingerprint
-          tasks=${builtins.concatStringsSep "," taskIds}
-          open_tasks=${builtins.concatStringsSep "," openTaskIds}
           status=complete
           real_qemu_source=checks.crucible.phase7.productionRustPluginFlight
           projection_source=checks.crucible.phase2.qemuFingerprintProjectionManifest

@@ -2,8 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase3.gates.adversarialDeterminism",
-  taskIds ? ["T-HARN-22"],
-  openTaskIds ? [],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -18,8 +16,6 @@
   gateTargetMapping = builtins.readFile ./phase1-gate-target-mapping.nix;
   defaultChecks = builtins.readFile ./default.nix;
   testingDoc = builtins.readFile ../../docs/engineering/crucible/testing-and-gates.md;
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
@@ -217,10 +213,6 @@
         label = "phase3 adversarial attr path";
         needle = "attrPath = \"checks.crucible.phase3.gates.adversarialDeterminism\"";
       }
-      {
-        label = "phase3 adversarial task id";
-        needle = "\"T-HARN-22\"";
-      }
     ]
     ++ forbiddenFor "tests/crucible/default.nix" defaultChecks [
       {
@@ -312,7 +304,6 @@ in
             PASS
             check=${attrPath}
             gate=gate:adversarial-determinism
-            tasks=${taskList}
             rust_tests=crucible_test_support::gate_adversarial_determinism,crucible_engine::gate_adversarial_determinism
             hostile_profiles=quiet-single-core,loaded-single-core,reordered-two-core,loaded-many-core
             hostile_dimensions=task-order,logical-affinity,load-yield,worker-count,producer-consumer-skew,host-io

@@ -5,8 +5,8 @@ use super::*;
 impl BlockDevice {
     /// Builds a block device over `base` with the given core and latency model.
     ///
-    /// The base image is held read-only and never mutated ([IO-5]); the overlay
-    /// starts empty so every read falls through to the base.
+    /// The base image is held read-only and never mutated; the overlay starts
+    /// empty so every read falls through to the base.
     #[must_use]
     pub fn new(core: IoCore, base: BaseImage, latency: BlockLatency) -> Self {
         let storage_faults = BlockFaultState::write_through(base.len());
@@ -19,7 +19,7 @@ impl BlockDevice {
         }
     }
 
-    /// Returns the device length in bytes (the base image size, [IO-6]).
+    /// Returns the device length in bytes (the base image size).
     #[must_use]
     pub fn length(&self) -> u64 {
         self.base.len()

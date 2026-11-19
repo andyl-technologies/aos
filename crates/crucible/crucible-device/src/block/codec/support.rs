@@ -27,7 +27,7 @@ pub(super) fn u64_le(buf: &[u8], offset: usize) -> u64 {
 /// A malformed-message failure of the block wire codec.
 ///
 /// Every variant is a pure function of the input bytes; decoding hostile input
-/// always lands here rather than panicking ([IO-8], `gate:abi-conformance`).
+/// always lands here rather than panicking (`gate:abi-conformance`).
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, thiserror::Error, serde::Serialize, serde::Deserialize,
 )]
@@ -105,9 +105,9 @@ pub enum BlockCodecError {
 
     /// A payload length does not fit the `u32` wire `count` field.
     ///
-    /// The block wire `count` is a `u32` ([IO-8]); a payload of more than
-    /// `u32::MAX` bytes cannot be faithfully encoded. Rejecting at encode time
-    /// is loud and lossless rather than silently clamping the count downward.
+    /// The block wire `count` is a `u32`; a payload of more than `u32::MAX`
+    /// bytes cannot be faithfully encoded. Rejecting at encode time is loud and
+    /// lossless rather than silently clamping the count downward.
     #[error("payload length {len} does not fit the u32 wire count field")]
     CountOverflow {
         /// The payload length that overflowed the `u32` `count` field.

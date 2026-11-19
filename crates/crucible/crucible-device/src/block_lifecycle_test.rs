@@ -324,7 +324,7 @@ fn device_out_of_range_read_returns_error_status() {
     assert_eq!(r.status, BlockStatus::Error);
 }
 
-// ---- completion model: host-timing independence (IO-10,22) ----
+// ---- completion model: host-timing independence ----
 
 #[test]
 fn latency_depends_only_on_op_and_count() {

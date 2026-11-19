@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase6.coverageGuidedFuzzing",
-  taskIds ? ["T-ADV-12"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -25,8 +24,6 @@
   searchStrategiesGate = builtins.readFile ./phase6-search-strategies.nix;
   basicBlockCoverageGate = builtins.readFile ./phase6-basic-block-coverage.nix;
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -294,10 +291,6 @@
         needle = "checks.crucible.phase6.coverageGuidedFuzzing";
       }
       {
-        label = "phase6 coverage-guided fuzzing task id";
-        needle = ''taskIds = ["T-ADV-12"]'';
-      }
-      {
         label = "phase1 content address raw dependency";
         needle = "\n          phase1.gates.contentAddress.rawGate\n";
       }
@@ -443,13 +436,12 @@ in
             cat > "$out/result" <<RESULT
             PASS
             check=${attrPath}
-            tasks=${taskList}
             gate=gate:coverage-guided-fuzzing
             family_execution=pinned-scenario-only
             family_sampler_decision=Decision::Selection
             live_override_gate=checks.crucible.phase5.cliSearchFuzzWorkflow
             coverage_feedback=event-log-projection
-            corpus_storage=deferred-to-T-ADV-13
+            corpus_storage=checks.crucible.phase6.coverageGuidedCorpus
             RESULT
           '';
         }

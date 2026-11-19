@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.guestHostBlackBoxSurface",
-  taskIds ? ["T-GHC-1"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -15,7 +14,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-  taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [
       {
@@ -150,10 +148,6 @@
         label = "phase4 black-box surface attr path";
         needle = "checks.crucible.phase4.guestHostBlackBoxSurface";
       }
-      {
-        label = "phase4 black-box surface task id";
-        needle = "taskIds = [\"T-GHC-1\"]";
-      }
     ]
     ++ forbiddenFor "crates/crucible/crucible-engine/tests/guest_host_black_box_surface.rs" surfaceTest [
       {
@@ -237,7 +231,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             surface=network,disk-9p,console-serial,qmp-state,run-outcome,crash-hang,basic-block-coverage
             determinism_class=observational
             RESULT

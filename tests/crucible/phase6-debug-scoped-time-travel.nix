@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase6.debugScopedTimeTravel",
-  taskIds ? ["T-DBG-5"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -16,8 +15,6 @@
   };
   timeTravelTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/gate_debug_time_travel.rs;
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -189,10 +186,6 @@
         needle = "debugScopedTimeTravel = greenBeforeAdvance";
       }
       {
-        label = "explicit task id";
-        needle = "taskIds = [\"T-DBG-5\"]";
-      }
-      {
         label = "debug time-travel raw dependency";
         needle = "phase6.debugTimeTravel.rawGate";
       }
@@ -284,7 +277,6 @@ in
             cat > "$out/result" <<RESULT
             PASS
             check=${attrPath}
-            tasks=${taskList}
             gate=gate:debug-scoped-time-travel
             per_node=icount-scoped-other-nodes-untouched
             whole_world=prefix-fork-minus-divergence

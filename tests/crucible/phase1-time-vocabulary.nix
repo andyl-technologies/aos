@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.timeVocabulary",
-  taskIds ? ["T-TIME-1"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -203,7 +202,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
             types=Icount,Shift,VirtualInstant,SimInstant,SimDuration,SimOffset
             conversions=to_virtual,to_icount_floor,to_icount_ceil
             point_plus_point=false

@@ -2,8 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.cliSelftest",
-  taskIds ? ["T-CLI-8"],
-  openTaskIds ? [],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -155,14 +153,6 @@
         needle = ''#[cfg_attr(not(any(test, feature = "test-double")), arg(hide = true))]'';
       }
       {
-        label = "stale qemu runner blocker";
-        needle = "real-QEMU selftest gate runner tracked by T-CLI-8";
-      }
-      {
-        label = "stale extended runner blocker";
-        needle = "real-QEMU and extended gate runners remain tracked by T-CLI-8";
-      }
-      {
         label = "hidden selftest cgroup root";
         needle = "CRUCIBLE_QEMU_" + "CGROUP_ROOT";
       }
@@ -197,8 +187,6 @@ in
       runtimeDeps = [pkgs.sqlite];
 
       ATTR_PATH = attrPath;
-      TASK_IDS = builtins.concatStringsSep "," taskIds;
-      OPEN_TASK_IDS = builtins.concatStringsSep "," openTaskIds;
       DEPENDENCY_COUNT = toString (builtins.length dependencies);
       DEPENDENCY_PATHS = builtins.concatStringsSep ":" dependencies;
 
@@ -402,8 +390,6 @@ in
       buildDeps = [pkgs.coreutils sourceChecks vmTest];
 
       ATTR_PATH = attrPath;
-      TASK_IDS = builtins.concatStringsSep "," taskIds;
-      OPEN_TASK_IDS = builtins.concatStringsSep "," openTaskIds;
       DEPENDENCY_COUNT = toString (builtins.length dependencies);
       DEPENDENCY_PATHS = builtins.concatStringsSep ":" dependencies;
 
@@ -417,8 +403,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=$ATTR_PATH
-            tasks=$TASK_IDS
-            open_tasks=$OPEN_TASK_IDS
             status=complete
             evidence_scope=packaged-production-cli-live-qemu-vm
             component=crucible-cli

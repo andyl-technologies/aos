@@ -218,9 +218,9 @@ pub enum DeviceError {
     /// A read or write range extends past the device length.
     ///
     /// The block sub-node rejects an out-of-bounds range rather than silently
-    /// truncating or extending it ([IO-6]). It is surfaced in band as an
-    /// error-status response when a request is served, and out of band (this
-    /// error) when the overlay API is called directly.
+    /// truncating or extending it. It is surfaced in band as an error-status
+    /// response when a request is served, and out of band (this error) when the
+    /// overlay API is called directly.
     #[error("range [{offset}, {offset}+{len}) extends past device length {device_len}")]
     OutOfRange {
         /// The byte offset of the rejected range.
@@ -233,10 +233,10 @@ pub enum DeviceError {
 
     /// A restore was handed a base image whose hash differs from the snapshot's.
     ///
-    /// The block snapshot never carries the base image bytes ([TEMP-9]); restore
+    /// The block snapshot never carries the base image bytes; restore
     /// re-supplies the content-addressed base and verifies its BLAKE3 hash
-    /// matches the recorded `base_hash` ([IO-11]). A mismatch means the wrong
-    /// parent World was supplied.
+    /// matches the recorded `base_hash`. A mismatch means the wrong parent
+    /// World was supplied.
     #[error("restore base hash mismatch")]
     BaseMismatch {
         /// The BLAKE3 hash the snapshot recorded for its base.
@@ -248,19 +248,19 @@ pub enum DeviceError {
     /// A block wire message failed to decode at the device boundary.
     ///
     /// Hostile request bytes are answered in band with an error-status response
-    /// rather than this error ([IO-8]); this variant surfaces only when the
-    /// device's own re-encoded response fails to decode, which indicates an
-    /// internal encoding bug, not external input.
+    /// rather than this error; this variant surfaces only when the device's own
+    /// re-encoded response fails to decode, which indicates an internal
+    /// encoding bug, not external input.
     #[error("block wire codec error: {0}")]
     Codec(#[from] BlockCodecError),
 
     /// A 9p wire message failed to encode at the device boundary.
     ///
     /// Hostile request bytes are answered in band with an `Rlerror` response
-    /// rather than this error ([IO-17], [IO-18]); this variant surfaces only when
-    /// the device's own re-encoded response fails to encode (for example a
-    /// `readdir` payload that overflows the negotiated `msize`), which indicates
-    /// an internal encoding bug, not external input.
+    /// rather than this error; this variant surfaces only when the device's own
+    /// re-encoded response fails to encode (for example a `readdir` payload
+    /// that overflows the negotiated `msize`), which indicates an internal
+    /// encoding bug, not external input.
     #[error("9p wire codec error: {0}")]
     NinepCodec(#[from] NinepCodecError),
 
@@ -322,12 +322,11 @@ pub enum DeviceError {
     /// This is the link's fail-loud path: a reorder fault is a per-frame seeded
     /// delivery-icount shift that may move one frame's delivery past another's,
     /// but every resulting `delivery_icount` MUST stay within the consumer's
-    /// future at the instant the frame is enqueued ([SHM-35]). A
-    /// modeled shift that would land at or before the consumer's current frontier
-    /// can never be delivered at its exact icount; rather than silently deliver
-    /// late, the link either clamps to a deliverable future icount (the
-    /// caller-selected policy) or fails loudly with this error via the divergence
-    /// path ([INV-10]).
+    /// future at the instant the frame is enqueued. A modeled shift that would
+    /// land at or before the consumer's current frontier can never be delivered
+    /// at its exact icount; rather than silently deliver late, the link either
+    /// clamps to a deliverable future icount (the caller-selected policy) or
+    /// fails loudly with this error via the divergence path.
     #[error(
         "reorder/jitter shift moved frame delivery to icount {delivery_icount}, in the consumer's past (frontier {consumer_frontier})"
     )]
@@ -340,10 +339,11 @@ pub enum DeviceError {
 
     /// A backpressured ring is full and cannot accept the producer's frame.
     ///
-    /// This is the deterministic block-and-wait signal of [IO-32]: the producer
-    /// blocks at its current boundary until the consumer frees a slot. It is
-    /// never a drop — the caller retries after the consumer drains. It is also
-    /// reused as the capacity-shape rejection for a non-power-of-two ring size.
+    /// This is the deterministic block-and-wait backpressure signal: the
+    /// producer blocks at its current boundary until the consumer frees a slot.
+    /// It is never a drop — the caller retries after the consumer drains. It is
+    /// also reused as the capacity-shape rejection for a non-power-of-two ring
+    /// size.
     #[error("ring is full at capacity {capacity}; producer must block until space frees")]
     RingFull {
         /// The fixed ring capacity in entries.

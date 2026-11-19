@@ -4,11 +4,9 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuProductionSetupFailure",
-  taskIds ? ["T-PROTO-8"],
 }: let
   source = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
-  taskList = builtins.concatStringsSep "," taskIds;
 in
   pkgs.mkDerivation {
     pname = "crucible-qemu-production-setup-failure";
@@ -18,7 +16,6 @@ in
 
     buildDeps = [pkgs.sqlite pkgs.coreutils pkgs.grep pkgs.rust];
     ATTR_PATH = attrPath;
-    TASK_IDS = taskList;
 
     phases = [
       {
@@ -70,7 +67,6 @@ in
           {
             printf 'PASS\n'
             printf 'check=%s\n' "$ATTR_PATH"
-            printf 'tasks=%s\n' "$TASK_IDS"
             printf 'descriptor_handoff=fail-closed\n'
             printf 'setup_ack=non-ready-rejected\n'
             printf 'real_region_validation=corruption-rejected\n'

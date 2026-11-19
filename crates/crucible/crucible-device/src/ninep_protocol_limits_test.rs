@@ -72,13 +72,13 @@ fn malformed_body_returns_einval() {
     assert_eq!(rlerror_code(&reply), errno::EINVAL);
 }
 
-// ---- msize enforcement (IO-18) ---------------------------------------
+// ---- msize enforcement ---------------------------------------
 
 #[test]
 fn over_msize_request_is_rejected() {
     let mut dev = device();
     // A tiny proposed msize clamps UP to the MIN_MSIZE floor (which provably
-    // fits every fixed-shape reply, [IO-18]).
+    // fits every fixed-shape reply).
     round_trip(&mut dev, 0, &tversion(1, 64, codec::PROTOCOL_VERSION));
     let msize = dev.server().msize();
     assert_eq!(msize, server::MIN_MSIZE);
@@ -140,7 +140,7 @@ fn readdir_respects_msize_budget_across_chunks() {
 fn regression_no_reply_exceeds_negotiated_msize() {
     // Before the fix, MIN_MSIZE (71) was below the 152-byte Rgetattr frame:
     // negotiating the floor and issuing a getattr emitted a 152-byte reply >
-    // msize, violating [IO-18]. Now MIN_MSIZE is derived to fit every
+    // msize, violating the msize bound. Now MIN_MSIZE is derived to fit every
     // fixed-shape reply, and a universal outbound cap backstops the rest.
     // Property: across a representative request mix, NO reply exceeds msize.
     let mut dev = device();
@@ -190,8 +190,8 @@ fn regression_no_reply_exceeds_negotiated_msize() {
 #[test]
 fn regression_qid_path_distinguishes_adversarial_structured_samples() {
     // Before the fix, qid_path joined components with '/', so distinct
-    // component vectors collided: ["a","b"] == ["a/b"] and [] == [""].
-    // The length-prefixed encoding makes these distinct ([IO-13]).
+    // component vectors collided: ["a","b"] == ["a/b"] and [] == [""]. The
+    // length-prefixed encoding makes these distinct.
     assert_ne!(
         qid_path(&["a".to_string(), "b".to_string()]),
         qid_path(&["a/b".to_string()]),
@@ -241,7 +241,7 @@ fn regression_qid_path_distinguishes_adversarial_structured_samples() {
 #[test]
 fn regression_walk_rejects_illegal_component_from_wire() {
     // A walk name carrying a NUL byte (illegal, would alias a QID) is rejected
-    // with EINVAL rather than silently aliasing ([IO-13]).
+    // with EINVAL rather than silently aliasing.
     let mut dev = device();
     round_trip(
         &mut dev,
@@ -264,9 +264,9 @@ fn regression_walk_rejects_illegal_component_from_wire() {
 
 #[test]
 fn regression_oversized_single_dirent_returns_emsgsize_not_empty() {
-    // Before the fix, a dirent larger than the client `count` budget yielded
-    // an empty Rreaddir (count=0) -- read as end-of-directory by the client,
-    // i.e. silent truncation that [IO-18] forbids. Now the server returns
+    // Before the fix, a dirent larger than the client `count` budget yielded an
+    // empty Rreaddir (count=0) -- read as end-of-directory by the client, i.e.
+    // silent truncation, which is forbidden. Now the server returns
     // Rlerror(EMSGSIZE) when not even the first resumable entry fits.
     //
     // Build a tree with one long-named child so a single dirent is large.
@@ -307,4 +307,4 @@ fn regression_oversized_single_dirent_returns_emsgsize_not_empty() {
     assert_eq!(names, vec![long_name]);
 }
 
-// ---- fid table snapshot/restore round-trip (IO-19) -------------------
+// ---- fid table snapshot/restore round-trip -------------------

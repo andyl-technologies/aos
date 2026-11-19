@@ -1,25 +1,25 @@
 //! The 9P2000.L request dispatcher: fid state, the read-only boundary, errnos.
 //!
-//! This module owns [`NinepServer`], the deterministic protocol engine that maps
-//! a decoded [`Message`] to a reply frame. It holds the negotiated `msize`, the
-//! [`FsTree`] being served, and the **fid table** — a [`BTreeMap`] from fid to
-//! the canonical path (and open state) it names ([IO-19]). The dispatcher:
+//! This module owns [`NinepServer`], the deterministic protocol engine that
+//! maps a decoded [`Message`] to a reply frame. It holds the negotiated
+//! `msize`, the [`FsTree`] being served, and the **fid table** — a [`BTreeMap`]
+//! from fid to the canonical path (and open state) it names. The dispatcher:
 //!
 //! - negotiates a **fixed protocol version** and a **deterministic `msize`** (the
-//!   minimum of the client's request and the server's fixed maximum, [IO-16]);
+//!   minimum of the client's request and the server's fixed maximum);
 //! - serves the read/traverse subset (attach, walk, lopen, read, readdir,
-//!   getattr, readlink, statfs, clunk, flush, xattrwalk, fsync) ([IO-17]);
+//!   getattr, readlink, statfs, clunk, flush, xattrwalk, fsync);
 //! - answers **every mutating message** with `EROFS`, unknown types with
-//!   `ENOSYS`, and malformed input with `EINVAL`/`EIO` ([IO-17]);
-//! - **enforces `msize`**: a request frame larger than the negotiated `msize` is
-//!   rejected, and a reply that would exceed `msize` is turned into an error
-//!   rather than emitted ([IO-18]);
+//!   `ENOSYS`, and malformed input with `EINVAL`/`EIO`;
+//! - **enforces `msize`**: a request frame larger than the negotiated `msize`
+//!   is rejected, and a reply that would exceed `msize` is turned into an error
+//!   rather than emitted;
 //! - is **snapshot/restore-able**: [`NinepServer::snapshot`] captures the fid
-//!   table and `msize`; open directory caches are reconstructed from the tree on
-//!   restore because their content is a pure function of the tree ([IO-19]).
+//!   table and `msize`; open directory caches are reconstructed from the tree
+//!   on restore because their content is a pure function of the tree.
 //!
 //! The fid table iteration order is fixed (a [`BTreeMap`]), so no host hashing
-//! ever influences a reply ([IO-24]).
+//! ever influences a reply.
 
 use std::collections::BTreeMap;
 
@@ -38,8 +38,8 @@ pub use types::{
 impl NinepServer {
     /// Builds a server over `tree` with `msize` un-negotiated (the fixed max).
     ///
-    /// The effective `msize` is pinned by the first `Tversion` ([IO-16]); before
-    /// that the server reports [`MAX_MSIZE`].
+    /// The effective `msize` is pinned by the first `Tversion`; before that the
+    /// server reports [`MAX_MSIZE`].
     #[must_use]
     pub fn new(tree: FsTree) -> Self {
         Self {
@@ -78,8 +78,8 @@ impl NinepServer {
     ///
     /// Decodes `request_bytes`, enforces the negotiated `msize`, dispatches the
     /// typed message, and encodes the reply. A malformed frame, a mutating
-    /// message, an unknown type, an over-`msize` frame, or a fid error all yield
-    /// a well-formed `Rlerror` reply rather than a panic ([IO-17], [IO-18]).
+    /// message, an unknown type, an over-`msize` frame, or a fid error all
+    /// yield a well-formed `Rlerror` reply rather than a panic.
     ///
     /// The returned bytes are always a valid 9p frame; the only `Err` path is a
     /// pathological *reply* that cannot be encoded (frame-size overflow), which
@@ -91,7 +91,7 @@ impl NinepServer {
     /// fails (frame-size overflow). All request-side malformations are answered
     /// in band with an `Rlerror`, never returned as an `Err`.
     pub fn handle(&mut self, request_bytes: &[u8]) -> Result<Vec<u8>, NinepCodecError> {
-        // Enforce msize on the inbound frame ([IO-18]): a frame larger than the
+        // Enforce msize on the inbound frame: a frame larger than the
         // negotiated maximum is rejected before any parsing. The tag is unknown
         // for an over-large frame, so the error carries the NOTAG sentinel.
         if request_bytes.len() > self.msize as usize {
@@ -101,8 +101,8 @@ impl NinepServer {
         let message = match Message::decode(request_bytes) {
             Ok(message) => message,
             Err(_) => {
-                // Malformed body -> EINVAL ([IO-17]). The tag may be unparsable,
-                // so recover it from the header if present, else use NOTAG.
+                // Malformed body -> EINVAL. The tag may be unparsable, so
+                // recover it from the header if present, else use NOTAG.
                 let tag = request_bytes
                     .get(5..7)
                     .map(|b| u16::from_le_bytes([b[0], b[1]]))
@@ -132,25 +132,26 @@ impl NinepServer {
             TMessage::Flush { .. } => codec::encode_rflush(tag),
             TMessage::Xattrwalk { fid, newfid } => self.handle_xattrwalk(tag, fid, newfid),
             TMessage::Fsync { fid } => self.handle_fsync(tag, fid),
-            // The read-only boundary: every mutating message is EROFS ([IO-17]).
+            // The read-only boundary: every mutating message is EROFS.
             TMessage::Mutating { .. } => codec::encode_rlerror(tag, errno::EROFS),
-            // An unimplemented message type is ENOSYS ([IO-17]).
+            // An unimplemented message type is ENOSYS.
             TMessage::Unknown { .. } => codec::encode_rlerror(tag, errno::ENOSYS),
         }?;
 
-        // Universal outbound msize cap ([IO-18]): no reply may exceed the
-        // negotiated msize. The per-handler budgets (read/readdir) keep their
-        // replies within it, and MIN_MSIZE is the floor that fits every
-        // fixed-shape reply; this is the backstop that turns any reply that
-        // would still overflow into an Rlerror(EMSGSIZE) rather than emitting an
-        // un-representable frame. An Rlerror is HEADER+4 bytes, always <= msize.
+        // Universal outbound msize cap: no reply may exceed the negotiated
+        // msize. The per-handler budgets (read/readdir) keep their replies
+        // within it, and MIN_MSIZE is the floor that fits every fixed-shape
+        // reply; this is the backstop that turns any reply that would still
+        // overflow into an Rlerror(EMSGSIZE) rather than emitting an
+        // un-representable frame. An Rlerror is HEADER+4 bytes, always <=
+        // msize.
         if reply.len() > self.msize as usize {
             return codec::encode_rlerror(tag, errno::EMSGSIZE);
         }
         Ok(reply)
     }
 
-    /// Negotiates the protocol version and `msize` ([IO-16]).
+    /// Negotiates the protocol version and `msize`.
     ///
     /// On **accept** (the client proposed [`codec::PROTOCOL_VERSION`]) this pins
     /// the `msize` to `client.clamp(MIN_MSIZE, MAX_MSIZE)`, marks the session
@@ -184,7 +185,7 @@ impl NinepServer {
         }
     }
 
-    /// Attaches `fid` to the served tree root ([IO-17]).
+    /// Attaches `fid` to the served tree root.
     fn handle_attach(&mut self, tag: u16, fid: u32) -> Result<Vec<u8>, NinepCodecError> {
         let qid = Qid::new(self.tree.root().qid_type(), super::tree::qid_path(&[]));
         self.fids.insert(
@@ -197,7 +198,7 @@ impl NinepServer {
         codec::encode_rattach(tag, &qid)
     }
 
-    /// Walks `wnames` from `fid`, binding the result to `newfid` ([IO-17]).
+    /// Walks `wnames` from `fid`, binding the result to `newfid`.
     ///
     /// A zero-length walk clones the fid (the 9p `Twalk` convention). A walk that
     /// cannot resolve a component returns `ENOENT`; a partial walk is reported as
@@ -224,9 +225,9 @@ impl NinepServer {
             if name == ".." {
                 path.pop();
             } else if name != "." {
-                // Reject an illegal walk component from the wire ([IO-13]): an
-                // empty, '/'-bearing, or NUL-bearing name would alias another
-                // node's QID. EINVAL is the 9p errno for a malformed name.
+                // Reject an illegal walk component from the wire: an empty,
+                // '/'-bearing, or NUL-bearing name would alias another node's
+                // QID. EINVAL is the 9p errno for a malformed name.
                 if super::tree::validate_component(name).is_err() {
                     return codec::encode_rlerror(tag, errno::EINVAL);
                 }
@@ -256,7 +257,7 @@ impl NinepServer {
         codec::encode_rwalk(tag, &qids)
     }
 
-    /// Opens `fid` for reading ([IO-17]).
+    /// Opens `fid` for reading.
     ///
     /// The flags are accepted but a read-only server never honors write intent;
     /// the open simply marks the fid [`FidState::Open`] so subsequent reads and
@@ -279,7 +280,7 @@ impl NinepServer {
         codec::encode_rlopen(tag, &qid, IOUNIT_ANY)
     }
 
-    /// Reads `count` bytes at `offset` from the file behind `fid` ([IO-17]).
+    /// Reads `count` bytes at `offset` from the file behind `fid`.
     ///
     /// A read of a directory fid is rejected with `EISDIR` (clients must use
     /// `readdir`); a read past end returns an empty `Rread`. The returned slice
@@ -312,13 +313,13 @@ impl NinepServer {
         codec::encode_rread(tag, data)
     }
 
-    /// Reads packed directory entries at `offset` from `fid` ([IO-14], [IO-17]).
+    /// Reads packed directory entries at `offset` from `fid`.
     ///
     /// Entries are the [`FsTree`] children in lexicographic order with offsets
-    /// assigned *after* the sort, plus the synthetic `.` and `..` entries first.
-    /// The reply packs as many whole entries as fit `min(count, msize-budget)`,
-    /// resuming from the cookie `offset`; enumeration is byte-identical across
-    /// runs ([IO-14]).
+    /// assigned *after* the sort, plus the synthetic `.` and `..` entries
+    /// first. The reply packs as many whole entries as fit
+    /// `min(count, msize-budget)`, resuming from the cookie `offset`;
+    /// enumeration is byte-identical across runs.
     fn handle_readdir(
         &mut self,
         tag: u16,
@@ -335,9 +336,9 @@ impl NinepServer {
             None => return codec::encode_rlerror(tag, errno::ENOTDIR),
         };
 
-        // Build the full, deterministically ordered entry list once: "." and ".."
-        // (offsets 1 and 2), then the sorted children (offsets 3..). Offsets are
-        // 1-based cookies assigned strictly after the sort ([IO-14]).
+        // Build the full, deterministically ordered entry list once: "." and
+        // ".." (offsets 1 and 2), then the sorted children (offsets 3..).
+        // Offsets are 1-based cookies assigned strictly after the sort.
         let self_qid = self.tree.qid(&path).unwrap_or(Qid::new(
             super::codec::QidType::Dir,
             super::tree::qid_path(&path),
@@ -370,10 +371,10 @@ impl NinepServer {
                 // If not even the FIRST resumable entry fits, the client's count
                 // (or msize) is too small to carry this entry: fail loudly with
                 // EMSGSIZE rather than returning an empty Rreaddir, which the
-                // client would read as end-of-directory — silent truncation that
-                // [IO-18] forbids. The MIN_MSIZE floor guarantees any entry of a
-                // legal (<= namelen) name fits the negotiated msize, so this can
-                // only fire on a too-small client `count`.
+                // client would read as end-of-directory — silent truncation,
+                // which is forbidden. The MIN_MSIZE floor guarantees any entry
+                // of a legal (<= namelen) name fits the negotiated msize, so
+                // this can only fire on a too-small client `count`.
                 if data.is_empty() {
                     return codec::encode_rlerror(tag, errno::EMSGSIZE);
                 }
@@ -384,7 +385,7 @@ impl NinepServer {
         codec::encode_rreaddir(tag, &data)
     }
 
-    /// Returns the fixed/content-derived attributes for `fid` ([IO-15], [IO-17]).
+    /// Returns the fixed/content-derived attributes for `fid`.
     fn handle_getattr(
         &mut self,
         tag: u16,
@@ -401,7 +402,7 @@ impl NinepServer {
         }
     }
 
-    /// Returns the symlink target behind `fid` ([IO-17]).
+    /// Returns the symlink target behind `fid`.
     fn handle_readlink(&mut self, tag: u16, fid: u32) -> Result<Vec<u8>, NinepCodecError> {
         let path = match self.fids.get(&fid) {
             Some(entry) => entry.path.clone(),
@@ -414,7 +415,7 @@ impl NinepServer {
         }
     }
 
-    /// Returns the synthetic filesystem statistics for `fid` ([IO-15], [IO-17]).
+    /// Returns the synthetic filesystem statistics for `fid`.
     fn handle_statfs(&mut self, tag: u16, fid: u32) -> Result<Vec<u8>, NinepCodecError> {
         if !self.fids.contains_key(&fid) {
             return codec::encode_rlerror(tag, errno::EBADF);
@@ -422,7 +423,7 @@ impl NinepServer {
         self.tree.statfs().encode(tag)
     }
 
-    /// Releases `fid`, removing its binding ([IO-17], [IO-19]).
+    /// Releases `fid`, removing its binding.
     fn handle_clunk(&mut self, tag: u16, fid: u32) -> Result<Vec<u8>, NinepCodecError> {
         if self.fids.remove(&fid).is_none() {
             return codec::encode_rlerror(tag, errno::EBADF);
@@ -430,7 +431,7 @@ impl NinepServer {
         codec::encode_rclunk(tag)
     }
 
-    /// Prepares an xattr walk; a read-only export advertises no xattrs ([IO-17]).
+    /// Prepares an xattr walk; a read-only export advertises no xattrs.
     ///
     /// The new fid is bound to the same path and the reported attribute size is
     /// zero, so a client's subsequent xattr read yields nothing — deterministic
@@ -466,14 +467,14 @@ impl NinepServer {
     /// Returns the maximum reply *payload* bytes that fit the negotiated `msize`.
     ///
     /// A reply frame is the fixed [`HEADER_LEN`] header plus a small per-message
-    /// fixed prefix plus the payload; budgeting the payload at `msize - HEADER -
-    /// COUNT_PREFIX` keeps every reply within `msize` ([IO-18]).
+    /// fixed prefix plus the payload; budgeting the payload at
+    /// `msize - HEADER - COUNT_PREFIX` keeps every reply within `msize`.
     fn max_payload(&self) -> usize {
         // Reserve the header and the 4-byte count prefix carried by Rread/Rreaddir.
         (self.msize as usize).saturating_sub(HEADER_LEN + 4)
     }
 
-    /// Captures the fid table and `msize` for snapshot/restore ([IO-19]).
+    /// Captures the fid table and `msize` for snapshot/restore.
     ///
     /// The fid table is serialized in ascending fid order so the snapshot is
     /// byte-stable; the tree and open caches are omitted (reconstructed from the
@@ -494,10 +495,10 @@ impl NinepServer {
     /// Reconstructs a server from a snapshot stacked over the served tree.
     ///
     /// The tree is re-supplied (it is the shared, content-addressed `World`,
-    /// never carried in the snapshot, [IO-19]); the fid table and `msize` are
-    /// restored verbatim. Open directory caches are *not* restored because they
-    /// are pure functions of the tree and are recomputed on each `readdir`, so
-    /// the restored server answers byte-identically to an uninterrupted run.
+    /// never carried in the snapshot); the fid table and `msize` are restored
+    /// verbatim. Open directory caches are *not* restored because they are pure
+    /// functions of the tree and are recomputed on each `readdir`, so the
+    /// restored server answers byte-identically to an uninterrupted run.
     #[must_use]
     pub fn restore(snapshot: &NinepServerSnapshot, tree: FsTree) -> Self {
         let fids = snapshot
@@ -521,7 +522,7 @@ const NOTAG: u16 = u16::MAX;
 ///
 /// A read past the end yields an empty slice (the 9p end-of-file convention); a
 /// `count` larger than the payload budget is clamped, so the reply always fits
-/// the negotiated `msize` ([IO-18]). Pure slicing — never reads host state.
+/// the negotiated `msize`. Pure slicing — never reads host state.
 fn slice_at(content: &[u8], offset: u64, count: u32, budget: usize) -> &[u8] {
     let start = match usize::try_from(offset) {
         Ok(start) if start <= content.len() => start,

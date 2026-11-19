@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.gates.campaignContinuity",
-  taskIds ? ["T-DCE-9"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -418,10 +417,6 @@
         label = "package validates campaign continuity provenance refusal";
         needle = "grep -q '^campaign_continuity_cross_provenance_refused=true$'";
       }
-      {
-        label = "package records DCE campaign continuity task";
-        needle = "dce_campaign_continuity_task=T-DCE-9";
-      }
     ];
 in
   if failures != []
@@ -497,7 +492,6 @@ in
             PASS
             check=${attrPath}
             gate=gate:campaign-continuity
-            tasks=${builtins.concatStringsSep "," taskIds}
             seed_reproducibility=bit-identical-prior-corpus
             coverage_ratchet=monotone-non-decreasing
             accumulated_coverage=grow-only-union-crdt

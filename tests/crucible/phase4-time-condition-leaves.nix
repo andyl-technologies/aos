@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.timeConditionLeaves",
-  taskIds ? ["T-TRIG-3"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -15,7 +14,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-  taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
@@ -334,7 +332,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             component=crucible-trigger
             time_leaves=at,after,timer
             reference_validation=after-events,timer-armers

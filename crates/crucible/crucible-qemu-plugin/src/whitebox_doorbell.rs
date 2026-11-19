@@ -1393,10 +1393,11 @@ pub enum GuestMemoryAddressSpace {
     Virtual,
 }
 
-/// Phase 0 S5 check that retired the guest virtual-memory payload-read spike.
+/// Phase 0 check that validated guest virtual-memory payload reads.
 pub const WHITEBOX_GUEST_MEMORY_VADDR_SPIKE_CHECK: &str = "checks.crucible.phase0.s5VirtualMemory";
 
-/// Fail-closed payload-read addressing when S5 evidence has not been supplied.
+/// Fail-closed payload-read addressing when virtual-memory read evidence has not
+/// been supplied.
 pub const WHITEBOX_GUEST_MEMORY_ADDRESSING_UNRESOLVED: WhiteboxGuestMemoryAddressingResolution =
     WhiteboxGuestMemoryAddressingResolution::unresolved(WHITEBOX_GUEST_MEMORY_VADDR_SPIKE_CHECK);
 
@@ -1432,7 +1433,7 @@ pub struct WhiteboxGuestMemoryAddressingResolution {
     pub check: &'static str,
     /// Whether QEMU exports the plugin virtual-memory read function.
     pub qemu_plugin_read_memory_vaddr_available: bool,
-    /// Whether the virtual-address read spike passed overall.
+    /// Whether the virtual-address read check passed overall.
     pub virtual_address_read_result: bool,
     /// Whether resident static-storage payload reads passed.
     pub resident_read: bool,
@@ -1487,7 +1488,7 @@ impl WhiteboxGuestMemoryAddressingResolution {
             && !self.physical_pinned_fallback_adopted
     }
 
-    /// Returns the default payload addressing mode selected by the spike result.
+    /// Returns the default payload addressing mode selected by the check result.
     #[must_use]
     pub const fn default_payload_addressing_mode(self) -> WhiteboxPayloadAddressingMode {
         if self.virtual_pointer_length_is_sound() {
@@ -1617,7 +1618,7 @@ impl WhiteboxDoorbellTrapEvent {
         }
     }
 
-    /// Builds a doorbell trap event from the S5 virtual-memory read resolution.
+    /// Builds a doorbell trap event from the virtual-memory read resolution.
     #[must_use]
     pub const fn from_default_payload_addressing(
         vcpu_index: u32,

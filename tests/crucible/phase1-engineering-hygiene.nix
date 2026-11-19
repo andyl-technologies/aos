@@ -767,7 +767,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=checks.crucible.phase1.engineeringHygiene
-            tasks=T-STD-11
             responsibility_review_threshold=1000
             cohesion_review_threshold=1500
             source_review_binding=whole-file-sha256-role-line-count

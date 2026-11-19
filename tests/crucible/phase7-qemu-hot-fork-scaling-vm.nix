@@ -1,11 +1,10 @@
 # Measures production daemon adoption and the native QEMU fork/reap path under
 # cgroup and project-quota pressure. The VM retains every raw sample alongside
-# the structural CPERF-3 assertions.
+# the structural copy-on-write fork assertions.
 {
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.gates.hotForkScaling.rawGate",
-  taskIds ? [],
 }: let
   source = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -409,7 +408,7 @@ in
         depth_source_disk=$(${pkgs.gawk}/bin/awk -F= \
           -v key="template_depth_''${depth}_source_allocated_bytes" \
           '$1 == key {print $2}' /tmp/depth-scaling-result)
-        # CPERF-3 rejects a full private RAM or disk copy. The fixed additions
+        # Hot forks must not make a full private RAM or disk copy. The fixed additions
         # cover the current QEMU allocator, page-table, and overlay metadata.
         depth_disk_limit=$((depth_source_disk / 2 + 16777216))
         [ "$depth_private" -le 98304 ]
@@ -622,7 +621,6 @@ in
         'descendant_template_generations=3' \
         'final_resource_audit=process,descriptors,memory,attempt-storage,content-store' \
         'check=${attrPath}' \
-        'tasks=${builtins.concatStringsSep "," taskIds}' \
         >> /tmp/hot-fork-scaling-measurements
       cat /tmp/hot-fork-scaling-measurements
       ${pkgs.util-linux}/bin/umount /tmp/attempts

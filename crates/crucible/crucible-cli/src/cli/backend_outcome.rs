@@ -144,7 +144,7 @@ pub(crate) enum BackendExecutionEvidence {
 }
 
 impl BackendExecutionEvidence {
-    pub(crate) fn proves_t_cli_3(&self, plan: &BackendSelectionPlan) -> bool {
+    pub(crate) fn matches_selected_route(&self, plan: &BackendSelectionPlan) -> bool {
         plan.expected_execution_evidence().as_ref() == Some(self)
     }
 }

@@ -1,11 +1,9 @@
 {
   pkgs,
   attrPath ? "checks.crucible.phase7.gates.hotForkIsolation.rawGate",
-  taskIds ? [],
   nativeIsolation,
   dependencies ? [],
 }: let
-  taskList = builtins.concatStringsSep "," taskIds;
 in
   pkgs.mkDerivation {
     pname = "crucible-phase7-hot-fork-isolation";
@@ -85,7 +83,6 @@ in
           PASS
           check=${attrPath}
           gate=gate:hot-fork-isolation
-          tasks=${taskList}
           scope=native-production
           private_devices=network,9p
           private_descriptors=memfd,eventfd

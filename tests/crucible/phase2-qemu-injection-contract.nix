@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuInjectionContract",
-  taskIds ? ["T-QEMU-13"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -50,7 +49,6 @@
   qemuSpec = builtins.readFile ../../docs/engineering/crucible/qemu-integration.md;
   defaultChecks = builtins.readFile ./default.nix;
 
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
@@ -392,7 +390,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             attr_path=${attrPath}
-            tasks=${taskList}
             qemu_37=exact-delivery-total-order-with-canonical-backpressure-retry
             qemu_38=device-io-freeze-observed-through-node-slot
             exact_delivery=authorized-at-delivery-icount

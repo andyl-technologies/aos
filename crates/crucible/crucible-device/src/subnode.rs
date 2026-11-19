@@ -14,10 +14,10 @@
 //!   real [`crucible_qemu_shmem::RingHeader`] / [`crucible_qemu_shmem::FrameEntry`] rings,
 //!   and the delivery-ordered [`InflightQueue`].
 //!
-//! The COMPUTE-then-DELIVER split is the crux ([IO-2], [IO-31]): on
-//! [`IoCore::process_inbox`], each arrived request is COMPUTEd *now* and its
-//! `delivery_icount = request_icount + latency_ns * TICKS_PER_NS`
-//! is fixed; the response then sits in the in-flight queue, *invisible* until
+//! The COMPUTE-then-DELIVER split is the crux: on [`IoCore::process_inbox`],
+//! each arrived request is COMPUTEd *now* and its
+//! `delivery_icount = request_icount + latency_ns * TICKS_PER_NS` is fixed; the
+//! response then sits in the in-flight queue, *invisible* until
 //! [`IoCore::advance_to`] moves the clock to its delivery icount. Host COMPUTE
 //! wall-clock never enters the delivery icount or any payload byte.
 //! ```text
@@ -69,7 +69,7 @@ pub use snapshot::{
 /// status and payload, and the latency model — while [`IoCore`] supplies the
 /// uniform clock, rings, in-flight tracking, `advance_to`, and snapshot/restore.
 /// Every method MUST be a deterministic function of the request and the device's
-/// owned state ([IO-4]); none may read the host clock, host scheduling, or host
+/// owned state; none may read the host clock, host scheduling, or host
 /// filesystem ordering.
 pub trait IoSubNode {
     /// The latency model this device applies to derive completion times.
@@ -92,7 +92,7 @@ pub trait IoSubNode {
     /// This is the host-access step: the implementor may read its overlay, base
     /// image, or served tree at any wall-clock instant. The returned value MUST
     /// be a pure function of the request and the device's owned state — the
-    /// wall-clock duration of this call MUST NOT influence the result ([IO-31]).
+    /// wall-clock duration of this call MUST NOT influence the result.
     ///
     /// # Errors
     ///
@@ -121,7 +121,7 @@ pub struct ShmemDeliveryFailure {
 /// response ring, and the delivery-ordered in-flight queue. A concrete device
 /// composes an `IoCore` and drives it with [`IoCore::process_inbox`] (COMPUTE)
 /// and [`IoCore::advance_to`] (DELIVER). The core never advances its own clock
-/// and never reads host time ([IO-1]).
+/// and never reads host time.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IoCore {
     clock: VirtualClock,
@@ -143,7 +143,7 @@ pub struct IoCore {
 /// contribution: the clock cursor, the pending inbound requests, the in-flight
 /// responses with their delivery icounts, and the outbound responses awaiting
 /// pickup. Restoring it reproduces a state byte-identical to an uninterrupted
-/// run ([IO-31] lifecycle replay). Concrete devices extend it with their own
+/// run (lifecycle replay). Concrete devices extend it with their own
 /// overlay/fid/RNG state in later changesets.
 ///
 /// The rings' monotonic `write_idx`/`read_idx` counters are intentionally *not*
@@ -392,9 +392,9 @@ impl IoCore {
     ///
     /// # Errors
     ///
-    /// Returns [`IoRequestEnqueueFailure`] carrying the rejected request when the inbound
-    /// ring is full; the producer must block at its boundary and re-push the
-    /// handed-back request after the device drains the inbox ([IO-32]). The
+    /// Returns [`IoRequestEnqueueFailure`] carrying the rejected request when
+    /// the inbound ring is full; the producer must block at its boundary and
+    /// re-push the handed-back request after the device drains the inbox. The
     /// request is not consumed. Revision exhaustion refuses before enqueue.
     pub fn enqueue_request(&mut self, request: Request) -> Result<(), IoRequestEnqueueFailure> {
         let revision = match self.next_queue_revision() {
@@ -416,13 +416,13 @@ impl IoCore {
     /// COMPUTEs every pending request and inserts each response in flight.
     ///
     /// For each inbound request this drives `device.compute` (the host-access
-    /// COMPUTE step) and adds the modeled latency to the exact request tick
-    /// ([IO-2]). The response
-    /// is inserted into the delivery-ordered in-flight queue; it stays invisible
-    /// until [`IoCore::advance_to`] reaches its delivery icount.
+    /// COMPUTE step) and adds the modeled latency to the exact request tick.
+    /// The response is inserted into the delivery-ordered in-flight queue; it
+    /// stays invisible until [`IoCore::advance_to`] reaches its delivery
+    /// icount.
     ///
     /// The host wall-clock instant of `compute` influences neither the
-    /// `delivery_icount` nor any payload byte ([IO-31]).
+    /// `delivery_icount` nor any payload byte.
     ///
     /// # Errors
     ///
@@ -542,7 +542,7 @@ impl IoCore {
     /// Computes the exact delivery icount for a request under a latency model.
     ///
     /// `delivery_icount = request_icount + latency_ns * TICKS_PER_NS`, preserving
-    /// the request tick's fractional phase ([IO-2], [IO-22]).
+    /// the request tick's fractional phase.
     ///
     /// # Errors
     ///
@@ -561,8 +561,8 @@ impl IoCore {
 
     /// Returns the in-flight head's delivery icount: the next exact local event.
     ///
-    /// This is what the scheduler reads to bound the requester's horizon
-    /// ([IO-3], [IO-31]). Returns `None` when nothing is in flight.
+    /// This is what the scheduler reads to bound the requester's horizon.
+    /// Returns `None` when nothing is in flight.
     #[must_use]
     pub fn next_exact_local_event(&self) -> Option<u64> {
         self.inflight.next_exact_local_event()
@@ -572,12 +572,12 @@ impl IoCore {
     ///
     /// Drains exactly the in-flight responses whose `delivery_icount <= limit`,
     /// in deterministic `(delivery_icount, src_node, seq)` order, pushing each
-    /// onto the outbound ring at its exact delivery icount ([IO-2], [SCHED-29]).
-    /// The clock advances to `limit` (never backward).
+    /// onto the outbound ring at its exact delivery icount. The clock advances
+    /// to `limit` (never backward).
     ///
     /// If the outbound ring fills mid-drain, delivery stops at that boundary:
-    /// the undelivered responses remain in flight (still ordered, still at their
-    /// exact icounts) and the producer is backpressured ([IO-32]). The returned
+    /// the undelivered responses remain in flight (still ordered, still at
+    /// their exact icounts) and the producer is backpressured. The returned
     /// count is the number of responses made visible on the outbound ring.
     ///
     /// # Errors
@@ -725,8 +725,8 @@ impl IoCore {
     /// Pops the next delivered response from the outbound ring, if any.
     ///
     /// Returns responses in the deterministic delivery order they were made
-    /// visible. Popping frees an outbound slot, waking a backpressured producer
-    /// ([IO-32]).
+    /// visible. Popping frees an outbound slot, waking a backpressured
+    /// producer.
     /// # Errors
     ///
     /// Returns [`DeviceError::IoQueueRevisionExhausted`] before consuming a response.
@@ -773,7 +773,7 @@ impl IoCore {
     /// The snapshot holds the clock cursor, pending inbox requests, in-flight
     /// responses with their delivery icounts, and outbound responses — all in
     /// deterministic order. Restoring via [`IoCore::restore`] reproduces a
-    /// byte-identical state ([IO-31] lifecycle replay).
+    /// byte-identical state (lifecycle replay).
     #[must_use]
     pub fn snapshot(&self) -> IoCoreSnapshot {
         IoCoreSnapshot {

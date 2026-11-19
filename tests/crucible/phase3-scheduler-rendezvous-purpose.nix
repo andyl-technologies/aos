@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase3.schedulerRendezvousPurpose",
-  taskIds ? ["T-SCHED-26"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -15,7 +14,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-  taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "docs/engineering/crucible/scheduling.md" schedulingDoc [
       {
@@ -224,7 +222,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             component=crucible-scheduler
             rendezvous_purposes=assertion-drain,trigger-eval,topology-swap,snapshot-control
             event_delivery_rendezvous=false

@@ -96,7 +96,7 @@ pub(crate) fn validate_backend_execution_evidence(
     plan: &BackendSelectionPlan,
     evidence: &BackendExecutionEvidence,
 ) -> Result<(), CliError> {
-    if evidence.proves_t_cli_3(plan) {
+    if evidence.matches_selected_route(plan) {
         Ok(())
     } else {
         Err(CliError::Backend(

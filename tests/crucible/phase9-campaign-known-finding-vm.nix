@@ -51,7 +51,6 @@ in
           cat > "$out/result" <<RESULT
           PASS
           gate=gate:campaign-envoy-known-finding
-          task=T-CAM-3.6
           measured_objective_authenticated=true
           failed_candidate_filtered=true
           fresh_packaged_replay_authenticated=true

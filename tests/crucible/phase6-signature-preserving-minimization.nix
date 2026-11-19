@@ -3,7 +3,6 @@
   dependencies ? [],
   lib,
   pkgs,
-  taskIds ? ["T-TRI-5"],
 }: let
   # Substring scan by index. The regex form (builtins.match ".*needle.*")
   # overflows the Nix regex engine's stack on large haystacks such as the CLI
@@ -33,7 +32,6 @@
     entry = ../../crates/crucible/crucible-engine/tests/gate_failure_signature.rs;
   };
   defaultChecks = builtins.readFile ./default.nix;
-  taskList = builtins.concatStringsSep "," taskIds;
 
   failures =
     failuresFor "docs/engineering/crucible/failure-triage.md" failureTriagePage [
@@ -198,10 +196,6 @@
         needle = "checks.crucible.phase6.signaturePreservingMinimization";
       }
       {
-        label = "explicit task id";
-        needle = "taskIds = [\"T-TRI-5\"]";
-      }
-      {
         label = "failure clustering raw dependency";
         needle = "phase6.failureClustering.rawGate";
       }
@@ -311,7 +305,6 @@ in
             cat > "$out/result" <<RESULT
             PASS
             check=${attrPath}
-            tasks=${taskList}
             gate=gate:signature-preserving-minimization
             source=existing-minimization-pass
             accept_predicate=signature-key-equality

@@ -66,7 +66,7 @@ impl NetLink {
         }
     }
 
-    /// Captures the link's deterministic state for snapshot/restore ([IO-23]).
+    /// Captures the link's deterministic state for snapshot/restore.
     ///
     /// Holds the clock cursor, the base latency, floor, fault table, sequence
     /// counter, the pending-recompute flag, the RNG cursor, and the

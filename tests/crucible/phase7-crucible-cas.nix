@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.crucibleCas",
-  taskIds ? ["T-PKG-17"],
 }: let
   packagingDoc = builtins.readFile ../../docs/engineering/crucible/packaging.md;
   workspaceManifest = builtins.fromTOML (builtins.readFile ../../crates/Cargo.toml);
@@ -66,7 +65,7 @@
     ++ failuresFor "crates/crucible/crucible-store/src/lib.rs" casSource [
       {
         label = "crate-level standalone docs";
-        needle = "intentionally has no\n//! dependency on RFC-0007 `ratchet` crates";
+        needle = "intentionally has no\n//! dependency on the `ratchet` crates";
       }
       {
         label = "content hash type";
@@ -151,7 +150,7 @@
         needle = "use aos_nix";
       }
     ]
-    ++ map (name: "crates/crucible/crucible-store/Cargo.toml: forbidden RFC-0007 dependency ${name}")
+    ++ map (name: "crates/crucible/crucible-store/Cargo.toml: forbidden ratchet dependency ${name}")
     forbiddenDependencyNames;
 in
   if failures != []
@@ -173,11 +172,10 @@ in
             cat > "$out/result" <<RESULT
             PASS
             check=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
             crate=crucible-cas
             store_interface=put,get,has
             invalidation=dependency-gated-content-hash
-            standalone_from_rfc_0007=true
+            standalone_from_ratchet=true
             RESULT
           '';
         }

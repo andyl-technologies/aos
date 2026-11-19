@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.shmemMultiVcpuNodeSlot",
-  taskIds ? ["T-SHM-16"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -26,7 +25,6 @@
   timeSpec = builtins.readFile ../../docs/engineering/crucible/virtual-time.md;
   defaultChecks = builtins.readFile ./default.nix;
 
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
@@ -289,7 +287,6 @@ in
             PASS
             check=${attrPath}
             gate=gate:abi-conformance
-            tasks=${taskList}
             abi_version=unchanged
             shmem_slots=node_scoped
             node_slot_fields=aggregate_current_icount,aggregate_ceiling,aggregate_idle_wake,device_io_active

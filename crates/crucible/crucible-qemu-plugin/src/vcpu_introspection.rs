@@ -316,7 +316,7 @@ impl PluginNvcpuFingerprintInputs {
     }
 }
 
-/// Required plugin-side handle for PATCH-46 introspection.
+/// Required plugin-side handle for patched-QEMU vCPU register introspection.
 #[derive(Clone, Copy, Debug)]
 pub struct PluginVcpuIntrospector {
     read_vcpu_regs: QemuReadVcpuRegsFn,

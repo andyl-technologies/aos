@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.crucibleReleaseManifest",
-  taskIds ? ["T-PKG-19"],
   cruciblePackage ? pkgs.crucible,
 }: let
   releaseManifestNix = builtins.readFile ../../pkgs/tools/crucible/_release-manifest.nix;
@@ -624,7 +623,6 @@ in
           {
             printf '%s\n' 'PASS'
             printf 'check=%s\n' "$ATTR_PATH"
-            printf 'tasks=%s\n' "$TASK_IDS"
             printf 'crucible_version=%s\n' "$CRUCIBLE_VERSION"
             printf 'crucible_source_store_hash=%s\n' "$CRUCIBLE_SOURCE_STORE_HASH"
             printf 'qemu_version=%s\n' "$QEMU_VERSION"
@@ -646,7 +644,6 @@ in
         ''
       ];
       ATTR_PATH = attrPath;
-      TASK_IDS = builtins.concatStringsSep "," taskIds;
       CRUCIBLE_PACKAGE = cruciblePackage;
       CRUCIBLE_VERSION = crucibleVersion;
       CRUCIBLE_SOURCE_STORE_NAME = sourceStoreName;

@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.sessionControlDeterminism",
-  taskIds ? ["T-SESS-9"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -10,8 +9,6 @@
 
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -86,10 +83,6 @@
       {
         label = "phase5 control determinism attr path";
         needle = ''attrPath = "checks.crucible.phase5.sessionControlDeterminism"'';
-      }
-      {
-        label = "phase5 control determinism task id";
-        needle = ''taskIds = ["T-SESS-9"]'';
       }
       {
         label = "phase5 control determinism depends on save/resume/fork";
@@ -167,7 +160,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             component=crucible-session
             artifact=session-control-replay
             boundary_key=virtual-time-quanta

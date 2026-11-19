@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.guestHostEmitter",
-  taskIds ? ["T-GHC-10"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -20,7 +19,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-  taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "docs/engineering/crucible/guest-host-channel.md" guestHostChannelDoc [
       {
@@ -223,10 +221,6 @@
         label = "phase4 guest emitter attr path";
         needle = "checks.crucible.phase4.guestHostEmitter";
       }
-      {
-        label = "phase4 guest emitter task id";
-        needle = "taskIds = [\"T-GHC-10\"]";
-      }
     ];
 in
   if failures != []
@@ -328,7 +322,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             gate=gate:abi-conformance
             package=crucible-guest
             binary=crucible-guest

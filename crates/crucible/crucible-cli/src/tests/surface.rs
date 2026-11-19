@@ -2815,7 +2815,7 @@ pub(super) fn cli_thin_wrapper_maps_every_subcommand_to_session_api_or_declared_
 
         assert_eq!(plan.subcommand, expected);
         assert!(
-            plan.proves_t_cli_2(),
+            plan.satisfies_thin_wrapper_contract(),
             "{expected:?} must satisfy the thin-wrapper contract: {plan:?}"
         );
         assert!(!plan.owns_canonical_run_state);
@@ -2896,25 +2896,25 @@ pub(super) fn cli_thin_wrapper_emits_only_control_client_methods_and_session_com
 pub(super) fn cli_thin_wrapper_rejects_canonical_state_or_extra_control_capabilities() {
     let cli = Cli::parse_from(["crucible", "run", TEST_SCENARIO]);
     let base = plan_cli_invocation(&cli);
-    assert!(base.proves_t_cli_2());
+    assert!(base.satisfies_thin_wrapper_contract());
 
     let mut owns_state = base.clone();
     owns_state.owns_canonical_run_state = true;
-    assert!(!owns_state.proves_t_cli_2());
+    assert!(!owns_state.satisfies_thin_wrapper_contract());
 
     let mut schedules = base.clone();
     schedules.implements_scheduler = true;
-    assert!(!schedules.proves_t_cli_2());
+    assert!(!schedules.satisfies_thin_wrapper_contract());
 
     let mut materializes = base.clone();
     materializes.implements_checkpoint_materialization = true;
-    assert!(!materializes.proves_t_cli_2());
+    assert!(!materializes.satisfies_thin_wrapper_contract());
 
     let mut extra_control = base;
     extra_control
         .extra_control_capabilities
         .push("invented-control-capability");
-    assert!(!extra_control.proves_t_cli_2());
+    assert!(!extra_control.satisfies_thin_wrapper_contract());
     let mut recorder = RecordingOperationRecorder::default();
     let error = match execute_cli_dispatch_plan(&extra_control, &mut recorder) {
         Ok(_) => panic!("invented control capabilities must not dispatch"),
@@ -2970,7 +2970,7 @@ pub(super) fn cli_hermetic_qemu_discovery_prefers_flags_then_env_then_aos_packag
     assert_eq!(plugin, &PathBuf::from(&flag_plugin));
     assert_eq!(*qemu_source, QemuDiscoverySource::Flag);
     assert_eq!(*plugin_source, QemuDiscoverySource::Flag);
-    assert!(flag_plan.proves_t_cli_5());
+    assert!(flag_plan.satisfies_hermetic_discovery());
 
     let env_cli = Cli::parse_from(["crucible", "--backend", "qemu", "run", TEST_SCENARIO]);
     let env_plan = plan_backend_selection_with_discovery(&env_cli, &env, &package_set)?
@@ -2989,7 +2989,7 @@ pub(super) fn cli_hermetic_qemu_discovery_prefers_flags_then_env_then_aos_packag
     assert_eq!(plugin, &PathBuf::from(&env_plugin));
     assert_eq!(*qemu_source, QemuDiscoverySource::Environment);
     assert_eq!(*plugin_source, QemuDiscoverySource::Environment);
-    assert!(env_plan.proves_t_cli_5());
+    assert!(env_plan.satisfies_hermetic_discovery());
 
     let empty_env = FakeQemuDiscoveryEnvironment::default();
     let aos_cli = Cli::parse_from(["crucible", "run", TEST_SCENARIO]);
@@ -3013,7 +3013,7 @@ pub(super) fn cli_hermetic_qemu_discovery_prefers_flags_then_env_then_aos_packag
         aos_plan.reason,
         BackendSelectionReason::AutoQemuArtifactsSupplied
     );
-    assert!(aos_plan.proves_t_cli_5());
+    assert!(aos_plan.satisfies_hermetic_discovery());
 
     Ok(())
 }
@@ -3053,7 +3053,7 @@ pub(super) fn cli_hermetic_qemu_discovery_uses_compile_time_aos_package_hints()
         plan.reason,
         BackendSelectionReason::AutoQemuArtifactsSupplied
     );
-    assert!(plan.proves_t_cli_5());
+    assert!(plan.satisfies_hermetic_discovery());
 
     Ok(())
 }
@@ -3266,7 +3266,7 @@ pub(super) fn cli_hermetic_qemu_discovery_pins_identity_into_failure_artifacts()
     assert_eq!(artifact.identity.rpc_abi_version, current_rpc_abi_version());
     assert_eq!(artifact.identity.rpc_abi_build, current_rpc_abi_build());
     assert_eq!(artifact.identity.plugin_abi, plugin_abi);
-    assert!(backend_plan.proves_t_cli_5());
+    assert!(backend_plan.satisfies_hermetic_discovery());
 
     Ok(())
 }

@@ -44,7 +44,7 @@ fn snapshot_preserves_inflight_responses() {
     );
 }
 
-// ---- completion model + determinism (IO-22, IO-28) -------------------
+// ---- completion model + determinism -------------------
 
 /// Drives a fixed request sequence and returns (delivery_icount, reply) of
 /// every response. `skew` is artificial host work that must NOT affect output.
@@ -105,7 +105,7 @@ fn latency_depends_only_on_message_kind_and_size() {
     assert_eq!(lat.latency_for(&[0xFF]), 800 + 2);
 }
 
-// ---- arbitrary-bytes decoder never panics (IO-18) --------------------
+// ---- arbitrary-bytes decoder never panics --------------------
 
 #[test]
 fn decode_never_panics_on_arbitrary_bytes() {

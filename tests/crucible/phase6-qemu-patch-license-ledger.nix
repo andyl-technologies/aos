@@ -7,7 +7,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase6.qemuPatchLicenseLedger",
-  taskIds ? ["T-CAM-6.8"],
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
   atomicPatch = import (patchDir + "/_atomic-patch.nix");
@@ -146,7 +145,6 @@ in
             PASS
             check=${attrPath}
             gate=gate:license-boundary
-            tasks=${builtins.concatStringsSep "," taskIds}
             atomic_patch=${atomicPatch.file}
             created_files=${builtins.toString (builtins.length createdFiles)}
             deleted_files=${builtins.toString (builtins.length deletedFiles)}

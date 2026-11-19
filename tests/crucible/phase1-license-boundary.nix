@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.gates.licenseBoundary",
-  taskIds ? ["BOUND-1" "BOUND-2" "BOUND-3" "BOUND-4" "BOUND-5" "BOUND-6" "BOUND-7" "BOUND-8" "BOUND-9" "BOUND-10" "BOUND-11" "BOUND-12"],
   campaignComposition ? null,
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -342,7 +341,6 @@ in
           PASS
           check=${attrPath}
           gate=gate:license-boundary
-          tasks=${builtins.concatStringsSep "," taskIds}
           rust_test=crucible_test_support::gate_license_boundary
           controller_package=crucible-controller
           controller_license=Apache-2.0

@@ -4747,8 +4747,6 @@ in
             inherit pkgs lib;
             qemuPackage = self;
             attrPath = "checks.integration.qemu-crucible-patch-microtests";
-            taskIds = ["T-PKG-4" "T-HARN-20" "T-PATCH-2" "T-PATCH-20" "T-PATCH-21" "T-PATCH-22" "T-PATCH-23" "T-PATCH-24"];
-            openTaskIds = [];
           };
         in {
           full-upstream-test-suite = pkgs.qemu-crucible-full-test-suite;
@@ -4759,8 +4757,6 @@ in
             patchedQemu = self;
             referenceQemu = pkgs.qemu-crucible-reference;
             attrPath = "checks.integration.qemu-crucible-qemu-inert";
-            taskIds = ["T-PLAN-3" "T-DET-23" "T-HARN-21" "T-PATCH-3"];
-            openTaskIds = [];
             dependencies = [patchMicrotests];
           };
         }

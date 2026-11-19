@@ -3,14 +3,14 @@
 //! These exercise the harness against all three I/O sub-nodes — block, 9p, and
 //! the network link — proving, per device:
 //!
-//! - **run-twice determinism** ([IO-28]): two independent constructions driven
-//!   through the same script yield byte-identical responses + delivery icounts;
-//! - **divergence localization** ([IO-28], [INV-10]): a deliberately perturbed
-//!   run is localized to its FIRST differing record/field deterministically;
-//! - **device-visible state** ([IO-27]): the harness lets a test assert the
-//!   overlay/dirty set (block), the fid table (9p), and the in-flight count
-//!   (link) after a run;
-//! - **idle-vs-busy-poll equivalence** ([IO-29]): one big `advance_to` and many
+//! - **run-twice determinism**: two independent constructions driven through
+//!   the same script yield byte-identical responses + delivery icounts;
+//! - **divergence localization**: a deliberately perturbed run is localized to
+//!   its FIRST differing record/field deterministically;
+//! - **device-visible state**: the harness lets a test assert the overlay/dirty
+//!   set (block), the fid table (9p), and the in-flight count (link) after a
+//!   run;
+//! - **idle-vs-busy-poll equivalence**: one big `advance_to` and many
 //!   single-icount advances produce identical deliveries at identical icounts.
 //!
 //! The busy-poll spike conclusion is asserted from the documented
@@ -80,7 +80,7 @@ fn block_run_twice_is_byte_identical() {
 #[test]
 fn block_harness_exposes_device_visible_state() {
     // Drive the script once through a single harness and assert the overlay and
-    // dirty set the write produced ([IO-27]).
+    // dirty set the write produced.
     let mut h = block_harness();
     use crucible_device::HarnessDevice;
     h.apply_request(0, &BlockRequest::write(1, 4096, vec![0xAB; 256]))
@@ -97,7 +97,7 @@ fn block_harness_exposes_device_visible_state() {
     );
     assert!(
         overlay.dirty_pages().contains(&4096),
-        "the written page must be dirty ([IO-7])"
+        "the written page must be dirty"
     );
     assert_eq!(h.device().length(), 12_288, "get-length is the base size");
 }
@@ -106,8 +106,8 @@ fn block_harness_exposes_device_visible_state() {
 fn block_divergence_localizes_first_differing_payload_byte() {
     // A baseline run reads the written page (all 0xAB at offset 4096); the
     // perturbed run reads the untouched base page at offset 0 (whose first byte
-    // is 0x00 from the base pattern). Their read-back payloads differ at byte 0,
-    // and the divergence must localize to the read record's first byte ([IO-28]).
+    // is 0x00 from the base pattern). Their read-back payloads differ at byte
+    // 0, and the divergence must localize to the read record's first byte.
     //
     // The read completes before the write acknowledgement, so it is record 0.
     let baseline = block_script();
@@ -362,7 +362,7 @@ fn ninep_harness_exposes_fid_table_state() {
         }
     }
     // After version+attach+walk, the fid table holds fid 1 (root) and fid 2
-    // (bin/tool), and the negotiated msize is the clamped 4096 ([IO-27], [IO-19]).
+    // (bin/tool), and the negotiated msize is the clamped 4096.
     let fids: Vec<u32> = h.device().server().fids().keys().copied().collect();
     assert_eq!(fids, vec![1, 2], "fid table must hold the walked fids");
     assert_eq!(h.device().server().msize(), 4096);

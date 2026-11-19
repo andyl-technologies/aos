@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.spatialReproductionArtifact",
-  taskIds ? ["T-SPAT-18"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -220,7 +219,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
             component=reproduction-artifact
             self_contained_tuple=true
             replay_oracle_verified=true

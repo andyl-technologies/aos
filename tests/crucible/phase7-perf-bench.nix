@@ -2,37 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.gates.perfBench",
-  taskIds ? [
-    "T-PERF-1"
-    "T-PERF-2"
-    "T-PERF-3"
-    "T-PERF-4"
-    "T-PERF-5"
-    "T-PERF-6"
-    "T-PERF-7"
-    "T-PERF-8"
-    "T-PERF-9"
-    "T-PERF-10"
-    "T-PERF-11"
-    "T-PERF-12"
-    "T-PERF-13"
-    "T-PERF-14"
-    "T-PERF-15"
-    "T-PERF-16"
-    "T-PERF-17"
-    "T-PERF-18"
-    "T-PERF-19"
-    "T-PERF-20"
-    "T-PERF-21"
-    "T-PERF-22"
-    "T-PERF-23"
-    "T-PERF-24"
-    "T-PERF-25"
-    "T-PERF-26"
-    "T-PERF-27"
-    "T-PERF-28"
-  ],
-  openTaskIds ? [],
   dependencies ? [],
   deviceWorkOverlap,
   fingerprintDigestOffload,
@@ -74,8 +43,6 @@
   liveCoverageGate = builtins.readFile ./phase6-basic-block-coverage.nix;
   testingAndGatesDoc = builtins.readFile ../../docs/engineering/crucible/testing-and-gates.md;
 
-  taskList = builtins.concatStringsSep "," taskIds;
-  openTaskList = builtins.concatStringsSep "," openTaskIds;
   resultFor = dependency:
     if campaignComposition == null
     then "${dependency}/result"
@@ -404,7 +371,7 @@
       }
       {
         label = "live coverage IPS check";
-        needle = "metric_coverage_ips=checks.crucible.phase0.coverageOverhead [PERF-14]";
+        needle = "metric_coverage_ips=checks.crucible.phase0.coverageOverhead";
       }
     ]
     ++ forbiddenFor "tests/crucible/default.nix" defaultChecks [
@@ -478,8 +445,6 @@
     gate=gate:perf-bench
     evidence_scope=deterministic-cost-model
     live_qemu_acceptance=not-established-by-this-check
-    tasks=${taskList}
-    open_tasks=${openTaskList}
     status=component-only
     owner=crucible-test-support
     phase=phase7
@@ -507,12 +472,12 @@
     missing_or_unknown_proving_gate_policy=blocking-failure
     measurement_model=deterministic-cost-model-substrate-no-qemu
     real_process_discharge=checks.fleet.crucible-perf
-    real_multi_vm_speedup=checks.fleet.crucible-perf [PERF-3]
-    real_restore_latency=checks.crucible.phase2.qemuCheckpointDeltaFlight [PERF-12]
-    real_throughput_baseline=checks.fleet.crucible-perf [PERF-13]
-    real_coverage_ips=checks.crucible.phase0.coverageOverhead [PERF-14]
-    real_coverage_observation=checks.crucible.phase6.basicBlockCoverage [PERF-15]
-    real_fleet_sweep=checks.fleet.crucible-perf [PERF-27]
+    real_multi_vm_speedup=checks.fleet.crucible-perf
+    real_restore_latency=checks.crucible.phase2.qemuCheckpointDeltaFlight
+    real_throughput_baseline=checks.fleet.crucible-perf
+    real_coverage_ips=checks.crucible.phase0.coverageOverhead
+    real_coverage_observation=checks.crucible.phase6.basicBlockCoverage
+    real_fleet_sweep=checks.fleet.crucible-perf
     real_guest_boot=checks.fleet.crucible-perf
     host_profile=pinned
     corpus_baseline=content-addressed

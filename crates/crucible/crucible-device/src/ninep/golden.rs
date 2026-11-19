@@ -1,4 +1,4 @@
-//! 9p wire-format golden vectors: a known-bytes conformance corpus ([IO-18]).
+//! 9p wire-format golden vectors: a known-bytes conformance corpus.
 //!
 //! This module is the `gate:abi-conformance` corpus for the 9p ABI: a table of
 //! `(name, raw_bytes, decoded_message)` triples asserting that decoding the exact

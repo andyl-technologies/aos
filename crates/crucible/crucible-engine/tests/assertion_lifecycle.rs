@@ -1,4 +1,4 @@
-//! Checks T-ASRT-12 assertion lifecycle states and unified outcomes.
+//! Checks assertion lifecycle states and unified outcomes.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.

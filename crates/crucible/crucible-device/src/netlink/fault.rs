@@ -1,10 +1,10 @@
 //! The network-link effective fault table and its deterministic transforms.
 //!
 //! A link's behavior is the fault-free delivery (base latency) composed with an
-//! **effective fault table** ([IO-20]): the set of faults currently active on
-//! the link, each a deterministic transform of a frame's delivery icount and/or
-//! payload. This module owns [`LinkFaults`] (the table) and the pure transform
-//! functions every fault applies at RESOLVE.
+//! **effective fault table**: the set of faults currently active on the link,
+//! each a deterministic transform of a frame's delivery icount and/or payload.
+//! This module owns [`LinkFaults`] (the table) and the pure transform functions
+//! every fault applies at RESOLVE.
 //!
 //! # The fault application model
 //!
@@ -16,7 +16,7 @@
 //!
 //! ```text
 //! resolve(frame, t_emit_tick, draws):
-//!   delivery_tick  = t_emit_tick + effective_latency_ticks        // base, clamped to floor (IO-33)
+//!   delivery_tick  = t_emit_tick + effective_latency_ticks        // base, clamped to floor
 //!   delivery_tick += serialization_delay_ticks(len, bandwidth)  // bandwidth (exact ticks, no float)
 //!   delivery_tick += draw(jitter)  % (jitter_window_ticks + 1)  // jitter   (seeded, shift later)
 //!   delivery_tick += draw(reorder) % (reorder_window_ticks + 1) // reorder  (seeded, shift later)
@@ -27,11 +27,11 @@
 //! ```
 //!
 //! Every probabilistic decision is a pure function of an **injected draw value**
-//! (a `u64`) supplied by the seeded per-device RNG ([`crate::fault::DeviceRng`]),
-//! forked by name-hash from the scenario seed ([IO-21]). The link consumes its
-//! draws in the fixed order documented above; the shared [`Probability`] and the
-//! transform functions are owned by [`crate::fault`] and re-exported here so the
-//! block, 9p, and network sub-nodes apply one taxonomy ([IO-25], [IO-26]).
+//! (a `u64`) supplied by the seeded per-device RNG
+//! ([`crate::fault::DeviceRng`]), forked by name-hash from the scenario seed.
+//! The link consumes its draws in the fixed order documented above; the shared
+//! [`Probability`] and the transform functions are owned by [`crate::fault`] and
+//! re-exported here so the block, 9p, and network sub-nodes apply one taxonomy.
 
 pub use crate::fault::{Probability, corrupt_payload, jitter_shift_ticks, reorder_shift_ticks};
 
@@ -73,14 +73,14 @@ impl LinkCorruptionStrategy {
 /// The effective fault table for a directed network link.
 ///
 /// Holds every fault parameter the link applies at RESOLVE. All fields are
-/// exact ticks or exact-fraction probabilities; no floating point
-/// appears anywhere ([IO-24]). A default table is fault-free: zero windows, zero
-/// bandwidth limit (unlimited), and never-firing probabilities, so the link
-/// delivers at exactly the base latency.
+/// exact ticks or exact-fraction probabilities; no floating point appears
+/// anywhere. A default table is fault-free: zero windows, zero bandwidth limit
+/// (unlimited), and never-firing probabilities, so the link delivers at exactly
+/// the base latency.
 ///
 /// The fields are deliberately a flat data contract: the link reads them, and a
 /// snapshot stores them verbatim, so the active fault set is part of the device
-/// half of `MaterializedState` ([IO-26], deferred wiring in CS-IO-5).
+/// half of `MaterializedState` (its wiring is deferred).
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct LinkFaults {
     /// Whether this directed link is partitioned and drops every frame.
@@ -89,21 +89,21 @@ pub struct LinkFaults {
     /// Extra fixed latency added to every frame, in exact virtual ticks.
     ///
     /// A latency fault that *raises* the effective latency is honored as-is (it
-    /// only widens lookahead, [IO-33]); a fault that would *lower* the link below
-    /// its floor is clamped by [`super::link::NetLink`], never applied here.
+    /// only widens lookahead); a fault that would *lower* the link below its
+    /// floor is clamped by [`super::link::NetLink`], never applied here.
     pub added_latency_ticks: u64,
 
     /// The upper bound (inclusive) of the seeded jitter window, in ticks.
     ///
-    /// Jitter shifts a frame later by `draw % (jitter_window_ticks + 1)` ([IO-20]).
-    /// A window of zero is no jitter.
+    /// Jitter shifts a frame later by `draw % (jitter_window_ticks + 1)`. A
+    /// window of zero is no jitter.
     pub jitter_window_ticks: u64,
 
     /// The upper bound (inclusive) of the seeded reorder window, in ticks.
     ///
     /// Reorder shifts a frame later by `draw % (reorder_window_ticks + 1)`,
-    /// potentially past a sibling frame ([IO-20]). The shift is checked against
-    /// the consumer's frontier by [`super::link::NetLink`] ([IO-34]).
+    /// potentially past a sibling frame. The shift is checked against the
+    /// consumer's frontier by [`super::link::NetLink`].
     pub reorder_window_ticks: u64,
 
     /// Active serialization-rate caps in bits per virtual second.
@@ -149,10 +149,10 @@ impl LinkFaults {
     /// Returns whether any fault raises the conservative minimum latency bound.
     ///
     /// This is the set of faults that change the scalar effective latency the
-    /// scheduler uses as its conservative lookahead edge ([IO-33]). Added latency
-    /// raises that lower bound for every frame. Jitter, reorder, and bandwidth can
-    /// delay individual frames, but their minimum additional delay is zero, so they
-    /// do not change this conservative bound. Loss, duplicate, and corrupt do not
+    /// scheduler uses as its conservative lookahead edge. Added latency raises
+    /// that lower bound for every frame. Jitter, reorder, and bandwidth can delay
+    /// individual frames, but their minimum additional delay is zero, so they do
+    /// not change this conservative bound. Loss, duplicate, and corrupt do not
     /// change it either.
     #[must_use]
     pub fn affects_latency(&self) -> bool {

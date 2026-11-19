@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.protocolGoldenVectors",
-  taskIds ? ["T-PROTO-9"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -12,7 +11,6 @@
   goldenTest = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/tests/golden_vectors.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -202,7 +200,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             gate=gate:abi-conformance
             rust_test=crucible_qemu_protocol::golden_vectors
             corpus=hello,hello-ack,setup-payload,setup-ack,quit

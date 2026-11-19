@@ -174,7 +174,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=checks.crucible.phase1.determinismReview
-            tasks=T-STD-13
             review_checklist=docs/engineering/crucible/engineering-standards.md
             root_cause_rule=source-only
             RESULT

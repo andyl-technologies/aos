@@ -1,4 +1,4 @@
-# Authenticates the RFC 10.4 host-time ratio and million-admission evidence.
+# Authenticates the campaign host-time ratio and million-admission evidence.
 {
   pkgs,
   nativeScaling,
@@ -176,7 +176,6 @@ pkgs.mkDerivation {
         PASS
         gate=gate:campaign-performance
         check=${attrPath}
-        task=T-CAM-9.2
         real_admissions=1000000
         short_branch_planner_queue_under_5_percent=true
         same_pinned_host_reference=true

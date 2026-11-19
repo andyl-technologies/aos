@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase6.advancedDependencyLadder",
-  taskIds ? ["T-ADV-1"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -12,8 +11,6 @@
   phasePlanRust = builtins.readFile ../../crates/crucible/crucible-test-support/src/phase_plan.rs;
   phasePlanTest = builtins.readFile ../../crates/crucible/crucible-test-support/tests/phase_plan.rs;
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -30,8 +27,8 @@
         needle = "pub enum AdvancedFeatureRung";
       }
       {
-        label = "advanced task table";
-        needle = "pub const ADVANCED_FEATURE_TASK_ORDER";
+        label = "advanced ladder table";
+        needle = "pub const ADVANCED_FEATURE_LADDER";
       }
       {
         label = "advanced ladder function";
@@ -54,8 +51,8 @@
         needle = "checks.crucible.phase5.gates.controlResponsive";
       }
       {
-        label = "fuzzing waits for coverage";
-        needle = ''required_task_ids: &["T-ADV-11", "T-ADV-19", "T-ADV-21"]'';
+        label = "fuzzing ladder step";
+        needle = ''attr_path: "checks.crucible.phase6.coverageGuidedFuzzing"'';
       }
     ]
     ++ failuresFor "crates/crucible/crucible-test-support/tests/phase_plan.rs" phasePlanTest [
@@ -72,8 +69,8 @@
         needle = "advanced_feature_schedule_rejects_inner_only_gate_dependency";
       }
       {
-        label = "implicit task id negative test";
-        needle = "advanced_feature_schedule_rejects_phase6_import_without_explicit_task_ids";
+        label = "borrowed guard negative test";
+        needle = "advanced_feature_schedule_rejects_check_borrowing_a_nearby_guard";
       }
       {
         label = "fuzz-before-coverage negative test";
@@ -81,7 +78,7 @@
       }
       {
         label = "late foundation negative test";
-        needle = "advanced_feature_ladder_rejects_tasks_before_foundation_gates";
+        needle = "advanced_feature_ladder_rejects_steps_before_foundation_gates";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -96,10 +93,6 @@
       {
         label = "phase6 advanced ladder attr path";
         needle = "checks.crucible.phase6.advancedDependencyLadder";
-      }
-      {
-        label = "phase6 advanced ladder task id";
-        needle = ''taskIds = ["T-ADV-1"]'';
       }
       {
         label = "phase6 advanced ladder raw fingerprint dependency";
@@ -197,7 +190,6 @@ in
                         cat > "$out/result" <<RESULT
                         PASS
             check=${attrPath}
-            tasks=${taskList}
             ladder=exact-determinism,save-restore,fork,search,coverage-feedback,fuzzing
             rust_test=crucible_test_support::phase_plan::advanced_feature
             RESULT

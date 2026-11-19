@@ -250,9 +250,9 @@ pub struct CoverageGuidedFuzzRun {
     pub iterations: Vec<CoverageGuidedFuzzIteration>,
     /// Candidate configuration ids ordered by coverage-guided priority.
     ///
-    /// This is not corpus admission or pruning; T-ADV-13 owns durable corpus
-    /// management. The order records the single-host bias T-ADV-12 uses before a
-    /// real corpus is stored.
+    /// This is not corpus admission or pruning; durable corpus management owns
+    /// those decisions. The order records the single-host coverage bias used
+    /// before a real corpus is stored.
     pub coverage_biased_order: Vec<ContentHash>,
 }
 
@@ -312,7 +312,7 @@ impl CoverageGuidedFuzzIteration {
     }
 }
 
-/// Default deterministic T-ADV-13 smoke target for a local corpus campaign.
+/// Default deterministic smoke target for a local corpus campaign.
 pub const DEFAULT_COVERAGE_GUIDED_FUZZ_THROUGHPUT_TARGET: u64 = 25;
 
 /// Configuration for durable coverage-guided corpus management.

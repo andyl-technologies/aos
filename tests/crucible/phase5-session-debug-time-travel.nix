@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.sessionDebugTimeTravel",
-  taskIds ? ["T-SESS-13"],
   dependencies ? [],
 }: let
   sessionPage = builtins.readFile ../../docs/engineering/crucible/session.md;
@@ -16,8 +15,6 @@
   qemuNode = builtins.readFile ../../crates/crucible/crucible-qemu-host/src/node.rs;
   productionDebugLoop = builtins.readFile ../../crates/crucible/crucible-daemon/src/vm_lifecycle/quantum_loop.rs;
   gatewayOwner = builtins.readFile ../../crates/crucible/crucible-control-server/src/debug_gateway.rs;
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) failuresFor;
 
@@ -236,7 +233,6 @@ in
 
     CRUCIBLE_T_SESS_13_FAILURES = failureText;
     ATTR_PATH = attrPath;
-    TASK_IDS = taskList;
     DEPENDENCY_COUNT = toString (builtins.length dependencies);
     DEPENDENCY_PATHS = builtins.concatStringsSep ":" dependencies;
 
@@ -255,7 +251,6 @@ in
                   {
                     printf 'PASS\n'
                     printf 'check=%s\n' "$ATTR_PATH"
-                    printf 'tasks=%s\n' "$TASK_IDS"
                     printf 'dependency_count=%s\n' "$DEPENDENCY_COUNT"
                     printf 'debug_commands=attach_gdb,goto,reverse_step,reverse_continue\n'
                     printf 'schedule_exclusion=query_pause_class\n'

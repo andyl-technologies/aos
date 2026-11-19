@@ -1,4 +1,4 @@
-//! Checks T-TRIG-19 black-box-first complete trigger scenarios.
+//! Checks black-box-first complete trigger scenarios.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.

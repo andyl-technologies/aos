@@ -73,11 +73,6 @@ fn gate_qemu_inert_runs_reference_vs_patched_corpus() -> Result<(), Box<dyn Erro
         "exercise_serial_normalization_negative_control",
     );
     assert_contains(&inert_gate, "status=complete");
-    assert_contains(
-        &inert_gate,
-        "taskIds ? [\"T-DET-23\" \"T-HARN-21\" \"T-PATCH-3\"]",
-    );
-    assert_contains(&inert_gate, "openTaskIds ? []");
 
     Ok(())
 }

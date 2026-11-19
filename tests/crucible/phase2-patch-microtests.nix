@@ -2,8 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.gates.patchMicrotests",
-  taskIds ? ["T-PKG-4" "T-HARN-20" "T-PATCH-2" "T-PATCH-20" "T-PATCH-21" "T-PATCH-22" "T-PATCH-23" "T-PATCH-24"],
-  openTaskIds ? [],
   qemuPackage ? pkgs.qemu-crucible,
   referenceQemu ? pkgs.qemu-crucible-reference,
   dependencies ? [],
@@ -153,8 +151,6 @@
     cat > "$out/result" <<RESULT
     PASS
     check=${attrPath}
-    tasks=${builtins.concatStringsSep "," taskIds}
-    open_tasks=${builtins.concatStringsSep "," openTaskIds}
     status=complete
     gate=gate:patch-microtests
     evidence_scope=atomic-apply-commit-tree-build-behavior
@@ -209,7 +205,7 @@
       }
     ];
     passthru = {
-      inherit attrPath taskIds openTaskIds dependencies atomicPatchRepository;
+      inherit attrPath dependencies atomicPatchRepository;
       gateName = "gate:patch-microtests";
     };
   };

@@ -8,7 +8,6 @@
   lib,
   qemuPackage ? pkgs.qemu-crucible,
   attrPath ? "checks.crucible.phase6.qemuHotForkChildVm",
-  taskIds ? [],
 }: let
   source = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -145,7 +144,6 @@ in
       grep -Fxq source_descriptors_leaked=0 /tmp/hot-fork-child-result
       grep -Fxq whole_world_child_handoff=false /tmp/hot-fork-child-result
       printf '%s\n' 'check=${attrPath}' \
-        'tasks=${builtins.concatStringsSep "," taskIds}' >> /tmp/hot-fork-child-result
       ${pkgs.util-linux}/bin/umount /tmp/attempts
     '';
   }

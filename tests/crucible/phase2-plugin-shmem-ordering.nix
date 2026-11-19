@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginShmemOrdering",
-  taskIds ? ["T-PLUG-20"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -52,7 +51,6 @@
   shmemLib = import ./_crucible-shmem-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
 
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -623,7 +621,6 @@ in
             mkdir -p "$out"
             printf '%s\n' \
               "attr=${attrPath}" \
-              "tasks=${taskList}" \
               "ordering_facade=plugin-shmem-access-only-through-safe-abi-methods" \
               "relaxed_scope=plugin-local-diagnostics-only" \
               > "$out/result"

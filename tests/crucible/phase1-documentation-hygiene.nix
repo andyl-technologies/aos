@@ -144,7 +144,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=checks.crucible.phase1.documentationHygiene
-            tasks=T-STD-12
             comments_only_policy=AGENTS.md,engineering-standards.md
             source_filter=AGENTS.md,documentation_hygiene.rs,phase1-documentation-hygiene.nix
             gate_catalog_check=checks.crucible.phase1.gateCatalog

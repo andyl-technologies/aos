@@ -154,7 +154,7 @@ impl BlockResponse {
 
     /// Encodes this response into its little-endian wire bytes.
     ///
-    /// The reserved `u16` is emitted as zero ([IO-8]).
+    /// The reserved `u16` is emitted as zero.
     ///
     /// # Errors
     ///

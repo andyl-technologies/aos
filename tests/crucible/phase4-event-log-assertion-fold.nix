@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.eventLogAssertionFold",
-  taskIds ? ["T-OBS-7"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -20,7 +19,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-  taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "docs/engineering/crucible/event-log.md" eventLogDoc [
       {
@@ -171,10 +169,6 @@
         label = "phase4 event log assertion fold attr path";
         needle = "checks.crucible.phase4.eventLogAssertionFold";
       }
-      {
-        label = "phase4 event log assertion fold task id";
-        needle = "taskIds = [\"T-OBS-7\"]";
-      }
     ]
     ++ forbiddenFor "crates/crucible/crucible-engine/tests/assertion_log_fold.rs" assertionLogFoldTest [
       {
@@ -260,7 +254,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             event_log_assertion_fold=true
             RESULT
           '';

@@ -2,8 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginAppRandomDoorbell",
-  taskIds ? [],
-  openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -19,8 +17,6 @@
   execSpec = builtins.readFile ../../docs/engineering/crucible/execution-model.md;
   defaultChecks = builtins.readFile ./default.nix;
 
-  taskList = builtins.concatStringsSep "," taskIds;
-  openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -366,8 +362,6 @@ in
             PASS
             check=${attrPath}
             gate=gate:layer0-determinism
-            tasks=${taskList}
-            open_tasks=${openTaskList}
             status=complete
             doorbell_kind=random_request
             whitebox_opt_in=required

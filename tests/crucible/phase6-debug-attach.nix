@@ -2,8 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase6.debugAttach",
-  taskIds ? ["T-DBG-1"],
-  openTaskIds ? [],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -52,9 +50,6 @@
       entry = ../../crates/crucible/crucible-qemu-host/tests/qmp_launch_channel.rs;
     });
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
-  openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -258,10 +253,6 @@
         needle = "debugAttach = greenBeforeAdvance";
       }
       {
-        label = "explicit task id";
-        needle = "taskIds = [\"T-DBG-1\"]";
-      }
-      {
         label = "unifying view raw dependency";
         needle = "phase6.unifyingView.rawGate";
       }
@@ -394,8 +385,6 @@ in
             cat > "$out/result" <<RESULT
             PASS
             check=${attrPath}
-            tasks=${taskList}
-            open_tasks=${openTaskList}
             status=complete
             evidence_scope=debug-attach-model-and-gateway
             gate=gate:debug-attach

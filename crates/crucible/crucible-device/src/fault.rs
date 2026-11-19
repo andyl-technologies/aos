@@ -4,14 +4,13 @@
 //! frame effects without host time or floating-point behavior.
 //!
 //! - The pure, integer-only **transforms** ([`Probability`],
-//!   [`jitter_shift_ticks`], [`reorder_shift_ticks`],
-//!   [`corrupt_payload`]) are functions of an injected draw value — no RNG,
-//!   no floating point ([IO-24]). The network link
-//!   ([`super::netlink::fault`]) re-exports these so disk, filesystem, and
-//!   network share one implementation.
+//!   [`jitter_shift_ticks`], [`reorder_shift_ticks`], [`corrupt_payload`]) are
+//!   functions of an injected draw value — no RNG, no floating point. The
+//!   network link ([`super::netlink::fault`]) re-exports these so disk,
+//!   filesystem, and network share one implementation.
 //! - The seeded **per-device RNG** ([`DeviceRng`]) supplies those draws in a
-//!   fixed consumption order ([IO-21]). It is forked by name-hash from the
-//!   scenario seed (the fork itself is computed in the `crucible` engine via the
+//!   fixed consumption order. It is forked by name-hash from the scenario seed
+//!   (the fork itself is computed in the `crucible` engine via the
 //!   determinism-contract name-hash; this crate only carries the resulting
 //!   stream seed and the SplitMix64 draw sequence), so adding or renaming an
 //!   unrelated device never perturbs another device's draws.
@@ -19,8 +18,8 @@
 
 /// A Bernoulli probability expressed as an exact integer fraction.
 ///
-/// The fault model uses no floating point ([IO-24]); a probability is the
-/// rational `numerator / denominator`, and a draw `d` fires the decision when
+/// The fault model uses no floating point; a probability is the rational
+/// `numerator / denominator`, and a draw `d` fires the decision when
 /// `(d % denominator) < numerator`. A `numerator` of zero never fires; a
 /// `numerator >= denominator` always fires.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -59,7 +58,7 @@ impl Probability {
     /// Returns whether the injected `draw` fires this probability.
     ///
     /// Pure function of `(self, draw)`: `(draw % denominator) < numerator`. A zero
-    /// denominator never fires. No floating point is used ([IO-24]).
+    /// denominator never fires. No floating point is used.
     #[must_use]
     pub fn fires(&self, draw: u64) -> bool {
         if self.denominator == 0 {
@@ -77,7 +76,7 @@ impl Default for Probability {
 
 /// The deterministic jitter shift drawn from an injected value.
 ///
-/// Returns `draw % (window_ticks + 1)`, a value in `0..=window_ticks` ([IO-20]). A zero
+/// Returns `draw % (window_ticks + 1)`, a value in `0..=window_ticks`. A zero
 /// window yields zero. Pure function of `(draw, window_ticks)`.
 ///
 /// The maximal `window_ticks == u64::MAX` is the full-range identity: `window_ticks + 1`
@@ -94,11 +93,12 @@ pub fn jitter_shift_ticks(draw: u64, window_ticks: u64) -> u64 {
 
 /// The deterministic reorder shift drawn from an injected value.
 ///
-/// Returns `draw % (window_ticks + 1)`, a value in `0..=window_ticks` ([IO-20]). A zero
+/// Returns `draw % (window_ticks + 1)`, a value in `0..=window_ticks`. A zero
 /// window yields zero. Pure function of `(draw, window_ticks)`. Identical math to
 /// [`jitter_shift_ticks`] but kept distinct so the two faults consume independent
-/// draws in a fixed order; the same `window_ticks == u64::MAX` full-range identity
-/// applies (the draw is returned verbatim, already in `0..=window_ticks`).
+/// draws in a fixed order; the same `window_ticks == u64::MAX` full-range
+/// identity applies (the draw is returned verbatim, already in
+/// `0..=window_ticks`).
 #[must_use]
 pub fn reorder_shift_ticks(draw: u64, window_ticks: u64) -> u64 {
     match window_ticks.checked_add(1) {
@@ -111,7 +111,7 @@ pub fn reorder_shift_ticks(draw: u64, window_ticks: u64) -> u64 {
 /// Flips `bit_flips` bits in `payload` at positions derived from `draws`.
 ///
 /// Each draw selects a bit position `draw % (payload_bits)`, and that bit is
-/// toggled in place ([IO-20]). The same draws flip exactly the same bits, so the
+/// toggled in place. The same draws flip exactly the same bits, so the
 /// corruption is reproducible. An empty payload or zero `bit_flips` leaves the
 /// payload unchanged. Pure function of `(payload, draws, bit_flips)`.
 ///
@@ -132,23 +132,23 @@ pub fn corrupt_payload(payload: &mut [u8], draws: &[u64], bit_flips: u32) {
     }
 }
 
-/// A seeded per-device RNG: the source of every probabilistic device draw ([IO-21]).
+/// A seeded per-device RNG: the source of every probabilistic device draw.
 ///
 /// `DeviceRng` is a thin newtype over the `crucible` engine's
-/// [`crucible_determinism::DecisionStream`], so the PRNG has a **single source of truth**
-/// in L0: the SplitMix64 algorithm, the seed-fork formula, and the draw-cursor
-/// convention are defined once and cannot drift between a device's recorded draws
-/// and an engine replay. A device stream forked by name-hash from the scenario
-/// seed ([DET-25]) therefore reproduces the same sequence an engine
+/// [`crucible_determinism::DecisionStream`], so the PRNG has a **single source of
+/// truth** in L0: the SplitMix64 algorithm, the seed-fork formula, and the
+/// draw-cursor convention are defined once and cannot drift between a device's
+/// recorded draws and an engine replay. A device stream forked by name-hash from
+/// the scenario seed therefore reproduces the same sequence an engine
 /// [`crucible_determinism::DecisionRng::fork_in_domain`] would. The RNG tracks a
-/// monotonically increasing **draw cursor** ([`DeviceRng::position`]); that cursor
-/// is the device's RNG state captured in a snapshot and restored on resume so the
-/// next draw resolves identically after a pause as it would have without one
-/// ([IO-23], [EXEC-13]).
+/// monotonically increasing **draw cursor** ([`DeviceRng::position`]); that
+/// cursor is the device's RNG state captured in a snapshot and restored on resume
+/// so the next draw resolves identically after a pause as it would have without
+/// one.
 ///
 /// Forking by name-hash (rather than by sequential draw from a root) is what
 /// makes the stream order- and topology-stable: adding or renaming an unrelated
-/// device never perturbs this device's sequence ([IO-21]).
+/// device never perturbs this device's sequence.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeviceRng {
     stream: crucible_determinism::DecisionStream,
@@ -157,13 +157,13 @@ pub struct DeviceRng {
 impl DeviceRng {
     /// Forks a device RNG by name-hash from the engine's decision-RNG root seed.
     ///
-    /// Delegates to [`crucible_determinism::DecisionRng::fork_in_domain`], the single L0
-    /// source of the SplitMix64 stream and the `seed XOR stable_hash(domain,
-    /// name)` fork formula ([DET-25]). `root_seed` is the scenario's
-    /// decision-RNG root (`Seed::decision_rng().root_seed()`); `domain` and
-    /// `name` are the device stream's stable domain and the device name. Because
-    /// the fork is by name-hash, an unrelated device never perturbs this device's
-    /// sequence.
+    /// Delegates to [`crucible_determinism::DecisionRng::fork_in_domain`], the
+    /// single L0 source of the SplitMix64 stream and the
+    /// `seed XOR stable_hash(domain, name)` fork formula. `root_seed` is the
+    /// scenario's decision-RNG root (`Seed::decision_rng().root_seed()`);
+    /// `domain` and `name` are the device stream's stable domain and the device
+    /// name. Because the fork is by name-hash, an unrelated device never perturbs
+    /// this device's sequence.
     #[must_use]
     pub fn fork(root_seed: u64, domain: &str, name: &str) -> Self {
         Self {
@@ -171,7 +171,7 @@ impl DeviceRng {
         }
     }
 
-    /// Restores a forked device RNG to a captured draw cursor ([IO-23]).
+    /// Restores a forked device RNG to a captured draw cursor.
     ///
     /// Re-forks the stream from `(root_seed, domain, name)` and replays
     /// `position` draws, so a restored stream's next draw is byte-identical to
@@ -194,7 +194,7 @@ impl DeviceRng {
         self.stream.seed()
     }
 
-    /// Returns the number of values drawn so far (the snapshot cursor, [IO-23]).
+    /// Returns the number of values drawn so far (the snapshot cursor).
     #[must_use]
     pub fn position(&self) -> u64 {
         self.stream.draws()
@@ -275,7 +275,7 @@ mod tests {
         assert_eq!(
             restored.next_u64(),
             live_next,
-            "restored stream resumes byte-identically ([IO-23])"
+            "restored stream resumes byte-identically"
         );
     }
 }

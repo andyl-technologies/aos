@@ -38,7 +38,7 @@ impl BlockRequestIdentity {
 /// A block operation code, the first byte of every [`BlockRequest`].
 ///
 /// The numeric values are part of the wire ABI and MUST NOT change without a
-/// version bump ([IO-8]).
+/// version bump.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BlockOp {
     /// Read `count` bytes at `offset` (overlay over base).
@@ -71,7 +71,7 @@ impl BlockOp {
     /// # Errors
     ///
     /// Returns [`BlockCodecError::UnknownOp`] when `byte` is not a defined
-    /// operation code ([IO-8]); the message is malformed and answered with an
+    /// operation code; the message is malformed and answered with an
     /// error-status response, never parsed past its bounds.
     pub fn from_wire(byte: u8) -> Result<Self, BlockCodecError> {
         match byte {

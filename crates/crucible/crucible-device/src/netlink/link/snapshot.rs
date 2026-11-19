@@ -6,12 +6,12 @@ mod codec_support;
 
 use codec_support::*;
 
-/// The device half of a network link's `MaterializedState` ([IO-23], [IO-26]).
+/// The device half of a network link's `MaterializedState`.
 ///
 /// Captures the link's clock cursor, base latency, floor, effective fault table,
-/// sequence counter, pending-recompute flag, RNG cursor, and the
-/// in-flight deliveries. The active fault set is part of the captured state so a
-/// fork resumes with identical link behavior (deferred wiring in CS-IO-5).
+/// sequence counter, pending-recompute flag, RNG cursor, and the in-flight
+/// deliveries. The active fault set is part of the captured state so a fork
+/// resumes with identical link behavior (its wiring is deferred).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LinkSnapshot {
     /// The link's current (consumer-frontier) icount at snapshot time.
@@ -30,7 +30,7 @@ pub struct LinkSnapshot {
     pub next_seq: u32,
     /// Whether a lookahead recompute was pending at snapshot time.
     pub lookahead_recompute_pending: bool,
-    /// The per-device RNG stream cursor (draws consumed so far, [IO-23]).
+    /// The per-device RNG stream cursor (draws consumed so far).
     pub rng_position: u64,
     /// The in-flight deliveries, in delivery order.
     pub inflight: Vec<PendingResponse>,

@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase6.restoreStrategies",
-  taskIds ? ["T-ADV-5"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -13,8 +12,6 @@
   replayOracleHarness = builtins.readFile ../../crates/crucible/crucible-test-support/src/replay_oracle.rs;
   divergenceGateTest = builtins.readFile ../../crates/crucible/crucible-test-support/tests/gate_divergence_bisect.rs;
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -182,10 +179,6 @@
         needle = "checks.crucible.phase6.restoreStrategies";
       }
       {
-        label = "phase6 restore strategies task id";
-        needle = ''taskIds = ["T-ADV-5"]'';
-      }
-      {
         label = "phase4 replay oracle raw dependency";
         needle = "\n          phase4.gates.replayOracle.rawGate\n";
       }
@@ -283,7 +276,6 @@ in
                         cat > "$out/result" <<RESULT
                         PASS
             check=${attrPath}
-            tasks=${taskList}
             restore=replay-from-seed,snapshot-restore
             rust_test=crucible_engine::gate_restore_strategies
             RESULT

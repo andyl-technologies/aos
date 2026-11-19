@@ -56,28 +56,6 @@ fn gate_evidence_references_are_integral() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn gate_evidence_rejects_checklist_state_needles() {
-    let findings = checklist_state_needle_failures(
-        Path::new("tests/crucible/synthetic.nix"),
-        r#"
-          failuresFor "docs/example/plan.md" doc [
-            {
-              label = "circular completion evidence";
-              needle = "- [x] **T-SYNTH-1**";
-            }
-            {
-              label = "circular open evidence";
-              needle = "- [ ] **T-SYNTH-2**";
-            }
-          ]
-        "#,
-    );
-
-    assert_contains(&findings, "T-SYNTH-1");
-    assert_contains(&findings, "T-SYNTH-2");
-}
-
-#[test]
 fn user_reference_names_every_executable_effect_kind() -> Result<(), Box<dyn Error>> {
     let reference = fs::read_to_string(repo_root().join("docs/users/crucible/reference.md"))?;
     let registry = fs::read_to_string(

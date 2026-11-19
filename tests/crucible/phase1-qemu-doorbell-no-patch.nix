@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.qemuDoorbellNoPatch",
-  taskIds ? ["T-PATCH-15"],
   qemuPackage ? pkgs.qemu-crucible,
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
@@ -46,7 +45,7 @@
         lib.concatMap (
           needle:
             lib.optionals (hasInfix needle patch.source) [
-              "pkgs/emulation/qemu-patches/${patch.name}: T-PATCH-15 must not carry bespoke doorbell patch symbol `${needle}`"
+              "pkgs/emulation/qemu-patches/${patch.name}: must not carry bespoke doorbell patch symbol `${needle}`"
             ]
         )
         forbiddenDoorbellPatchNeedles
@@ -58,13 +57,13 @@
 
   failures =
     lib.optionals (doorbellPatchNames != []) [
-      "pkgs/emulation/qemu-patches: T-PATCH-15 no-patch decision found doorbell patch files: ${builtins.concatStringsSep "," doorbellPatchNames}"
+      "pkgs/emulation/qemu-patches: no-doorbell-patch decision found doorbell patch files: ${builtins.concatStringsSep "," doorbellPatchNames}"
     ]
     ++ forbiddenPatchHits
     ++ lib.concatMap (
       needle:
         lib.optionals (hasInfix needle qemuNix) [
-          "pkgs/emulation/qemu.nix: T-PATCH-15 must not wire bespoke doorbell patch symbol `${needle}`"
+          "pkgs/emulation/qemu.nix: must not wire bespoke doorbell patch symbol `${needle}`"
         ]
     )
     forbiddenDoorbellPatchNeedles
@@ -231,7 +230,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
             gate=gate:patch-microtests
             qemu_package=${qemuPackage}
             qemu_package_version=${qemuPackage.version}

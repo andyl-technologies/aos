@@ -3,12 +3,10 @@
   lib,
   qemuPackage ? pkgs.qemu-crucible,
   attrPath ? "checks.crucible.phase2.qemuVcpuService",
-  taskIds ? ["T-QEMU-0055"],
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
   atomicPatch = import ../../pkgs/emulation/qemu-patches/_atomic-patch.nix;
   patchSource = builtins.readFile (patchDir + "/${atomicPatch.file}");
-  taskList = builtins.concatStringsSep "," taskIds;
   inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
   failures = failuresFor "pkgs/emulation/qemu-patches/${atomicPatch.file}" patchSource [
     {
@@ -224,7 +222,6 @@ in
               printf 'qemu_package=%s\n' '${qemuPackage}'
               printf 'qemu_package_version=%s\n' '${qemuPackage.version}'
               printf 'check=%s\n' '${attrPath}'
-              printf 'tasks=%s\n' '${taskList}'
               printf 'architectures=x86_64,aarch64\n'
               printf 'test_double=false\n'
               printf 'backend=actual-patched-and-stock-qemu\n'

@@ -110,7 +110,7 @@ fn link_snapshot_codec_enforces_authored_aggregate_limit() {
     );
 }
 
-// ---- construction: latency floor (IO-33) ----
+// ---- construction: latency floor ----
 
 #[test]
 fn zero_floor_or_subfloor_base_is_rejected() {
@@ -129,7 +129,7 @@ fn zero_floor_or_subfloor_base_is_rejected() {
     assert!(NetLink::new(src, 1000, 1000, LinkFaults::none()).is_ok());
 }
 
-// ---- fault-free delivery at base latency (IO-20) ----
+// ---- fault-free delivery at base latency ----
 
 #[test]
 fn fault_free_delivers_at_base_latency() {
@@ -281,7 +281,7 @@ fn resolved_duplicate_failure_enqueues_nothing() {
     assert_eq!(out.deliveries[0].key.seq, 0);
 }
 
-// ---- latency fault shifts delivery later (IO-20) ----
+// ---- latency fault shifts delivery later ----
 
 #[test]
 fn added_latency_shifts_delivery_later() {
@@ -296,7 +296,7 @@ fn added_latency_shifts_delivery_later() {
     assert_eq!(out.deliveries[0].delivery_icount(), 2 * BASE_TICKS);
 }
 
-// ---- sub-floor latency fault clamped to floor (IO-33) ----
+// ---- sub-floor latency fault clamped to floor ----
 
 #[test]
 fn subfloor_latency_is_clamped_to_floor() {
@@ -317,7 +317,7 @@ fn subfloor_latency_is_clamped_to_floor() {
     assert!(at_floor.effective_latency_ticks() >= at_floor.floor_ticks());
 }
 
-// ---- jitter shifts later, deterministic given draw (IO-20) ----
+// ---- jitter shifts later, deterministic given draw ----
 
 #[test]
 fn jitter_shifts_later_and_is_deterministic() {
@@ -346,7 +346,7 @@ fn jitter_shifts_later_and_is_deterministic() {
     assert!(oc.deliveries[0].delivery_icount() >= oa.deliveries[0].delivery_icount());
 }
 
-// ---- reorder shifts a frame past a sibling (IO-20) ----
+// ---- reorder shifts a frame past a sibling ----
 
 #[test]
 fn reorder_moves_a_frame_past_its_sibling() {
@@ -380,7 +380,7 @@ fn reorder_moves_a_frame_past_its_sibling() {
     assert_eq!(ids, vec![2, 1], "reorder did not move frame 1 past frame 2");
 }
 
-// ---- bandwidth adds serialization delay proportional to size (IO-20) ----
+// ---- bandwidth adds serialization delay proportional to size ----
 
 #[test]
 fn bandwidth_adds_size_proportional_delay() {
@@ -407,7 +407,7 @@ fn bandwidth_adds_size_proportional_delay() {
     assert!(big.deliveries[0].delivery_icount() > small.deliveries[0].delivery_icount());
 }
 
-// ---- loss drops the frame (IO-20) ----
+// ---- loss drops the frame ----
 
 #[test]
 fn loss_drops_the_frame() {
@@ -467,7 +467,7 @@ fn partition_drops_the_frame() {
     );
 }
 
-// ---- duplicate emits exactly two deliveries (IO-20) ----
+// ---- duplicate emits exactly two deliveries ----
 
 #[test]
 fn duplicate_emits_exactly_two_deliveries_at_distinct_icounts() {
@@ -490,4 +490,4 @@ fn duplicate_emits_exactly_two_deliveries_at_distinct_icounts() {
     assert_eq!(l.inflight_len(), 2);
 }
 
-// ---- corrupt flips exactly the seeded bits (IO-20) ----
+// ---- corrupt flips exactly the seeded bits ----

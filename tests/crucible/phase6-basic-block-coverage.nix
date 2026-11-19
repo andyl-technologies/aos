@@ -2,8 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase6.basicBlockCoverage",
-  taskIds ? ["T-ADV-10" "T-PLUG-15" "T-PERF-15"],
-  openTaskIds ? [],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -57,8 +55,6 @@ in
           cat > "$out/result" <<'RESULT'
           PASS
           check=${attrPath}
-          tasks=${builtins.concatStringsSep "," taskIds}
-          open_tasks=${builtins.concatStringsSep "," openTaskIds}
           gate=gate:basic-block-coverage
           transport=aggregate-shmem-coverage
           restore_generation_acknowledged=true

@@ -320,7 +320,7 @@ fn assert_low_latency_trade(scenario: &BenchScenario) -> Result<(), PerfBenchErr
     // determinism failure. "Deterministic" means the low-latency
     // scenario reproduces bit-identically across runs  --  not that lowering the
     // latency preserves the fingerprint (latency is a determinism-relevant input
-    // in the content hash, [SCHED-21], so a different latency is a different
+    // in the content hash, so a different latency is a different
     // scenario). We therefore compare two independent evaluations of the *same*
     // low-latency scenario, which must agree.
     let low_latency = with_min_latency(scenario, 1);

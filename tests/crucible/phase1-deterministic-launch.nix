@@ -33,7 +33,7 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-  # The any-guest contract ([G-2], D-31): the launch layer MUST NOT bake guest
+  # The any-guest contract: the launch layer MUST NOT bake guest
   # entropy-suppression flags into the shipped default cmdline or gate a launch
   # on their presence. These strings must be absent from the launch source.
 
@@ -675,7 +675,6 @@ in
             PASS
             check=checks.crucible.phase1.deterministicLaunch
             gate=gate:layer0-determinism
-            tasks=T-DET-1
             rust_test=crucible_qemu_host::deterministic_launch,crucible_engine::canonical_material_builds_stable_scenario_identity
             scenario_hash=crucible.scenario.v1.qemu-launch
             cpu=qemu64,-rdrand,-rdseed

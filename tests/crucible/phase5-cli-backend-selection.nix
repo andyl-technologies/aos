@@ -2,8 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.cliBackendSelection",
-  taskIds ? ["T-CLI-3" "T-CLI-19" "T-CLI-20"],
-  openTaskIds ? [],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -14,9 +12,6 @@
   cliHelpTests = builtins.readFile ../../crates/crucible/crucible-cli/tests/help_surface.rs;
   machineReadableTests = builtins.readFile ../../crates/crucible/crucible-cli/tests/machine_readable.rs;
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
-  openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
@@ -50,7 +45,7 @@
       }
       {
         label = "backend-selection proof predicate";
-        needle = "fn proves_t_cli_3";
+        needle = "fn matches_selected_route";
       }
       {
         label = "observed backend execution evidence";
@@ -324,8 +319,6 @@ in
 
     CRUCIBLE_T_CLI_3_FAILURES = failureText;
     ATTR_PATH = attrPath;
-    TASK_IDS = taskList;
-    OPEN_TASK_IDS = openTaskList;
     DEPENDENCY_COUNT = toString (builtins.length dependencies);
     DEPENDENCY_PATHS = builtins.concatStringsSep ":" dependencies;
 
@@ -395,8 +388,6 @@ in
           cat > "$out/result" <<'RESULT'
           PASS
           check=$ATTR_PATH
-          tasks=$TASK_IDS
-          open_tasks=$OPEN_TASK_IDS
           status=complete
           evidence_scope=backend-routing-live-qemu-and-production-api
           plugin_validation=elf64-dynsym-defined-global
@@ -407,9 +398,8 @@ in
     ];
 
     meta = {
-      description = "Crucible phase 5 CLI backend-selection gate for ${taskList}";
       passthru = {
-        inherit attrPath taskIds openTaskIds dependencies;
+        inherit attrPath dependencies;
         failureText = failureText;
       };
     };

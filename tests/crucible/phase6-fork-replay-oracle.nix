@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase6.gates.replayOracle",
-  taskIds ? ["T-ADV-4"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -11,8 +10,6 @@
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
   forkReplayGateTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/gate_fork_replay_oracle.rs;
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -160,10 +157,6 @@
         needle = "checks.crucible.phase6.gates.replayOracle";
       }
       {
-        label = "phase6 replay oracle task id";
-        needle = ''taskIds = ["T-ADV-4"]'';
-      }
-      {
         label = "phase4 replay oracle raw dependency";
         needle = "\n            phase4.gates.replayOracle.rawGate\n";
       }
@@ -270,7 +263,6 @@ in
             cat > "$out/result" <<RESULT
             PASS
             check=${attrPath}
-            tasks=${taskList}
             gate=gate:replay-oracle
             fork=base-validated,branch-materialized,divergence-localized
             rust_test=crucible_engine::gate_fork_replay_oracle

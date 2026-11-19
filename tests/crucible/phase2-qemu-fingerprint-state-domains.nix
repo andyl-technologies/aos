@@ -6,7 +6,6 @@
     import ./phase2-qemu-exact-snapshot-restore.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase2.qemuFingerprintStateDomains.liveRestore";
-      taskIds = ["T-QEMU-0078"];
     },
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;

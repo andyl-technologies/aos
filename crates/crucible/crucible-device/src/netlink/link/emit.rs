@@ -5,10 +5,11 @@ use super::*;
 impl NetLink {
     /// Builds a link with a source id, base latency, floor, and faults.
     ///
-    /// The base latency MUST be strictly positive and at or above `floor_ticks`, and
-    /// `floor_ticks` MUST itself be strictly positive ([IO-33]): the base latency is
-    /// what supplies the scheduler's conservative lookahead bound, so a
-    /// zero-latency link is rejected rather than silently collapsing parallelism.
+    /// The base latency MUST be strictly positive and at or above
+    /// `floor_ticks`, and `floor_ticks` MUST itself be strictly positive: the
+    /// base latency is what supplies the scheduler's conservative lookahead
+    /// bound, so a zero-latency link is rejected rather than silently
+    /// collapsing parallelism.
     ///
     /// # Errors
     ///
@@ -63,7 +64,7 @@ impl NetLink {
         &self.faults
     }
 
-    /// Returns the per-device RNG stream cursor (draws consumed so far, [IO-23]).
+    /// Returns the per-device RNG stream cursor (draws consumed so far).
     #[must_use]
     pub fn rng_position(&self) -> u64 {
         self.rng_position
@@ -97,8 +98,8 @@ impl NetLink {
     ///
     /// A latency fault that *raises* the effective latency is honored as-is (it
     /// only widens lookahead); a fault that would push it below the floor is
-    /// clamped up to the floor ([IO-33]). This is the value the scheduler's
-    /// lookahead uses; it is always at or above the strictly-positive floor.
+    /// clamped up to the floor. This is the value the scheduler's lookahead
+    /// uses; it is always at or above the strictly-positive floor.
     #[must_use]
     pub fn effective_latency_ticks(&self) -> u64 {
         let raised = self
@@ -110,7 +111,7 @@ impl NetLink {
     /// Replaces the effective fault table, flagging a lookahead recompute if needed.
     ///
     /// If the new table changes the link's conservative minimum effective latency
-    /// ([IO-33]) -- currently the `added_latency_ticks` component -- the link sets the
+    /// -- currently the `added_latency_ticks` component -- the link sets the
     /// lookahead-recompute flag so the scheduler recomputes its lookahead/horizon
     /// at the **next quantum boundary**, never mid-RUN. The signal is exposed via
     /// [`NetLink::take_lookahead_recompute`]; this method cannot call the
@@ -135,19 +136,18 @@ impl NetLink {
     ///
     /// The bound-relevant fields are exactly those
     /// [`LinkFaults::affects_latency`] reports. Other fields can perturb a
-    /// specific delivery after EMIT, but their minimum additional delay is zero and
-    /// therefore they do not change the lookahead edge the scheduler reads
-    /// ([IO-33]).
+    /// specific delivery after EMIT, but their minimum additional delay is zero
+    /// and therefore they do not change the lookahead edge the scheduler reads.
     pub(super) fn latency_profile_changed(before: &LinkFaults, after: &LinkFaults) -> bool {
         before.added_latency_ticks != after.added_latency_ticks
     }
 
-    /// Takes and clears the pending lookahead-recompute signal ([IO-33]).
+    /// Takes and clears the pending lookahead-recompute signal.
     ///
     /// Returns `true` exactly once after any conservative latency-bound change,
     /// then resets to `false`. The integration layer (CS-INT) consumes this at
     /// the quantum boundary to trigger the scheduler's lookahead/horizon
-    /// recompute ([SCHED-37]).
+    /// recompute.
     pub fn take_lookahead_recompute(&mut self) -> bool {
         core::mem::replace(&mut self.lookahead_recompute_pending, false)
     }
@@ -160,27 +160,27 @@ impl NetLink {
 
     /// Resolves and enqueues one emitted frame, applying the effective fault table.
     ///
-    /// Computes the delivery icount from the base latency (clamped to the floor,
-    /// [IO-33]) plus bandwidth serialization and seeded jitter/reorder shifts,
-    /// then applies the probabilistic effects from `draws` ([IO-20]): loss drops
-    /// the frame (zero deliveries), duplicate emits a second delivery at a
-    /// deterministically-derived later icount, and corrupt mutates payload bytes.
-    /// Each produced delivery is inserted into the delivery-ordered
+    /// Computes the delivery icount from the base latency (clamped to the
+    /// floor) plus bandwidth serialization and seeded jitter/reorder shifts,
+    /// then applies the probabilistic effects from `draws`: loss drops the
+    /// frame (zero deliveries), duplicate emits a second delivery at a
+    /// deterministically-derived later icount, and corrupt mutates payload
+    /// bytes. Each produced delivery is inserted into the delivery-ordered
     /// in-flight queue and is also returned in the [`ResolveOutcome`].
     ///
     /// The `draws` are injected here for unit testing;
-    /// [`NetLink::emit_from_rng`] draws them from the seeded per-device RNG. The
-    /// same `frame` and `draws` always yield byte-identical deliveries ([IO-4],
-    /// [IO-22]).
+    /// [`NetLink::emit_from_rng`] draws them from the seeded per-device RNG.
+    /// The same `frame` and `draws` always yield byte-identical deliveries.
     ///
     /// # Errors
     ///
     /// Returns [`DeviceError::TickOverflow`] when exact time overflows,
     /// [`DeviceError::ResponseSequenceOverflow`] when delivery ordering exhausts
-    /// its sequence width, and -- when `policy` is [`PastDeliveryPolicy::FailLoud`] --
+    /// its sequence width, and -- when `policy` is
+    /// [`PastDeliveryPolicy::FailLoud`] --
     /// [`DeviceError::DeliveryReorderedIntoPast`] if a jitter/reorder shift would
-    /// move the delivery to at or before the consumer's current frontier ([IO-34]).
-    /// On any error no delivery is enqueued (the frame is fully rejected).
+    /// move the delivery to at or before the consumer's current frontier. On any
+    /// error no delivery is enqueued (the frame is fully rejected).
     pub fn emit(
         &mut self,
         frame: &Frame,
@@ -189,7 +189,7 @@ impl NetLink {
     ) -> Result<ResolveOutcome, DeviceError> {
         let mut outcome = ResolveOutcome::default();
 
-        // --- partition (IO-20): drop the frame, no delivery ---
+        // --- partition: drop the frame, no delivery ---
         if self.faults.partitioned {
             return Ok(outcome);
         }
@@ -248,15 +248,15 @@ impl NetLink {
                 delta_ticks: frame.resolved_effects.additional_delay_ticks(),
             })?;
 
-        // --- into-the-past guard (IO-34): never silently deliver late ---
+        // --- into-the-past guard: never silently deliver late ---
         let delivery_icount = self.guard_future(delivery_icount_raw, policy)?;
 
-        // --- loss (IO-20): drop the frame, no delivery ---
+        // --- loss: drop the frame, no delivery ---
         if self.faults.loss_fires(draws.loss, &draws.additional_loss) {
             return Ok(outcome);
         }
 
-        // --- corrupt (IO-20): mutate payload bytes deterministically ---
+        // --- corrupt: mutate payload bytes deterministically ---
         let mut payload = frame.payload.clone();
         if self.faults.corrupt.fires(draws.corrupt) {
             corrupt_link_payload(&self.faults, &mut payload, &draws.corruption_selectors);
@@ -264,12 +264,12 @@ impl NetLink {
 
         let mut planned = vec![(delivery_icount, payload.clone())];
 
-        // --- duplicate (IO-20): emit a second delivery at a later icount ---
+        // --- duplicate: emit a second delivery at a later icount ---
         if self.faults.duplicate.fires(draws.duplicate) {
             let dup_icount_raw = self
                 .clock
                 .add_ticks(delivery_icount_raw, self.faults.duplicate_gap_ticks)?;
-            // The duplicate must also stay in the consumer's future ([IO-34]).
+            // The duplicate must also stay in the consumer's future.
             let dup_icount_guarded = self.guard_future(dup_icount_raw, policy)?;
             // Preserve the duplicate gap under ClampToFuture: if both the primary
             // and the duplicate were clamped into the consumer's past, naively
@@ -343,15 +343,15 @@ impl NetLink {
         Ok(outcome)
     }
 
-    /// Resolves one emitted frame, drawing its faults from the seeded RNG ([IO-21]).
+    /// Resolves one emitted frame, drawing its faults from the seeded RNG.
     ///
-    /// Identical to [`NetLink::emit`] except the [`FrameDraws`] are produced by
-    /// the seeded per-device RNG in the fixed model order
-    /// ([`FrameDraws::from_rng_for_faults`]) rather than injected, and the link's RNG cursor
-    /// ([`NetLink::rng_position`]) advances to match. The cursor is captured in the
-    /// snapshot so a fork resumes the same draw sequence ([IO-23]). The draws are
-    /// taken before any early-out so the cursor stays aligned whether or not the
-    /// frame is lost.
+    /// Identical to [`NetLink::emit`] except the [`FrameDraws`] are produced by the
+    /// seeded per-device RNG in the fixed model order
+    /// ([`FrameDraws::from_rng_for_faults`]) rather than injected, and the link's
+    /// RNG cursor ([`NetLink::rng_position`]) advances to match. The cursor is
+    /// captured in the snapshot so a fork resumes the same draw sequence. The draws
+    /// are taken before any early-out so the cursor stays aligned whether or not
+    /// the frame is lost.
     ///
     /// # Errors
     ///
@@ -390,11 +390,11 @@ impl NetLink {
         Ok((outcome, draws))
     }
 
-    /// Builds a seeded RNG positioned at this link's captured cursor ([IO-23]).
+    /// Builds a seeded RNG positioned at this link's captured cursor.
     ///
     /// Forks the link stream by name-hash from the engine's decision-RNG
-    /// `root_seed` in `domain` for `name` ([DET-25]) and resumes it at the
-    /// captured cursor, so the returned RNG's next draw is byte-identical to the
+    /// `root_seed` in `domain` for `name` and resumes it at the captured
+    /// cursor, so the returned RNG's next draw is byte-identical to the
     /// uninterrupted run's. The caller supplies the engine root seed and the
     /// link's stable stream domain and name (the engine owns the name-hash).
     #[must_use]
@@ -402,7 +402,7 @@ impl NetLink {
         DeviceRng::restore(root_seed, domain, name, self.rng_position)
     }
 
-    /// Enforces that a delivery icount is in the consumer's strict future ([IO-34]).
+    /// Enforces that a delivery icount is in the consumer's strict future.
     ///
     /// A delivery at or before the current frontier can never be made visible at
     /// its exact icount; per `policy` the link either fails loudly or clamps up to

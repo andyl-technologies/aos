@@ -2,8 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.gates.replayOracle",
-  taskIds ? ["T-DET-18" "T-DET-21" "T-DET-27" "T-HARN-12" "T-HARN-13" "T-EXEC-4" "T-EXEC-11" "T-PAT-4" "T-TEMP-3" "T-TEMP-4" "T-TEMP-5" "T-TEMP-7" "T-TEMP-9" "T-TEMP-11"],
-  openTaskIds ? [],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -730,63 +728,11 @@
         label = "phase1 replay-oracle attr path";
         needle = "attrPath = \"checks.crucible.phase1.gates.replayOracle\"";
       }
-      {
-        label = "phase1 replay-oracle lists T-DET-18";
-        needle = "\"T-DET-18\"";
-      }
-      {
-        label = "phase1 replay-oracle lists T-DET-21";
-        needle = "\"T-DET-21\"";
-      }
-      {
-        label = "phase1 replay-oracle lists T-DET-27";
-        needle = "\"T-DET-27\"";
-      }
-      {
-        label = "phase1 replay-oracle lists T-HARN-12";
-        needle = "\"T-HARN-12\"";
-      }
-      {
-        label = "phase1 replay-oracle lists T-HARN-13";
-        needle = "\"T-HARN-13\"";
-      }
-      {
-        label = "phase1 replay-oracle lists T-EXEC-4";
-        needle = "\"T-EXEC-4\"";
-      }
-      {
-        label = "phase1 replay-oracle lists T-EXEC-11";
-        needle = "\"T-EXEC-11\"";
-      }
-      {
-        label = "phase1 replay-oracle lists T-PAT-4";
-        needle = "\"T-PAT-4\"";
-      }
-      {
-        label = "phase1 replay-oracle lists T-TEMP-3";
-        needle = "\"T-TEMP-3\"";
-      }
-      {
-        label = "phase1 replay-oracle lists T-TEMP-4";
-        needle = "\"T-TEMP-4\"";
-      }
-      {
-        label = "phase1 replay-oracle lists T-TEMP-5";
-        needle = "\"T-TEMP-5\"";
-      }
-      {
-        label = "phase1 replay-oracle lists T-TEMP-9";
-        needle = "\"T-TEMP-9\"";
-      }
-      {
-        label = "phase1 replay-oracle lists T-TEMP-11";
-        needle = "\"T-TEMP-11\"";
-      }
     ]
     ++ forbiddenFor "tests/crucible/default.nix" defaultChecks [
       {
-        label = "phase6 still marks T-HARN-13 pending";
-        needle = "taskIds = [\"T-HARN-12\" \"T-HARN-13\"];\n        reason = \"search-time replay oracle gate is intentionally pending\";";
+        label = "phase6 still marks the search-time replay oracle gate pending";
+        needle = "reason = \"search-time replay oracle gate is intentionally pending\";";
       }
     ]
     ++ failuresFor "docs/engineering/crucible/testing-and-gates.md" testingAndGatesDoc [
@@ -977,7 +923,6 @@ in
             require_leaf ${guestNonModification} \
               "gate=gate:replay-oracle" \
               "required_gates=gate:any-guest,gate:replay-oracle" \
-              "tasks=T-DET-21" \
               "guest_writes=copy-on-write-overlay" \
               "guest_backing_state=byte-identical-genesis" \
               "guest_on_disk_mutation_policy=forbidden-by-launch-profile" \
@@ -987,7 +932,6 @@ in
             PASS
             check=${attrPath}
             gate=gate:replay-oracle
-            tasks=${builtins.concatStringsSep "," taskIds}
             rust_test=crucible_engine::gate_replay_oracle
             harness_rust_test=crucible_test_support::replay_oracle
             qemu_rust_test=crucible_qemu_host::realization::replay_oracle

@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath,
-  taskIds,
 }:
 pkgs.mkDerivation {
   pname = "crucible-phase7-debugger-package";
@@ -32,7 +31,6 @@ pkgs.mkDerivation {
         cat > "$out/result" <<'RESULT'
         PASS
         check=${attrPath}
-        tasks=${lib.concatStringsSep "," taskIds}
         gdb_version=${pkgs.gdb.version}
         build=hermetic-source
         python_scripting=true

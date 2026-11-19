@@ -340,7 +340,6 @@ in
             check=checks.crucible.phase1.simAccel
             gate=gate:layer0-determinism
             gate=gate:patch-microtests
-            tasks=T-PATCH-4
             atomic_patch=${atomicPatch.file}
             patched_fixture_exercised=true
             stock_negative_control=true

@@ -100,9 +100,9 @@ impl NinepDevice {
 
     /// Builds a 9p device over `tree` with the given core and latency model.
     ///
-    /// The tree is held read-only and never mutated ([IO-13]); the server starts
-    /// with an empty fid table and the fixed maximum `msize` until the first
-    /// `Tversion` pins it ([IO-16]).
+    /// The tree is held read-only and never mutated; the server starts with an
+    /// empty fid table and the fixed maximum `msize` until the first `Tversion`
+    /// pins it.
     #[must_use]
     pub fn new(core: IoCore, tree: FsTree, latency: NinepLatency) -> Self {
         Self {
@@ -234,10 +234,9 @@ impl NinepDevice {
     /// # Errors
     ///
     /// Returns [`DeviceError::RingFull`] when the inbound ring is full (the
-    /// producer must drain and retry, [IO-32]), or any error
-    /// [`IoCore::process_inbox`] raises (clock/overflow/past-delivery guards),
-    /// including a [`DeviceError::NinepCodec`] if the server's own reply fails to
-    /// encode.
+    /// producer must drain and retry), or any error [`IoCore::process_inbox`]
+    /// raises (clock/overflow/past-delivery guards), including a
+    /// [`DeviceError::NinepCodec`] if the server's own reply fails to encode.
     pub fn submit(&mut self, request_icount: u64, frame: &[u8]) -> Result<(), DeviceError> {
         let tag = frame
             .get(5..7)
@@ -267,7 +266,7 @@ impl NinepDevice {
     /// COMPUTEd through the read-only 9p server, and inserted into the in-flight
     /// queue. The VM producer slot is woken as each request-ring entry is freed,
     /// so a producer blocked on a full `(vm slot -> SLOT_9P_IO)` ring can retry
-    /// without dropping or reordering the request ([IO-32]).
+    /// without dropping or reordering the request.
     ///
     /// # Errors
     ///
@@ -340,7 +339,7 @@ impl NinepDevice {
         self.core.compute_request(&mut node, request)
     }
 
-    /// Advances the clock to `limit` and DELIVERs every due response ([IO-2]).
+    /// Advances the clock to `limit` and DELIVERs every due response.
     ///
     /// # Errors
     ///
@@ -411,7 +410,7 @@ impl NinepDevice {
     /// Pops the next delivered response, returning its raw 9p reply frame.
     ///
     /// Returns `None` when no response has been made visible yet. The payload is
-    /// a complete, well-formed 9p reply frame ([IO-18]).
+    /// a complete, well-formed 9p reply frame.
     /// # Errors
     ///
     /// Returns [`DeviceError::IoQueueRevisionExhausted`] before consuming a reply.
@@ -460,13 +459,12 @@ impl NinepDevice {
         core.process_inbox(&mut node)
     }
 
-    /// Snapshots the device half of a `MaterializedState` ([IO-19], [IO-23]).
+    /// Snapshots the device half of a `MaterializedState`.
     ///
     /// Captures the uniform-core snapshot (clock, rings, in-flight responses),
-    /// the server's fid table and negotiated `msize`, the latency model (part of
-    /// the `World`, [IO-22]), exact directives, visibility continuation, and
-    /// session identity -- **never**
-    /// the served tree bytes ([TEMP-9]).
+    /// the server's fid table and negotiated `msize`, the latency model (part
+    /// of the `World`), exact directives, visibility continuation, and session
+    /// identity -- **never** the served tree bytes.
     #[must_use]
     pub fn snapshot(&self) -> NinepSnapshot {
         NinepSnapshot {
@@ -484,11 +482,11 @@ impl NinepDevice {
     /// Restores a device from a snapshot stacked over the served tree.
     ///
     /// The served `tree` is re-supplied (it is the shared, content-addressed
-    /// `World`, never carried in the snapshot, [IO-19], [TEMP-9]); the fid table,
-    /// negotiated `msize`, latency model, directives, visibility state, session
-    /// identity, and in-flight responses are restored verbatim. Open directory caches are reconstructed from the
-    /// tree on demand, so the restored device answers byte-identically to an
-    /// uninterrupted run ([IO-19], [IO-28]).
+    /// `World`, never carried in the snapshot); the fid table, negotiated
+    /// `msize`, latency model, directives, visibility state, session identity,
+    /// and in-flight responses are restored verbatim. Open directory caches are
+    /// reconstructed from the tree on demand, so the restored device answers
+    /// byte-identically to an uninterrupted run.
     ///
     /// # Errors
     ///

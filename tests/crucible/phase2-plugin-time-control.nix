@@ -2,8 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginTimeControl",
-  taskIds ? [],
-  openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -19,8 +17,6 @@
   qemuPatchSpec = builtins.readFile ../../docs/engineering/crucible/qemu-patch.md;
   defaultChecks = builtins.readFile ./default.nix;
 
-  taskList = builtins.concatStringsSep "," taskIds;
-  openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -319,8 +315,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
-            open_tasks=${openTaskList}
             status=partial
             owner=PluginTimeControlOwnership
             request_symbol=qemu_plugin_request_time_control

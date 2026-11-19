@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.protocolCodecFuzz",
-  taskIds ? ["T-PROTO-10" "T-HARN-19"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -19,7 +18,6 @@
   pluginNinePIo = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/ninep_io.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -401,7 +399,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             gate=gate:abi-conformance
             rust_test=crucible_qemu_protocol::codec_fuzz
             rust_test=crucible-qemu-plugin::io_wire_fuzz

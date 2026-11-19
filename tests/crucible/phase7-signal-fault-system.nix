@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.gates.signalFaultSystem",
-  taskIds ? [],
   instructionFaults,
   hardwareFaults,
   pluginInstall,
@@ -17,7 +16,6 @@
   campaignComposition ? null,
   testing ? import ../../lib/testing {inherit pkgs lib;},
 }: let
-  taskList = builtins.concatStringsSep "," taskIds;
   selectedResultName =
     if campaignComposition == null
     then "result"
@@ -99,7 +97,6 @@
           PASS
           check=${attrPath}
           gate=gate:signal-fault-system
-          tasks=${taskList}
           runtime=guarded-production-qemu
           plugin_protocol=aggregate-current
           fault_domains=instruction,hardware,node,network,block,ninep

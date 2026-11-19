@@ -2,8 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginCoverage",
-  taskIds ? ["T-PLUG-15"],
-  openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -60,8 +58,6 @@
   advancedSpec = builtins.readFile ../../docs/engineering/crucible/exploration.md;
   defaultChecks = builtins.readFile ./default.nix;
 
-  taskList = builtins.concatStringsSep "," taskIds;
-  openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -837,8 +833,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
-            open_tasks=${openTaskList}
             status=pass
             off_mode=disabled-plan-installs-no-tcg-exec-callback
             coverage_signal=guest-pc-folded-into-fixed-map

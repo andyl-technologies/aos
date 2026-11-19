@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.crucibleFourLayerDedup",
-  taskIds ? ["T-DCE-3"],
   dependencies ? [],
 }: let
   distributedExplorationDoc = builtins.readFile ../../docs/engineering/crucible/distributed-exploration.md;
@@ -141,10 +140,6 @@
         label = "package validates reduction fingerprint";
         needle = "grep -q '^reduction_fingerprint=shared-prune$'";
       }
-      {
-        label = "package records DCE four-layer task";
-        needle = "dce_four_layer_dedup_task=T-DCE-3";
-      }
     ]
     ++ failuresFor "default.nix" rootDefault [
       {
@@ -250,7 +245,6 @@ in
             cat > "$out/result" <<RESULT
             PASS
             check=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
             fleet_store_component=${fleetStore}
             runtime_probe=crucible-fleet-store probe
             dedup_layers=exists,coverage-map,reduction-fingerprint,claim-set

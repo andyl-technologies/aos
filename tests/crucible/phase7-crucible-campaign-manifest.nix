@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.crucibleCampaignManifest",
-  taskIds ? ["T-DCE-4"],
   dependencies ? [],
 }: let
   casSource =
@@ -176,10 +175,6 @@
         label = "package validates lost CAS";
         needle = "grep -q '^lost_cas=bookkeeping-only$'";
       }
-      {
-        label = "package records DCE campaign manifest task";
-        needle = "dce_campaign_manifest_task=T-DCE-4";
-      }
     ]
     ++ failuresFor "default.nix" rootDefault [
       {
@@ -262,7 +257,6 @@ in
             cat > "$out/result" <<RESULT
             PASS
             check=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
             fleet_store_component=${fleetStore}
             runtime_probe=crucible-fleet-store probe
             campaign_store=persistent-dagstore

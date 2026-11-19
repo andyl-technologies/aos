@@ -1,7 +1,5 @@
 //! `crucible-guest` owns the optional in-guest white-box emitter.
 //!
-//! Spec index: RFC-0020 file 02.
-//!
 //! This guest-side library is wrapped by the `crucible-guest` static
 //! command-line emitter. It builds marker payloads from the shared
 //! `crucible-qemu-protocol` vocabulary and canonical typed choice domains and

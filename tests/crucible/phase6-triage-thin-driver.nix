@@ -3,7 +3,6 @@
   dependencies ? [],
   lib,
   pkgs,
-  taskIds ? ["T-TRI-7"],
 }: let
   # Substring scan by index. The regex form (builtins.match ".*needle.*")
   # overflows the Nix regex engine's stack on large haystacks such as the CLI
@@ -31,7 +30,6 @@
   cliSource = import ./_cli-source.nix {inherit lib;};
   signatureTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/gate_failure_signature.rs;
   defaultChecks = builtins.readFile ./default.nix;
-  taskList = builtins.concatStringsSep "," taskIds;
 
   failures =
     failuresFor "docs/engineering/crucible/failure-triage.md" failureTriagePage [
@@ -283,7 +281,7 @@
       }
       {
         label = "thin-driver proof";
-        needle = "fn proves_t_tri_7";
+        needle = "fn satisfies_triage_surface";
       }
       {
         label = "uniform triage failure exit";
@@ -335,7 +333,7 @@
     ++ failuresFor "crates/crucible/crucible-cli/src/main.rs" cliSource [
       {
         label = "triage CLI surface regression";
-        needle = "cli_triage_surface_parses_full_t_tri_7_flags_and_pipeline";
+        needle = "cli_triage_surface_parses_full_flags_and_pipeline";
       }
       {
         label = "triage runner regression";
@@ -383,7 +381,6 @@
 in
   pkgs.runCommand "crucible-phase6-triage-thin-driver-0" {
     nativeBuildInputs = dependencies;
-    CRUCIBLE_TASK_IDS = taskList;
     CRUCIBLE_ATTR_PATH = attrPath;
     CRUCIBLE_CARGO_DEPS = cargoDeps;
     inherit failureText;
@@ -397,7 +394,6 @@ in
     {
       echo "crucible_gate=phase6-triage-thin-driver"
       echo "attr_path=$CRUCIBLE_ATTR_PATH"
-      echo "task_ids=$CRUCIBLE_TASK_IDS"
       echo "cargo_deps=$CRUCIBLE_CARGO_DEPS"
     } > "$out/nix-support/hydra-build-products"
   ''

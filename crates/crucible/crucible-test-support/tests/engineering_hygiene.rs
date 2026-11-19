@@ -220,12 +220,6 @@ fn engineering_hygiene_policy_is_wired_and_documented() -> Result<(), Box<dyn Er
     }
     require_contains(
         &hygiene_nix,
-        "tasks=T-STD-11",
-        "phase1 engineering hygiene check must claim T-STD-11",
-        &mut failures,
-    );
-    require_contains(
-        &hygiene_nix,
         "responsibility_review_threshold=1000",
         "phase1 engineering hygiene check must publish the responsibility-review threshold",
         &mut failures,

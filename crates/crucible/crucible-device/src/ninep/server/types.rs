@@ -2,7 +2,7 @@
 
 use super::*;
 
-/// The server's fixed maximum message size in bytes ([IO-16]).
+/// The server's fixed maximum message size in bytes.
 ///
 /// Negotiation pins the effective `msize` to `min(client_msize, MAX_MSIZE)`. The
 /// value matches the shmem frame data budget so a reply always fits one frame.
@@ -13,7 +13,7 @@ pub const MAX_MSIZE: u32 = crucible_qemu_shmem::MAX_FRAME_DATA as u32;
 /// A `readdir` entry is `qid[13] offset[8] type[1] name[s]`, and a name is at
 /// most [`STATFS_NAMELEN`] bytes (the advertised `namelen`). A `readdir` chunk
 /// MUST be able to carry at least one whole entry of any legal name, so the
-/// negotiated `msize` floor is derived from this ([IO-18]).
+/// negotiated `msize` floor is derived from this.
 pub const MAX_DIRENT_LEN: usize = QID_LEN + 8 + 1 + 2 + STATFS_NAMELEN as usize;
 
 /// The encoded size in bytes of an `Rwalk` carrying the maximum 16 QIDs.
@@ -28,15 +28,15 @@ pub(super) const MAX_RWALK_LEN: usize = HEADER_LEN + 2 + codec::MAX_WALK_NAMES *
 /// timestamp `u64`s. Computed here so the `msize` floor provably accommodates it.
 pub(super) const RGETATTR_LEN: usize = HEADER_LEN + 8 + QID_LEN + (4 * 3 + 8 * 4) + 9 * 8;
 
-/// The minimum `msize` the server will negotiate ([IO-16], [IO-18]).
+/// The minimum `msize` the server will negotiate.
 ///
 /// Derived as the largest single reply the server can emit -- the maximum
 /// `Rreaddir` entry, the 16-QID `Rwalk`, and the fixed `Rgetattr` -- plus the
 /// `Rreaddir` `header[7] count[4]` prefix. Pinning the floor here guarantees
 /// every fixed-shape reply and at least one whole directory entry of any legal
 /// name fit the negotiated `msize`, so a reply is never silently truncated and
-/// `readdir` always makes progress ([IO-18]). A working 9p client proposes far
-/// more; this only guards a degenerate request.
+/// `readdir` always makes progress. A working 9p client proposes far more; this
+/// only guards a degenerate request.
 pub const MIN_MSIZE: u32 = {
     let readdir_floor = HEADER_LEN + 4 + MAX_DIRENT_LEN;
     let a = if readdir_floor > MAX_RWALK_LEN {
@@ -56,7 +56,7 @@ const _: () = {
     assert!(MIN_MSIZE <= MAX_MSIZE);
 };
 
-/// The iounit reported in `Rlopen`: zero means "no fixed I/O unit" ([IO-16]).
+/// The iounit reported in `Rlopen`: zero means "no fixed I/O unit".
 pub(super) const IOUNIT_ANY: u32 = 0;
 
 /// The open state of a fid: closed (walk target) or opened for reading.
@@ -64,7 +64,7 @@ pub(super) const IOUNIT_ANY: u32 = 0;
 /// A read-only export only ever opens for reading; the cached, sorted directory
 /// enumeration of an opened directory is *not* stored here -- it is recomputed
 /// deterministically from the tree on each `readdir`, so it survives
-/// snapshot/restore for free ([IO-19]).
+/// snapshot/restore for free.
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
 )]
@@ -78,7 +78,7 @@ pub enum FidState {
 /// A live fid binding: the canonical path it names and its open state.
 ///
 /// The `path` is the component vector within the served tree (empty = root). The
-/// binding is the unit captured and restored by the snapshot ([IO-19]).
+/// binding is the unit captured and restored by the snapshot.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FidEntry {
     /// The canonical path within the served tree this fid names.
@@ -90,8 +90,8 @@ pub struct FidEntry {
 /// A captured, restorable snapshot of a [`NinepServer`]'s deterministic state.
 ///
 /// Holds the negotiated `msize`, whether version negotiation has completed, and
-/// the **fid table** as a sorted `(fid, FidEntry)` vector ([IO-19]). The served
-/// tree and any open directory caches are *not* carried: the tree is the shared,
+/// the **fid table** as a sorted `(fid, FidEntry)` vector. The served tree and
+/// any open directory caches are *not* carried: the tree is the shared,
 /// content-addressed `World` and the caches are pure functions of it, so restore
 /// reconstructs them exactly from the supplied tree.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

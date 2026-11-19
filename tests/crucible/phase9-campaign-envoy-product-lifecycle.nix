@@ -34,7 +34,6 @@ in
           cat > "$out/result" <<RESULT
           PASS
           gate=gate:campaign-envoy-product-lifecycle
-          task=T-CAM-8.6
           five_vm_failover_and_recovery_authenticated=true
           finding_to_debug_authenticated=true
           branch_steering_authenticated=true

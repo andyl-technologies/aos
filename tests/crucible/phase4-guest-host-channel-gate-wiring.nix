@@ -2,8 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.guestHostChannelGateWiring",
-  taskIds ? ["T-GHC-15"],
-  openTaskIds ? [],
   qemuLiveWhiteboxDoorbell ? import ./phase2-qemu-live-whitebox-doorbell.nix {inherit pkgs lib;},
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -12,24 +10,19 @@
   phase2SingleVmFingerprintDefinition = import ./phase1-production-fingerprint-sample.nix {
     inherit pkgs lib;
     attrPath = "checks.crucible.phase2.gates.singleVmFingerprint";
-    taskIds = [];
   };
   phase2AnyGuestDefinition = import ./phase2-any-guest.nix {
     inherit pkgs lib;
     attrPath = "checks.crucible.phase2.gates.anyGuest";
-    taskIds = ["T-DET-22" "T-HARN-16"];
     dependencies = [phase2SingleVmFingerprintDefinition];
   };
   phase4ChannelDeterminismDefinition = import ./phase4-guest-host-channel-determinism.nix {
     inherit pkgs lib;
     attrPath = "checks.crucible.phase4.guestHostChannelDeterminism";
-    taskIds = [];
-    openTaskIds = ["T-GHC-12"];
   };
   phase4EmitterAbsenceDefinition = import ./phase4-guest-host-emitter-absence.nix {
     inherit pkgs lib;
     attrPath = "checks.crucible.phase4.guestHostEmitterAbsence";
-    taskIds = ["T-GHC-11"];
   };
 
   channelDeterminismTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/guest_host_channel_determinism.rs;
@@ -44,8 +37,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-  taskList = builtins.concatStringsSep "," taskIds;
-  openTaskList = builtins.concatStringsSep "," openTaskIds;
   canonicalGate = "checks.crucible.phase4.guestHostChannelGateWiring";
   failures =
     failuresFor "crates/crucible/crucible-engine/tests/guest_host_channel_determinism.rs" channelDeterminismTest [
@@ -192,10 +183,6 @@
         needle = "checks.crucible.phase4.guestHostChannelGateWiring";
       }
       {
-        label = "phase4 channel gate wiring task id";
-        needle = "taskIds = [\"T-GHC-15\"]";
-      }
-      {
         label = "phase4 channel gate consumes live white-box result";
         needle = "qemuLiveWhiteboxDoorbell = phase2.qemuLiveWhiteboxDoorbell;";
       }
@@ -287,13 +274,13 @@
     ++ forbiddenFor "tests/crucible/phase4-guest-host-channel-determinism.nix" channelGate [
       {
         label = "deferred channel gate wiring";
-        needle = "canonical_gate_wiring_deferred=T-GHC-15";
+        needle = "canonical_gate_wiring_deferred=";
       }
     ]
     ++ forbiddenFor "tests/crucible/phase4-guest-host-emitter-absence.nix" emitterAbsenceGate [
       {
         label = "deferred emitter absence gate wiring";
-        needle = "canonical_gate_wiring_deferred=T-GHC-15";
+        needle = "canonical_gate_wiring_deferred=";
       }
     ]
     ++ forbiddenFor "crates/crucible/crucible-engine/tests/guest_host_channel_determinism.rs" channelDeterminismTest [
@@ -398,8 +385,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
-            open_tasks=${openTaskList}
             status=complete
             evidence_scope=canonical-gate-binding-with-live-whitebox-run
             gate=gate:any-guest,gate:single-vm-fingerprint

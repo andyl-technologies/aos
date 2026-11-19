@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.cliSkeleton",
-  taskIds ? ["T-CLI-1"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -187,7 +186,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
             component=crucible-cli
             parser=clap-derive
             subcommands=run,verify,selftest,save,resume,replay,search,fuzz,triage,debug,serve,campaign,store,completions

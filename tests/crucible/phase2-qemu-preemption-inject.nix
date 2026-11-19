@@ -4,7 +4,6 @@
   qemuPackage ? pkgs.qemu-crucible,
   referenceQemu ? pkgs.qemu-crucible-reference,
   attrPath ? "checks.crucible.phase2.qemuPreemptionInject",
-  taskIds ? ["T-PATCH-24"],
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
   atomicPatch = import ../../pkgs/emulation/qemu-patches/_atomic-patch.nix;
@@ -15,7 +14,6 @@
   defaultChecks = builtins.readFile ./default.nix;
   livePluginSource = builtins.readFile ./phase2-qemu-exact-preemption-plugin.c;
   exactLive = import ./phase2-qemu-exact-preemption-live.nix {inherit pkgs qemuPackage;};
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -220,7 +218,6 @@ in
             chmod u+w "$out/result"
             cat >> "$out/result" <<RESULT
             check=${attrPath}
-            tasks=${taskList}
             gate=gate:patch-microtests
             formal_preemption_export=qemu_plugin_inject_preemption
             vcpu_switch_exact_tick=true

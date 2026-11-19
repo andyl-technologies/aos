@@ -3,8 +3,6 @@
   lib,
   testing ? import ../../lib/testing {inherit pkgs lib;},
   attrPath ? "checks.crucible.phase3.gates.schedulerLiveness",
-  taskIds ? ["T-HARN-14" "T-SCHED-4"],
-  openTaskIds ? [],
   dependencies ? [],
   campaignComposition ? null,
 }: let
@@ -14,7 +12,7 @@
   };
 in
   import ./phase9-campaign-mode-production-evidence.nix {
-    inherit pkgs lib campaignComposition attrPath taskIds openTaskIds dependencies;
+    inherit pkgs lib campaignComposition attrPath dependencies;
     authority = productionFlight;
     gate = "gate:scheduler-liveness";
     executionFamily = "qemu-runtime";

@@ -2,8 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.timeNoRealtimeWarp",
-  taskIds ? [],
-  openTaskIds ? ["T-TIME-5"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -246,8 +244,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
-            open_tasks=${builtins.concatStringsSep "," openTaskIds}
             status=partial
             evidence_scope=launch-policy-callback-core-model-and-atomic-package
             gate=gate:layer0-determinism

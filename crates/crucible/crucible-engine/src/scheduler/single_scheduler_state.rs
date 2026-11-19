@@ -22,8 +22,8 @@ impl SingleScheduler {
     /// first-class network scheduling identities, and block/9p declarations are
     /// resolved from `store` into concrete [`DeviceSchedulingSubNode`](crate::DeviceSchedulingSubNode)
     /// values. Physical ring capacities and source numbers come from `policy` at
-    /// this boundary and do not affect World/scenario identity ([SPAT-14],
-    /// [SPAT-15]). The per-device RNG uses the scenario's authoritative seed.
+    /// this boundary and do not affect World/scenario identity. The per-device
+    /// RNG uses the scenario's authoritative seed.
     ///
     /// The resulting scheduler implements [`QuantumLoop`], so it can be handed
     /// directly to the L4 session engine; trigger/control faults then update the
@@ -310,10 +310,10 @@ impl SingleScheduler {
     /// The sub-node's in-flight head delivery icount is the **real** source of the
     /// owning node's exact I/O-completion horizon term, so an otherwise-idle
     /// requester is fast-forwarded to the scheduler-time projection of its next
-    /// exact I/O completion ([IO-3], [SCHED-10]), and
+    /// exact I/O completion, and
     /// [`SingleScheduler::resolve_device_completions`] delivers the completion at
     /// that exact delivery icount's scheduler-time projection in the canonical
-    /// `(delivery_icount, src_node, seq)` order ([SCHED-29]). Several sub-nodes
+    /// `(delivery_icount, src_node, seq)` order. Several sub-nodes
     /// may target one VM node; their horizon terms are folded with `min`.
     ///
     /// Submit requests through the returned sub-node before driving the scheduler;
@@ -378,7 +378,7 @@ impl SingleScheduler {
 
     /// **Test-only.** Forces I/O completions to be stamped at the consumer's
     /// frontier icount instead of their exact `delivery_icount`, modeling the
-    /// freeze-time bug ([IO-2], [DET-19]).
+    /// freeze-time bug.
     ///
     /// Exists solely to prove the determinism gates are falsifiable: with this
     /// set, a scenario whose requester reaches a completion at a frontier
@@ -393,7 +393,7 @@ impl SingleScheduler {
     /// Returns whether any device sub-node holds an undelivered completion.
     ///
     /// While any I/O completion is still in flight the system is not quiescent,
-    /// even when every node is parked `Idle` ([SCHED-22], [SCHED-29]).
+    /// even when every node is parked `Idle`.
     #[must_use]
     pub fn has_undelivered_device_completion(&self) -> bool {
         self.device_sub_nodes
@@ -407,7 +407,7 @@ impl SingleScheduler {
     }
 
     /// Returns the earliest undelivered device completion for `node` due
-    /// **strictly after** `instant`, if any ([SCHED-29]).
+    /// **strictly after** `instant`, if any.
     ///
     /// Scans every targeting sub-node's next exact local event; used to keep a
     /// requester `Runnable` when it still owes a later completion, so an idle park
@@ -458,7 +458,7 @@ impl SingleScheduler {
 
     /// Folds every device sub-node's in-flight head into its target node's exact
     /// I/O-completion horizon term and re-activates a parked target that still
-    /// owes a completion ([IO-3], [SCHED-9], [SCHED-10], [SCHED-29]).
+    /// owes a completion.
     ///
     /// Called at the start of each quantum so the horizon the scheduler reads is
     /// the device's *current* next completion — the real exact local event with no
@@ -477,7 +477,7 @@ impl SingleScheduler {
     /// whenever a targeting sub-node has an undelivered completion this flips the
     /// node back to `Runnable`, so it is re-PICKed and advanced to the next
     /// completion — without this an idle requester would silently drop a normal
-    /// sequential read ([SCHED-29]).
+    /// sequential read.
     ///
     /// # Errors
     ///
@@ -529,7 +529,7 @@ impl SingleScheduler {
         for (target, instant) in earliest_by_target {
             self.device_horizons.insert(target.clone(), instant);
             // Re-activate a parked requester so the next sequential completion is
-            // observed ([SCHED-29]); a `Runnable` node is left as-is.
+            // observed; a `Runnable` node is left as-is.
             if let Some(runtime) = self
                 .nodes
                 .iter_mut()
@@ -679,12 +679,11 @@ impl SingleScheduler {
     ///
     /// Drains each targeting sub-node's due completions in the canonical
     /// `(delivery_icount, src_node, seq)` order, mints each event's `sequence`
-    /// from the live [`EventSequenceState`] for its `(sub_node, target)` pair
-    /// ([SCHED-18]), and returns the [`IoCompletion`] events plus the fault
-    /// [`Decision`]s they drew, all in delivery order. The completion is made
-    /// visible at the scheduler-time projection of **exactly** its
-    /// `delivery_icount` ([SCHED-29], [IO-2]), never the consumer's
-    /// `consumer_icount` frontier.
+    /// from the live [`EventSequenceState`] for its `(sub_node, target)` pair,
+    /// and returns the [`IoCompletion`] events plus the fault [`Decision`]s they
+    /// drew, all in delivery order. The completion is made visible at the
+    /// scheduler-time projection of **exactly** its `delivery_icount`, never the
+    /// consumer's `consumer_icount` frontier.
     ///
     /// # Errors
     ///
@@ -735,7 +734,7 @@ impl SingleScheduler {
                 node: completion.target.clone(),
                 kind: SchedulingNodeKind::Vm,
             };
-            // SCHED-18 on the LIVE path: the sequence comes from the owned counter.
+            // On the LIVE path the sequence comes from the owned counter.
             let sequence = self.event_sequences.next_sequence(&producer, &consumer);
             self.event_sequences.set_next_sequence(
                 producer.clone(),
@@ -743,8 +742,7 @@ impl SingleScheduler {
                 sequence + 1,
             );
             // The completion is made visible at the scheduler-time projection of
-            // EXACTLY its delivery icount ([SCHED-29], [IO-2]) — never the
-            // consumer's frontier. The test-only broken stamp models the
+            // EXACTLY its delivery icount — never the consumer's frontier. The test-only broken stamp models the
             // freeze-time bug to prove the gates catch it.
             let stamp_icount = completion.delivery_tick.ticks;
             #[cfg(test)]
@@ -1020,7 +1018,7 @@ impl SingleScheduler {
     /// Returns the canonical World scheduler identities consumed at instantiation.
     ///
     /// The set includes every VM, concrete block/9p sub-node, and one
-    /// content-derived network scheduling node per logical LinkDef ([IO-1]).
+    /// content-derived network scheduling node per logical LinkDef.
     #[must_use]
     pub fn world_scheduling_nodes(&self) -> &BTreeSet<SchedulerNodeId> {
         &self.world_scheduling_nodes
@@ -1338,7 +1336,7 @@ impl SingleScheduler {
                 }),
         );
 
-        // An in-flight device completion is a future happening ([SCHED-29]); the
+        // An in-flight device completion is a future happening; the
         // system is not quiescent while one is undelivered, even when every node
         // is parked `Idle`. Ordered by target `NodeId` (BTreeMap iteration).
         for (target, sub_nodes) in &self.device_sub_nodes {

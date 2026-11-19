@@ -104,7 +104,6 @@ fn doc_lint_and_gate_catalog_checks_remain_wired() -> Result<(), Box<dyn Error>>
         "phase1-documentation-hygiene.nix",
         &documentation_hygiene_nix,
         &[
-            "tasks=T-STD-12",
             "source_filter=AGENTS.md,documentation_hygiene.rs,phase1-documentation-hygiene.nix",
             "gate_catalog_check=checks.crucible.phase1.gateCatalog",
             "phase_gate_wiring_check=checks.crucible.phase1.phaseGateWiring",

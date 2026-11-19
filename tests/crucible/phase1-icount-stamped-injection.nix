@@ -153,7 +153,6 @@
     cat > "$out/result" <<'RESULT'
     PASS
     check=checks.crucible.phase1.icountStampedInjection
-    tasks=T-DET-11
     crate=crucible-shmem
     abi_type=FrameEntry
     in_band_delivery_icount=true

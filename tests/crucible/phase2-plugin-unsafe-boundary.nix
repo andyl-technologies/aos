@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginUnsafeBoundary",
-  taskIds ? ["T-PLUG-21"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -32,7 +31,6 @@
   pluginSpec = builtins.readFile ../../docs/engineering/crucible/qemu-plugin.md;
   defaultChecks = builtins.readFile ./default.nix;
 
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -509,7 +507,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             task_status=complete
             unsafe_boundary=abi,coverage,fingerprint,registration,runtime,runtime-live-callbacks,runtime-device-callbacks,test-support,setup,network-rx,network-tx,vcpu-introspection
             unsafe_comments=blocks-require-nearby-SAFETY-functions-require-Safety-contract

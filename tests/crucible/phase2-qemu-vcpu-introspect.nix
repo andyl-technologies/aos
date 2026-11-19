@@ -3,13 +3,11 @@
   lib,
   qemuPackage ? pkgs.qemu-crucible,
   attrPath ? "checks.crucible.phase2.qemuVcpuIntrospect",
-  taskIds ? ["T-PATCH-23"],
 }: let
   atomicPatch = import ../../pkgs/emulation/qemu-patches/_atomic-patch.nix;
   tracePluginSource = builtins.readFile ../../pkgs/emulation/crucible-qemu-trace-plugin.c;
   pluginPackage = builtins.readFile ../../pkgs/emulation/crucible-qemu-plugin.nix;
   defaultChecks = builtins.readFile ./default.nix;
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) failuresFor;
 
@@ -106,7 +104,6 @@ in
             cat > "$out/result" <<RESULT
             PASS
             check=${attrPath}
-            tasks=${taskList}
             gate=gate:patch-microtests
             gate=gate:single-vm-fingerprint
             gate=gate:qemu-inert

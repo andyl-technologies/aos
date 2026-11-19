@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.sessionSaveResumeFork",
-  taskIds ? ["T-SESS-8"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -15,8 +14,6 @@
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
   forkGateTest = builtins.readFile ../../crates/crucible/crucible-session/tests/gate_exploration_fork.rs;
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -186,10 +183,6 @@
         label = "phase5 save/resume/fork attr path";
         needle = ''attrPath = "checks.crucible.phase5.sessionSaveResumeFork"'';
       }
-      {
-        label = "phase5 save/resume/fork task id";
-        needle = ''taskIds = ["T-SESS-8"]'';
-      }
     ];
 in
   if failures != []
@@ -262,7 +255,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             component=crucible-session
             graph_ops=save-checkpoint,resume-checkpoint,fork-empty-delta
             child_actor=independent-paused

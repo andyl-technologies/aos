@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase6.stateSpaceSearch",
-  taskIds ? ["T-ADV-7"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -19,8 +18,6 @@
   modelCanonical = builtins.readFile ../../crates/crucible/crucible-engine/src/model/canonical.rs;
   stateSpaceGateTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/gate_state_space_search.rs;
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -334,10 +331,6 @@
         needle = "checks.crucible.phase6.stateSpaceSearch";
       }
       {
-        label = "phase6 state-space search task id";
-        needle = ''taskIds = ["T-ADV-7"]'';
-      }
-      {
         label = "phase4 replay oracle raw dependency";
         needle = "\n          phase4.gates.replayOracle.rawGate\n";
       }
@@ -460,7 +453,6 @@ in
             cat > "$out/result" <<RESULT
             PASS
             check=${attrPath}
-            tasks=${taskList}
             gate=gate:state-space-search
             search=frontier-realized,content-address-dedup,budget-materialized
             rust_test=crucible_engine::gate_state_space_search

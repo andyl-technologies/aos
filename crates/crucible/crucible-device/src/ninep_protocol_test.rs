@@ -38,7 +38,7 @@ fn version_rejects_unknown_protocol_string() {
     assert!(!dev.server().negotiated());
 }
 
-// ---- attach + walk + QID path-hashing (IO-13) ------------------------
+// ---- attach + walk + QID path-hashing ------------------------
 
 #[test]
 fn attach_returns_root_qid_path_hashed() {
@@ -105,7 +105,7 @@ fn walk_missing_component_returns_enoent() {
     assert_eq!(rlerror_code(&reply), errno::ENOENT);
 }
 
-// ---- sorted readdir (IO-14) ------------------------------------------
+// ---- sorted readdir ------------------------------------------
 
 /// Decodes the names from a packed Rreaddir payload in wire order.
 fn readdir_names(reply: &[u8]) -> Vec<String> {
@@ -158,13 +158,13 @@ fn readdir_is_byte_identical_on_repeat() {
     );
     round_trip(&mut dev, 1, &tattach(2, 1));
     // Identical tag on both reads: the reply must be byte-identical, proving
-    // enumeration order (not just content) is deterministic ([IO-14]).
+    // enumeration order (not just content) is deterministic.
     let (_, a) = round_trip(&mut dev, 2, &treaddir(3, 1, 0, MAX_MSIZE));
     let (_, b) = round_trip(&mut dev, 3, &treaddir(3, 1, 0, MAX_MSIZE));
     assert_eq!(a, b, "repeated readdir of the same snapshot must match");
 }
 
-// ---- getattr / statfs host-independence (IO-15) ----------------------
+// ---- getattr / statfs host-independence ----------------------
 
 #[test]
 fn getattr_returns_fixed_and_content_derived_attrs() {
@@ -234,7 +234,7 @@ fn statfs_is_synthetic_and_host_independent() {
     assert_eq!(bsize, 4096);
 }
 
-// ---- read file content (IO-17) ---------------------------------------
+// ---- read file content ---------------------------------------
 
 #[test]
 fn read_returns_content_derived_bytes() {
@@ -283,7 +283,7 @@ fn readlink_returns_symlink_target() {
     assert_eq!(&reply[9..9 + tlen], b"alpha");
 }
 
-// ---- clunk + fid table (IO-19) ---------------------------------------
+// ---- clunk + fid table ---------------------------------------
 
 #[test]
 fn clunk_releases_fid() {
@@ -304,4 +304,4 @@ fn clunk_releases_fid() {
     assert_eq!(rlerror_code(&reply2), errno::EBADF);
 }
 
-// ---- the read-only EROFS boundary (IO-17) ----------------------------
+// ---- the read-only EROFS boundary ----------------------------

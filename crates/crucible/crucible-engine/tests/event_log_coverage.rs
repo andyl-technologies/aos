@@ -1,4 +1,4 @@
-//! Checks T-OBS-9 coverage projection and fingerprinting from the unified event log.
+//! Checks coverage projection and fingerprinting from the unified event log.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.

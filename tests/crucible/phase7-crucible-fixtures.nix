@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.crucibleFixtures",
-  taskIds ? ["T-PKG-13"],
   crucibleFixtures ? pkgs.crucible-fixtures,
   anyGuestGate ? throw "crucible phase7 crucible-fixtures check requires checks.crucible.phase2.gates.anyGuest",
 }: let
@@ -14,7 +13,6 @@
   anyGuestGateSource = builtins.readFile ./phase2-any-guest.nix;
 
   fixtureName = "aos-minimal";
-  taskList = builtins.concatStringsSep "," taskIds;
   fixturesProbe = import ../../pkgs/tools/crucible-fixtures.nix {
     inherit lib;
     stdenv.hostPlatform.system = pkgs.stdenv.hostPlatform.system;
@@ -372,7 +370,6 @@ in
             cat > "$out/result" <<RESULT
             PASS
             check=${attrPath}
-            tasks=${taskList}
             package=crucible-fixtures
             package_passthru=pkgs.crucible-fixtures
             root_image=$image

@@ -2,8 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.gates.e2eDeterminism",
-  taskIds ? [],
-  openTaskIds ? [],
   dependencies ? [],
   campaignComposition ? null,
   testing ? import ../../lib/testing {inherit pkgs lib;},
@@ -152,7 +150,7 @@ in
   then
     import ./phase4-e2e-determinism.nix {
       inherit pkgs lib testing campaignComposition;
-      inherit attrPath taskIds dependencies;
+      inherit attrPath dependencies;
     }
   else
     pkgs.mkDerivation {
@@ -229,8 +227,6 @@ in
             check=${attrPath}
             gate=gate:e2e-determinism
             component=gate:e2e-determinism/local-native-contract
-            tasks=${builtins.concatStringsSep "," taskIds}
-            open_tasks=${builtins.concatStringsSep "," openTaskIds}
             canonical_gate_status=satisfied-by-executable-fleet-gate
             executable_gate=checks.fleet.crucible-e2e-determinism
             native_qemu_execution=validated

@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.executionLifecycleRoutes",
-  taskIds ? ["T-EXEC-7" "T-PAT-9"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -111,7 +110,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
             exact_resume_route=authenticated-lifecycle-to-atomic-request-to-launch-restored
             baked_replay_route=typed-baked-catalog-to-replay-only-exact-admission
             qemu_realization_facade=absent

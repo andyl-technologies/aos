@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.eventLogCoverage",
-  taskIds ? ["T-OBS-9"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -22,7 +21,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-  taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "docs/engineering/crucible/event-log.md" eventLogDoc [
       {
@@ -221,10 +219,6 @@
         label = "phase4 event log coverage attr path";
         needle = "checks.crucible.phase4.eventLogCoverage";
       }
-      {
-        label = "phase4 event log coverage task id";
-        needle = "taskIds = [\"T-OBS-9\"]";
-      }
     ]
     ++ forbiddenFor "crates/crucible/crucible-engine/tests/event_log_coverage.rs" coverageTest [
       {
@@ -311,7 +305,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             event_log_coverage_projection=true
             checkpoint_coverage_fingerprint=projection-digest
             coverage_determinism_class=observational

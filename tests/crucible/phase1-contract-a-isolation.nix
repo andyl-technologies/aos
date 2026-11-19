@@ -179,14 +179,6 @@
         needle = "contractAIsolation = import ./phase1-contract-a-isolation.nix";
       }
       {
-        label = "layer0 gate lists T-DET-7";
-        needle = "\"T-DET-7\"";
-      }
-      {
-        label = "layer0 gate lists T-DET-28";
-        needle = "\"T-DET-28\"";
-      }
-      {
         label = "layer0 gate depends on Contract A isolation";
         needle = "phase1-contract-a-isolation.nix";
       }
@@ -258,7 +250,6 @@ in
             PASS
             check=checks.crucible.phase1.contractAIsolation
             gate=gate:layer0-determinism
-            tasks=T-DET-7,T-DET-28
             driver=crucible_determinism::contract_a::ContractADriver
             inputs=icount-stamped-recorded-list
             live_scheduler_transport=false

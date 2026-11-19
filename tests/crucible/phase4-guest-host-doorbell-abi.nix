@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.guestHostDoorbellAbi",
-  taskIds ? ["T-GHC-5"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -34,8 +33,6 @@
   };
   guestHostChannelDoc = builtins.readFile ../../docs/engineering/crucible/guest-host-channel.md;
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
@@ -223,10 +220,6 @@
         label = "phase4 doorbell ABI attr path";
         needle = "checks.crucible.phase4.guestHostDoorbellAbi";
       }
-      {
-        label = "phase4 doorbell ABI task id";
-        needle = "taskIds = [\"T-GHC-5\"]";
-      }
     ];
 in
   if failures != []
@@ -306,7 +299,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             gate=gate:abi-conformance
             instruction_abi_version=4
             x86_64_doorbell_bytes=e6-e7

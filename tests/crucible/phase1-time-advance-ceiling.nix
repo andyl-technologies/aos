@@ -2,8 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.timeAdvanceCeiling",
-  taskIds ? [],
-  openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -267,8 +265,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
-            open_tasks=${builtins.concatStringsSep "," openTaskIds}
             status=partial
             evidence_scope=shmem-ceiling-and-handoff-model
             gate=gate:layer0-determinism

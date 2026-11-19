@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.gates.controlResponsive",
-  taskIds ? ["T-HARN-15"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -415,7 +414,6 @@ in
             cat > "$out/result" <<RESULT
             PASS
             check=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
             gate=gate:control-responsive
             backend=crucible-sim-double-adapter
             real_qemu_required=false

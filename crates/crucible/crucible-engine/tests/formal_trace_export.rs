@@ -1,4 +1,4 @@
-//! Checks T-ASRT-9 external-only formal trace export.
+//! Checks external-only formal trace export.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.

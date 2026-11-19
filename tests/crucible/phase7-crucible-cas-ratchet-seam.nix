@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.crucibleCasRatchetSeam",
-  taskIds ? ["T-PKG-18"],
 }: let
   casSource = builtins.readFile ../../crates/crucible/crucible-store/src/lib.rs;
   casManifest = builtins.readFile ../../crates/crucible/crucible-store/Cargo.toml;
@@ -16,7 +15,7 @@
     failuresFor "crates/crucible/crucible-store/src/lib.rs" casSource [
       {
         label = "future home";
-        needle = "RFC-0007 is the future home";
+        needle = "`ratchet` is the future home";
       }
       {
         label = "narrow interface put";
@@ -52,7 +51,7 @@
       }
       {
         label = "no current dependency";
-        needle = "no RFC-0007 dependency";
+        needle = "no `ratchet` dependency";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -105,12 +104,11 @@ in
             cat > "$out/result" <<RESULT
             PASS
             check=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
             seam=crucible_store::dag-store
             interface=put,get,has,invalidation-query
             merge_plan=thin-adapter-behind-unchanged-interface
             merge_bar=gate:content-address,gate:replay-oracle,gate:e2e-determinism
-            standalone_from_rfc_0007=true
+            standalone_from_ratchet=true
             RESULT
           '';
         }

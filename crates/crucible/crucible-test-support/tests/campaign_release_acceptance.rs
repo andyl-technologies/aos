@@ -32,7 +32,6 @@ struct AcceptanceContract {
     schema: String,
     gate: String,
     acceptance_state: String,
-    implementation_tasks: Vec<String>,
     executable_evidence: ExecutableEvidence,
     e2e_evidence: E2eEvidence,
     provenance: ProvenanceContract,
@@ -109,16 +108,10 @@ fn release_acceptance_requires_automated_local_evidence() -> Result<(), Box<dyn 
     assert_eq!(contract.gate, "gate:campaign-release-acceptance");
     assert_eq!(contract.acceptance_state, "automated-evidence-required");
     assert_eq!(
-        contract.implementation_tasks,
-        (1..=7)
-            .map(|number| format!("T-CAM-9.{number}"))
-            .collect::<Vec<_>>()
-    );
-    assert_eq!(
         contract.executable_evidence.required_gates,
         EXECUTABLE_GATES
     );
-    assert_eq!(contract.executable_evidence.required_claim_gates.len(), 35);
+    assert_eq!(contract.executable_evidence.required_claim_gates.len(), 34);
     assert!(
         contract
             .executable_evidence

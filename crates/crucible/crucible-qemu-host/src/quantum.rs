@@ -477,9 +477,9 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
 
     /// Starts one scheduler quantum by publishing the ceiling and futex wake.
     ///
-    /// The bounded wait for the plugin's later publish is owned by T-QEMU-14;
-    /// this method returns the pending token needed to finish the quantum after
-    /// that report is present in shared memory.
+    /// The bounded wait for the plugin's later publish happens separately; this
+    /// method returns the pending token needed to finish the quantum after that
+    /// report is present in shared memory.
     ///
     /// # Errors
     ///

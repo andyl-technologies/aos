@@ -1,4 +1,4 @@
-//! Checks T-TRIG-10 deterministic condition-evaluation points and prefixes.
+//! Checks deterministic condition-evaluation points and prefixes.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.

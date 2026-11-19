@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.crucibleQemuPackage",
-  taskIds ? ["T-PKG-2"],
 }: let
   pkgsDefault = builtins.readFile ../../pkgs/default.nix;
   qemuNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
@@ -297,7 +296,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
             package=qemu-crucible
             qemu_version=${atomicPatch.qemuVersion}
             qemu_source_hash=${atomicPatch.qemuSourceHash}

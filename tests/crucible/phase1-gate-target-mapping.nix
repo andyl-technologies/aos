@@ -392,7 +392,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=checks.crucible.phase1.gateTargetMapping
-            tasks=T-CRATE-12
             engine_features=test-double
             RESULT
           '';

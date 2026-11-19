@@ -4,7 +4,6 @@
   pkgs,
   qemuPackage ? pkgs.qemu-crucible,
   attrPath ? "checks.crucible.phase6.qemuNativeWorkerRetirement",
-  taskIds ? [],
 }:
 pkgs.mkDerivation {
   pname = "crucible-phase6-qemu-native-worker-retirement";
@@ -32,7 +31,6 @@ pkgs.mkDerivation {
         cat > "$out/result" <<'RESULT'
         PASS
         check=${attrPath}
-        tasks=${builtins.concatStringsSep "," taskIds}
         patch=crucible-qemu-11.1.1.patch
         inherited_native_workers_negative_control=true
         native_child_source_read=true

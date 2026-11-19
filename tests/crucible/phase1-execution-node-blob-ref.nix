@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.executionNodeBlobRef",
-  taskIds ? ["T-EXEC-10"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -223,7 +222,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
             related_gates=gate:content-address,gate:replay-oracle
             node_blob_ref_variants=baked,cow-delta
             checkpoint_node_blobs=homogeneous-map

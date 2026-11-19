@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase3.schedulerRunCeiling",
-  taskIds ? ["T-SCHED-14"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -26,7 +25,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-  taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "docs/engineering/crucible/scheduling.md" schedulingDoc [
       {
@@ -238,7 +236,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             component=crucible-scheduler
             run_ceiling=single-max-advance-publication-per-RUN
             shmem_field=max_advance_icount

@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.reproductionProvenanceTriple",
-  taskIds ? ["T-PKG-20"],
 }: let
   packagingDoc = builtins.readFile ../../docs/engineering/crucible/packaging.md;
   reproduction = builtins.readFile ../../crates/crucible/crucible-test-support/src/reproduction.rs;
@@ -380,15 +379,15 @@
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
-        label = "T-PKG-20 gate import";
+        label = "provenance triple gate import";
         needle = "reproductionProvenanceTriple = import ./phase7-reproduction-provenance-triple.nix";
       }
       {
-        label = "T-PKG-20 gate attrPath";
+        label = "provenance triple gate attrPath";
         needle = ''attrPath = "checks.crucible.phase7.reproductionProvenanceTriple";'';
       }
       {
-        label = "e2e raw gate waits for T-PKG-20";
+        label = "e2e raw gate waits for provenance triple";
         needle = "phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple";
       }
     ]
@@ -418,7 +417,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
             schema=crucible.reproduction-artifact.v4
             provenance=crucible-version,qemu-build-id,qemu-atomic-patch-hash,shmem-abi-version,guest-host-protocol-version,rpc-abi-version,rpc-abi-build,plugin-abi
             replay_refusal=identity-mismatch

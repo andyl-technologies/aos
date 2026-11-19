@@ -237,7 +237,7 @@ pub(super) fn measure_campaign_planner_queue_at_boundary(
     .expect("campaign planner driver")
     .require_tree_search_policy();
 
-    // Request publication is a separate setup phase. The RFC numerator starts
+    // Request publication is a separate setup phase. The measured numerator starts
     // with the canonical planner step and ends after queue reservation.
     let setup_started = operational_monotonic_nanoseconds();
     let discovered = repository

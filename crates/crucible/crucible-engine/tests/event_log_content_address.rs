@@ -1,4 +1,4 @@
-//! Checks the T-OBS-5 event-log content-addressed segment contract.
+//! Checks the event-log content-addressed segment contract.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.

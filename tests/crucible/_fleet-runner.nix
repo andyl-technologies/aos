@@ -1,25 +1,24 @@
 # tests/crucible/_fleet-runner.nix — the shared Crucible VM/fleet check substrate.
 #
-# T-PKG-15 ([PKG-29], [PKG-30], spec §26.8) wires `gate:e2e-determinism` as an
-# AOS VM/fleet check that builds the *entire* Crucible closure hermetically and
-# runs the representative multi-VM, fault-injected scenario end to end. This file
-# is the reusable runner behind that check (and behind the real-VM performance
-# checks that ride the same substrate): it assembles the whole Crucible closure
-# — the patched QEMU (`qemu-crucible`), its co-packaged plugin
-# (`crucible-qemu-plugin`), the `crucible` CLI, the stock fixture kernel
-# (`linux-crucible`), and the root-image fixtures (`crucible-fixtures`) — as
-# hermetic build inputs ([PKG-1]), then executes the built `crucible` CLI binary
-# under TCG.
+# `gate:e2e-determinism` is wired as an AOS VM/fleet check that builds the
+# *entire* Crucible closure hermetically and runs the representative multi-VM,
+# fault-injected scenario end to end. This file is the reusable runner behind
+# that check (and behind the real-VM performance checks that ride the same
+# substrate): it assembles the whole Crucible closure — the patched QEMU
+# (`qemu-crucible`), its co-packaged plugin (`crucible-qemu-plugin`), the
+# `crucible` CLI, the stock fixture kernel (`linux-crucible`), and the
+# root-image fixtures (`crucible-fixtures`) — as hermetic build inputs, then
+# executes the built `crucible` CLI binary under TCG.
 #
-# The two load-bearing constraints of [PKG-30] are enforced structurally here so
+# The two load-bearing TCG-only constraints are enforced structurally here so
 # every caller inherits them and no caller can forget them:
 #
 #   * The derivation NEVER sets `requiredSystemFeatures = [ "kvm" ]`. Crucible's
-#     determinism forbids KVM ([G-1]); the whole point of this check class is
+#     determinism forbids KVM; the whole point of this check class is
 #     that it runs TCG-only on any CI runner without nested virtualization.
 #   * The emitted `$out/result` records `tcg_only=true`,
 #     `required_system_features=none`, and `kvm_required=false`, which the
-#     CI-wiring guard ([PKG-27], `checks.crucible.phase7.crucibleGateCiWiring`)
+#     CI-wiring guard (`checks.crucible.phase7.crucibleGateCiWiring`)
 #     and the fleet-store guard needle.
 #
 # The runner is parameterized so a performance-measurement check reuses the exact
@@ -193,14 +192,15 @@
         version = "0";
         src = null;
 
-        # The whole Crucible closure is a hermetic build input ([PKG-1], [PKG-29]).
+        # The whole Crucible closure is a hermetic build input.
         # `crucible` carries qemu-crucible + crucible-qemu-plugin through its
         # runtimeDeps, so listing it pulls the patched QEMU + plugin into the
         # closure; the kernel and fixtures are added explicitly.
         buildDeps = runtimeInputs ++ runtimeClosures;
 
-        # DELIBERATELY no `requiredSystemFeatures = [ "kvm" ]`: [PKG-30] mandates
-        # TCG-only so this runs on any CI runner without nested virtualization.
+        # DELIBERATELY no `requiredSystemFeatures = [ "kvm" ]`: the check must
+        # stay TCG-only so it runs on any CI runner without nested
+        # virtualization.
 
         phases = [
           {

@@ -1,4 +1,4 @@
-//! Checks the T-OBS-4 event-kind class catalog lint.
+//! Checks the event-kind class catalog lint.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.

@@ -59,7 +59,7 @@ impl LiveVcpuTimeCallbackState {
     /// budget at its raw request coordinate until completion commits the new
     /// logical offset. The distinct case of a guest *halted* on device I/O
     /// (where the sim loop stops querying this callback altogether) is closed
-    /// separately by the device-wait callback of the SCHED-8 delivery patch.
+    /// separately by the device-wait callback of the device-delivery patch.
     pub(super) fn max_advance_icount(&self) -> Result<u64, LiveVcpuTimeCallbackError> {
         let raw_icount = (self.icount_raw)();
         if self.publish_pause_for_boundary(raw_icount, true, false, None, "max-advance")? {

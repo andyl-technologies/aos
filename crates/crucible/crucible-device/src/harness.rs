@@ -4,10 +4,9 @@
 //! outbox, every device is **testable without a real QEMU**: a test constructs
 //! the node, enqueues a sequence of requests at chosen request-icounts,
 //! advances the clock to chosen limits, and asserts the resulting responses,
-//! their delivery icounts, and the device-visible state ([IO-27]). This module
-//! owns that harness and makes it reusable across the three
-//! structurally-different sub-nodes (block/9p ride
-//! [`IoCore`](crate::subnode::IoCore) and answer
+//! their delivery icounts, and the device-visible state. This module owns that
+//! harness and makes it reusable across the three structurally-different
+//! sub-nodes (block/9p ride [`IoCore`](crate::subnode::IoCore) and answer
 //! `submit`/`advance_to`/`next_response`; the network link has its own
 //! `emit`/`advance_to`/`next_delivery`).
 //!
@@ -18,11 +17,10 @@
 //! observation: a [`DeliveryRecord`] stream. A [`DeliveryRecord`] is the
 //! device-agnostic, byte-comparable shape of one delivered response —
 //! `(delivery_icount, src_node, seq, correlation_id, status, payload)` — drawn
-//! straight from the [`FrameDeliveryKey`] total order ([IO-10], [SHM-34]). A
-//! [`Script`] is a list of [`Step`]s (enqueue a
-//! request at an icount, or advance the clock to a limit); [`run_script`] drives
-//! a freshly-constructed device through a script and returns the ordered
-//! [`DeliveryLog`].
+//! straight from the [`FrameDeliveryKey`] total order. A [`Script`] is a list
+//! of [`Step`]s (enqueue a request at an icount, or advance the clock to a
+//! limit); [`run_script`] drives a freshly-constructed device through a script
+//! and returns the ordered [`DeliveryLog`].
 //!
 //! ```text
 //! Script = [ Step::Request{ at_icount, request },   (ARRIVE + COMPUTE)
@@ -35,11 +33,11 @@
 //!
 //! [`run_twice`] runs the same script through two independently-constructed
 //! devices and compares their logs; a byte-identical pair proves the per-device
-//! run-twice determinism of [IO-28]. When two runs differ, [`localize_divergence`]
-//! reports the **first** differing point deterministically — the record index,
-//! and within that record the first field (delivery icount, status, byte offset,
-//! …) that differs — mirroring the scheduler's divergence bisector but for a
-//! single device's response stream ([IO-28], [INV-10]).
+//! run-twice determinism. When two runs differ, [`localize_divergence`] reports
+//! the **first** differing point deterministically — the record index, and
+//! within that record the first field (delivery icount, status, byte offset, …)
+//! that differs — mirroring the scheduler's divergence bisector but for a
+//! single device's response stream.
 //!
 //! The comparison helpers are **panic-free production code**: they return a
 //! structured [`Divergence`] rather than asserting, so the harness itself meets
@@ -49,24 +47,24 @@
 //! # The idle-vs-busy-poll proof
 //!
 //! [`idle_busy_poll_equivalence`] drives the *same* script two ways — one big
-//! `advance_to(limit)` (the idle / fast-forward path, [SCHED-28]) versus many
-//! `advance_to` steps of one icount each (the busy-poll path) — and returns
-//! whether the two delivery logs are byte-identical. Because a completion's
-//! `delivery_icount` is fixed at COMPUTE and the in-flight queue drains strictly
-//! by `delivery_icount <= limit`, the two paths MUST agree: a completion lands at
-//! its exact icount regardless of how the consumer advances ([IO-29]). The
-//! documented [`BUSY_POLL_SPIKE`] records the busy-poll spike conclusion.
+//! `advance_to(limit)` (the idle / fast-forward path) versus many `advance_to`
+//! steps of one icount each (the busy-poll path) — and returns whether the two
+//! delivery logs are byte-identical. Because a completion's `delivery_icount` is
+//! fixed at COMPUTE and the in-flight queue drains strictly by
+//! `delivery_icount <= limit`, the two paths MUST agree: a completion lands at
+//! its exact icount regardless of how the consumer advances. The documented
+//! [`BUSY_POLL_SPIKE`] records the busy-poll spike conclusion.
 //!
 //! # Coverage note: network-link emit-after-advance
 //!
 //! The generic harness applies every [`Step::Request`] before any advance, so a
 //! link emits all of its frames while the consumer frontier is still at icount
 //! zero. This means the generic path does **not** exercise
-//! [`NetLink`](crate::netlink::link::NetLink)'s
-//! `guard_future` clamp-to-`frontier+1` (the one link behavior whose result
-//! depends on the consumer frontier *at emit time*, [IO-34]): that path requires
-//! emitting after the clock has already advanced past where a frame would land.
-//! The `netlink` unit tests cover the clamp and fail-loud paths directly
+//! [`NetLink`](crate::netlink::link::NetLink)'s `guard_future`
+//! clamp-to-`frontier+1` (the one link behavior whose result depends on the
+//! consumer frontier *at emit time*): that path requires emitting after the
+//! clock has already advanced past where a frame would land. The `netlink` unit
+//! tests cover the clamp and fail-loud paths directly
 //! (`reorder_into_consumer_past_clamps_to_future`,
 //! `reorder_into_consumer_past_fails_loud`); the harness here proves the
 //! frontier-zero delivery and idle-vs-busy-poll equivalence, not the
@@ -88,13 +86,13 @@ pub use adapters::{BlockHarness, LinkRequest, NetLinkHarness, NinepHarness};
 /// correlation id (a block/9p `request_id` or a link `frame_id`), the terminal
 /// status, and the response payload. Two devices that deliver byte-identical
 /// records in byte-identical order are observationally identical for the
-/// purposes of [IO-28].
+/// purposes of run-twice determinism.
 ///
 /// The fields are ordered so the natural [`PartialEq`] and the field-by-field
 /// [`localize_divergence`] walk agree on what "first difference" means.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeliveryRecord {
-    /// The exact icount at which the response became visible ([IO-2]).
+    /// The exact icount at which the response became visible.
     pub delivery_icount: u64,
     /// The source-node id stamped into the delivery key (the sub-node's id).
     pub src_node: u32,
@@ -133,7 +131,7 @@ impl DeliveryRecord {
 /// A `DeliveryLog` is the canonical observation of a run: [`run_script`] returns
 /// one, and the determinism and idle-vs-busy-poll proofs compare two. The
 /// records are in the order they were drained from the in-flight queue, which is
-/// the deterministic `(delivery_icount, src_node, seq)` total order ([IO-10]).
+/// the deterministic `(delivery_icount, src_node, seq)` total order.
 pub type DeliveryLog = Vec<DeliveryRecord>;
 
 /// A single step in a device test [`Script`].
@@ -207,7 +205,7 @@ impl<R> Script<R> {
     ///
     /// This is the natural single fast-forward target for the idle path of the
     /// idle-vs-busy-poll proof: advancing once to the script's maximum limit
-    /// drains everything the per-step advances would have ([IO-29]).
+    /// drains everything the per-step advances would have.
     #[must_use]
     pub fn max_advance_limit(&self) -> Option<u64> {
         self.steps
@@ -220,14 +218,14 @@ impl<R> Script<R> {
     }
 }
 
-/// A device adapter that the uniform harness can drive ([IO-27]).
+/// A device adapter that the uniform harness can drive.
 ///
 /// Implementors project their structurally-distinct surface — block/9p's
 /// `submit`/`advance_to`/`next_response`, or the link's `emit`/`advance_to`/
 /// `next_delivery` — onto three uniform operations the harness composes: apply
 /// one request, advance the clock, and drain due deliveries as normalized
-/// [`DeliveryRecord`]s. Every method MUST be deterministic ([IO-4]); the harness
-/// never reads host time.
+/// [`DeliveryRecord`]s. Every method MUST be deterministic; the harness never
+/// reads host time.
 pub trait HarnessDevice {
     /// The device-specific request type carried in a [`Step::Request`].
     type Request: Clone;
@@ -270,20 +268,19 @@ pub trait HarnessDevice {
 
     /// Returns the device's next exact local event (in-flight head icount).
     ///
-    /// This is the scheduler-visible bound ([IO-3], [IO-31]); the harness uses it
-    /// to size the busy-poll path's per-step advances. `None` when nothing is in
-    /// flight.
+    /// This is the scheduler-visible bound; the harness uses it to size the
+    /// busy-poll path's per-step advances. `None` when nothing is in flight.
     fn next_exact_local_event(&self) -> Option<u64>;
 }
 
 /// Drives a freshly-built device through `script`, returning its delivery log.
 ///
 /// `factory` constructs the device (each run gets an independent construction so
-/// `run_twice` compares two genuinely separate devices, [IO-28]). The script's
-/// steps are applied in order: a [`Step::Request`] enqueues and COMPUTEs a
-/// request; a [`Step::AdvanceTo`] advances the clock and the harness then drains
-/// every newly-visible record into the log. The returned log is the run's
-/// canonical observation.
+/// `run_twice` compares two genuinely separate devices). The script's steps are
+/// applied in order: a [`Step::Request`] enqueues and COMPUTEs a request; a
+/// [`Step::AdvanceTo`] advances the clock and the harness then drains every
+/// newly-visible record into the log. The returned log is the run's canonical
+/// observation.
 ///
 /// # Errors
 ///
@@ -317,7 +314,7 @@ where
 /// The result of comparing two delivery logs for the run-twice property.
 ///
 /// `Identical` means the two runs produced byte-identical records in identical
-/// order — the success signal of [IO-28]. `Diverged` localizes the **first**
+/// order — the run-twice success signal. `Diverged` localizes the **first**
 /// difference deterministically (see [`Divergence`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LogComparison {
@@ -349,9 +346,9 @@ impl LogComparison {
 /// `record_index` is the index of the first differing [`DeliveryRecord`] in
 /// delivery order; `field` names which field of that record diverged first,
 /// walked in the fixed field order of [`DeliveryRecord`] so localization is
-/// itself deterministic ([IO-28]). A length mismatch (one run produced fewer
-/// records) is reported as a divergence at the first index the shorter log lacks,
-/// with [`DivergedField::Missing`].
+/// itself deterministic. A length mismatch (one run produced fewer records) is
+/// reported as a divergence at the first index the shorter log lacks, with
+/// [`DivergedField::Missing`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Divergence {
     /// The index of the first differing record in delivery order.
@@ -364,8 +361,8 @@ pub struct Divergence {
 ///
 /// The variants are checked in the order they are listed, matching the field
 /// order of [`DeliveryRecord`], so the *first* difference is always the same
-/// across runs ([IO-28]). For a payload mismatch the exact differing byte offset
-/// is reported, mirroring the scheduler's byte-level bisector.
+/// across runs. For a payload mismatch the exact differing byte offset is
+/// reported, mirroring the scheduler's byte-level bisector.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DivergedField {
     /// One run produced a record the other lacked at this index.
@@ -428,10 +425,10 @@ pub enum DivergedField {
 
 /// Compares two delivery logs and localizes the first difference, if any.
 ///
-/// Walks the two logs in lockstep. The first index whose records differ (or that
-/// one log lacks) yields a [`Divergence`] naming the record index and the first
-/// differing field, in the fixed [`DeliveryRecord`] field order ([IO-28]). The
-/// walk is a pure function of the two logs — no host state, no hashing — so the
+/// Walks the two logs in lockstep. The first index whose records differ (or
+/// that one log lacks) yields a [`Divergence`] naming the record index and the
+/// first differing field, in the fixed [`DeliveryRecord`] field order. The walk
+/// is a pure function of the two logs — no host state, no hashing — so the
 /// localized point is reproducible run-to-run, the property the divergence
 /// bisector relies on.
 ///
@@ -528,11 +525,11 @@ fn first_differing_field(left: &DeliveryRecord, right: &DeliveryRecord) -> Optio
 
 /// Runs `script` twice through independently-built devices and compares the logs.
 ///
-/// This is the run-twice determinism helper of [IO-28]: a
-/// [`LogComparison::Identical`] result proves two independent constructions
-/// driven through the same script produce byte-identical responses at
-/// byte-identical delivery icounts; a [`LogComparison::Diverged`] result carries
-/// the first differing point for the divergence path ([INV-10]).
+/// This is the run-twice determinism helper: a [`LogComparison::Identical`]
+/// result proves two independent constructions driven through the same script
+/// produce byte-identical responses at byte-identical delivery icounts; a
+/// [`LogComparison::Diverged`] result carries the first differing point for the
+/// divergence path.
 ///
 /// # Errors
 ///
@@ -553,9 +550,10 @@ where
 /// The result of the idle-vs-busy-poll equivalence proof for one script.
 ///
 /// Carries both delivery logs (the idle / one-big-advance path and the busy-poll
-/// / many-small-advances path) and their comparison. [`IdleBusyPoll::is_equivalent`]
-/// is the [IO-29] success signal: the completion landed at its exact icount
-/// regardless of how the consumer advanced.
+/// / many-small-advances path) and their comparison.
+/// [`IdleBusyPoll::is_equivalent`] is the idle-versus-busy-poll success signal:
+/// the completion landed at its exact icount regardless of how the consumer
+/// advanced.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IdleBusyPoll {
     /// The log produced by the idle path (one `advance_to(max_limit)`).
@@ -567,7 +565,7 @@ pub struct IdleBusyPoll {
 }
 
 impl IdleBusyPoll {
-    /// Returns whether the idle and busy-poll logs are byte-identical ([IO-29]).
+    /// Returns whether the idle and busy-poll logs are byte-identical.
     #[must_use]
     pub fn is_equivalent(&self) -> bool {
         self.comparison.is_identical()
@@ -577,25 +575,25 @@ impl IdleBusyPoll {
 /// Proves a script's completions are independent of how the consumer advances.
 ///
 /// Runs the script's requests against two freshly-built devices, then DELIVERs
-/// two different ways ([IO-29]):
+/// two different ways:
 ///
 /// - the **idle / fast-forward** path advances once to the script's maximum
-///   advance limit (the scheduler collapsing an idle wait to one jump,
-///   [SCHED-28]) and **drains to quiescent** at that limit;
+///   advance limit (the scheduler collapsing an idle wait to one jump) and
+///   **drains to quiescent** at that limit;
 /// - the **busy-poll** path advances one icount at a time from the device's start
 ///   up to that same limit (the guest spinning, retiring instructions the whole
 ///   way), draining to quiescent at each step.
 ///
 /// Both paths drain into a log; the two logs MUST be byte-identical because a
 /// completion's `delivery_icount` is fixed at COMPUTE and the in-flight queue
-/// drains strictly by `delivery_icount <= limit` — neither the size nor the count
-/// of the advance steps can move a delivery off its exact icount ([IO-2],
-/// [IO-29]). The drain-to-quiescent loop (`drain_to_quiescent`) is essential
-/// for block/9p, whose **bounded outbox** ([IO-32]) caps any single
-/// `advance_to`+`drain` at `outbox_capacity` records: without it the one-shot
-/// idle drain would under-report a coincident batch larger than the outbox while
-/// the per-step busy-poll path reported it in full, manufacturing a false
-/// divergence on a deterministic device.
+/// drains strictly by `delivery_icount <= limit` — neither the size nor the
+/// count of the advance steps can move a delivery off its exact icount. The
+/// drain-to-quiescent loop (`drain_to_quiescent`) is essential for block/9p,
+/// whose **bounded outbox** caps any single `advance_to`+`drain` at
+/// `outbox_capacity` records: without it the one-shot idle drain would
+/// under-report a coincident batch larger than the outbox while the per-step
+/// busy-poll path reported it in full, manufacturing a false divergence on a
+/// deterministic device.
 ///
 /// All [`Step::Request`]s in the script are applied first (in order) and the
 /// advance limit is taken from [`Script::max_advance_limit`]; any
@@ -631,15 +629,15 @@ where
 {
     let limit = script.max_advance_limit().unwrap_or(0);
 
-    // Idle path: apply every request, then one big fast-forward to `limit`,
-    // then drain to quiescent. A single `drain_records` is NOT enough: block/9p
+    // Idle path: apply every request, then one big fast-forward to `limit`, then
+    // drain to quiescent. A single `drain_records` is NOT enough: block/9p
     // deliver through a *bounded outbox*, and `IoCore::advance_to` stops
     // mid-drain when the outbox fills, leaving the surplus in flight. Re-issuing
     // `advance_to(limit)` pushes the next outbox-full batch, so we loop
     // advance+drain until the device is quiescent at `limit` — the same terminal
-    // state the busy-poll path reaches. Without this loop a capped idle log would
-    // diverge from a fully-drained busy-poll log on a perfectly deterministic
-    // device ([IO-29]).
+    // state the busy-poll path reaches. Without this loop a capped idle log
+    // would diverge from a fully-drained busy-poll log on a perfectly
+    // deterministic device.
     let idle_log = {
         let mut device = factory();
         apply_all_requests(&mut device, script)?;
@@ -679,12 +677,12 @@ where
 /// The crux of the idle/busy-poll equivalence on a bounded-outbox device
 /// (block/9p): [`HarnessDevice::advance_to`] may stop delivering mid-drain when
 /// the device's outbox fills, leaving the surplus in flight at their exact
-/// icounts. This helper loops `drain_records` (and re-`advance_to(limit)` to push
-/// the next outbox-full batch) until the device is **quiescent at `limit`** —
-/// nothing left to drain and no in-flight head at or below `limit`. The result is
-/// the complete, order-preserving set of records due by `limit`, independent of
-/// the outbox capacity, so neither the size nor the count of advances can change
-/// the log ([IO-29], [IO-32]).
+/// icounts. This helper loops `drain_records` (and re-`advance_to(limit)` to
+/// push the next outbox-full batch) until the device is **quiescent at `limit`**
+/// — nothing left to drain and no in-flight head at or below `limit`. The result
+/// is the complete, order-preserving set of records due by `limit`, independent
+/// of the outbox capacity, so neither the size nor the count of advances can
+/// change the log.
 ///
 /// Termination: each iteration either drains at least one record (progress) or
 /// drains none, in which case the loop exits. A device whose `next_exact_local_event`
@@ -752,18 +750,18 @@ where
 ///
 /// - **Correctness is independent of idle-vs-busy-poll.** A completion lands at
 ///   its exact computed icount whether the consumer idles (one fast-forward) or
-///   busy-polls (many single-icount advances) ([IO-29]). The idle-during-I/O
-///   assumption ([IO-3]) is therefore a **performance optimization only**.
+///   busy-polls (many single-icount advances). The idle-during-I/O assumption
+///   is therefore a **performance optimization only**.
 /// - **Busy-poll is a performance cost, not a correctness risk.** A spinning
 ///   guest retires a deterministic instruction count and defeats idle
 ///   fast-forward, so the wait costs real wall-clock; the *result* is identical.
 /// - **Any mitigation MUST preserve exactness.** A busy-poll fast-forward may
 ///   collapse only a span whose deterministic outcome is provably identical to
 ///   running it instruction-by-instruction; it may not change which instruction
-///   observes the completion ([IO-30]).
+///   observes the completion.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BusyPollSpike {
-    /// Whether correctness holds under both idle and busy-poll ([IO-29]).
+    /// Whether correctness holds under both idle and busy-poll.
     ///
     /// Always `true`: the in-process equivalence proof shows a completion lands
     /// at its exact icount under either consumer advance strategy.
@@ -772,7 +770,7 @@ pub struct BusyPollSpike {
     ///
     /// Always `true`: a busy-poll run is slower but byte-identical.
     pub busy_poll_is_performance_only: bool,
-    /// Whether any future busy-poll mitigation must preserve exactness ([IO-30]).
+    /// Whether any future busy-poll mitigation must preserve exactness.
     ///
     /// Always `true`: a mitigation may collapse only a provably-identical span and
     /// may not move which instruction observes the completion.
@@ -784,7 +782,7 @@ pub struct BusyPollSpike {
 /// Completion exactness is preserved under both the idle/fast-forward and the
 /// busy-poll consumer paths; busy-poll is a performance concern only; and any
 /// mitigation it motivates must preserve exactness. This is a documented spike
-/// result, not a runtime measurement — the live half of the claim is exercised
+/// result, not a runtime measurement; the live half of the claim is exercised
 /// by [`idle_busy_poll_equivalence`] across all three device kinds.
 pub const BUSY_POLL_SPIKE: BusyPollSpike = BusyPollSpike {
     correctness_independent_of_poll_mode: true,

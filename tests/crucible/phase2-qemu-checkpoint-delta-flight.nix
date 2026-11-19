@@ -7,7 +7,6 @@
       inherit pkgs qemuPackage;
     },
   attrPath ? "checks.crucible.phase2.qemuCheckpointDeltaFlight",
-  taskIds ? ["T-CAM-5.3"],
   dependencies ? [],
   campaignComposition ? null,
   testing ? import ../../lib/testing {inherit pkgs lib;},
@@ -34,7 +33,6 @@
     path = ./x86-direct-reset.ld;
     name = "x86-direct-reset.ld";
   };
-  taskList = builtins.concatStringsSep "," taskIds;
   exactTest = "live_direct_delta_restore_preserves_exact_bytes_and_dirty_epochs";
   ordinaryTest = "ordinary_mode_checkpoint_rejection_is_inert";
   runtimeInputs =
@@ -315,7 +313,6 @@
       printf 'qemu_package=%s\n' '${qemuPackage}'
       printf 'qemu_package_version=%s\n' '${qemuPackage.version}'
       printf 'attr_path=%s\n' '${attrPath}'
-      printf 'task_ids=%s\n' '${taskList}'
     } >> "$out/result"
   '';
   authoritativeGate = pkgs.mkDerivation {

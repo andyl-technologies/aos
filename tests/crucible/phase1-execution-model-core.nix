@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.executionModelCore",
-  taskIds ? ["T-EXEC-1"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -180,7 +179,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
             types=ScenarioDef,Configuration,Schedule,Decision
             identity=Configuration::id
             rust_test=crucible_engine::configuration_id_is_content_addressed_by_def_and_schedule

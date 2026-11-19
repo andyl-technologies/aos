@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.sessionLockFreeObservation",
-  taskIds ? ["T-SESS-10"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -14,8 +13,6 @@
     entry = ../../crates/crucible/crucible-session/tests/gate_control_responsive.rs;
   };
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -226,10 +223,6 @@
         needle = ''attrPath = "checks.crucible.phase5.sessionLockFreeObservation"'';
       }
       {
-        label = "phase5 lock-free observation task id";
-        needle = ''taskIds = ["T-SESS-10"]'';
-      }
-      {
         label = "phase5 lock-free observation depends on control determinism";
         needle = "dependencies = [phase5.sessionControlDeterminism]";
       }
@@ -306,7 +299,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             component=crucible-session
             mirror=lock-free-atomics
             event_log_broadcast=lag-or-drop

@@ -3,7 +3,6 @@
   dependencies ? [],
   lib,
   pkgs,
-  taskIds ? ["T-TRI-4"],
 }: let
   hasInfix = needle: haystack: let
     needleLen = builtins.stringLength needle;
@@ -47,7 +46,6 @@
   };
   signatureTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/gate_failure_signature.rs;
   defaultChecks = builtins.readFile ./default.nix;
-  taskList = builtins.concatStringsSep "," taskIds;
 
   failures =
     failuresFor "docs/engineering/crucible/failure-triage.md" failureTriagePage [
@@ -208,10 +206,6 @@
         needle = "checks.crucible.phase6.failureClustering";
       }
       {
-        label = "explicit task id";
-        needle = "taskIds = [\"T-TRI-4\"]";
-      }
-      {
         label = "signature policy raw dependency";
         needle = "phase6.signaturePolicy.rawGate";
       }
@@ -313,7 +307,6 @@ in
             cat > "$out/result" <<RESULT
             PASS
             check=${attrPath}
-            tasks=${taskList}
             gate=gate:failure-clustering
             source=recorded-signatures-only
             key=content-address-ordered-partition

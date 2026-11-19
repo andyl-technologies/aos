@@ -12,10 +12,10 @@
 //! I/O completion is a **scheduled event, not a freeze of virtual time**. When
 //! a request arrives at the requester's icount `t`, the sub-node COMPUTEs its
 //! status and payload *now* (touching host state at any wall-clock instant) and
-//! fixes `delivery_icount = t + latency_ns * TICKS_PER_NS`. The
-//! response's architectural *visibility* is then gated until the consumer clock
-//! reaches that icount. Host COMPUTE wall-clock never enters the delivery icount
-//! or any payload byte ([IO-2], [IO-4], [IO-31]).
+//! fixes `delivery_icount = t + latency_ns * TICKS_PER_NS`. The response's
+//! architectural *visibility* is then gated until the consumer clock reaches
+//! that icount. Host COMPUTE wall-clock never enters the delivery icount or any
+//! payload byte.
 //!
 //! # Module map
 //!
@@ -26,24 +26,23 @@
 //! - [`inflight`]: the [`InflightQueue`] of computed-not-delivered responses,
 //!   ordered by `delivery_icount` so its head is the `next_exact_local_event`.
 //! - [`backpressure`]: the [`BoundedQueue`] modeling deterministic full-ring
-//!   block-and-wake backpressure ([IO-32]).
+//!   block-and-wake backpressure.
 //! - [`subnode`]: the [`IoSubNode`] trait and the [`IoCore`] lifecycle engine
 //!   that ties the clock, rings, and in-flight queue together.
-//! - [`block`]: the block device sub-node (CS-IO-2, tasks T-IO-2..5) — a
-//!   read-only content-addressed base image, an in-memory 4 KiB copy-on-write
-//!   overlay with dirty tracking, the versioned little-endian block wire ABI,
-//!   the deterministic completion model, and snapshot/restore/materialize.
-//! - [`ninep`]: the 9p filesystem sub-node (CS-IO-3, tasks T-IO-6..8) — a
-//!   read-only 9P2000.L server over a deterministic content-addressed tree, with
-//!   path-hashed QIDs, sorted enumeration, fixed/content-derived attributes, the
-//!   `EROFS` read-only boundary, `msize` enforcement, and snapshot/restore of the
-//!   fid table ([IO-13]..[IO-19]).
-//! - [`netlink`]: the network-link sub-node (CS-IO-4, tasks T-IO-9 / T-IO-16) —
-//!   a directed `A -> B` edge that schedules each frame over `SLOT_NET_ROUTER`,
-//!   modeling latency/jitter/reorder/bandwidth/loss/duplicate/corrupt as
-//!   deterministic perturbations of the delivery icount and/or payload, with the
+//! - [`block`]: the block device sub-node — a read-only content-addressed base
+//!   image, an in-memory 4 KiB copy-on-write overlay with dirty tracking, the
+//!   versioned little-endian block wire ABI, the deterministic completion
+//!   model, and snapshot/restore/materialize.
+//! - [`ninep`]: the 9p filesystem sub-node — a read-only 9P2000.L server over a
+//!   deterministic content-addressed tree, with path-hashed QIDs, sorted
+//!   enumeration, fixed/content-derived attributes, the `EROFS` read-only
+//!   boundary, `msize` enforcement, and snapshot/restore of the fid table.
+//! - [`netlink`]: the network-link sub-node — a directed `A -> B` edge that
+//!   schedules each frame over `SLOT_NET_ROUTER`, modeling
+//!   latency/jitter/reorder/bandwidth/loss/duplicate/corrupt as deterministic
+//!   perturbations of the delivery icount and/or payload, with the
 //!   strictly-positive latency floor, sub-floor clamp, lookahead-recompute
-//!   signal, and into-the-past fail-loud guard ([IO-20], [IO-33], [IO-34]).
+//!   signal, and into-the-past fail-loud guard.
 //! - [`fault`]: the seeded per-device RNG ([`fault::DeviceRng`]), exact
 //!   [`fault::Probability`], and integer-only transforms used by network effects.
 //! - [`error`]: the [`DeviceError`] taxonomy returned across the crate.
@@ -57,9 +56,9 @@
 //!
 //! Every completion time and probabilistic device choice is a pure function of
 //! `(request icount, modeled latency, per-device RNG draw)` — no host
-//! wall-clock, scheduling, filesystem, or inode dependence ([IO-1], [IO-4]).
-//! All ordering-significant collections are explicitly ordered; no
-//! default-hasher iteration appears on any response path.
+//! wall-clock, scheduling, filesystem, or inode dependence. All
+//! ordering-significant collections are explicitly ordered; no default-hasher
+//! iteration appears on any response path.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]

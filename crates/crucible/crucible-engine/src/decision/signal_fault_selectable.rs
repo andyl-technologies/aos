@@ -734,7 +734,7 @@ pub enum SignalFaultSelectableError {
     /// Candidate decisions named different search identities or candidate sets.
     #[error("signal-fault search frontier mixes candidate bases")]
     MixedCandidateBasis,
-    /// Candidate tags did not preserve one homogeneous typed RFC-0014 domain.
+    /// Candidate tags did not preserve one homogeneous typed signal-fault domain.
     #[error("signal-fault search frontier mixes typed candidate semantics")]
     MixedCandidateSemantics,
     /// An index-only untyped candidate cannot be promoted as a typed choice.

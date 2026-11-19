@@ -2,10 +2,8 @@
 {
   pkgs,
   attrPath ? "checks.crucible.phase7.gates.hostCloneCost.rawGate",
-  taskIds ? [],
   nativeScaling,
 }: let
-  taskList = builtins.concatStringsSep "," taskIds;
 in
   pkgs.mkDerivation {
     pname = "crucible-phase7-host-clone-cost";
@@ -67,7 +65,6 @@ in
           PASS
           check=${attrPath}
           gate=gate:host-clone-cost
-          tasks=${taskList}
           host_continuation_siblings=64
           host_immutable_object_bytes=33554432
           host_shared_backing_copies=1

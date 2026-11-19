@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.executionBake",
-  taskIds ? ["T-EXEC-8" "T-PAT-9"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -214,7 +213,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
             related_gates=gate:content-address,gate:replay-oracle
             model_bake=world-derived-fat-genesis-checkpoint
             production_bake=authenticated-fresh-lifecycle-v9-descriptor-capture

@@ -150,7 +150,6 @@ in
             PASS
             check=checks.crucible.phase1.standaloneDependencies
             gate=gate:harness-lint
-            tasks=T-CRATE-15
             forbidden_prefixes=ratchet-,aos-nix-
             seam=crucible_determinism::content-addressing
             RESULT

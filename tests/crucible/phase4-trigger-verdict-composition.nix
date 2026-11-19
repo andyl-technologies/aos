@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.triggerVerdictComposition",
-  taskIds ? ["T-TRIG-17"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -14,7 +13,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-  taskList = builtins.concatStringsSep "," taskIds;
   verdictSources = builtins.concatStringsSep "\n" [
     scheduler
     libRs
@@ -223,7 +221,6 @@ in
             mkdir -p "$out/nix-support"
             {
               echo "attr=${attrPath}"
-              echo "tasks=${taskList}"
               echo "gate=phase4-trigger-verdict-composition"
               echo "trigger_failures_are_sticky=true"
               echo "assertion_failures_override_trigger_pass=true"

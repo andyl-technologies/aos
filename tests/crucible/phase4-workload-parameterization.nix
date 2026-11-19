@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.workloadParameterization",
-  taskIds ? ["T-WL-6"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -12,8 +11,6 @@
   engineLib = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
   parameterizationTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/workload_parameterization.rs;
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
@@ -225,10 +222,6 @@
         label = "phase4 workload parameterization attr path";
         needle = "checks.crucible.phase4.workloadParameterization";
       }
-      {
-        label = "phase4 workload parameterization task id";
-        needle = "taskIds = [\"T-WL-6\"]";
-      }
     ];
 in
   if failures != []
@@ -331,7 +324,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             scalar_params=cmdline
             config_tree=read_only_content_addressed
             host_runtime_pokes=false

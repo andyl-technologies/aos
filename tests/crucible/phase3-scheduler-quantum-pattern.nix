@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase3.schedulerQuantumPattern",
-  taskIds ? ["T-PAT-2"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -95,7 +94,6 @@
     "\n    pub(super) fn emit_quantum_event_log"
     authoritativeScheduler;
 
-  taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "docs/engineering/crucible/scheduling.md" schedulingDoc [
       {
@@ -435,7 +433,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             component=crucible-scheduler
             pattern=PICK-RUN-RESOLVE-EMIT-STEP
             single_ceiling_per_run=true

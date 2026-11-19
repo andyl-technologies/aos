@@ -1,12 +1,12 @@
 //! The versioned block wire ABI: `BlockRequest` and `BlockResponse` codecs.
 //!
 //! This module owns the on-wire format the block sub-node speaks across the
-//! `SLOT_BLK_IO` shmem rings ([IO-8], [IO-9]). Both messages are a fixed field
-//! order with all multi-byte integers in **little-endian**; reserved bytes are
-//! zero on emit and rejected when nonzero on receive. Decoding is fully
-//! bounds-checked: an
-//! arbitrary byte sequence never panics, never reads out of bounds, and yields a
-//! [`BlockCodecError`] when malformed — the fuzz-safe boundary the spec demands.
+//! `SLOT_BLK_IO` shmem rings. Both messages are a fixed field order with all
+//! multi-byte integers in **little-endian**; reserved bytes are zero on emit
+//! and rejected when nonzero on receive. Decoding is fully bounds-checked: an
+//! arbitrary byte sequence never panics, never reads out of bounds, and yields
+//! a [`BlockCodecError`] when malformed — the fuzz-safe boundary the spec
+//! demands.
 //!
 //! ```text
 //! BlockRequest  (VM slot -> SLOT_BLK_IO), little-endian, header = 28 bytes
@@ -39,8 +39,8 @@
 
 /// The block wire ABI version encoded in every request and response.
 ///
-/// A decoder rejects any message whose version byte differs from this constant
-/// ([IO-8]); bumping it is a breaking ABI change gated by `gate:abi-conformance`.
+/// A decoder rejects any message whose version byte differs from this constant;
+/// bumping it is a breaking ABI change gated by `gate:abi-conformance`.
 pub const BLOCK_ABI_VERSION: u8 = 4;
 
 /// The fixed size in bytes of an encoded [`BlockRequest`] header.

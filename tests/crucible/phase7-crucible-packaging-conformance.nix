@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.cruciblePackagingConformance",
-  taskIds ? ["T-PKG-16"],
   patchMicrotestsGate ? null,
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
@@ -232,7 +231,6 @@ in
           {
             printf '%s\n' 'PASS'
             printf 'check=%s\n' "$ATTR_PATH"
-            printf 'tasks=%s\n' "$TASK_IDS"
             printf '%s\n' 'gate=gate:patch-microtests'
             printf '%s\n' 'catalog=docs/engineering/crucible/qemu-patch.md#catalog'
             printf '%s\n' 'package_manifest=pkgs/emulation/qemu-patches/_atomic-patch.nix'
@@ -253,7 +251,6 @@ in
         ''
       ];
       ATTR_PATH = attrPath;
-      TASK_IDS = builtins.concatStringsSep "," taskIds;
       ATOMIC_PATCH = atomicPatch.file;
       CATALOG_ROW_COUNT = toString (builtins.length catalogRowNames);
       CATALOG_ONLY_COUNT = toString (builtins.length additionalCapabilities);

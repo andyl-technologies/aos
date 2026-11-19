@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.crucibleQemuPluginPackage",
-  taskIds ? ["T-PKG-7"],
 }: let
   pluginPackageNix = builtins.readFile ../../pkgs/emulation/crucible-qemu-plugin.nix;
   qemuPackageNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
@@ -234,7 +233,6 @@ in
 
       QEMU_PLUGIN_API_VERSION = qemuPluginApiVersion;
       SHMEM_ABI_VERSION = shmemAbiVersion;
-      TASK_IDS = builtins.concatStringsSep "," taskIds;
       ATTR_PATH = attrPath;
       passthru = {
         pluginPackage = pkgs.crucible-qemu-plugin;
@@ -251,7 +249,6 @@ in
             cat > "$out/result" <<RESULT
             PASS
             check=$ATTR_PATH
-            tasks=$TASK_IDS
             package=crucible-qemu-plugin
             package_passthru=pkgs.crucible-qemu-plugin
             qemu_package_passthru=pkgs.qemu-crucible

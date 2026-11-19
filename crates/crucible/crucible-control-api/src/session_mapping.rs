@@ -429,7 +429,7 @@ pub fn api_command_for_session_command(
         .find(|mapping| mapping.command_kind == command)
 }
 
-/// Validates the API mapping against the T-API-2 thin-wrapper contract.
+/// Validates the API mapping against the thin-wrapper contract.
 ///
 /// # Errors
 ///

@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.sessionLifecycle",
-  taskIds ? ["T-SESS-3"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -12,8 +11,6 @@
   cliTerminalObservation = builtins.readFile ../../crates/crucible/crucible-cli/src/cli/control/streaming_events.rs;
   sessionPage = builtins.readFile ../../docs/engineering/crucible/session.md;
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -257,7 +254,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             component=crucible-session
             state_machine=lifecycle
             transition_table=total

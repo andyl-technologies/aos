@@ -5,18 +5,18 @@ use super::*;
 impl BlockDevice {
     /// Enqueues an encoded request and COMPUTEs it immediately.
     ///
-    /// This is the ARRIVE+COMPUTE convenience path for the in-process double
-    /// ([IO-27]): the wire bytes of `request` are wrapped into the uniform
-    /// [`Request`] at `request_icount`, enqueued, and COMPUTEd, fixing the
-    /// response's `delivery_icount`. The response stays in flight until
+    /// This is the ARRIVE+COMPUTE convenience path for the in-process double:
+    /// the wire bytes of `request` are wrapped into the uniform [`Request`] at
+    /// `request_icount`, enqueued, and COMPUTEd, fixing the response's
+    /// `delivery_icount`. The response stays in flight until
     /// [`BlockDevice::advance_to`] reaches that icount.
     ///
     /// # Errors
     ///
     /// Returns [`DeviceError::Codec`] when `request` cannot be encoded (a write
-    /// payload exceeding the `u32` wire `count` field), [`DeviceError::RingFull`]
-    /// when the inbound ring is full (the producer must drain and retry,
-    /// [IO-32]), or any error [`IoCore::process_inbox`] raises
+    /// payload exceeding the `u32` wire `count` field),
+    /// [`DeviceError::RingFull`] when the inbound ring is full (the producer
+    /// must drain and retry), or any error [`IoCore::process_inbox`] raises
     /// (clock/overflow/past-delivery guards).
     pub fn submit(
         &mut self,
@@ -53,10 +53,10 @@ impl BlockDevice {
     /// Drains raw block request frames from a shared-memory inbox ring.
     ///
     /// Each dequeued frame is converted to the uniform [`Request`] payload,
-    /// COMPUTEd through the block server, and inserted into the in-flight queue.
-    /// The VM producer slot is woken as each request-ring entry is freed, so a
-    /// producer blocked on a full `(vm slot -> SLOT_BLK_IO)` ring can retry
-    /// without dropping or reordering the request ([IO-32]).
+    /// COMPUTEd through the block server, and inserted into the in-flight
+    /// queue. The VM producer slot is woken as each request-ring entry is
+    /// freed, so a producer blocked on a full `(vm slot -> SLOT_BLK_IO)` ring
+    /// can retry without dropping or reordering the request.
     ///
     /// # Errors
     ///
@@ -384,7 +384,7 @@ impl BlockDevice {
         })
     }
 
-    /// Advances the clock to `limit` and DELIVERs every due response ([IO-2]).
+    /// Advances the clock to `limit` and DELIVERs every due response.
     ///
     /// # Errors
     ///

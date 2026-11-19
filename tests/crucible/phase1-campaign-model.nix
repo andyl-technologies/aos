@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.gates.campaignModel",
-  taskIds ? ["T-CAM-1.1" "T-CAM-1.2" "T-CAM-1.3" "T-CAM-1.4" "T-CAM-1.5" "T-CAM-1.6" "T-CAM-1.7" "T-CAM-3.1"],
   dependencies ? [],
   campaignComposition ? null,
   testing ? import ../../lib/testing {inherit pkgs lib;},
@@ -26,7 +25,6 @@ in
 
       buildDeps = [pkgs.coreutils pkgs.rust pkgs.pkg-config pkgs.sqlite];
       ATTR_PATH = attrPath;
-      TASK_IDS = builtins.concatStringsSep "," taskIds;
       DEPENDENCY_PATHS = builtins.concatStringsSep ":" dependencies;
 
       phases = [
@@ -134,7 +132,6 @@ in
               printf 'PASS\n'
               printf 'gate=gate:campaign-model\n'
               printf 'attr_path=%s\n' "$ATTR_PATH"
-              printf 'task_ids=%s\n' "$TASK_IDS"
               printf 'scope=canonical-identities,linear-owner,derivation,restart-projection,model-owned-measurements,raw-replay-evidence\n'
             } > "$out/result"
           '';

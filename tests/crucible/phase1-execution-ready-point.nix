@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.executionReadyPoint",
-  taskIds ? ["T-EXEC-9" "T-SPAT-6"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -218,7 +217,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
             related_gates=gate:content-address,gate:any-guest
             ready_point_policies=fixed-icount,network-idle,console-marker,agent-signal
             spatial_graph_task=ready-point-policy-set-white-box-opt-in

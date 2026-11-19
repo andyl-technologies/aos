@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.eventKindCatalogFreeze",
-  taskIds ? ["T-OBS-13"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -26,7 +25,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-  taskList = builtins.concatStringsSep "," taskIds;
   requiredKinds = [
     "state_transition"
     "event_activated"
@@ -162,23 +160,23 @@
       }
       {
         label = "assertions dependency";
-        needle = "18-assertions-properties";
+        needle = "consumer: \"assertions\"";
       }
       {
         label = "control-plane dependency";
-        needle = "20-session-control-plane";
+        needle = "consumer: \"session\"";
       }
       {
         label = "api dependency";
-        needle = "21-api";
+        needle = "consumer: \"control-api\"";
       }
       {
-        label = "advanced-features dependency";
-        needle = "22-advanced-features";
+        label = "exploration dependency";
+        needle = "consumer: \"exploration\"";
       }
       {
         label = "determinism harness dependency";
-        needle = "24-determinism-harness-testing";
+        needle = "consumer: \"determinism-harness\"";
       }
     ]
     ++ requiredKindFailures
@@ -234,10 +232,6 @@
       {
         label = "phase4 event-kind catalog freeze attr path";
         needle = "checks.crucible.phase4.eventKindCatalogFreeze";
-      }
-      {
-        label = "phase4 event-kind catalog freeze task id";
-        needle = "taskIds = [\"T-OBS-13\"]";
       }
     ]
     ++ forbiddenFor "crates/crucible/crucible-engine/tests/event_kind_catalog.rs" catalogTest [
@@ -321,7 +315,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             catalog_version=1
             catalog_golden_vector=true
             structural_dependency_map=true

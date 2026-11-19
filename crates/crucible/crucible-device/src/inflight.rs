@@ -5,11 +5,11 @@
 //! reached `delivery_icount`). This module owns [`InflightQueue`], which keeps
 //! those [`PendingResponse`]s ordered so that:
 //!
-//! - the head's `delivery_icount` is the sub-node's `next_exact_local_event`
-//!   ([IO-31]) — what the scheduler reads to bound the requester's horizon;
+//! - the head's `delivery_icount` is the sub-node's `next_exact_local_event` —
+//!   what the scheduler reads to bound the requester's horizon;
 //! - draining at a limit emits exactly the responses whose
 //!   `delivery_icount <= limit`, in the deterministic total order
-//!   `(delivery_icount, src_node, seq)` ([IO-10], [SHM-34]).
+//!   `(delivery_icount, src_node, seq)`.
 //!
 //! The order key reuses [`crucible_qemu_shmem::FrameDeliveryKey`] so a sub-node and
 //! the shmem transport agree byte-for-byte on coincident-delivery tie-breaking.
@@ -67,9 +67,9 @@ impl PendingResponse {
 ///
 /// Entries are kept sorted by [`FrameDeliveryKey`] (`delivery_icount`, then
 /// `src_node`, then `seq`) so the head is always the next event and draining is
-/// a prefix scan. The queue never reorders or re-times an entry: a late-arriving
-/// computation with an earlier `delivery_icount` is inserted at its correct
-/// position, preserving the global delivery order ([IO-32]).
+/// a prefix scan. The queue never reorders or re-times an entry: a
+/// late-arriving computation with an earlier `delivery_icount` is inserted at
+/// its correct position, preserving the global delivery order.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct InflightQueue {
     /// Entries sorted ascending by [`FrameDeliveryKey`]. Kept private so the
@@ -114,8 +114,8 @@ impl InflightQueue {
 
     /// Returns the head's `delivery_icount`: the sub-node's next exact event.
     ///
-    /// This is what the scheduler reads to bound the requester's horizon
-    /// ([IO-3], [IO-31]). Returns `None` when nothing is in flight.
+    /// This is what the scheduler reads to bound the requester's horizon.
+    /// Returns `None` when nothing is in flight.
     #[must_use]
     pub fn next_exact_local_event(&self) -> Option<u64> {
         self.entries.first().map(PendingResponse::delivery_icount)

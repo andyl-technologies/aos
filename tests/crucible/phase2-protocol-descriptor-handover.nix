@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.protocolDescriptorHandover",
-  taskIds ? ["T-PROTO-3"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -14,8 +13,6 @@
   unsafeFenceRust = builtins.readFile ../../crates/crucible/crucible-test-support/tests/crate_unsafe_fence.rs;
   unsafeFenceNix = builtins.readFile ./phase1-crate-unsafe-fence.nix;
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -197,10 +194,6 @@
         label = "canonical ABI conformance gate is implemented";
         needle = "abiConformance = import ./phase2-abi-conformance.nix";
       }
-      {
-        label = "canonical ABI conformance task list";
-        needle = "taskIds = [\"T-HARN-17\" \"T-API-11\" \"T-API-12\" \"T-PAT-8\"]";
-      }
     ];
 in
   if failures != []
@@ -268,7 +261,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             gate=gate:abi-conformance
             rust_tests=crucible_qemu_protocol::descriptor_handover
             descriptor_handover=SCM_RIGHTS

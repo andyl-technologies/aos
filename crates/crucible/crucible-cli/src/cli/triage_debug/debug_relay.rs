@@ -146,7 +146,7 @@ pub(crate) fn plan_debug_invocation(
         non_canonical_branch_label: (explicit_fork || guest_shell)
             .then(|| "NON-CANONICAL debug branch".to_string()),
     };
-    if !plan.proves_t_dbg_8() {
+    if !plan.satisfies_debug_surface_contract() {
         return Err(CliError::Backend(
             "debug planner does not satisfy the debug surface contract".to_string(),
         ));

@@ -3,9 +3,7 @@
   lib,
   qemuPackage ? pkgs.qemu-crucible,
   attrPath ? "checks.crucible.phase6.qemuHotForkReadiness",
-  taskIds ? [],
 }: let
-  taskList = builtins.concatStringsSep "," taskIds;
 in
   pkgs.mkDerivation {
     pname = "crucible-phase6-qemu-hot-fork-readiness";
@@ -1261,7 +1259,6 @@ in
           cat > "$out/result" <<'RESULT'
           PASS
           check=${attrPath}
-          tasks=${taskList}
           gate=gate:hot-fork-readiness
           patch=crucible-qemu-11.1.1.patch
           retained_template_fork_rejects_unprepared=true

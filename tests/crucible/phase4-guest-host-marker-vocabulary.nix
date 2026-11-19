@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.guestHostMarkerVocabulary",
-  taskIds ? ["T-GHC-8"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -51,7 +50,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-  taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "docs/engineering/crucible/guest-host-channel.md" guestHostChannelDoc [
       {
@@ -324,10 +322,6 @@
         label = "phase4 marker vocabulary attr path";
         needle = "checks.crucible.phase4.guestHostMarkerVocabulary";
       }
-      {
-        label = "phase4 marker vocabulary task id";
-        needle = "taskIds = [\"T-GHC-8\"]";
-      }
     ]
     ++ forbiddenFor "crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhitebox [
       {
@@ -457,7 +451,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             gate=gate:abi-conformance
             marker_vocabulary=WHITEBOX_DOORBELL_KIND_ASSERTION..WHITEBOX_DOORBELL_KIND_RANDOM_REQUEST
             golden_vectors=GOLDEN_WHITEBOX_MARKER_PAYLOAD_VECTORS

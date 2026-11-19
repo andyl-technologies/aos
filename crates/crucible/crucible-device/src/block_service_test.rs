@@ -315,7 +315,7 @@ fn full_service_queue_returns_stable_busy_response() {
     );
 }
 
-// ---- CoW: read / write / copy-up / base-never-mutated (IO-5,6) ----
+// ---- CoW: read / write / copy-up / base-never-mutated ----
 
 #[test]
 fn retained_flush_release_rolls_back_when_completion_order_is_exhausted() {

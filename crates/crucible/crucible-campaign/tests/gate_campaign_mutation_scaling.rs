@@ -1,4 +1,4 @@
-//! CPERF-9 campaign mutation scaling and restart conformance.
+//! Campaign mutation scaling and restart conformance.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- conformance fixtures fail at the violated invariant.

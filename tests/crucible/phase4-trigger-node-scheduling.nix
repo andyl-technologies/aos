@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.triggerNodeScheduling",
-  taskIds ? ["T-TRIG-13"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -14,7 +13,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-  taskList = builtins.concatStringsSep "," taskIds;
   nodeSchedulingSources = builtins.concatStringsSep "\n" [
     scheduler
     trigger
@@ -255,7 +253,6 @@ in
             mkdir -p "$out/nix-support"
             {
               echo "attr=${attrPath}"
-              echo "tasks=${taskList}"
               echo "gate=phase4-trigger-node-scheduling"
               echo "node_scheduling_uses_world_static_topology=true"
               echo "node_scheduling_does_not_mutate_topology=true"

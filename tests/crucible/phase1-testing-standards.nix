@@ -870,7 +870,6 @@ in
             PASS
             check=checks.crucible.phase1.testingStandards
             gate=gate:harness-lint
-            tasks=T-STD-8
             test_shape=twice-reduce-compare-by-hash
             flaky_policy=flaky-is-failing
             simdouble_scope=L1,L3,L4

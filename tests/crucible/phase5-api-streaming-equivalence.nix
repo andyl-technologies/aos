@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.apiStreamingEquivalence",
-  taskIds ? ["T-API-4"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -26,8 +25,6 @@
     entry = ../../crates/crucible/crucible-control-client/tests/gate_control_client.rs;
   };
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -221,7 +218,6 @@ in
 
     CRUCIBLE_T_API_4_FAILURES = failureText;
     ATTR_PATH = attrPath;
-    TASK_IDS = taskList;
     DEPENDENCY_COUNT = toString (builtins.length dependencies);
     DEPENDENCY_PATHS = builtins.concatStringsSep ":" dependencies;
 
@@ -292,7 +288,6 @@ in
           {
             printf 'PASS\n'
             printf 'check=%s\n' "$ATTR_PATH"
-            printf 'tasks=%s\n' "$TASK_IDS"
             printf 'dependency_count=%s\n' "$DEPENDENCY_COUNT"
             printf 'control=bidirectional_attach_and_command\n'
             printf 'watch=read_only_attach\n'

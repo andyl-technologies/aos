@@ -3,8 +3,6 @@
   lib,
   liveWhitebox ? import ./phase2-qemu-live-whitebox-doorbell.nix {inherit pkgs lib;},
   attrPath ? "checks.crucible.phase4.guestHostMarkerObservability",
-  taskIds ? ["T-GHC-9"],
-  openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -52,8 +50,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-  taskList = builtins.concatStringsSep "," taskIds;
-  openTaskList = builtins.concatStringsSep "," openTaskIds;
   failures =
     failuresFor "docs/engineering/crucible/guest-host-channel.md" guestHostChannelDoc [
       {
@@ -280,10 +276,6 @@
         label = "phase4 marker observability attr path";
         needle = "checks.crucible.phase4.guestHostMarkerObservability";
       }
-      {
-        label = "phase4 marker observability task id";
-        needle = "taskIds = [\"T-GHC-9\"];\n      openTaskIds = [];";
-      }
     ];
 in
   if failures != []
@@ -367,8 +359,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
-            open_tasks=${openTaskList}
             status=complete
             evidence_scope=marker-observation-model-and-live-production
             gate=gate:single-vm-fingerprint

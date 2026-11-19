@@ -5,7 +5,6 @@
   modeGateAdapters,
   campaignGateMatrixContract,
   attrPath ? "checks.crucible.phase9.gates.campaignGateMatrix",
-  taskIds ? ["T-CAM-9.1"],
 }: let
   inventoryPath = ./campaign-gate-matrix-inventory.toml;
   inventory = builtins.fromTOML (builtins.readFile inventoryPath);
@@ -212,7 +211,6 @@ in
             PASS
             gate=gate:campaign-gate-matrix
             check=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
             inventory_sha256=${builtins.hashFile "sha256" inventoryPath}
             inventory_gate_count=${toString (builtins.length authorities)}
             mode_execution_count=${toString (2 * builtins.length authorities)}

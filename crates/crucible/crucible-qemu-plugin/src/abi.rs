@@ -614,7 +614,7 @@ pub type QemuRegisterSimShmemDispatchCbFn = extern "C" fn(
     *mut c_void,
 );
 
-/// Required runtime APIs added by the T-PATCH-11 QEMU patch group.
+/// Required runtime APIs added by the Crucible QEMU runtime patch group.
 #[derive(Clone, Copy, Debug)]
 pub struct PluginRuntimeApis {
     icount_raw: QemuIcountRawFn,
@@ -624,7 +624,7 @@ pub struct PluginRuntimeApis {
 }
 
 impl PluginRuntimeApis {
-    /// Requires every T-PATCH-11 runtime export before install succeeds.
+    /// Requires every patched-QEMU runtime export before install succeeds.
     ///
     /// # Errors
     ///
@@ -775,7 +775,7 @@ pub enum QemuPluginAbiError {
         /// Underlying fault bridge capability error.
         source: crate::FaultCommandBridgeError,
     },
-    /// A required T-PATCH-11 runtime API export is unavailable.
+    /// A required patched-QEMU runtime API export is unavailable.
     #[error("QEMU plugin runtime API capability {symbol} is unavailable")]
     RuntimeApiCapability {
         /// Missing QEMU symbol.

@@ -4,13 +4,11 @@
   qemuPackage ? pkgs.qemu-crucible,
   referenceQemu ? pkgs.qemu-crucible-reference,
   attrPath ? "checks.crucible.phase2.qemuMemoryAccess",
-  taskIds ? ["T-QEMU-0050"],
   focus ? "",
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
   atomicPatch = import ../../pkgs/emulation/qemu-patches/_atomic-patch.nix;
   patchSource = builtins.readFile (patchDir + "/${atomicPatch.file}");
-  taskList = builtins.concatStringsSep "," taskIds;
   inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
   dmaGuest = import ./phase2-qemu-memory-dma-guest.nix {inherit pkgs;};
   failures = failuresFor "pkgs/emulation/qemu-patches/${atomicPatch.file}" patchSource [
@@ -486,7 +484,6 @@ in
               printf 'gate=gate:patch-microtests\n'
               printf 'atomic_patch=%s\n' '${atomicPatch.file}'
               printf 'attr_path=%s\n' '${attrPath}'
-              printf 'task_ids=%s\n' '${taskList}'
               printf 'backend=actual-patched-and-stock-qemu\n'
               printf 'architectures=x86_64,aarch64\n'
               printf 'cpu_access_matrix=fetch,aligned,unaligned,cross-page,load,store,atomic-1-2-4-8-16,cmpxchg-success-failure\n'

@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.sessionBoundaryControl",
-  taskIds ? ["T-SESS-6"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -17,8 +16,6 @@
   daemonGateControlResponsive = builtins.readFile ../../crates/crucible/crucible-daemon/tests/gate_control_responsive.rs;
   schedulerLib = import ./_crucible-scheduler-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -177,7 +174,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             component=crucible-session
             boundary_control_log=frontier-quanta
             scheduler_control=typed-boundary-operations

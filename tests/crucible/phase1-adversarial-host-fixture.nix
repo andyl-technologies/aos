@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.adversarialHostFixture",
-  taskIds ? ["T-DET-25"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -198,7 +197,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
             fixture=canonical-host-adversary-matrix
             dimensions=seeded-scheduling,seeded-affinity,bounded-seeded-work-yield,core-counts,producer-consumer-skew
             rust_tests=crucible_test_support::adversarial_host_fixture

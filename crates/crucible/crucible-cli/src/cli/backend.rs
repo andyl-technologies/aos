@@ -28,7 +28,7 @@ pub(super) struct DaemonMutualTlsPaths {
 }
 
 impl BackendSelectionPlan {
-    pub(super) fn proves_t_cli_5(&self) -> bool {
+    pub(super) fn satisfies_hermetic_discovery(&self) -> bool {
         match (&self.target, &self.resolved_backend, self.requested_backend) {
             (BackendExecutionTarget::RemoteDaemon, None, _) => true,
             #[cfg(any(test, feature = "test-double"))]
@@ -1128,7 +1128,7 @@ pub(super) fn execute_backend_selection_plan(
             "CLI backend selection violates the local/remote split".to_string(),
         ));
     }
-    if !plan.proves_t_cli_5() {
+    if !plan.satisfies_hermetic_discovery() {
         return Err(CliError::Backend(
             "CLI QEMU discovery violates the hermetic discovery contract".to_string(),
         ));

@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.protocolInertness",
-  taskIds ? ["T-PROTO-11"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -13,7 +12,6 @@
   protocolSpec = builtins.readFile ../../docs/engineering/crucible/control-protocol.md;
   defaultChecks = builtins.readFile ./default.nix;
 
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -228,7 +226,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             gate=gate:qemu-inert,gate:abi-conformance
             rust_test=crucible_qemu_host::protocol_inertness
             sim_off=stock-tcg-thread-single,no-control-socket,no-control-frames,no-plugin-args,no-sim-accelerator

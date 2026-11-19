@@ -1051,9 +1051,6 @@
       "distribution metadata reaching reduce/Decision/content key/artifact path"
       "gate_evidence_references_are_integral"
       "gate_reference_integrity_failures"
-      "task_metadata_state_failures"
-      "completed RFC task"
-      "open RFC task"
     ];
     rustTierFailures =
       lib.concatMap (
@@ -1382,7 +1379,7 @@
       "harness-lint confinement regression failed to reject workspace engine alias"
     ];
 
-  tDet17CompletionFailures = let
+  harnessWiringFailures = let
     requiredHarnessCode = [
       "fn reduction_path_sources_have_no_banned_nondeterminism() -> Result<(), Box<dyn Error>>"
       "for package in REDUCTION_PATH_PACKAGES"
@@ -1448,7 +1445,7 @@
       lib.concatMap (
         required:
           lib.optionals (!(hasInfix (normalize required) harnessLintMainCode || hasInfix (normalize required) harnessLintScanCode)) [
-            "crates/crucible/crucible-test-support/tests/harness_lint.rs: missing T-DET-17 harness-lint evidence `${required}`"
+            "crates/crucible/crucible-test-support/tests/harness_lint.rs: missing harness-lint evidence `${required}`"
           ]
       )
       requiredHarnessCode;
@@ -1486,11 +1483,11 @@
   in
     harnessFailures ++ denyCoverageFailures ++ docFailures ++ baselineFailures ++ phaseWiringFailures;
 
-  tAsrt17CompletionFailures =
+  predicateDslFailures =
     failuresFor "crates/crucible/crucible-engine/tests/predicate_dsl.rs" predicateDsl [
       {
-        label = "T-ASRT-17 regression module";
-        needle = "Checks T-ASRT-17 predicate DSL desugaring.";
+        label = "predicate DSL regression module";
+        needle = "Checks predicate DSL desugaring.";
       }
       {
         label = "host predicate additivity evidence";
@@ -1534,7 +1531,7 @@
       }
     ];
 
-  failures = sourceFailures ++ boundarySourceFailures ++ boundaryManifestFailures ++ productionSourceFailures ++ manifestFailures ++ clippyTierFailures ++ customStaticTierFailures ++ regressionFailures ++ spacedPathRegressionFailures ++ scrubRegressionFailures ++ errorLoggingRegressionFailures ++ manifestRegressionFailures ++ exceptionPolicyRegressionFailures ++ confinementRegressionFailures ++ tDet17CompletionFailures ++ tAsrt17CompletionFailures;
+  failures = sourceFailures ++ boundarySourceFailures ++ boundaryManifestFailures ++ productionSourceFailures ++ manifestFailures ++ clippyTierFailures ++ customStaticTierFailures ++ regressionFailures ++ spacedPathRegressionFailures ++ scrubRegressionFailures ++ errorLoggingRegressionFailures ++ manifestRegressionFailures ++ exceptionPolicyRegressionFailures ++ confinementRegressionFailures ++ harnessWiringFailures ++ predicateDslFailures;
 in
   if failures != []
   then throw "crucible phase1 harness-lint failed:\n${builtins.concatStringsSep "\n" failures}"
@@ -1569,14 +1566,13 @@ in
               PASS
               check=${attrPath}
               gate=gate:harness-lint
-              tasks=T-ASRT-17,T-DET-17,T-HARN-2,T-HARN-27,T-HARN-28,T-CRATE-7,T-CRATE-8,T-STD-3,T-STD-4,T-STD-5,T-STD-6,T-DCE-7
               rust_test=crucible_test_support::harness_lint
               reduction_path=crucible-sim,crucible-assert,crucible,crucible-protocol,crucible-device,crucible-session
               nondeterminism_confinement=crucible-daemon,crucible-cli,crucible-qemu:no-state-leak
               error_logging=typed-errors,no-production-unwrap,main-boundary-anyhow,no-library-stdout
               clippy_tier=checked-in-disallowed-list,workspace-deny-set,all-targets,hermetic-cargo-clippy
               custom_static_tier=rust-harness-lint-all-crucible-src,hash-iteration,default-random-hasher,unordered-select,immediate-safety-comments,distribution-metadata-flow
-              reference_integrity=source-labels,checklist-state-needles,task-metadata-state
+              reference_integrity=source-labels
               nix_eval_source_scans=synthetic-regressions-and-wiring-only
               distribution_metadata_guardrail=reduce-decision-content-key-artifact-ban
               exception_policy=crucible-lint-allow-rationale,annotated-rust-allow,versioned-lint-surface

@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase6.explorationLifecycle",
-  taskIds ? ["T-ADV-2"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -11,8 +10,6 @@
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
   lifecycleGateTest = builtins.readFile ../../crates/crucible/crucible-session/tests/gate_exploration_lifecycle.rs;
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -144,10 +141,6 @@
         needle = "checks.crucible.phase6.explorationLifecycle";
       }
       {
-        label = "phase6 lifecycle task id";
-        needle = ''taskIds = ["T-ADV-2"]'';
-      }
-      {
         label = "phase6 lifecycle raw control dependency";
         needle = "phase5.gates.controlResponsive.rawGate";
       }
@@ -237,7 +230,6 @@ in
                         cat > "$out/result" <<RESULT
                         PASS
             check=${attrPath}
-            tasks=${taskList}
             lifecycle=pause,resume,stop
             rust_test=crucible-session::gate_exploration_lifecycle
             RESULT

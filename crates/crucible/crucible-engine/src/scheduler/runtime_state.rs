@@ -197,7 +197,7 @@ pub enum SchedulerQuiescenceBlocker {
     ///
     /// A completion not yet delivered to its requester is a future happening, so
     /// the system is not quiescent while any is in flight even if every node is
-    /// parked `Idle` ([SCHED-22], [SCHED-29]).
+    /// parked `Idle`.
     DeviceCompletionInFlight {
         /// The VM node that still owes the completion.
         target: NodeId,
@@ -449,8 +449,7 @@ pub struct SingleScheduler {
     /// Each [`DeviceSchedulingSubNode`](crate::device_subnode::DeviceSchedulingSubNode)
     /// holds an L1 `crucible-device` whose in-flight completions become the owning
     /// node's exact I/O-completion horizon term and are delivered at their exact
-    /// icount through [`SingleScheduler::resolve_device_completions`] ([IO-1],
-    /// [IO-3], [SCHED-29]).
+    /// icount through [`SingleScheduler::resolve_device_completions`].
     pub(super) device_sub_nodes:
         BTreeMap<NodeId, Vec<crate::device_subnode::DeviceSchedulingSubNode>>,
     /// Concrete directed network links derived from the logical World.
@@ -472,7 +471,7 @@ pub struct SingleScheduler {
     /// [`refresh_device_horizons`](SingleScheduler::refresh_device_horizons).
     ///
     /// This is the separate exact I/O-completion horizon TERM the scheduler folds
-    /// into a node's effective exact local event ([IO-3], [SCHED-10]) — it bounds
+    /// into a node's effective exact local event — it bounds
     /// the requester's horizon without injecting a deliverable event, so delivery
     /// happens solely on the RESOLVE path through
     /// [`resolve_device_completions`](SingleScheduler::resolve_device_completions)

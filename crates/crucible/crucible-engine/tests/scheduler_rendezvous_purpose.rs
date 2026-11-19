@@ -1,4 +1,4 @@
-//! Checks T-SCHED-26 rendezvous purpose restrictions and zero-skew swaps.
+//! Checks rendezvous purpose restrictions and zero-skew swaps.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.

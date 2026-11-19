@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.protocolShutdownEscalation",
-  taskIds ? ["T-PROTO-7"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -15,10 +14,8 @@
   controlResponsiveGate = import ./phase5-control-responsive.nix {
     inherit pkgs lib;
     attrPath = "checks.crucible.phase5.gates.controlResponsive";
-    taskIds = ["T-HARN-15"];
   };
 
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -295,7 +292,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             gate=gate:control-responsive
             rust_test=crucible_qemu_host::shutdown
             real_qemu_proof=crucible_qemu_host::shutdown::unix_adapter_reaps_real_qemu_child_when_polite_channels_fail

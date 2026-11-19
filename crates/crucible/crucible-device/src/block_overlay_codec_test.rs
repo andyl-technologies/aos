@@ -47,7 +47,7 @@ fn out_of_range_read_and_write_error_not_truncate() {
     assert!(overlay.read(&base, PAGE_SIZE as u64, 0).is_ok());
 }
 
-// ---- dirty tracking (IO-7) ----
+// ---- dirty tracking ----
 
 #[test]
 fn dirty_set_tracks_written_pages_and_clears_at_boundary() {
@@ -70,7 +70,7 @@ fn dirty_set_tracks_written_pages_and_clears_at_boundary() {
     assert_eq!(delta, vec![(PAGE_SIZE * 3) as u64]);
 }
 
-// ---- materialize (IO-12) ----
+// ---- materialize ----
 
 #[test]
 fn materialize_applies_overlay_over_base_without_mutating_base() {
@@ -86,7 +86,7 @@ fn materialize_applies_overlay_over_base_without_mutating_base() {
     assert_eq!(base.bytes(), &original[..], "materialize mutated base");
 }
 
-// ---- wire ABI round-trip + fuzz (IO-8) ----
+// ---- wire ABI round-trip + fuzz ----
 
 #[test]
 fn request_round_trips_for_every_op() {
@@ -214,4 +214,4 @@ fn decode_never_panics_on_arbitrary_bytes() {
     }
 }
 
-// ---- end-to-end device serve (IO-5,6 over the lifecycle) ----
+// ---- end-to-end device serve (copy-on-write over the lifecycle) ----

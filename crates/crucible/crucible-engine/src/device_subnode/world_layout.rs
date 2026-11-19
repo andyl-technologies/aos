@@ -12,8 +12,7 @@ use super::{
 /// Host/transport layout policy for instantiated World I/O nodes.
 ///
 /// This value is intentionally not part of [`World`] or [`crate::DeviceId`]. Changing
-/// either capacity changes only physical buffering, never scenario identity
-/// ([SPAT-14], [SPAT-15]).
+/// either capacity changes only physical buffering, never scenario identity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WorldIoLayoutPolicy {
     /// Physical inbound request-ring capacity for every instantiated I/O node.

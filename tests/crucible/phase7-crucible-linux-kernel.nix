@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.crucibleLinuxKernel",
-  taskIds ? ["T-PKG-12"],
   linuxCrucible ? pkgs.linux-crucible,
   anyGuestGate ? throw "crucible phase7 linux-crucible check requires checks.crucible.phase2.gates.anyGuest",
 }: let
@@ -14,7 +13,6 @@
   systemKernelSelection = builtins.readFile ../../systems/_kernel.nix;
   defaultChecks = builtins.readFile ./default.nix;
 
-  taskList = builtins.concatStringsSep "," taskIds;
   linuxFixtureWithMetadataProbe = extraConfig: let
     base = {
       pname = "linux";
@@ -436,7 +434,6 @@ in
             cat > "$out/result" <<RESULT
             PASS
             check=${attrPath}
-            tasks=${taskList}
             package=linux-crucible
             package_passthru=pkgs.linux-crucible
             kernel_builder=pkgs.linuxWith

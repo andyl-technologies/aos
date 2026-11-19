@@ -1,4 +1,4 @@
-//! Checks T-ASRT-15 assertion violation replay and divergence reporting.
+//! Checks assertion violation replay and divergence reporting.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.

@@ -133,7 +133,6 @@
     cat > "$out/result" <<'RESULT'
     PASS
     check=checks.crucible.phase1.sameIcountTieBreak
-    tasks=T-DET-13
     engine_order=virtual_time,consumer_node,producer_node,sequence
     shmem_projection=delivery_icount,src_node,seq
     arrival_order_visible=false

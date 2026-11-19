@@ -1,4 +1,4 @@
-//! Checks T-SCHED-22 topology-change lookahead recompute.
+//! Checks topology-change lookahead recompute.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.

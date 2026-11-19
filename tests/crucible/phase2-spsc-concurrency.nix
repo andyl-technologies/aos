@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.spscConcurrency",
-  taskIds ? ["T-HARN-18" "T-SHM-6"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -19,7 +18,6 @@
   gateTargetMapping = builtins.readFile ./phase1-gate-target-mapping.nix;
   defaultChecks = builtins.readFile ./default.nix;
 
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
@@ -239,7 +237,6 @@ in
             PASS
             check=${attrPath}
             gate=gate:layer1-injection
-            tasks=${taskList}
             rust_tests=crucible_qemu_shmem::gate_layer1_injection
             queue=Lamport-SPSC
             memory_ordering=release-acquire

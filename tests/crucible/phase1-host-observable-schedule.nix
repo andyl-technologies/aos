@@ -2,8 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.hostObservableSchedule",
-  taskIds ? ["T-HARN-4"],
-  openTaskIds ? [],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -94,7 +92,7 @@
     ++ failuresFor "crates/crucible/crucible-qemu-plugin/Cargo.toml" pluginManifest [
       {
         label = "test-only layer exception comment";
-        needle = "Test-only HARN-16 cross-check: production plugin dependencies stay L1-only.";
+        needle = "cross-check: production plugin dependencies stay L1-only.";
       }
       {
         label = "test-only crucible dependency";
@@ -103,7 +101,7 @@
     ]
     ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/network_rx.rs" pluginNetworkRx [
       {
-        label = "focused HARN-16 cross-check test";
+        label = "focused host-observable schedule cross-check test";
         needle = "host_observable_schedule_cross_checks_sim_double_against_plugin_projection";
       }
       {
@@ -283,8 +281,6 @@ in
             cat > "$out/result" <<RESULT
             PASS
             check=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
-            open_tasks=${builtins.concatStringsSep "," openTaskIds}
             status=complete
             evidence_scope=callback-core+installed-production-plugin
             sim_double_schedule_trace=true

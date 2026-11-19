@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuQuantumShmem",
-  taskIds ? ["T-QEMU-12"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -27,7 +26,6 @@
   qemuSpec = builtins.readFile ../../docs/engineering/crucible/qemu-integration.md;
   defaultChecks = builtins.readFile ./default.nix;
 
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
@@ -281,7 +279,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             attr_path=${attrPath}
-            tasks=${taskList}
             qemu_36=implemented
             qemu_quantum_hot_path=shared-memory-only
             ceiling_cycle=report-current-icount,set-max-advance,futex-wake,observe-report

@@ -4,7 +4,6 @@
   pkgs,
   qemuPackage ? pkgs.qemu-crucible,
   attrPath ? "checks.crucible.phase6.qemuNativeSourceSet",
-  taskIds ? [],
 }:
 pkgs.mkDerivation {
   pname = "crucible-phase6-qemu-native-source-set";
@@ -31,7 +30,6 @@ pkgs.mkDerivation {
         cat > "$out/result" <<'RESULT'
         PASS
         check=${attrPath}
-        tasks=${builtins.concatStringsSep "," taskIds}
         patch=crucible-qemu-11.1.1.patch
         complete_explicit_native_source_closure=true
         unowned_backend_node_and_consumer_rejected=true

@@ -913,7 +913,7 @@ struct CampaignFixtureArgs {
 
 #[derive(Subcommand, Debug, PartialEq, Eq)]
 enum CampaignFixtureCommand {
-    /// Generate the adaptive network-recovery campaign from RFC-0020.
+    /// Generate the adaptive network-recovery worked-example campaign.
     WorkedNetwork(CampaignWorkedNetworkFixtureArgs),
 }
 
@@ -2409,7 +2409,7 @@ struct CliThinWrapperPlan {
 }
 
 impl CliThinWrapperPlan {
-    fn proves_t_cli_2(&self) -> bool {
+    fn satisfies_thin_wrapper_contract(&self) -> bool {
         self.thin_wrapper
             && !self.owns_canonical_run_state
             && !self.implements_scheduler

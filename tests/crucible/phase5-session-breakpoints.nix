@@ -2,8 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.sessionBreakpoints",
-  taskIds ? ["T-SESS-7"],
-  openTaskIds ? [],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -13,9 +11,6 @@
   schedulerLib = import ./_crucible-scheduler-source.nix {inherit lib;};
   triggerLib = import ./_crucible-trigger-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
-  openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -307,8 +302,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
-            open_tasks=${openTaskList}
             status=partial
             component=crucible-session
             breakpoints=shared-condition-vocabulary

@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.crucibleDeterminismGuardrail",
-  taskIds ? ["T-DCE-7"],
   dependencies ? [],
 }: let
   distributedExplorationDoc = builtins.readFile ../../docs/engineering/crucible/distributed-exploration.md;
@@ -170,10 +169,6 @@
     ]
     ++ failuresFor "tests/crucible/phase1-harness-lint.nix" phase1HarnessLint [
       {
-        label = "phase1 harness-lint records T-DCE-7";
-        needle = "T-DCE-7";
-      }
-      {
         label = "phase1 harness-lint records lint extension";
         needle = "custom_static_tier=rust-harness-lint-all-crucible-src,hash-iteration,default-random-hasher,unordered-select,immediate-safety-comments,distribution-metadata-flow";
       }
@@ -252,7 +247,6 @@ in
             cat > "$out/result" <<RESULT
             PASS
             check=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
             harness_lint_extension=distribution-metadata-flow
             distribution_metadata_guardrail=reduce-decision-content-key-artifact-ban
             forbidden_paths=reduce,Decision,content-key,artifact

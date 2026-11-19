@@ -8,15 +8,15 @@
 //! - [`NetLink`] has its own `emit(frame, draws, policy)` / `advance_to(limit)` /
 //!   `next_delivery(limit)`.
 //!
-//! This module owns one thin [`HarnessDevice`] adapter per
-//! kind — [`BlockHarness`], [`NinepHarness`], [`NetLinkHarness`] — that projects
-//! each surface onto the harness's three uniform operations (apply a request,
-//! advance the clock, drain normalized [`DeliveryRecord`]s)
-//! so the run-twice/divergence/idle-busy-poll machinery is written once and
-//! reused across all three ([IO-27]). Each adapter drains through the device's
-//! own [`IoCore`](crate::subnode::IoCore)/in-flight queue, so the delivery key
-//! (`delivery_icount`, `src_node`, `seq`) is preserved verbatim in every record
-//! ([IO-10]).
+//! This module owns one thin [`HarnessDevice`] adapter per kind —
+//! [`BlockHarness`], [`NinepHarness`], [`NetLinkHarness`] — that projects each
+//! surface onto the harness's three uniform operations (apply a request,
+//! advance the clock, drain normalized [`DeliveryRecord`]s) so the
+//! run-twice/divergence/idle-busy-poll machinery is written once and reused
+//! across all three. Each adapter drains through the device's own
+//! [`IoCore`](crate::subnode::IoCore)/in-flight queue, so the delivery key
+//! (`delivery_icount`, `src_node`, `seq`) is preserved verbatim in every
+//! record.
 
 use crate::block::BlockDevice;
 use crate::block::codec::BlockRequest;
@@ -49,7 +49,7 @@ impl BlockHarness {
     /// Returns a shared reference to the wrapped device.
     ///
     /// Tests use this to assert device-visible state (overlay pages, dirty set,
-    /// length) after a run ([IO-27]).
+    /// length) after a run.
     #[must_use]
     pub fn device(&self) -> &BlockDevice {
         &self.device
@@ -116,7 +116,7 @@ impl NinepHarness {
     /// Returns a shared reference to the wrapped device.
     ///
     /// Tests use this to assert device-visible state (the fid table, negotiated
-    /// `msize`) after a run ([IO-27]).
+    /// `msize`) after a run.
     #[must_use]
     pub fn device(&self) -> &NinepDevice {
         &self.device
@@ -195,9 +195,9 @@ pub struct NetLinkHarness {
 
 /// A network-link harness request: a frame and its injected fault draws.
 ///
-/// The link is the one sub-node whose request is not an opaque payload — it
+/// The link is the one sub-node whose request is not an opaque payload: it
 /// carries the [`Frame`] to deliver and the [`FrameDraws`] that resolve its
-/// probabilistic effects deterministically ([IO-20], [IO-4]).
+/// probabilistic effects deterministically.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LinkRequest {
     /// The frame to emit (carries its own `emit_icount`).
@@ -227,8 +227,8 @@ impl NetLinkHarness {
 
     /// Returns a shared reference to the wrapped link.
     ///
-    /// Tests use this to assert link-visible state (in-flight count, the
-    /// next exact local event) after a run ([IO-27]).
+    /// Tests use this to assert link-visible state (in-flight count, the next
+    /// exact local event) after a run.
     #[must_use]
     pub fn link(&self) -> &NetLink {
         &self.link

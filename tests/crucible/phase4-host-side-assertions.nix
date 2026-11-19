@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.hostSideAssertions",
-  taskIds ? ["T-ASRT-5"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -22,7 +21,6 @@
   # stack on large sources.
   scrubCommentsAndStrings = import ./_rust-scrub.nix {inherit lib;};
 
-  taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [
       {
@@ -299,7 +297,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${taskList}
             host_side_assertions_over_observed_state=true
             RESULT
           '';

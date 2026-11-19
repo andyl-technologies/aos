@@ -1,10 +1,10 @@
 use crucible_engine::DebugCliSurfaceContract;
 
 #[test]
-fn debug_cli_surface_contract_covers_t_dbg_8_policy() {
+fn debug_cli_surface_contract_covers_policy() {
     let contract = DebugCliSurfaceContract::canonical();
 
-    assert!(contract.proves_t_dbg_8());
+    assert!(contract.satisfies_debug_surface_contract());
     assert!(contract.coordinate_flags.contains(&"--at"));
     assert!(contract.coordinate_flags.contains(&"--at-event"));
     assert!(contract.coordinate_flags.contains(&"--at-failure"));
@@ -40,5 +40,5 @@ fn debug_cli_surface_contract_rejects_symbol_server() {
             .symbol_resolution
             .proves_no_crucible_symbol_server()
     );
-    assert!(!with_symbol_server.proves_t_dbg_8());
+    assert!(!with_symbol_server.satisfies_debug_surface_contract());
 }

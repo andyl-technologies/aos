@@ -1,7 +1,5 @@
 //! AWS SDK transport for Crucible's S3-compatible immutable-store leaf.
 //!
-//! Spec index: RFC-0020 file 06.
-//!
 //! [`AwsSdkS3Client`] owns a bounded command queue and a dedicated Tokio
 //! runtime. This keeps the synchronous, streaming `crucible-store` contract free
 //! of credential and runtime policy while reusing one configured SDK client.

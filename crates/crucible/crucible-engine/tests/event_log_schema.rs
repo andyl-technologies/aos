@@ -1,4 +1,4 @@
-//! Checks the T-OBS-2 event-log entry schema.
+//! Checks the event-log entry schema.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.

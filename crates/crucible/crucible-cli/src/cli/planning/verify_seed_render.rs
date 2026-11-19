@@ -464,7 +464,7 @@ pub(crate) fn execute_determinism_ergonomics_plan(
     plan: &DeterminismErgonomicsPlan,
     recorder: &mut impl DeterminismErgonomicsRecorder,
 ) -> Result<(), CliError> {
-    if !plan.proves_t_cli_4() {
+    if !plan.satisfies_determinism_ergonomics() {
         return Err(CliError::Backend(
             "CLI determinism ergonomics violate the seed/artifact/trace contract".to_string(),
         ));

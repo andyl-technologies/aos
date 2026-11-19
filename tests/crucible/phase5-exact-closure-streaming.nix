@@ -3,7 +3,6 @@
   lib,
   checkpointDeltaFlight,
   attrPath ? "checks.crucible.phase5.gates.exactClosureStreaming",
-  taskIds ? ["T-CAM-5.3"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -124,7 +123,6 @@ in
           PASS
           check=${attrPath}
           gate=gate:exact-closure-streaming
-          tasks=${builtins.concatStringsSep "," taskIds}
           live_direct_delta_equivalence=true
           authenticated_file_stream=true
           chunked_sparse_zero_extents_recreated=true

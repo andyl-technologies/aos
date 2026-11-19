@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.cliDeterminismErgonomics",
-  taskIds ? ["T-CLI-4"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -10,8 +9,6 @@
 
   cliMain = import ./_cli-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
@@ -27,7 +24,7 @@
       }
       {
         label = "determinism ergonomics proof predicate";
-        needle = "fn proves_t_cli_4";
+        needle = "fn satisfies_determinism_ergonomics";
       }
       {
         label = "seed source enum";
@@ -351,7 +348,6 @@ in
 
     CRUCIBLE_T_CLI_4_FAILURES = failureText;
     ATTR_PATH = attrPath;
-    TASK_IDS = taskList;
     DEPENDENCY_COUNT = toString (builtins.length dependencies);
     DEPENDENCY_PATHS = builtins.concatStringsSep ":" dependencies;
 
@@ -409,9 +405,8 @@ in
     ];
 
     meta = {
-      description = "Crucible phase 5 CLI determinism-ergonomics gate for ${taskList}";
       passthru = {
-        inherit attrPath taskIds dependencies;
+        inherit attrPath dependencies;
         failureText = failureText;
       };
     };

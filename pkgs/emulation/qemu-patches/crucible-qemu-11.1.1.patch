@@ -1,3 +1,95 @@
+From 8fc2bdb429fca129891866748654d1cc06237dab Mon Sep 17 00:00:00 2001
+From: Dylan Plecki <dylan@andyl.com>
+Date: Tue, 6 Oct 2026 22:17:47 -0700
+Subject: [PATCH] Integrate deterministic execution and validated TSC source
+ lookup
+
+Keep small TCG invalidation page-lock sets in four caller-owned sorted
+entries. Create the tree only on the fifth distinct existing page and
+transfer held and busy state into stable heap entries without releasing
+locks. Retain discovery acquisition order, ascending retry and release,
+opposite-page deduplication, and precise-SMC cleanup before nonlocal exit.
+
+Retain versioned process control, exact virtual coordinates, independent
+child resources, canonical guest-state projection and complete matching
+source integration. Preserve stopped-owner generations, registered reader
+and callback custody, FIFO barriers, fault settlement and descriptor
+failure refusal across snapshot, restore and retained fork operations.
+
+Preserve accelerator instance classification, cold continuation checks,
+empty fault-queue admission, active instruction-context observation,
+direct register-rule presence, cached tick-mode admission and native
+mutex owner identity. Keep tracked waiter updates under the existing
+registry guard, with unsigned wrap, underflow refusal, condition waiter
+identity and retained fork transaction ordering unchanged.
+
+Keep ordinary RR event ordering and Sim flush fixed points. Preserve all
+guest accesses, invalidation ranges, PageDesc and TB membership, dirty
+accounting, callback order, replay clock observations and scheduling.
+
+Exercise actual page collection, native fast invalidation, locked range
+handling and native page removal with explicit providers. Compare exact
+baseline lock traces for zero, missing, duplicate, boundary and spilled
+sets, including busy trylocks and precise-SMC nonlocal cleanup. Carry
+causal controls for omitted pages, lost spill state, missing cleanup,
+reversed iteration, absent first-page admission and eager tree creation.
+
+Extend the system-mode x86 SMC regression with a shared first physical
+page and five distinct second pages, patches through both memberships,
+spilled current-TB cleanup and restored temporary mappings. Retain the
+strict public prototypes and compiler macros in the native waiter proof.
+
+Strict source-built syntax checks pass for the prototype, baseline and
+all six mutations. The inline collection remains a prototype pending
+configured native execution, guest, replay and performance qualification.
+
+Keep a page-locked derived count of recorded TB memberships requiring a
+second distinct physical page. Skip only the preliminary lock-discovery
+walk when that count is zero after acquiring the page lock. Preserve
+nonzero and unknown traversal, retry ordering and actual invalidation.
+Saturate at UINT32_MAX, retain unknown until the list is empty or fully
+cleared, and update only insertion, successful tagged unlink and full flush.
+Keep physical aliases at zero and invalid retained memberships counted.
+
+Extract native insertion, duplicate-QHT rollback, hash invalidation and
+recursive list-clear bodies into focused proofs. Verify both list tags,
+mixed lists, final crossing removal, sticky saturation, empty and flush
+recovery, retry after a competing membership change, precise-SMC cleanup
+and retained process fork copies. Strict source-built compilation and
+execution pass. Seven causal controls fail runtime native assertions;
+sealed-baseline collection stdout matches exactly. Guest SMC, MTTCG,
+replay and performance remain unqualified for this prototype.
+
+Place the crossing count directly after QemuSpin, before the tagged list
+head. The extracted native QemuSpin and PageDesc definitions measured with
+the source-built 64-bit compiler retain the baseline 16-byte descriptor,
+using the existing four-byte padding rather than enlarging it to 24 bytes.
+This layout probe is not a full configured QEMU compilation. The same nine
+focused proof cases pass after the layout correction.
+
+Retain a thread-private validated search position for x86 TSC sources.
+Resolve it against current array storage and compare the complete source
+kind and instance on every hit; keep original scans for misses and all
+other clock kinds. Remain useful before binding or manifest finalization
+without caching pointers, absent results, activation, values or time.
+Preserve live guards, transform evidence, replay and clock-read ordering.
+
+Exercise production lookup, manifest sorting, activation and projection
+bodies with real GLib arrays, native fork and a cold replacement thread.
+Compare sealed-reference traces and quiescent relocation, sorting, exact
+keys, live restore guards, values and terminal refusal. Nine compiled
+causal controls fail native assertions. Preserve the existing exhaustive
+cold fault proof with the original clock-kind enum in its test adapter.
+Registry mutation providers remain quiescent; guest, migration-stream,
+retained-runtime and performance qualification remain outstanding.
+
+Emit the native unsealed second-lookup row count on stderr after its
+assertion. Retain five identical lifecycle stdout observations and all
+production functions. Strict proofs retain candidate one-row lookup,
+reference five-row lookup and nine native assertion controls.
+
+Signed-off-by: Dylan Plecki <dylan@andyl.com>
+
 diff --git a/MAINTAINERS b/MAINTAINERS
 index 902db77218eacc2461b54fe675c9816b3d98aec6..efa17b3715547e731699fcd0edcb3de3ce8d49bd 100644
 --- a/MAINTAINERS
@@ -8044,7 +8136,7 @@ index 41b7bfaa27f62ff654e72d73546108152c44bf7e..16db2d31f901546dd1d63786e442fb89
  
  static const TypeInfo rng_builtin_info = {
 diff --git a/backends/rng.c b/backends/rng.c
-index bc9c7a5ab3b989aaac1c8341ab60c52544c45d7a..3fd95b9225c5f2131a3b7daa1f4695b86cf009a0 100644
+index bc9c7a5ab3b989aaac1c8341ab60c52544c45d7a..1c296be0c0a69ebbece02f0e09f0aa717b495ae5 100644
 --- a/backends/rng.c
 +++ b/backends/rng.c
 @@ -12,7 +12,9 @@
@@ -8057,7 +8149,7 @@ index bc9c7a5ab3b989aaac1c8341ab60c52544c45d7a..3fd95b9225c5f2131a3b7daa1f4695b8
  #include "qapi/error.h"
  #include "qemu/module.h"
  #include "qom/object_interfaces.h"
-@@ -35,6 +37,38 @@ void rng_backend_request_entropy(RngBackend *s, size_t size,
+@@ -35,6 +37,34 @@ void rng_backend_request_entropy(RngBackend *s, size_t size,
          req->opaque = opaque;
          req->data = g_malloc(req->size);
  
@@ -8066,28 +8158,24 @@ index bc9c7a5ab3b989aaac1c8341ab60c52544c45d7a..3fd95b9225c5f2131a3b7daa1f4695b8
 +            QSIMPLEQ_INSERT_TAIL(&s->requests, req, next);
 +
 +            /*
-+             * Crucible deterministic entropy delivery (no QEMU record/replay,
-+             * per RFC-0010 NG-6).  When a backend can produce entropy
-+             * synchronously and the Crucible sim accelerator is active under
-+             * icount, do not schedule the backend's host-main-loop bottom half
-+             * at all.  Queue and complete the request inline on the requesting
-+             * (vCPU) thread so the guest-visible completion interrupt fires at
-+             * the exact request icount.  Racing an already-scheduled bottom
-+             * half against the inline drain would still make the selected
-+             * entropy stream and completion icount functions of host timing --
-+             * exactly the failure RFC-0010 15-io-subnodes.md warns of ("a
-+             * bottom half ... makes the completion icount a function of host
-+             * timing rather than of virtual time") -- and forks the guest
-+             * instruction stream across otherwise-identical deterministic
-+             * runs (determinism-contract 4.6/E7 interrupt-delivery timing;
-+             * S6/T-RISK-6).  This is an inherent upstream icount limitation
-+             * for asynchronous device completions, sealed here by construction.
-+             * Delivery is immediate: any modeled completion latency is a
-+             * property of a crucible IO sub-node and its links
-+             * (15-io-subnodes.md), so it belongs there if/when virtio-rng
-+             * becomes a sub-node, never in this backend.  Plain TCG icount
-+             * deliberately retains upstream asynchronous delivery and the
-+             * exact upstream request-before-queue call order.
++             * Crucible deterministic entropy delivery (no QEMU record/replay).
++             * When a backend can produce entropy synchronously and the Crucible
++             * sim accelerator is active under icount, do not schedule the
++             * backend's host-main-loop bottom half at all.  Queue and complete
++             * the request inline on the requesting (vCPU) thread so the
++             * guest-visible completion interrupt fires at the exact request
++             * icount.  Racing an already-scheduled bottom half against the
++             * inline drain would still make the selected entropy stream and
++             * completion icount functions of host timing rather than of virtual
++             * time, and would fork the guest instruction stream across
++             * otherwise-identical deterministic runs.  This is an inherent
++             * upstream icount limitation for asynchronous device completions,
++             * sealed here by construction.  Delivery is immediate: any modeled
++             * completion latency is a property of a Crucible I/O sub-node and
++             * its links, so it belongs there if/when virtio-rng becomes a
++             * sub-node, never in this backend.  Plain TCG icount deliberately
++             * retains upstream asynchronous delivery and the exact upstream
++             * request-before-queue call order.
 +             */
 +            k->drain_requests(s);
 +            return;

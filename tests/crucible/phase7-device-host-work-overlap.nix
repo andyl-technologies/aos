@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.deviceHostWorkOverlap",
-  taskIds ? ["T-PERF-31"],
   dependencies ? [],
   campaignComposition ? null,
   testing ? import ../../lib/testing {inherit pkgs lib;},
@@ -10,7 +9,6 @@
   campaignRustRuntime = import ./_campaign-rust-runtime.nix {inherit pkgs lib;};
   source = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
-  taskList = builtins.concatStringsSep "," taskIds;
   exactTest = "supervision::device_host_work::tests::synchronous_host_wins_and_guest_wins_preserve_completion_and_canonical_log";
   verifyScript = ''
     set -eu
@@ -37,7 +35,6 @@
     PASS
     check=${attrPath}
     gate=gate:device-host-work-overlap
-    tasks=${taskList}
     status=complete
     admission_class=B
     production_path=QemuLiveHostIoRuntime/QemuLiveBlockHostWorkPool

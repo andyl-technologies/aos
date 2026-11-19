@@ -44,14 +44,11 @@
     e2eDeterminism = import ./phase7-e2e-determinism.nix {
       inherit pkgs lib testing campaignComposition;
       attrPath = "checks.crucible.phase7.gates.e2eDeterminism";
-      taskIds = [];
-      openTaskIds = [];
       dependencies = [];
     };
     fleetEquivalence = import ./phase7-crucible-fleet-equivalence.nix {
       inherit pkgs lib testing campaignComposition e2eDeterminism;
       attrPath = "checks.crucible.phase7.gates.fleetEquivalence";
-      taskIds = ["T-DCE-8"];
       dependencies = [];
     };
   in {

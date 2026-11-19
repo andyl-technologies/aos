@@ -1640,7 +1640,7 @@ fn disk_with_reads(
 
 #[test]
 fn resolve_device_completions_keep_non_instruction_aligned_exact_ticks() {
-    // The integration capstone ([SCHED-29], [IO-2]): two sequential disk reads
+    // The integration capstone: two sequential disk reads
     // resolved at a single consumer frontier above the head completion are each
     // made visible at their OWN exact delivery icount, in canonical order — not
     // collapsed onto the consumer frontier.
@@ -1686,7 +1686,7 @@ fn resolve_device_completions_keep_non_instruction_aligned_exact_ticks() {
 
 #[test]
 fn refresh_device_horizons_folds_the_inflight_head_into_the_node_horizon() {
-    // [IO-3]/[SCHED-10]: the device sub-node's in-flight head delivery icount
+    // The device sub-node's in-flight head delivery icount
     // becomes the owning node's exact I/O-completion horizon term (a horizon
     // TERM, not a deliverable pending event — delivery stays on the RESOLVE
     // path so it is never double-counted). A second refresh is idempotent.
@@ -1757,7 +1757,7 @@ fn refresh_device_horizons_folds_the_inflight_head_into_the_node_horizon() {
 fn device_completion_flows_through_live_drive_quantum_at_exact_icount() {
     // ITEM 1 teeth: a device completion submitted to a sub-node is delivered
     // through the LIVE `drive_quantum` (not the building blocks) at EXACTLY its
-    // delivery icount ([SCHED-29], [IO-2]). The device horizon caps the
+    // delivery icount. The device horizon caps the
     // requester's advance so it is fast-forwarded to exactly the completion.
     // A time limit comfortably past the completion icount (1_008_001) so the
     // requester can advance to it; budget large enough to reach it.
@@ -1944,7 +1944,7 @@ fn resolved_device_observation_rejects_a_mismatched_owner() {
 
 #[test]
 fn broken_device_delivery_stamp_diverges_proving_gate_falsifiability() {
-    // The falsifiability proof for the exact-icount property ([IO-2], [DET-19]).
+    // The falsifiability proof for the exact-icount property.
     // Driving PRODUCTION `resolve_device_completions` at a frontier ABOVE the
     // head completion (the one configuration where exact and frontier provably
     // differ), the exact path stamps each completion at its OWN icount while the

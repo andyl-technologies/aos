@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.crucibleCasFleetRatchetSeam",
-  taskIds ? ["T-PKG-23"],
   dependencies ? [],
 }: let
   packagingDoc = builtins.readFile ../../docs/engineering/crucible/packaging.md;
@@ -62,8 +61,8 @@
         needle = "gate:e2e-determinism";
       }
       {
-        label = "standalone no RFC dependency";
-        needle = "no RFC-0007 dependency exists";
+        label = "standalone no ratchet dependency";
+        needle = "no `ratchet` dependency exists";
       }
     ]
     ++ forbiddenFor "crates/crucible/crucible-store/Cargo.toml" casManifest [
@@ -134,14 +133,13 @@ in
             cat > "$out/result" <<RESULT
             PASS
             check=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
             seam=crucible_store::dag-store
             shared_seam=SharedDagStore+InvalidationQuery::evaluate
             interface=DagStore::put,DagStore::get,DagStore::has,SharedDagStore,InvalidationQuery::evaluate
             merge_plan=thin-adapter-behind-unchanged-interface
             merge_bar=gate:content-address,gate:replay-oracle,gate:e2e-determinism
-            standalone_from_rfc_0007=true
-            no_rfc_0007_dependency=true
+            standalone_from_ratchet=true
+            no_ratchet_dependency=true
             RESULT
           '';
         }

@@ -1498,7 +1498,7 @@ impl DebugNonCanonicalBranchReport {
         self.branch.inside_virtual_time_single_execution_path()
     }
 
-    /// Returns whether all T-DBG-6 invariants are satisfied.
+    /// Returns whether all report invariants are satisfied.
     #[must_use]
     pub fn proves_non_canonical_debug_branch(&self) -> bool {
         self.canonical_run_bit_identical()
@@ -1703,7 +1703,7 @@ impl DebugTargetResolverReport {
             && self.target_configuration != ContentHash::default()
     }
 
-    /// Returns whether this report satisfies the T-DBG-7 target resolver contract.
+    /// Returns whether this report satisfies the target resolver contract.
     #[must_use]
     pub fn proves_debug_target_resolution(&self) -> bool {
         self.delegates_to_goto()
@@ -1959,9 +1959,9 @@ impl DebugCliSurfaceContract {
         )
     }
 
-    /// Returns whether this surface satisfies the T-DBG-8 contract.
+    /// Returns whether this surface satisfies its contract.
     #[must_use]
-    pub fn proves_t_dbg_8(&self) -> bool {
+    pub fn satisfies_debug_surface_contract(&self) -> bool {
         self.has_required_coordinate_flags()
             && self.has_required_control_flags()
             && self.has_required_interactive_verbs()

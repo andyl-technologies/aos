@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.gates.divergenceBisect",
-  taskIds ? ["T-HARN-9" "T-HARN-10" "T-HARN-13" "T-DET-20" "T-EXEC-12"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -218,7 +217,7 @@
       }
       {
         label = "red placeholder panic";
-        needle = "implementation is pending T-HARN-10";
+        needle = "implementation is pending";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-test-support/src/gate_targets.rs" gateTargets [
@@ -253,26 +252,6 @@
       {
         label = "phase1 divergence-bisect attr path";
         needle = "attrPath = \"checks.crucible.phase1.gates.divergenceBisect\"";
-      }
-      {
-        label = "phase1 divergence-bisect lists T-HARN-9";
-        needle = "\"T-HARN-9\"";
-      }
-      {
-        label = "phase1 divergence-bisect lists T-HARN-10";
-        needle = "\"T-HARN-10\"";
-      }
-      {
-        label = "phase1 divergence-bisect lists T-HARN-13";
-        needle = "\"T-HARN-13\"";
-      }
-      {
-        label = "phase1 divergence-bisect lists T-DET-20";
-        needle = "\"T-DET-20\"";
-      }
-      {
-        label = "phase1 divergence-bisect lists T-EXEC-12";
-        needle = "\"T-EXEC-12\"";
       }
     ]
     ++ failuresFor "docs/engineering/crucible/testing-and-gates.md" testingAndGatesDoc [
@@ -366,7 +345,6 @@ in
             PASS
             check=${attrPath}
             gate=gate:divergence-bisect
-            tasks=${builtins.concatStringsSep "," taskIds}
             rust_test=crucible_test_support::gate_divergence_bisect
             localization=coarse-fingerprint-plus-exact-icount-bisection
             oracle_failure_localization=fat-thin-divergence-bisection

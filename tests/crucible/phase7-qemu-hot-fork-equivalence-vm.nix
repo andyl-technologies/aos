@@ -3,7 +3,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase7.qemuHotForkEquivalenceVm",
-  taskIds ? [],
   campaignComposition ? null,
   testing ? import ../../lib/testing {inherit pkgs lib;},
 }: let
@@ -245,7 +244,6 @@
       'state=network,block,ninep,guest-choice,measurement,signal,permanent-failure' \
       'failures=source-preparation' \
       'check=${attrPath}' \
-      'tasks=${builtins.concatStringsSep "," taskIds}' \
       > ${resultPath}
     cat ${resultPath}
     ${pkgs.util-linux}/bin/umount /tmp/attempts

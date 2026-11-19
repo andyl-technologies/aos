@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase9.gates.campaignOperationalContinuity",
-  taskIds ? ["T-CAM-9.3"],
   campaignStoreEquivalence,
   campaignStoreComposition,
   campaignColdContinuity,
@@ -353,7 +352,6 @@ in
           PASS
           check=${attrPath}
           gate=gate:campaign-operational-continuity
-          tasks=${builtins.concatStringsSep "," taskIds}
           coordinator_executor_restart=true
           exact_pause=true
           real_paused_qemu_s3_outage_credential_recovery=true

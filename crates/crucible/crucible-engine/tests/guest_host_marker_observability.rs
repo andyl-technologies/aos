@@ -1,4 +1,4 @@
-//! Checks T-GHC-9 marker event-log observability and fingerprint neutrality.
+//! Checks marker event-log observability and fingerprint neutrality.
 
 #![cfg(feature = "test-double")]
 #![forbid(unsafe_code)]

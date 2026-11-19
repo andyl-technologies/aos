@@ -438,7 +438,7 @@ pub(super) static EVENT_KIND_CATALOG: &[EventKindCatalogEntry] = &[
 
 pub(super) static EVENT_KIND_CATALOG_DEPENDENCIES: &[EventKindCatalogDependency] = &[
     EventKindCatalogDependency {
-        consumer: "0012-05-recording-replay-observability",
+        consumer: "fault-signal-recording",
         kinds: &[
             "association_transition",
             "binding_activation",
@@ -457,7 +457,7 @@ pub(super) static EVENT_KIND_CATALOG_DEPENDENCIES: &[EventKindCatalogDependency]
         ],
     },
     EventKindCatalogDependency {
-        consumer: "0016-08-observability-measurement-debugging",
+        consumer: "guest-measurement",
         kinds: &[
             "guest_measurement_begin",
             "guest_measurement_end",
@@ -466,7 +466,7 @@ pub(super) static EVENT_KIND_CATALOG_DEPENDENCIES: &[EventKindCatalogDependency]
         ],
     },
     EventKindCatalogDependency {
-        consumer: "18-assertions-properties",
+        consumer: "assertions",
         kinds: &[
             "assertion_evaluated",
             "assertion_proximity",
@@ -475,19 +475,19 @@ pub(super) static EVENT_KIND_CATALOG_DEPENDENCIES: &[EventKindCatalogDependency]
         ],
     },
     EventKindCatalogDependency {
-        consumer: "20-session-control-plane",
+        consumer: "session",
         kinds: &["*"],
     },
     EventKindCatalogDependency {
-        consumer: "21-api",
+        consumer: "control-api",
         kinds: &["*"],
     },
     EventKindCatalogDependency {
-        consumer: "22-advanced-features",
+        consumer: "exploration",
         kinds: &["assertion_proximity", "coverage"],
     },
     EventKindCatalogDependency {
-        consumer: "24-determinism-harness-testing",
+        consumer: "determinism-harness",
         kinds: &[
             "app_random",
             "assertion_evaluated",

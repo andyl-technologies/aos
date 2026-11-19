@@ -30,8 +30,7 @@ fn guest_channel_eof_preserves_pty_output_drain() {
 }
 
 #[test]
-pub(super) fn cli_debug_surface_parses_full_t_dbg_8_flags_and_verbs() -> Result<(), Box<dyn Error>>
-{
+pub(super) fn cli_debug_surface_parses_full_flags_and_verbs() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse_from([
         "crucible",
         "debug",
@@ -95,7 +94,7 @@ pub(super) fn cli_debug_surface_parses_full_t_dbg_8_flags_and_verbs() -> Result<
         plan.engine_operations
             .contains(&DebugEngineOperation::CheckpointCadence)
     );
-    assert!(plan.proves_t_dbg_8());
+    assert!(plan.satisfies_debug_surface_contract());
 
     Ok(())
 }
@@ -421,7 +420,7 @@ pub(super) fn cli_debug_surface_requires_explicit_fork_for_allow_mutate()
         plan.engine_operations
             .contains(&DebugEngineOperation::NonCanonicalBranchFork)
     );
-    assert!(plan.proves_t_dbg_8());
+    assert!(plan.satisfies_debug_surface_contract());
 
     Ok(())
 }
@@ -451,7 +450,7 @@ pub(super) fn cli_debug_allow_mutate_does_not_fork_implicitly() -> Result<(), Bo
             .contains(&SessionCommand::fork_current())
     );
     assert!(plan.non_canonical_branch_label.is_none());
-    assert!(plan.proves_t_dbg_8());
+    assert!(plan.satisfies_debug_surface_contract());
 
     Ok(())
 }

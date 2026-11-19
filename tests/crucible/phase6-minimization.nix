@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase6.minimization",
-  taskIds ? ["T-ADV-15"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -16,8 +15,6 @@
   };
   minimizationTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/gate_minimization.rs;
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -153,10 +150,6 @@
         needle = "minimization = greenBeforeAdvance";
       }
       {
-        label = "explicit task id";
-        needle = "taskIds = [\"T-ADV-15\"]";
-      }
-      {
         label = "reproduction raw dependency";
         needle = "phase6.reproductionArtifacts.rawGate";
       }
@@ -248,7 +241,6 @@ in
             cat > "$out/result" <<RESULT
             PASS
             check=${attrPath}
-            tasks=${taskList}
             gate=gate:minimization
             artifact=stable-minimized-reproduction
             order=seeded-content-address

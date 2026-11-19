@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.decisionRng",
-  taskIds ? ["T-DET-15" "T-PAT-5"],
 }: let
   simLib = builtins.readFile ../../crates/crucible/crucible-determinism/src/lib.rs;
   decisionRngTest = builtins.readFile ../../crates/crucible/crucible-determinism/tests/decision_rng.rs;
@@ -217,7 +216,6 @@ in
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}
-            tasks=${builtins.concatStringsSep "," taskIds}
             crate=crucible-sim
             prng=splitmix64-v1
             fork_rule=seed_xor_stable_name_hash

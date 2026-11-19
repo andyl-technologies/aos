@@ -1,8 +1,8 @@
 //! The deterministic in-memory filesystem tree the 9p server exports.
 //!
 //! This module owns [`FsTree`], a read-only, content-addressed directory tree
-//! whose every observable value is a pure function of the served content and the
-//! requested path — never the host filesystem ([IO-13]). Three sources of
+//! whose every observable value is a pure function of the served content and
+//! the requested path — never the host filesystem. Three sources of
 //! host-filesystem nondeterminism are eliminated here:
 //!
 //! 1. **Path-hashed QIDs.** A node's QID `path` is [`qid_path`] — a stable,
@@ -11,11 +11,11 @@
 //!    [`Qid::FIXED_VERSION`].
 //! 2. **Sorted enumeration.** A directory's children are stored in a
 //!    [`BTreeMap`], so [`FsTree::children`] yields them in lexicographic name
-//!    order with no host readdir dependence ([IO-14]).
-//! 3. **Fixed/derived attributes.** [`FsTree::getattr`] returns a fixed epoch for
-//!    all timestamps, root ownership, a fixed block size, and a block count
+//!    order with no host readdir dependence.
+//! 3. **Fixed/derived attributes.** [`FsTree::getattr`] returns a fixed epoch
+//!    for all timestamps, root ownership, a fixed block size, and a block count
 //!    derived from the file size; [`FsTree::statfs`] is a fixed synthetic
-//!    snapshot ([IO-15]).
+//!    snapshot.
 //!
 //! ```text
 //!   qid.path    = blake3_64("/" + canonical path within served tree)   // NOT host inode
@@ -45,13 +45,13 @@ use std::collections::BTreeMap;
 
 use super::codec::{GetattrReply, Qid, QidType, StatfsReply};
 
-/// The fixed preferred block size reported by `getattr`/`statfs` ([IO-15]).
+/// The fixed preferred block size reported by `getattr`/`statfs`.
 pub const BLOCK_SIZE: u64 = 4096;
 
 /// The fixed 512-byte unit `blocks` is counted in (the POSIX `st_blocks` unit).
 pub const STAT_BLOCK_UNIT: u64 = 512;
 
-/// The synthetic filesystem-type magic reported by `statfs` ([IO-15]).
+/// The synthetic filesystem-type magic reported by `statfs`.
 ///
 /// A fixed value (ASCII `"9PFS"` little-endian) so `statfs` never leaks the
 /// host's real filesystem identity.
@@ -77,19 +77,19 @@ const MAX_CANONICAL_DEPTH: usize = 1024;
 
 /// A node in the served tree: a directory, a regular file, or a symlink.
 ///
-/// All content is owned in memory and never mutated after construction ([IO-13],
-/// read-only export). Directory children are a [`BTreeMap`] so enumeration is
-/// lexicographically sorted by construction ([IO-14]).
+/// All content is owned in memory and never mutated after construction
+/// (read-only export). Directory children are a [`BTreeMap`] so enumeration is
+/// lexicographically sorted by construction.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Node {
     /// A directory holding named children in sorted order.
     Directory {
-        /// The children, keyed by name; iteration is lexicographic ([IO-14]).
+        /// The children, keyed by name; iteration is lexicographic.
         children: BTreeMap<String, Node>,
     },
     /// A regular file holding its full content bytes.
     File {
-        /// The file's content; its length is the reported size ([IO-15]).
+        /// The file's content; its length is the reported size.
         content: Vec<u8>,
     },
     /// A symbolic link holding its target path string.
@@ -110,7 +110,7 @@ impl Node {
         }
     }
 
-    /// Returns the content-derived size in bytes ([IO-15]).
+    /// Returns the content-derived size in bytes.
     ///
     /// A file reports its content length; a symlink reports its target length; a
     /// directory reports the fixed [`BLOCK_SIZE`] (a conventional, host-
@@ -148,7 +148,7 @@ impl Node {
     }
 }
 
-/// The read-only filesystem tree served over 9P2000.L ([IO-13]).
+/// The read-only filesystem tree served over 9P2000.L.
 ///
 /// Holds the root [`Node`] and exposes deterministic lookups: path resolution,
 /// sorted child enumeration, content-derived attributes, and synthetic statfs.
@@ -163,8 +163,8 @@ impl FsTree {
     /// Builds a tree, rejecting any illegal path component anywhere in it.
     ///
     /// Recursively validates every directory child name via
-    /// [`validate_component`], so the resulting tree's path-to-QID map is provably
-    /// unambiguous ([IO-13]). Use this for any tree assembled from untrusted
+    /// [`validate_component`], so the resulting tree's path-to-QID map is
+    /// provably unambiguous. Use this for any tree assembled from untrusted
     /// metadata.
     ///
     /// # Errors
@@ -262,10 +262,10 @@ impl FsTree {
 
     /// Returns the sorted children of the directory at `path`.
     ///
-    /// Each entry is `(name, qid, dirent_type)` in lexicographic name order
-    /// ([IO-14]). Returns `None` when `path` is absent or is not a directory.
-    /// Offsets are assigned by the caller *after* this sorted order, never from a
-    /// host readdir cursor.
+    /// Each entry is `(name, qid, dirent_type)` in lexicographic name order.
+    /// Returns `None` when `path` is absent or is not a directory. Offsets are
+    /// assigned by the caller *after* this sorted order, never from a host
+    /// readdir cursor.
     #[must_use]
     pub fn children(&self, path: &[String]) -> Option<Vec<DirEntry>> {
         match self.resolve(path)? {
@@ -290,8 +290,8 @@ impl FsTree {
     /// Returns the fixed/content-derived attributes for the node at `path`.
     ///
     /// Timestamps are a fixed epoch, ownership is root, the block size is fixed,
-    /// and the block count is `ceil(size / 512)` — never host metadata ([IO-15]).
-    /// The `request_mask` is echoed as the valid mask.
+    /// and the block count is `ceil(size / 512)` — never host metadata. The
+    /// `request_mask` is echoed as the valid mask.
     #[must_use]
     pub fn getattr(&self, path: &[String], request_mask: u64) -> Option<GetattrReply> {
         let node = self.resolve(path)?;
@@ -311,7 +311,7 @@ impl FsTree {
         })
     }
 
-    /// Returns the synthetic, host-independent filesystem statistics ([IO-15]).
+    /// Returns the synthetic, host-independent filesystem statistics.
     ///
     /// Every field is a fixed constant; usage counters are zero (a read-only
     /// export has no free space and reports none), so `statfs` reveals nothing
@@ -379,14 +379,14 @@ pub struct DirEntry {
 /// Computes the stable QID `path` hash for a canonical path within the tree.
 ///
 /// The hash is the low 64 bits of BLAKE3 over an **unambiguous, length-prefixed**
-/// encoding of the component vector: the component count as a little-endian `u64`,
-/// then for each component its byte length as a little-endian `u64` followed by
-/// its raw bytes. Because every component is length-delimited, no two distinct
-/// component vectors can produce the same byte stream — unlike a `/`-joined string
-/// where `["a", "b"]` and `["a/b"]` (or `[]` and `[""]`) would collide. The hash
-/// depends only on the structured path — never on a host inode number, mount, or
-/// allocation order — so the identifiers a guest caches are identical across runs
-/// and hosts ([IO-13]).
+/// encoding of the component vector: the component count as a little-endian
+/// `u64`, then for each component its byte length as a little-endian `u64`
+/// followed by its raw bytes. Because every component is length-delimited, no two
+/// distinct component vectors can produce the same byte stream — unlike a
+/// `/`-joined string where `["a", "b"]` and `["a/b"]` (or `[]` and `[""]`) would
+/// collide. The hash depends only on the structured path — never on a host inode
+/// number, mount, or allocation order — so the identifiers a guest caches are
+/// identical across runs and hosts.
 ///
 /// The byte encoding fed to BLAKE3 is injective over component vectors, but the
 /// returned QID is a 64-bit truncation and therefore is not mathematically
@@ -424,7 +424,7 @@ pub fn qid_path(path: &[String]) -> u64 {
     u64::from_le_bytes(le)
 }
 
-/// Validates a single path component for the served tree ([IO-13]).
+/// Validates a single path component for the served tree.
 ///
 /// A legal stored component is non-empty, is neither `.` nor `..`, and contains
 /// neither a `/` (which would make the component span a directory boundary) nor a
@@ -459,7 +459,7 @@ pub fn validate_component(name: &str) -> Result<(), BadComponent> {
     Ok(())
 }
 
-/// Recursively validates every directory child name in `node` ([IO-13]).
+/// Recursively validates every directory child name in `node`.
 ///
 /// # Errors
 ///
@@ -474,7 +474,7 @@ fn validate_node(node: &Node) -> Result<(), BadComponent> {
     Ok(())
 }
 
-/// An illegal path component rejected by [`validate_component`] ([IO-13]).
+/// An illegal path component rejected by [`validate_component`].
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum BadComponent {
     /// The component was the empty string.

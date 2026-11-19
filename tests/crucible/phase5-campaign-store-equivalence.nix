@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase5.gates.campaignStoreEquivalence",
-  taskIds ? ["T-CAM-5.1" "T-CAM-5.5" "T-CAM-5.7" "T-CAM-5.8"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -298,7 +297,6 @@ in
           cat > "$out/result" <<RESULT
           PASS
           check=${attrPath}
-          tasks=${builtins.concatStringsSep "," taskIds}
           gate=gate:campaign-store-equivalence
           local_leaves=memory,directory,packed
           mutable_refs=memory,directory,s3-compatible

@@ -176,7 +176,7 @@ fn validate_live_qemu_probe_evidence(
     let expected = plan
         .expected_execution_evidence()
         .ok_or_else(|| backend_error("live QEMU probe has no selected execution identity"))?;
-    if expected != observed || !observed.proves_t_cli_3(&plan) {
+    if expected != observed || !observed.matches_selected_route(&plan) {
         return Err(backend_error(
             "live QEMU probe identity does not match the discovered backend",
         ));

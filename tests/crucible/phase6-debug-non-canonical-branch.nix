@@ -2,8 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase6.debugNonCanonicalBranch",
-  taskIds ? ["T-DBG-6"],
-  openTaskIds ? [],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -18,9 +16,6 @@
   };
   branchTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/gate_debug_non_canonical_branch.rs;
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
-  openTaskList = builtins.concatStringsSep "," openTaskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -190,10 +185,6 @@
         needle = "debugNonCanonicalBranch = greenBeforeAdvance";
       }
       {
-        label = "explicit task id";
-        needle = "taskIds = [\"T-DBG-6\"]";
-      }
-      {
         label = "scoped time-travel raw dependency";
         needle = "phase6.debugScopedTimeTravel.rawGate";
       }
@@ -285,8 +276,6 @@ in
             cat > "$out/result" <<RESULT
             PASS
             check=${attrPath}
-            tasks=${taskList}
-            open_tasks=${openTaskList}
             gate=gate:debug-non-canonical-branch
             branch=non-canonical-visible
             replay_oracle=excluded

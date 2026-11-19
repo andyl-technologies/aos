@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase6.debugTimeTravel",
-  taskIds ? ["T-DBG-4"],
   dependencies ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -17,8 +16,6 @@
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
   timeTravelTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/gate_debug_time_travel.rs;
   defaultChecks = builtins.readFile ./default.nix;
-
-  taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -248,10 +245,6 @@
         needle = "debugTimeTravel = greenBeforeAdvance";
       }
       {
-        label = "explicit task id";
-        needle = "taskIds = [\"T-DBG-4\"]";
-      }
-      {
         label = "canonical breakpoint raw dependency";
         needle = "phase6.canonicalDebugBreakpoint.rawGate";
       }
@@ -351,7 +344,6 @@ in
             cat > "$out/result" <<RESULT
             PASS
             check=${attrPath}
-            tasks=${taskList}
             gate=gate:debug-time-travel
             goto=restore-nearest-checkpoint-then-replay
             reverse_step=mirrors-forward-step-modes

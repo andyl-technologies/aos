@@ -35,7 +35,6 @@ in
             test "$(grep -Fxc "$1" "$serial" || true)" -eq 1
           }
           require_line gate=gate:campaign-storage-recovery
-          require_line tasks=T-CAM-5.8,T-CAM-9.3
           require_line tier=real-packaged-qemu-and-garage
           ${builtins.concatStringsSep "\n" (map (claim: "require_line ${lib.escapeShellArg claim}") claims)}
           grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$serial"
@@ -46,7 +45,6 @@ in
           cat > "$out/result" <<RESULT
           PASS
           gate=gate:campaign-storage-recovery
-          tasks=T-CAM-5.8,T-CAM-9.3
           tier=real-packaged-qemu-and-garage
           ${builtins.concatStringsSep "\n" claims}
           evidence_retained=true

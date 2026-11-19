@@ -107,10 +107,8 @@ in
             {
               printf 'PASS\n'
               printf 'check=checks.crucible.referenceIntegrity\n'
-              printf 'tasks=T-HARN-28\n'
               printf 'resolved_reference_count=%s\n' "$REFERENCE_COUNT"
               printf 'evaluated_check_tree=true\n'
-              printf 'task_metadata_state_consistency=true\n'
               printf 'qemu_atomic_patch=%s\n' "$ATOMIC_PATCH"
               printf 'qemu_atomic_patch_hash=%s\n' "$ATOMIC_PATCH_HASH"
             } > "$out/result"

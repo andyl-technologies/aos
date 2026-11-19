@@ -2,7 +2,6 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase4.blackBoxFirstGuarantee",
-  taskIds ? ["T-TRIG-19"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -12,7 +11,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-  taskList = builtins.concatStringsSep "," taskIds;
   failures =
     failuresFor "crates/crucible/crucible-engine/tests/black_box_first_guarantee.rs" blackBoxTest [
       {
@@ -187,10 +185,9 @@ in
             mkdir -p "$out/nix-support"
             {
               echo "attr=${attrPath}"
-              echo "tasks=${taskList}"
               echo "gate=phase4-black-box-first-guarantee"
               echo "any_guest=gate:any-guest"
-              echo "black_box_first=implemented-T-TRIG-19"
+              echo "black_box_first=implemented"
               echo "complete_zero_guest_marker_scenario=true"
               echo "guest_marker_removal_functional=true"
               echo "deterministic_black_box_run=true"

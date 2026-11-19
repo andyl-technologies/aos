@@ -2,14 +2,10 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuLivePluginInstall",
-  taskIds ? ["T-PLUG-3" "T-PLUG-16" "T-PLUG-17" "T-PLUG-18" "T-PLUG-19" "T-PROTO-6"],
-  openTaskIds ? [],
   liveWhitebox ? import ./phase2-qemu-live-whitebox-doorbell.nix {inherit pkgs lib;},
   campaignComposition ? null,
   testing ? import ../../lib/testing {inherit pkgs lib;},
 }: let
-  taskList = builtins.concatStringsSep "," taskIds;
-  openTaskList = builtins.concatStringsSep "," openTaskIds;
   runtimeInputs = [pkgs.coreutils pkgs.grep liveWhitebox];
   runtimeScript = ''
     set -eu
@@ -39,8 +35,6 @@
     cat "$install_result" > "$out/result"
     {
       printf 'attr_path=%s\n' '${attrPath}'
-      printf 'task_ids=%s\n' '${taskList}'
-      printf 'open_task_ids=%s\n' '${openTaskList}'
       printf 'scope=rust-plugin-install-lifecycle-live-not-fingerprint-migration\n'
       printf 'plugins_loaded=rust-control-plugin-only\n'
       printf 'time_authority=rust-plugin-sim-shmem-dispatch\n'
@@ -180,8 +174,6 @@
     cp "$qemu_log" "$out/qemu.log"
     {
       printf 'attr_path=%s\n' '${attrPath}'
-      printf 'task_ids=%s\n' '${taskList}'
-      printf 'open_task_ids=%s\n' '${openTaskList}'
       printf 'scope=rust-plugin-install-lifecycle-live-not-fingerprint-migration\n'
       printf 'plugins_loaded=rust-control-plugin-only\n'
       printf 'time_authority=rust-plugin-sim-shmem-dispatch\n'
