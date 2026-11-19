@@ -1,0 +1,4 @@
+{"event":"Increment","count":1}
+{"event":"Increment","count":2}
+{"event":"Reset","count":0}
+{"event":"Increment","count":1}

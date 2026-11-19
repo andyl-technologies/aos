@@ -18,7 +18,14 @@
   packageModulesAvailable ? false,
   ...
 }: {
-  imports = [./server.nix] ++ lib.optionals (!packageModulesAvailable) [./_native-policy/secure-boot.nix];
+  # The authored policy also enables the server role. Its services, such as
+  # chrony, take their lifecycle from package modules that only the host stage
+  # loads, so the image evaluation takes just the boot requirement. As in
+  # systems/server-test.nix, the role's service packages are bundled so the
+  # host stage has their modules.
+  imports =
+    [./server.nix ./_server-test-packages.nix]
+    ++ lib.optionals (!packageModulesAvailable) [{aos.boot.secureBoot.enable = true;}];
   aos.activation.stages.host.configuration = [
     (builtins.path {
       path = ./_native-policy/secure-boot.nix;
@@ -48,7 +55,10 @@
   # system, so re-bundle the guest agent: the fleet harness activates it on
   # image-boot machines, which requires the payload to be present in the image
   # (lib/testing/fleet.nix).
-  aos.packages.aos-test-agent.bundle = lib.mkIf ((config.aos.boot.stage or "host") == "host") true;
+  aos.packages.aos-test-agent = {
+    package = pkgs.aos-test-agent;
+    bundle = lib.mkIf ((config.aos.boot.stage or "host") == "host") true;
+  };
 
   aos.boot.secureBoot = {
     # TEST keys only — see pkgs/boot/secure-boot-test-keys.nix. db.key

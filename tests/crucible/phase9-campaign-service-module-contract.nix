@@ -1,17 +1,16 @@
 {
   pkgs,
-  mkSystem,
+  # A server system; each case extends it with one campaign configuration.
+  # Image assembly accepts only source-path modules, so the inline case
+  # configuration cannot be passed to mkSystem directly.
+  baseSystem,
   attrPath ? "checks.crucible.phase9.gates.campaignServiceModuleContract",
 }: let
   evaluate = campaignConfig:
     builtins.tryEval (
       let
-        evaluated = mkSystem {
-          modules = [
-            ../../systems/server.nix
-            {aos.services.crucibleCampaign = campaignConfig;}
-          ];
-          systemName = "campaign-service-contract";
+        evaluated = baseSystem.extendModules {
+          modules = [{aos.crucible.campaign = campaignConfig;}];
         };
       in
         builtins.deepSeq evaluated.config.system.build.toplevel true

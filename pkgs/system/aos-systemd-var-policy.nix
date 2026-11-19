@@ -2,7 +2,6 @@
 {
   lib,
   mkDerivation,
-  stdenv,
   bash,
   coreutils,
   cryptsetup,
@@ -90,7 +89,10 @@ mkDerivation {
 
   buildDeps = [];
   runtimeDeps =
+    # The installed scripts execute through their bash shebang. Declaring the
+    # shell keeps reference scrubbing from replacing it on every platform.
     [
+      bash
       coreutils
       cryptsetup
       e2fsprogs
@@ -98,9 +100,7 @@ mkDerivation {
       jq
       systemd
       util-linux
-    ]
-    # The installed script needs the target shell after reference scrubbing.
-    ++ lib.optionals (stdenv.isCross && stdenv.hostPlatform.isLinux) [bash];
+    ];
   propagatedDeps = [];
 
   phases = [

@@ -20,7 +20,6 @@
   upgradeImage = fixture.consumerUpgradeSystem.config.system.build.image.raw;
   upgradeImageDisk = fixture.consumerUpgradeSystem.config.system.build.imageArtifacts.raw.disk;
   upgradeImageInfo = fixture.consumerUpgradeSystem.config.system.build.imageArtifacts.raw.info;
-  upgradeUki = fixture.consumerUpgradeSystem.config.system.build.initialBootExecutable;
   publisherClosureInfo = lib.build.closureInfo {inherit pkgs;} {
     rootPaths = [
       fixture.toolV1
@@ -29,7 +28,6 @@
       upgradeImage
       upgradeImageDisk
       upgradeImageInfo
-      upgradeUki
       pkgs.nginx
       pkgs.aos-hub
       pkgs.binutils
@@ -107,7 +105,6 @@ in {
       UPGRADE_IMAGE = "${upgradeImage}"
       UPGRADE_IMAGE_DISK = "${upgradeImageDisk}"
       UPGRADE_IMAGE_INFO = "${upgradeImageInfo}"
-      UPGRADE_UKI = "${upgradeUki}"
       CLOSURE_INFO = "${publisherClosureInfo}"
       OPERATOR_PATH = ":".join(
           [
@@ -323,7 +320,6 @@ in {
           {NIX_STORE} --check-validity {UPGRADE_IMAGE}
           {NIX_STORE} --check-validity {UPGRADE_IMAGE_DISK}
           {NIX_STORE} --check-validity {UPGRADE_IMAGE_INFO}
-          {NIX_STORE} --check-validity {UPGRADE_UKI}
           {FINDMNT} -rn -t 9p -o OPTIONS /run/aos-host-store | grep -qw ro
           ! touch {TOOL_V1}/share/hub-tool/host-store-write-must-fail
       """), timeout=180)
@@ -618,6 +614,11 @@ in {
             --channel stable --init-channel --cache-url {REGISTRY} \\
             --upload-url file:///var/tmp/aos-publication-v1
           {APR} verify --registry production
+          # The release catalogs the image against the provider contract that
+          # binds the candidate's metadata document.
+          package="$HOME/.local/share/apm/registries/production/packages/a/aos.toml"
+          grep -q 'schema = "aos.image.metadata/v1"' "$package"
+          grep -q "$(basename {UPGRADE_IMAGE_INFO})" "$package"
           {AOS} --json hub registry publish upload acme/production \\
             --hub {HUB} --token {shlex.quote(token)} \\
             --root /var/tmp/aos-publication-v1
@@ -976,16 +977,13 @@ in {
           fi
           rm -rf /var/tmp/aos-publication-system
           mkdir -p /var/tmp/aos-publication-system
-          set -- {UPGRADE_UKI}/*.efi
-          test "$#" -eq 1
-          candidate_uki="$1"
           {APR} release 3.0.0 --registry production \\
             --store-path {UPGRADE_TOPLEVEL} --name aos --version test-2 \\
             --sysroot --previous 0.1.0 \\
             --image-payload {UPGRADE_IMAGE} \\
             --image-disk {UPGRADE_IMAGE_DISK} \\
             --image-info {UPGRADE_IMAGE_INFO} --image-format raw \\
-            --image-uki "$candidate_uki" \\
+            --image-contract-schema aos.image.metadata/v1 \\
             --description 'AOS native Hub system upgrade fixture' --license MIT \\
             --maintainer publisher@example.test --key-id initial \\
             --channel stable --count 256 --cache-url {REGISTRY} \\

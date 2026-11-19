@@ -1,9 +1,10 @@
 ##! pkgs/system/_systemd-abilities/platform/presets.nix — Systemd preset policy for package targets.
 ##!
-##! Package targets (`aos-pkg-<name>.target`) ship inert: their unit files are
-##! present, but only preset policy enables them. The image contributes the
-##! default-deny preset file, while host-specific and runtime `apm` layers add
-##! earlier `enable aos-pkg-<name>.target` rules.
+##! The image ships `/usr/lib/systemd/system-preset` with any rules selected
+##! here and a final default-deny `disable *` file. No boot service applies
+##! these presets: image units are enabled by stage-2 `.wants` links, and
+##! package services by native activation. The files take effect only through
+##! an explicit `systemctl preset` or `systemctl preset-all`.
 {
   config,
   lib,
