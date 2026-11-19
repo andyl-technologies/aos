@@ -31,19 +31,19 @@ exploration overrides are resolved into the schedule as the run executes.
 ### Properties
 
 Properties are named temporal assertions over observations. The supported model
-includes invariants and reachability-style quantifiers such as `Always`,
-`Sometimes`, `Eventually`, `AfterQuiescence`, and `Reachable`.
+includes invariants and reachability-style quantifiers such as `always`,
+`sometimes`, `eventually`, `after_quiescence`, and `reachable`.
 
 The host assertion evaluator consumes deterministic observations such as node
 lifecycle, modeled network events, guest console output, and structured
 guest-assertion markers. Application and test code should normally report its
 own semantic results with the static `crucible-guest` emitter (or its thin
-library) and a declared `GuestMarker` property. The QEMU plugin records the
+library) and a declared `guest_marker` predicate. The QEMU plugin records the
 doorbell marker at its exact retired-instruction count and the same assertion
 evaluator publishes its `AssertionState` transition.
 
-Use `ConsoleMatch` when exercising an opaque or entirely prebuilt workload that
-already prints a stable result. Use `NetworkMatch` for transport and topology
+Use `console_match` when exercising an opaque or entirely prebuilt workload that
+already prints a stable result. Use `network_match` for transport and topology
 properties, not to infer an application result from plaintext protocol bytes.
 This distinction keeps application assertions valid for encrypted protocols
 while preserving a zero-guest-component black-box path.
@@ -52,7 +52,7 @@ The built-in partition-recovery, crash-restart, and fault-campaign examples use
 this structured guest-assertion path for application semantics. Their host-side
 graphs still own readiness, lifecycle, signal and binding state, timers, I/O
 facts, and quiescence. The happy-path example remains the intentionally opaque
-`ConsoleMatch` reference case.
+`console_match` reference case.
 
 ### Seed
 

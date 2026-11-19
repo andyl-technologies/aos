@@ -79,6 +79,9 @@ Choose the coordinate domain first:
 | `Event` | Exact impulses and recorded discrete events. |
 | `State` | Feedback-delayed state machines and accumulated exposure. |
 
+These are the Rust variant names. Canonical TOML spells them `virtual_time`,
+`node_counter`, `operation`, `spatial`, `event`, and `state`.
+
 Sources include constants, steps, pulses, periodic signals, normalized traces,
 spatial fields, event sequences, and keyed stochastic processes. Pure
 operators transform values without memory; stateful operators carry declared,
@@ -139,8 +142,8 @@ guest or modeled topology must satisfy:
 - use a typed guest marker for application-level success or failure;
 - use console matching for a stable, opaque prebuilt workload;
 - use network observations for transport/topology claims; and
-- choose `Always`, `Eventually`, `Sometimes`, `AfterQuiescence`, or
-  `Reachable` according to the intended temporal claim.
+- choose `always`, `eventually`, `sometimes`, `after_quiescence`, or
+  `reachable` according to the intended temporal claim.
 
 Include a bounded terminal condition when running. A fault that successfully
 makes an application wait forever is otherwise indistinguishable from an

@@ -23,7 +23,9 @@ before it makes examples easier to scan.
 | `-v`, `-vv` | Reserved for diagnostic verbosity. |
 | `-q`, `--quiet` | Suppress non-essential standard output. |
 
-`markdown` is valid for triage reports, not canonical event-log traces.
+`markdown` is valid for triage reports, not canonical event-log traces. The
+daemon TLS options and each option's default are in the
+[reference](reference.md#global-options).
 
 ## Backend discovery
 
@@ -188,6 +190,9 @@ hashes are not accepted as portable resume or fork inputs.
 
 ## Exit codes
 
+This table is the single definition of Crucible's process exit statuses; other
+pages link here.
+
 | Code | Meaning |
 |---:|---|
 | `0` | Passed, deterministic, gates green, or clean shutdown. |
@@ -216,6 +221,10 @@ Run the default live subset with:
 ```sh
 ./result/bin/crucible selftest
 ```
+
+Each live probe loads the guarded campaign-executor deployment, resolved as
+for `run`. Provision the host as described in
+[campaign setup](campaigns.md#start-the-single-host-owner) first.
 
 To select gates explicitly, pass a comma-separated list:
 

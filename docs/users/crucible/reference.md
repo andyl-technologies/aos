@@ -47,21 +47,21 @@ Global options may appear before or after the subcommand.
 
 | Option | Accepted value and default | Purpose | Guide |
 | --- | --- | --- | --- |
-| `--seed <u64\|hex>` | Unsigned decimal, `0x` hexadecimal, or canonical seed text; otherwise `CRUCIBLE_SEED`, then one generated seed | Override the root entropy. | [Seed resolution](running.md#seed-resolution) |
+| `--seed <u64\|hex>` | Unsigned 64-bit decimal or `0x`-prefixed hexadecimal; otherwise `CRUCIBLE_SEED`, then one generated seed | Override the root entropy. | [Seed resolution](running.md#seed-resolution) |
 | `--backend <auto\|qemu>` | `auto` (default), `qemu` | Select or discover the local backend. Production builds expose QEMU only. | [Backend discovery](running.md#backend-discovery) |
 | `--daemon <addr>` | Host/port or HTTP endpoint | Send a supported lifecycle operation to a daemon instead of running locally. | [Daemon operation](daemon.md) |
 | `--daemon-ca <path>` | Requires `--daemon` and the other client TLS paths | Authenticate an HTTPS daemon with this CA certificate. | [Daemon operation](daemon.md#connect-a-client) |
 | `--daemon-cert <path>` | Requires `--daemon` and the other client TLS paths | Present this client certificate chain to an HTTPS daemon. | [Daemon operation](daemon.md#connect-a-client) |
 | `--daemon-key <path>` | Requires `--daemon` and the other client TLS paths | Present this client private key to an HTTPS daemon. | [Daemon operation](daemon.md#connect-a-client) |
 | `--trusted-unauthenticated-daemon` | Required for cleartext daemon access | Explicitly acknowledge an unauthenticated endpoint on a trusted network. Conflicts with daemon mutual TLS. | [Daemon operation](daemon.md) |
-| `--qemu <path>` | Discovered when omitted | Override the packaged patched-QEMU executable. Must be paired with `--plugin`. | [Backend discovery](running.md#backend-discovery) |
-| `--plugin <path>` | Discovered when omitted | Override the matching QEMU plugin. Must be paired with `--qemu`. | [Backend discovery](running.md#backend-discovery) |
+| `--qemu <path>` | Otherwise `CRUCIBLE_QEMU`, then the packaged path | Override the patched-QEMU executable. The plugin is still resolved through its own discovery order, and the resolved pair must pass identity validation. | [Backend discovery](running.md#backend-discovery) |
+| `--plugin <path>` | Otherwise `CRUCIBLE_PLUGIN`, then the packaged path | Override the matching QEMU plugin. QEMU is still resolved through its own discovery order, and the resolved pair must pass identity validation. | [Backend discovery](running.md#backend-discovery) |
 | `--store <path>` | Command-specific default below `--artifact-dir` | Set the content-addressed store root. | [Artifacts and store](running.md#artifacts-and-store-layout) |
 | `--campaign-deployment <PATH>` | Otherwise `CRUCIBLE_CAMPAIGN_DEPLOYMENT`, then `/etc/crucible/packaged-executor.toml` | Select the guarded local campaign-executor deployment; incompatible with a daemon route. | [Campaign setup](campaigns.md#start-the-single-host-owner) |
 | `--format <jsonl\|json\|table\|markdown>` | Terminal: `table`; non-terminal: `jsonl` | Select report rendering. `jsonl` and `json` are stable machine formats. | [Output formats](running.md#output-formats) |
 | `--trace <path>` | Standard output | Write the canonical event-log stream to a file. | [Output formats](running.md#output-formats) |
 | `--artifact-dir <path>` | `./.crucible` | Set the failure-artifact and default savepoint/report directory. | [Artifacts and store](running.md#artifacts-and-store-layout) |
-| `-v`, `--verbose` | Repeatable; default count `0` | Increase diagnostic verbosity. | [Running](running.md) |
+| `-v`, `--verbose` | Repeatable; default count `0` | Reserved for diagnostic verbosity; the count is accepted but does not currently change output. | [Running](running.md) |
 | `-q`, `--quiet` | Boolean; default off | Suppress non-essential output. | [Running](running.md) |
 | `-h`, `--help` | Built in | Print top-level or subcommand help. | This reference |
 | `-V`, `--version` | Built in | Print the Crucible version. | This reference |
@@ -109,9 +109,11 @@ Output-format values:
 | `replay` | Validate and reduce a recorded reproduction artifact. | [Replay](reproduction.md#replay) |
 | `search` | Explore a bounded schedule space. | [State-space search](exploration.md#state-space-search) |
 | `fuzz` | Sample a scenario family using basic-block coverage. | [Coverage-guided fuzzing](exploration.md#coverage-guided-fuzzing) |
-| `triage` | Cluster, deduplicate, compare, and minimize findings. | [Findings and triage](exploration.md#findings-and-triage) |
+| `triage` | Cluster, deduplicate, and minimize the findings retained by a campaign snapshot. | [Findings and triage](exploration.md#findings-and-triage) |
 | `debug` | Inspect a live daemon session at a coordinate; local artifact/savepoint execution currently fails closed. | [Debugging](debugging.md#debug-command) |
 | `serve` | Run the remote lifecycle API. | [Daemon operation](daemon.md) |
+| `campaign` | Author campaign inputs offline, and inspect or control a lazy campaign through the local daemon. | [Campaigns](campaigns.md) |
+| `store` | Inspect or maintain a configured content store. | [Composed store](campaigns.md#inspect-and-collect-a-composed-store) |
 | `completions` | Generate shell completion definitions. | [Shell completions](running.md#shell-completions) |
 
 ### `run`
@@ -160,11 +162,11 @@ Exactly one of `SCENARIO` and `--compare` is required.
 
 | Option | Required/default | Meaning |
 | --- | --- | --- |
-| `--gates <list>` | All applicable gates | Run a comma-separated gate subset. |
-| `--with-qemu` | Hidden production option; off | Include QEMU-backed gates. This is primarily a package/gate surface. |
+| `--gates <list>` | The three live-QEMU gates listed in [Self-test](running.md#self-test) | Run a comma-separated subset of those gates. Any other gate name is rejected. |
 
-Test-double builds also compile a test-only `--corpus <path>` fixture-manifest
-option; it is not part of the shipped production interface.
+The production command always runs QEMU-backed gates. Test-double builds also
+compile the test-only `--with-qemu` and `--corpus <path>` options; neither is
+part of the shipped production interface.
 
 Self-test honors the global `--format`, `--trace`, and `--quiet` options. JSONL
 uses `selftest_gate`, `selftest_scenario`, and terminal `final_outcome` records.
@@ -209,6 +211,7 @@ partial control trail for diagnosis.
 | `--check <original-log>` | Optional | After live replay succeeds, require byte-identical canonical JSONL output. |
 | `--to <savepoint>` | Optional | Live-replay the artifact, then validate a target savepoint handle or checkpoint hash as its typed prefix. A v4 artifact can resolve its own terminal checkpoint hash without a separate store object. |
 | `--bisect <other-artifact>` | Optional | Live-replay both artifacts, then locate their first evidence divergence. |
+| `--bounded-scheduler-preemption` | Off | Inject and require authenticated bounded host scheduler preemption during live QEMU replay. |
 
 The v4 artifact's live recipe declares its fingerprint evidence scope. Run,
 verify, and fuzz use the full execution stream; search uses one terminal
@@ -224,7 +227,7 @@ timing can be reproduced.
 | `--max-depth <n>` | Optional | Bound decision depth. |
 | `--max-states <n>` | Default `1` | Bound materialized states. Set this explicitly for useful campaigns. |
 | `--on-violation <stop\|collect>` | Engine default `stop` when omitted | Stop at the first property/timeout finding or continue within the supplied budget. |
-| `--findings-out <path>` | Content-addressed path below `--artifact-dir` | Write the signed findings ledger here, including an empty ledger when no finding is retained. |
+| `--findings-out <path>` | Content-addressed path below `<artifact-dir>/findings`, written only when a finding is retained | Write the signed findings ledger to this path. An explicit path is written even when no finding is retained. |
 | `--schedule-named-truths <path>` | Optional | Load schedule-named assertion truth data. |
 | `--retained-evidence <path>` | Optional | Load authenticated backend-retained assertion evidence. |
 
@@ -250,7 +253,7 @@ Supply the family either positionally or with `--family`, never both.
 | `--coverage <basic-block>` | Default `basic-block` | Select the coverage feedback signal. |
 | `--corpus <path>` | Optional | Seed and regression corpus directory. |
 | `--on-violation <stop\|collect>` | Default `stop` | Stop at the first property/timeout finding or retain findings through the run budget. |
-| `--findings-out <path>` | Content-addressed path below `--artifact-dir` | Write the signed findings ledger here, including an empty ledger when no finding is retained. |
+| `--findings-out <path>` | Content-addressed path below `<artifact-dir>/findings`, written only when a finding is retained | Write the signed findings ledger to this path. An explicit path is written even when no finding is retained. |
 
 ### `triage`
 
@@ -319,12 +322,165 @@ Debugger verbs:
 | `--max-sessions <n>` | Optional; must be greater than zero | Cap concurrent live sessions. |
 | `--production-qemu` | Off | Host inline scenarios with the packaged production QEMU lifecycle instead of the quiescent API-test loop. |
 | `--qemu-rendezvous-ticks <n>` | Optional positive count; production QEMU only | Cap production-QEMU runs at this deterministic exact-tick rendezvous interval. |
+| `--qemu-quantum-budget <n>` | Optional | Limit the number of scheduler quanta in a production-QEMU session. |
 | `--read-only` | Off | Permit query/watch calls and reject mutations. |
 | `--tls-cert <path>` | Required with the other server TLS paths | Server certificate chain. |
 | `--tls-key <path>` | Required with the other server TLS paths | Server private key. |
 | `--client-ca <path>` | Required with the other server TLS paths | CA used to authenticate client certificates. |
 | `--trusted-unauthenticated-bind` | Required for cleartext | Explicitly trust an unauthenticated bind; conflicts with TLS. |
 | `--debug-role <sha256=capability,...>` | Repeatable; authenticated server | Map a client leaf-certificate fingerprint to `observe`, `control`, `mutate`, `shell`, and/or `admin`. |
+
+The following `serve` options host the local campaign service. Every one
+except `--campaign-socket` requires `--campaign-socket`. See
+[Start the single-host owner](campaigns.md#start-the-single-host-owner).
+
+| Option | Required/default | Meaning |
+| --- | --- | --- |
+| `--campaign-socket <path>` | Optional | Host the local campaign service on this managed Unix socket. |
+| `--campaign-socket-mode <octal>` | Default `600` | Set the managed campaign socket's Unix permission bits in octal. |
+| `--campaign-state <path>` | Optional | Retain local campaign objects and refs below this existing directory. |
+| `--campaign-policy <path>` | Optional | Load the strict local campaign peer policy from this file. |
+| `--campaign-store <path>` | Optional | Load a strict composed campaign repository-store deployment. |
+| `--campaign-component-authority <path>` | Optional | Load distinct planner/debugger component authority keys from this file. |
+| `--campaign-import-manifest <path>` | Repeatable; conflicts with `--read-only` | Import verified campaign creation artifacts before binding the socket. |
+| `--campaign-runtime <name>` | Repeatable; requires `--campaign-component-authority` and `--campaign-executor-socket`; conflicts with `--read-only` | Attach the packaged planner and an authenticated local executor to a campaign. |
+| `--campaign-runtime-all` | Requires `--campaign-component-authority`, `--campaign-executor-socket`, and `--campaign-packaged-executor`; conflicts with `--campaign-runtime` and `--read-only` | Attach every authenticated campaign in the bounded local catalog. |
+| `--campaign-executor-socket <path>` | Repeatable; conflicts with `--read-only` | Connect one attached campaign runtime to this owner-only Unix socket; repeat in runtime order unless a packaged pool shares one endpoint. |
+| `--campaign-packaged-executor <path>` | Requires `--campaign-component-authority`, `--campaign-executor-socket`, and `--production-qemu`; conflicts with `--read-only` | Start one scenario-catalogued packaged QEMU pool from this deployment file. |
+| `--campaign-maintenance-interval-ms <milliseconds>` | Requires `--campaign-store`; conflicts with `--read-only` | Run bounded campaign-store maintenance at this fixed cadence. |
+| `--campaign-maintenance-write-back-transfers <n>` | Requires `--campaign-maintenance-interval-ms` | Complete at most this many write-back transfers per maintenance pass. |
+| `--campaign-maintenance-s3-nodes <n>` | Requires `--campaign-maintenance-interval-ms` | Visit at most this many S3 leaves per maintenance pass. |
+| `--campaign-maintenance-s3-uploads <n>` | Requires `--campaign-maintenance-interval-ms` | Abort at most this many unfinished uploads per visited S3 leaf. |
+
+### `campaign`
+
+`campaign` accepts two options before its subcommand. Both are omitted for
+offline authoring, validation, and archival subcommands.
+
+| Option | Meaning |
+| --- | --- |
+| `--socket <path>` | Connected daemon socket. |
+| `--principal <principal>` | Authenticated principal. |
+
+In the tables below, `NAME` is the canonical campaign name and every
+`--snapshot <SNAPSHOT>` is required and names one exact authenticated campaign
+snapshot. `BASIS` abbreviates the mutation basis
+`NAME --expected <SNAPSHOT> --command <COMMAND>`: the snapshot the mutation
+expects to advance and a stable lowercase hexadecimal idempotency key.
+Bracketed options are optional. The [campaign guide](campaigns.md) gives the
+workflows.
+
+Offline authoring, validation, and archival:
+
+| Subcommand | Arguments and options | Purpose |
+| --- | --- | --- |
+| `fixture worked-network` | `--output <DIR>`; `[--kernel <FILE> --root-image <FILE> --qemu <FILE> --plugin <FILE>]`, which must be supplied together | Generate the adaptive network-recovery reference campaign into a new directory. The four optional paths select the AOS-built kernel, the immutable `root.ext4` of the AOS Envoy network guest package, and the packaged QEMU and matching plugin for the executable fixture. |
+| `validate-import` | `<MANIFEST>...` | Validate strict campaign import manifests without opening repository state. Repeated manifests share one bound. |
+| `validate` | `NAME` or `--policy <FILE>`, never both | Authenticate a named campaign through the connected service, or validate one canonical binary policy record offline. |
+| `scenario compile` | `<INPUT> --output <DIR>` | Compile canonical scenario TOML and an empty genesis schedule into a new directory holding `scenario.bin`, `schedule.bin`, and `import.toml`. |
+| `configuration compile` | `<SCENARIO> <SCHEDULE> --output <DIR>` | Compile a nonempty canonical Schedule V4 against one scenario into an importable configuration bundle. |
+| `schedule compile` | `<INPUT> --output <OUTPUT>` | Compile a strict TOML decision list into canonical Schedule V4 bytes. |
+| `policy compile` | `<INPUT> [--scenario <SCENARIO>] --output <OUTPUT>` | Compile a strict TOML policy into its canonical binary record. `--scenario` resolves selectable IDs and tag predicates. |
+| `lineage compile` | `<INPUT> --output <OUTPUT>` | Compile a strict TOML lineage into its canonical binary record. |
+| `archive transfer` | `--source-state <path> --source-policy <path> --source-store <path> --source-campaign <name> --snapshot <snapshot-id> --mode <metadata\|findings\|debug\|executable\|mirror> --destination-state <path> --destination-policy <path> --destination-store <path> --archive <name>`; `[--retain <content-id>]...` (mirror archives only), `[--campaign <name>]` (executable archives), `[--minimum-durable-placements <n>]` (default `1`), `[--allow-deferred-write]`, `[--maximum-checkpoint-bytes <bytes>]` (default `1073741824`) | Transfer one exact snapshot between stopped deployment owners. |
+| `archive inspect` | `--state <path> --policy <path> --store <path> --archive <name>` | Authenticate one named archive in a stopped deployment. |
+
+Creation and lifecycle:
+
+| Subcommand | Arguments and options | Purpose |
+| --- | --- | --- |
+| `create` | `NAME --lineage <FILE> --policy <FILE> [--start-command <COMMAND>]` | Create a named campaign from canonical imported lineage and policy records. `--start-command` resumes it immediately with that idempotency key. |
+| `derive` | `<SOURCE> --snapshot <SNAPSHOT> <TARGET> [--policy <FILE>]` | Derive a new named campaign from one exact source snapshot, optionally activating a compiled policy. |
+| `attach` | `NAME --executor-socket <PATH>` | Attach one live runtime to a local executor endpoint. The path is absolute. |
+| `start` | `BASIS` | Begin issuing work for a newly created campaign. |
+| `resume` | `BASIS` | Begin or resume issuing campaign work. |
+| `pause` | `BASIS [--active <drain\|checkpoint\|retry>]` (default `drain`) | Pause new work. `drain` lets accepted attempts finish, `checkpoint` captures exact checkpoints for them, and `retry` cancels them and leaves their work retryable. |
+| `stop` | `BASIS [--seal]` | Complete a campaign; `--seal` also seals it against accidental future mutation. |
+| `unseal` | `BASIS` | Re-enable mutation of a sealed campaign. |
+| `budget` | `BASIS add <ATTEMPTS> [--proposals <PROPOSALS>]` (default `0`) | Grant additive proposal and attempt budget. |
+| `steer` | `BASIS --policy <POLICY>` | Activate an imported compatible policy for future work. |
+| `pin` | `BASIS <CONFIGURATION> [--tier <thin\|exact>] [--reason <TEXT>]` (default tier `thin`) | Add or update one semantic configuration pin. `thin` retains semantic replay inputs; `exact` retains the complete portable exact closure. |
+| `unpin` | `BASIS <CONFIGURATION> [--reason <TEXT>]` | Remove one semantic configuration pin. |
+
+Branching and captures:
+
+| Subcommand | Arguments and options | Purpose |
+| --- | --- | --- |
+| `branch` | `NAME --expected <SNAPSHOT> --branch-point <BRANCH_POINT> --parent <CONFIGURATION_ARTIFACT>` plus the selection options below | Submit one finite additive operator branch request. |
+| `choice-value encode` | `NAME --snapshot <SNAPSHOT> --opportunity <OPPORTUNITY> --member <NAME=VALUE>...` | Encode a complete named atomic group tuple for `campaign branch --value`. |
+| `capture-attempt` | `NAME --snapshot <SNAPSHOT> --attempt <ATTEMPT> --command <COMMAND>` | Replay a completed next-choice attempt to an exact pending-choice checkpoint. |
+| `capture-status` | `NAME --snapshot <SNAPSHOT> --request <REQUEST>` | Inspect the authenticated outcome and retained root of one capture. |
+| `select-capture` | `NAME --snapshot <SNAPSHOT> --request <REQUEST> --command <COMMAND> --stop <CONDITION>` | Admit an exact-source continuation from a Ready capture, stopping at the later condition reached after the pending choice is answered. |
+
+`branch` selection options:
+
+| Option | Required/default | Meaning |
+| --- | --- | --- |
+| `--command <COMMAND>` | Required unless `--all`; conflicts with `--all` | Exact operator idempotency key. |
+| `--opportunity <OPPORTUNITY>` | Required with `--domain` unless `--selector` is used | Exact choice-opportunity ID reached at the parent. |
+| `--domain <DOMAIN>` | Required with `--opportunity` unless `--selector` is used | Exact effective choice-domain ID. |
+| `--selector <SELECTOR>` | Repeatable alternative to `--opportunity`/`--domain` | Resolve one opportunity by conjunctive declaration names, IDs, or tags. |
+| `--instance <INSTANCE>` | Optional; requires `--selector` | Exact opportunity instance filter. |
+| `--selector-scan-limit <COUNT>` | Default `256` | Maximum authenticated opportunities examined during selector resolution. |
+| `--value <VALUE>` | Repeatable; one of `--value`, `--generator`, or `--all` is required | Finite value: `true`, `false`, `i64:N`, `u64:N`, `discrete:ID`, or `group:HEX`. |
+| `--generator <GENERATOR>` | Alternative to `--value` and `--all` | Deterministic candidate-generator ID instead of finite values. |
+| `--all` | Alternative to `--value` and `--generator`; conflicts with `--proposals` | Exhaust the authenticated finite domain under the active exhaustive policy. |
+| `--proposals <COUNT>` | Required for a generator; otherwise defaults to the value count | Maximum proposals. |
+| `--attempts <COUNT>` | Default `1` | Maximum newly admitted attempts. |
+| `--stop <CONDITION>` | Default `next-choice` | Primary stop: `next-choice`, `terminal`, `boundary:NAME`, `virtual-time-ps:N`, `events:N`, `execution-quanta:N`, or `virtual-time-or-execution-quanta:TIME:QUANTA`. The active policy's attempt deadlines also apply. |
+
+Inspection and explanation:
+
+| Subcommand | Arguments and options | Purpose |
+| --- | --- | --- |
+| `list` | `[--after <NAME>] [--limit <COUNT>] [--pages <COUNT>]` (defaults `32` and `1`) | List authenticated current campaign heads. |
+| `status` | `NAME` | Print the current authenticated campaign head and lifecycle state. |
+| `watch` | `NAME [--after <SNAPSHOT>]` | Return the latest coalesced head after an optional snapshot cursor. |
+| `snapshot` | `NAME --snapshot <SNAPSHOT>` | Inspect one exact historical campaign snapshot. |
+| `compare` | `NAME --left <SNAPSHOT> --right <SNAPSHOT>` | Compare two exact historical campaign snapshots. |
+| `report` | `NAME --snapshot <SNAPSHOT> [--after <CURSOR>] [--limit <COUNT>] [--pages <COUNT>]` (defaults `8` and `1`) | Report snapshot-bound outcomes, exploration state, and estimator evidence. |
+| `graph`, `choices`, `frontier`, `findings` | `NAME --snapshot <SNAPSHOT> [--after <CURSOR>] [--limit <COUNT>] [--pages <COUNT>]` (defaults `8` and `1`) | Read one authenticated page of the temporal graph, discovered choice opportunities, continuation states, or canonical failure findings. |
+| `graph-object` | `NAME --snapshot <SNAPSHOT> --key <KEY>` | Inspect one exact object named by the authenticated graph. |
+| `choice-object` | `NAME --snapshot <SNAPSHOT> --opportunity <OPPORTUNITY> --kind <declaration\|domain>` | Inspect the reusable selectable declaration or the exact effective choice domain named by an authenticated choice. |
+| `frontier-object` | `NAME --snapshot <SNAPSHOT> --request <REQUEST>` | Inspect one exact branch request and its current continuation state. |
+| `request-attempts` | `NAME --snapshot <SNAPSHOT> --request <REQUEST> [--after <PROPOSAL>] [--limit <COUNT>] [--pages <COUNT>]` (defaults `8` and `1`) | Read authenticated execution bases and additional causes for one branch request. |
+| `explain` | `NAME --snapshot <SNAPSHOT> --opportunity <OPPORTUNITY> --request <REQUEST>` | Explain one exact choice and frontier-request basis. |
+| `explain-finding` | `NAME --snapshot <SNAPSHOT> --finding <FINDING>` | Explain one exact finding and its reproduction basis. |
+| `explain-attempt` | `NAME --snapshot <SNAPSHOT> --attempt <ATTEMPT>` | Explain one exact attempt, proposal, and completion basis. |
+| `rankings` | `NAME --snapshot <SNAPSHOT> --step <STEP> [--pages <COUNT>] [--policy-groups] [--branch-point <BRANCH_POINT>] [--source <REQUEST>] [--top <COUNT>]` (default `--pages 16`) | Rank candidates or policy epochs across an authenticated planner-step chain. |
+
+Findings:
+
+| Subcommand | Arguments and options | Purpose |
+| --- | --- | --- |
+| `replay` | `NAME --snapshot <SNAPSHOT> --finding <FINDING> [--minimized]` | Replay one authenticated finding reproduction through its pure oracle; `--minimized` replays the authenticated minimized reproduction when present. |
+| `triage` | `NAME --snapshot <SNAPSHOT>` plus the [`triage`](#triage) policy, minimization, and report options | Project and minimize the authenticated findings retained by one snapshot. |
+| `debug` | `NAME --snapshot <SNAPSHOT> --finding <FINDING> --node <ID> [--gdb-listen <ADDR>] [--writable]` (default listener `127.0.0.1:0`) | Open an authenticated retained finding checkpoint in the debug relay. `--writable` forks a private non-canonical branch before exposing the GDB relay. |
+| `finding-bundle export` | `NAME --snapshot <SNAPSHOT> --finding <FINDING> --source-state <PATH> --source-policy <PATH> --source-store <PATH> --output <DIR> [--maximum-checkpoint-bytes <BYTES>]` (default `1073741824`) | Export one finding and its complete executable archive from a stopped owner into a new directory. |
+| `finding-bundle verify` | `<DIR> [--role <ROLE>] [--exact]` | Verify archived evidence offline; `--exact` repeats the retained production boundary in a fresh local QEMU lifecycle. |
+| `finding-bundle midpoint` | `<DIR> --node <ID> [--role <ROLE>] [--maximum-checkpoint-bytes <BYTES>]` | Open an archived exact checkpoint in a private read-only QEMU session with this node's gdbstub attached. |
+| `finding-bundle fork-write` | The `midpoint` arguments plus `[--register <N>]` (default `0`), `[--xor-mask <MASK>]` (default `1`), `[--serve]` | Fork a second private midpoint and prove one non-canonical register write to the low byte of the GDB register; `--serve` keeps serving the writable branch to a local GDB client. |
+| `finding-bundle branch` | `<DIR> --value <VALUE> --output <DIR> [--timeout-seconds <SECONDS>]` (default `300`) | Execute a declared alternate choice for the first retained declared choice from the imported executable archive into a new owner-only directory. |
+
+`--role` selects the retained replay pass: `minimization-original`,
+`minimization-selected`, `verification-original` (default), or
+`verification-selected`.
+
+### `store`
+
+Every `store` subcommand names a strict composed repository-store deployment
+file, written `STORE` below.
+
+| Subcommand | Arguments and options | Purpose |
+| --- | --- | --- |
+| `status` | `<STORE>` | Describe one exact admitted store graph without accessing object bytes. |
+| `ensure` | `<CONTENT_ID> --in <STORE>` | Read and authenticate one complete object without repair or promotion. |
+| `verify` | `<STORE>` | Authenticate every bounded physical placement in one stable generation. |
+| `gc` | `--state <path> --policy <path> --store <path> --journal <path>` then `plan`, `cancel`, or `apply` | Stopped-owner garbage collection. `plan` inventories exact roots and persists a non-destructive deletion plan, `cancel` durably cancels a planned journal before deletion begins, and `apply` revalidates every generation and applies one persisted plan. The owner lock of the `--state` directory must be free. |
+| `transform packed` | `--store <path> --journal <path> [--node <node>]` then `plan` or `apply` | Repack one exact packed-leaf generation. `--node` is optional only when exactly one packed graph node exists. |
+| `credentials refresh` | `<STORE>` | Reload current credential files and validate every bound capability. |
+| `cleanup incomplete-packs` | `--state <path> --policy <path> --store <path> [--node <node>]` | Under a stopped owner, reclaim complete and staging packs absent from the authenticated index. |
+| `repair placement` | `<CONTENT_ID> --in <STORE> --source <NODE> --target <NODE> --state <PATH> --policy <PATH> [--maximum-bytes <BYTES>]` (default `1073741824`) | Restore one physical placement from an independently authenticated peer. `--source` supplies authenticated bytes, `--target` names the placement that may be replaced, and the command refuses a running service whose owner lock on `--state` is held. |
 
 ### `completions`
 
@@ -393,33 +549,34 @@ VM rows are untagged: they do not carry `kind`.
 Crucible fixes QEMU's instruction-count shift at 0. Scenario TOML has no
 `icount_shift` field; including one is a schema error.
 
-VM enum values:
+VM enum values, as defined by the
+[TOML schema source](../../../crates/crucible/crucible-engine/src/model/toml.rs):
 
-| Field | Value | Meaning | Reference |
-| --- | --- | --- | --- |
-| `arch` | `x86_64` | Run an x86-64 guest. | [TOML schema source](../../../crates/crucible/crucible-engine/src/model/toml.rs) |
-| `arch` | `aarch64` | Run an AArch64 guest. | [TOML schema source](../../../crates/crucible/crucible-engine/src/model/toml.rs) |
-| `white_box` | `disabled` | Prohibit the optional guest-host observation/control channel. | [TOML schema source](../../../crates/crucible/crucible-engine/src/model/toml.rs) |
-| `white_box` | `enabled` | Allow typed guest markers and application-random requests through the white-box doorbell. | [TOML schema source](../../../crates/crucible/crucible-engine/src/model/toml.rs) |
+| Field | Value | Meaning |
+| --- | --- | --- |
+| `arch` | `x86_64` | Run an x86-64 guest. |
+| `arch` | `aarch64` | Run an AArch64 guest. |
+| `white_box` | `disabled` | Prohibit the optional guest-host observation/control channel. |
+| `white_box` | `enabled` | Allow typed guest markers and application-random requests through the white-box doorbell. |
 
 `[world.node.ready_point]` kinds:
 
-| `kind` | Required fields | Meaning | Reference |
-| --- | --- | --- | --- |
-| `fixed_icount` | `retired: u64` | Snapshot after exactly this many retired guest instructions. | [TOML schema source](../../../crates/crucible/crucible-engine/src/model/toml.rs) |
-| `network_idle` | `window_nanos: u64` | Snapshot after the first network-idle window of this length. | [TOML schema source](../../../crates/crucible/crucible-engine/src/model/toml.rs) |
-| `console_marker` | `marker: string` | Snapshot when the guest console emits the marker. | [TOML schema source](../../../crates/crucible/crucible-engine/src/model/toml.rs) |
-| `agent_signal` | None | Snapshot when the optional in-guest agent signals readiness. | [TOML schema source](../../../crates/crucible/crucible-engine/src/model/toml.rs) |
+| `kind` | Required fields | Meaning |
+| --- | --- | --- |
+| `fixed_icount` | `retired: u64` | Snapshot after exactly this many retired guest instructions. |
+| `network_idle` | `window_nanos: u64` | Snapshot after the first network-idle window of this length. |
+| `console_marker` | `marker: string` | Snapshot when the guest console emits the marker. |
+| `agent_signal` | None | Snapshot when the optional in-guest agent signals readiness. |
 
 ### `[[world.node]]` I/O device fields
 
 I/O rows share the VM node array but carry a `kind`. Every field listed for the
 selected kind is required.
 
-| `kind` | Required fields | Meaning | Reference |
-| --- | --- | --- | --- |
-| `block` | `id`, `owner`, `shift_bits`, `artifact`, `artifact_length`, `read_base_ns`, `write_base_ns`, `flush_ns`, `get_length_ns`, `per_byte_ns` | Deterministic block sub-node backed by a content-addressed base image. `owner` is a VM ID; latency is the operation base plus the per-byte component. | [TOML schema source](../../../crates/crucible/crucible-engine/src/model/toml.rs) |
-| `nine_p` | `id`, `owner`, `shift_bits`, `artifact`, `control_ns`, `data_ns`, `per_byte_ns` | Deterministic read-only 9p filesystem sub-node. `owner` is a VM ID; control/data bases and the per-byte term model completion latency. | [TOML schema source](../../../crates/crucible/crucible-engine/src/model/toml.rs) |
+| `kind` | Required fields | Meaning |
+| --- | --- | --- |
+| `block` | `id`, `owner`, `shift_bits`, `artifact`, `artifact_length`, `read_base_ns`, `write_base_ns`, `flush_ns`, `get_length_ns`, `per_byte_ns` | Deterministic block sub-node backed by a content-addressed base image. `owner` is a VM ID; latency is the operation base plus the per-byte component. |
+| `nine_p` | `id`, `owner`, `shift_bits`, `artifact`, `control_ns`, `data_ns`, `per_byte_ns` | Deterministic read-only 9p filesystem sub-node. `owner` is a VM ID; control/data bases and the per-byte term model completion latency. |
 
 For both kinds, `id` is the unique device name, `shift_bits` maps device work to
 virtual time, and `artifact` is a content-addressed blob reference.
@@ -458,6 +615,7 @@ complete encoded register manifest, represented in TOML as
 | `page_bytes` | Power-of-two integer | Guest page size used by memory-fault contracts. |
 | `dram_geometry` | Table | Exact QEMU DRAM coordinate mapping described below. |
 | `interrupts` | Array | Fully routed interrupt targets. May be empty. |
+| `hardware_errors` | Array | Architecture and platform error rows; see [Hardware-error rows](topology.md#hardware-error-rows). |
 | `clock_sources` | Array | Guest-visible clock sources. May be empty. |
 | `accelerators` | Array | Declared accelerator devices. May be empty; sensor devices are not accepted. |
 | `ready_markers` | Canonically ordered unique string array | Exact guest event-marker names allowed to complete `require_ready`; an undeclared marker rejects the run before boot. May be empty. |
@@ -525,7 +683,7 @@ Register side-effect values are exhaustive:
 | `[[world.node_fault_capabilities.address_spaces]]` | `id`, `start_address`, positive `length_bytes` | One non-wrapping guest address range. Address and length accept a TOML integer or canonical decimal/hex string. |
 | `[world.node_fault_capabilities.dram_geometry]` | `channels=2`, `ranks=2`, `banks=16`, `interleave_bytes=64`, `semantic_version=1` | The only currently implemented GPA-to-DRAM mapping. |
 | `[[world.node_fault_capabilities.interrupts]]` | All interrupt-row fields below | One exact source-to-controller route and its mutation contract. |
-| `[[world.node_fault_capabilities.clock_sources]]` | `id`, `semantic_version=1`, `monotonic` | One registered guest clock and whether reads must remain monotonic. |
+| `[[world.node_fault_capabilities.clock_sources]]` | `id`, `implementation`, `source_kind`, `base_domain`, `epoch_ns`, `timer_relationship`, `width_bits`, `wraps`, `read_error`, `frequency_numerator`, `frequency_denominator`, `model_phases`, `monotonicity`, `vmstate`, `semantic_version` | One registered guest-visible clock source; see [Clock-source rows](topology.md#clock-source-rows). |
 | `[[world.node_fault_capabilities.accelerators]]` | `id`, nonempty sorted `classes`, `semantic_version=1`, `capability_manifest` | One realized fault device and its exact content-addressed manifest; `classes` contains any supported combination of `gpu`, `tpu`, and `fpga`. |
 
 `ready_markers` is part of the content-addressed QEMU launch contract. Each
@@ -720,31 +878,34 @@ Signal units are exhaustive:
 | `parts_per_million`, `probability_millionths` | Ratio or probability; probability is `0..=1_000_000`. |
 | `micrometres_per_second_squared`, `micrometres_per_hour` | Acceleration or precipitation rate. |
 
+Signal source, pure, and stateful kinds below are defined by the
+[signal schema](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs).
+
 Signal source kinds are exhaustive:
 
-| `kind` | Required fields | Purpose | Configuration source |
-| --- | --- | --- | --- |
-| `constant` | `value` | Emit one immutable typed literal. | [signal schema](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
-| `step` | ordered `points`, `before` | Emit piecewise-constant values. | [signal schema](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
-| `pulse` | `start`, `duration`, `inactive`, `active` | Emit one finite active interval. | [signal schema](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
-| `periodic_pulse` | `epoch`, `period`, `width`, `phase`, `inactive`, `active` | Emit repeating exact active intervals. | [signal schema](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
-| `ramp` | `start`, `end`, `start_value`, `end_value`, `rounding` | Emit one exact linear transition. | [signal schema](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
-| `triangle` | `epoch`, `period`, `phase`, `minimum`, `maximum`, `rounding` | Emit a periodic triangle wave. | [signal schema](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
-| `sawtooth` | `epoch`, `period`, `phase`, `minimum`, `maximum`, `rounding` | Emit a periodic sawtooth wave. | [signal schema](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
-| `event_sequence` | ordered `events` | Emit typed events with stable same-coordinate order. | [signal schema](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
-| `trace` | `artifact`, `raw_provenance`, `channel`, `interpolation`, `before`, `after`, `missing`; optional quality channel/threshold and time mapping | Replay a normalized recorded channel while retaining its raw provenance. | [signal schema](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
-| `telemetry` | `adapter`, `target`, `field`, `boundary_delay=1` | Read delayed production telemetry without a feedback loop. | [signal schema](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
-| `point_set` | `artifact`, `coordinate_frame`, `interpolation`, `outside` | Sample irregular spatial data. | [signal schema](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
-| `regular_grid` | `artifact`, `coordinate_frame`, `origin_mm`, `cell_size_mm`, `dimensions`, `interpolation`, `outside` | Sample a dense 3-D grid. | [signal schema](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
-| `tiled_grid` | `manifest`, `coordinate_frame`, `tile_size_mm`, `interpolation`, `outside` | Sample a bounded tiled grid. | [signal schema](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
-| `zone_map` | `artifact`, `coordinate_frame`, `boundary`, `overlap` | Resolve polygon/polyhedron membership. | [signal schema](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
-| `path_profile` | `artifact`, `path`, `interpolation`, `before`, `after` | Sample a quantity by distance along a path. | [signal schema](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
-| `seeded_field` | `field_seed_domain`, `coordinate_frame`, `quantization_mm`, `correlation_mm`, `distribution`, `distribution_parameters` | Generate a deterministic correlated field. | [signal schema](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
-| `transmitter_field` | `transmitter`, `coordinate_frame`, `position_signal`, optional `orientation_signal`, `model`, `lookup`, `environment_signals` | Apply calibrated path-loss, antenna, and environment transfer. | [signal schema](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
-| `bernoulli` | `probability_millionths`, `key_domain`, optional `opportunity_filter` | Make a stable-key Boolean draw. | [signal schema](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
-| `uniform_integer` | `minimum`, `maximum`, `key_domain`, optional `opportunity_filter` | Make an unbiased stable-key inclusive integer draw. | [signal schema](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
-| `exponential_wait` | `rate`, `sampler_version`, `sampler_table`, `key_domain`, optional `maximum_nanos` | Sample an exact integer inverse-CDF exponential wait. | [signal schema](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
-| `weibull_wait` | `shape`, `scale_nanos`, `sampler_version`, `sampler_table`, `key_domain`, optional `maximum_nanos` | Sample an exact integer inverse-CDF Weibull wait. | [signal schema](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
+| `kind` | Required fields | Purpose |
+| --- | --- | --- |
+| `constant` | `value` | Emit one immutable typed literal. |
+| `step` | ordered `points`, `before` | Emit piecewise-constant values. |
+| `pulse` | `start`, `duration`, `inactive`, `active` | Emit one finite active interval. |
+| `periodic_pulse` | `epoch`, `period`, `width`, `phase`, `inactive`, `active` | Emit repeating exact active intervals. |
+| `ramp` | `start`, `end`, `start_value`, `end_value`, `rounding` | Emit one exact linear transition. |
+| `triangle` | `epoch`, `period`, `phase`, `minimum`, `maximum`, `rounding` | Emit a periodic triangle wave. |
+| `sawtooth` | `epoch`, `period`, `phase`, `minimum`, `maximum`, `rounding` | Emit a periodic sawtooth wave. |
+| `event_sequence` | ordered `events` | Emit typed events with stable same-coordinate order. |
+| `trace` | `artifact`, `raw_provenance`, `channel`, `interpolation`, `before`, `after`, `missing`; optional quality channel/threshold and time mapping | Replay a normalized recorded channel while retaining its raw provenance. |
+| `telemetry` | `adapter`, `target`, `field`, `boundary_delay=1` | Read delayed production telemetry without a feedback loop. |
+| `point_set` | `artifact`, `coordinate_frame`, `interpolation`, `outside` | Sample irregular spatial data. |
+| `regular_grid` | `artifact`, `coordinate_frame`, `origin_mm`, `cell_size_mm`, `dimensions`, `interpolation`, `outside` | Sample a dense 3-D grid. |
+| `tiled_grid` | `manifest`, `coordinate_frame`, `tile_size_mm`, `interpolation`, `outside` | Sample a bounded tiled grid. |
+| `zone_map` | `artifact`, `coordinate_frame`, `boundary`, `overlap` | Resolve polygon/polyhedron membership. |
+| `path_profile` | `artifact`, `path`, `interpolation`, `before`, `after` | Sample a quantity by distance along a path. |
+| `seeded_field` | `field_seed_domain`, `coordinate_frame`, `quantization_mm`, `correlation_mm`, `distribution`, `distribution_parameters` | Generate a deterministic correlated field. |
+| `transmitter_field` | `transmitter`, `coordinate_frame`, `position_signal`, optional `orientation_signal`, `model`, `lookup`, `environment_signals` | Apply calibrated path-loss, antenna, and environment transfer. |
+| `bernoulli` | `probability_millionths`, `key_domain`, optional `opportunity_filter` | Make a stable-key Boolean draw. |
+| `uniform_integer` | `minimum`, `maximum`, `key_domain`, optional `opportunity_filter` | Make an unbiased stable-key inclusive integer draw. |
+| `exponential_wait` | `rate`, `sampler_version`, `sampler_table`, `key_domain`, optional `maximum_nanos` | Sample an exact integer inverse-CDF exponential wait. |
+| `weibull_wait` | `shape`, `scale_nanos`, `sampler_version`, `sampler_table`, `key_domain`, optional `maximum_nanos` | Sample an exact integer inverse-CDF Weibull wait. |
 
 Interpolation is `exact`, `hold_previous`, `nearest`, or `linear`; linear also
 declares `rounding` and `overflow`. Boundary behavior is `error`, `hold`,
@@ -755,24 +916,24 @@ Stochastic `key_domain` is `opportunity`, `transition`, or `coordinate`.
 
 Pure specification kinds select the parameter shape:
 
-| `kind` | Required fields | Purpose | Configuration source |
-| --- | --- | --- | --- |
-| `simple` | `operator`, `overflow` | Configure a parameter-free arithmetic, comparison, Boolean, selection, or edge operator. | [pure schemas](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
-| `ratio_arithmetic` | `operator`, `ratio`, `rounding`, `overflow` | Multiply or divide by an exact reduced ratio. | [pure schemas](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
-| `clamp` | `minimum`, `maximum`, `overflow` | Clamp a value to inclusive typed bounds. | [pure schemas](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
-| `lookup_step` | ordered `points`, `before`, `after` | Apply a piecewise-constant lookup. | [pure schemas](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
-| `piecewise_linear` | ordered `points`, `rounding`, `overflow` | Apply exact linear interpolation between lookup points. | [pure schemas](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
-| `enum_map` | exhaustive `entries` | Map every accepted enum input to a typed output. | [pure schemas](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
-| `unit_convert` | `from_unit`, `to_unit`, `ratio`, `offset`, `rounding`, `overflow` | Convert compatible units with exact affine arithmetic. | [pure schemas](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
-| `delay` | positive `delay`, positive `retained_samples` | Delay values in their declared domain with a hard history bound. | [pure schemas](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
-| `sample_hold` | positive `cadence`, `epoch`, positive `retained_samples` | Sample and hold at exact domain coordinates. | [pure schemas](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
-| `window` | `operator`, positive `window`, `sampling_cadence`, positive `retained_samples`, `rounding`, `overflow` | Compute a bounded window minimum, maximum, or mean. | [pure schemas](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
-| `distance` | `metric`, `rounding` | Compute spatial distance in one coordinate frame. | [pure schemas](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
-| `zone_contains` | `zone` | Test declared zone membership. | [pure schemas](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
-| `field_sample` | none | Sample a declared spatial field using the input coordinate. | [pure schemas](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
-| `orientation_delta` | `convention` | Compute orientation difference using a closed convention. | [pure schemas](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
-| `merge_events` | positive `source_sequence_limit` | Merge typed event streams with bounded stable ordering. | [pure schemas](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
-| `gate_events` | none | Pass typed events only while the Boolean gate input is true. | [pure schemas](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
+| `kind` | Required fields | Purpose |
+| --- | --- | --- |
+| `simple` | `operator`, `overflow` | Configure a parameter-free arithmetic, comparison, Boolean, selection, or edge operator. |
+| `ratio_arithmetic` | `operator`, `ratio`, `rounding`, `overflow` | Multiply or divide by an exact reduced ratio. |
+| `clamp` | `minimum`, `maximum`, `overflow` | Clamp a value to inclusive typed bounds. |
+| `lookup_step` | ordered `points`, `before`, `after` | Apply a piecewise-constant lookup. |
+| `piecewise_linear` | ordered `points`, `rounding`, `overflow` | Apply exact linear interpolation between lookup points. |
+| `enum_map` | exhaustive `entries` | Map every accepted enum input to a typed output. |
+| `unit_convert` | `from_unit`, `to_unit`, `ratio`, `offset`, `rounding`, `overflow` | Convert compatible units with exact affine arithmetic. |
+| `delay` | positive `delay`, positive `retained_samples` | Delay values in their declared domain with a hard history bound. |
+| `sample_hold` | positive `cadence`, `epoch`, positive `retained_samples` | Sample and hold at exact domain coordinates. |
+| `window` | `operator`, positive `window`, `sampling_cadence`, positive `retained_samples`, `rounding`, `overflow` | Compute a bounded window minimum, maximum, or mean. |
+| `distance` | `metric`, `rounding` | Compute spatial distance in one coordinate frame. |
+| `zone_contains` | `zone` | Test declared zone membership. |
+| `field_sample` | none | Sample a declared spatial field using the input coordinate. |
+| `orientation_delta` | `convention` | Compute orientation difference using a closed convention. |
+| `merge_events` | positive `source_sequence_limit` | Merge typed event streams with bounded stable ordering. |
+| `gate_events` | none | Pass typed events only while the Boolean gate input is true. |
 
 The `operator` field is exhaustive:
 
@@ -817,17 +978,17 @@ The `operator` field is exhaustive:
 
 Stateful specification kinds are exhaustive:
 
-| `kind` | Required fields | Purpose | Configuration source |
-| --- | --- | --- | --- |
-| `hysteresis` | `initial`, `set_when`, `clear_when`, `minimum_residence_nanos` | Apply Boolean hysteresis with an optional residence interval. | [stateful schemas](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
-| `debounce` | `initial`, `residence_nanos` | Commit an input only after it remains stable for the residence interval. | [stateful schemas](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
-| `integrator` | `initial`, `cadence_nanos`, positive `time_unit_nanos`, `rounding`, `overflow` | Integrate exactly at source changes or a declared cadence. | [stateful schemas](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
-| `leaky_integrator` | `initial`, positive `cadence_nanos`, positive `time_unit_nanos`, `decay_ratio`, positive `maximum_catch_up_steps`, `rounding`, `overflow` | Integrate at fixed cadence while applying exact rational decay. | [stateful schemas](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
-| `finite_state_machine` | nonempty `states`, `initial`, exhaustive `transitions`, `unmatched_event` | Run a closed event/guard/timer transition table. | [stateful schemas](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
-| `markov_chain` | nonempty `states`, `initial`, `opportunity`, `probability_rows` | Run an exact-probability finite Markov chain. | [stateful schemas](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
-| `burst_process` | `initial_bad`, transition probabilities, `opportunity` | Run a two-state correlated good/bad process. | [stateful schemas](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
-| `counter` | `initial`, `maximum`, `overflow`, optional `reset_event` | Count bounded typed events with explicit overflow/reset behavior. | [stateful schemas](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
-| `queue_model` | positive `capacity`, `discipline`, `overflow` | Model bounded checkpointed service backlog. | [stateful schemas](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs) |
+| `kind` | Required fields | Purpose |
+| --- | --- | --- |
+| `hysteresis` | `initial`, `set_when`, `clear_when`, `minimum_residence_nanos` | Apply Boolean hysteresis with an optional residence interval. |
+| `debounce` | `initial`, `residence_nanos` | Commit an input only after it remains stable for the residence interval. |
+| `integrator` | `initial`, `cadence_nanos`, positive `time_unit_nanos`, `rounding`, `overflow` | Integrate exactly at source changes or a declared cadence. |
+| `leaky_integrator` | `initial`, positive `cadence_nanos`, positive `time_unit_nanos`, `decay_ratio`, positive `maximum_catch_up_steps`, `rounding`, `overflow` | Integrate at fixed cadence while applying exact rational decay. |
+| `finite_state_machine` | nonempty `states`, `initial`, exhaustive `transitions`, `unmatched_event` | Run a closed event/guard/timer transition table. |
+| `markov_chain` | nonempty `states`, `initial`, `opportunity`, `probability_rows` | Run an exact-probability finite Markov chain. |
+| `burst_process` | `initial_bad`, transition probabilities, `opportunity` | Run a two-state correlated good/bad process. |
+| `counter` | `initial`, `maximum`, `overflow`, optional `reset_event` | Count bounded typed events with explicit overflow/reset behavior. |
+| `queue_model` | positive `capacity`, `discipline`, `overflow` | Model bounded checkpointed service backlog. |
 
 Unknown variants or fields in any table are rejected.
 
@@ -909,75 +1070,75 @@ The following table is the complete closed operation vocabulary. The
 and the [filter schema and validation](../../../crates/crucible/crucible-engine/src/model/fault_signal/binding.rs)
 are the corresponding code contracts.
 
-| Operation value | Adapter | Opportunity represented | Configuration |
-| --- | --- | --- | --- |
-| `network_transmit` | `network` | A frame leaves a producer or forwarding interface. | Add `"network_transmit"` to `operations`. |
-| `network_receive` | `network` | A frame arrives at a selected recipient interface. | Add `"network_receive"` to `operations`. |
-| `network_contend` | `network` | Participants contend for a shared-medium resource. | Add `"network_contend"` to `operations`. |
-| `network_allocate` | `network` | A shared medium allocates service, a slot, or another bounded resource. | Add `"network_allocate"` to `operations`. |
-| `network_enqueue` | `network` | A frame is admitted to a bounded network queue. | Add `"network_enqueue"` to `operations`. |
-| `network_serve` | `network` | A queued frame consumes modeled link or forwarder service. | Add `"network_serve"` to `operations`. |
-| `network_dequeue` | `network` | A frame leaves a queue for delivery, forwarding, or disposal. | Add `"network_dequeue"` to `operations`. |
-| `network_learn` | `network` | A forwarder updates learned forwarding state. | Add `"network_learn"` to `operations`. |
-| `network_lookup` | `network` | A forwarder consults routing, switching, firewall, or related state. | Add `"network_lookup"` to `operations`. |
-| `network_route` | `network` | A route is selected or transitions between versioned paths. | Add `"network_route"` to `operations`. |
-| `network_translate` | `network` | An address, port, protocol, or control result is translated. | Add `"network_translate"` to `operations`. |
-| `network_encapsulate` | `network` | A frame or bundle is encapsulated or decapsulated. | Add `"network_encapsulate"` to `operations`. |
-| `network_select` | `network` | A path, backend, beam, gateway, channel, or candidate is selected. | Add `"network_select"` to `operations`. |
-| `network_traverse` | `network` | Traffic traverses one segment, medium, path, or scheduled contact. | Add `"network_traverse"` to `operations`. |
-| `network_change` | `network` | A versioned topology, path, profile, or attachment changes. | Add `"network_change"` to `operations`. |
-| `network_discover` | `network` | A network, peer, access point, cell, service, or contact is discovered. | Add `"network_discover"` to `operations`. |
-| `network_authenticate` | `network` | Network access or peer identity is authenticated. | Add `"network_authenticate"` to `operations`. |
-| `network_associate` | `network` | An interface establishes an attachment or association. | Add `"network_associate"` to `operations`. |
-| `network_handoff` | `network` | An attachment moves between access resources or paths. | Add `"network_handoff"` to `operations`. |
-| `network_acquire` | `network` | A scheduled contact, channel, beam, or link is acquired. | Add `"network_acquire"` to `operations`. |
-| `network_custody` | `network` | Delay-tolerant traffic changes custody or durable queue ownership. | Add `"network_custody"` to `operations`. |
-| `network_teardown` | `network` | A contact, association, tunnel, or attachment is torn down. | Add `"network_teardown"` to `operations`. |
-| `storage_read` | `storage` | A block or 9p read request is resolved. | Add `"storage_read"` to `operations`. |
-| `storage_write` | `storage` | A block or 9p write request is resolved. | Add `"storage_write"` to `operations`. |
-| `storage_flush` | `storage` | A guest requests a durability or ordering barrier. | Add `"storage_flush"` to `operations`. |
-| `storage_discard` | `storage` | A block range is discarded or deallocated. | Add `"storage_discard"` to `operations`. |
-| `storage_get_length` | `storage` | Guest-visible device capacity is queried. | Add `"storage_get_length"` to `operations`. |
-| `storage_reset` | `storage` | A storage device, controller, namespace, or path is reset. | Add `"storage_reset"` to `operations`. |
-| `storage_erase` | `storage` | A flash erase block is erased. | Add `"storage_erase"` to `operations`. |
-| `storage_refresh` | `storage` | Media is refreshed to restore or retain readable state. | Add `"storage_refresh"` to `operations`. |
-| `storage_admit` | `storage` | A controller decides whether to admit an operation. | Add `"storage_admit"` to `operations`. |
-| `storage_submit` | `storage` | An admitted operation is submitted to controller service. | Add `"storage_submit"` to `operations`. |
-| `storage_complete` | `storage` | A block, controller, array, or 9p operation completes. | Add `"storage_complete"` to `operations`. |
-| `storage_enumerate` | `storage` | A controller, namespace, path, or 9p device is enumerated. | Add `"storage_enumerate"` to `operations`. |
-| `storage_rebuild` | `storage` | An array performs bounded rebuild work. | Add `"storage_rebuild"` to `operations`. |
-| `node_boot` | `node` | A node enters its boot transition. | Add `"node_boot"` to `operations`. |
-| `node_run` | `node` | A node or vCPU performs scheduled execution. | Add `"node_run"` to `operations`. |
-| `node_pause` | `node` | A node enters a paused state. | Add `"node_pause"` to `operations`. |
-| `node_reset` | `node` | A node performs an architectural reset. | Add `"node_reset"` to `operations`. |
-| `node_stop` | `node` | A node stops or powers off. | Add `"node_stop"` to `operations`. |
-| `node_resume` | `node` | A stopped or paused node resumes execution. | Add `"node_resume"` to `operations`. |
-| `cpu_instruction` | `node` | A vCPU reaches an instruction execution opportunity. | Add `"cpu_instruction"` to `operations`. |
-| `cpu_exception` | `node` | A vCPU reaches an architecture exception transition. | Add `"cpu_exception"` to `operations`. |
-| `cpu_halt` | `node` | A vCPU enters or leaves a halted service state. | Add `"cpu_halt"` to `operations`. |
-| `register_access` | `node` | An architecture-resolved register is read or written. | Add `"register_access"` to `operations`. |
-| `memory_fetch` | `node` | A vCPU fetches instruction bytes. | Add `"memory_fetch"` to `operations`. |
-| `memory_load` | `node` | A vCPU loads data from memory. | Add `"memory_load"` to `operations`. |
-| `memory_store` | `node` | A vCPU stores data to memory. | Add `"memory_store"` to `operations`. |
-| `memory_dma_read` | `node` | A device reads guest memory through DMA. | Add `"memory_dma_read"` to `operations`. |
-| `memory_dma_write` | `node` | A device writes guest memory through DMA. | Add `"memory_dma_write"` to `operations`. |
-| `memory_page_table_walk` | `node` | A vCPU MMU reads a page-table descriptor. | Add `"memory_page_table_walk"` to `operations`. |
-| `memory_refresh` | `node` | Modeled main memory performs a refresh operation. | Add `"memory_refresh"` to `operations`. |
-| `interrupt_raise` | `node` | An interrupt source raises an interrupt. | Add `"interrupt_raise"` to `operations`. |
-| `interrupt_route` | `node` | An interrupt controller resolves a route and target. | Add `"interrupt_route"` to `operations`. |
-| `interrupt_acknowledge` | `node` | A target acknowledges an interrupt. | Add `"interrupt_acknowledge"` to `operations`. |
-| `interrupt_deliver` | `node` | An interrupt is delivered to a target vCPU. | Add `"interrupt_deliver"` to `operations`. |
-| `interrupt_return` | `node` | A vCPU completes an interrupt-return transition. | Add `"interrupt_return"` to `operations`. |
-| `clock_read` | `node` | Guest software reads a registered clock source. | Add `"clock_read"` to `operations`. |
-| `clock_arm` | `node` | A guest-visible timer is armed. | Add `"clock_arm"` to `operations`. |
-| `clock_fire` | `node` | A guest-visible timer reaches its fire boundary. | Add `"clock_fire"` to `operations`. |
-| `clock_synchronize` | `node` | A clock synchronization update is applied. | Add `"clock_synchronize"` to `operations`. |
-| `clock_source_switch` | `node` | Guest-visible timekeeping switches clock sources. | Add `"clock_source_switch"` to `operations`. |
-| `accelerator_submit` | `node` | A job is submitted to an accelerator queue. | Add `"accelerator_submit"` to `operations`. |
-| `accelerator_execute` | `node` | An accelerator performs modeled job work. | Add `"accelerator_execute"` to `operations`. |
-| `accelerator_complete` | `node` | An accelerator job produces a completion. | Add `"accelerator_complete"` to `operations`. |
-| `accelerator_memory_access` | `node` | An accelerator accesses device or guest memory. | Add `"accelerator_memory_access"` to `operations`. |
-| `accelerator_reset` | `node` | An accelerator performs a reset transition. | Add `"accelerator_reset"` to `operations`. |
+| Operation value | Adapter | Opportunity represented |
+| --- | --- | --- |
+| `network_transmit` | `network` | A frame leaves a producer or forwarding interface. |
+| `network_receive` | `network` | A frame arrives at a selected recipient interface. |
+| `network_contend` | `network` | Participants contend for a shared-medium resource. |
+| `network_allocate` | `network` | A shared medium allocates service, a slot, or another bounded resource. |
+| `network_enqueue` | `network` | A frame is admitted to a bounded network queue. |
+| `network_serve` | `network` | A queued frame consumes modeled link or forwarder service. |
+| `network_dequeue` | `network` | A frame leaves a queue for delivery, forwarding, or disposal. |
+| `network_learn` | `network` | A forwarder updates learned forwarding state. |
+| `network_lookup` | `network` | A forwarder consults routing, switching, firewall, or related state. |
+| `network_route` | `network` | A route is selected or transitions between versioned paths. |
+| `network_translate` | `network` | An address, port, protocol, or control result is translated. |
+| `network_encapsulate` | `network` | A frame or bundle is encapsulated or decapsulated. |
+| `network_select` | `network` | A path, backend, beam, gateway, channel, or candidate is selected. |
+| `network_traverse` | `network` | Traffic traverses one segment, medium, path, or scheduled contact. |
+| `network_change` | `network` | A versioned topology, path, profile, or attachment changes. |
+| `network_discover` | `network` | A network, peer, access point, cell, service, or contact is discovered. |
+| `network_authenticate` | `network` | Network access or peer identity is authenticated. |
+| `network_associate` | `network` | An interface establishes an attachment or association. |
+| `network_handoff` | `network` | An attachment moves between access resources or paths. |
+| `network_acquire` | `network` | A scheduled contact, channel, beam, or link is acquired. |
+| `network_custody` | `network` | Delay-tolerant traffic changes custody or durable queue ownership. |
+| `network_teardown` | `network` | A contact, association, tunnel, or attachment is torn down. |
+| `storage_read` | `storage` | A block or 9p read request is resolved. |
+| `storage_write` | `storage` | A block or 9p write request is resolved. |
+| `storage_flush` | `storage` | A guest requests a durability or ordering barrier. |
+| `storage_discard` | `storage` | A block range is discarded or deallocated. |
+| `storage_get_length` | `storage` | Guest-visible device capacity is queried. |
+| `storage_reset` | `storage` | A storage device, controller, namespace, or path is reset. |
+| `storage_erase` | `storage` | A flash erase block is erased. |
+| `storage_refresh` | `storage` | Media is refreshed to restore or retain readable state. |
+| `storage_admit` | `storage` | A controller decides whether to admit an operation. |
+| `storage_submit` | `storage` | An admitted operation is submitted to controller service. |
+| `storage_complete` | `storage` | A block, controller, array, or 9p operation completes. |
+| `storage_enumerate` | `storage` | A controller, namespace, path, or 9p device is enumerated. |
+| `storage_rebuild` | `storage` | An array performs bounded rebuild work. |
+| `node_boot` | `node` | A node enters its boot transition. |
+| `node_run` | `node` | A node or vCPU performs scheduled execution. |
+| `node_pause` | `node` | A node enters a paused state. |
+| `node_reset` | `node` | A node performs an architectural reset. |
+| `node_stop` | `node` | A node stops or powers off. |
+| `node_resume` | `node` | A stopped or paused node resumes execution. |
+| `cpu_instruction` | `node` | A vCPU reaches an instruction execution opportunity. |
+| `cpu_exception` | `node` | A vCPU reaches an architecture exception transition. |
+| `cpu_halt` | `node` | A vCPU enters or leaves a halted service state. |
+| `register_access` | `node` | An architecture-resolved register is read or written. |
+| `memory_fetch` | `node` | A vCPU fetches instruction bytes. |
+| `memory_load` | `node` | A vCPU loads data from memory. |
+| `memory_store` | `node` | A vCPU stores data to memory. |
+| `memory_dma_read` | `node` | A device reads guest memory through DMA. |
+| `memory_dma_write` | `node` | A device writes guest memory through DMA. |
+| `memory_page_table_walk` | `node` | A vCPU MMU reads a page-table descriptor. |
+| `memory_refresh` | `node` | Modeled main memory performs a refresh operation. |
+| `interrupt_raise` | `node` | An interrupt source raises an interrupt. |
+| `interrupt_route` | `node` | An interrupt controller resolves a route and target. |
+| `interrupt_acknowledge` | `node` | A target acknowledges an interrupt. |
+| `interrupt_deliver` | `node` | An interrupt is delivered to a target vCPU. |
+| `interrupt_return` | `node` | A vCPU completes an interrupt-return transition. |
+| `clock_read` | `node` | Guest software reads a registered clock source. |
+| `clock_arm` | `node` | A guest-visible timer is armed. |
+| `clock_fire` | `node` | A guest-visible timer reaches its fire boundary. |
+| `clock_synchronize` | `node` | A clock synchronization update is applied. |
+| `clock_source_switch` | `node` | Guest-visible timekeeping switches clock sources. |
+| `accelerator_submit` | `node` | A job is submitted to an accelerator queue. |
+| `accelerator_execute` | `node` | An accelerator performs modeled job work. |
+| `accelerator_complete` | `node` | An accelerator job produces a completion. |
+| `accelerator_memory_access` | `node` | An accelerator accesses device or guest memory. |
+| `accelerator_reset` | `node` | An accelerator performs a reset transition. |
 
 ### Target selector values
 
@@ -1009,83 +1170,86 @@ Sensor targets are specification-only and are rejected by this schema.
 ### Exhaustive effect registry
 
 Every row below is executable. `Parameters` names the primary closed table or
-fields; follow the linked family source for nested enum fields. Legal targets,
+fields; nested enum fields are defined in the network, storage, and node
+parameter sources listed at the start of
+[Plans, signals, bindings, and faults](#plans-signals-bindings-and-faults).
+Legal targets,
 phases, lifetimes, composition, capabilities, and replay-evidence keys are
 enforced by the [effect registry](../../../crates/crucible/crucible-engine/src/model/fault_signal/effect_registry.rs).
 
-| Effect `kind` | Parameters and purpose | Configuration source |
-| --- | --- | --- |
-| `network.availability` | Directional `state` and queued/in-flight policies; make an interface, segment, path, or contact up, down, receive-only, or transmit-only. | [network parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/network_effect.rs) |
-| `network.flap` | Down, training, and recovery durations; model timed link transitions. | [network parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/network_effect.rs) |
-| `network.negotiated_mode` | Rate, duplex, lanes, FEC, and training duration. | [network parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/network_effect.rs) |
-| `network.profile_delta` | Optional latency/rate/error/technology profile components. | [network parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/network_effect.rs) |
-| `network.propagation_delay` | Exact delay or a distance/velocity lookup; adds propagation time above the immutable scheduler floor. | [network parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/network_effect.rs) |
-| `network.access_delay` | Per-opportunity arbitration or retry delay in virtual nanoseconds. | [network parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/network_effect.rs) |
-| `network.jitter` | Keyed bounded delay variation with a closed distribution. | [network parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/network_effect.rs) |
-| `network.service_curve` | Ordered piecewise-constant rate segments integrated over virtual time. | [network parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/network_effect.rs) |
-| `network.token_bucket` | Rate, burst size, and initial tokens for a checkpointed service constraint. | [network parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/network_effect.rs) |
-| `network.queue_policy` | Byte/frame capacity, discipline/classes, and overflow response. | [network parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/network_effect.rs) |
-| `network.frame_loss` | Explicit or millionths-probability frame loss keyed to stable frame identity. | [network parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/network_effect.rs) |
-| `network.burst_error_state` | Correlated good/bad loss and corruption process with checkpointed transition state. | [network parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/network_effect.rs) |
-| `network.duplicate` | Probability, copy count, and inter-copy gap for bounded additional deliveries. | [network parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/network_effect.rs) |
-| `network.reorder` | Bounded reorder window and keyed selection rule. | [network parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/network_effect.rs) |
-| `network.payload_transform` | Bit flip, field mutation, truncation, or undetected corruption. | [network parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/network_effect.rs) |
-| `network.detected_frame_error` | CRC/FCS/framing/FEC class and corrected/retry/drop/reset receiver action. | [network parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/network_effect.rs) |
-| `network.mtu` | MTU plus drop, fragment, or typed-error oversize policy. | [network parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/network_effect.rs) |
-| `network.pause_backpressure` | Class-scoped pause state with an optional exact resume boundary. | [network parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/network_effect.rs) |
-| `network.recipient_subset` | Versioned multicast/broadcast candidate filtering by declared membership. | [network parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/network_effect.rs) |
-| `network.forwarder_lifecycle` | Restart/reset/power-loss transition, downtime, and queue/table retention. | [network parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/network_effect.rs) |
-| `network.forwarding_mutation` | Wrong-port, flood, blackhole, loop, or stale-age lookup mutation. | [network parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/network_effect.rs) |
-| `network.route_transition` | Old/new paths, convergence events, and in-flight policy. | [network parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/network_effect.rs) |
-| `network.control_plane_service` | Bounded control queue, service curve, work size, and overflow. | [network parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/network_effect.rs) |
-| `network.firewall_disposition` | Selector/state machine plus accept, reject, or drop. | [network parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/network_effect.rs) |
-| `network.connection_state` | NAT, conntrack, load-balancer, tunnel, or DNS table and overflow state. | [network parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/network_effect.rs) |
-| `network.shared_medium` | Resources, arbitration, contention/collision/capture, and duty cycle. | [network parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/network_effect.rs) |
-| `network.rf_channel` | Carrier/bandwidth, signal/noise/gain/attenuation/fading, SINR transfer, and retry outcomes. | [network parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/network_effect.rs) |
-| `network.association` | Candidate set, authentication, selection, hysteresis, timers, handoff, and traffic policy. | [network parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/network_effect.rs) |
-| `network.control_result_transform` | Technology operation plus drop, stale, bias, replace, or typed error result. | [network parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/network_effect.rs) |
-| `network.contact` | Contact intervals, range delay, and beam/gateway candidates. | [network parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/network_effect.rs) |
-| `network.custody_queue` | Bundle/byte capacity, priority, expiry, route/contact plan, hop bound, and overflow. | [network parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/network_effect.rs) |
-| `storage.availability` | Online/offline/read-only/degraded state. | [storage parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/storage_effect.rs) |
-| `storage.reported_capacity` | Guest-visible length and affected-range policy. | [storage parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/storage_effect.rs) |
-| `storage.latency` | Operation-filtered base delay and keyed jitter at resolve or delivery. | [storage parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/storage_effect.rs) |
-| `storage.service` | Integrated bandwidth, IOPS, queue, class, and token service constraints. | [storage parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/storage_effect.rs) |
-| `storage.operation_failure` | Operation set, keyed probability, and referenced typed failure result. | [storage parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/storage_effect.rs) |
-| `storage.stall_timeout` | Stall, recovery, and modeled timeout coordinates with explicit completion behavior. | [storage parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/storage_effect.rs) |
-| `storage.completion_reorder` | Bounded keyed completion ordering within the declared window. | [storage parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/storage_effect.rs) |
-| `storage.duplicate_completion` | Protocol-valid additional completions and guest duplicate disposition. | [storage parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/storage_effect.rs) |
-| `storage.read_transform` | Bit corruption, stale-version read, or cross-range/device misdirection. | [storage parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/storage_effect.rs) |
-| `storage.write_disposition` | Applied, lost, torn, or misdirected persistence. | [storage parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/storage_effect.rs) |
-| `storage.persistence_order` | Declared durable partial order and violation behavior. | [storage parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/storage_effect.rs) |
-| `storage.volatile_cache` | Bounded cache admission, eviction, dirty-eviction, and power-loss-protection policy. | [storage parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/storage_effect.rs) |
-| `storage.volatile_cache_loss` | Boundary impulse selecting the exact eligible cached-write set to lose. | [storage parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/storage_effect.rs) |
-| `storage.flush_disposition` | Honest, erroring, lying, or stalled flush result. | [storage parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/storage_effect.rs) |
-| `storage.media_range` | Persistent bad, latent, poisoned, or read-only byte range with count/time thresholds. | [storage parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/storage_effect.rs) |
-| `storage.flash_state` | Per-erase-block wear, program/erase failure, retention, and read-disturb state. | [storage parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/storage_effect.rs) |
-| `storage.controller_lifecycle` | Reset/reconnect/enumeration/namespace/path transition and pending-I/O treatment. | [storage parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/storage_effect.rs) |
-| `storage.array_state` | Array member/path state, selection, quorum, rebuild, and partial-update consistency. | [storage parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/storage_effect.rs) |
-| `ninep.result` | Typed errno, stale object, or misdirected 9p result. | [storage parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/storage_effect.rs) |
-| `ninep.visibility` | Checkpointed committed-versus-visible frontier and lookup behavior. | [storage parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/storage_effect.rs) |
-| `node.lifecycle` | Boot, crash, reset, power-cycle, stop, and recovery transition with explicit state loss. | [node parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/node_effect.rs) |
-| `node.hang` | Node, vCPU-set, or accelerator progress outage with watchdog/recovery policy. | [node parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/node_effect.rs) |
-| `cpu.service` | Exact rational execution capacity, thermal throttling, and vCPU service schedule. | [node parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/node_effect.rs) |
-| `cpu.vcpu_state` | Online, offline, or stalled vCPU transition with round-robin topology state. | [node parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/node_effect.rs) |
-| `cpu.register_transform` | Architecture-resolved bit flip, stuck mask/value, or replacement. | [node parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/node_effect.rs) |
-| `cpu.instruction_transform` | Instruction result corruption, skip, or replay at an exact instruction opportunity. | [node parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/node_effect.rs) |
-| `cpu.exception` | Architecture-specific machine check, hardware error, or injected exception. | [node parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/node_effect.rs) |
-| `interrupt.disposition` | Drop, delay, duplicate, or replace one exact interrupt delivery. | [node parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/node_effect.rs) |
-| `interrupt.storm` | Bounded generated interrupt sequence with exact acknowledgements. | [node parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/node_effect.rs) |
-| `memory.mutation` | Atomic GPA/GVA bit flip or byte replacement at a safe boundary. | [node parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/node_effect.rs) |
-| `memory.access_transform` | Stuck/read-corrupt/lost-write/torn-write/poison transform by access class. | [node parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/node_effect.rs) |
-| `memory.ecc_event` | Corrected or uncorrectable ECC event with a platform error record and acknowledgement. | [node parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/node_effect.rs) |
-| `memory.region_state` | Persistent failure, retention decay, or rowhammer disturbance with range counters. | [node parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/node_effect.rs) |
-| `memory.service` | Shared memory-access latency, bandwidth, and page-table-walk service constraints. | [node parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/node_effect.rs) |
-| `clock.transform` | Guest-visible offset, rational drift, jump, freeze, jitter, or wander. | [node parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/node_effect.rs) |
-| `clock.source_state` | Clock-source failure, fallback, selection, or synchronization state. | [node parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/node_effect.rs) |
-| `accelerator.lifecycle` | Device disappearance, reset, reconnect, enumeration, and queue treatment. | [node parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/node_effect.rs) |
-| `accelerator.result_transform` | Ordered accelerator job-field or result-buffer corruption. | [node parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/node_effect.rs) |
-| `accelerator.memory_event` | Corrected, uncorrectable, or transformed device-memory event. | [node parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/node_effect.rs) |
-| `accelerator.service` | Compute, memory, thermal, or power service cap with queue/job ledgers. | [node parameters](../../../crates/crucible/crucible-engine/src/model/fault_signal/node_effect.rs) |
+| Effect `kind` | Parameters and purpose |
+| --- | --- |
+| `network.availability` | Directional `state` and queued/in-flight policies; make an interface, segment, path, or contact up, down, receive-only, or transmit-only. |
+| `network.flap` | Down, training, and recovery durations; model timed link transitions. |
+| `network.negotiated_mode` | Rate, duplex, lanes, FEC, and training duration. |
+| `network.profile_delta` | Optional latency/rate/error/technology profile components. |
+| `network.propagation_delay` | Exact delay or a distance/velocity lookup; adds propagation time above the immutable scheduler floor. |
+| `network.access_delay` | Per-opportunity arbitration or retry delay in virtual nanoseconds. |
+| `network.jitter` | Keyed bounded delay variation with a closed distribution. |
+| `network.service_curve` | Ordered piecewise-constant rate segments integrated over virtual time. |
+| `network.token_bucket` | Rate, burst size, and initial tokens for a checkpointed service constraint. |
+| `network.queue_policy` | Byte/frame capacity, discipline/classes, and overflow response. |
+| `network.frame_loss` | Explicit or millionths-probability frame loss keyed to stable frame identity. |
+| `network.burst_error_state` | Correlated good/bad loss and corruption process with checkpointed transition state. |
+| `network.duplicate` | Probability, copy count, and inter-copy gap for bounded additional deliveries. |
+| `network.reorder` | Bounded reorder window and keyed selection rule. |
+| `network.payload_transform` | Bit flip, field mutation, truncation, or undetected corruption. |
+| `network.detected_frame_error` | CRC/FCS/framing/FEC class and corrected/retry/drop/reset receiver action. |
+| `network.mtu` | MTU plus drop, fragment, or typed-error oversize policy. |
+| `network.pause_backpressure` | Class-scoped pause state with an optional exact resume boundary. |
+| `network.recipient_subset` | Versioned multicast/broadcast candidate filtering by declared membership. |
+| `network.forwarder_lifecycle` | Restart/reset/power-loss transition, downtime, and queue/table retention. |
+| `network.forwarding_mutation` | Wrong-port, flood, blackhole, loop, or stale-age lookup mutation. |
+| `network.route_transition` | Old/new paths, convergence events, and in-flight policy. |
+| `network.control_plane_service` | Bounded control queue, service curve, work size, and overflow. |
+| `network.firewall_disposition` | Selector/state machine plus accept, reject, or drop. |
+| `network.connection_state` | NAT, conntrack, load-balancer, tunnel, or DNS table and overflow state. |
+| `network.shared_medium` | Resources, arbitration, contention/collision/capture, and duty cycle. |
+| `network.rf_channel` | Carrier/bandwidth, signal/noise/gain/attenuation/fading, SINR transfer, and retry outcomes. |
+| `network.association` | Candidate set, authentication, selection, hysteresis, timers, handoff, and traffic policy. |
+| `network.control_result_transform` | Technology operation plus drop, stale, bias, replace, or typed error result. |
+| `network.contact` | Contact intervals, range delay, and beam/gateway candidates. |
+| `network.custody_queue` | Bundle/byte capacity, priority, expiry, route/contact plan, hop bound, and overflow. |
+| `storage.availability` | Online/offline/read-only/degraded state. |
+| `storage.reported_capacity` | Guest-visible length and affected-range policy. |
+| `storage.latency` | Operation-filtered base delay and keyed jitter at resolve or delivery. |
+| `storage.service` | Integrated bandwidth, IOPS, queue, class, and token service constraints. |
+| `storage.operation_failure` | Operation set, keyed probability, and referenced typed failure result. |
+| `storage.stall_timeout` | Stall, recovery, and modeled timeout coordinates with explicit completion behavior. |
+| `storage.completion_reorder` | Bounded keyed completion ordering within the declared window. |
+| `storage.duplicate_completion` | Protocol-valid additional completions and guest duplicate disposition. |
+| `storage.read_transform` | Bit corruption, stale-version read, or cross-range/device misdirection. |
+| `storage.write_disposition` | Applied, lost, torn, or misdirected persistence. |
+| `storage.persistence_order` | Declared durable partial order and violation behavior. |
+| `storage.volatile_cache` | Bounded cache admission, eviction, dirty-eviction, and power-loss-protection policy. |
+| `storage.volatile_cache_loss` | Boundary impulse selecting the exact eligible cached-write set to lose. |
+| `storage.flush_disposition` | Honest, erroring, lying, or stalled flush result. |
+| `storage.media_range` | Persistent bad, latent, poisoned, or read-only byte range with count/time thresholds. |
+| `storage.flash_state` | Per-erase-block wear, program/erase failure, retention, and read-disturb state. |
+| `storage.controller_lifecycle` | Reset/reconnect/enumeration/namespace/path transition and pending-I/O treatment. |
+| `storage.array_state` | Array member/path state, selection, quorum, rebuild, and partial-update consistency. |
+| `ninep.result` | Typed errno, stale object, or misdirected 9p result. |
+| `ninep.visibility` | Checkpointed committed-versus-visible frontier and lookup behavior. |
+| `node.lifecycle` | Boot, crash, reset, power-cycle, stop, and recovery transition with explicit state loss. |
+| `node.hang` | Node, vCPU-set, or accelerator progress outage with watchdog/recovery policy. |
+| `cpu.service` | Exact rational execution capacity, thermal throttling, and vCPU service schedule. |
+| `cpu.vcpu_state` | Online, offline, or stalled vCPU transition with round-robin topology state. |
+| `cpu.register_transform` | Architecture-resolved bit flip, stuck mask/value, or replacement. |
+| `cpu.instruction_transform` | Instruction result corruption, skip, or replay at an exact instruction opportunity. |
+| `cpu.exception` | Architecture-specific machine check, hardware error, or injected exception. |
+| `interrupt.disposition` | Drop, delay, duplicate, or replace one exact interrupt delivery. |
+| `interrupt.storm` | Bounded generated interrupt sequence with exact acknowledgements. |
+| `memory.mutation` | Atomic GPA/GVA bit flip or byte replacement at a safe boundary. |
+| `memory.access_transform` | Stuck/read-corrupt/lost-write/torn-write/poison transform by access class. |
+| `memory.ecc_event` | Corrected or uncorrectable ECC event with a platform error record and acknowledgement. |
+| `memory.region_state` | Persistent failure, retention decay, or rowhammer disturbance with range counters. |
+| `memory.service` | Shared memory-access latency, bandwidth, and page-table-walk service constraints. |
+| `clock.transform` | Guest-visible offset, rational drift, jump, freeze, jitter, or wander. |
+| `clock.source_state` | Clock-source failure, fallback, selection, or synchronization state. |
+| `accelerator.lifecycle` | Device disappearance, reset, reconnect, enumeration, and queue treatment. |
+| `accelerator.result_transform` | Ordered accelerator job-field or result-buffer corruption. |
+| `accelerator.memory_event` | Corrected, uncorrectable, or transformed device-memory event. |
+| `accelerator.service` | Compute, memory, thermal, or power service cap with queue/job ledgers. |
 
 The registry has 71 distinct keys and exactly one row above for each key. A
 reference-integrity gate compares this document with the closed
@@ -1105,13 +1269,13 @@ registry so a new executable kind cannot ship undocumented.
 `[properties.assertion.property]` is tagged by `kind`. Supplying a field not
 listed for that kind is an error.
 
-| `kind` | Required fields | Meaning | Reference |
-| --- | --- | --- | --- |
-| `always` | `predicate` | Invariant: the predicate must hold at every relevant evaluation point. | [TOML schema source](../../../crates/crucible/crucible-engine/src/model/toml.rs) |
-| `sometimes` | `predicate` | Liveness witness: the predicate must hold at least once. | [TOML schema source](../../../crates/crucible/crucible-engine/src/model/toml.rs) |
-| `eventually` | `trigger`, `property`, `deadline_ticks` | After `trigger` holds, `property` must hold within this many virtual-time ticks from the trigger instant. | [TOML schema source](../../../crates/crucible/crucible-engine/src/model/toml.rs) |
-| `after_quiescence` | `predicate` | Check the predicate once when the run quiesces or reaches its run limit. | [TOML schema source](../../../crates/crucible/crucible-engine/src/model/toml.rs) |
-| `reachable` | `predicate`, `expectation` | Coverage-style reachability or unreachability expectation. | [TOML schema source](../../../crates/crucible/crucible-engine/src/model/toml.rs) |
+| `kind` | Required fields | Meaning |
+| --- | --- | --- |
+| `always` | `predicate` | Invariant: the predicate must hold at every relevant evaluation point. |
+| `sometimes` | `predicate` | Liveness witness: the predicate must hold at least once. |
+| `eventually` | `trigger`, `property`, `deadline_ticks` | After `trigger` holds, `property` must hold within this many virtual-time ticks from the trigger instant. |
+| `after_quiescence` | `predicate` | Check the predicate once when the run quiesces or reaches its run limit. |
+| `reachable` | `predicate`, `expectation` | Coverage-style reachability or unreachability expectation. |
 
 Reachability expectation tables:
 
@@ -1125,25 +1289,25 @@ Reachability expectation tables:
 A predicate may be a DSL string or a structured table tagged by `kind`. The
 same vocabulary is accepted for assertion predicates and event triggers.
 
-| `kind` | Required/optional fields | True when | Reference |
-| --- | --- | --- | --- |
-| `at` | `at_ticks` | Virtual time equals the exact coordinate. | [TOML schema source](../../../crates/crucible/crucible-engine/src/model/toml.rs) |
-| `after` | `duration_ticks`, `of` | The exact picosecond duration has elapsed since event ID `of` last fired. | [TOML schema source](../../../crates/crucible/crucible-engine/src/model/toml.rs) |
-| `timer` | `name` | The named relative timer fires. | [TOML schema source](../../../crates/crucible/crucible-engine/src/model/toml.rs) |
-| `network_match` | `predicate`, `link?` | A delivered frame, optionally restricted to a link ID, matches the nested frame predicate. | [TOML schema source](../../../crates/crucible/crucible-engine/src/model/toml.rs) |
-| `console_match` | `node`, `regex` | The node's captured serial output matches the regex program. | [TOML schema source](../../../crates/crucible/crucible-engine/src/model/toml.rs) |
-| `coverage_point` | `node`, `point` | The node executes the nested address or symbol code point. | [TOML schema source](../../../crates/crucible/crucible-engine/src/model/toml.rs) |
-| `memory_predicate` | `node`, `place`, `cmp`, `value` | The sampled memory/register value satisfies the comparison. | [TOML schema source](../../../crates/crucible/crucible-engine/src/model/toml.rs) |
-| `io_pattern` | `node`, `io_kind` | An I/O event of the selected kind is observed for the node. | [TOML schema source](../../../crates/crucible/crucible-engine/src/model/toml.rs) |
-| `node_state` | `node`, `state` | The node has the selected lifecycle state. | [TOML schema source](../../../crates/crucible/crucible-engine/src/model/toml.rs) |
-| `assertion_state` | `name`, `state` | The named assertion is satisfied or violated. | [TOML schema source](../../../crates/crucible/crucible-engine/src/model/toml.rs) |
-| `quiescent` | None | The scheduler has settled with no immediately runnable work. | [TOML schema source](../../../crates/crucible/crucible-engine/src/model/toml.rs) |
-| `named` | `name`, `nodes?` | The named predicate DSL entry resolves in the current world/plan context. | [TOML schema source](../../../crates/crucible/crucible-engine/src/model/toml.rs) |
-| `guest_marker` | `marker` | The white-box-enabled guest emits the named bare marker or declared assertion marker as applicable. | [TOML schema source](../../../crates/crucible/crucible-engine/src/model/toml.rs) |
-| `all_of` | `predicates` array | Every nested predicate is true. | [TOML schema source](../../../crates/crucible/crucible-engine/src/model/toml.rs) |
-| `any_of` | `predicates` array | At least one nested predicate is true. | [TOML schema source](../../../crates/crucible/crucible-engine/src/model/toml.rs) |
-| `once` | `predicate` | The nested predicate has become true at least once. | [TOML schema source](../../../crates/crucible/crucible-engine/src/model/toml.rs) |
-| `not` | `predicate` | The nested predicate is false. | [TOML schema source](../../../crates/crucible/crucible-engine/src/model/toml.rs) |
+| `kind` | Required/optional fields | True when |
+| --- | --- | --- |
+| `at` | `at_ticks` | Virtual time equals the exact coordinate. |
+| `after` | `duration_ticks`, `of` | The exact picosecond duration has elapsed since event ID `of` last fired. |
+| `timer` | `name` | The named relative timer fires. |
+| `network_match` | `predicate`, `link?` | A delivered frame, optionally restricted to a link ID, matches the nested frame predicate. |
+| `console_match` | `node`, `regex` | The node's captured serial output matches the regex program. |
+| `coverage_point` | `node`, `point` | The node executes the nested address or symbol code point. |
+| `memory_predicate` | `node`, `place`, `cmp`, `value` | The sampled memory/register value satisfies the comparison. |
+| `io_pattern` | `node`, `io_kind` | An I/O event of the selected kind is observed for the node. |
+| `node_state` | `node`, `state` | The node has the selected lifecycle state. |
+| `assertion_state` | `name`, `state` | The named assertion is satisfied or violated. |
+| `quiescent` | None | The scheduler has settled with no immediately runnable work. |
+| `named` | `name`, `nodes?` | The named predicate DSL entry resolves in the current world/plan context. |
+| `guest_marker` | `marker` | The white-box-enabled guest emits the named bare marker or declared assertion marker as applicable. |
+| `all_of` | `predicates` array | Every nested predicate is true. |
+| `any_of` | `predicates` array | At least one nested predicate is true. |
+| `once` | `predicate` | The nested predicate has become true at least once. |
+| `not` | `predicate` | The nested predicate is false. |
 
 ### Named predicate DSL strings
 
@@ -1247,15 +1411,8 @@ names a checkpoint for `resume` and debugger attachment. Preserve every
 store object referenced by exported handles; reproduction artifacts carry their
 own signal closure.
 
-| Status | Class |
-| ---: | --- |
-| 0 | Success |
-| 1 | Property failure, divergence, replay mismatch, counterexample, or triage failure |
-| 2 | Virtual-time or scheduler-quantum timeout |
-| 3 | Crash, daemon failure, replay-oracle failure, or build-identity mismatch |
-| 4 | Backend failure |
-| 5 | Invalid scenario, artifact, store object, or local I/O input |
-| 64 | Command-line usage error |
+Process exit statuses are listed once, in
+[Running Crucible](running.md#exit-codes).
 
 Scripts should branch on the status class and consume JSON/JSONL output. Human
 diagnostic wording may change. See [Troubleshooting](troubleshooting.md) for

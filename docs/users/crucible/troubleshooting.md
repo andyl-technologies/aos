@@ -1,7 +1,90 @@
 # Troubleshooting Crucible
 
 Start with the process exit code. It classifies the failure before the detailed
-message or event log does.
+message or event log does. [Running Crucible](running.md#exit-codes) defines
+every status; the sections below are in numeric order.
+
+## Exit `1`: property failure or divergence
+
+### Property failure
+
+Retain the emitted `.crucible` artifact and replay it before changing the test:
+
+```sh
+./result/bin/crucible replay <artifact>
+```
+
+Then save immediately before the failure boundary if an alternate
+schedule needs investigation.
+
+If replay reports a terminal, event-stream, or fingerprint-stream divergence,
+retain both the artifact and complete packaged QEMU
+closure. Those errors mean the fresh guest execution did not reproduce the
+recording; they are not ordinary assertion failures.
+
+An interactive run can finish normally, but Crucible will reject live-QEMU
+failure-artifact capture until interactive commands can be recorded and replayed
+at exact scheduler coordinates. Re-run non-interactively to produce a portable
+artifact.
+
+### Verify divergence
+
+Repeat with a fixed seed and bisection enabled:
+
+```sh
+./result/bin/crucible \
+  --seed <recorded-seed> \
+  verify scenario.toml \
+  --runs 2 \
+  --bisect
+```
+
+Preserve both side artifacts. Do not start a search or fuzz campaign until
+ordinary repeated reductions agree.
+
+### Replay `--check` mismatch
+
+`--check` compares canonical log bytes, not a table rendering or arbitrary
+stdout capture. Generate and retain the original with `--format jsonl --trace`.
+
+## Exit `2`: timeout
+
+The run reached a modeled virtual-time or scheduler-quantum bound. A timeout is
+not a property violation. Decide whether the budget is the intended assertion
+or only a safety bound, then adjust the user-configurable budget or terminal
+condition within the [lifecycle limits](running.md#terminal-conditions-and-budgets).
+A host step deadline or campaign watchdog is an operational failure, not a
+modeled timeout finding; inspect its backend diagnostic instead.
+
+Check duration syntax: only positive integral `ticks`, `ns`, `us`, `ms`, and `s`
+values are accepted.
+
+## Exit `3`: identity, oracle, crash, or server failure
+
+### Reproduction build identity mismatch
+
+Replay requires the engine, artifact ABI, QEMU build, atomic patch, shared-memory
+ABI, guest-host protocol, RPC ABI, and plugin ABI recorded by the producer.
+Rebuild or recover the exact package revision that created the artifact.
+
+Production replay accepts only the v4 live-QEMU artifact contract. Any other
+contract fails closed before execution; the current CLI has no compatibility
+decoder.
+
+Do not bypass this check: replay under a different deterministic substrate is a
+different experiment.
+
+### Replay-oracle violation
+
+A materialized checkpoint and reduction from its ancestor produced different
+state. Preserve the artifact, store, trace, and complete build closure. This is
+a Crucible correctness failure, not an expected scenario outcome.
+
+### Daemon or backend crashed
+
+Run the same scenario locally with the packaged backend. If local execution
+works but the daemon route fails, confirm the daemon was started with
+`--production-qemu`. Its default quiescent lifecycle is for API testing.
 
 ## Exit `4`: backend discovery or configuration
 
@@ -97,88 +180,6 @@ campaign service. It takes `--campaign-socket`, `--principal`, the campaign
 name, and `--snapshot`; it does not accept a findings ledger, a directory of
 reproduction artifacts, or an individual `.crucible` artifact. See
 [Findings and triage](exploration.md#findings-and-triage).
-
-## Exit `3`: identity, oracle, crash, or server failure
-
-### Reproduction build identity mismatch
-
-Replay requires the engine, artifact ABI, QEMU build, atomic patch, shared-memory
-ABI, guest-host protocol, RPC ABI, and plugin ABI recorded by the producer.
-Rebuild or recover the exact package revision that created the artifact.
-
-Production replay accepts only the v4 live-QEMU artifact contract. Any other
-contract fails closed before execution; the current CLI has no compatibility
-decoder.
-
-Do not bypass this check: replay under a different deterministic substrate is a
-different experiment.
-
-### Replay-oracle violation
-
-A materialized checkpoint and reduction from its ancestor produced different
-state. Preserve the artifact, store, trace, and complete build closure. This is
-a Crucible correctness failure, not an expected scenario outcome.
-
-### Daemon or backend crashed
-
-Run the same scenario locally with the packaged backend. If local execution
-works but the daemon route fails, confirm the daemon was started with
-`--production-qemu`. Its default quiescent lifecycle is for API testing.
-
-## Exit `2`: timeout
-
-The run reached a modeled virtual-time or scheduler-quantum bound. A timeout is
-not a property violation. Decide whether the budget is the intended assertion
-or only a safety bound, then adjust the user-configurable budget or terminal
-condition within the [lifecycle limits](running.md#terminal-conditions-and-budgets).
-A host step deadline or campaign watchdog is an operational failure, not a
-modeled timeout finding; inspect its backend diagnostic instead.
-
-Check duration syntax: only positive integral `ticks`, `ns`, `us`, `ms`, and `s`
-values are accepted.
-
-## Exit `1`: property failure or divergence
-
-### Property failure
-
-Retain the emitted `.crucible` artifact and replay it before changing the test:
-
-```sh
-./result/bin/crucible replay <artifact>
-```
-
-Then save immediately before the failure boundary if an alternate
-schedule needs investigation.
-
-If replay reports a terminal, event-stream, or fingerprint-stream divergence,
-retain both the artifact and complete packaged QEMU
-closure. Those errors mean the fresh guest execution did not reproduce the
-recording; they are not ordinary assertion failures.
-
-An interactive run can finish normally, but Crucible will reject live-QEMU
-failure-artifact capture until interactive commands can be recorded and replayed
-at exact scheduler coordinates. Re-run non-interactively to produce a portable
-artifact.
-
-### Verify divergence
-
-Repeat with a fixed seed and bisection enabled:
-
-```sh
-./result/bin/crucible \
-  --seed <recorded-seed> \
-  verify scenario.toml \
-  --runs 2 \
-  --bisect
-```
-
-Preserve both side artifacts. Do not start a search or fuzz campaign until
-ordinary repeated reductions agree.
-
-### Replay `--check` mismatch
-
-`--check` compares canonical log bytes, not a table rendering or arbitrary
-stdout capture. Generate and retain the original with `--format jsonl --trace`.
 
 ## Exit `64`: command-line usage
 

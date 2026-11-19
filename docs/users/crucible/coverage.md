@@ -32,7 +32,7 @@ and programmatic surfaces are mapped in the [Rust integration API](rust-api.md).
 
 ## Packaged command inventory
 
-All thirteen shipped subcommands are packaged on the local CLI. A command can
+All fourteen shipped subcommands are packaged on the local CLI. A command can
 still have narrower daemon or backend behavior, which its guide must state.
 
 | Command | Primary behavior | User documentation | Boundary |
@@ -45,9 +45,11 @@ still have narrower daemon or backend behavior, which its guide must state.
 | `replay` | Reproduce an artifact and optionally compare or bisect evidence. | [Reproduction](reproduction.md#replay), [Reference](reference.md#replay) | Reproduction artifacts may carry authenticated signal objects and resolved-effect traces. |
 | `search` | Explore bounded alternate schedules and fault choices. | [Exploration](exploration.md#state-space-search), [Reference](reference.md#search) | Local search attaches `--store` for signal search material; budgets are mandatory for useful exploration. |
 | `fuzz` | Instantiate and explore a bounded scenario family. | [Exploration](exploration.md#coverage-guided-fuzzing), [Reference](reference.md#fuzz) | Packaged local campaigns exist; fleet campaign orchestration remains an API/certification surface. |
-| `triage` | Cluster, compare, and minimize retained findings. | [Exploration](exploration.md#findings-and-triage), [Reference](reference.md#triage) | Operates on signed findings ledgers, not arbitrary log files. |
+| `triage` | Cluster and minimize the findings retained by a campaign snapshot. | [Exploration](exploration.md#findings-and-triage), [Reference](reference.md#triage) | Requires a connected campaign service and an exact snapshot; it does not read findings-ledger files. |
 | `debug` | Inspect a retained or running execution. | [Debugging](debugging.md#debug-command), [Reference](reference.md#debug) | Some actions require a daemon session, debug gateway, guest agent, or explicit mutable fork. |
 | `serve` | Run the mutual-TLS or explicitly trusted cleartext HTTP/2 lifecycle control plane. | [Daemon operation](daemon.md), [Reference](reference.md#serve) | Not a distributed scheduler and not equivalent to every local CLI workflow. |
+| `campaign` | Author campaign inputs offline, and inspect or control a lazy campaign through the local daemon. | [Lazy campaigns](campaigns.md), [Reference](reference.md#campaign) | Single-host; most subcommands need a connected campaign socket and an authorized principal. |
+| `store` | Inspect or maintain a configured content store. | [Lazy campaigns](campaigns.md#inspect-and-collect-a-composed-store), [Reference](reference.md#store) | Operates on an explicit composed store deployment file; garbage collection, cleanup, and repair require a stopped owner. |
 | `completions` | Emit an offline shell completion definition. | [Running Crucible](running.md#shell-completions), [Reference](reference.md#completions) | Reads only command schema and does not discover a backend. |
 
 Global options, environment variables, input resolution, output formats,

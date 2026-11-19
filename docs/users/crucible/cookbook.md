@@ -106,8 +106,6 @@ All bindings consume the same event signal but retain independent effect
 evidence. The ordering and exact durable frontier are recorded. After restart,
 assert guest-visible recovered state, not merely node liveness.
 
-The certified shared-cause Rust example implements this recipe end to end.
-
 ## Recorded environmental exposure
 
 Use this for temperature, RF attenuation, vibration, mobility, or other

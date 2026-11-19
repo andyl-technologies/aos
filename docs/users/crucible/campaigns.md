@@ -189,7 +189,7 @@ semantic scenario/genesis IDs and their verifier-derived scenario and
 configuration artifact IDs; use those four values in the lineage manifest.
 
 To import a recorded non-genesis configuration, pair the same canonical
-scenario TOML with a nonempty compact Schedule V2:
+scenario TOML with a nonempty compact Schedule V4:
 
 ```sh
 ./result/bin/crucible campaign schedule compile ./decisions.toml \
@@ -205,7 +205,7 @@ scenario TOML with a nonempty compact Schedule V2:
 ```
 
 Configuration compilation accepts at most 32 MiB for each input, requires the
-schedule to round-trip byte-for-byte through the current canonical Schedule V2
+schedule to round-trip byte-for-byte through the current canonical Schedule V4
 codec, and rejects an empty schedule or an unresolved campaign `Selection`.
 Selections require repository-backed opportunity/domain authentication and are
 therefore imported through the daemon rather than asserted by an offline
@@ -214,7 +214,7 @@ artifact before atomically installing the same three-file, no-replace import
 bundle. Its report includes the scenario and configuration semantic IDs,
 verifier-derived artifact IDs, and decision count.
 
-When a Schedule V3 is not already recorded, `campaign schedule compile` accepts
+When a Schedule V4 is not already recorded, `campaign schedule compile` accepts
 a strict version-two TOML decision list. It supports the four current offline-
 authorable decision shapes and both preemption actions:
 
@@ -258,7 +258,7 @@ The manifest and output are each bounded to 32 MiB;
 the manifest contains 1 through 65,536 decisions, each delivery order contains
 1 through 65,536 events, and authored strings are bounded to 4,096 bytes without
 NUL or line breaks. The compiler rejects unknown fields and variants, re-decodes
-and byte-compares the canonical Schedule V2, and never replaces an existing
+and byte-compares the canonical Schedule V4, and never replaces an existing
 output. It does not author raw app-random or campaign `Selection` decisions.
 Selections require authenticated opportunity/domain/origin resolution, and
 runtime replay remains the final authority that an authored scheduling point is
@@ -298,11 +298,11 @@ control = 3
 shared-memory = 5
 ```
 
-`exact_closure_schema` names the CAS production-root envelope schema, distinct
-from the version-9 exact checkpoint manifest and the genesis configuration
-payload format. The current packaged executor requires root-envelope version 4;
-imported Crucible configuration payloads use version 2 and are independently
-authenticated by `genesis_content`. A different requested root-envelope version
+`exact_closure_schema` names the content-addressed production-root envelope
+schema, distinct from the exact checkpoint manifest and the genesis
+configuration payload format. The current packaged executor requires
+root-envelope version 5, as in the example above; imported Crucible
+configuration payloads are independently authenticated by `genesis_content`. A different requested root-envelope version
 is rejected before the packaged executor acquires host resources. Existing
 immutable lineage records are not rewritten at startup.
 
@@ -961,8 +961,8 @@ crucible campaign --socket "$CAMPAIGN_SOCKET" --principal operator \
 
 The supplied policy must have the same campaign mode as the source policy, and
 a statistical campaign must preserve the exact active policy. Derivation never
-converts between strict, streaming, and statistical modes. `steer policy` on an
-existing campaign name has the same exact-mode rule.
+converts between strict, streaming, and statistical modes. `campaign steer
+--policy` on an existing campaign name has the same exact-mode rule.
 
 Derivation shares the exact immutable history reachable from the selected
 source snapshot and leaves the source name unchanged. Retry the exact same
@@ -1195,6 +1195,98 @@ Keep the deployment and journal directory unchanged between commands. Apply reje
 stale generation before changing pack files. Retrying the same applied plan is
 idempotent, and readers that already opened an old pack remain valid through
 the generation switch.
+
+Three further maintenance subcommands exist. `store credentials refresh STORE`
+reloads the current credential files and validates every bound capability.
+`store cleanup incomplete-packs` takes `--state`, `--policy`, `--store`, and
+an optional `--node`, and reclaims complete and staging packs absent from the
+authenticated index; the state directory's owner lock must be free.
+`store repair placement CONTENT_ID --in STORE --source NODE --target NODE
+--state PATH --policy PATH` restores one physical placement from an
+independently authenticated peer and refuses a running service. Exact options
+are in the [`store` reference](reference.md#store).
+
+## Campaign command summary
+
+The [`campaign` reference](reference.md#campaign) lists every argument and
+default. This summary groups the subcommands by task. Subcommands in the first
+group run without `--socket` and `--principal`; the others use a connected
+campaign socket unless noted.
+
+- **Author and validate offline:** `fixture worked-network`,
+  `validate-import`, `validate --policy`, `scenario compile`,
+  `configuration compile`, `schedule compile`, `policy compile`, and
+  `lineage compile`.
+- **Create and attach:** `create`, `derive`, `attach`, and `list`.
+- **Control the lifecycle:** `start`, `resume`, `pause`, `stop` (with optional
+  `--seal`), `unseal`, `budget add`, `steer`, `pin`, and `unpin`.
+- **Branch:** `branch`, `choice-value encode`, `capture-attempt`,
+  `capture-status`, and `select-capture`.
+- **Inspect:** `status`, `watch`, `snapshot`, `compare`, `report`, `graph`,
+  `graph-object`, `choices`, `choice-object`, `frontier`, `frontier-object`,
+  `request-attempts`, and `findings`.
+- **Explain:** `explain`, `explain-finding`, `explain-attempt`, and `rankings`.
+- **Work with findings:** `replay`, `triage`, `debug`, and `finding-bundle`
+  (`export`, `verify`, `midpoint`, `fork-write`, `branch`).
+- **Archive between stopped owners:** `archive transfer` and
+  `archive inspect`.
+
+### Branch from a discovered choice
+
+`branch` submits one finite additive operator branch request. Name the
+semantic branch point, the exact parent configuration artifact, and the
+choice either by its exact opportunity and domain IDs or by one or more
+`--selector` expressions. Then supply finite `--value` entries, a
+`--generator`, or `--all`:
+
+```sh
+crucible campaign --socket "$CAMPAIGN_SOCKET" --principal operator \
+  branch network-recovery --expected "$SNAPSHOT" --command "$BRANCH_COMMAND" \
+  --branch-point "$BRANCH_POINT" --parent "$CONFIGURATION_ARTIFACT" \
+  --opportunity "$OPPORTUNITY" --domain "$DOMAIN" \
+  --value true --attempts 1 --stop next-choice
+```
+
+A value is `true`, `false`, `i64:N`, `u64:N`, `discrete:ID`, or `group:HEX`.
+`choice-value encode` produces the `group:HEX` form from complete
+`--member NAME=VALUE` assignments against an authenticated group domain.
+`--stop` defaults to `next-choice`; the other conditions are `terminal`,
+`boundary:NAME`, `virtual-time-ps:N`, `events:N`, `execution-quanta:N`, and
+`virtual-time-or-execution-quanta:TIME:QUANTA`. The active policy's attempt
+deadlines also apply. `--all` exhausts the authenticated finite domain under
+the active exhaustive policy and takes no `--command` or `--proposals`.
+
+`choices` pages the discovered choice opportunities of a snapshot,
+`choice-object --kind declaration|domain` inspects what one opportunity
+names, and `request-attempts` reads the execution bases admitted for one
+branch request.
+
+### Capture and continue a completed attempt
+
+`capture-attempt` replays a completed next-choice attempt to an exact
+pending-choice checkpoint. `capture-status` inspects the authenticated outcome
+and retained root of that capture request. Once the capture is Ready,
+`select-capture` admits an exact-source continuation and requires the later
+`--stop` condition reached after the pending choice is answered.
+
+### Replay, export, and archive findings
+
+`replay NAME --snapshot SNAPSHOT --finding FINDING` replays one authenticated
+finding reproduction through its pure oracle; add `--minimized` to replay the
+authenticated minimized reproduction when present.
+
+`finding-bundle export` writes one finding and its complete executable archive
+from a stopped owner into a new directory. `finding-bundle verify DIR` checks
+the archived evidence offline, and `--exact` repeats the retained production
+boundary in a fresh local QEMU lifecycle. `midpoint` opens an archived exact
+checkpoint in a private read-only QEMU session, `fork-write` forks a second
+private midpoint and proves one non-canonical register write, and `branch`
+executes a declared alternate choice from the imported executable archive.
+
+`archive transfer` moves one exact snapshot between stopped deployment owners
+under a closed `--mode` (`metadata`, `findings`, `debug`, `executable`, or
+`mirror`); `archive inspect` authenticates one named archive in a stopped
+deployment.
 
 ## Recovery rules
 
