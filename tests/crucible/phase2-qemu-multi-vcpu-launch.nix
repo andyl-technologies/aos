@@ -15,9 +15,9 @@
   launchTest =
     builtins.readFile ../../crates/crucible/crucible-qemu-host/tests/deterministic_launch.rs
     + builtins.readFile ../../crates/crucible/crucible-qemu-host/tests/deterministic_launch/launch_artifacts.rs;
-  determinismSpec = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
-  spatialSpec = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
-  qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
+  determinismSpec = builtins.readFile ../../docs/engineering/crucible/determinism.md;
+  spatialSpec = builtins.readFile ../../docs/engineering/crucible/scenario-model.md;
+  qemuSpec = builtins.readFile ../../docs/engineering/crucible/qemu-integration.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -26,65 +26,49 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismSpec [
+    failuresFor "docs/engineering/crucible/determinism.md" determinismSpec [
       {
-        label = "T-DET-29 task traceability marker";
-        needle = "**T-DET-29**";
-      }
-      {
-        label = "T-DET-29 completion note names launch gate";
+        label = "multi-vCPU launch check listed";
         needle = "`checks.crucible.phase2.qemuMultiVcpuLaunch`";
       }
       {
-        label = "T-DET-29 completion note names MTTCG rejection";
+        label = "MTTCG rejection";
         needle = "rejects MTTCG";
       }
       {
-        label = "T-DET-30 task traceability marker";
-        needle = "**T-DET-30**";
-      }
-      {
-        label = "T-DET-30 completion note names launch check";
-        needle = "`checks.crucible.phase2.qemuMultiVcpuLaunch`";
-      }
-      {
-        label = "T-DET-30 completion note names fixed topology";
-        needle = "fixed-at-genesis topology";
+        label = "fixed topology";
+        needle = "Fixed-at-genesis topology";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/10-qemu-integration.md" qemuSpec [
+    ++ failuresFor "docs/engineering/crucible/qemu-integration.md" qemuSpec [
       {
-        label = "T-QEMU-15 task traceability marker";
-        needle = "**T-QEMU-15**";
+        label = "multi-vCPU acceptance";
+        needle = "A node may have `smp_vcpus >= 1`";
       }
       {
-        label = "T-QEMU-15 completion note names multi-vCPU acceptance";
-        needle = "accepts `smp_vcpus >= 1`";
+        label = "multi-threaded TCG rejection";
+        needle = "Multi-threaded TCG is rejected because";
       }
       {
-        label = "T-QEMU-15 completion note names pre-spawn MTTCG rejection";
-        needle = "pre-spawn validator rejects MTTCG";
-      }
-      {
-        label = "T-QEMU-15 completion note names canonical RR option";
+        label = "canonical RR option";
         needle = "`rr_switch_quantum`";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/06-spatial-graph.md" spatialSpec [
+    ++ failuresFor "docs/engineering/crucible/scenario-model.md" spatialSpec [
       {
         label = "World schema carries vCPU count";
-        needle = "pub smp_vcpus: u16,";
+        needle = "`smp_vcpus: u16`";
       }
       {
         label = "World schema hashes fixed vCPU count";
         needle = "Fixed vCPU count. `N >= 1`";
       }
       {
-        label = "SPAT-8 permits fixed multi-vCPU RR contract";
-        needle = "Each VM node MUST request a fixed vCPU count `N >= 1`";
+        label = "fixed vCPU count is hashed";
+        needle = "`WorldNode` carries fixed `smp_vcpus`";
       }
       {
-        label = "SPAT-8 rejects MTTCG";
+        label = "scenario model rejects MTTCG";
         needle = "never MTTCG";
       }
     ]

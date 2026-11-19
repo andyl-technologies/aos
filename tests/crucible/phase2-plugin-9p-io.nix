@@ -10,7 +10,7 @@
 
   pluginLib = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/lib.rs;
   pluginNinePIo = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/ninep_io.rs;
-  pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
+  pluginSpec = builtins.readFile ../../docs/engineering/crucible/qemu-plugin.md;
   shmemSources = import ./_crucible-shmem-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -47,14 +47,14 @@
     forbiddenCallbackApis;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
+    failuresFor "docs/engineering/crucible/qemu-plugin.md" pluginSpec [
       {
-        label = "9p callback wording";
-        needle = "Implement the 9p submit/poll/burst-done callbacks against the";
+        label = "9p burst-done callback";
+        needle = "burst-done callback";
       }
       {
-        label = "whole burst wording";
-        needle = "holding the freeze for the whole burst";
+        label = "hold covers the whole burst";
+        needle = "the hold covers the whole burst";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/lib.rs" pluginLib [

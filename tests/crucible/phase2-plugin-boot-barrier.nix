@@ -18,8 +18,8 @@
       inherit lib;
       entry = ../../crates/crucible/crucible-qemu-shmem/src/shmem/frame_node.rs;
     };
-  pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
-  shmemSpec = builtins.readFile ../../docs/rfcs/0010-crucible/13-shmem-abi.md;
+  pluginSpec = builtins.readFile ../../docs/engineering/crucible/qemu-plugin.md;
+  shmemSpec = builtins.readFile ../../docs/engineering/crucible/shmem-abi.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -48,28 +48,24 @@
         inherit needle;
       })
       forbiddenBootBarrierApis)
-    ++ failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
+    ++ failuresFor "docs/engineering/crucible/qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-18 live completion evidence";
-        needle = "Completed by `checks.crucible.phase2.qemuLivePluginInstall`";
-      }
-      {
-        label = "boot barrier wording";
-        needle = "block on the boot barrier";
+        label = "boot barrier type";
+        needle = "`PluginBootBarrier`";
       }
       {
         label = "wake_signal futex wording";
-        needle = "wake_signal` futex";
+        needle = "`wake_signal` futex";
       }
       {
         label = "no wall-clock sleep wording";
-        needle = "wall-clock sleep used as the gate";
+        needle = "no wall-clock timeout or sleep fallback";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/13-shmem-abi.md" shmemSpec [
+    ++ failuresFor "docs/engineering/crucible/shmem-abi.md" shmemSpec [
       {
         label = "initial ceiling starts at zero";
-        needle = "max_advance_icount` MUST initialize to 0";
+        needle = "`max_advance_icount` MUST initialize to 0";
       }
       {
         label = "race-free futex idiom";

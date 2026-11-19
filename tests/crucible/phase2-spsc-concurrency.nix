@@ -17,8 +17,6 @@
     entry = ../../crates/crucible/crucible-test-support/src/gate_targets.rs;
   };
   gateTargetMapping = builtins.readFile ./phase1-gate-target-mapping.nix;
-  harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
-  shmemSpec = builtins.readFile ../../docs/rfcs/0010-crucible/13-shmem-abi.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -87,7 +85,7 @@
       }
       {
         label = "actual RingHeader ordering source guard";
-        needle = "assert_ring_header_source_uses_rfc_13_6_orderings";
+        needle = "assert_ring_header_source_uses_acquire_release_orderings";
       }
       {
         label = "function-scoped RingHeader ordering guard";
@@ -167,10 +165,6 @@
         label = "implemented shmem layer1 mapping target";
         needle = "gate = \"gate:layer1-injection\";\n      package = \"crucible-qemu-shmem\";\n      testTarget = \"gate_layer1_injection\";\n      requiredFeatures = [];";
       }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/13-shmem-abi.md" shmemSpec [
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {

@@ -1,7 +1,5 @@
 //! Contract A's isolated single-VM driver.
 //!
-//! Spec index: RFC-0010 files 04, 09.
-//!
 //! This module owns the pure L0 driver for Contract A: a single node receives an
 //! already-recorded, icount-stamped input list and produces deterministic
 //! instruction-stream, architectural-state, and virtual-time samples. The

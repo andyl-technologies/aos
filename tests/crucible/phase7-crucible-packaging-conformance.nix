@@ -8,22 +8,9 @@
   patchDir = ../../pkgs/emulation/qemu-patches;
   atomicPatch = import ../../pkgs/emulation/qemu-patches/_atomic-patch.nix;
   qemuNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
-  qemuPatchSpec = builtins.readFile ../../docs/rfcs/0010-crucible/11-qemu-patches.md;
-  packagingSpec = builtins.readFile ../../docs/rfcs/0010-crucible/26-packaging-aos-integration.md;
+  qemuPatchDoc = builtins.readFile ../../docs/engineering/crucible/qemu-patch.md;
+  testingAndGatesDoc = builtins.readFile ../../docs/engineering/crucible/testing-and-gates.md;
   defaultChecks = builtins.readFile ./default.nix;
-  specTextIn = directory:
-    builtins.concatStringsSep "\n" (
-      lib.mapAttrsToList (name: type:
-        if type == "directory"
-        then specTextIn (directory + "/${name}")
-        else if lib.hasSuffix ".md" name
-        then builtins.readFile (directory + "/${name}")
-        else "") (builtins.readDir directory)
-    );
-  allSpecText =
-    specTextIn ../../docs/rfcs/0010-crucible
-    + "\n"
-    + specTextIn ../../docs/rfcs/0014-signal-driven-fault-model;
 
   patchMicrotestsGateProvided = patchMicrotestsGate != null;
 
@@ -51,18 +38,19 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-  section11_3 =
-    builtins.elemAt
-    (lib.splitString "## 11.4"
-      (builtins.elemAt (lib.splitString "## 11.3 The patch catalog" qemuPatchSpec) 1))
-    0;
+  # The "## Catalog" section of the patch page, up to the next level-two heading.
+  catalogSectionParts = lib.splitString "\n## Catalog\n" qemuPatchDoc;
+  catalogSection =
+    if builtins.length catalogSectionParts < 2
+    then ""
+    else builtins.elemAt (lib.splitString "\n## " (builtins.elemAt catalogSectionParts 1)) 0;
   catalogRowLines =
     builtins.filter
     (line:
       lib.hasPrefix "  crucible-" line
       || lib.hasPrefix "  rr-" line
       || lib.hasPrefix "  (crucible-" line)
-    (lib.splitString "\n" section11_3);
+    (lib.splitString "\n" catalogSection);
   firstField = value: let
     fields = builtins.filter (field: field != "") (lib.splitString " " (lib.trim value));
   in
@@ -134,96 +122,28 @@
   qemuNixUnexpectedPatchRefs =
     builtins.filter (patch: !(builtins.elem patch manifestPatchFiles)) qemuNixExplicitPatchRefs;
 
-  tokensFor = enforces:
-    builtins.filter (token: token != "") (map lib.trim (lib.splitString "," enforces));
-  # Requirement ids: a family prefix and one or more dash-joined parts, the
-  # last of which may be a number (`DET-1`, `QFP-STATE-2`, `FAULT-ORDER`),
-  # or the short `E<n>` form.
-  isRequirementToken = token:
-    builtins.match "([A-Z]+(-[A-Z0-9]+)+|E[0-9]+)" token != null;
-  isDocumentedCapabilityToken = token:
-    builtins.elem token ["coverage" "PERF" "PLUG"];
-  tokenIsStated = token:
-    isRequirementToken token
-    && (hasInfix "[${token}]" allSpecText || hasInfix token allSpecText)
-    || isDocumentedCapabilityToken token && hasInfix token allSpecText;
+  # A catalog row is `  <name> ....... <class>`; the class is the last field.
   rowHasClass = row: class:
-    hasInfix " ${class} " row;
-  normalizeRowToken = token:
-    lib.trim (builtins.replaceStrings ["," "(" ")" "." ";" ":"] ["" "" "" "" "" ""] token);
-  rowTokensFor = row: class: let
-    parts = lib.splitString " ${class} " row;
-    tail =
-      if builtins.length parts < 2
-      then ""
-      else builtins.elemAt parts 1;
-  in
-    builtins.filter
-    (token: token != "")
-    (map normalizeRowToken (lib.splitString " " tail));
-  tokenSetDifference = left: right:
-    builtins.filter (token: !(builtins.elem token right)) left;
-  rowTokenFailuresFor = kind: name: row: class: enforces:
-    if row == null
-    then []
-    else let
-      manifestTokens = tokensFor enforces;
-      rowTokens = rowTokensFor row class;
-      missingManifestTokens = tokenSetDifference manifestTokens rowTokens;
-      extraCatalogTokens = tokenSetDifference rowTokens manifestTokens;
-    in
-      map
-      (token: "${kind} ${name}: section 11.3 catalog row is missing manifest enforces token ${token}")
-      missingManifestTokens
-      ++ map
-      (token: "${kind} ${name}: section 11.3 catalog row has extra enforces token ${token}")
-      extraCatalogTokens;
+    lib.hasSuffix " ${class}" (lib.trim row);
   rowClassFailuresFor = kind: name: row: class:
     if row == null || rowHasClass row class
     then []
     else [
-      "${kind} ${name}: section 11.3 catalog row is missing manifest class ${class}"
+      "${kind} ${name}: docs/engineering/crucible/qemu-patch.md catalog row is missing manifest class ${class}"
     ];
 
-  requirementFailuresFor = kind: name: enforces: let
-    tokens = tokensFor enforces;
-  in
-    lib.optionals (tokens == []) [
-      "${kind} ${name}: missing enforces mapping"
-    ]
-    ++ lib.optionals (!(builtins.any isRequirementToken tokens)) [
-      "${kind} ${name}: enforces mapping must include at least one requirement id"
-    ]
-    ++ lib.concatMap
-    (token:
-      lib.optionals (!(tokenIsStated token)) [
-        "${kind} ${name}: enforces token ${token} is not stated in RFC0010 or RFC0014"
-      ])
-    tokens;
-
-  patchRequirementFailures =
-    lib.concatMap
-    (patch: requirementFailuresFor "patch" patch.file patch.enforces)
-    [atomicPatch];
   patchCatalogRowFailures =
     lib.concatMap
-    (patch: let
-      row = catalogRowFor patch.catalogName;
-    in
-      rowClassFailuresFor "patch" patch.file row patch.class
-      ++ rowTokenFailuresFor "patch" patch.file row patch.class patch.enforces)
+    (patch: rowClassFailuresFor "patch" patch.file (catalogRowFor patch.catalogName) patch.class)
     [atomicPatch];
-  catalogOnlyRequirementFailures =
-    lib.concatMap
-    (capability: requirementFailuresFor "catalog-only capability" capability.catalogName capability.enforces)
-    additionalCapabilities;
   catalogOnlyRowFailures =
     lib.concatMap
-    (capability: let
-      row = catalogRowFor capability.catalogName;
-    in
-      rowClassFailuresFor "catalog-only capability" capability.catalogName row capability.class
-      ++ rowTokenFailuresFor "catalog-only capability" capability.catalogName row capability.class capability.enforces)
+    (capability:
+      rowClassFailuresFor
+      "catalog-only capability"
+      capability.catalogName
+      (catalogRowFor capability.catalogName)
+      capability.class)
     additionalCapabilities;
 
   catalogOnlyMappingFailures =
@@ -232,8 +152,8 @@
       lib.optionals (!(builtins.elem capability.carriedBy manifestPatchFiles)) [
         "pkgs/emulation/qemu-patches/_atomic-patch.nix: ${capability.catalogName} is carried by unknown patch ${capability.carriedBy}"
       ]
-      ++ lib.optionals (!(hasInfix "`${capability.catalogName}` -> `${capability.carriedBy}`" qemuPatchSpec)) [
-        "docs/rfcs/0010-crucible/11-qemu-patches.md: missing catalog-only carried-by mapping for ${capability.catalogName}"
+      ++ lib.optionals (!(hasInfix "`${capability.catalogName}` -> `${capability.carriedBy}`" qemuPatchDoc)) [
+        "docs/engineering/crucible/qemu-patch.md: missing catalog-only carried-by mapping for ${capability.catalogName}"
       ])
     additionalCapabilities;
 
@@ -242,12 +162,15 @@
     missingManifestPatches
     ++ map (patch: "pkgs/emulation/qemu-patches/${patch}: patch file is absent from the package manifest")
     unmanifestedPatchFiles
-    ++ map (name: "docs/rfcs/0010-crucible/11-qemu-patches.md: section 11.3 catalog missing ${name}")
+    ++ lib.optionals (catalogSection == "") [
+      "docs/engineering/crucible/qemu-patch.md: missing \"## Catalog\" section"
+    ]
+    ++ map (name: "docs/engineering/crucible/qemu-patch.md: catalog missing ${name}")
     missingCatalogRows
-    ++ map (name: "docs/rfcs/0010-crucible/11-qemu-patches.md: section 11.3 catalog row ${name} is not mapped to shipped, catalog-only, dev-only, or not-carried inventory")
+    ++ map (name: "docs/engineering/crucible/qemu-patch.md: catalog row ${name} is not mapped to shipped, catalog-only, dev-only, or not-carried inventory")
     unexpectedCatalogRows
     ++ lib.optionals (builtins.length catalogRowNames != builtins.length catalogRowLines) [
-      "docs/rfcs/0010-crucible/11-qemu-patches.md: section 11.3 catalog has duplicate crucible-* row names"
+      "docs/engineering/crucible/qemu-patch.md: catalog has duplicate crucible-* row names"
     ]
     ++ lib.optionals (!qemuNixAppliesAtomicPatch) [
       "pkgs/emulation/qemu.nix: shipped QEMU package must directly apply the atomic patch"
@@ -269,19 +192,13 @@
     devOnlyManifestCatalogNames
     ++ map (name: "pkgs/emulation/qemu.nix: shipped package references dev-only diagnostic patch ${name}")
     devOnlyQemuNixReferences
-    ++ patchRequirementFailures
     ++ patchCatalogRowFailures
-    ++ catalogOnlyRequirementFailures
     ++ catalogOnlyRowFailures
     ++ catalogOnlyMappingFailures
-    ++ failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingSpec [
-      {
-        label = "T-PKG-16 completion note";
-        needle = "Completed by `checks.crucible.phase7.cruciblePackagingConformance`";
-      }
+    ++ failuresFor "docs/engineering/crucible/testing-and-gates.md" testingAndGatesDoc [
       {
         label = "patch microtests gate reference";
-        needle = "`checks.crucible.phase2.gates.patchMicrotests`";
+        needle = "checks.crucible.phase2.gates.patchMicrotests";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -317,7 +234,7 @@ in
             printf 'check=%s\n' "$ATTR_PATH"
             printf 'tasks=%s\n' "$TASK_IDS"
             printf '%s\n' 'gate=gate:patch-microtests'
-            printf '%s\n' 'catalog=docs/rfcs/0010-crucible/11-qemu-patches.md#11.3'
+            printf '%s\n' 'catalog=docs/engineering/crucible/qemu-patch.md#catalog'
             printf '%s\n' 'package_manifest=pkgs/emulation/qemu-patches/_atomic-patch.nix'
             printf '%s\n' 'package=pkgs.qemu-crucible'
             printf 'atomic_patch=%s\n' "$ATOMIC_PATCH"
@@ -326,10 +243,9 @@ in
             printf 'dev_only_catalog_count=%s\n' "$DEV_ONLY_COUNT"
             printf '%s\n' 'patch_directory_equals_manifest=true'
             printf '%s\n' 'manifest_equals_shipped_catalog_rows=true'
-            printf '%s\n' 'manifest_class_and_enforces_match_catalog_rows=true'
+            printf '%s\n' 'manifest_class_matches_catalog_rows=true'
             printf '%s\n' 'catalog_only_capabilities_mapped_to_carrier_patches=true'
             printf '%s\n' 'dev_only_patches_excluded=true'
-            printf '%s\n' 'every_manifest_patch_maps_to_stated_requirement=true'
             printf '%s\n' 'qemu_package_applies_atomic_patch=true'
             printf '%s\n' 'patch_microtests_gate=checks.crucible.phase2.gates.patchMicrotests'
             printf '%s\n' 'patch_microtests_gate_result_consumed=true'

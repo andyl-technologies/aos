@@ -7,7 +7,7 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  workloadDoc = builtins.readFile ../../docs/rfcs/0010-crucible/33-examples-and-workloads.md;
+  workloadsDoc = builtins.readFile ../../docs/engineering/crucible/workloads.md;
   engineBackend = builtins.readFile ../../crates/crucible/crucible-engine/src/backend.rs;
   engineDevice = builtins.readFile ../../crates/crucible/crucible-engine/src/device.rs;
   engineModel = import ./_crucible-model-source.nix {inherit lib;};
@@ -36,18 +36,14 @@
   ];
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/33-examples-and-workloads.md" workloadDoc [
-      {
-        label = "T-WL-1 completion note";
-        needle = "Completed by `checks.crucible.phase4.workloadModel`";
-      }
+    failuresFor "docs/engineering/crucible/workloads.md" workloadsDoc [
       {
         label = "in-guest workload model documented";
-        needle = "closed `GuestWorkloadBinary`";
+        needle = "`GuestWorkloadBinary` is a closed set";
       }
       {
         label = "no host traffic injector documented";
-        needle = "application-traffic origination path exists in the engine";
+        needle = "`WorkloadEngineRole::permits_host_side_traffic_injector` | `false`";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" engineModel [

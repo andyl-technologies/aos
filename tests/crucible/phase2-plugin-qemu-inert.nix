@@ -10,8 +10,8 @@
   pluginLib = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/lib.rs;
   pluginInertness = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/inertness.rs;
   pluginGate = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/tests/gate_qemu_inert.rs;
-  pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
-  harnessSpec = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
+  pluginSpec = builtins.readFile ../../docs/engineering/crucible/qemu-plugin.md;
+  harnessSpec = builtins.readFile ../../docs/engineering/crucible/testing-and-gates.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -19,18 +19,18 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
+    failuresFor "docs/engineering/crucible/qemu-plugin.md" pluginSpec [
       {
-        label = "plugin-half scope wording";
-        needle = "contributes plugin-half evidence for [PLUG-49]";
+        label = "plugin-half inertness observation";
+        needle = "module expresses that plugin half as";
       }
       {
-        label = "full qemu inert corpus implemented by T-PATCH-3";
-        needle = "full real-QEMU corpus is";
+        label = "real-QEMU inert corpus";
+        needle = "corpus that proves patched QEMU matches upstream with sim mode off";
       }
       {
-        label = "PLUG-49 text";
-        needle = "When sim mode is off the plugin is not loaded at all";
+        label = "sim-off plugin not loaded";
+        needle = "When simulation mode is off the plugin is not loaded at all";
       }
       {
         label = "plugin argument absence";
@@ -41,14 +41,10 @@
         needle = "zero effect on a QEMU process launched without it";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessSpec [
+    ++ failuresFor "docs/engineering/crucible/testing-and-gates.md" harnessSpec [
       {
-        label = "full qemu inert gate remains harness-owned";
-        needle = "T-HARN-21";
-      }
-      {
-        label = "full qemu inert corpus is real-QEMU comparison";
-        needle = "behaviorally identical to an unpatched reference build";
+        label = "qemu-inert gate compares against unpatched QEMU";
+        needle = "the patched QEMU matches an unpatched reference";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/lib.rs" pluginLib [

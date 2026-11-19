@@ -2,8 +2,8 @@
 //!
 //! This module owns [`FsTree`], a read-only, content-addressed directory tree
 //! whose every observable value is a pure function of the served content and the
-//! requested path — never the host filesystem ([IO-13]). The three sources of
-//! host-filesystem nondeterminism the RFC names are eliminated here:
+//! requested path — never the host filesystem ([IO-13]). Three sources of
+//! host-filesystem nondeterminism are eliminated here:
 //!
 //! 1. **Path-hashed QIDs.** A node's QID `path` is [`qid_path`] — a stable,
 //!    collision-resistant BLAKE3-derived identifier for the node's canonical

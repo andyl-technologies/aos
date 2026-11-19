@@ -10,20 +10,13 @@
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   libSource = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
   exactLocalTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/scheduler_exact_local_event.rs;
-  schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/08-scheduling.md" schedulingDoc [
-      {
-        label = "T-SCHED-6 completion note";
-        needle = "Completed by `checks.crucible.phase3.schedulerExactLocalEvent`";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [
+    failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "I/O exact local variant";
         needle = "IoCompletion";

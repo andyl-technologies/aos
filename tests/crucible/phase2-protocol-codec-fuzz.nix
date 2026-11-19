@@ -17,8 +17,6 @@
     entry = ../../crates/crucible/crucible-qemu-plugin/src/block_io.rs;
   };
   pluginNinePIo = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/ninep_io.rs;
-  protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
-  harnessSpec = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -306,14 +304,6 @@
       {
         label = "regression corpus marker";
         needle = "regression_corpus";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/14-protocol.md" protocolSpec [
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessSpec [
-      {
-        label = "T-HARN-19 completion note";
-        needle = "Completed by `checks.crucible.phase2.protocolCodecFuzz`";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

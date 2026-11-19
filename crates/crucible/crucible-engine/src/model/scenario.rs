@@ -65,7 +65,7 @@ impl World {
 
     /// Returns the world's canonical heterogeneous logical node collection.
     ///
-    /// This is the RFC-0010 `World.nodes` contract: VM and I/O sub-nodes share
+    /// This is the `World.nodes` contract: VM and I/O sub-nodes share
     /// one namespace and one canonical collection. Callers that specifically
     /// launch QEMU guests use [`World::vm_nodes`] instead.
     #[must_use]

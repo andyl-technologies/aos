@@ -40,7 +40,6 @@
   emitterAbsenceGate = builtins.readFile ./phase4-guest-host-emitter-absence.nix;
   liveWhiteboxGate = builtins.readFile ./phase2-qemu-live-whitebox-doorbell.nix;
   phaseGate = builtins.readFile ./phase4-guest-host-channel-gate-wiring.nix;
-  guestHostDoc = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
@@ -49,17 +48,7 @@
   openTaskList = builtins.concatStringsSep "," openTaskIds;
   canonicalGate = "checks.crucible.phase4.guestHostChannelGateWiring";
   failures =
-    failuresFor "docs/rfcs/0010-crucible/16-guest-host-channel.md" guestHostDoc [
-      {
-        label = "T-GHC-15 completion note";
-        needle = "Completed by";
-      }
-      {
-        label = "canonical channel wiring no longer deferred";
-        needle = "gate definition files in lazy passthru";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-engine/tests/guest_host_channel_determinism.rs" channelDeterminismTest [
+    failuresFor "crates/crucible/crucible-engine/tests/guest_host_channel_determinism.rs" channelDeterminismTest [
       {
         label = "white-box on/off fingerprint equality";
         needle = "whitebox_channel_fingerprints_are_identical_with_markers_on_vs_off";

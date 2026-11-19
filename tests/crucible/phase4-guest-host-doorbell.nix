@@ -13,8 +13,6 @@
   pluginWhiteboxDoorbellWithTests =
     pluginWhiteboxDoorbell
     + builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs;
-  guestHostDoc = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
-  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
@@ -22,19 +20,7 @@
   taskList = builtins.concatStringsSep "," taskIds;
   openTaskList = builtins.concatStringsSep "," openTaskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/16-guest-host-channel.md" guestHostDoc [
-      {
-        label = "T-GHC-4 completion note";
-        needle = "Completed by";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "guest-host phase4 task range";
-        needle = "Guest↔host channel + optional agent";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/lib.rs" pluginLib [
+    failuresFor "crates/crucible/crucible-qemu-plugin/src/lib.rs" pluginLib [
       {
         label = "payload source export";
         needle = "WhiteboxDoorbellPayloadSource";

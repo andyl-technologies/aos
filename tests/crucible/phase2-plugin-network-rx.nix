@@ -28,7 +28,7 @@
     inherit lib;
     entry = ../../crates/crucible/crucible-qemu-plugin/src/idle_loop/tests/inbound_cases.rs;
   };
-  pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
+  pluginSpec = builtins.readFile ../../docs/engineering/crucible/qemu-plugin.md;
   shmemDeliveryErrors = import ./_rust-module-source.nix {
     inherit lib;
     entry = ../../crates/crucible/crucible-qemu-shmem/src/shmem/delivery_errors.rs;
@@ -91,14 +91,14 @@
     hotPathSources;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
+    failuresFor "docs/engineering/crucible/qemu-plugin.md" pluginSpec [
       {
-        label = "network RX wording";
-        needle = "Implement RX injection via the canonical retry path";
+        label = "network RX injection after the idle advance";
+        needle = "`PluginNetworkRx` injects from the idle context after the advance";
       }
       {
-        label = "idle jump ordering wording";
-        needle = "after the idle jump, gated by the delivery-icount rule";
+        label = "delivery-icount visibility rule";
+        needle = "frame.delivery_icount <= current_icount";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/lib.rs" pluginLib [

@@ -20,18 +20,14 @@
   };
   catalogTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/event_kind_catalog.rs;
   proximityTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/event_log_assertion_proximity.rs;
-  observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;
+  eventLogDoc = builtins.readFile ../../docs/engineering/crucible/event-log.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/19-observability-event-log.md" observabilityDoc [
-      {
-        label = "T-OBS-14 completion note";
-        needle = "Completed by `checks.crucible.phase4.eventLogAssertionProximity`";
-      }
+    failuresFor "docs/engineering/crucible/event-log.md" eventLogDoc [
       {
         label = "minimum projection note";
         needle = "minimum-distance";

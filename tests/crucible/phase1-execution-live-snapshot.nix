@@ -15,9 +15,8 @@
   gateTargetNix = builtins.readFile ./phase1-gate-target-mapping.nix;
   gateTargetRust = builtins.readFile ../../crates/crucible/crucible-test-support/src/gate_targets.rs;
   defaultChecks = builtins.readFile ./default.nix;
-  rfc = builtins.readFile ../../docs/rfcs/0010-crucible/05-execution-model.md;
-  sessionControlPlane = builtins.readFile ../../docs/rfcs/0010-crucible/20-session-control-plane.md;
-  patternsAndSketches = builtins.readFile ../../docs/rfcs/0010-crucible/29-patterns-and-sketches.md;
+  sessionDoc = builtins.readFile ../../docs/engineering/crucible/session.md;
+  executionModelDoc = builtins.readFile ../../docs/engineering/crucible/execution-model.md;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -171,34 +170,28 @@
         needle = "executionLiveSnapshot = import ./phase1-execution-live-snapshot.nix";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/05-execution-model.md" rfc [
+    ++ failuresFor "docs/engineering/crucible/session.md" sessionDoc [
       {
-        label = "T-EXEC-15 completion note";
-        needle = "Completed by `crates/crucible/crucible-session/src/lib.rs`: `LiveSnapshot`";
+        label = "live snapshot section";
+        needle = "### `LiveSnapshot`";
+      }
+      {
+        label = "control-responsive target observes mailbox-free progress";
+        needle = "`gate:control-responsive`: mailbox-free live progress";
+      }
+      {
+        label = "stop acknowledged within one quantum";
+        needle = "A pause or stop is at most one quantum away.";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/20-session-control-plane.md" sessionControlPlane [
+    ++ failuresFor "docs/engineering/crucible/execution-model.md" executionModelDoc [
       {
-        label = "T-SESS-2 completion names session-side control-responsive target";
-        needle = "`gate_control_responsive` target observes mailbox-free live progress";
-      }
-      {
-        label = "T-SESS-2 completion names one-quantum stop acknowledgement";
-        needle = "one-quantum stop acknowledgement";
-      }
-      {
-        label = "T-SESS-2 completion names live snapshot gate";
+        label = "live snapshot check is documented";
         needle = "`checks.crucible.phase1.executionLiveSnapshot`";
       }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsAndSketches [
       {
-        label = "T-PAT-1 completion names live snapshot mirror";
-        needle = "publish the `LiveSnapshot` mirror";
-      }
-      {
-        label = "T-PAT-1 completion names live snapshot gate";
-        needle = "`checks.crucible.phase1.executionLiveSnapshot`";
+        label = "live snapshot mirrors run state";
+        needle = "`LiveSnapshot` mirrors state kind";
       }
     ];
 in

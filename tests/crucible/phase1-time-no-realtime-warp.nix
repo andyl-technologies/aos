@@ -17,7 +17,6 @@
     + builtins.readFile ../../crates/crucible/crucible-qemu-host/tests/deterministic_launch/launch_artifacts.rs;
   pluginRoot = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/lib.rs;
   pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
-  timeSpec = builtins.readFile ../../docs/rfcs/0010-crucible/09-virtual-time-icount.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
@@ -117,12 +116,6 @@
       {
         label = "duplicate control rejection test";
         needle = "time_control_registration_order_rejects_duplicate_steps";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/09-virtual-time-icount.md" timeSpec [
-      {
-        label = "T-TIME-5 partial evidence boundary";
-        needle = "visible instruction and idle-warp suppression in a running guest";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

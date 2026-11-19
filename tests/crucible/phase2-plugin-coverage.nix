@@ -55,9 +55,9 @@
   backendBoundary = builtins.readFile ../../crates/crucible/crucible-engine/src/backend.rs;
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   session = import ./_crucible-session-source.nix {inherit lib;};
-  pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
-  patchSpec = builtins.readFile ../../docs/rfcs/0010-crucible/11-qemu-patches.md;
-  advancedSpec = builtins.readFile ../../docs/rfcs/0010-crucible/22-advanced-features.md;
+  pluginSpec = builtins.readFile ../../docs/engineering/crucible/qemu-plugin.md;
+  patchSpec = builtins.readFile ../../docs/engineering/crucible/qemu-patch.md;
+  advancedSpec = builtins.readFile ../../docs/engineering/crucible/exploration.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -113,26 +113,26 @@
     ];
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
+    failuresFor "docs/engineering/crucible/qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-15 records the loaded-QEMU equivalence evidence";
-        needle = "independent instruction/register/RR-cursor/writable-RAM/device-I/O trajectory";
+        label = "coverage leaves the execution fingerprint unchanged";
+        needle = "does not change the execution fingerprint";
       }
       {
-        label = "T-PLUG-15 records the current-ABI host observation handoff";
+        label = "coverage published through a per-VM SPSC ring";
         needle = "dedicated per-VM SPSC ring";
       }
       {
-        label = "coverage hook wording";
-        needle = "Implement the optional coverage hook";
+        label = "coverage hook is a registration-time opt-in";
+        needle = "Coverage is a registration-time opt-in";
       }
       {
-        label = "zero cost wording";
-        needle = "zero cost when off";
+        label = "coverage off registers no TB callback";
+        needle = "registers no translation-block callback";
       }
       {
-        label = "observational wording";
-        needle = "emit coverage as observational output";
+        label = "coverage is observational";
+        needle = "Coverage is observational";
       }
     ]
     ++ failuresFor "tests/crucible/phase6-basic-block-coverage.nix" liveCoverageGate [
@@ -141,20 +141,20 @@
         needle = "canonical_fingerprint_effect=none";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/11-qemu-patches.md" patchSpec [
+    ++ failuresFor "docs/engineering/crucible/qemu-patch.md" patchSpec [
       {
-        label = "exact TB-entry icount export spec";
+        label = "exact TB-entry icount export";
         needle = "qemu_plugin_icount_at_tb_entry";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/22-advanced-features.md" advancedSpec [
+    ++ failuresFor "docs/engineering/crucible/exploration.md" advancedSpec [
       {
-        label = "basic-block coverage spec";
+        label = "basic-block coverage hook";
         needle = "TCG-execution hook";
       }
       {
-        label = "coverage feedback only spec";
-        needle = "Coverage MUST feed the search and fuzzer as feedback only";
+        label = "coverage feedback only";
+        needle = "Coverage feeds the search and fuzzer as feedback only";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/lib.rs" pluginLib [

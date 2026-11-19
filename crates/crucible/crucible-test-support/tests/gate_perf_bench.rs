@@ -1,9 +1,9 @@
-//! `gate:perf-bench` — the RFC-0010 §25 cost-model regression gate.
+//! `gate:perf-bench` — the cost-model regression gate.
 //!
 //! This integration target is the runnable body of `gate:perf-bench`. It drives
 //! the harness cost-model substrate ([`crucible_test_support::perf`]) over the
 //! canonical hermetic corpus and asserts the structural/relative properties of
-//! the §25 performance contract: idle compression, the latency-is-the-budget
+//! the performance contract: idle compression, the latency-is-the-budget
 //! identity, the core-count speedup, serial/parallel bit-identity, the
 //! sub-millisecond-latency trade, the sync-overhead budget, node-count-
 //! independent per-TB overhead, rendezvous neutrality, boot amortization, the
@@ -15,8 +15,7 @@
 //! The gate ASSERTS these properties and RECORDS the raw metrics. Absolute
 //! wall-clock thresholds are never hard-asserted on the shared builder; the one
 //! host-timing test below asserts only a *relative* property (idle spans do not
-//! add wall-clock) with a generous ratio bound, mirroring the RFC's guidance
-//! ([PERF-20]).
+//! add wall-clock) with a generous ratio bound, so host noise cannot fail it.
 
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
@@ -41,14 +40,14 @@ use crucible_test_support::perf::{
     scenario_result_fingerprint, snapshot_latency_series,
 };
 
-/// [PERF-1], [PERF-19] — the full gate passes over the canonical corpus, and the
-/// report records every §25.7.1 cost-model metric term separately.
+/// The full gate passes over the canonical corpus, and the
+/// report records every cost-model metric term separately.
 #[test]
 fn gate_perf_bench_reports_every_cost_model_term() {
     let input = canonical_perf_bench_input();
     let report = run_perf_bench_gate(&input).expect("canonical perf corpus must pass the gate");
 
-    // Every §25.7.1 metric is recorded (attributed to a distinct cost-model term).
+    // Every perf-bench metric is recorded (attributed to a distinct cost-model term).
     assert!(report.tcg_ips > 0, "tcg_ips must be recorded");
     assert!(!report.idle_compression.is_empty(), "idle series recorded");
     assert!(report.parallelism_p >= 1, "realized P recorded");
@@ -78,7 +77,7 @@ fn gate_perf_bench_reports_every_cost_model_term() {
     assert!(report.peak_rss_units > 0, "peak RSS recorded");
 }
 
-/// [PERF-2] — a span of idle virtual time contributes zero wall-clock: the
+/// A span of idle virtual time contributes zero wall-clock: the
 /// modeled idle-compression series is flat regardless of idle duration.
 #[test]
 fn gate_perf_bench_idle_is_fast_forwarded_to_zero() {
@@ -94,7 +93,7 @@ fn gate_perf_bench_idle_is_fast_forwarded_to_zero() {
     }
 }
 
-/// [PERF-2] — the *host* wall-clock of a modeled run is flat in idle duration
+/// The *host* wall-clock of a modeled run is flat in idle duration
 /// too. This is the one host-timing test; it asserts only a relative property
 /// (idle spans do not scale wall-clock) with a generous ratio bound.
 #[test]
@@ -133,7 +132,7 @@ fn gate_perf_bench_idle_compression_is_flat_in_wall_clock() {
     );
 }
 
-/// [PERF-3], [HARN-11] — a k-node run approaches min(k, N)x as cores are added:
+/// A k-node run approaches min(k, N)x as cores are added:
 /// wall-clock is non-increasing and realized P is non-decreasing.
 #[test]
 fn gate_perf_bench_core_count_speedup_is_monotone() {
@@ -152,7 +151,7 @@ fn gate_perf_bench_core_count_speedup_is_monotone() {
     }
 }
 
-/// [PERF-4] — parallelism is the lookahead budget: realized P is non-decreasing
+/// Parallelism is the lookahead budget: realized P is non-decreasing
 /// in the minimum link latency, down to the floor.
 #[test]
 fn gate_perf_bench_parallelism_scales_with_lookahead() {
@@ -172,7 +171,7 @@ fn gate_perf_bench_parallelism_scales_with_lookahead() {
     );
 }
 
-/// [PERF-5], [PERF-24] — a serialized (P=1) and a maximally-parallel run produce
+/// A serialized (P=1) and a maximally-parallel run produce
 /// bit-identical result fingerprints: parallelism is a speed property only.
 #[test]
 fn gate_perf_bench_serial_and_parallel_are_bit_identical() {
@@ -192,7 +191,7 @@ fn gate_perf_bench_serial_and_parallel_are_bit_identical() {
     );
 }
 
-/// [PERF-6], [PERF-25] — a sub-millisecond-latency scenario stays deterministic
+/// A sub-millisecond-latency scenario stays deterministic
 /// while exhibiting the predicted parallelism reduction (the explicit trade).
 #[test]
 fn gate_perf_bench_low_latency_trades_parallelism_not_determinism() {
@@ -215,7 +214,7 @@ fn gate_perf_bench_low_latency_trades_parallelism_not_determinism() {
     );
 }
 
-/// [PERF-7] — the sync/determinism overhead is below the hard-fail threshold for
+/// The sync/determinism overhead is below the hard-fail threshold for
 /// a scenario at the recommended operating point.
 #[test]
 fn gate_perf_bench_sync_overhead_is_within_budget() {
@@ -228,7 +227,7 @@ fn gate_perf_bench_sync_overhead_is_within_budget() {
     );
 }
 
-/// [PERF-9] — per-TB plugin overhead is a small constant independent of node
+/// Per-TB plugin overhead is a small constant independent of node
 /// count: growing the scenario's node count does not grow it.
 #[test]
 fn gate_perf_bench_per_tb_overhead_is_node_count_independent() {
@@ -246,7 +245,7 @@ fn gate_perf_bench_per_tb_overhead_is_node_count_independent() {
     );
 }
 
-/// [PERF-10] — the rendezvous frequency is a pure perf/observation knob: two runs
+/// The rendezvous frequency is a pure perf/observation knob: two runs
 /// at different frequencies are bit-identical, and overhead rises with frequency.
 #[test]
 fn gate_perf_bench_rendezvous_frequency_is_result_neutral() {
@@ -262,7 +261,7 @@ fn gate_perf_bench_rendezvous_frequency_is_result_neutral() {
     }
 }
 
-/// [PERF-13] — the throughput ratchet flags a regression beyond the tolerated
+/// The throughput ratchet flags a regression beyond the tolerated
 /// fraction. A synthetic regressed baseline must fail the gate.
 #[test]
 fn gate_perf_bench_flags_throughput_regression() {
@@ -279,7 +278,7 @@ fn gate_perf_bench_flags_throughput_regression() {
     ));
 }
 
-/// [PERF-14] — coverage-on guest IPS must be within the configured ratio budget;
+/// Coverage-on guest IPS must be within the configured ratio budget;
 /// a below-budget coverage ratio fails the gate.
 #[test]
 fn gate_perf_bench_rejects_below_budget_coverage_ratio() {
@@ -292,7 +291,7 @@ fn gate_perf_bench_rejects_below_budget_coverage_ratio() {
     );
 }
 
-/// [PERF-15] — coverage extraction is observation-only: toggling the coverage
+/// Coverage extraction is observation-only: toggling the coverage
 /// hook does not change the result fingerprint.
 #[test]
 fn gate_perf_bench_coverage_is_observation_only() {
@@ -308,7 +307,7 @@ fn gate_perf_bench_coverage_is_observation_only() {
     );
 }
 
-/// [PERF-27] — fleet exploration throughput scales near-linearly with host count
+/// Fleet exploration throughput scales near-linearly with host count
 /// up to shared-store bandwidth saturation.
 #[test]
 fn gate_perf_bench_fleet_throughput_scales_to_saturation() {
@@ -333,7 +332,7 @@ fn gate_perf_bench_fleet_throughput_scales_to_saturation() {
     );
 }
 
-/// [PERF-28] — cumulative campaign coverage is monotone non-decreasing; a
+/// Cumulative campaign coverage is monotone non-decreasing; a
 /// decrease fails the gate, but a flat run is legitimate.
 #[test]
 fn gate_perf_bench_coverage_ratchet_rejects_decrease() {
@@ -353,7 +352,7 @@ fn gate_perf_bench_coverage_ratchet_rejects_decrease() {
     );
 }
 
-/// [PERF-16], [PERF-18], [PERF-23] — the delta-bounded fork cost, suffix-bounded
+/// The delta-bounded fork cost, suffix-bounded
 /// replay cost, and state-bounded RSS all hold; these are checked inside the gate
 /// pass and their evidence is recorded in the report.
 #[test]
@@ -373,7 +372,7 @@ fn gate_perf_bench_records_fork_replay_and_rss_evidence() {
     assert!(report.peak_rss_units > 0, "peak RSS must be recorded");
 }
 
-/// [PERF-12], [PERF-17] — snapshot capture and restore latency scale with changed
+/// Snapshot capture and restore latency scale with changed
 /// state, not total state, and restore is bounded below by the realize floor.
 #[test]
 fn gate_perf_bench_snapshot_latency_tracks_changed_state() {
@@ -400,7 +399,7 @@ fn gate_perf_bench_snapshot_latency_tracks_changed_state() {
     );
 }
 
-/// [PERF-20], [PERF-21] — the run pins a host profile and content-addresses the
+/// The run pins a host profile and content-addresses the
 /// corpus and baseline together, so a regression reproduces from scenario+profile.
 #[test]
 fn gate_perf_bench_pins_host_profile_and_content_addresses_corpus() {
@@ -460,7 +459,7 @@ fn gate_perf_bench_accepts_single_node_scenario() {
     );
 }
 
-/// [PERF-34] — every host-parallel mechanism records exactly one admission
+/// Every host-parallel mechanism records exactly one admission
 /// class, a non-empty class argument, and at least one proving gate.
 #[test]
 fn gate_perf_bench_requires_complete_host_parallelism_admission_register() {
@@ -506,7 +505,7 @@ fn gate_perf_bench_requires_complete_host_parallelism_admission_register() {
     ));
 }
 
-/// [PERF-34] — an admitted mechanism without a class argument or proving gate
+/// An admitted mechanism without a class argument or proving gate
 /// fails closed instead of being tolerance-banded.
 #[test]
 fn gate_perf_bench_rejects_unproved_host_parallelism_admission() {
@@ -526,7 +525,7 @@ fn gate_perf_bench_rejects_unproved_host_parallelism_admission() {
     ));
 }
 
-/// [PERF-34] — a label that does not name a canonical determinism gate is not
+/// A label that does not name a canonical determinism gate is not
 /// accepted as proof, even when the admission otherwise has a valid class.
 #[test]
 fn gate_perf_bench_rejects_unknown_proving_gate() {

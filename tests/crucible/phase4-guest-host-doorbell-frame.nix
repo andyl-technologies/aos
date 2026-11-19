@@ -33,19 +33,14 @@
   };
   appRandomGate = builtins.readFile ./phase2-plugin-app-random-doorbell.nix;
   abiConformanceGate = builtins.readFile ./phase2-abi-conformance.nix;
-  guestHostDoc = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
-  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
+  guestHostChannelDoc = builtins.readFile ../../docs/engineering/crucible/guest-host-channel.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/16-guest-host-channel.md" guestHostDoc [
-      {
-        label = "T-GHC-7 completion note";
-        needle = "Completed by `checks.crucible.phase4.guestHostDoorbellFrame`";
-      }
+    failuresFor "docs/engineering/crucible/guest-host-channel.md" guestHostChannelDoc [
       {
         label = "shared frame owner";
         needle = "WhiteboxDoorbellFrame";
@@ -205,12 +200,6 @@
       {
         label = "phase2 ABI gate checks doorbell frame";
         needle = "protocol_doorbell_frame_golden_vectors_match_live_codec_bytes";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "guest-host phase4 task range";
-        needle = "Guest↔host channel + optional agent";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

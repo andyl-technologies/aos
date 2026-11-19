@@ -9,25 +9,21 @@
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   effectiveHorizonTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/scheduler_effective_horizon.rs;
-  schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
+  schedulingDoc = builtins.readFile ../../docs/engineering/crucible/scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/08-scheduling.md" schedulingDoc [
+    failuresFor "docs/engineering/crucible/scheduling.md" schedulingDoc [
       {
-        label = "T-SCHED-13 completion note";
-        needle = "Completed by `checks.crucible.phase3.schedulerEffectiveHorizon`";
+        label = "effective horizon projection";
+        needle = "PICK takes the minimum over one projection, `effective_horizon`";
       }
       {
-        label = "effective horizon requirement";
-        needle = "single unified `effective_horizon(node)` projection";
-      }
-      {
-        label = "terminal projection requirement";
-        needle = "DONE/Halted → +∞";
+        label = "terminal projection";
+        needle = "Halted | Done  ->  +inf";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [

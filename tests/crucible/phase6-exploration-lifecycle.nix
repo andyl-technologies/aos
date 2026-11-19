@@ -8,7 +8,6 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  advancedDoc = builtins.readFile ../../docs/rfcs/0010-crucible/22-advanced-features.md;
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
   lifecycleGateTest = builtins.readFile ../../crates/crucible/crucible-session/tests/gate_exploration_lifecycle.rs;
   defaultChecks = builtins.readFile ./default.nix;
@@ -27,13 +26,7 @@
     forbidden;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/22-advanced-features.md" advancedDoc [
-      {
-        label = "T-ADV-2 completion note";
-        needle = "Completed by `checks.crucible.phase6.explorationLifecycle`";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-session/src/lib.rs" sessionLib [
+    failuresFor "crates/crucible/crucible-session/src/lib.rs" sessionLib [
       {
         label = "exploration lifecycle driver";
         needle = "pub struct ExplorationLifecycleDriver";

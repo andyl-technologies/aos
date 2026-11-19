@@ -1,10 +1,8 @@
 //! `crucible-determinism` owns Crucible's deterministic core primitives.
 //!
-//! Spec index: RFC-0010 files 04, 08, 09.
-//!
 //! This L0 crate owns seeded decision streams, ordered collections,
 //! deterministic selection, virtual-time arithmetic, and the content-addressing
-//! primitives described by the indexed RFC-0010 files.
+//! primitives.
 //! It intentionally has no QEMU, transport, scheduler-policy, or wall-clock
 //! surface.
 //!

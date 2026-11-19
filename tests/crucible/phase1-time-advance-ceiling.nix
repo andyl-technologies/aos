@@ -19,7 +19,6 @@
     entry = ../../crates/crucible/crucible-qemu-shmem/tests/advance_ceiling_handoff.rs;
   };
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  timeSpec = builtins.readFile ../../docs/rfcs/0010-crucible/09-virtual-time-icount.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
@@ -195,12 +194,6 @@
       {
         label = "scheduler horizon ceiling field";
         needle = "ceiling: Icount,";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/09-virtual-time-icount.md" timeSpec [
-      {
-        label = "T-TIME-7 production-flight completion";
-        needle = "Completed by `checks.crucible.phase1.timeAdvanceCeiling`";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

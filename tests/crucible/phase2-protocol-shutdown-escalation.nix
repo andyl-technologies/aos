@@ -11,7 +11,6 @@
   qemuLib = builtins.readFile ../../crates/crucible/crucible-qemu-host/src/lib.rs;
   shutdownLib = builtins.readFile ../../crates/crucible/crucible-qemu-host/src/shutdown.rs;
   shutdownTest = builtins.readFile ../../crates/crucible/crucible-qemu-host/tests/shutdown.rs;
-  protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
   defaultChecks = builtins.readFile ./default.nix;
   controlResponsiveGate = import ./phase5-control-responsive.nix {
     inherit pkgs lib;
@@ -211,8 +210,6 @@
         label = "mock unresponsive path";
         needle = "QemuChildWait::StillRunning";
       }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/14-protocol.md" protocolSpec [
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {

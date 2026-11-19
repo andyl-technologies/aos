@@ -10,33 +10,29 @@
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   libSource = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
   focusedTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/scheduler_all_vcpus_idle.rs;
-  schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
+  schedulingDoc = builtins.readFile ../../docs/engineering/crucible/scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/08-scheduling.md" schedulingDoc [
+    failuresFor "docs/engineering/crucible/scheduling.md" schedulingDoc [
       {
-        label = "T-SCHED-30 completion note";
-        needle = "Completed by `checks.crucible.phase3.schedulerAllVcpusIdle`";
+        label = "all-vCPUs-idle rule";
+        needle = "all vCPUs are halted, timer-free,";
       }
       {
-        label = "all-vCPUs-idle note";
-        needle = "all vCPUs are halted, timer-free, and input-free";
+        label = "exact vCPU coverage rule";
+        needle = "coverage of every vCPU in `0..N`";
       }
       {
-        label = "exact vCPU coverage note";
-        needle = "exact contiguous coverage of every vCPU in `0..N`";
+        label = "minimum vCPU deadline rule";
+        needle = "per-vCPU deadline, folded into its exact local event";
       }
       {
-        label = "minimum vCPU deadline note";
-        needle = "minimum per-vCPU deadline";
-      }
-      {
-        label = "node-level projection note";
-        needle = "one scheduler node candidate";
+        label = "node-level projection rule";
+        needle = "scheduler candidate with one node-level ceiling";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [

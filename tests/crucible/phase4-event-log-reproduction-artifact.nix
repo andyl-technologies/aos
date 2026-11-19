@@ -11,21 +11,21 @@
   libSource = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
   reproductionTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/event_log_reproduction_artifact.rs;
   contentAddressTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/event_log_content_address.rs;
-  observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;
+  eventLogDoc = builtins.readFile ../../docs/engineering/crucible/event-log.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/19-observability-event-log.md" observabilityDoc [
+    failuresFor "docs/engineering/crucible/event-log.md" eventLogDoc [
       {
-        label = "T-OBS-10 completion note";
-        needle = "Completed by `checks.crucible.phase4.eventLogReproductionArtifact`";
+        label = "fork-point index metadata";
+        needle = "event-log metadata records the fork-point index";
       }
       {
-        label = "byte-identical causal replay completion note";
-        needle = "event-log metadata records the fork-point index and causal-subsequence digest";
+        label = "causal-subsequence digest field";
+        needle = "pub causal_subsequence: ContentHash";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [

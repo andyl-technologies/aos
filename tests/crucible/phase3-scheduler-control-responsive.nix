@@ -10,29 +10,29 @@
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   libSource = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
   controlResponsiveTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/scheduler_control_responsive.rs;
-  schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
+  schedulingDoc = builtins.readFile ../../docs/engineering/crucible/scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/08-scheduling.md" schedulingDoc [
+    failuresFor "docs/engineering/crucible/scheduling.md" schedulingDoc [
       {
-        label = "T-SCHED-27 completion note";
-        needle = "Completed by `checks.crucible.phase3.schedulerControlResponsive`";
+        label = "bounded quantum rule";
+        needle = "applied within one scheduler quantum of its admission";
       }
       {
-        label = "bounded quantum note";
-        needle = "one scheduler quantum";
+        label = "boundary-only rule";
+        needle = "applied only at quantum boundaries, never mid-quantum";
       }
       {
-        label = "boundary-only note";
-        needle = "only at quantum boundaries";
+        label = "response bound constant";
+        needle = "`SCHEDULER_CONTROL_RESPONSE_BOUND_QUANTA` is `1`";
       }
       {
-        label = "scheduler half note";
-        needle = "scheduler half of `gate:control-responsive`";
+        label = "control-responsive gate";
+        needle = "`gate:control-responsive`";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [

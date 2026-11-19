@@ -5,7 +5,6 @@
   taskIds ? ["T-DCE-5"],
   dependencies ? [],
 }: let
-  dceDoc = builtins.readFile ../../docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md;
   casSource =
     builtins.readFile ../../crates/crucible/crucible-store/src/lib.rs
     + builtins.readFile ../../crates/crucible/crucible-store/src/cas/campaign_codec.rs
@@ -26,31 +25,7 @@
   campaignContinuityWrapperDependency = "dependencies = [fleetEquivalence phase7.crucibleCampaignManifest phase7.crucibleCampaignSeeding phase7.crucibleCampaignStorageBounding phase7.crucibleCampaignProvenance];";
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md" dceDoc [
-      {
-        label = "T-DCE-5 completion note";
-        needle = "Completed by `checks.crucible.phase7.crucibleCampaignSeeding`";
-      }
-      {
-        label = "DCE-11 seed prior corpus text";
-        needle = "Run N+1 of a campaign MUST seed from the corpus";
-      }
-      {
-        label = "DCE-12 accumulated coverage ratchet text";
-        needle = "continuous coverage ratchet";
-      }
-      {
-        label = "DCE-13 findings ledger text";
-        needle = "content-addressed **findings ledger**";
-      }
-      {
-        label = "DCE-24 grow-only union CRDT text";
-        needle = "grow-only union CRDT";
-      }
-    ]
-    ++ forbiddenFor "docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md" dceDoc [
-    ]
-    ++ failuresFor "crates/crucible/crucible-store/src/lib.rs" casSource [
+    failuresFor "crates/crucible/crucible-store/src/lib.rs" casSource [
       {
         label = "self-contained replay artifact type";
         needle = "pub struct CampaignReplayArtifact";

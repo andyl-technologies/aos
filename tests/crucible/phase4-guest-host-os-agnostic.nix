@@ -10,27 +10,13 @@
   libSource = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
   osAgnosticTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/guest_host_os_agnostic.rs;
-  guestHostDoc = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
-  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/16-guest-host-channel.md" guestHostDoc [
-      {
-        label = "T-GHC-2 completion note";
-        needle = "Completed by `checks.crucible.phase4.guestHostOsAgnostic`";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "guest-host phase4 task range";
-        needle = "Guest↔host channel + optional agent";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [
+    failuresFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [
       {
         label = "black-box observation contract type";
         needle = "pub struct BlackBoxObservationContract";

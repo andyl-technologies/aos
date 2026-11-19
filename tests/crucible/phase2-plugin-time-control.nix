@@ -15,8 +15,8 @@
   pluginSetup = import ./_qemu-plugin-setup-source.nix {inherit lib;};
   pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
   qemuPatch = builtins.readFile ../../pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch;
-  pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
-  qemuPatchSpec = builtins.readFile ../../docs/rfcs/0010-crucible/11-qemu-patches.md;
+  pluginSpec = builtins.readFile ../../docs/engineering/crucible/qemu-plugin.md;
+  qemuPatchSpec = builtins.readFile ../../docs/engineering/crucible/qemu-patch.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -86,39 +86,35 @@
   ];
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
-      {
-        label = "T-PLUG-4 production-flight completion";
-        needle = "Completed by `checks.crucible.phase2.qemuPluginTimeControl`";
-      }
+    failuresFor "docs/engineering/crucible/qemu-plugin.md" pluginSpec [
       {
         label = "plugin clock ownership";
-        needle = "The plugin MUST own virtual-time control";
+        needle = "the plugin is the only authority that";
       }
       {
         label = "no host wall clock";
-        needle = "The plugin MUST NOT read host wall-clock";
+        needle = "reads host wall-clock time";
       }
       {
         label = "no host monotonic clock";
         needle = "host monotonic time";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/11-qemu-patches.md" qemuPatchSpec [
+    ++ failuresFor "docs/engineering/crucible/qemu-patch.md" qemuPatchSpec [
       {
-        label = "time-control request symbol spec";
+        label = "time-control request symbol";
         needle = "qemu_plugin_request_time_control";
       }
       {
-        label = "queued virtual-time advance symbol spec";
+        label = "queued virtual-time advance symbol";
         needle = "qemu_plugin_advance_time_ticks";
       }
       {
-        label = "time-advance completion registration symbol spec";
+        label = "time-advance completion registration symbol";
         needle = "qemu_plugin_register_time_advance_cb";
       }
       {
-        label = "time-control predicate spec";
+        label = "time-control predicate";
         needle = "qemu_plugin_has_time_control";
       }
       {

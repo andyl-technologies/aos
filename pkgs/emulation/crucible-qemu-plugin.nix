@@ -1,4 +1,4 @@
-##! crucible-qemu-plugin — RFC-0010 QEMU plugin cdylib
+##! crucible-qemu-plugin — Crucible QEMU plugin cdylib
 {
   lib,
   mkCargoPackage,

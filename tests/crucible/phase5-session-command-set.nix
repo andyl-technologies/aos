@@ -9,8 +9,6 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
-  sessionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/20-session-control-plane.md;
-  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -18,19 +16,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/20-session-control-plane.md" sessionDoc [
-      {
-        label = "T-SESS-4 completion note";
-        needle = "Completed by `checks.crucible.phase5.sessionCommandSet`";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "phase5 command set status note";
-        needle = "`T-SESS-4` is green through `checks.crucible.phase5.sessionCommandSet`";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-session/src/lib.rs" sessionLib [
+    failuresFor "crates/crucible/crucible-session/src/lib.rs" sessionLib [
       {
         label = "reply wrapper";
         needle = "pub struct CommandReply<T>";
@@ -129,19 +115,19 @@
       }
       {
         label = "reply payload success test";
-        needle = "rfc_command_payloads_return_replies_through_engine_boundary";
+        needle = "session_command_payloads_return_replies_through_engine_boundary";
       }
       {
         label = "reply rejection test";
-        needle = "rfc_command_rejections_complete_reply_oneshots_without_side_effects";
+        needle = "session_command_rejections_complete_reply_oneshots_without_side_effects";
       }
       {
         label = "terminal drain reply test";
-        needle = "rfc_command_terminal_drain_completes_queued_replies";
+        needle = "session_command_terminal_drain_completes_queued_replies";
       }
       {
         label = "running local acknowledgement test";
-        needle = "rfc_command_running_actor_acknowledges_local_boundary_replies_immediately";
+        needle = "session_command_running_actor_acknowledges_local_boundary_replies_immediately";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -210,7 +196,7 @@ in
               --target-dir "$TMPDIR/crucible-session-command-set-target" \
               -p crucible-session \
               --lib \
-              rfc_command \
+              session_command_ \
               -- --test-threads=1
           '';
         }
@@ -224,7 +210,7 @@ in
             check=${attrPath}
             tasks=${taskList}
             component=crucible-session
-            command_set=closed-rfc-section-4
+            command_set=closed
             replies=oneshot
             graph_mapping=savepoint-and-fork
             scheduler_mapping=fault-and-query-control

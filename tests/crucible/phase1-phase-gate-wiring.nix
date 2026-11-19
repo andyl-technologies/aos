@@ -3,13 +3,24 @@
   lib,
 }: let
   defaultSource = builtins.readFile ./default.nix;
-  gateCatalog = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
-  phasePlan = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
-  compositionTextParts = lib.splitString "## 13. How the gates compose into the phase plan" gateCatalog;
-  compositionText =
-    if builtins.length compositionTextParts >= 2
-    then builtins.elemAt compositionTextParts 1
+  testingAndGatesDoc = builtins.readFile ../../docs/engineering/crucible/testing-and-gates.md;
+
+  # The documented gate ordering is the first text block under "## Gate
+  # ordering"; each line reads `phaseN  gate:name  checks.crucible.attr.path`.
+  orderingSectionParts = lib.splitString "\n## Gate ordering\n" testingAndGatesDoc;
+  orderingSection =
+    if builtins.length orderingSectionParts >= 2
+    then builtins.elemAt orderingSectionParts 1
     else "";
+  orderingBlockParts = lib.splitString "```" orderingSection;
+  orderingBlock =
+    if builtins.length orderingBlockParts >= 2
+    then lib.removePrefix "text\n" (builtins.elemAt orderingBlockParts 1)
+    else "";
+  orderingEntries =
+    builtins.filter (words: words != [])
+    (map (line: builtins.filter (word: word != "") (lib.splitString " " line))
+      (lib.splitString "\n" orderingBlock));
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix;
 
@@ -21,7 +32,7 @@
     else matched;
 
   catalogGateLines =
-    builtins.filter (line: lib.hasPrefix "| `gate:" line) (lib.splitString "\n" gateCatalog);
+    builtins.filter (line: lib.hasPrefix "| `gate:" line) (lib.splitString "\n" testingAndGatesDoc);
   catalogGates =
     builtins.sort builtins.lessThan
     (lib.unique (lib.concatMap gateNameFromCatalogLine catalogGateLines));
@@ -37,7 +48,6 @@
       phase = "phase0";
       attr = "blockers";
       label = "phase0:blockers";
-      planNeedle = "Phase-0 blockers pass";
     }
     {
       phase = "phase1";
@@ -224,19 +234,12 @@
   targetFailures = lib.concatMap (target: let
     attrPath = targetAttrPath target;
     gateOrLabel = targetName target;
-    planNeedle =
-      if target ? planNeedle
-      then target.planNeedle
-      else target.gate;
   in
     lib.optionals (!(hasInfix "attrPath = \"${attrPath}\"" defaultSource)) [
       "${attrPath}: phase gate target is not wired in tests/crucible/default.nix"
     ]
-    ++ lib.optionals (!(hasInfix planNeedle phasePlan)) [
-      "${gateOrLabel}: phase gate is absent from the master phase plan"
-    ]
-    ++ lib.optionals (!(hasInfix "${target.phase}  ${gateOrLabel}" compositionText)) [
-      "${gateOrLabel}: phase gate is absent from RFC 24 phase composition for ${target.phase}"
+    ++ lib.optionals (!(builtins.elem [target.phase gateOrLabel attrPath] orderingEntries)) [
+      "${gateOrLabel}: ${target.phase} occurrence at ${attrPath} is absent from the gate ordering in docs/engineering/crucible/testing-and-gates.md"
     ]
     ++ lib.optionals (target ? gate && !(builtins.elem target.gate catalogGates)) [
       "${target.gate}: phase gate is absent from the canonical gate catalog"

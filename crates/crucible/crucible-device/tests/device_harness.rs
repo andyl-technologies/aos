@@ -1,7 +1,7 @@
-//! Per-device tests for the in-process device test harness (CS-IO-6).
+//! Per-device tests for the in-process device test harness.
 //!
-//! These exercise the harness of spec §15.7 / §15.8 against all three I/O
-//! sub-nodes — block, 9p, and the network link — proving, per device:
+//! These exercise the harness against all three I/O sub-nodes — block, 9p, and
+//! the network link — proving, per device:
 //!
 //! - **run-twice determinism** ([IO-28]): two independent constructions driven
 //!   through the same script yield byte-identical responses + delivery icounts;
@@ -13,8 +13,8 @@
 //! - **idle-vs-busy-poll equivalence** ([IO-29]): one big `advance_to` and many
 //!   single-icount advances produce identical deliveries at identical icounts.
 //!
-//! The §15.8 busy-poll spike conclusion is asserted from the documented
-//! [`BUSY_POLL_SPIKE`] constant ([IO-30]).
+//! The busy-poll spike conclusion is asserted from the documented
+//! [`BUSY_POLL_SPIKE`] constant.
 
 #![forbid(unsafe_code)]
 // crucible-lint: allow panic-shortcut -- test fixture construction must fail loudly.
@@ -600,7 +600,7 @@ fn link_idle_equals_busy_poll() {
 }
 
 // =========================================================================
-// Cross-cutting: divergence helper sanity + the §15.8 spike conclusion
+// Cross-cutting: divergence helper sanity + the busy-poll spike conclusion
 // =========================================================================
 
 #[test]
@@ -621,7 +621,7 @@ fn compare_logs_identical_when_equal_and_localizes_length_mismatch() {
 
 #[test]
 fn busy_poll_spike_conclusion_is_recorded() {
-    // The §15.8 spike result ([IO-30]): completion exactness holds under both
+    // The busy-poll spike result: completion exactness holds under both
     // idle and busy-poll, busy-poll is a performance concern only, and any
     // mitigation must preserve exactness. Assert the recorded conclusion matches
     // the documented finding field-for-field.

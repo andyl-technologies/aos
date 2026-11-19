@@ -10,24 +10,13 @@
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
   model = import ./_crucible-model-source.nix {inherit lib;};
   compoundTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/compound_condition_combinators.rs;
-  triggerDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17a-conditions-and-triggers.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/17a-conditions-and-triggers.md" triggerDoc [
-      {
-        label = "T-TRIG-9 completion note";
-        needle = "Completed by `checks.crucible.phase4.compoundConditionCombinators`";
-      }
-      {
-        label = "event graph replay gate complete";
-        needle = "Completed by `checks.crucible.phase4.gates.replayOracle`";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
+    failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "all-of predicate variant";
         needle = "AllOf {\n        /// Predicates that must all hold.";

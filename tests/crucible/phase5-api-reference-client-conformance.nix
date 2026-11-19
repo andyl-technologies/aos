@@ -8,8 +8,6 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  apiDoc = builtins.readFile ../../docs/rfcs/0010-crucible/21-api.md;
-  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   apiCargo = builtins.concatStringsSep "\n" [
     (builtins.readFile ../../crates/crucible/crucible-control-client/Cargo.toml)
     (builtins.readFile ../../crates/crucible/crucible-control-server/Cargo.toml)
@@ -33,19 +31,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/21-api.md" apiDoc [
-      {
-        label = "T-API-13 completion note";
-        needle = "Completed by `checks.crucible.phase5.apiReferenceClientConformance`";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "phase5 API reference client status note";
-        needle = "`T-API-13` is green through";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-control-api/Cargo.toml" apiCargo [
+    failuresFor "crates/crucible/crucible-control-api/Cargo.toml" apiCargo [
       {
         label = "versioned process-protocol dependency";
         needle = ''crucible-qemu-protocol = { path = "../crucible-qemu-protocol" }'';
@@ -415,7 +401,7 @@ in
     ];
 
     meta = {
-      description = "RFC-0010 phase 5 API reference client conformance gate for ${taskList}";
+      description = "Crucible phase 5 API reference client conformance gate for ${taskList}";
       passthru = {
         inherit attrPath taskIds dependencies;
         failureText = failureText;

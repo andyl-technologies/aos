@@ -8,7 +8,7 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  advancedDoc = builtins.readFile ../../docs/rfcs/0010-crucible/22-advanced-features.md;
+  explorationPage = builtins.readFile ../../docs/engineering/crucible/exploration.md;
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
   libRs = import ./_rust-module-source.nix {
     inherit lib;
@@ -78,22 +78,18 @@
     forbidden;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/22-advanced-features.md" advancedDoc [
+    failuresFor "docs/engineering/crucible/exploration.md" explorationPage [
       {
-        label = "T-ADV-12 completion note";
-        needle = "Completed by `checks.crucible.phase6.coverageGuidedFuzzing`";
+        label = "family fuzzing requirement";
+        needle = "Fuzzing samples the parameter space of a `ScenarioFamily`";
       }
       {
-        label = "ADV-24 family fuzzing requirement";
-        needle = "Fuzzing MUST be coverage-guided sampling/mutation of the schedule";
+        label = "pinned scenario requirement";
+        needle = "A family never runs directly";
       }
       {
-        label = "ADV-24 pinned scenario requirement";
-        needle = "fuzzing MUST NOT execute a family directly";
-      }
-      {
-        label = "ADV-25 deterministic choice requirement";
-        needle = "Every fuzzer choice — corpus-entry selection, mutation, family\n  sampling, and energy assignment — MUST be a deterministic function of a recorded\n  seed";
+        label = "deterministic choice requirement";
+        needle = "inputs reproduce the same";
       }
     ]
     ++ failuresFor "tests/crucible/phase6-coverage-feedback.nix" coverageFeedbackGate [

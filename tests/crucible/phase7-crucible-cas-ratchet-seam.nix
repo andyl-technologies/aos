@@ -4,7 +4,6 @@
   attrPath ? "checks.crucible.phase7.crucibleCasRatchetSeam",
   taskIds ? ["T-PKG-18"],
 }: let
-  packagingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/26-packaging-aos-integration.md;
   casSource = builtins.readFile ../../crates/crucible/crucible-store/src/lib.rs;
   casManifest = builtins.readFile ../../crates/crucible/crucible-store/Cargo.toml;
   defaultChecks = builtins.readFile ./default.nix;
@@ -14,13 +13,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
-      {
-        label = "T-PKG-18 completion note";
-        needle = "Completed by `checks.crucible.phase7.crucibleCasRatchetSeam`";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-store/src/lib.rs" casSource [
+    failuresFor "crates/crucible/crucible-store/src/lib.rs" casSource [
       {
         label = "future home";
         needle = "RFC-0007 is the future home";

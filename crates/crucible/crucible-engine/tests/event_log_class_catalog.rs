@@ -64,7 +64,7 @@ fn event_class_is_derived_from_payload_kind_catalog() {
 }
 
 #[test]
-fn assertion_and_guest_marker_kinds_follow_rfc_catalog_classes() {
+fn assertion_and_guest_marker_kinds_follow_catalog_classes() {
     let assertion_state = ObservableEvent::assertion_state_changed(
         time(3),
         assertion_id("catalog-assertion"),

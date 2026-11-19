@@ -9,8 +9,6 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
-  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   controlClientGate = import ./_rust-module-source.nix {
     inherit lib;
     entry = ../../crates/crucible/crucible-control-client/tests/gate_control_client.rs;
@@ -20,23 +18,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
-      {
-        label = "T-CLI-14 multi-client completion note";
-        needle = "`checks.crucible.phase5.cliServeMultiClient`";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "phase5 CLI serve multi-client completion note";
-        needle = "`checks.crucible.phase5.cliServeMultiClient`, and";
-      }
-      {
-        label = "phase5 CLI serve multi-client coverage wording";
-        needle = "admits concurrent";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-control-client/tests/gate_control_client.rs" controlClientGate [
+    failuresFor "crates/crucible/crucible-control-client/tests/gate_control_client.rs" controlClientGate [
       {
         label = "production HTTP/2 multi-client test";
         needle = "production_http2_lifecycle_server_admits_concurrent_watch_and_query_clients";

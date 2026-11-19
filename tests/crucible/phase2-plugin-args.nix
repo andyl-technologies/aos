@@ -15,7 +15,7 @@
     inherit lib;
     entry = ../../crates/crucible/crucible-qemu-plugin/src/args.rs;
   };
-  pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
+  pluginSpec = builtins.readFile ../../docs/engineering/crucible/qemu-plugin.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -23,18 +23,18 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
+    failuresFor "docs/engineering/crucible/qemu-plugin.md" pluginSpec [
       {
-        label = "simfd required by spec";
+        label = "simfd argument documented";
         needle = "`simfd=N`";
       }
       {
-        label = "slot required by spec";
+        label = "slot argument documented";
         needle = "`slot=N`";
       }
       {
-        label = "fail-closed parser required by spec";
-        needle = "total, fail-closed parser";
+        label = "fail-closed parser documented";
+        needle = "is total and fail-closed";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/lib.rs" pluginLib [

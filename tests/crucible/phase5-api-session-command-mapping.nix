@@ -8,8 +8,6 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  apiDoc = builtins.readFile ../../docs/rfcs/0010-crucible/21-api.md;
-  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   apiLib = import ./_crucible-control-source.nix {
     inherit lib;
     component = "exports";
@@ -23,19 +21,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/21-api.md" apiDoc [
-      {
-        label = "T-API-2 completion note";
-        needle = "Completed by `checks.crucible.phase5.apiSessionCommandMapping`";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "phase5 API session mapping status note";
-        needle = "`T-API-2` is green through `checks.crucible.phase5.apiSessionCommandMapping`";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-control-api/src/lib.rs" apiLib [
+    failuresFor "crates/crucible/crucible-control-api/src/lib.rs" apiLib [
       {
         label = "session mapping module exported";
         needle = "pub mod session_mapping";

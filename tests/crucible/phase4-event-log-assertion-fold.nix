@@ -15,21 +15,17 @@
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
   assertionLogFoldTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/assertion_log_fold.rs;
   classCatalogTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/event_log_class_catalog.rs;
-  observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;
+  eventLogDoc = builtins.readFile ../../docs/engineering/crucible/event-log.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/19-observability-event-log.md" observabilityDoc [
+    failuresFor "docs/engineering/crucible/event-log.md" eventLogDoc [
       {
-        label = "T-OBS-7 completion note";
-        needle = "Completed by `checks.crucible.phase4.eventLogAssertionFold`";
-      }
-      {
-        label = "one-log assertion fold completion note";
-        needle = "same `HostAssertionEvaluator` fold live and\n  offline";
+        label = "one-log assertion fold";
+        needle = "same `HostAssertionEvaluator` fold live and offline";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/event_catalog.rs" eventCatalog [
@@ -139,7 +135,7 @@
     ++ failuresFor "crates/crucible/crucible-engine/tests/event_log_class_catalog.rs" classCatalogTest [
       {
         label = "assertion/guest marker catalog class regression";
-        needle = "assertion_and_guest_marker_kinds_follow_rfc_catalog_classes";
+        needle = "assertion_and_guest_marker_kinds_follow_catalog_classes";
       }
       {
         label = "assertion state changed is causal";

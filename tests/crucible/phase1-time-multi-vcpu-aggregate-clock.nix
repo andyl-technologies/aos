@@ -15,8 +15,9 @@
   shmemLib = import ./_crucible-shmem-source.nix {inherit lib;};
   harnessObservation = builtins.readFile ../../crates/crucible/crucible-test-support/src/fingerprint/observation.rs;
   phase0S11 = builtins.readFile ./phase0-s11.nix;
-  timeSpec = builtins.readFile ../../docs/rfcs/0010-crucible/09-virtual-time-icount.md;
-  decisionRegister = builtins.readFile ../../docs/rfcs/0010-crucible/31-decision-register.md;
+  virtualTimeDoc = builtins.readFile ../../docs/engineering/crucible/virtual-time.md;
+  qemuIntegrationDoc = builtins.readFile ../../docs/engineering/crucible/qemu-integration.md;
+  determinismDoc = builtins.readFile ../../docs/engineering/crucible/determinism.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
@@ -186,27 +187,29 @@
         needle = ''[ "$horizon_register_hash" = "$final_register_hash" ]'';
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/09-virtual-time-icount.md" timeSpec [
+    ++ failuresFor "docs/engineering/crucible/virtual-time.md" virtualTimeDoc [
       {
-        label = "TIME-24 multi-vCPU deadline minimum";
+        label = "multi-vCPU deadline minimum";
         needle = "minimum over all vCPUs' armed virtual-clock";
       }
       {
-        label = "TIME-34 aggregate node clock";
+        label = "aggregate node clock";
         needle = "retired-instruction count across all `N` vCPUs";
       }
       {
-        label = "TIME-35 retired-instruction RR quantum";
-        needle = "integer number of retired instructions";
+        label = "retired-instruction RR quantum";
+        needle = "an integer number of retired";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/31-decision-register.md" decisionRegister [
+    ++ failuresFor "docs/engineering/crucible/qemu-integration.md" qemuIntegrationDoc [
       {
-        label = "single aggregate icount decision";
+        label = "single aggregate icount";
         needle = "single aggregate icount";
       }
+    ]
+    ++ failuresFor "docs/engineering/crucible/determinism.md" determinismDoc [
       {
-        label = "RR quantum default decision";
+        label = "default RR quantum";
         needle = "rr_switch_quantum=4096";
       }
     ]

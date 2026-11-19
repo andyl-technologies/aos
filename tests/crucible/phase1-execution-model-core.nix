@@ -37,7 +37,7 @@
         needle = "pub fn genesis(def: ScenarioDef) -> Self";
       }
       {
-        label = "RFC-named configuration id";
+        label = "configuration id";
         needle = "pub fn id(&self) -> ContentHash";
       }
       {

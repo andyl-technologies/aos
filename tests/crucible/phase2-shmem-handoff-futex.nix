@@ -12,7 +12,6 @@
     inherit lib;
     entry = ../../crates/crucible/crucible-qemu-shmem/tests/advance_ceiling_handoff.rs;
   };
-  shmemSpec = builtins.readFile ../../docs/rfcs/0010-crucible/13-shmem-abi.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -177,8 +176,6 @@
         label = "off-Linux no-op shim test";
         needle = "off_linux_futex_syscalls_compile_to_noops";
       }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/13-shmem-abi.md" shmemSpec [
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {

@@ -10,8 +10,6 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
   networkInitramfs = import ./phase2-qemu-live-network-io-guest.nix {inherit pkgs;};
 
-  cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
-  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = import ./_cli-source.nix {inherit lib;};
   liveReplayContract =
     builtins.readFile ../../crates/crucible/crucible-cli/src/cli/artifact/live_qemu.rs
@@ -29,55 +27,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
-      {
-        label = "T-CLI-12 replay check partial-evidence note";
-        needle = "Completed under `checks.crucible.phase5.cliReplayCheck`";
-      }
-      {
-        label = "replay bisect progress";
-        needle = "artifact-to-artifact `--bisect <other-artifact>`";
-      }
-      {
-        label = "content-addressed replay component resolution progress";
-        needle = "resolves missing content-addressed component payloads";
-      }
-      {
-        label = "process replay check progress";
-        needle = "process-tests real-binary\n  `replay --check` success/mismatch and `replay --to <SAVEPOINT>`";
-      }
-      {
-        label = "process replay to progress";
-        needle = "target-validation JSONL output with replay records plus `final_outcome`";
-      }
-      {
-        label = "replay identity before store progress";
-        needle = "pinned identity path before store access";
-      }
-      {
-        label = "replay inline store validation progress";
-        needle = "validates declared DAG-store references against inline payloads";
-      }
-      {
-        label = "replay to synopsis";
-        needle = "--to <savepoint>        Validate an authenticated savepoint target.";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "phase5 CLI replay check completion note";
-        needle = "`T-CLI-12` is completed through `checks.crucible.phase5.cliReplayCheck`";
-      }
-      {
-        label = "phase5 process replay check progress";
-        needle = "process-level\n  `replay --check` success/mismatch and `replay --to <SAVEPOINT>`";
-      }
-      {
-        label = "phase5 process replay to progress";
-        needle = "target-validation JSONL coverage with replay records plus `final_outcome`";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-cli/src/main.rs" cliMain [
+    failuresFor "crates/crucible/crucible-cli/src/main.rs" cliMain [
       {
         label = "replay check flag";
         needle = "check: Option<PathBuf>";

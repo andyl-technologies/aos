@@ -13,7 +13,7 @@
     entry = ../../crates/crucible/crucible-engine/src/lib.rs;
   };
   quantumTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/scheduler_quantum_loop.rs;
-  schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
+  schedulingDoc = builtins.readFile ../../docs/engineering/crucible/scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
@@ -62,17 +62,13 @@
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/08-scheduling.md" schedulingDoc [
+    failuresFor "docs/engineering/crucible/scheduling.md" schedulingDoc [
       {
-        label = "T-SCHED-12 completion note";
-        needle = "Completed by `checks.crucible.phase3.schedulerQuantumLoop`";
-      }
-      {
-        label = "quantum phase requirement";
+        label = "quantum phases";
         needle = "PICK, RUN, RESOLVE, EMIT, STEP";
       }
       {
-        label = "pure sequence requirement";
+        label = "pure sequence";
         needle = "pure function of `(ScenarioDef, Seed, Schedule)`";
       }
     ]

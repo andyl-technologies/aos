@@ -14,24 +14,13 @@
     entry = ../../crates/crucible/crucible-engine/src/lib.rs;
   };
   assertionTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/assertion_quiescence_leaves.rs;
-  triggerDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17a-conditions-and-triggers.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/17a-conditions-and-triggers.md" triggerDoc [
-      {
-        label = "T-TRIG-7 completion note";
-        needle = "Completed by `checks.crucible.phase4.assertionQuiescenceLeaves`";
-      }
-      {
-        label = "event graph replay gate complete";
-        needle = "Completed by `checks.crucible.phase4.gates.replayOracle`";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
+    failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "AssertionPhase type";
         needle = "pub enum AssertionPhase";

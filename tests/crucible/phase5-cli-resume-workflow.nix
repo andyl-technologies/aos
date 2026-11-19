@@ -9,8 +9,6 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
-  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = import ./_cli-source.nix {inherit lib;};
   cliMachineReadable = builtins.readFile ../../crates/crucible/crucible-cli/tests/machine_readable.rs;
   campaignProcessTest = builtins.readFile ../../crates/crucible/crucible-cli/tests/campaign_process.rs;
@@ -52,47 +50,7 @@
     forbidden;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
-      {
-        label = "T-CLI-10 completion";
-        needle = "[x] **T-CLI-10** Implement Campaign-owned `resume` from an authenticated";
-      }
-      {
-        label = "source replay from genesis";
-        needle = "replays the source attempt from scenario genesis";
-      }
-      {
-        label = "version-nine exact capture";
-        needle = "captures one workflow-local version-nine exact descriptor";
-      }
-      {
-        label = "fresh continuation process";
-        needle = "fresh QEMU process as an `AfterAttempt` continuation";
-      }
-      {
-        label = "closed fallback policy";
-        needle = "No remote/session, cached-parent, or nearest-checkpoint fallback";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "phase5 CLI resume completion";
-        needle = "`T-CLI-10` is completed through `checks.crucible.phase5.cliResumeWorkflow`";
-      }
-      {
-        label = "authenticated Campaign savepoint";
-        needle = "accepts only an authenticated portable Campaign savepoint";
-      }
-      {
-        label = "production exact-resume lifecycle";
-        needle = "production exact-resume lifecycle";
-      }
-      {
-        label = "closed model fallback";
-        needle = "model-only fallbacks are rejected";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-cli/src/main.rs" cliMain [
+    failuresFor "crates/crucible/crucible-cli/src/main.rs" cliMain [
       {
         label = "resume arguments";
         needle = "struct ResumeArgs";

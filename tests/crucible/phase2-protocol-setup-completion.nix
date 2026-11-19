@@ -34,7 +34,6 @@
   };
   pluginSetup = import ./_qemu-plugin-setup-source.nix {inherit lib;};
   pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
-  protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -269,8 +268,6 @@
         label = "setup ack before wake fd arm rejection";
         needle = "time_control_registration_order_rejects_setup_ack_before_wake_fd_arm";
       }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/14-protocol.md" protocolSpec [
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {

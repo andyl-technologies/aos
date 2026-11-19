@@ -10,7 +10,6 @@
   protocolLib = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/src/lib.rs;
   codecTest = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/tests/codec.rs;
   protocolAbiGate = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/tests/gate_abi_conformance.rs;
-  protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -139,8 +138,6 @@
         label = "canonical protocol ABI gate literal byte freeze";
         needle = "protocol_golden_vectors_freeze_literal_frame_bytes";
       }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/14-protocol.md" protocolSpec [
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {

@@ -9,8 +9,6 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
-  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   apiServer = import ./_crucible-control-source.nix {
     inherit lib;
     component = "server";
@@ -30,23 +28,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
-      {
-        label = "T-CLI-14 shutdown completion note";
-        needle = "`checks.crucible.phase5.cliServeShutdown`";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "phase5 CLI serve shutdown completion note";
-        needle = "`checks.crucible.phase5.cliServeShutdown`: the CLI advertises";
-      }
-      {
-        label = "phase5 CLI serve process signal evidence";
-        needle = "real process exits 0 after an external shutdown signal";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-control-server/src/server.rs" apiServer [
+    failuresFor "crates/crucible/crucible-control-server/src/server.rs" apiServer [
       {
         label = "shutdown-aware HTTP/2 server helper";
         needle = "serve_lifecycle_http2_with_mode_until_shutdown";

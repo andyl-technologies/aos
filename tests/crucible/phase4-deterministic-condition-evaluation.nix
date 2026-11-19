@@ -13,7 +13,6 @@
   deterministicTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/deterministic_condition_evaluation.rs;
   schedulerEmitTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/scheduler_emit_step.rs;
   observableTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/observable_condition_leaves.rs;
-  triggerDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17a-conditions-and-triggers.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
@@ -27,17 +26,7 @@
     observableTest
   ];
   failures =
-    failuresFor "docs/rfcs/0010-crucible/17a-conditions-and-triggers.md" triggerDoc [
-      {
-        label = "T-TRIG-10 completion note";
-        needle = "Completed by `checks.crucible.phase4.deterministicConditionEvaluation`";
-      }
-      {
-        label = "event graph replay gate complete";
-        needle = "Completed by `checks.crucible.phase4.gates.replayOracle`";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [
+    failuresFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [
       {
         label = "checked event-log prefix type";
         needle = "pub struct ConditionEventLogPrefix";

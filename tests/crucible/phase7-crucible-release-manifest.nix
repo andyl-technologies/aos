@@ -5,7 +5,6 @@
   taskIds ? ["T-PKG-19"],
   cruciblePackage ? pkgs.crucible,
 }: let
-  packagingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/26-packaging-aos-integration.md;
   releaseManifestNix = builtins.readFile ../../pkgs/tools/crucible/_release-manifest.nix;
   cruciblePackageNix = builtins.readFile ../../pkgs/tools/crucible/crucible.nix;
   pluginPackageNix = builtins.readFile ../../pkgs/emulation/crucible-qemu-plugin.nix;
@@ -562,20 +561,6 @@
       {
         label = "phase7 release manifest check imported";
         needle = "crucibleReleaseManifest = import ./phase7-crucible-release-manifest.nix";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
-      {
-        label = "T-PKG-19 completion note";
-        needle = "Completed by `checks.crucible.phase7.crucibleReleaseManifest`";
-      }
-      {
-        label = "PKG-36 release manifest requirement";
-        needle = "[PKG-36]";
-      }
-      {
-        label = "PKG-37 reproducibility requirement";
-        needle = "[PKG-37]";
       }
     ]
     ++ timestampFailuresFor "pkgs/tools/crucible/_release-manifest.nix" releaseManifestNix

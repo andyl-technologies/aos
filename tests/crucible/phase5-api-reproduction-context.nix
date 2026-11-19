@@ -8,8 +8,6 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  apiDoc = builtins.readFile ../../docs/rfcs/0010-crucible/21-api.md;
-  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   apiLib = import ./_crucible-control-source.nix {
     inherit lib;
     component = "exports";
@@ -39,19 +37,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/21-api.md" apiDoc [
-      {
-        label = "T-API-9 completion note";
-        needle = "Completed by `checks.crucible.phase5.apiReproductionContext`";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "phase5 API reproduction context status note";
-        needle = "`T-API-9` is green through `checks.crucible.phase5.apiReproductionContext`";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-session/src/lib.rs" session [
+    failuresFor "crates/crucible/crucible-session/src/lib.rs" session [
       {
         label = "session reproduction log";
         needle = "pub struct SessionReproductionLog";
@@ -286,7 +272,7 @@ in
     ];
 
     meta = {
-      description = "RFC-0010 phase 5 API reproduction-context gate for ${taskList}";
+      description = "Crucible phase 5 API reproduction-context gate for ${taskList}";
       passthru = {
         inherit attrPath taskIds dependencies;
         failureText = failureText;

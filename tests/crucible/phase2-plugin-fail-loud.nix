@@ -47,7 +47,7 @@
       entry = ../../crates/crucible/crucible-qemu-plugin/src/coverage/tests.rs;
     })
   ];
-  pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
+  pluginSpec = builtins.readFile ../../docs/engineering/crucible/qemu-plugin.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -143,14 +143,14 @@
     failLoudSources;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
+    failuresFor "docs/engineering/crucible/qemu-plugin.md" pluginSpec [
       {
-        label = "PLUG-48 wording";
-        needle = "Any failure of the determinism-critical machinery MUST fail loud";
+        label = "determinism-critical fail-loud wording";
+        needle = "Determinism-critical failures stop the node with a distinct diagnostic";
       }
       {
-        label = "diagnosable divergence wording";
-        needle = "distinct, diagnosable failure";
+        label = "live callback fatal diagnostic";
+        needle = "fatal live";
       }
       {
         label = "no wall-clock fallback wording";

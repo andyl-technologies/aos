@@ -9,7 +9,7 @@
 
   session = import ./_crucible-session-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
-  rfc = builtins.readFile ../../docs/rfcs/0010-crucible/05-execution-model.md;
+  executionModelDoc = builtins.readFile ../../docs/engineering/crucible/execution-model.md;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -82,10 +82,10 @@
         needle = "executionCacheEviction = import ./phase1-execution-cache-eviction.nix";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/05-execution-model.md" rfc [
+    ++ failuresFor "docs/engineering/crucible/execution-model.md" executionModelDoc [
       {
-        label = "T-EXEC-16 completion note";
-        needle = "Completed by `crates/crucible/crucible-session/src/lib.rs`: `Engine::evict_runtime_cache`";
+        label = "runtime cache eviction entry point";
+        needle = "`Engine::evict_runtime_cache` drops it";
       }
     ];
 in

@@ -5,7 +5,7 @@
   taskIds ? ["T-DCE-7"],
   dependencies ? [],
 }: let
-  dceDoc = builtins.readFile ../../docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md;
+  distributedExplorationDoc = builtins.readFile ../../docs/engineering/crucible/distributed-exploration.md;
   harnessLintMainRust = builtins.readFile ../../crates/crucible/crucible-test-support/tests/harness_lint.rs;
   harnessLintCommonRust = builtins.readFile ../../crates/crucible/crucible-test-support/tests/support/harness_lint/common.rs;
   harnessLintScanRust = builtins.readFile ../../crates/crucible/crucible-test-support/tests/support/harness_lint/scan.rs;
@@ -20,36 +20,26 @@
   fleetEquivalenceWrapperDependency = "dependencies = [phase2.gates.singleVmFingerprint e2eDeterminism phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleFrontierLeases phase7.crucibleFourLayerDedup phase7.crucibleDeterminismGuardrail phase7.crucibleCasFleetRatchetSeam];";
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md" dceDoc [
+    failuresFor "docs/engineering/crucible/distributed-exploration.md" distributedExplorationDoc [
       {
-        label = "T-DCE-7 completion note";
-        needle = "Completed by `checks.crucible.phase7.crucibleDeterminismGuardrail`";
+        label = "deterministic reproduction text";
+        needle = "**Reproduction is deterministic and host-independent.**";
       }
       {
-        label = "DCE-16 deterministic reproduction text";
-        needle = "**[DCE-16]** **Reproduction MUST be deterministic and host-independent.**";
+        label = "nondeterministic scheduling text";
+        needle = "**Distribution and scheduling may be nondeterministic.**";
       }
       {
-        label = "DCE-17 nondeterministic scheduling text";
-        needle = "**[DCE-17]** **Distribution and scheduling MAY be nondeterministic.**";
-      }
-      {
-        label = "DCE-18 distribution metadata text";
+        label = "distribution metadata text";
         needle = "Distribution metadata";
       }
       {
-        label = "DCE-18 forbidden flow text";
-        needle = "MUST NOT flow into";
+        label = "forbidden flow text";
+        needle = "must not flow into";
       }
       {
-        label = "DCE-19 harness-lint extension text";
-        needle = "`gate:harness-lint` ([HARN-24]) MUST be **extended**";
-      }
-    ]
-    ++ forbiddenFor "docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md" dceDoc [
-      {
-        label = "stale T-DCE-7 guardrail remaining note";
-        needle = "Determinism guardrails remain T-DCE-7";
+        label = "harness-lint rule text";
+        needle = "`distribution-metadata-flow` rule in `gate:harness-lint`";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-test-support/tests/support/harness_lint/common.rs" harnessLintCommonRust [

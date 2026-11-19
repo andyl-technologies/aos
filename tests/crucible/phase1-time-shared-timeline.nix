@@ -11,7 +11,6 @@
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   crateRoot = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
   publicTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/time_shared_timeline.rs;
-  timeSpec = builtins.readFile ../../docs/rfcs/0010-crucible/09-virtual-time-icount.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
@@ -172,8 +171,6 @@
         label = "public scheduled event consumption test";
         needle = "scheduled_event_keys_consume_shared_timeline_keys";
       }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/09-virtual-time-icount.md" timeSpec [
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {

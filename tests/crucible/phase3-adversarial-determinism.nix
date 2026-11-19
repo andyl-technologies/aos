@@ -17,29 +17,25 @@
   gateCatalogTest = builtins.readFile ../../crates/crucible/crucible-test-support/tests/gate_catalog.rs;
   gateTargetMapping = builtins.readFile ./phase1-gate-target-mapping.nix;
   defaultChecks = builtins.readFile ./default.nix;
-  harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
+  testingDoc = builtins.readFile ../../docs/engineering/crucible/testing-and-gates.md;
 
   taskList = builtins.concatStringsSep "," taskIds;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
+    failuresFor "docs/engineering/crucible/testing-and-gates.md" testingDoc [
       {
-        label = "T-HARN-22 modeled-scope completion note";
-        needle = "Completed at modeled scope by";
-      }
-      {
-        label = "modeled hostile-condition phase table scope";
-        needle = "phase3  gate:adversarial-determinism       (modeled hostile-condition matrix)";
+        label = "canonical gate drives the real scheduler";
+        needle = "`checks.crucible.phase3.gates.adversarialDeterminism` gate drives the real";
       }
       {
         label = "production native profile boundary";
-        needle = "execute against the native QEMU backend in T-HARN-23";
+        needle = "while the native profiles run inside";
       }
       {
-        label = "modeled gate remains a diagnostic layer";
-        needle = "remains the fast diagnostic layer for isolating scheduler drift";
+        label = "gate remains a diagnostic layer";
+        needle = "It remains the fast diagnostic layer for";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-test-support/src/adversarial.rs" adversarial [
@@ -182,7 +178,7 @@
         needle = "implementation is pending";
       }
     ]
-    ++ forbiddenFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
+    ++ forbiddenFor "docs/engineering/crucible/testing-and-gates.md" testingDoc [
       {
         label = "stale phase table 2-VM scope";
         needle = "gate:adversarial-determinism       (2-VM hostile-condition matrix)";

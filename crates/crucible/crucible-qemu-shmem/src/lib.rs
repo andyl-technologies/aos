@@ -1,8 +1,6 @@
 //! SPDX-License-Identifier: MIT OR Apache-2.0
 //! `crucible-qemu-shmem` implements the public shared-memory process ABI.
 //!
-//! Spec index: RFC-0010 files 13.
-//!
 //! This permissively dual-licensed L1 crate is the Rust implementation of the
 //! versioned, independently implementable process ABI declared by
 //! `interface/crucible-shmem-abi.toml`. The generated C header is a peer view
@@ -189,7 +187,7 @@ use thiserror::Error;
 
 /// The maximum frame payload carried by a shared-memory [`FrameEntry`].
 ///
-/// This RFC-fixed value is sector-aligned, leaves room for a 4 KiB block
+/// This fixed ABI value is sector-aligned, leaves room for a 4 KiB block
 /// response plus protocol headroom, and still fits in [`FrameEntry::len`].
 pub const MAX_FRAME_DATA: usize = 4608;
 

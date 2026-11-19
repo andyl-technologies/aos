@@ -3,19 +3,17 @@
   lib,
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  standards = builtins.readFile ../../docs/rfcs/0010-crucible/28-engineering-standards.md;
+  standards = builtins.readFile ../../docs/engineering/crucible/engineering-standards.md;
   reviewRust = builtins.readFile ../../crates/crucible/crucible-test-support/tests/determinism_review.rs;
   defaultNix = builtins.readFile ./default.nix;
   expectedDeterminismChecklistItems = 15;
 
-  rfcTerms = [
-    "[STD-32]"
+  reviewPolicyTerms = [
     "DETERMINISM REVIEW CHECKLIST"
     "any PR touching an engine/scheduler/transport crate"
     "MUST block the PR on"
     "completed checklist is recorded in the PR description"
     "or review."
-    "[STD-33]"
     "fix MUST be at the"
     "source"
     "never a workaround"
@@ -125,32 +123,32 @@
   in
     (pushCurrent folded).items;
 
-  rfcChecklistSection =
+  checklistSection =
     sliceBetween
-    "RFC determinism checklist block"
+    "determinism checklist block"
     "```text\nDETERMINISM REVIEW CHECKLIST (apply to any engine/scheduler/transport PR)"
     "\n```"
     standards;
-  rfcChecklistItems = checkboxItems "[ ] " rfcChecklistSection.value;
+  checklistItems = checkboxItems "[ ] " checklistSection.value;
 
   checklistStructureFailures =
-    lib.optionals rfcChecklistSection.missing [
-      "${rfcChecklistSection.label}: missing section markers"
+    lib.optionals checklistSection.missing [
+      "${checklistSection.label}: missing section markers"
     ]
-    ++ lib.optionals (builtins.length rfcChecklistItems != expectedDeterminismChecklistItems) [
-      "28-engineering-standards.md: expected ${builtins.toString expectedDeterminismChecklistItems} RFC checklist items, found ${builtins.toString (builtins.length rfcChecklistItems)}"
+    ++ lib.optionals (builtins.length checklistItems != expectedDeterminismChecklistItems) [
+      "engineering-standards.md: expected ${builtins.toString expectedDeterminismChecklistItems} determinism checklist items, found ${builtins.toString (builtins.length checklistItems)}"
     ];
 
   failures =
-    missingTerms "28-engineering-standards.md STD-32/STD-33" standards rfcTerms
+    missingTerms "engineering-standards.md review policy" standards reviewPolicyTerms
     ++ checklistStructureFailures
     ++ missingTerms "determinism_review.rs" reviewRust [
-      "determinism_review_policy_matches_rfc"
+      "determinism_review_policy_matches_engineering_standards"
       "determinism_review_rules_reject_missing_checklist_structure"
-      "rfc_structure_failures"
-      "rfc_checklist_items"
+      "checklist_structure_failures"
+      "determinism_checklist_items"
       "DETERMINISM_CHECKLIST_COUNT"
-      "failures.extend(rfc_structure_failures(&standards)?)"
+      "failures.extend(checklist_structure_failures(&standards)?)"
     ]
     ++ missingTerms "tests/crucible/default.nix" defaultNix [
       "determinismReview = import ./phase1-determinism-review.nix"
@@ -171,13 +169,13 @@ in
           name = "write-result";
           script = ''
             set -eu
-            test -f ${crucibleSrc}/docs/rfcs/0010-crucible/28-engineering-standards.md
+            test -f ${crucibleSrc}/docs/engineering/crucible/engineering-standards.md
             mkdir -p "$out"
             cat > "$out/result" <<'RESULT'
             PASS
             check=checks.crucible.phase1.determinismReview
             tasks=T-STD-13
-            review_checklist=docs/rfcs/0010-crucible/28-engineering-standards.md
+            review_checklist=docs/engineering/crucible/engineering-standards.md
             root_cause_rule=source-only
             RESULT
           '';

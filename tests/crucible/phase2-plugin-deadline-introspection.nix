@@ -29,7 +29,7 @@
     inherit lib;
     entry = ../../crates/crucible/crucible-qemu-plugin/src/idle_loop.rs;
   };
-  pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
+  pluginSpec = builtins.readFile ../../docs/engineering/crucible/qemu-plugin.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -60,18 +60,14 @@
     deadlinePathForbiddenApis;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
+    failuresFor "docs/engineering/crucible/qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-6 production-flight completion";
-        needle = "Completed by `checks.crucible.phase2.qemuPluginDeadlineIntrospection`";
-      }
-      {
-        label = "required plugin export wording";
-        needle = "required plugin export";
+        label = "required deadline export";
+        needle = "`ExactDeadlineError::CapabilityUnavailable`";
       }
       {
         label = "registration-time fail-loud wording";
-        needle = "fail loudly during callback";
+        needle = "fails registration with";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/lib.rs" pluginLib [

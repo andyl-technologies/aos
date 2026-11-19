@@ -9,8 +9,8 @@ or an application sequence.
 This directory specifies engineering and licensing boundaries; it is not legal
 advice. The controlling repository policies are
 [`LICENSING.md`](../../../../LICENSING.md), the
-[`Crucible/QEMU process boundary`](../../0010-crucible/37-licensing-process-boundary.md),
-the existing [`atomic QEMU integration contract`](../../0010-crucible/11-qemu-patches.md),
+[`Crucible/QEMU process boundary`](../../../legal/licensing.md#crucibleqemu-process-boundary),
+the existing [`atomic QEMU integration contract`](../../../engineering/crucible/qemu-patch.md),
 and [`pkgs/emulation/qemu-patches/README.md`](../../../../pkgs/emulation/qemu-patches/README.md).
 
 ## 14.1 Capability task map

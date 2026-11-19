@@ -1,9 +1,9 @@
 //! Thin API-to-session mapping contract.
 //!
-//! RFC-0010 T-API-2 requires the programmatic API to add no control semantics of
-//! its own. This module makes that boundary explicit: every declared API method
-//! is classified as a server read, lock-free mirror read, control-log read, or a
-//! one-command dispatch into the `crucible-session` command set.
+//! The programmatic API must add no control semantics of its own. This module
+//! makes that boundary explicit: every declared API method is classified as a
+//! server read, lock-free mirror read, control-log read, or a one-command
+//! dispatch into the `crucible-session` command set.
 
 use crucible_session::{LiveQueryKind, SessionCommandKind};
 use thiserror::Error;

@@ -5,7 +5,7 @@
   hot-fork path is enabled as a supported default before its listed gates.
 - **Date:** 2026-08-18
 - **PR:** [#194](https://github.com/andyl-technologies/aos/pull/194)
-- **Depends on:** [RFC-0010](../0010-crucible/README.md) and
+- **Depends on:** [RFC-0010](../../engineering/crucible/README.md) and
   [RFC-0014](../0014-signal-driven-fault-model/README.md), including RFC-0014's
   exact production checkpoint closure and stable fault-opportunity identities.
 - **Audience:** Crucible scenario authors, `crucible-*` crate maintainers, QEMU

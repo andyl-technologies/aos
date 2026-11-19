@@ -6,7 +6,7 @@
   crucibleFixtures ? pkgs.crucible-fixtures,
   anyGuestGate ? throw "crucible phase7 crucible-fixtures check requires checks.crucible.phase2.gates.anyGuest",
 }: let
-  packagingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/26-packaging-aos-integration.md;
+  packagingDoc = builtins.readFile ../../docs/engineering/crucible/packaging.md;
   fixturesNix = builtins.readFile ../../pkgs/tools/crucible-fixtures.nix;
   defaultChecks = builtins.readFile ./default.nix;
   deterministicLaunch = builtins.readFile ../../crates/crucible/crucible-qemu-host/src/launch.rs;
@@ -99,11 +99,7 @@
       "pkgs.crucible-fixtures: third-party guest path must point at the packaged generic unmodified guest manifest"
     ]
     ++ nodeFailures
-    ++ failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
-      {
-        label = "T-PKG-13 completion note";
-        needle = "Completed by `checks.crucible.phase7.crucibleFixtures`";
-      }
+    ++ failuresFor "docs/engineering/crucible/packaging.md" packagingDoc [
       {
         label = "crucible-fixtures package reference";
         needle = "`pkgs.crucible-fixtures`";

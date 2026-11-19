@@ -8,7 +8,6 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   shmemGate = builtins.readFile ../../crates/crucible/crucible-qemu-shmem/tests/gate_layer1_injection.rs;
-  shmemSpec = builtins.readFile ../../docs/rfcs/0010-crucible/13-shmem-abi.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -35,7 +34,7 @@
       }
       {
         label = "actual RingHeader ordering source guard";
-        needle = "assert_ring_header_source_uses_rfc_13_6_orderings";
+        needle = "assert_ring_header_source_uses_acquire_release_orderings";
       }
       {
         label = "function-scoped source order guard";
@@ -115,8 +114,6 @@
         label = "placeholder panic";
         needle = "implementation is pending";
       }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/13-shmem-abi.md" shmemSpec [
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {

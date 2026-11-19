@@ -10,18 +10,18 @@
   model = import ./_crucible-model-source.nix {inherit lib;};
   workloadTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/workload_parameterization.rs;
   defaultChecks = builtins.readFile ./default.nix;
-  spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
+  scenarioModelDoc = builtins.readFile ../../docs/engineering/crucible/scenario-model.md;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/06-spatial-graph.md" spatialGraph [
+    failuresFor "docs/engineering/crucible/scenario-model.md" scenarioModelDoc [
       {
-        label = "T-SPAT-15 completion names ScenarioBuilder";
-        needle = "`ScenarioBuilder` now exposes";
+        label = "code-first scenario builder";
+        needle = "`ScenarioBuilder` (in `model/family.rs`) is the code-first front door";
       }
       {
-        label = "T-SPAT-15 completion names gate";
+        label = "scenario builder check";
         needle = "`checks.crucible.phase1.spatialScenarioBuilder`";
       }
     ]

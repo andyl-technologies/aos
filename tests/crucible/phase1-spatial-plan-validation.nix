@@ -9,27 +9,27 @@
 
   model = import ./_crucible-model-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
-  spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
+  scenarioModelDoc = builtins.readFile ../../docs/engineering/crucible/scenario-model.md;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/06-spatial-graph.md" spatialGraph [
+    failuresFor "docs/engineering/crucible/scenario-model.md" scenarioModelDoc [
       {
-        label = "T-SPAT-20 completion names signal plan admission";
-        needle = "rejects missing programs, duplicate identities, invalid selectors";
+        label = "signal plan admission";
+        needle = "rejects missing programs, duplicate identities,";
       }
       {
-        label = "T-SPAT-20 completion names terminal gate";
+        label = "signal fault system gate";
         needle = "`checks.crucible.phase7.gates.signalFaultSystem`";
       }
       {
-        label = "T-SPAT-20 completion names resource ceilings";
+        label = "resource ceilings enforced before hashing";
         needle = "exceeded resource ceilings before hashing or execution";
       }
       {
-        label = "T-SPAT-20 completion names typed time";
-        needle = "Typed signal coordinates prevent negative time";
+        label = "typed signal coordinates";
+        needle = "coordinates prevent negative time";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [

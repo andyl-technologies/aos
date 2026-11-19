@@ -17,7 +17,6 @@
     inherit lib;
     entry = ../../crates/crucible/crucible-qemu-shmem/tests/lookahead_gate.rs;
   };
-  shmemSpec = builtins.readFile ../../docs/rfcs/0010-crucible/13-shmem-abi.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -114,8 +113,6 @@
         label = "ignored lookahead test";
         needle = "#[ignore";
       }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/13-shmem-abi.md" shmemSpec [
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {

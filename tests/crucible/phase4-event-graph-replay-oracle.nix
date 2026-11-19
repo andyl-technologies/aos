@@ -14,8 +14,8 @@
   };
   replayGate = builtins.readFile ../../crates/crucible/crucible-engine/tests/gate_replay_oracle.rs;
   assertionProximityTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/assertion_proximity_gradient.rs;
-  triggerDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17a-conditions-and-triggers.md;
-  assertionsDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
+  conditionsDoc = builtins.readFile ../../docs/engineering/crucible/conditions-and-triggers.md;
+  assertionsDoc = builtins.readFile ../../docs/engineering/crucible/assertions.md;
   defaultChecks = builtins.readFile ./default.nix;
   e2eGate = builtins.readFile ./phase4-e2e-determinism.nix;
 
@@ -23,19 +23,15 @@
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/17a-conditions-and-triggers.md" triggerDoc [
+    failuresFor "docs/engineering/crucible/conditions-and-triggers.md" conditionsDoc [
       {
-        label = "T-TRIG-20 completion note";
-        needle = "Completed by `checks.crucible.phase4.gates.replayOracle`";
+        label = "event graph replay gate named";
+        needle = "`checks.crucible.phase4.gates.replayOracle`";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/18-assertions-properties.md" assertionsDoc [
+    ++ failuresFor "docs/engineering/crucible/assertions.md" assertionsDoc [
       {
-        label = "T-ASRT-16 completion note";
-        needle = "Completed by `checks.crucible.phase4.gates.e2eDeterminism` and";
-      }
-      {
-        label = "T-ASRT-18 replay completion note";
+        label = "assertion replay gate named";
         needle = "`checks.crucible.phase4.gates.replayOracle`";
       }
     ]
@@ -215,12 +211,6 @@
       {
         label = "e2e target scenario metadata";
         needle = "scenario=representative-three-vm-fault-injected";
-      }
-    ]
-    ++ forbiddenFor "docs/rfcs/0010-crucible/17a-conditions-and-triggers.md" triggerDoc [
-      {
-        label = "stale replay gate pending prose";
-        needle = "Replay gates remain T-TRIG-20";
       }
     ]
     ++ forbiddenFor "tests/crucible/default.nix" defaultChecks [

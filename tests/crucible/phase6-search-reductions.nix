@@ -8,8 +8,8 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  advancedDoc = builtins.readFile ../../docs/rfcs/0010-crucible/22-advanced-features.md;
-  temporalDoc = builtins.readFile ../../docs/rfcs/0010-crucible/07-temporal-graph.md;
+  explorationPage = builtins.readFile ../../docs/engineering/crucible/exploration.md;
+  executionGraphPage = builtins.readFile ../../docs/engineering/crucible/execution-graph.md;
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
   reductionGateTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/gate_search_reductions.rs;
   contentAddressGateTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/gate_content_address.rs;
@@ -67,24 +67,20 @@
     forbidden;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/22-advanced-features.md" advancedDoc [
-      {
-        label = "T-ADV-9 completion note";
-        needle = "Completed by `checks.crucible.phase6.searchReductions`";
-      }
+    failuresFor "docs/engineering/crucible/exploration.md" explorationPage [
       {
         label = "explicit graph-level node dedup";
-        needle = "sound graph-level node-deduplication over the content-addressed DAG";
+        needle = "graph-level node-deduplication over the content-addressed DAG";
       }
       {
         label = "explicit non-model-checker scope";
-        needle = "explicitly not a model checker / spec-language evaluator";
+        needle = "Crucible contains no model";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/07-temporal-graph.md" temporalDoc [
+    ++ failuresFor "docs/engineering/crucible/execution-graph.md" executionGraphPage [
       {
-        label = "T-TEMP-10 completion records canonical representative on demand";
-        needle = "after recording that\n    canonical representative on demand";
+        label = "partial-order reduction records canonical representative on demand";
+        needle = "after recording that canonical representative on demand";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" temporalGraph [

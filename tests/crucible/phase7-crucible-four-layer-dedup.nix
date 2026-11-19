@@ -5,7 +5,7 @@
   taskIds ? ["T-DCE-3"],
   dependencies ? [],
 }: let
-  dceDoc = builtins.readFile ../../docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md;
+  distributedExplorationDoc = builtins.readFile ../../docs/engineering/crucible/distributed-exploration.md;
   casSource =
     builtins.readFile ../../crates/crucible/crucible-store/src/lib.rs
     + builtins.readFile ../../crates/crucible/crucible-store/src/cas/campaign_codec.rs
@@ -30,17 +30,11 @@
   fleetEquivalenceWrapperDependency = "dependencies = [phase2.gates.singleVmFingerprint e2eDeterminism phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleFrontierLeases phase7.crucibleFourLayerDedup phase7.crucibleDeterminismGuardrail phase7.crucibleCasFleetRatchetSeam];";
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md" dceDoc [
+    failuresFor "docs/engineering/crucible/distributed-exploration.md" distributedExplorationDoc [
       {
-        label = "T-DCE-3 completion note";
-        needle = "Completed by `checks.crucible.phase7.crucibleFourLayerDedup`";
+        label = "four-layer text";
+        needle = "The fleet deduplicates redundant work at four layers";
       }
-      {
-        label = "DCE-8 four-layer text";
-        needle = "The fleet MUST deduplicate redundant work at four layers";
-      }
-    ]
-    ++ forbiddenFor "docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md" dceDoc [
     ]
     ++ failuresFor "crates/crucible/crucible-store/src/lib.rs" casSource [
       {

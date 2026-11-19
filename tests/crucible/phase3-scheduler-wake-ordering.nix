@@ -25,7 +25,7 @@
     inherit lib;
     entry = ../../crates/crucible/crucible-qemu-host/src/quantum.rs;
   };
-  schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
+  schedulingDoc = builtins.readFile ../../docs/engineering/crucible/scheduling.md;
   runCeilingGate = builtins.readFile ./phase3-scheduler-run-ceiling.nix;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -33,18 +33,14 @@
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/08-scheduling.md" schedulingDoc [
+    failuresFor "docs/engineering/crucible/scheduling.md" schedulingDoc [
       {
-        label = "T-SCHED-21 completion note";
-        needle = "Completed by `checks.crucible.phase3.schedulerWakeOrdering`";
-      }
-      {
-        label = "wake after inbox write requirement";
+        label = "wake after inbox write";
         needle = "wake after inbox write";
       }
       {
         label = "consistent ceiling inputs snapshot";
-        needle = "consistent `(ceiling, pending-inputs)` snapshot";
+        needle = "consistent `(ceiling, pending-inputs)`";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-qemu-shmem/src/lib.rs" shmem [

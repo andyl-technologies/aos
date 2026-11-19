@@ -10,9 +10,8 @@
   modelRust = import ./_crucible-model-source.nix {inherit lib;};
   libRust = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
   manifest = builtins.readFile ../../crates/crucible/crucible-engine/Cargo.toml;
-  determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
-  executionModel = builtins.readFile ../../docs/rfcs/0010-crucible/05-execution-model.md;
-  patternsAndSketches = builtins.readFile ../../docs/rfcs/0010-crucible/29-patterns-and-sketches.md;
+  executionModelDoc = builtins.readFile ../../docs/engineering/crucible/execution-model.md;
+  determinismDoc = builtins.readFile ../../docs/engineering/crucible/determinism.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
@@ -224,30 +223,28 @@
         needle = "crucible-determinism = { path = \"../crucible-determinism\" }";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/05-execution-model.md" executionModel [
+    ++ failuresFor "docs/engineering/crucible/execution-model.md" executionModelDoc [
       {
-        label = "EXEC-9 requires recorded RngStreamId";
-        needle = "A `Decision::RngDraw` MUST record its\n  `RngStreamId`";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsAndSketches [
-      {
-        label = "T-PAT-5 completion names decision recorder";
-        needle = "`crucible_engine::decision::DecisionRecorder`";
+        label = "RngDraw records its RngStreamId";
+        needle = "`Decision::RngDraw` records its `RngStreamId`";
       }
       {
-        label = "T-PAT-5 completion names RngStreamId";
+        label = "decision recorder seeded draw entry point";
+        needle = "`DecisionRecorder::draw_u64`";
+      }
+      {
+        label = "decision recording check is documented";
+        needle = "`checks.crucible.phase1.decisionRecording`";
+      }
+    ]
+    ++ failuresFor "docs/engineering/crucible/determinism.md" determinismDoc [
+      {
+        label = "RngStreamId is documented";
         needle = "`RngStreamId`";
       }
       {
-        label = "T-PAT-5 completion says RngStreamId is domain-qualified";
-        needle = "domain-qualified `RngStreamId`";
-      }
-      {
-        label = "T-PAT-5 completion names decision recording gate";
-        needle = "`checks.crucible.phase1.decisionRecording`";
+        label = "RngStreamId is domain-qualified";
+        needle = "`RngStreamId` (domain plus name)";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

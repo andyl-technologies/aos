@@ -21,7 +21,7 @@
     entry = ../../crates/crucible/crucible-qemu-plugin/src/idle_loop.rs;
   };
   pluginIdleLoopContract = pluginIdleLoop;
-  pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
+  pluginSpec = builtins.readFile ../../docs/engineering/crucible/qemu-plugin.md;
   shmemSources = import ./_rust-module-source.nix {
     inherit lib;
     entry = ../../crates/crucible/crucible-qemu-shmem/src/shmem/frame_node.rs;
@@ -74,18 +74,18 @@
     hotPathSources;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
+    failuresFor "docs/engineering/crucible/qemu-plugin.md" pluginSpec [
       {
-        label = "device-I/O freeze wording";
-        needle = "Implement virtual-time freeze across in-flight device I/O";
+        label = "device-I/O freeze type";
+        needle = "`PluginDeviceIoFreeze`";
       }
       {
         label = "pending-counter wording";
-        needle = "`device_io_active`/pending-counter";
+        needle = "`device_io_active` flag, increments a local";
       }
       {
-        label = "burst-done wording";
-        needle = "cleared on burst-done";
+        label = "hold release wording";
+        needle = "The hold is released when the last request of the burst completes.";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/lib.rs" pluginLib [

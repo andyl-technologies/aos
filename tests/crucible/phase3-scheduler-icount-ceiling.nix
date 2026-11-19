@@ -12,29 +12,25 @@
   nodeTime = builtins.readFile ../../crates/crucible/crucible-engine/src/node_time.rs;
   icountCeilingTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/scheduler_icount_ceiling.rs;
   runCeilingTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/scheduler_run_ceiling.rs;
-  schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
+  schedulingDoc = builtins.readFile ../../docs/engineering/crucible/scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/08-scheduling.md" schedulingDoc [
+    failuresFor "docs/engineering/crucible/scheduling.md" schedulingDoc [
       {
-        label = "T-SCHED-20 completion names the focused gate";
-        needle = "Completed by `checks.crucible.phase3.schedulerIcountCeiling`";
-      }
-      {
-        label = "SCHED-34 requires exact logical ticks";
-        needle = "MUST treat each node's clock as exact logical";
+        label = "exact tick scale";
+        needle = "exact tick scale";
       }
       {
         label = "nanosecond rounding cannot move a ceiling";
-        needle = "A nanosecond floor/ceil conversion MUST NOT change an authorization boundary";
+        needle = "round-trip never changes an authorization boundary";
       }
       {
-        label = "RUN publication retains exact ticks";
-        needle = "RUN publications retain exact ticks into the shmem ABI `max_advance_icount`";
+        label = "RUN publication carries the shmem ceiling";
+        needle = "`max_advance_icount` is the shared-memory ABI field value";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [

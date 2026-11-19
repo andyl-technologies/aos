@@ -10,25 +10,21 @@
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   libSource = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
   resolveTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/scheduler_resolve.rs;
-  schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
+  schedulingDoc = builtins.readFile ../../docs/engineering/crucible/scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/08-scheduling.md" schedulingDoc [
+    failuresFor "docs/engineering/crucible/scheduling.md" schedulingDoc [
       {
-        label = "T-SCHED-16 completion note";
-        needle = "Completed by `checks.crucible.phase3.schedulerResolve`";
+        label = "RESOLVE entry point";
+        needle = "`resolve_due_scheduled_events(pending, consumer, advanced_to)`";
       }
       {
-        label = "RESOLVE requirement";
-        needle = "Implement RESOLVE";
-      }
-      {
-        label = "transport independence requirement";
-        needle = "transport-timing-independent";
+        label = "transport independence";
+        needle = "regardless of the order they were queued";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [

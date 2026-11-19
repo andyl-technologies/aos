@@ -12,22 +12,22 @@
   qemuCargo = builtins.readFile ../../crates/crucible/crucible-qemu-host/Cargo.toml;
   qemuRealization = builtins.readFile ../../crates/crucible/crucible-qemu-host/src/realization.rs;
   defaultChecks = builtins.readFile ./default.nix;
-  spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
+  scenarioModelDoc = builtins.readFile ../../docs/engineering/crucible/scenario-model.md;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/06-spatial-graph.md" spatialGraph [
+    failuresFor "docs/engineering/crucible/scenario-model.md" scenarioModelDoc [
       {
-        label = "T-SPAT-10 completion names immutable accessors";
-        needle = "`World` now stores nodes and";
+        label = "immutable world accessors";
+        needle = "`World` stores nodes and links behind immutable accessors";
       }
       {
-        label = "T-SPAT-10 completion names static topology API";
+        label = "static topology API";
         needle = "`World::static_topology()`";
       }
       {
-        label = "T-SPAT-10 completion names gate";
+        label = "static topology check";
         needle = "`checks.crucible.phase1.spatialStaticTopology`";
       }
     ]

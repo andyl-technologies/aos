@@ -1,6 +1,6 @@
 //! Checks the Crucible runtime crate dependency graph.
 //!
-//! The L0-L4 crate map in RFC-0010 file 27 is a phase-ordering contract: a
+//! The L0-L4 crate map is a phase-ordering contract: a
 //! runtime crate may depend only on crates in its own layer or lower layers,
 //! except for the host-side QEMU adapter edge into the engine crate. The two
 //! in-VM L2 crates may depend directly only on L1 crates.

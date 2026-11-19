@@ -85,7 +85,7 @@ struct ObservedInjection {
 
 #[test]
 fn gate_layer1_injection_checks_spsc_ring_concurrency_properties() {
-    assert_ring_header_source_uses_rfc_13_6_orderings();
+    assert_ring_header_source_uses_acquire_release_orderings();
     assert_spsc_ring_exhaustive_ordering_model(&[
         SpscProperty::NoLostFrame,
         SpscProperty::NoDuplicatedFrame,
@@ -119,16 +119,16 @@ fn assert_spsc_ring_exhaustive_ordering_model(required: &[SpscProperty]) {
     assert!(required.contains(&SpscProperty::NoTornFrame));
     assert!(required.contains(&SpscProperty::NoEarlyRead));
 
-    let rfc_orderings = RingOrderings::rfc_13_6();
-    let failures = model_check_publish_before_read(rfc_orderings);
+    let abi_orderings = RingOrderings::acquire_release();
+    let failures = model_check_publish_before_read(abi_orderings);
     assert!(
         failures.is_empty(),
-        "RFC 13.6 publish/acquire ordering admitted failures: {failures:?}"
+        "acquire/release publish ordering admitted failures: {failures:?}"
     );
-    let failures = model_check_free_before_overwrite(rfc_orderings);
+    let failures = model_check_free_before_overwrite(abi_orderings);
     assert!(
         failures.is_empty(),
-        "RFC 13.6 free/acquire ordering admitted failures: {failures:?}"
+        "acquire/release free ordering admitted failures: {failures:?}"
     );
 
     let relaxed_everywhere = RingOrderings::relaxed_everywhere();
@@ -142,7 +142,7 @@ fn assert_spsc_ring_exhaustive_ordering_model(required: &[SpscProperty]) {
     let missing_consumer_acquire_negative_control_failed =
         model_check_publish_before_read(RingOrderings {
             consumer_write_idx_load: ModelOrdering::Relaxed,
-            ..rfc_orderings
+            ..abi_orderings
         })
         .contains(&ModelFailure::TornFrameAfterPublishedWriteIndex);
     assert!(missing_consumer_acquire_negative_control_failed);
@@ -150,7 +150,7 @@ fn assert_spsc_ring_exhaustive_ordering_model(required: &[SpscProperty]) {
     let missing_producer_acquire_negative_control_failed =
         model_check_free_before_overwrite(RingOrderings {
             producer_read_idx_load: ModelOrdering::Relaxed,
-            ..rfc_orderings
+            ..abi_orderings
         })
         .contains(&ModelFailure::ProducerOverwriteBeforeConsumerReadIsOrdered);
     assert!(missing_producer_acquire_negative_control_failed);
@@ -331,7 +331,7 @@ fn random_operation_sequence(rng: &mut SeededPropertyRng, len: usize) -> Vec<boo
         .collect()
 }
 
-fn assert_ring_header_source_uses_rfc_13_6_orderings() {
+fn assert_ring_header_source_uses_acquire_release_orderings() {
     assert_function_source_order(
         "pub fn enqueue_coverage(",
         &[
@@ -607,7 +607,7 @@ fn run_free_before_overwrite_interleaving(
 }
 
 impl RingOrderings {
-    const fn rfc_13_6() -> Self {
+    const fn acquire_release() -> Self {
         Self {
             producer_read_idx_load: ModelOrdering::Acquire,
             producer_write_idx_store: ModelOrdering::Release,

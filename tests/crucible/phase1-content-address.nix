@@ -22,9 +22,8 @@
   gateCatalogTest = builtins.readFile ../../crates/crucible/crucible-test-support/tests/gate_catalog.rs;
   gateTargetMapping = builtins.readFile ./phase1-gate-target-mapping.nix;
   defaultChecks = builtins.readFile ./default.nix;
-  harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
-  temporalGraph = builtins.readFile ../../docs/rfcs/0010-crucible/07-temporal-graph.md;
-  patternsAndSketches = builtins.readFile ../../docs/rfcs/0010-crucible/29-patterns-and-sketches.md;
+  executionGraphDoc = builtins.readFile ../../docs/engineering/crucible/execution-graph.md;
+  executionModelDoc = builtins.readFile ../../docs/engineering/crucible/execution-model.md;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
@@ -1009,118 +1008,76 @@
         needle = "\"T-TEMP-11\"";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/07-temporal-graph.md" temporalGraph [
+    ++ failuresFor "docs/engineering/crucible/execution-graph.md" executionGraphDoc [
       {
-        label = "T-TEMP-1 completion names content-address gate";
+        label = "content-address check is documented";
         needle = "`checks.crucible.phase1.gates.contentAddress`";
       }
       {
-        label = "T-TEMP-2 completion names content-address gate";
-        needle = "`checks.crucible.phase1.gates.contentAddress`";
-      }
-      {
-        label = "T-TEMP-3 completion names content-address gate";
-        needle = "`checks.crucible.phase1.gates.contentAddress`";
-      }
-      {
-        label = "T-TEMP-6 completion names CoW refs";
+        label = "CoW delta references";
         needle = "`crucible_engine::CowDeltaRef`";
       }
       {
-        label = "T-TEMP-6 completion names marginal fork API";
+        label = "marginal fork objects";
         needle = "`marginal_fork_cow_delta_objects`";
       }
       {
-        label = "T-TEMP-6 completion says log prefix is shared";
-        needle = "inherited log prefix as a shared reference";
+        label = "inherited log prefix is shared";
+        needle = "The inherited log prefix is kept as a shared reference";
       }
       {
-        label = "T-TEMP-6 completion names content-address gate";
-        needle = "`checks.crucible.phase1.gates.contentAddress`";
-      }
-      {
-        label = "T-TEMP-8 completion names DAG store trait";
+        label = "DAG store trait";
         needle = "`crucible_engine::DagStore`";
       }
       {
-        label = "T-TEMP-8 completion names local backend";
+        label = "local DAG store backend";
         needle = "`crucible_engine::LocalDagStore`";
       }
       {
-        label = "T-TEMP-8 completion names store-key artifact";
+        label = "store-key reproduction artifact";
         needle = "`crucible_engine::DagStoreReproductionArtifact`";
       }
       {
-        label = "T-TEMP-9 completion names GC roots";
+        label = "GC roots";
         needle = "`crucible_engine::TemporalGraphGcRoots`";
       }
       {
-        label = "T-TEMP-9 completion names GC report";
+        label = "GC report";
         needle = "`crucible_engine::TemporalGraphGcReport`";
       }
       {
-        label = "T-TEMP-9 completion names content-address gate";
-        needle = "`checks.crucible.phase1.gates.contentAddress`";
-      }
-      {
-        label = "T-TEMP-10 completion names frontier policy";
+        label = "frontier reduction policy";
         needle = "`crucible_engine::FrontierReductionPolicy`";
       }
       {
-        label = "T-TEMP-10 completion names reduced enumeration";
+        label = "reduced frontier enumeration";
         needle = "`TemporalGraph::enumerate_frontier_reduced`";
       }
       {
-        label = "T-TEMP-10 completion names content-address gate";
-        needle = "`checks.crucible.phase1.gates.contentAddress`";
-      }
-      {
-        label = "T-TEMP-11 completion names save operation";
+        label = "save operation";
         needle = "`TemporalGraph::save`";
       }
       {
-        label = "T-TEMP-11 completion names fork operation";
+        label = "fork operation";
         needle = "`TemporalGraph::fork`";
       }
       {
-        label = "T-TEMP-11 completion names content-address gate";
-        needle = "`checks.crucible.phase1.gates.contentAddress`";
+        label = "checkpoint node shape";
+        needle = "pub struct Checkpoint {";
+      }
+      {
+        label = "checkpoint closure persistence";
+        needle = "`TemporalGraph::persist_checkpoint_closure";
+      }
+      {
+        label = "cached snapshot store collection";
+        needle = "`collect_cached_snapshot_store(store, config)`";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsAndSketches [
+    ++ failuresFor "docs/engineering/crucible/execution-model.md" executionModelDoc [
       {
-        label = "T-PAT-4 completion names checkpoint";
-        needle = "`crucible_engine::Checkpoint`";
-      }
-      {
-        label = "T-PAT-4 completion names node blob refs";
-        needle = "`crucible_engine::NodeBlobRef`";
-      }
-      {
-        label = "T-PAT-4 completion names CoW refs";
-        needle = "`crucible_engine::CowDeltaRef`";
-      }
-      {
-        label = "T-PAT-4 completion names DagStore";
-        needle = "`crucible_engine::DagStore`";
-      }
-      {
-        label = "T-PAT-4 completion names local DagStore backend";
-        needle = "`crucible_engine::LocalDagStore`";
-      }
-      {
-        label = "T-PAT-4 completion names checkpoint closure persistence";
-        needle = "`TemporalGraph::persist_checkpoint_closure`";
-      }
-      {
-        label = "T-PAT-4 completion names cached snapshot store collection";
-        needle = "`TemporalGraph::collect_cached_snapshot_store`";
-      }
-      {
-        label = "T-PAT-4 completion names content-address gate";
-        needle = "`checks.crucible.phase1.gates.contentAddress`";
+        label = "node blob references";
+        needle = "pub enum NodeBlobRef {";
       }
     ];
 in

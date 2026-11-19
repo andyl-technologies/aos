@@ -14,28 +14,24 @@
     (builtins.readFile ../../crates/crucible/crucible-engine/tests/scheduler_preemption_resolve.rs)
     (builtins.readFile ../../crates/crucible/crucible-engine/tests/scheduler_preemption_identity.rs)
   ];
-  schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
+  schedulingDoc = builtins.readFile ../../docs/engineering/crucible/scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/08-scheduling.md" schedulingDoc [
+    failuresFor "docs/engineering/crucible/scheduling.md" schedulingDoc [
       {
-        label = "T-SCHED-29 completion note";
-        needle = "Completed by `checks.crucible.phase3.schedulerPreemptionResolve`";
+        label = "bounded window";
+        needle = "rejects a request outside `[current counter, authorized horizon]`";
       }
       {
-        label = "bounded window note";
-        needle = "authorized `[deadline, ceiling]` window";
-      }
-      {
-        label = "total order note";
+        label = "total order";
         needle = "preemption's commanded virtual time";
       }
       {
-        label = "no clamp note";
+        label = "no clamp";
         needle = "never clamps or defers";
       }
     ]

@@ -270,9 +270,9 @@ pub(super) fn assert_expected_crucible_package_set(
     crates_dir: &Path,
     failures: &mut Vec<String>,
 ) -> Result<(), Box<dyn Error>> {
-    let mut expected: Vec<String> = crate_spec_index()
+    let mut expected: Vec<String> = crucible_crates()
         .iter()
-        .map(|spec| spec.package.to_string())
+        .map(|member| member.package.to_string())
         .collect();
     expected.sort();
 

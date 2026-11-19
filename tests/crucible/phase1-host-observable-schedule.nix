@@ -16,15 +16,15 @@
   pluginNetworkTx = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/network_tx.rs;
   pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
-  harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
+  testingAndGatesDoc = builtins.readFile ../../docs/engineering/crucible/testing-and-gates.md;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
+    failuresFor "docs/engineering/crucible/testing-and-gates.md" testingAndGatesDoc [
       {
-        label = "T-HARN-4 completion note";
-        needle = "Completed by `checks.crucible.phase1.hostObservableSchedule`";
+        label = "host-observable schedule check is documented";
+        needle = "`checks.crucible.phase1.gates.hostObservableSchedule`";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" crateRoot [

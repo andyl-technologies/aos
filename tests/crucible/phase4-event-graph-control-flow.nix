@@ -11,7 +11,7 @@
   model = import ./_crucible-model-source.nix {inherit lib;};
   libSource = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
   eventGraphTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/event_graph_control_flow.rs;
-  triggerDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17a-conditions-and-triggers.md;
+  conditionsDoc = builtins.readFile ../../docs/engineering/crucible/conditions-and-triggers.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
@@ -30,18 +30,10 @@
     (import ./_crucible-session-source.nix {inherit lib;})
   ];
   failures =
-    failuresFor "docs/rfcs/0010-crucible/17a-conditions-and-triggers.md" triggerDoc [
+    failuresFor "docs/engineering/crucible/conditions-and-triggers.md" conditionsDoc [
       {
-        label = "T-TRIG-1 completion note";
-        needle = "Completed by `checks.crucible.phase4.eventGraphControlFlow`";
-      }
-      {
-        label = "event graph replay gate complete";
-        needle = "Completed by `checks.crucible.phase4.gates.replayOracle`";
-      }
-      {
-        label = "event graph serialization task text";
-        needle = "content-addressed** form";
+        label = "event graph content-addressed serialization";
+        needle = "binary forms of the same plan produce the same content-addressed id";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [

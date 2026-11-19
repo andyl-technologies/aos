@@ -13,7 +13,6 @@
     inherit lib;
     entry = ../../crates/crucible/crucible-engine/tests/assertion_determinism_nonperturbation.rs;
   };
-  assertionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
   defaultChecks = builtins.readFile ./default.nix;
   assertionEngineBlock =
     builtins.elemAt (
@@ -27,13 +26,7 @@
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/18-assertions-properties.md" assertionDoc [
-      {
-        label = "T-ASRT-13 completion note";
-        needle = "Completed by `checks.crucible.phase4.assertionDeterminismNonPerturbation`";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [
+    failuresFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [
       {
         label = "read-only observed-state slices";
         needle = "observable_events: &'log [ObservableEvent]";

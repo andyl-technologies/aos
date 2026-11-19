@@ -11,29 +11,25 @@
   libSource = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
   concurrencyTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/scheduler_concurrency.rs;
   schedulerConcurrencyTests = builtins.readFile ../../crates/crucible/crucible-engine/src/scheduler/tests/concurrent.rs;
-  schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
+  schedulingDoc = builtins.readFile ../../docs/engineering/crucible/scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/08-scheduling.md" schedulingDoc [
+    failuresFor "docs/engineering/crucible/scheduling.md" schedulingDoc [
       {
-        label = "T-SCHED-25 completion note";
-        needle = "Completed by `checks.crucible.phase3.schedulerConcurrency`";
+        label = "concurrent run set";
+        needle = "`SingleScheduler::concurrent_run_set`";
       }
       {
-        label = "concurrent run set note";
-        needle = "adds a concurrent RUN set";
+        label = "serialized resolve emit step";
+        needle = "RESOLVE, EMIT, and STEP on the single scheduler in canonical completion order";
       }
       {
-        label = "serialized resolve emit note";
-        needle = "serializes each completion through RESOLVE/EMIT/STEP";
-      }
-      {
-        label = "e2e determinism note";
-        needle = "gate:e2e-determinism";
+        label = "e2e determinism gate";
+        needle = "`gate:e2e-determinism`";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [

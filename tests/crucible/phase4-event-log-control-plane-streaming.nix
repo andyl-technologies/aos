@@ -21,21 +21,17 @@
     component = "event_log_stream";
   };
   apiGate = builtins.readFile ../../crates/crucible/crucible-control-server/tests/gate_control_responsive.rs;
-  observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;
+  eventLogDoc = builtins.readFile ../../docs/engineering/crucible/event-log.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/19-observability-event-log.md" observabilityDoc [
+    failuresFor "docs/engineering/crucible/event-log.md" eventLogDoc [
       {
-        label = "T-OBS-11 completion note";
-        needle = "Completed by `checks.crucible.phase4.eventLogControlPlaneStreaming`";
-      }
-      {
-        label = "cursor and command-correlation completion note";
-        needle = "including `Command`-sourced control correlations";
+        label = "cursor streaming with command correlation";
+        needle = "including `Command`-sourced";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-session/src/lib.rs" session [

@@ -10,7 +10,7 @@
   qemuLib = builtins.readFile ../../crates/crucible/crucible-qemu-host/src/lib.rs;
   inertnessLib = builtins.readFile ../../crates/crucible/crucible-qemu-host/src/inertness.rs;
   inertnessTest = builtins.readFile ../../crates/crucible/crucible-qemu-host/tests/protocol_inertness.rs;
-  protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
+  protocolSpec = builtins.readFile ../../docs/engineering/crucible/control-protocol.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -144,7 +144,7 @@
         needle = "RuntimeDataPlane::SharedMemory";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/14-protocol.md" protocolSpec [
+    ++ failuresFor "docs/engineering/crucible/control-protocol.md" protocolSpec [
       {
         label = "gate qemu inert reference";
         needle = "`gate:qemu-inert`";

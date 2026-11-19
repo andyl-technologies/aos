@@ -1,12 +1,12 @@
 //! Event-graph control-flow spine.
 //!
-//! RFC-0010 file 17a defines scenario control flow as a graph of events. This
-//! module owns the first, condition-agnostic layer of that model: an [`Event`]
-//! binds an optional [`Condition`] to an [`Action`] and a [`FirePolicy`], while
+//! Scenario control flow is a graph of events. This module owns the first,
+//! condition-agnostic layer of that model: an [`Event`] binds an optional
+//! [`Condition`] to an [`Action`] and a [`FirePolicy`], while
 //! [`EventGraphState`] is the only local producer of fired actions. The
-//! code-first builder and graph-native plan serialization keep that control flow
-//! as a content-addressed scenario component instead of a separate scenario poke
-//! path.
+//! code-first builder and graph-native plan serialization keep that control
+//! flow as a content-addressed scenario component instead of a separate
+//! scenario poke path.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;

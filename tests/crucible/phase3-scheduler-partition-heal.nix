@@ -10,29 +10,25 @@
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   libSource = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
   partitionHealTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/scheduler_partition_heal.rs;
-  schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
+  schedulingDoc = builtins.readFile ../../docs/engineering/crucible/scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/08-scheduling.md" schedulingDoc [
+    failuresFor "docs/engineering/crucible/scheduling.md" schedulingDoc [
       {
-        label = "T-SCHED-23 completion note";
-        needle = "Completed by `checks.crucible.phase3.schedulerPartitionHeal`";
+        label = "partition removal";
+        needle = "Remove directed edges by endpoint";
       }
       {
-        label = "partition removal note";
-        needle = "Partition changes remove directed";
+        label = "heal restoration";
+        needle = "Restore directed edges into the current set";
       }
       {
-        label = "heal restoration note";
-        needle = "heal changes restore";
-      }
-      {
-        label = "last inbound infinite note";
-        needle = "last inbound edge is removed";
+        label = "last inbound infinite";
+        needle = "removes a node's last inbound edge makes its lookahead";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [

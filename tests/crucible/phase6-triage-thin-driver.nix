@@ -22,8 +22,7 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  triageDoc = builtins.readFile ../../docs/rfcs/0010-crucible/34-failure-triage.md;
-  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
+  failureTriagePage = builtins.readFile ../../docs/engineering/crucible/failure-triage.md;
   modelSource = import ./_crucible-model-source.nix {inherit lib;};
   libSource = import ./_rust-module-source.nix {
     inherit lib;
@@ -35,28 +34,14 @@
   taskList = builtins.concatStringsSep "," taskIds;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/34-failure-triage.md" triageDoc [
-      {
-        label = "T-TRI-7 completion note";
-        needle = "Completed by `checks.crucible.phase6.triageThinDriver`";
-      }
+    failuresFor "docs/engineering/crucible/failure-triage.md" failureTriagePage [
       {
         label = "content-addressed triage result";
         needle = "content-addressed triage result in the DagStore";
       }
       {
         label = "self-check wording";
-        needle = "recomputed signatures equal discovery-time signatures byte-for-byte";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "T-TRI-7 plan summary";
-        needle = "checks.crucible.phase6.triageThinDriver";
-      }
-      {
-        label = "downstream triage CLI surface gate";
-        needle = "checks.crucible.phase6.triageCliSurface";
+        needle = "recomputed signatures equal discovery-time signatures";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" modelSource [

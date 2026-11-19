@@ -14,18 +14,18 @@
   cargoManifest = builtins.readFile ../../crates/crucible/crucible-engine/Cargo.toml;
   cargoLock = builtins.readFile ../../crates/Cargo.lock;
   defaultChecks = builtins.readFile ./default.nix;
-  spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
+  scenarioModelDoc = builtins.readFile ../../docs/engineering/crucible/scenario-model.md;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/06-spatial-graph.md" spatialGraph [
+    failuresFor "docs/engineering/crucible/scenario-model.md" scenarioModelDoc [
       {
-        label = "T-SPAT-16 completion names serializable form";
+        label = "serializable scenario form";
         needle = "`ScenarioDefForm`";
       }
       {
-        label = "T-SPAT-16 completion names gate";
+        label = "serializable form check";
         needle = "`checks.crucible.phase1.spatialSerializableForm`";
       }
     ]

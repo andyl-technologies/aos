@@ -1,25 +1,25 @@
 //! The `gate:perf-bench` cost-model substrate.
 //!
-//! This module owns the performance-benchmark gate of RFC-0010 file 25
-//! ([`25-performance-targets.md`]). It is the *measurement and assertion*
-//! substrate: it models the SS25.1 cost model
+//! This module owns the performance-benchmark gate documented in
+//! `docs/engineering/crucible/performance.md`. It is the *measurement and assertion*
+//! substrate: it models the cost model
 //!
 //! ```text
 //!   wall_clock  ~=  (sum busy_i) / (IPS_tcg x P)  +  T_amortized_boot  +  T_sync_overhead
 //! ```
 //!
-//! attributes wall-clock to each term separately ([PERF-1]), and exposes the
-//! SS25.7.1 metric set as a [`PerfBenchReport`] so the gate can assert the
-//! *structural and relative* properties the RFC requires while *recording* the
+//! attributes wall-clock to each term separately, and exposes the
+//! perf-bench metric set as a [`PerfBenchReport`] so the gate can assert the
+//! *structural and relative* properties the gate requires while *recording* the
 //! raw numbers for humans and trend tracking.
 //!
 //! # The regression-gate discipline
 //!
-//! Unlike every determinism gate, `gate:perf-bench` is a *regression* gate
-//! ([PERF-19]): it compares metrics against a stored baseline and fails on a
+//! Unlike every determinism gate, `gate:perf-bench` is a *regression* gate:
+//! it compares metrics against a stored baseline and fails on a
 //! per-metric regression beyond a configured threshold, rather than asserting
 //! byte-identity. Because it runs on a shared, noisy builder, the gate asserts
-//! *host-independent* properties wherever possible ([PERF-20])  --  ratios,
+//! *host-independent* properties wherever possible  --  ratios,
 //! monotonicity, syscall counts, and flatness  --  and tolerance-bands the few
 //! unavoidable wall-clock numbers (restore latency, throughput). Absolute
 //! wall-clock thresholds are never hard-asserted here; they are recorded.
@@ -27,12 +27,12 @@
 //! # What the substrate models
 //!
 //! The gate must run hermetically with no QEMU, so this module carries a
-//! deterministic *cost-model simulator*: a closed-form evaluation of the SS25.1
+//! deterministic *cost-model simulator*: a closed-form evaluation of the cost-model
 //! equation for a described [`BenchScenario`]. Given a scenario's busy
 //! instruction counts, idle spans, link latencies, core budget, and fault/plugin
 //! configuration, [`evaluate_cost_model`] computes the modeled wall-clock and its
 //! term breakdown deterministically. This lets the gate assert the *relations*
-//! the RFC pins ("idle contributes zero", "parallelism scales with lookahead",
+//! the gate pins ("idle contributes zero", "parallelism scales with lookahead",
 //! "serial and parallel are bit-identical") without a live VM, exactly the way
 //! the mock e2e artifact lets `gate:e2e-determinism` run without a VM. Real
 //! wall-clock timing of the host lives in the gate *test target*, not here, so
@@ -41,10 +41,10 @@
 //! # Module map
 //!
 //! - [`admission`]  --  the Class A/Class B host-parallelism register and its
-//!   fail-closed validator ([PERF-34]).
+//!   fail-closed validator.
 //! - [`model`]  --  the [`BenchScenario`] inputs, the [`CostModelBreakdown`], and
-//!   [`evaluate_cost_model`]/[`realized_parallelism`] (the SS25.1 evaluator).
-//! - [`sweeps`]  --  the SS25 parameter sweeps ([`latency_parallelism_sweep`],
+//!   [`evaluate_cost_model`]/[`realized_parallelism`] (the cost-model evaluator).
+//! - [`sweeps`]  --  the cost-model parameter sweeps ([`latency_parallelism_sweep`],
 //!   [`core_count_speedup_sweep`], [`rendezvous_frequency_sweep`],
 //!   [`fleet_host_sweep`]) and the derived host-independent metrics
 //!   ([`advance_syscall_count`], [`snapshot_latency_series`],
@@ -55,8 +55,6 @@
 //! - [`gate`]  --  [`run_perf_bench_gate`], the assertion pass, plus the modeled
 //!   [`fork_cost_bytes`]/[`replay_cost_units`]/[`peak_rss_units`] helpers.
 //! - [`corpus`]  --  the canonical hermetic corpus, baseline, and gate input.
-//!
-//! [`25-performance-targets.md`]: ../../../docs/rfcs/0010-crucible/25-performance-targets.md
 
 pub mod admission;
 pub mod corpus;

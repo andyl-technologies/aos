@@ -1229,7 +1229,7 @@ pub(super) fn cli_completions_ignores_global_daemon_for_thin_wrapper_metadata()
 }
 
 #[test]
-pub(super) fn cli_resume_help_and_version_surface_matches_rfc_copy() {
+pub(super) fn cli_resume_help_and_version_surface_matches_expected_copy() {
     let mut command = Cli::command();
     let top_help = command.render_long_help().to_string();
     for needle in [
@@ -1379,7 +1379,7 @@ pub(super) fn cli_resume_help_and_version_surface_matches_rfc_copy() {
 }
 
 #[test]
-pub(super) fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
+pub(super) fn cli_help_surface_matches_normalized_exact_snapshots() {
     let snapshots = [
         (
             "run",
@@ -1392,12 +1392,12 @@ pub(super) fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
                 "save_on",
                 "watch",
             ][..],
-            "about=Run a scenario to completion (local or via a daemon)\nusage=Usage: crucible run [OPTIONS] <SCENARIO>\nscenario=Scenario file (the canonical TOML form, 06 §6.1) or its content hash\nuntil=Terminal condition. Default: quiescence\nmax_virtual_time=Stop with Timeout past this virtual time (20 §2)\nmax_quanta=Stop with Timeout at this scheduler-quantum boundary\ninteractive=Pause at genesis and drive the session interactively\nsave_on=Materialize a savepoint at the outcome. Default: never\nwatch=Stream the live status line (20 §9) alongside the trace\n",
+            "about=Run a scenario to completion (local or via a daemon)\nusage=Usage: crucible run [OPTIONS] <SCENARIO>\nscenario=Scenario file (the canonical TOML form) or its content hash\nuntil=Terminal condition. Default: quiescence\nmax_virtual_time=Stop with Timeout past this virtual time\nmax_quanta=Stop with Timeout at this scheduler-quantum boundary\ninteractive=Pause at genesis and drive the session interactively\nsave_on=Materialize a savepoint at the outcome. Default: never\nwatch=Stream the live status line alongside the trace\n",
         ),
         (
             "verify",
             &["scenario", "runs", "adversarial", "bisect", "compare"][..],
-            "about=Prove determinism: run N times, diff fingerprints + causal logs\nusage=Usage: crucible verify [OPTIONS] <SCENARIO|--compare <a> <b>>\nscenario=Scenario file (the canonical TOML form, 06 §6.1) or its content hash\nruns=Number of runs to compare. Default: 2\nadversarial=Run the full hostile host scheduling, clock, core, and I/O matrix\nbisect=On divergence, run divergence-bisection (24 §5) and print the report\ncompare=Diff two existing reproduction artifacts instead of running\n",
+            "about=Prove determinism: run N times, diff fingerprints + causal logs\nusage=Usage: crucible verify [OPTIONS] <SCENARIO|--compare <a> <b>>\nscenario=Scenario file (the canonical TOML form) or its content hash\nruns=Number of runs to compare. Default: 2\nadversarial=Run the full hostile host scheduling, clock, core, and I/O matrix\nbisect=On divergence, run divergence-bisection and print the report\ncompare=Diff two existing reproduction artifacts instead of running\n",
         ),
         (
             "selftest",
@@ -1415,7 +1415,7 @@ pub(super) fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
                 "marker",
                 "out",
             ][..],
-            "about=Run to a savepoint and export it as a resumable checkpoint\nusage=Usage: crucible save [OPTIONS] --at <virtual-time|quiescence|property|marker> <SCENARIO>\nscenario=Scenario file (the canonical TOML form, 06 §6.1) or its content hash\nat=Where to stop and save. Required\nlabel=Human label for the savepoint (07)\nmax_virtual_time=Coordinate for --at virtual-time\nproperty=Assertion selector for --at property\nmarker=Guest marker selector for --at marker\nout=Write the exported savepoint handle here. Default: --artifact-dir\n",
+            "about=Run to a savepoint and export it as a resumable checkpoint\nusage=Usage: crucible save [OPTIONS] --at <virtual-time|quiescence|property|marker> <SCENARIO>\nscenario=Scenario file (the canonical TOML form) or its content hash\nat=Where to stop and save. Required\nlabel=Human label for the savepoint\nmax_virtual_time=Coordinate for --at virtual-time\nproperty=Assertion selector for --at property\nmarker=Guest marker selector for --at marker\nout=Write the exported savepoint handle here. Default: --artifact-dir\n",
         ),
         (
             "resume",
@@ -1426,7 +1426,7 @@ pub(super) fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
                 "interactive",
                 "watch",
             ][..],
-            "about=Resume a run from a checkpoint or savepoint\nusage=Usage: crucible resume [OPTIONS] <SAVEPOINT>\nsavepoint=A current portable savepoint handle (07)\nuntil=Terminal condition, as in `run` (§6)\nmax_virtual_time=Stop with Timeout past this virtual time (20 §2)\ninteractive=Drive the resumed session interactively (as in `run`)\nwatch=Stream the live status line (20 §9)\n",
+            "about=Resume a run from a checkpoint or savepoint\nusage=Usage: crucible resume [OPTIONS] <SAVEPOINT>\nsavepoint=A current portable savepoint handle\nuntil=Terminal condition, as in `run`\nmax_virtual_time=Stop with Timeout past this virtual time\ninteractive=Drive the resumed session interactively (as in `run`)\nwatch=Stream the live status line\n",
         ),
         (
             "replay",
@@ -1437,7 +1437,7 @@ pub(super) fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
                 "bisect",
                 "bounded_scheduler_preemption",
             ][..],
-            "about=Replay a reproduction artifact, bit-identically\nusage=Usage: crucible replay [OPTIONS] <ARTIFACT>\nartifact=A reproduction artifact (06 §7.1) or its content hash\ncheck=Assert the replayed canonical log is byte-identical to this one\nto=Validate a target savepoint handle\nbisect=Bisect this artifact against another (24 §5)\nbounded_scheduler_preemption=Inject and require authenticated bounded host scheduler preemption during live QEMU replay\n",
+            "about=Replay a reproduction artifact, bit-identically\nusage=Usage: crucible replay [OPTIONS] <ARTIFACT>\nartifact=A reproduction artifact or its content hash\ncheck=Assert the replayed canonical log is byte-identical to this one\nto=Validate a target savepoint handle\nbisect=Bisect this artifact against another\nbounded_scheduler_preemption=Inject and require authenticated bounded host scheduler preemption during live QEMU replay\n",
         ),
         (
             "search",
@@ -1451,7 +1451,7 @@ pub(super) fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
                 "schedule_named_truths",
                 "retained_evidence",
             ][..],
-            "about=Drive state-space search over the schedule space (22)\nusage=Usage: crucible search [OPTIONS] <SCENARIO>\nscenario=Scenario file (the canonical TOML form, 06 §6.1) or its content hash\nstrategy=Frontier expansion strategy (22)\nmax_depth=Decision-depth bound\nmax_states=Budget on materialized states\non_violation=Stop at the first finding, or collect findings within the search bound\nfindings_out=Write the signed findings ledger to this path\nschedule_named_truths=Load schedule-named assertion truth data\nretained_evidence=Load backend-retained assertion evidence\n",
+            "about=Drive state-space search over the schedule space\nusage=Usage: crucible search [OPTIONS] <SCENARIO>\nscenario=Scenario file (the canonical TOML form) or its content hash\nstrategy=Frontier expansion strategy\nmax_depth=Decision-depth bound\nmax_states=Budget on materialized states\non_violation=Stop at the first finding, or collect findings within the search bound\nfindings_out=Write the signed findings ledger to this path\nschedule_named_truths=Load schedule-named assertion truth data\nretained_evidence=Load backend-retained assertion evidence\n",
         ),
         (
             "fuzz",
@@ -1464,7 +1464,7 @@ pub(super) fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
                 "on_violation",
                 "findings_out",
             ][..],
-            "about=Coverage-guided fuzzing over a scenario family (22)\nusage=Usage: crucible fuzz [OPTIONS] <FAMILY|--family <path|hash>>\nfamily=A ScenarioFamily (06 §7) to sample\nfamily_flag=A ScenarioFamily (06 §7) to sample\nruns=Number of family instances to run\ncoverage=Coverage signal guiding sampling (22)\ncorpus=Seed/regression corpus directory\non_violation=Stop at the first finding, or collect findings within the run bound\nfindings_out=Write the signed findings ledger to this path\n",
+            "about=Coverage-guided fuzzing over a scenario family\nusage=Usage: crucible fuzz [OPTIONS] <FAMILY|--family <path|hash>>\nfamily=A ScenarioFamily to sample\nfamily_flag=A ScenarioFamily to sample\nruns=Number of family instances to run\ncoverage=Coverage signal guiding sampling\ncorpus=Seed/regression corpus directory\non_violation=Stop at the first finding, or collect findings within the run bound\nfindings_out=Write the signed findings ledger to this path\n",
         ),
         (
             "serve",
@@ -1496,7 +1496,7 @@ pub(super) fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
                 "campaign_packaged_executor",
                 "campaign_socket_mode",
             ][..],
-            "about=Run the daemon hosting the API (21)\nusage=Usage: crucible serve [OPTIONS] --listen <addr>\nlisten=Address to bind the API (21) on. Required\nmax_sessions=Concurrency cap on live sessions\nproduction_qemu=Host sessions with the packaged production QEMU lifecycle\nqemu_rendezvous_ticks=Cap production-QEMU RUNs at this exact simulation-tick interval\nqemu_quantum_budget=Limit the number of scheduler quanta in a production-QEMU session\nread_only=Accept only read-only API calls (query/watch); no mutate\ntls_cert=Server certificate chain for authenticated remote access\ntls_key=Server private key for authenticated remote access\nclient_ca=CA certificate used to authenticate remote clients\ntrusted_unauthenticated_bind=Permit cleartext access on this explicitly trusted bind address\ndebug_role=Map a client certificate fingerprint to debugger capabilities\ncampaign_socket=Host the local CampaignService on this managed Unix socket\ncampaign_state=Retain local campaign objects and refs below this existing directory\ncampaign_policy=Load the strict local campaign peer policy from this file\ncampaign_store=Load a strict composed campaign repository-store deployment\ncampaign_maintenance_interval_ms=Run bounded campaign-store maintenance at this fixed cadence\ncampaign_maintenance_write_back_transfers=Complete at most this many write-back transfers per maintenance pass\ncampaign_maintenance_s3_nodes=Visit at most this many S3 leaves per maintenance pass\ncampaign_maintenance_s3_uploads=Abort at most this many unfinished uploads per visited S3 leaf\ncampaign_component_authority=Load distinct planner/debugger component authority keys from this file\ncampaign_import_manifest=Import verified campaign creation artifacts before binding the socket\ncampaign_runtime=Attach the packaged planner and an authenticated local executor to a campaign\ncampaign_runtime_all=Attach every authenticated campaign in the bounded local catalog\ncampaign_executor_socket=Connect one attached campaign runtime to this owner-only Unix socket; repeat in runtime order unless a packaged pool shares one endpoint\ncampaign_packaged_executor=Start one scenario-catalogued packaged QEMU pool from this deployment file\ncampaign_socket_mode=Set the managed campaign socket's Unix permission bits in octal\n",
+            "about=Run the daemon hosting the API\nusage=Usage: crucible serve [OPTIONS] --listen <addr>\nlisten=Address to bind the API on. Required\nmax_sessions=Concurrency cap on live sessions\nproduction_qemu=Host sessions with the packaged production QEMU lifecycle\nqemu_rendezvous_ticks=Cap production-QEMU RUNs at this exact simulation-tick interval\nqemu_quantum_budget=Limit the number of scheduler quanta in a production-QEMU session\nread_only=Accept only read-only API calls (query/watch); no mutate\ntls_cert=Server certificate chain for authenticated remote access\ntls_key=Server private key for authenticated remote access\nclient_ca=CA certificate used to authenticate remote clients\ntrusted_unauthenticated_bind=Permit cleartext access on this explicitly trusted bind address\ndebug_role=Map a client certificate fingerprint to debugger capabilities\ncampaign_socket=Host the local CampaignService on this managed Unix socket\ncampaign_state=Retain local campaign objects and refs below this existing directory\ncampaign_policy=Load the strict local campaign peer policy from this file\ncampaign_store=Load a strict composed campaign repository-store deployment\ncampaign_maintenance_interval_ms=Run bounded campaign-store maintenance at this fixed cadence\ncampaign_maintenance_write_back_transfers=Complete at most this many write-back transfers per maintenance pass\ncampaign_maintenance_s3_nodes=Visit at most this many S3 leaves per maintenance pass\ncampaign_maintenance_s3_uploads=Abort at most this many unfinished uploads per visited S3 leaf\ncampaign_component_authority=Load distinct planner/debugger component authority keys from this file\ncampaign_import_manifest=Import verified campaign creation artifacts before binding the socket\ncampaign_runtime=Attach the packaged planner and an authenticated local executor to a campaign\ncampaign_runtime_all=Attach every authenticated campaign in the bounded local catalog\ncampaign_executor_socket=Connect one attached campaign runtime to this owner-only Unix socket; repeat in runtime order unless a packaged pool shares one endpoint\ncampaign_packaged_executor=Start one scenario-catalogued packaged QEMU pool from this deployment file\ncampaign_socket_mode=Set the managed campaign socket's Unix permission bits in octal\n",
         ),
         (
             "store",

@@ -32,8 +32,7 @@
   launchTest =
     builtins.readFile ../../crates/crucible/crucible-qemu-host/tests/deterministic_launch.rs
     + builtins.readFile ../../crates/crucible/crucible-qemu-host/tests/deterministic_launch/launch_artifacts.rs;
-  timeSpec = builtins.readFile ../../docs/rfcs/0010-crucible/09-virtual-time-icount.md;
-  decisionRegister = builtins.readFile ../../docs/rfcs/0010-crucible/31-decision-register.md;
+  virtualTimeDoc = builtins.readFile ../../docs/engineering/crucible/virtual-time.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
@@ -151,36 +150,30 @@
         needle = "assert_ne!(base_scenario.id(), changed_scenario.id());";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/09-virtual-time-icount.md" timeSpec [
+    ++ failuresFor "docs/engineering/crucible/virtual-time.md" virtualTimeDoc [
       {
         label = "picosecond retirement step documented";
         needle = "50 ticks per retired instruction";
       }
       {
         label = "internal shift is not a nanosecond clock";
-        needle = "not a selectable nanosecond time scale in `sim` mode";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/31-decision-register.md" decisionRegister [
-      {
-        label = "icount shift decision";
-        needle = "D-2";
+        needle = "nanosecond time scale in `sim` mode";
       }
       {
-        label = "picosecond retirement step decided";
-        needle = "per retired instruction; an authorized idle jump";
+        label = "idle advances are authorized jumps";
+        needle = "authorized idle jumps";
       }
       {
         label = "fixed scale is content addressed";
-        needle = "The fixed scale is bound into scenario, launch,";
+        needle = "The fixed scale is part of launch identity.";
       }
       {
-        label = "default shift documented";
-        needle = "`-icount shift=0`";
+        label = "fixed shift profile documented";
+        needle = "-icount shift=0,sleep=off,align=off";
       }
       {
         label = "nanosecond projection is derived";
-        needle = "floor(logical_ticks / 1000)";
+        needle = "floor(logical_tick / 1000)";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

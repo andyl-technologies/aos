@@ -8,7 +8,7 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  advancedDoc = builtins.readFile ../../docs/rfcs/0010-crucible/22-advanced-features.md;
+  explorationPage = builtins.readFile ../../docs/engineering/crucible/exploration.md;
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
   libRs = import ./_rust-module-source.nix {
     inherit lib;
@@ -31,18 +31,14 @@
     forbidden;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/22-advanced-features.md" advancedDoc [
+    failuresFor "docs/engineering/crucible/exploration.md" explorationPage [
       {
-        label = "T-ADV-15 completion note";
-        needle = "Completed by `checks.crucible.phase6.minimization`";
+        label = "shrinking pass";
+        needle = "`FindingReproductionArtifact::minimize(config, failure_fingerprint)` shrinks a";
       }
       {
-        label = "ADV-30 shrinking pass";
-        needle = "Crucible MUST provide a minimization (shrinking) pass";
-      }
-      {
-        label = "ADV-31 deterministic candidate order";
-        needle = "candidate-shrink order MUST\n  be a seeded, content-address-tie-broken function";
+        label = "deterministic candidate order";
+        needle = "Because ordering and limits are fixed functions of";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" temporalGraph [

@@ -5,10 +5,7 @@
   taskIds ? ["T-SESS-13"],
   dependencies ? [],
 }: let
-  sessionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/20-session-control-plane.md;
-  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
-  riskDoc = builtins.readFile ../../docs/rfcs/0010-crucible/30-risks-spikes.md;
-  decisionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/31-decision-register.md;
+  sessionPage = builtins.readFile ../../docs/engineering/crucible/session.md;
   defaultChecks = builtins.readFile ./default.nix;
   backend = builtins.readFile ../../crates/crucible/crucible-engine/src/backend.rs;
   backendTests = builtins.readFile ../../crates/crucible/crucible-engine/src/backend/tests.rs;
@@ -22,38 +19,13 @@
 
   taskList = builtins.concatStringsSep "," taskIds;
 
-  inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
+  inherit (import ./_lib.nix {inherit lib;}) failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/20-session-control-plane.md" sessionDoc [
-      {
-        label = "T-SESS-13 completion note";
-        needle = "Completed by `checks.crucible.phase5.sessionDebugTimeTravel`";
-      }
+    failuresFor "docs/engineering/crucible/session.md" sessionPage [
       {
         label = "correct time-travel cross-reference";
-        needle = "36-time-travel-debugging.md";
-      }
-    ]
-    ++ lib.optionals (hasInfix "36-debugging-time-travel.md" sessionDoc) [
-      "docs/rfcs/0010-crucible/20-session-control-plane.md: stale cross-reference: `36-debugging-time-travel.md`"
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "phase5 debug/time-travel status note";
-        needle = "`T-SESS-13` is green through `checks.crucible.phase5.sessionDebugTimeTravel`";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/30-risks-spikes.md" riskDoc [
-      {
-        label = "S14 records implemented backend capability";
-        needle = "`session_open_gdbstub_implemented=true`";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/31-decision-register.md" decisionDoc [
-      {
-        label = "S14 decision records implemented backend capability";
-        needle = "`session_open_gdbstub_implemented=true`";
+        needle = "[time-travel-debugging.md](time-travel-debugging.md)";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

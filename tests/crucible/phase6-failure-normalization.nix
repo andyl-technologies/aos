@@ -8,8 +8,7 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  triageDoc = builtins.readFile ../../docs/rfcs/0010-crucible/34-failure-triage.md;
-  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
+  failureTriagePage = builtins.readFile ../../docs/engineering/crucible/failure-triage.md;
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
   failureSignatureMaterial = builtins.readFile ../../crates/crucible/crucible-engine/src/model/failure/material.rs;
   engineLib = import ./_rust-module-source.nix {
@@ -33,11 +32,7 @@
     forbidden;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/34-failure-triage.md" triageDoc [
-      {
-        label = "T-TRI-2 completion note";
-        needle = "Completed by `checks.crucible.phase6.failureNormalization`";
-      }
+    failuresFor "docs/engineering/crucible/failure-triage.md" failureTriagePage [
       {
         label = "absolute icount report-only invariant";
         needle = "at_icount_report_only";
@@ -49,12 +44,6 @@
       {
         label = "causal cone invariant";
         needle = "causal cone";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "T-TRI-2 plan summary";
-        needle = "checks.crucible.phase6.failureNormalization";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" temporalGraph [

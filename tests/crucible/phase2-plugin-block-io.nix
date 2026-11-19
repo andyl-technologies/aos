@@ -19,7 +19,7 @@
       entry = ../../crates/crucible/crucible-qemu-plugin/src/block_io_tests.rs;
     })
   ];
-  pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
+  pluginSpec = builtins.readFile ../../docs/engineering/crucible/qemu-plugin.md;
   shmemSources = import ./_crucible-shmem-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -56,14 +56,14 @@
     forbiddenCallbackApis;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
+    failuresFor "docs/engineering/crucible/qemu-plugin.md" pluginSpec [
       {
-        label = "block callback wording";
-        needle = "Implement the block submit/poll callbacks against the";
+        label = "block callback registration";
+        needle = "`qemu_plugin_register_blk_cb`";
       }
       {
-        label = "delivery icount wording";
-        needle = "validating the response's";
+        label = "response gated on delivery icount";
+        needle = "only after its `delivery_icount` has been reached";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/lib.rs" pluginLib [

@@ -4,7 +4,7 @@ use crucible_test_support::perf::{
     PerfBenchError, advance_syscall_count, canonical_perf_bench_input, run_perf_bench_gate,
 };
 
-/// [PERF-8] - the advance path has no per-quantum socket/control round trips and
+/// The advance path has no per-quantum socket/control round trips and
 /// accounts for every current host/plugin futex and eventfd category separately.
 #[test]
 fn advance_path_accounts_for_futex_and_eventfd_kernel_entries() {

@@ -12,22 +12,22 @@
   propertiesTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/property_fingerprint_neutrality.rs;
   coverageTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/coverage_condition_leaf.rs;
   defaultChecks = builtins.readFile ./default.nix;
-  spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
+  scenarioModelDoc = builtins.readFile ../../docs/engineering/crucible/scenario-model.md;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/06-spatial-graph.md" spatialGraph [
+    failuresFor "docs/engineering/crucible/scenario-model.md" scenarioModelDoc [
       {
-        label = "T-SPAT-13 completion names independent properties hash";
-        needle = "`Properties` now carries an";
+        label = "independent properties hash";
+        needle = "`Properties` carries an independent content hash";
       }
       {
-        label = "T-SPAT-13 completion names scenario composition";
+        label = "scenario composition with properties";
         needle = "`World::scenario_def_with_plan_and_properties`";
       }
       {
-        label = "T-SPAT-13 completion names gate";
+        label = "properties component check";
         needle = "`checks.crucible.phase1.spatialPropertiesComponent`";
       }
     ]

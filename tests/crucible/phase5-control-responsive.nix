@@ -30,7 +30,6 @@
   gateTargetNix = builtins.readFile ./phase1-gate-target-mapping.nix;
   defaultChecks = builtins.readFile ./default.nix;
   protocolShutdownEscalation = builtins.readFile ./phase2-protocol-shutdown-escalation.nix;
-  harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
@@ -44,13 +43,7 @@
     forbidden;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
-      {
-        label = "T-HARN-15 completion note";
-        needle = "Completed by `checks.crucible.phase5.gates.controlResponsive`";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-control-api/src/lib.rs" apiLib [
+    failuresFor "crates/crucible/crucible-control-api/src/lib.rs" apiLib [
       {
         label = "control-responsive module";
         needle = "pub mod control_responsive;";

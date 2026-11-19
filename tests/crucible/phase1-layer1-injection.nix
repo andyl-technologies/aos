@@ -28,8 +28,6 @@
   gateCatalog = builtins.readFile ../../crates/crucible/crucible-test-support/src/lib.rs;
   gateCatalogTest = builtins.readFile ../../crates/crucible/crucible-test-support/tests/gate_catalog.rs;
   gateTargetMapping = builtins.readFile ./phase1-gate-target-mapping.nix;
-  determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
-  harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -174,10 +172,6 @@
       }
     ]
     ++ failuresFor "tests/crucible/phase1-gate-target-mapping.nix" gateTargetMapping [
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {

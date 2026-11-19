@@ -14,21 +14,17 @@
   gateContentAddressTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/gate_content_address.rs;
   schemaTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/event_log_schema.rs;
   payloadTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/event_log_payload.rs;
-  observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;
+  eventLogDoc = builtins.readFile ../../docs/engineering/crucible/event-log.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/19-observability-event-log.md" observabilityDoc [
+    failuresFor "docs/engineering/crucible/event-log.md" eventLogDoc [
       {
-        label = "T-OBS-5 completion note";
-        needle = "Completed by `checks.crucible.phase4.eventLogContentAddress`";
-      }
-      {
-        label = "content-addressed binary completion note";
-        needle = "versioned binary event-log segments";
+        label = "versioned binary segments";
+        needle = "Each append is one versioned binary segment";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [

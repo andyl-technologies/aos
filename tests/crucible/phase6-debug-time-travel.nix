@@ -8,8 +8,7 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  debugDoc = builtins.readFile ../../docs/rfcs/0010-crucible/36-time-travel-debugging.md;
-  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
+  timeTravelPage = builtins.readFile ../../docs/engineering/crucible/time-travel-debugging.md;
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
   engineLib = import ./_rust-module-source.nix {
     inherit lib;
@@ -33,11 +32,7 @@
     forbidden;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/36-time-travel-debugging.md" debugDoc [
-      {
-        label = "T-DBG-4 completion note";
-        needle = "Completed by `checks.crucible.phase6.debugTimeTravel`";
-      }
+    failuresFor "docs/engineering/crucible/time-travel-debugging.md" timeTravelPage [
       {
         label = "restore nearest wording";
         needle = "restore-nearest-checkpoint";
@@ -48,13 +43,7 @@
       }
       {
         label = "bisection wording";
-        needle = "localizing any divergence by bisection";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "T-DBG-4 plan summary";
-        needle = "`T-DBG-4` is green through `checks.crucible.phase6.debugTimeTravel`";
+        needle = "localizing any divergence by";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" temporalGraph [

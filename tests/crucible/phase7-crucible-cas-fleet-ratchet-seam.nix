@@ -5,8 +5,8 @@
   taskIds ? ["T-PKG-23"],
   dependencies ? [],
 }: let
-  packagingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/26-packaging-aos-integration.md;
-  dceDoc = builtins.readFile ../../docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md;
+  packagingDoc = builtins.readFile ../../docs/engineering/crucible/packaging.md;
+  distributedExplorationDoc = builtins.readFile ../../docs/engineering/crucible/distributed-exploration.md;
   casSource = builtins.readFile ../../crates/crucible/crucible-store/src/lib.rs;
   casManifest = builtins.readFile ../../crates/crucible/crucible-store/Cargo.toml;
   defaultChecks = builtins.readFile ./default.nix;
@@ -16,25 +16,19 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
+    failuresFor "docs/engineering/crucible/packaging.md" packagingDoc [
       {
-        label = "T-PKG-23 completion note";
-        needle = "Completed by `checks.crucible.phase7.crucibleCasFleetRatchetSeam`";
-      }
-      {
-        label = "PKG-45 same seam text";
-        needle = "fleet-visible store + dependency-gated invalidation as the SAME seam";
+        label = "fleet backend shares the seam";
+        needle = "`SharedDagStore` as the fleet-visible backend of the same seam";
       }
     ]
-    ++ forbiddenFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md" dceDoc [
+    ++ failuresFor "docs/engineering/crucible/distributed-exploration.md" distributedExplorationDoc [
       {
-        label = "DCE same ratchet seam section";
+        label = "same ratchet seam section";
         needle = "The fleet-visible content-addressed store is the **same seam**";
       }
       {
-        label = "DCE no RFC-0007 dependency";
+        label = "seam is documentation, not a dependency";
         needle = "documented text, not a";
       }
     ]

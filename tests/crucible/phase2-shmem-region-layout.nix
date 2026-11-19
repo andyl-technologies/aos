@@ -20,7 +20,6 @@
     (builtins.readFile ../../crates/crucible/crucible-qemu-shmem/src/shmem/ring_coverage.rs)
   ];
   regionTest = builtins.readFile ../../crates/crucible/crucible-qemu-shmem/tests/region_layout.rs;
-  shmemSpec = builtins.readFile ../../docs/rfcs/0010-crucible/13-shmem-abi.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -338,8 +337,6 @@
         label = "ignored region layout test";
         needle = "#[ignore";
       }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/13-shmem-abi.md" shmemSpec [
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {

@@ -1,14 +1,15 @@
 //! Mapping from canonical gate names to isolable Cargo component tests.
 //!
-//! RFC-0010 file 27 requires each per-layer determinism gate to have an
-//! addressable test target in the crate that owns it. A mapped target proves
+//! Each per-layer determinism gate has an addressable test target in the
+//! crate that owns it (see "Gate targets" in
+//! `docs/engineering/crucible/testing-and-gates.md`). A mapped target proves
 //! its crate-level contribution; it does not by itself discharge an aggregate
 //! gate that also requires packaged processes, VM execution, or host variation.
 
 /// A named Cargo test target for a determinism gate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GateTargetSpec {
-    /// Canonical RFC gate name.
+    /// Canonical gate name, including the `gate:` prefix.
     pub gate: &'static str,
     /// Cargo package that owns the test target.
     pub package: &'static str,
@@ -18,7 +19,7 @@ pub struct GateTargetSpec {
     pub required_features: &'static [&'static str],
 }
 
-/// Cargo test targets for the RFC-0010 crate-structure gate map.
+/// Cargo test targets for the per-layer gate-to-target map.
 pub const GATE_TARGETS: &[GateTargetSpec] = &[
     GateTargetSpec {
         gate: "gate:harness-lint",
@@ -360,7 +361,7 @@ pub const GATE_TARGETS: &[GateTargetSpec] = &[
     },
 ];
 
-/// Returns every mapped gate target in RFC table order.
+/// Returns every mapped gate target in table order.
 #[must_use]
 pub fn gate_targets() -> &'static [GateTargetSpec] {
     GATE_TARGETS

@@ -5,8 +5,6 @@
   taskIds ? ["T-API-1"],
   dependencies ? [],
 }: let
-  apiDoc = builtins.readFile ../../docs/rfcs/0010-crucible/21-api.md;
-  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   apiCargo = builtins.concatStringsSep "\n" [
     (builtins.readFile ../../crates/crucible/crucible-control-client/Cargo.toml)
     (builtins.readFile ../../crates/crucible/crucible-control-server/Cargo.toml)
@@ -31,19 +29,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/21-api.md" apiDoc [
-      {
-        label = "T-API-1 completion note";
-        needle = "Completed by `checks.crucible.phase5.apiControlClient`";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "phase5 API control-client status note";
-        needle = "`T-API-1` is green through `checks.crucible.phase5.apiControlClient`";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-control-api/Cargo.toml" apiCargo [
+    failuresFor "crates/crucible/crucible-control-api/Cargo.toml" apiCargo [
       {
         label = "reqwest HTTP/2 client dependency";
         needle = ''reqwest = { workspace = true, features = ["http2"] }'';

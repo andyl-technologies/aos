@@ -8,7 +8,7 @@ use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crucible_test_support::spec_index::crate_spec_index;
+use crucible_test_support::workspace_crates::crucible_crates;
 use toml::Value;
 
 #[path = "support/harness_lint/allow.rs"]
@@ -60,7 +60,7 @@ fn gate_evidence_rejects_checklist_state_needles() {
     let findings = checklist_state_needle_failures(
         Path::new("tests/crucible/synthetic.nix"),
         r#"
-          failuresFor "docs/rfcs/0010-crucible/example.md" doc [
+          failuresFor "docs/example/plan.md" doc [
             {
               label = "circular completion evidence";
               needle = "- [x] **T-SYNTH-1**";
@@ -204,15 +204,15 @@ fn production_sources_follow_error_and_logging_conventions() -> Result<(), Box<d
     let repo = repo_root();
     let baseline = HarnessLintBaseline::load(&repo)?;
 
-    for spec in crate_spec_index() {
-        let package_dir = workspace::package_directory(&root, spec.package)?;
+    for member in crucible_crates() {
+        let package_dir = workspace::package_directory(&root, member.package)?;
         let manifest = fs::read_to_string(package_dir.join("Cargo.toml"))?;
-        let is_library = spec.package != BINARY_BOUNDARY_PACKAGE;
+        let is_library = member.package != BINARY_BOUNDARY_PACKAGE;
         let mut has_typed_error =
             !is_library || manifest_declares_dependency(&manifest, "thiserror");
 
         findings.extend(manifest_error_dependency_failures(
-            spec.package,
+            member.package,
             &manifest,
             is_library,
         ));
@@ -229,12 +229,12 @@ fn production_sources_follow_error_and_logging_conventions() -> Result<(), Box<d
             findings.extend(error_logging_failures(
                 &source,
                 &content,
-                is_binary_boundary_source(spec.package, &package_dir, &source),
+                is_binary_boundary_source(member.package, &package_dir, &source),
             ));
         }
 
         if !has_typed_error {
-            findings.push(missing_typed_error_finding(spec.package));
+            findings.push(missing_typed_error_finding(member.package));
         }
     }
 
@@ -258,11 +258,11 @@ fn clippy_tier_is_checked_in_and_wired() -> Result<(), Box<dyn Error>> {
     let crucible_package = fs::read_to_string(repo.join("pkgs/tools/crucible/crucible.nix"))?;
     let mut package_manifests = Vec::new();
 
-    for spec in crate_spec_index() {
+    for member in crucible_crates() {
         let manifest = fs::read_to_string(
-            workspace::package_directory(&root, spec.package)?.join("Cargo.toml"),
+            workspace::package_directory(&root, member.package)?.join("Cargo.toml"),
         )?;
-        package_manifests.push((spec.package, manifest));
+        package_manifests.push((member.package, manifest));
     }
 
     let findings = clippy_tier_failures(
@@ -286,8 +286,8 @@ fn custom_static_analysis_tier_runs_over_crucible_sources() -> Result<(), Box<dy
     let root = workspace_root();
     let mut findings = Vec::new();
 
-    for spec in crate_spec_index() {
-        let package_dir = workspace::package_directory(&root, spec.package)?;
+    for member in crucible_crates() {
+        let package_dir = workspace::package_directory(&root, member.package)?;
         for source in rust_sources(&package_dir.join("src"))? {
             let content = fs::read_to_string(&source)?;
             findings.extend(custom_static_analysis_failures(&source, &content));
@@ -308,8 +308,8 @@ fn allow_annotations_are_checked_for_all_crucible_targets() -> Result<(), Box<dy
     let root = workspace_root();
     let mut findings = Vec::new();
 
-    for spec in crate_spec_index() {
-        let package_dir = workspace::package_directory(&root, spec.package)?;
+    for member in crucible_crates() {
+        let package_dir = workspace::package_directory(&root, member.package)?;
         for source in rust_sources(&package_dir)? {
             let content = fs::read_to_string(&source)?;
             findings.extend(allow_annotation_failures(&source, &content));

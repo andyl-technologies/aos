@@ -1,12 +1,12 @@
 //! The `gate:perf-bench` assertion pass and its cost-model helpers.
 //!
 //! This module owns [`run_perf_bench_gate`], the runnable body of the perf-bench
-//! regression gate: it drives the SS25.1 cost model and the SS25 sweeps over a
-//! corpus and asserts every structural/relative property the RFC pins, returning
+//! regression gate: it drives the cost model and the cost-model sweeps over a
+//! corpus and asserts every structural/relative property the gate pins, returning
 //! a [`PerfBenchReport`] of recorded metrics or the first [`PerfBenchError`] whose
 //! property is violated. It also owns the modeled cost helpers the assertions
-//! measure against  --  [`fork_cost_bytes`] ([PERF-16]), [`replay_cost_units`]
-//! ([PERF-18]), and [`peak_rss_units`] ([PERF-23]).
+//! measure against  --  [`fork_cost_bytes`], [`replay_cost_units`],
+//! and [`peak_rss_units`].
 
 use super::admission::validate_host_parallelism_admissions;
 use super::model::{
@@ -21,8 +21,8 @@ use super::sweeps::{
     snapshot_latency_series, with_min_latency,
 };
 
-/// The modeled sub-second restore-to-runnable latency ([PERF-12]); recorded, not
-/// hard-asserted, since it is an unavoidable wall-clock number ([PERF-20]).
+/// The modeled sub-second restore-to-runnable latency; recorded, not
+/// hard-asserted, since it is an unavoidable wall-clock number.
 const RESTORE_LATENCY_UNITS: u64 = 1;
 
 /// The modeled peak host RSS over the representative search, in abstract units.
@@ -30,35 +30,35 @@ const PEAK_RSS_UNITS: u64 = 64;
 
 /// Runs the `gate:perf-bench` assertion pass over a corpus and baseline.
 ///
-/// This is the gate body. It measures every SS25.7.1 metric via the deterministic
-/// cost model and asserts the structural/relative properties the RFC pins:
+/// This is the gate body. It measures every perf-bench metric via the deterministic
+/// cost model and asserts the structural/relative properties the gate pins:
 ///
-/// - **[PERF-2]** idle compression: wall-clock is flat across an idle sweep.
-/// - **[PERF-3]** speedup: wall-clock is non-increasing as cores are added.
-/// - **[PERF-4]** latency-is-the-budget: realized `P` is non-decreasing in the
+/// - idle compression: wall-clock is flat across an idle sweep.
+/// - speedup: wall-clock is non-increasing as cores are added.
+/// - latency-is-the-budget: realized `P` is non-decreasing in the
 ///   minimum link latency, down to the floor.
-/// - **[PERF-5]** serial/parallel bit-identity: `P=1` and `P=max` share a result
+/// - serial/parallel bit-identity: `P=1` and `P=max` share a result
 ///   fingerprint.
-/// - **[PERF-6]** low-latency: a sub-millisecond-latency scenario stays
+/// - low-latency: a sub-millisecond-latency scenario stays
 ///   deterministic while exhibiting reduced parallelism.
-/// - **[PERF-7]** sync overhead is below the hard-fail threshold.
-/// - **[PERF-9]** per-TB overhead is node-count-independent.
-/// - **[PERF-10]** rendezvous frequency does not change the result fingerprint.
-/// - **[PERF-11]** cold boots are independent of campaign size.
-/// - **[PERF-13]** throughput has not regressed beyond the tolerated fraction.
-/// - **[PERF-14]** coverage-on IPS is within the configured ratio budget.
-/// - **[PERF-15]** coverage extraction does not change the result fingerprint.
-/// - **[PERF-16]** fork cost scales with delta, not absolute state size.
-/// - **[PERF-18]** replay cost is bounded by suffix length.
-/// - **[PERF-8]** the advance path issues zero per-quantum socket/control round trips.
-/// - **[PERF-12]**, **[PERF-17]** snapshot capture and restore latency scale with
+/// - sync overhead is below the hard-fail threshold.
+/// - per-TB overhead is node-count-independent.
+/// - rendezvous frequency does not change the result fingerprint.
+/// - cold boots are independent of campaign size.
+/// - throughput has not regressed beyond the tolerated fraction.
+/// - coverage-on IPS is within the configured ratio budget.
+/// - coverage extraction does not change the result fingerprint.
+/// - fork cost scales with delta, not absolute state size.
+/// - replay cost is bounded by suffix length.
+/// - the advance path issues zero per-quantum socket/control round trips.
+/// - snapshot capture and restore latency scale with
 ///   changed state, not total state.
-/// - **[PERF-20]** the run pins a host profile.
-/// - **[PERF-21]** the corpus and baseline are content-addressed together.
-/// - **[PERF-23]** peak RSS scales with active state, not fork count.
-/// - **[PERF-27]** fleet throughput scales near-linearly to saturation.
-/// - **[PERF-28]** cumulative campaign coverage is monotone non-decreasing.
-/// - **[PERF-34]** every host-parallel mechanism has one admission class,
+/// - the run pins a host profile.
+/// - the corpus and baseline are content-addressed together.
+/// - peak RSS scales with active state, not fork count.
+/// - fleet throughput scales near-linearly to saturation.
+/// - cumulative campaign coverage is monotone non-decreasing.
+/// - every host-parallel mechanism has one admission class,
 ///   argument, and proving gate.
 ///
 /// # Errors
@@ -124,8 +124,8 @@ pub fn run_perf_bench_gate(input: &PerfBenchInput) -> Result<PerfBenchReport, Pe
 }
 
 /// Folds the highest realized parallelism observed across the latency sweep into
-/// the report's `parallelism_p`, so the recorded number carries the [PERF-4]
-/// sweep evidence, not a single point.
+/// the report's `parallelism_p`, so the recorded number carries the
+/// latency-is-the-budget sweep evidence, not a single point.
 fn with_latency_evidence(
     mut report: PerfBenchReport,
     points: &[LatencyParallelismPoint],
@@ -317,7 +317,7 @@ fn assert_serial_parallel_identity(scenario: &BenchScenario) -> Result<(), PerfB
 fn assert_low_latency_trade(scenario: &BenchScenario) -> Result<(), PerfBenchError> {
     // A sub-millisecond-latency scenario (minimum link latency at the floor) must
     // stay *deterministic* while exhibiting reduced parallelism, never a
-    // determinism failure ([PERF-6]). "Deterministic" means the low-latency
+    // determinism failure. "Deterministic" means the low-latency
     // scenario reproduces bit-identically across runs  --  not that lowering the
     // latency preserves the fingerprint (latency is a determinism-relevant input
     // in the content hash, [SCHED-21], so a different latency is a different
@@ -358,7 +358,7 @@ fn assert_sync_overhead(scenario: &BenchScenario) -> Result<(), PerfBenchError> 
 
 fn assert_per_tb_node_independent(scenario: &BenchScenario) -> Result<(), PerfBenchError> {
     // Per-TB overhead is a small constant; growing the node count must not grow
-    // it (a node checks only its own slot and inbound rings, [PERF-9]).
+    // it (a node checks only its own slot and inbound rings).
     let small = scenario.per_tb_atomics;
     let mut larger = scenario.clone();
     let extra = larger.nodes.first().cloned();
@@ -489,7 +489,7 @@ fn assert_fork_cost_delta_bounded() -> Result<Vec<u64>, PerfBenchError> {
 }
 
 /// The modeled fork cost in bytes: proportional to delta, independent of the
-/// absolute shared-ancestor state size (copy-on-write, [PERF-16]).
+/// absolute shared-ancestor state size (copy-on-write).
 #[must_use]
 pub fn fork_cost_bytes(_absolute_state: u64, delta: u64) -> u64 {
     // A page of overhead per delta page, plus a fixed small per-fork header.
@@ -519,7 +519,7 @@ fn assert_replay_suffix_bounded() -> Result<Vec<u64>, PerfBenchError> {
     Ok(costs)
 }
 
-/// The modeled replay cost, bounded by the schedule-suffix length ([PERF-18]).
+/// The modeled replay cost, bounded by the schedule-suffix length.
 #[must_use]
 pub fn replay_cost_units(suffix: u64) -> u64 {
     suffix
@@ -537,7 +537,7 @@ fn assert_throughput_ratchet(baseline: u64, observed: u64) -> Result<(), PerfBen
 
 fn assert_fleet_near_linear() -> Result<(), PerfBenchError> {
     // Aggregate throughput scales near-linearly with explorer-host count up to
-    // shared-store bandwidth saturation ([PERF-27]).
+    // shared-store bandwidth saturation.
     let points = fleet_host_sweep(1_000, 8, &[1, 2, 4, 8, 16, 32]);
     for window in points.windows(2) {
         let [fewer, more] = window else { continue };
@@ -550,7 +550,7 @@ fn assert_fleet_near_linear() -> Result<(), PerfBenchError> {
 
 fn assert_coverage_ratchet(prior: u64, next: u64) -> Result<(), PerfBenchError> {
     // Accumulated coverage must be monotone non-decreasing across cumulative CI
-    // runs; a flat run is legitimate, a decrease is a regression ([PERF-28]).
+    // runs; a flat run is legitimate, a decrease is a regression.
     if next < prior {
         return Err(PerfBenchError::CoverageRegressed { prior, next });
     }
@@ -559,7 +559,7 @@ fn assert_coverage_ratchet(prior: u64, next: u64) -> Result<(), PerfBenchError> 
 
 fn assert_rss_scales_with_state() -> Result<(), PerfBenchError> {
     // Peak host RSS must scale with guest RAM + active rings + sum deltas, not with
-    // the number of forks ([PERF-23]): a broad search's memory grows with
+    // the number of forks: a broad search's memory grows with
     // explored deltas, not with forks x full-state.
     let guest_ram: u64 = 64;
     let active_rings: u64 = 4;
@@ -568,7 +568,7 @@ fn assert_rss_scales_with_state() -> Result<(), PerfBenchError> {
     for forks in [1u64, 10, 100, 1_000] {
         let summed_deltas = forks.saturating_mul(DELTA_PER_FORK);
         let rss = peak_rss_units(guest_ram, active_rings, summed_deltas);
-        // The pathological model [PERF-23] forbids is a full guest-RAM copy per
+        // The pathological model the gate forbids is a full guest-RAM copy per
         // fork. Realized RSS must stay strictly below it: it grows only with the
         // summed one-page deltas, never with forks x guest_ram.
         let full_copy_model = guest_ram.saturating_mul(forks).saturating_add(active_rings);
@@ -580,7 +580,7 @@ fn assert_rss_scales_with_state() -> Result<(), PerfBenchError> {
 }
 
 /// The modeled peak host RSS: guest RAM + active rings + summed deltas, never
-/// `forks x full-state` ([PERF-23]).
+/// `forks x full-state`.
 #[must_use]
 pub fn peak_rss_units(guest_ram: u64, active_rings: u64, summed_deltas: u64) -> u64 {
     guest_ram + active_rings + summed_deltas

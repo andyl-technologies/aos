@@ -9,8 +9,6 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
-  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   lifecycle = import ./_crucible-control-source.nix {
     inherit lib;
     component = "lifecycle";
@@ -25,19 +23,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
-      {
-        label = "T-CLI-14 max-sessions completion note";
-        needle = "`checks.crucible.phase5.cliServeMaxSessions`";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "phase5 CLI serve max-sessions completion note";
-        needle = "`checks.crucible.phase5.cliServeMaxSessions`";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-control-api/src/lifecycle.rs" lifecycle [
+    failuresFor "crates/crucible/crucible-control-api/src/lifecycle.rs" lifecycle [
       {
         label = "session cap field";
         needle = "max_sessions: Option<usize>";

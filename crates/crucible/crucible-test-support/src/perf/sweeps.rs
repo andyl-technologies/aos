@@ -1,19 +1,19 @@
-//! The SS25 parameter sweeps and the derived host-independent metrics.
+//! The cost-model parameter sweeps and the derived host-independent metrics.
 //!
 //! This module owns the sweep series the perf-bench gate uses to prove the
-//! cost-model *relations*: the latency-vs-parallelism sweep ([PERF-4]), the
-//! core-count speedup sweep ([PERF-3]), the rendezvous-frequency sweep
-//! ([PERF-10]), and the fleet host sweep ([PERF-27]). It also owns the derived,
+//! cost-model *relations*: the latency-vs-parallelism sweep, the
+//! core-count speedup sweep, the rendezvous-frequency sweep,
+//! and the fleet host sweep. It also owns the derived,
 //! host-independent metric helpers the gate asserts and records: the advance-path
-//! syscall accounting ([PERF-8]), the snapshot capture/restore latency series
-//! ([PERF-12], [PERF-17]), the pinned host profile ([PERF-20]), the
-//! content-addressed corpus digest ([PERF-21]), and the deterministic scenario
-//! result fingerprint ([PERF-5], [PERF-10], [PERF-15]).
+//! syscall accounting, the snapshot capture/restore latency series,
+//! the pinned host profile, the
+//! content-addressed corpus digest, and the deterministic scenario
+//! result fingerprint.
 
 use super::model::{BenchLink, BenchNode, BenchScenario, RealizationConfig, evaluate_cost_model};
 use super::report::PerfBaseline;
 
-/// One point on the latency/parallelism sweep ([PERF-4]).
+/// One point on the latency/parallelism sweep.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LatencyParallelismPoint {
     /// Minimum link latency used at this sweep point.
@@ -25,7 +25,7 @@ pub struct LatencyParallelismPoint {
 }
 
 /// Sweeps the minimum link latency of a scenario and reports how realized
-/// parallelism scales with it ([PERF-4], the latency-is-the-budget identity).
+/// parallelism scales with it (the latency-is-the-budget identity).
 ///
 /// Returns points in ascending latency order; realized parallelism is
 /// non-decreasing across the sweep (larger latency permits proportionally larger
@@ -74,7 +74,7 @@ pub(crate) fn with_min_latency(scenario: &BenchScenario, latency: u64) -> BenchS
     swept
 }
 
-/// One point on the core-count speedup sweep ([PERF-3], [HARN-11]).
+/// One point on the core-count speedup sweep.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CoreCountPoint {
     /// Host cores available at this sweep point.
@@ -85,7 +85,7 @@ pub struct CoreCountPoint {
     pub wall_clock: u64,
 }
 
-/// Sweeps the host core count and reports the realized speedup ([PERF-3]).
+/// Sweeps the host core count and reports the realized speedup.
 ///
 /// Returns points in ascending core order; wall-clock is non-increasing and
 /// realized parallelism is non-decreasing as cores are added, approaching
@@ -111,7 +111,7 @@ pub fn core_count_speedup_sweep(
     points
 }
 
-/// One point on the rendezvous-frequency sweep ([PERF-10]).
+/// One point on the rendezvous-frequency sweep.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RendezvousPoint {
     /// Rendezvous frequency at this sweep point.
@@ -119,12 +119,12 @@ pub struct RendezvousPoint {
     /// Sync overhead percentage at this frequency.
     pub sync_overhead_pct: u64,
     /// Deterministic result fingerprint, which MUST be identical across the
-    /// sweep ([PERF-10]: rendezvous frequency is a pure perf/observation knob).
+    /// sweep (rendezvous frequency is a pure perf/observation knob).
     pub result_fingerprint: u64,
 }
 
 /// Sweeps the rendezvous frequency and reports the overhead-versus-frequency
-/// curve plus the invariant result fingerprint ([PERF-10]).
+/// curve plus the invariant result fingerprint.
 ///
 /// The result fingerprint is identical at every frequency (the knob cannot change
 /// which instruction sees which input); the sync-overhead percentage is
@@ -155,7 +155,7 @@ pub fn rendezvous_frequency_sweep(
     points
 }
 
-/// The modeled syscall accounting for a fixed advance workload ([PERF-8]).
+/// The modeled syscall accounting for a fixed advance workload.
 ///
 /// All hot-path cross-node synchronization is shared-memory based and never an
 /// IPC round trip per quantum. The current ceiling-publication path performs one
@@ -196,7 +196,7 @@ pub struct AdvanceSyscallCount {
     pub per_quantum_socket_control_round_trips: u64,
 }
 
-/// Models the syscall count over a fixed advance workload ([PERF-8]).
+/// Models the syscall count over a fixed advance workload.
 ///
 /// The advance path issues no per-quantum IPC round trip. The current
 /// implementation pays one unconditional ceiling futex wake per quantum, the
@@ -241,7 +241,7 @@ pub fn advance_syscall_count(
     }
 }
 
-/// One point on the snapshot capture/restore latency series ([PERF-12], [PERF-17]).
+/// One point on the snapshot capture/restore latency series.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SnapshotLatencyPoint {
     /// Changed state (dirty pages/blocks) since the parent, in pages.
@@ -253,7 +253,7 @@ pub struct SnapshotLatencyPoint {
 }
 
 /// Models the snapshot capture and restore latency as a function of changed
-/// state ([PERF-12], [PERF-17]).
+/// state.
 ///
 /// Capture cost scales with *changed* state, not total state (incremental/CoW
 /// capture of what diverged since the parent). Restore-to-runnable is
@@ -277,12 +277,12 @@ pub fn snapshot_latency_series(changed_pages_series: &[u64]) -> Vec<SnapshotLate
     points
 }
 
-/// A pinned host profile for the perf-bench gate ([PERF-20]).
+/// A pinned host profile for the perf-bench gate.
 ///
 /// The gate pins the host profile it runs on (core count, CPU model class) so a
 /// metric regression reflects a real efficiency loss and not host noise, and so a
 /// perf regression is reproducible from the recorded benchmark scenario + host
-/// profile ([PERF-21]).
+/// profile.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HostProfile {
     /// Host core count the profile pins.
@@ -300,7 +300,7 @@ pub fn canonical_host_profile() -> HostProfile {
     }
 }
 
-/// A content-addressed digest binding the perf corpus and its baseline ([PERF-21]).
+/// A content-addressed digest binding the perf corpus and its baseline.
 ///
 /// The corpus and its baselines are content-addressed and versioned together so a
 /// benchmark scenario's identity and its expected baseline travel together and a
@@ -325,7 +325,7 @@ pub fn perf_corpus_digest(corpus: &[BenchScenario], baseline: &PerfBaseline) -> 
     hash
 }
 
-/// One point on the fleet host sweep ([PERF-27]).
+/// One point on the fleet host sweep.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FleetHostPoint {
     /// Number of explorer hosts at this sweep point.
@@ -337,7 +337,7 @@ pub struct FleetHostPoint {
 }
 
 /// Sweeps the explorer-host count and reports aggregate throughput and per-host
-/// store-I/O overhead ([PERF-27]).
+/// store-I/O overhead.
 ///
 /// Aggregate throughput scales near-linearly with host count until the shared
 /// store's bandwidth saturates, after which store-I/O overhead rises and
@@ -375,7 +375,7 @@ pub fn fleet_host_sweep(
 /// run produces; it is a pure function of the scenario's determinism-relevant
 /// inputs and is therefore invariant to every performance knob (core count,
 /// rendezvous frequency, parallelism). Two scenarios that differ only in a
-/// performance knob share this fingerprint ([PERF-5], [PERF-10], [PERF-24]).
+/// performance knob share this fingerprint.
 #[must_use]
 pub fn scenario_result_fingerprint(scenario: &BenchScenario) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
@@ -412,6 +412,6 @@ pub fn scenario_result_fingerprint(scenario: &BenchScenario) -> u64 {
         mix(link.latency_ticks);
     }
     // The coverage hook and core budget are observation/performance knobs and are
-    // deliberately excluded from the fingerprint ([PERF-15], [PERF-5]).
+    // deliberately excluded from the fingerprint.
     hash
 }

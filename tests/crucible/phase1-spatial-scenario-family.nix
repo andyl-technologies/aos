@@ -11,18 +11,18 @@
   crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
   familyTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/gate_coverage_guided_fuzzing.rs;
   defaultChecks = builtins.readFile ./default.nix;
-  spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
+  scenarioModelDoc = builtins.readFile ../../docs/engineering/crucible/scenario-model.md;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/06-spatial-graph.md" spatialGraph [
+    failuresFor "docs/engineering/crucible/scenario-model.md" scenarioModelDoc [
       {
-        label = "T-SPAT-17 completion names ScenarioFamily";
+        label = "scenario family";
         needle = "`ScenarioFamily`";
       }
       {
-        label = "T-SPAT-17 completion names gate";
+        label = "scenario family check";
         needle = "`checks.crucible.phase1.spatialScenarioFamily`";
       }
     ]

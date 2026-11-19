@@ -1,7 +1,7 @@
 //! The canonical hermetic perf-bench corpus, baseline, and gate input.
 //!
 //! This module owns the content-addressable reference benchmark corpus and its
-//! stored baseline ([PERF-21], [PERF-19]): a small, deterministic fan-out
+//! stored baseline: a small, deterministic fan-out
 //! scenario and the [`PerfBaseline`] the regression gate compares against. Their
 //! identities travel together  --  [`canonical_perf_bench_input`] pairs them.
 
@@ -11,7 +11,7 @@ use super::report::{PerfBaseline, PerfBenchInput};
 
 /// Returns the canonical hermetic benchmark corpus for the reference guest.
 ///
-/// The corpus is small, deterministic, and content-addressable ([PERF-21]): a
+/// The corpus is small, deterministic, and content-addressable: a
 /// representative fan-out scenario with realistic busy/idle mix, links at the
 /// recommended operating point, and the coverage hook enabled. Its identity and
 /// baseline travel together.
@@ -20,7 +20,7 @@ use super::report::{PerfBaseline, PerfBenchInput};
 /// do not depend on each other), so the critical path  --  the coordinator plus one
 /// worker  --  is well below total busy work. This makes the parallelism sweeps
 /// non-trivial: realized `P` rises with cores and with the lookahead budget,
-/// bounded by the coordinator->worker critical path (SS25.2.2), rather than
+/// bounded by the coordinator->worker critical path, rather than
 /// collapsing to `P = 1` the way a pure causal chain would.
 #[must_use]
 pub fn canonical_bench_corpus() -> Vec<BenchScenario> {
@@ -56,7 +56,7 @@ pub fn canonical_bench_corpus() -> Vec<BenchScenario> {
     }]
 }
 
-/// Returns the canonical stored baseline for the reference corpus ([PERF-19]).
+/// Returns the canonical stored baseline for the reference corpus.
 #[must_use]
 pub fn canonical_perf_baseline() -> PerfBaseline {
     PerfBaseline {

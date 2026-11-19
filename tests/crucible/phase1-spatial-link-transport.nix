@@ -10,18 +10,18 @@
   model = import ./_crucible-model-source.nix {inherit lib;};
   crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
-  spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
+  scenarioModelDoc = builtins.readFile ../../docs/engineering/crucible/scenario-model.md;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/06-spatial-graph.md" spatialGraph [
+    failuresFor "docs/engineering/crucible/scenario-model.md" scenarioModelDoc [
       {
-        label = "T-SPAT-8 completion names latency floor";
+        label = "link latency floor";
         needle = "`MIN_LINK_LATENCY` is exported as";
       }
       {
-        label = "T-SPAT-8 completion names fixed-point loss";
+        label = "fixed-point link loss";
         needle = "`LinkLossProbability` stores loss as fixed-point millionths";
       }
     ]

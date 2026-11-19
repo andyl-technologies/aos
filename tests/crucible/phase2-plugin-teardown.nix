@@ -48,8 +48,8 @@
     inherit lib;
     entry = ../../crates/crucible/crucible-qemu-shmem/src/shmem/frame_node.rs;
   };
-  pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
-  protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
+  pluginSpec = builtins.readFile ../../docs/engineering/crucible/qemu-plugin.md;
+  protocolSpec = builtins.readFile ../../docs/engineering/crucible/control-protocol.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -73,27 +73,23 @@
         inherit needle;
       })
       forbiddenTeardownApis)
-    ++ failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
+    ++ failuresFor "docs/engineering/crucible/qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-19 live completion evidence";
-        needle = "Completed by `checks.crucible.phase2.qemuLivePluginInstall`";
+        label = "shutdown_requested teardown trigger";
+        needle = "the region header's `shutdown_requested` flag";
       }
       {
-        label = "PLUG-43 teardown requirement";
-        needle = "**[PLUG-43]** The plugin MUST observe the global `shutdown_requested` flag";
+        label = "seal shared memory after teardown";
+        needle = "seals further shared-memory access";
       }
       {
-        label = "stop touching shmem wording";
-        needle = "stop touching shmem";
-      }
-      {
-        label = "orderly QEMU shutdown wording";
-        needle = "initiate orderly QEMU shutdown";
+        label = "orderly QEMU shutdown request";
+        needle = "`qemu_plugin_request_shutdown`";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/14-protocol.md" protocolSpec [
+    ++ failuresFor "docs/engineering/crucible/control-protocol.md" protocolSpec [
       {
-        label = "Quit protocol requirement";
+        label = "Quit tag-only frame";
         needle = "`Quit` MUST be encoded as a tag-only frame";
       }
       {

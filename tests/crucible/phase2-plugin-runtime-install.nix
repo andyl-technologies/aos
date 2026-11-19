@@ -18,7 +18,7 @@
     inherit lib;
     entry = ../../crates/crucible/crucible-qemu-plugin/src/abi/tests.rs;
   };
-  pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
+  pluginSpec = builtins.readFile ../../docs/engineering/crucible/qemu-plugin.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -33,18 +33,18 @@
         needle = "crate-type = [\"cdylib\"]";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
+    ++ failuresFor "docs/engineering/crucible/qemu-plugin.md" pluginSpec [
       {
-        label = "plugin owns callbacks";
-        needle = "The plugin MUST own the device and channel callbacks";
+        label = "plugin owns device interception";
+        needle = "intercepts device I/O, and injects cross-node inputs";
       }
       {
         label = "single-threaded RR model";
-        needle = "single-threaded round-robin TCG";
+        needle = "QEMU drives all vCPUs on one host thread";
       }
       {
         label = "reentrant callback state partition";
-        needle = "device-callback pointers fixed once at";
+        needle = "device-callback state (ring pointers, slot, sequence counters) fixed at";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/lib.rs" pluginLib [

@@ -13,15 +13,15 @@
   replayOracle = builtins.readFile ../../crates/crucible/crucible-engine/tests/gate_replay_oracle.rs;
   qemuRealization = builtins.readFile ../../crates/crucible/crucible-qemu-host/src/realization.rs;
   defaultChecks = builtins.readFile ./default.nix;
-  rfc = builtins.readFile ../../docs/rfcs/0010-crucible/05-execution-model.md;
+  executionModelDoc = builtins.readFile ../../docs/engineering/crucible/execution-model.md;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/05-execution-model.md" rfc [
+    failuresFor "docs/engineering/crucible/execution-model.md" executionModelDoc [
       {
-        label = "T-EXEC-10 completion note";
-        needle = "Completed by `crates/crucible/crucible-engine/src/model.rs`: `NodeBlobRef`";
+        label = "NodeBlobRef shape";
+        needle = "pub enum NodeBlobRef {";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [

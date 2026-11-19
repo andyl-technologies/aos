@@ -1,19 +1,20 @@
 //! Checks `gate:adversarial-determinism` (the Phase-3 exit gate) on the REAL
 //! scheduler RESOLVE path.
 //!
-//! RFC-0010 file 24 [HARN-11] / §7: a fixed scenario run `N` times under
-//! deliberately hostile host conditions MUST yield byte-identical canonical event
-//! logs and final fingerprints (INV-1, INV-4, INV-9 — the determinism that
-//! *survives* hostile conditions). This gate drives a **2-VM scenario with a disk
-//! sub-node** through the host-adversary matrix ([`crucible_test_support::adversarial`])
-//! — hostile host thread scheduling, varied core counts, injected load,
-//! producer/consumer skew — **and** rotates the modeled scheduler host condition
-//! per task: serial drive ([`crucible_engine::QuantumLoop::drive_quantum`]), full-budget
+//! A fixed scenario run `N` times under deliberately hostile host conditions
+//! MUST yield byte-identical canonical event logs and final fingerprints
+//! (INV-1, INV-4, INV-9 — the determinism that *survives* hostile conditions).
+//! This gate drives a **2-VM scenario with a disk sub-node** through the
+//! host-adversary matrix ([`crucible_test_support::adversarial`]) — hostile
+//! host thread scheduling, varied core counts, injected load, producer/consumer
+//! skew — **and** rotates the modeled scheduler host condition per task: serial
+//! drive ([`crucible_engine::QuantumLoop::drive_quantum`]), full-budget
 //! host-concurrent drive
-//! ([`crucible_engine::ConcurrentQuantumLoop::drive_concurrent_quantum`]), coarse
-//! rendezvous frequency, and a COMPUTE-time skew that submits the two disk reads in
-//! reversed host order. All runs must agree on the [`ScenarioFingerprint`] (config
-//! hash + resolved-event log + delivery ticks + the decision stream).
+//! ([`crucible_engine::ConcurrentQuantumLoop::drive_concurrent_quantum`]),
+//! coarse rendezvous frequency, and a COMPUTE-time skew that submits the two
+//! disk reads in reversed host order. All runs must agree on the
+//! [`ScenarioFingerprint`] (config hash + resolved-event log + delivery ticks +
+//! the decision stream).
 //!
 //! # How the gate has teeth
 //!

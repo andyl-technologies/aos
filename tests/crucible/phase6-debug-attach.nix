@@ -9,7 +9,7 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  debugDoc = builtins.readFile ../../docs/rfcs/0010-crucible/36-time-travel-debugging.md;
+  timeTravelPage = builtins.readFile ../../docs/engineering/crucible/time-travel-debugging.md;
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
   engineLib = import ./_rust-module-source.nix {
     inherit lib;
@@ -68,14 +68,10 @@
     forbidden;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/36-time-travel-debugging.md" debugDoc [
-      {
-        label = "T-DBG-1 partial-evidence note";
-        needle = "Completed under `checks.crucible.phase6.debugAttach`";
-      }
+    failuresFor "docs/engineering/crucible/time-travel-debugging.md" timeTravelPage [
       {
         label = "attach is instantiate";
-        needle = "A debug attach MUST be an `instantiate`";
+        needle = "A debug attach is an `instantiate`";
       }
       {
         label = "gdb listen endpoint";

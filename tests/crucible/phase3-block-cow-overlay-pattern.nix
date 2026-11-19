@@ -7,8 +7,7 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  patternDoc = builtins.readFile ../../docs/rfcs/0010-crucible/29-patterns-and-sketches.md;
-  ioDoc = builtins.readFile ../../docs/rfcs/0010-crucible/15-io-subnodes.md;
+  ioDoc = builtins.readFile ../../docs/engineering/crucible/io-subnodes.md;
   blockModule =
     import ./_rust-module-source.nix {
       inherit lib;
@@ -30,56 +29,42 @@
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternDoc [
+    failuresFor "docs/engineering/crucible/io-subnodes.md" ioDoc [
       {
-        label = "T-PAT-7 completion note";
-        needle = "Completed by `checks.crucible.phase3.blockCowOverlayPattern`";
-      }
-      {
-        label = "completion names BaseImage";
-        needle = "`BaseImage`";
-      }
-      {
-        label = "completion names CowOverlay";
-        needle = "`CowOverlay`";
-      }
-      {
-        label = "completion names ordered maps";
-        needle = "`BTreeMap`";
-      }
-      {
-        label = "completion names ordered dirty set";
-        needle = "`BTreeSet`";
-      }
-      {
-        label = "completion names dirty delta";
-        needle = "`dirty_delta`";
-      }
-      {
-        label = "completion names materialize";
-        needle = "`BlockDevice::materialize`";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/15-io-subnodes.md" ioDoc [
-      {
-        label = "T-IO-2 completion note";
-        needle = "Completed by `checks.crucible.phase3.blockSubnodeOverlay`";
-      }
-      {
-        label = "T-IO-5 completion note";
-        needle = "Completed by `checks.crucible.phase3.blockSnapshotRestore`";
-      }
-      {
-        label = "read-only base requirement";
+        label = "read-only base";
         needle = "read-only, content-addressed base image";
       }
       {
-        label = "4 KiB CoW overlay requirement";
+        label = "4 KiB CoW overlay";
         needle = "in-memory 4 KiB CoW page overlay";
       }
       {
-        label = "dirty-page delta requirement";
-        needle = "Dirty tracking records only the dirty pages since the last checkpoint boundary";
+        label = "dirty-page delta";
+        needle = "Dirty tracking records only the dirty pages since the last checkpoint";
+      }
+      {
+        label = "names BaseImage";
+        needle = "`BaseImage`";
+      }
+      {
+        label = "names CowOverlay";
+        needle = "`CowOverlay`";
+      }
+      {
+        label = "ordered page map";
+        needle = "`pages: BTreeMap<u64, [u8; PAGE_SIZE]>`";
+      }
+      {
+        label = "ordered dirty set";
+        needle = "`dirty: BTreeSet<u64>`";
+      }
+      {
+        label = "names dirty delta";
+        needle = "dirty_delta()";
+      }
+      {
+        label = "names materialize";
+        needle = "`BlockDevice::materialize`";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-device/src/block/overlay.rs" overlay [

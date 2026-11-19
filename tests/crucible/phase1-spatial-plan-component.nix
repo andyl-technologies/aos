@@ -10,22 +10,22 @@
   model = import ./_crucible-model-source.nix {inherit lib;};
   planTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/event_graph_serialization.rs;
   defaultChecks = builtins.readFile ./default.nix;
-  spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
+  scenarioModelDoc = builtins.readFile ../../docs/engineering/crucible/scenario-model.md;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/06-spatial-graph.md" spatialGraph [
+    failuresFor "docs/engineering/crucible/scenario-model.md" scenarioModelDoc [
       {
-        label = "T-SPAT-12 completion names independent plan hash";
+        label = "independent plan hash";
         needle = "`Plan` carries one event";
       }
       {
-        label = "T-SPAT-12 completion names scenario composition";
+        label = "scenario composition with plan";
         needle = "`World::scenario_def_with_plan_properties_and_seed`";
       }
       {
-        label = "T-SPAT-12 completion names gate";
+        label = "signal fault system gate";
         needle = "`checks.crucible.phase7.gates.signalFaultSystem`";
       }
     ]

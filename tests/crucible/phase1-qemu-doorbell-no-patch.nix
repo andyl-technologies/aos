@@ -7,9 +7,7 @@
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
   qemuNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
-  qemuPatchSpec = builtins.readFile ../../docs/rfcs/0010-crucible/11-qemu-patches.md;
-  riskSpec = builtins.readFile ../../docs/rfcs/0010-crucible/30-risks-spikes.md;
-  decisionRegister = builtins.readFile ../../docs/rfcs/0010-crucible/31-decision-register.md;
+  qemuPatchDoc = builtins.readFile ../../docs/engineering/crucible/qemu-patch.md;
   phase0S2Plugin = builtins.readFile ./phase0-s2-io-idle-plugin.c;
   phase0S5Plugin = builtins.readFile ./phase0-s5-virtual-memory-plugin.c;
   phase0S5Check = builtins.readFile ./phase0-s5.nix;
@@ -70,34 +68,14 @@
         ]
     )
     forbiddenDoorbellPatchNeedles
-    ++ failuresFor "docs/rfcs/0010-crucible/11-qemu-patches.md" qemuPatchSpec [
+    ++ failuresFor "docs/engineering/crucible/qemu-patch.md" qemuPatchDoc [
       {
-        label = "no new QEMU patch decision";
+        label = "doorbell needs no QEMU patch";
         needle = "no QEMU patch was added";
       }
       {
-        label = "PATCH-33 cross reference";
-        needle = "PATCH-33";
-      }
-      {
-        label = "upstream read-memory evidence";
-        needle = "qemu_plugin_read_memory_vaddr";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/30-risks-spikes.md" riskSpec [
-      {
-        label = "retired RISK-12 upstream read-memory evidence";
-        needle = "qemu_plugin_read_memory_vaddr_available=true";
-      }
-      {
-        label = "production white-box channel remains later";
-        needle = "production_whitebox_channel_implemented=false";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/31-decision-register.md" decisionRegister [
-      {
-        label = "RISK-12 decision evidence";
-        needle = "qemu_plugin_read_memory_vaddr_available=true";
+        label = "upstream read-memory API";
+        needle = "`qemu_plugin_read_memory_vaddr`";
       }
     ]
     ++ failuresFor "tests/crucible/phase0-s2-io-idle-plugin.c" phase0S2Plugin [

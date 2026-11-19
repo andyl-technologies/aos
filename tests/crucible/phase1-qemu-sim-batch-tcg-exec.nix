@@ -6,7 +6,6 @@
   patchDir = ../../pkgs/emulation/qemu-patches;
   atomicPatch = import ../../pkgs/emulation/qemu-patches/_atomic-patch.nix;
   qemuNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
-  qemuPatchSpec = builtins.readFile ../../docs/rfcs/0010-crucible/11-qemu-patches.md;
   defaultChecks = builtins.readFile ./default.nix;
   patchSource = builtins.readFile (patchDir + "/${atomicPatch.file}");
   microtestSource = builtins.readFile ./phase1-qemu-sim-batch-tcg-exec.c;
@@ -79,16 +78,6 @@
       {
         label = "BQL-releasing vCPU ceiling wait";
         needle = "qemu_cond_wait_bql(first_cpu->halt_cond)";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/11-qemu-patches.md" qemuPatchSpec [
-      {
-        label = "PATCH-35 cross reference";
-        needle = "PATCH-35";
-      }
-      {
-        label = "batch patch catalog";
-        needle = "crucible-sim-batch-tcg-exec";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

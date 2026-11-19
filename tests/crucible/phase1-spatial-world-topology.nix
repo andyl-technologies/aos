@@ -10,18 +10,18 @@
   model = import ./_crucible-model-source.nix {inherit lib;};
   crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
-  spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
+  scenarioModelDoc = builtins.readFile ../../docs/engineering/crucible/scenario-model.md;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/06-spatial-graph.md" spatialGraph [
+    failuresFor "docs/engineering/crucible/scenario-model.md" scenarioModelDoc [
       {
-        label = "T-SPAT-4 completion names world links";
-        needle = "`nodes` and `links`, `World::from_nodes_and_links`";
+        label = "world nodes and links constructor";
+        needle = "`World::from_nodes_and_links`";
       }
       {
-        label = "T-SPAT-7 completion names endpoint validation";
+        label = "link endpoint validation";
         needle = "endpoint order and rejects self-loops";
       }
     ]

@@ -4,7 +4,6 @@
   attrPath ? "checks.crucible.phase7.crucibleQemuPackage",
   taskIds ? ["T-PKG-2"],
 }: let
-  packagingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/26-packaging-aos-integration.md;
   pkgsDefault = builtins.readFile ../../pkgs/default.nix;
   qemuNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
   pluginPackageNix = builtins.readFile ../../pkgs/emulation/crucible-qemu-plugin.nix;
@@ -167,12 +166,6 @@
     ]
     ++ lib.optionals (alternateSmbdIdentityFlag == "--smbd=@aos-samba-smbd@/sbin/smbd") [
       "pkgs.qemu-crucible: a changed Samba executable does not change identity material"
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
-      {
-        label = "T-PKG-2 completion note";
-        needle = "Completed by `checks.crucible.phase7.crucibleQemuPackage`";
-      }
     ]
     ++ failuresFor "pkgs/default.nix" pkgsDefault [
       {

@@ -4,8 +4,7 @@
   attrPath ? "checks.crucible.phase7.cruciblePackageHermeticDiscovery",
   taskIds ? ["T-PKG-9"],
 }: let
-  packagingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/26-packaging-aos-integration.md;
-  cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
+  packagingDoc = builtins.readFile ../../docs/engineering/crucible/packaging.md;
   cruciblePackageNix = builtins.readFile ../../pkgs/tools/crucible/crucible.nix;
   liveDebuggerMatrix = builtins.readFile ../../pkgs/tools/crucible/live-debugger-matrix.sh;
   cliHermeticDiscoveryCheck = builtins.readFile ./phase5-cli-hermetic-discovery.nix;
@@ -16,11 +15,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
-      {
-        label = "T-PKG-9 completion note";
-        needle = "Completed by `checks.crucible.phase7.cruciblePackageHermeticDiscovery`";
-      }
+    failuresFor "docs/engineering/crucible/packaging.md" packagingDoc [
       {
         label = "phase5 behavior proof reference";
         needle = "`checks.crucible.phase5.cliHermeticDiscovery`";
@@ -28,12 +23,6 @@
       {
         label = "phase1 output-smoke reference";
         needle = "`checks.crucible.phase1.aosWorkspaceBuild`";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
-      {
-        label = "CLI hermetic discovery task complete";
-        needle = "Completed by `checks.crucible.phase5.cliHermeticDiscovery`";
       }
     ]
     ++ failuresFor "pkgs/tools/crucible/crucible.nix" cruciblePackageNix [

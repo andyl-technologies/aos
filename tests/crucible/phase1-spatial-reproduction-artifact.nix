@@ -12,18 +12,18 @@
   artifactTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/event_log_reproduction_artifact.rs;
   workloadTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/workload_parameterization.rs;
   defaultChecks = builtins.readFile ./default.nix;
-  spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
+  scenarioModelDoc = builtins.readFile ../../docs/engineering/crucible/scenario-model.md;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/06-spatial-graph.md" spatialGraph [
+    failuresFor "docs/engineering/crucible/scenario-model.md" scenarioModelDoc [
       {
-        label = "T-SPAT-18 completion names reproduction artifact";
+        label = "reproduction artifact";
         needle = "`ReproductionArtifact`";
       }
       {
-        label = "T-SPAT-18 completion names gate";
+        label = "reproduction artifact check";
         needle = "`checks.crucible.phase1.spatialReproductionArtifact`";
       }
     ]

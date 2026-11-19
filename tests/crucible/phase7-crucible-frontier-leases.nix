@@ -5,7 +5,7 @@
   taskIds ? ["T-DCE-2"],
   dependencies ? [],
 }: let
-  dceDoc = builtins.readFile ../../docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md;
+  distributedExplorationDoc = builtins.readFile ../../docs/engineering/crucible/distributed-exploration.md;
   casSource =
     builtins.readFile ../../crates/crucible/crucible-store/src/lib.rs
     + builtins.readFile ../../crates/crucible/crucible-store/src/cas/campaign_codec.rs
@@ -28,25 +28,19 @@
   fleetEquivalenceWrapperDependency = "dependencies = [phase2.gates.singleVmFingerprint e2eDeterminism phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleFrontierLeases phase7.crucibleFourLayerDedup phase7.crucibleDeterminismGuardrail phase7.crucibleCasFleetRatchetSeam];";
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md" dceDoc [
+    failuresFor "docs/engineering/crucible/distributed-exploration.md" distributedExplorationDoc [
       {
-        label = "T-DCE-2 completion note";
-        needle = "Completed by `checks.crucible.phase7.crucibleFrontierLeases`";
+        label = "claim lease work-stealing text";
+        needle = "content-addressed CLAIM/LEASE work-stealing over\nthe shared frontier";
       }
       {
-        label = "DCE-5 claim lease text";
-        needle = "content-addressed CLAIM/LEASE\n  work-stealing over the shared frontier";
+        label = "TTL lease text";
+        needle = "A claim is a short-lived lease";
       }
       {
-        label = "DCE-6 TTL lease text";
-        needle = "A claim MUST be a short-lived **lease**";
+        label = "affinity hint text";
+        needle = "Soft hash-affinity is a priority hint only";
       }
-      {
-        label = "DCE-7 affinity hint text";
-        needle = "soft hash-affinity";
-      }
-    ]
-    ++ forbiddenFor "docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md" dceDoc [
     ]
     ++ failuresFor "crates/crucible/crucible-store/src/lib.rs" casSource [
       {

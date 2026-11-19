@@ -5,10 +5,9 @@
   taskIds ? ["T-DCE-10"],
   dependencies ? [],
 }: let
-  dceDoc = builtins.readFile ../../docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md;
-  gateCatalogDoc = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
-  phasePlanDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
-  packagingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/26-packaging-aos-integration.md;
+  distributedExplorationDoc = builtins.readFile ../../docs/engineering/crucible/distributed-exploration.md;
+  testingAndGatesDoc = builtins.readFile ../../docs/engineering/crucible/testing-and-gates.md;
+  packagingDoc = builtins.readFile ../../docs/engineering/crucible/packaging.md;
   phasePlanRust = import ./_rust-module-source.nix {
     inherit lib;
     entry = ../../crates/crucible/crucible-test-support/src/phase_plan.rs;
@@ -43,61 +42,51 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-  fleetCatalogRow = "| `gate:fleet-equivalence` | Cross-layer (Phase ≥ L3) | DCE-16, DCE-17, DCE-20; G-6 | Single-host and fleet search over the same `(family, seed, budget)` discover the same content-addressed finding-set with byte-identical artifacts; discovery order may differ. |";
-  campaignCatalogRow = "| `gate:campaign-continuity` | Cross-layer (Phase ≥ L3) | DCE-11, DCE-12, DCE-26; PERF-28 | Seeding run N+1 from run N's campaign reproduces each corpus entry bit-identically, accumulated coverage is monotone non-decreasing across runs, and cross-provenance reuse is refused. |";
+  fleetCatalogRow = "| `gate:fleet-equivalence` | `Phase7` | `crucible-test-support` | Single-host and fleet search over the same family, seed, and budget find the same content-addressed finding set with byte-identical artifacts; discovery order may differ. |";
+  campaignCatalogRow = "| `gate:campaign-continuity` | `Phase7` | `crucible-test-support` | Seeding a run from a previous campaign reproduces each corpus entry, coverage never decreases, and cross-provenance reuse is refused. |";
   fleetEquivalenceRawDependency = "dependencies = [phase2.gates.singleVmFingerprint.rawGate e2eDeterminism.rawGate phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleFrontierLeases phase7.crucibleFourLayerDedup phase7.crucibleDeterminismGuardrail phase7.crucibleCasFleetRatchetSeam];";
   campaignContinuityRawDependency = "dependencies = [fleetEquivalence.rawGate phase7.crucibleCampaignManifest phase7.crucibleCampaignSeeding phase7.crucibleCampaignStorageBounding phase7.crucibleCampaignProvenance];";
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md" dceDoc [
-      {
-        label = "T-DCE-10 completion note";
-        needle = "Completed by `checks.crucible.phase7.crucibleDceIntegration`";
-      }
-      {
-        label = "DCE-28 same crucible-cas seam";
-        needle = "**[DCE-28]** The fleet's shared store";
-      }
-      {
-        label = "DCE-29 standalone ratchet seam";
-        needle = "**[DCE-29]** Crucible MUST ship **standalone**";
-      }
-      {
-        label = "DCE-30 canonical gates";
-        needle = "**[DCE-30]** `gate:fleet-equivalence` and `gate:campaign-continuity` MUST be";
-      }
-      {
-        label = "DCE-31 from-source fleet check";
-        needle = "**[DCE-31]** The fleet/campaign store backend MUST be an AOS package built";
-      }
-      {
-        label = "DCE-32 performance forward-ref";
-        needle = "**[DCE-32]** The performance contract for fleet throughput";
-      }
+    failuresFor "docs/engineering/crucible/distributed-exploration.md" distributedExplorationDoc [
       {
         label = "ratchet seam text";
         needle = "The fleet-visible content-addressed store is the **same seam**";
       }
       {
+        label = "standalone ratchet seam";
+        needle = "Crucible ships standalone.";
+      }
+      {
         label = "standalone no dependency";
-        needle = "the seam is **documented text, not a\ndependency**";
+        needle = "The seam is documented text, not a dependency";
+      }
+      {
+        label = "from-source fleet store package";
+        needle = "from the `crucible-store` crate hermetically from source";
       }
       {
         label = "from-source AOS fleet check text";
-        needle = "wired as an **AOS\nVM/fleet check**";
+        needle = "Distributed exploration is wired as an AOS VM/fleet check";
       }
       {
         label = "TCG-only fleet check text";
-        needle = "**TCG-only** without `requiredSystemFeatures = [ \"kvm\" ]`";
+        needle = "It runs TCG-only without\n`requiredSystemFeatures = [ \"kvm\" ]`";
       }
       {
-        label = "new canonical gates summary";
-        needle = "NEW CANONICAL GATES (§35.10): gate:fleet-equivalence, gate:campaign-continuity";
+        label = "fleet-equivalence gate";
+        needle = "`gate:fleet-equivalence` is the runtime proof";
+      }
+      {
+        label = "campaign-continuity sibling gate";
+        needle = "`gate:campaign-continuity` is its sibling";
+      }
+      {
+        label = "performance forward-ref";
+        needle = "Measured performance contracts live in\n[performance.md](performance.md)";
       }
     ]
-    ++ forbiddenFor "docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md" dceDoc [
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" gateCatalogDoc [
+    ++ failuresFor "docs/engineering/crucible/testing-and-gates.md" testingAndGatesDoc [
       {
         label = "fleet-equivalence catalog row verbatim";
         needle = fleetCatalogRow;
@@ -105,28 +94,6 @@
       {
         label = "campaign-continuity catalog row verbatim";
         needle = campaignCatalogRow;
-      }
-      {
-        label = "fleet and campaign canonical text";
-        needle = "`gate:campaign-continuity` (owned";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" phasePlanDoc [
-      {
-        label = "distributed/continuous phase plan tasks";
-        needle = "`T-DCE-1 … T-DCE-10`";
-      }
-      {
-        label = "fleet-equivalence phase plan gate";
-        needle = "`gate:fleet-equivalence`";
-      }
-      {
-        label = "campaign-continuity phase plan gate";
-        needle = "`gate:campaign-continuity`";
-      }
-      {
-        label = "phase plan after final deterministic gate";
-        needle = "and reproduces from its self-contained artifact), `gate:fleet-equivalence`";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-test-support/src/phase_plan.rs" phasePlanRust [
@@ -165,8 +132,8 @@
     ]
     ++ failuresFor "crates/crucible/crucible-test-support/tests/gate_catalog.rs" gateCatalogTest [
       {
-        label = "gate catalog RFC table test";
-        needle = "canonical_gate_catalog_matches_rfc_table_and_references";
+        label = "gate catalog documented table test";
+        needle = "canonical_gate_catalog_matches_documented_table_and_references";
       }
       {
         label = "fleet-equivalence implemented assertion";
@@ -355,14 +322,14 @@
         needle = ''// flattenAttrs "fleet" aos.checks.fleet'';
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
+    ++ failuresFor "docs/engineering/crucible/packaging.md" packagingDoc [
       {
-        label = "PKG fleet store section";
-        needle = "Distributed exploration: the fleet store and campaign provenance";
+        label = "fleet store package";
+        needle = "`pkgs.crucible-fleet-store`";
       }
       {
-        label = "PKG ratchet seam";
-        needle = "fleet-visible store + dependency-gated invalidation as the SAME seam";
+        label = "ratchet seam";
+        needle = "`SharedDagStore` as the fleet-visible backend of the same seam";
       }
     ];
 in
@@ -387,7 +354,7 @@ in
             check=${attrPath}
             tasks=${builtins.concatStringsSep "," taskIds}
             canonical_gates=gate:fleet-equivalence,gate:campaign-continuity
-            canonical_catalog=docs/rfcs/0010-crucible/24-determinism-harness-testing.md#1.1
+            canonical_catalog=docs/engineering/crucible/testing-and-gates.md
             phase_plan=crates/crucible/crucible-test-support/src/phase_plan.rs
             fleet_gate=checks.crucible.phase7.gates.fleetEquivalence
             campaign_gate=checks.crucible.phase7.gates.campaignContinuity
@@ -398,7 +365,7 @@ in
             from_source=true
             tcg_only=true
             required_system_features=none
-            performance_owner=docs/rfcs/0010-crucible/25-performance-targets.md
+            performance_owner=docs/engineering/crucible/performance.md
             RESULT
           '';
         }

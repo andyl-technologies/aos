@@ -10,22 +10,22 @@
   model = import ./_crucible-model-source.nix {inherit lib;};
   crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
-  spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
+  scenarioModelDoc = builtins.readFile ../../docs/engineering/crucible/scenario-model.md;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/06-spatial-graph.md" spatialGraph [
+    failuresFor "docs/engineering/crucible/scenario-model.md" scenarioModelDoc [
       {
-        label = "T-SPAT-19 completion names world canonicalization test";
+        label = "world canonicalization test";
         needle = "`world_topology_hashes_nodes_and_links_canonically`";
       }
       {
-        label = "T-SPAT-19 completion names signal canonicalization test";
+        label = "signal canonicalization test";
         needle = "`authored_order_does_not_change_identity`";
       }
       {
-        label = "T-SPAT-19 completion names gate";
+        label = "canonicalization check";
         needle = "`checks.crucible.phase1.spatialCanonicalization`";
       }
     ]

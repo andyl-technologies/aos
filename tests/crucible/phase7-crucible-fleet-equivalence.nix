@@ -12,8 +12,8 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  dceDoc = builtins.readFile ../../docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md;
-  harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
+  distributedExplorationDoc = builtins.readFile ../../docs/engineering/crucible/distributed-exploration.md;
+  testingAndGatesDoc = builtins.readFile ../../docs/engineering/crucible/testing-and-gates.md;
   crucibleManifest = builtins.readFile ../../crates/crucible/crucible-engine/Cargo.toml;
   modelRust = import ./_crucible-model-source.nix {inherit lib;};
   libRust = import ./_rust-module-source.nix {
@@ -38,43 +38,29 @@
   fleetEquivalenceWrapperDependency = "dependencies = [phase2.gates.singleVmFingerprint e2eDeterminism phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleFrontierLeases phase7.crucibleFourLayerDedup phase7.crucibleDeterminismGuardrail phase7.crucibleCasFleetRatchetSeam];";
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md" dceDoc [
+    failuresFor "docs/engineering/crucible/distributed-exploration.md" distributedExplorationDoc [
       {
-        label = "T-DCE-8 completion note";
-        needle = "Completed by `checks.crucible.phase7.gates.fleetEquivalence`";
+        label = "fleet equivalence gate";
+        needle = "`gate:fleet-equivalence` is the runtime proof of the determinism boundary";
       }
       {
-        label = "DCE-20 fleet equivalence requirement";
-        needle = "**[DCE-20]** Crucible MUST define and maintain **`gate:fleet-equivalence`**";
+        label = "pure check requirement";
+        needle = "The gate is a pure check";
       }
       {
-        label = "DCE-21 pure check requirement";
-        needle = "**[DCE-21]** `gate:fleet-equivalence` MUST be a **pure check**";
+        label = "divergence localization";
+        needle = "divergence-bisection";
       }
       {
-        label = "DCE-25 divergence localization";
-        needle = "divergence-bisection localization";
-      }
-      {
-        label = "DCE-33 work-stealing/real-QEMU coverage";
+        label = "work-stealing adversarial coverage";
         needle = "work-stealing fleet under adversarial host conditions";
       }
       {
-        label = "DCE-33 real-QEMU slice coverage";
-        needle = "a real-QEMU slice";
+        label = "real-QEMU slice coverage";
+        needle = "real-QEMU slice";
       }
     ]
-    ++ forbiddenFor "docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md" dceDoc [
-      {
-        label = "stale fleet equivalence remaining note";
-        needle = "Full fleet equivalence remains T-DCE-8";
-      }
-      {
-        label = "stale divergence localization remaining note";
-        needle = "divergence localization remain T-DCE-3/T-DCE-8";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
+    ++ failuresFor "docs/engineering/crucible/testing-and-gates.md" testingAndGatesDoc [
       {
         label = "fleet-equivalence catalog entry";
         needle = "`gate:fleet-equivalence`";

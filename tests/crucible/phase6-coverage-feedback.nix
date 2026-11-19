@@ -8,7 +8,7 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  advancedDoc = builtins.readFile ../../docs/rfcs/0010-crucible/22-advanced-features.md;
+  explorationPage = builtins.readFile ../../docs/engineering/crucible/exploration.md;
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
   libRs = import ./_rust-module-source.nix {
@@ -73,18 +73,14 @@
     forbidden;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/22-advanced-features.md" advancedDoc [
+    failuresFor "docs/engineering/crucible/exploration.md" explorationPage [
       {
-        label = "T-ADV-11 completion note";
-        needle = "Completed by `checks.crucible.phase6.coverageFeedback`";
+        label = "coverage projection";
+        needle = "read the coverage projection of the log as their feedback signal";
       }
       {
-        label = "ADV-22 coverage projection";
-        needle = "Search and fuzzing read the **coverage projection** of\nthe log";
-      }
-      {
-        label = "ADV-23 reduce invariant";
-        needle = "recording or\n  reading coverage MUST be free of any effect on `reduce`";
+        label = "reduce invariant";
+        needle = "has no effect on `reduce`";
       }
     ]
     ++ failuresFor "tests/crucible/phase4-event-log-coverage.nix" eventLogCoverageGate [

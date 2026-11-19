@@ -8,7 +8,7 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  advancedDoc = builtins.readFile ../../docs/rfcs/0010-crucible/22-advanced-features.md;
+  testingGatesPage = builtins.readFile ../../docs/engineering/crucible/testing-and-gates.md;
   phasePlanRust = builtins.readFile ../../crates/crucible/crucible-test-support/src/phase_plan.rs;
   phasePlanTest = builtins.readFile ../../crates/crucible/crucible-test-support/tests/phase_plan.rs;
   defaultChecks = builtins.readFile ./default.nix;
@@ -18,14 +18,10 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/22-advanced-features.md" advancedDoc [
-      {
-        label = "T-ADV-1 completion note";
-        needle = "Completed by `checks.crucible.phase6.advancedDependencyLadder`";
-      }
+    failuresFor "docs/engineering/crucible/testing-and-gates.md" testingGatesPage [
       {
         label = "dependency order prose";
-        needle = "exact-determinism →";
+        needle = "exact-determinism -> save-restore -> fork -> search -> coverage-feedback -> fuzzing";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-test-support/src/phase_plan.rs" phasePlanRust [

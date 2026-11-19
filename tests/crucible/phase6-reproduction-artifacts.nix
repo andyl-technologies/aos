@@ -8,7 +8,7 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  advancedDoc = builtins.readFile ../../docs/rfcs/0010-crucible/22-advanced-features.md;
+  explorationPage = builtins.readFile ../../docs/engineering/crucible/exploration.md;
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
   libRs = import ./_rust-module-source.nix {
     inherit lib;
@@ -31,18 +31,14 @@
     forbidden;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/22-advanced-features.md" advancedDoc [
+    failuresFor "docs/engineering/crucible/exploration.md" explorationPage [
       {
-        label = "T-ADV-14 completion note";
-        needle = "Completed by `checks.crucible.phase6.reproductionArtifacts`";
+        label = "every finding artifact";
+        needle = "Every interesting finding (a property violation, a divergence, a concrete";
       }
       {
-        label = "ADV-28 every finding artifact";
-        needle = "Every interesting finding (a property violation, a divergence, a\n  concrete execution timeout, or a retained corpus entry) MUST emit a\n  self-contained reproduction artifact";
-      }
-      {
-        label = "ADV-29 discovery paths";
-        needle = "regardless of how\n  the finding was reached (campaign branching, state-space search, or\n  coverage-guided fuzzing)";
+        label = "discovery paths";
+        needle = "the finding was reached (campaign branching, state-space search, or";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" temporalGraph [

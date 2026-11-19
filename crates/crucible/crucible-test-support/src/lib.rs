@@ -1,13 +1,12 @@
 //! `crucible-test-support` owns cross-crate determinism gate scaffolding.
 //!
-//! Spec index: RFC-0010 files 24, 27.
-//!
 //! This test-only workspace member hosts the fingerprint comparator, divergence
 //! bisector, replay-oracle checker, ABI golden-vector runner, adversarial-host
-//! driver, and mock e2e gate driver described by RFC-0010 files 24 and 27.
+//! driver, and mock e2e gate driver used by the determinism gates documented
+//! in `docs/engineering/crucible/testing-and-gates.md`.
 //!
-//! The crate also exposes the canonical gate catalog used by the RFC lint and
-//! the isolable Cargo targets used by gate wiring. It is not an L0-L4 runtime
+//! The crate also exposes the canonical gate catalog used by the gate-catalog
+//! check and the isolable Cargo targets used by gate wiring. It is not an L0-L4 runtime
 //! layer and is not a shipped crate.
 //!
 //! Module map: [`abi`] compares golden vectors, [`adversarial`] compares
@@ -18,7 +17,8 @@
 //! cost-model perf-bench gate substrate, [`phase_plan`] records the ordered gate
 //! occurrences, [`replay_oracle`] compares replay hashes, [`reproduction`] owns
 //! the versioned reproduction artifact format, [`segment_replay`] coordinates
-//! checkpoint-parallel replay, and [`spec_index`] owns the crate-to-RFC map.
+//! checkpoint-parallel replay, and [`workspace_crates`] lists the Crucible
+//! crates that workspace-wide lints iterate.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -36,7 +36,7 @@ pub mod phase_plan;
 pub mod replay_oracle;
 pub mod reproduction;
 pub mod segment_replay;
-pub mod spec_index;
+pub mod workspace_crates;
 
 /// A cross-crate harness component hosted by `crucible-test-support`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -49,7 +49,7 @@ pub struct HarnessComponentSpec {
     pub gate: &'static str,
 }
 
-/// The cross-crate harness components required by RFC-0010 file 27.
+/// The cross-crate harness components hosted by this crate.
 pub const HARNESS_COMPONENTS: &[HarnessComponentSpec] = &[
     HarnessComponentSpec {
         name: "fingerprint comparator",
@@ -78,13 +78,13 @@ pub const HARNESS_COMPONENTS: &[HarnessComponentSpec] = &[
     },
 ];
 
-/// Returns every cross-crate harness component in RFC order.
+/// Returns every cross-crate harness component in catalog order.
 #[must_use]
 pub fn harness_components() -> &'static [HarnessComponentSpec] {
     HARNESS_COMPONENTS
 }
 
-/// A canonical determinism gate from RFC-0010 section 24.
+/// A canonical determinism gate from the Crucible gate catalog.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GateSpec {
     /// The normative gate name, including the `gate:` prefix.
@@ -129,7 +129,7 @@ pub enum GateStatus {
     Implemented,
 }
 
-/// The canonical RFC-0010 gate catalog.
+/// The canonical Crucible determinism gate catalog.
 pub const CANONICAL_GATES: &[GateSpec] = &[
     GateSpec {
         name: "gate:harness-lint",
@@ -295,7 +295,7 @@ pub const CANONICAL_GATES: &[GateSpec] = &[
     },
 ];
 
-/// Returns every canonical gate in RFC order.
+/// Returns every canonical gate in catalog order.
 #[must_use]
 pub fn canonical_gates() -> &'static [GateSpec] {
     CANONICAL_GATES

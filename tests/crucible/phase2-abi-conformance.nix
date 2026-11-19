@@ -43,9 +43,6 @@
   apiRpcAbi = builtins.readFile ../../crates/crucible/crucible-control-api/src/rpc_abi.rs;
   apiRpcGolden = builtins.readFile ../../crates/crucible/crucible-control-api/src/rpc_abi/golden.rs;
   apiGateTest = builtins.readFile ../../crates/crucible/crucible-control-api/tests/gate_abi_conformance.rs;
-  harnessSpec = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
-  apiSpec = builtins.readFile ../../docs/rfcs/0010-crucible/21-api.md;
-  patternsSpec = builtins.readFile ../../docs/rfcs/0010-crucible/29-patterns-and-sketches.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -356,12 +353,6 @@
         label = "wire drift negative control";
         needle = "rpc_golden_vector_negative_control_detects_wire_drift";
       }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessSpec [
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/21-api.md" apiSpec [
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsSpec [
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {

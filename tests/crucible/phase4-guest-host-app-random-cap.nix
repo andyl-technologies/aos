@@ -14,7 +14,7 @@
   guestMain = builtins.readFile ../../crates/crucible/crucible-guest/src/main.rs;
   guestAbiGate = builtins.readFile ../../crates/crucible/crucible-guest/tests/gate_abi_conformance.rs;
   phase2AppRandomGate = builtins.readFile ./phase2-plugin-app-random-doorbell.nix;
-  guestHostDoc = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
+  guestHostChannelDoc = builtins.readFile ../../docs/engineering/crucible/guest-host-channel.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -22,14 +22,10 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/16-guest-host-channel.md" guestHostDoc [
-      {
-        label = "T-GHC-17 completion note";
-        needle = "Completed by `checks.crucible.phase4.guestHostAppRandomCap`";
-      }
+    failuresFor "docs/engineering/crucible/guest-host-channel.md" guestHostChannelDoc [
       {
         label = "scenario hash includes app-random cap";
-        needle = "app-random draw cap into the scenario definition hash";
+        needle = "`app_random_draw_cap={app_random_draw_cap}`";
       }
       {
         label = "zero-request fingerprint proof documented";

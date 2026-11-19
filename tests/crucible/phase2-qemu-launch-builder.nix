@@ -23,7 +23,7 @@
     }
     + builtins.readFile ../../crates/crucible/crucible-qemu-host/tests/deterministic_launch/launch_artifacts.rs
     + builtins.readFile ../../crates/crucible/crucible-qemu-host/tests/deterministic_launch/fingerprint_options.rs;
-  qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
+  qemuSpec = builtins.readFile ../../docs/engineering/crucible/qemu-integration.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -31,22 +31,18 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/10-qemu-integration.md" qemuSpec [
+    failuresFor "docs/engineering/crucible/qemu-integration.md" qemuSpec [
       {
-        label = "T-QEMU-1 completion note names launch-command builder";
-        needle = "typed `crucible-qemu` launch-command builder";
+        label = "launch-command builder";
+        needle = "`QemuLaunchCommandBuilder::build`";
       }
       {
-        label = "T-QEMU-1 completion note preserves fd-passing follow-up";
-        needle = "Child ownership/fd-passing remains tracked by";
+        label = "store-resolved launch artifacts";
+        needle = "to be AOS store paths";
       }
       {
-        label = "T-QEMU-1 completion note requires store-resolved artifacts";
-        needle = "requires content-addressed VM launch artifacts resolved";
-      }
-      {
-        label = "T-QEMU-1 completion note names fixed child fds";
-        needle = "`simfd=3`, `shmemfd=4`, `wakefd=5`";
+        label = "fixed child fds";
+        needle = "so the argument is `simfd=3`, `shmemfd=4`,";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-qemu-host/src/lib.rs" qemuLib [

@@ -9,8 +9,6 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
-  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   apiLib = import ./_crucible-control-source.nix {
     inherit lib;
     component = "exports";
@@ -29,19 +27,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
-      {
-        label = "T-CLI-14 read-only partial-evidence note";
-        needle = "Completed under `checks.crucible.phase5.cliServeReadOnly`";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "phase5 CLI serve read-only completion note";
-        needle = "`T-CLI-14` is completed under `checks.crucible.phase5.cliServeReadOnly`";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-control-api/src/lib.rs" apiLib [
+    failuresFor "crates/crucible/crucible-control-api/src/lib.rs" apiLib [
       {
         label = "server mode exported";
         needle = "LifecycleServerMode";

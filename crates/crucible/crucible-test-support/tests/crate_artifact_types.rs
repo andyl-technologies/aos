@@ -1,7 +1,6 @@
 //! Checks the Crucible crate artifact-type contract.
 //!
-//! RFC-0010 file 27 fixes the Rust artifact surface before later phases add
-//! implementation detail: only the QEMU plugin builds a `cdylib`, the CLI
+//! The Rust artifact surface is fixed: only the QEMU plugin builds a `cdylib`, the CLI
 //! builds the public `crucible-engine` binary, `crucible-qemu-debug-gateway` builds the
 //! GPL-side gateway process, `crucible-guest` builds its optional in-guest
 //! emitter binary, `crucible-store` builds the fleet-store binary, and every

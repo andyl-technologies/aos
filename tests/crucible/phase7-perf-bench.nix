@@ -70,9 +70,9 @@
   defaultChecks = builtins.readFile ./default.nix;
   rootChecks = builtins.readFile ../../default.nix;
   gateTargetMapping = builtins.readFile ./phase1-gate-target-mapping.nix;
-  perfDoc = builtins.readFile ../../docs/rfcs/0010-crucible/25-performance-targets.md;
+  performanceDoc = builtins.readFile ../../docs/engineering/crucible/performance.md;
   liveCoverageGate = builtins.readFile ./phase6-basic-block-coverage.nix;
-  harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
+  testingAndGatesDoc = builtins.readFile ../../docs/engineering/crucible/testing-and-gates.md;
 
   taskList = builtins.concatStringsSep "," taskIds;
   openTaskList = builtins.concatStringsSep "," openTaskIds;
@@ -100,32 +100,11 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
-  perfCheckboxFailures =
-    lib.concatMap (
-      id:
-        lib.optionals (!(hasInfix "- [x] **${id}**" perfDoc)) [
-          "docs/rfcs/0010-crucible/25-performance-targets.md: ${id} checklist box must be ticked"
-        ]
-    )
-    taskIds
-    ++ lib.concatMap (
-      id:
-        lib.optionals (!(hasInfix "- [ ] **${id}**" perfDoc)) [
-          "docs/rfcs/0010-crucible/25-performance-targets.md: ${id} unexpectedly remains open"
-        ]
-    )
-    openTaskIds;
-
   failures =
-    perfCheckboxFailures
-    ++ failuresFor "docs/rfcs/0010-crucible/25-performance-targets.md" perfDoc [
-      {
-        label = "perf-bench completed-evidence note";
-        needle = "Completed by `checks.crucible.phase7.gates.perfBench`";
-      }
+    failuresFor "docs/engineering/crucible/performance.md" performanceDoc [
       {
         label = "cost-model term attribution";
-        needle = "wall_clock ≈";
+        needle = "cost_model=wall_clock=busy/(tcg_ips*P)+amortized_boot+sync_overhead";
       }
     ]
     ++ failuresFor "tests/crucible/phase6-basic-block-coverage.nix" liveCoverageGate [
@@ -134,7 +113,7 @@
         needle = "canonical_fingerprint_effect=none";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessTesting [
+    ++ failuresFor "docs/engineering/crucible/testing-and-gates.md" testingAndGatesDoc [
       {
         label = "canonical perf-bench gate row";
         needle = "`gate:perf-bench`";

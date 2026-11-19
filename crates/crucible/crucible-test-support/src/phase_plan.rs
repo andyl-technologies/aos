@@ -1,12 +1,14 @@
-//! Phase-gate ordering for RFC-0010.
+//! Phase-gate ordering for the Crucible determinism gates.
 //!
 //! The catalog records names once; this plan records every occurrence, including repeated gates.
+//! `docs/engineering/crucible/testing-and-gates.md` documents the ordering, the layer
+//! precedences, and the advanced-feature ladder that this module makes executable.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::find_gate;
 
-/// A Crucible determinism-test layer from RFC-0010 file 24 section 2.
+/// A Crucible determinism-test layer, from L0 runtime primitives up to L4 end-to-end.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DeterminismLayer {
     /// L0 deterministic runtime and assertion primitives.
@@ -43,7 +45,7 @@ pub enum PhasePlanPhase {
 }
 
 impl PhasePlanPhase {
-    /// Returns the lowercase RFC label for this phase.
+    /// Returns the lowercase label for this phase, such as `phase3`.
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -59,7 +61,7 @@ impl PhasePlanPhase {
     }
 }
 
-/// Every phase in RFC order.
+/// Every phase in plan order.
 pub const PHASE_PLAN_PHASES: &[PhasePlanPhase] = &[
     PhasePlanPhase::Phase0,
     PhasePlanPhase::Phase1,
@@ -77,13 +79,13 @@ pub const SIM_DOUBLE_AVAILABLE_PHASE: PhasePlanPhase = PhasePlanPhase::Phase1;
 /// Whether an occurrence is a canonical gate or a phase-local aggregate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PhaseGateKind {
-    /// The occurrence names a gate from the canonical RFC-0010 gate catalog.
+    /// The occurrence names a gate from the canonical gate catalog.
     CatalogGate,
     /// The occurrence names a phase-local aggregate outside the gate catalog.
     NonCatalogAggregate,
 }
 
-/// One ordered phase-gate occurrence from RFC-0010 file 24 section 13.
+/// One ordered phase-gate occurrence in the phase plan.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PhaseGateOccurrence {
     /// The phase whose exit this occurrence guards.
@@ -162,7 +164,7 @@ pub struct LayerGatePrecedenceFailure {
     pub rationale: &'static str,
 }
 
-/// One rung in the advanced-feature dependency ladder from RFC-0010 file 22.
+/// One rung in the advanced-feature dependency ladder.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum AdvancedFeatureRung {
     /// Exact deterministic replay is the bedrock below every advanced feature.
@@ -180,7 +182,7 @@ pub enum AdvancedFeatureRung {
 }
 
 impl AdvancedFeatureRung {
-    /// Returns the RFC label for this advanced-feature rung.
+    /// Returns the kebab-case label for this advanced-feature rung.
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -197,7 +199,7 @@ impl AdvancedFeatureRung {
 /// One ADV checklist task bound to the dependency ladder.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AdvancedFeatureTaskOrder {
-    /// RFC checklist task identifier such as `T-ADV-12`.
+    /// Task identifier, such as `T-ADV-12`, that keys the implementing check's `taskIds`.
     pub task_id: &'static str,
     /// Ladder rung that owns the task.
     pub rung: AdvancedFeatureRung,
@@ -358,7 +360,7 @@ const ADVANCED_LADDER_FOUNDATION: &[&str] = &[
     "checks.crucible.phase5.gates.controlResponsive",
 ];
 
-/// ADV checklist ordering required by RFC-0010 file 22 section 22.1.
+/// Advanced-feature entries in dependency-ladder order.
 pub const ADVANCED_FEATURE_TASK_ORDER: &[AdvancedFeatureTaskOrder] = &[
     AdvancedFeatureTaskOrder {
         task_id: "T-ADV-1",
@@ -530,7 +532,7 @@ pub const ADVANCED_FEATURE_TASK_ORDER: &[AdvancedFeatureTaskOrder] = &[
     },
 ];
 
-/// The full ordered phase-gate plan from RFC-0010 file 24 section 13.
+/// The full ordered phase-gate plan.
 pub const PHASE_GATE_ORDER: &[PhaseGateOccurrence] = &[
     non_catalog_gate(
         PhasePlanPhase::Phase0,

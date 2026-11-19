@@ -1,12 +1,13 @@
 //! Tests the scheduler component of `gate:e2e-determinism` for host-level
-//! concurrency (RFC-0010 T-SCHED-25, [SCHED-40], [SCHED-41], §8.12) on the
-//! authoritative scheduler RESOLVE path. This target does not execute QEMU.
+//! concurrency on the authoritative scheduler RESOLVE path. This target does
+//! not execute QEMU.
 //!
 //! Lookahead is the parallelism budget: nodes whose horizons cannot constrain
-//! each other within the conservative lookahead window may run in parallel on the
-//! host, while RESOLVE and EMIT stay serialized through the single scheduler in
-//! the §8.6 total order ([SCHED-40]). The headline invariant proven here: a serial
-//! drive ([`crucible_engine::QuantumLoop::drive_quantum`], one RUN at a time) and a
+//! each other within the conservative lookahead window may run in parallel on
+//! the host, while RESOLVE and EMIT stay serialized through the single
+//! scheduler in the scheduler's total delivery order. The headline invariant
+//! proven here: a serial drive
+//! ([`crucible_engine::QuantumLoop::drive_quantum`], one RUN at a time) and a
 //! full-budget host-concurrent drive
 //! ([`crucible_engine::ConcurrentQuantumLoop::drive_concurrent_quantum`], every
 //! independent RUN dispatched at once) produce BIT-IDENTICAL results — the same

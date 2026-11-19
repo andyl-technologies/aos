@@ -24,7 +24,7 @@
       builtins.replaceStrings ["\n#[cfg(test)]"] ["@@CFGTEST@@"] quantumLib
     )
   );
-  qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
+  qemuSpec = builtins.readFile ../../docs/engineering/crucible/qemu-integration.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -32,18 +32,10 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/10-qemu-integration.md" qemuSpec [
+    failuresFor "docs/engineering/crucible/qemu-integration.md" qemuSpec [
       {
-        label = "completion note names shmem hot path";
-        needle = "shared-memory hot path";
-      }
-      {
-        label = "completion note points to completed injection contract";
-        needle = "device-I/O freeze semantics are completed by";
-      }
-      {
-        label = "completion note preserves async follow-up";
-        needle = "real-time async wait remains tracked by";
+        label = "shmem hot path";
+        needle = "The per-quantum shared-memory hot path";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-qemu-host/src/lib.rs" qemuLib [

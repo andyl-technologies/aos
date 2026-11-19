@@ -9,10 +9,8 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  sessionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/20-session-control-plane.md;
-  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
-  harnessDoc = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
-  patternsDoc = builtins.readFile ../../docs/rfcs/0010-crucible/29-patterns-and-sketches.md;
+  sessionPage = builtins.readFile ../../docs/engineering/crucible/session.md;
+  testingGatesPage = builtins.readFile ../../docs/engineering/crucible/testing-and-gates.md;
   defaultChecks = builtins.readFile ./default.nix;
   sessionManifest = builtins.readFile ../../crates/crucible/crucible-session/Cargo.toml;
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
@@ -64,45 +62,21 @@
   ];
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/20-session-control-plane.md" sessionDoc [
+    failuresFor "docs/engineering/crucible/session.md" sessionPage [
       {
-        label = "T-SESS-12 completion note";
-        needle = "Completed by `checks.crucible.phase5.sessionSimDoubleSuite`";
+        label = "control-plane double rule";
+        needle = "test that needs real QEMU to exercise the control plane";
       }
       {
-        label = "SESS-28 control-plane double rule";
-        needle = "A session test that needs real QEMU to";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsDoc [
-      {
-        label = "T-PAT-6 session backend completion note";
-        needle = "Completed by `checks.crucible.phase5.sessionSimulationBackend` and";
+        label = "SimDouble adapter claim";
+        needle = "`SimDouble` quantum-loop adapter";
       }
       {
-        label = "T-PAT-6 SimDouble suite completion note";
-        needle = "`checks.crucible.phase5.sessionSimDoubleSuite`";
-      }
-      {
-        label = "T-PAT-6 SimDouble adapter claim";
-        needle = "`crucible_engine::SimDouble` quantum-loop adapter";
-      }
-      {
-        label = "T-PAT-6 scheduler liveness harness claim";
-        needle = "initialized `crucible_engine::SimDouble` liveness harness";
-      }
-      {
-        label = "T-PAT-6 no real QEMU claim";
-        needle = "real QEMU";
+        label = "no real QEMU claim";
+        needle = "`CONTROL_RESPONSIVE_REQUIRES_REAL_QEMU = false`";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "phase5 SimDouble suite completion note";
-        needle = "`T-SESS-12` is completed by `checks.crucible.phase5.sessionSimDoubleSuite`";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/24-determinism-harness-testing.md" harnessDoc [
+    ++ failuresFor "docs/engineering/crucible/testing-and-gates.md" testingGatesPage [
       {
         label = "control-plane responsiveness is double-backed";
         needle = "control-plane responsiveness       yes";
@@ -338,7 +312,7 @@
       }
       {
         label = "command filter";
-        needle = "rfc_command";
+        needle = "session_command_";
       }
     ]
     ++ failuresFor "tests/crucible/phase5-control-responsive.nix" controlResponsiveCheck [

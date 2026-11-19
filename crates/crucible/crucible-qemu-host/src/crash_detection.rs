@@ -1,10 +1,9 @@
 //! Typed QEMU node crash detection.
 //!
-//! RFC-0010 QEMU-32 requires infrastructure failures around a QEMU child to be
-//! surfaced as a crashed-node status, not retried or conflated with an intended
-//! scenario fault. This module provides both the scheduler-facing status model
-//! and the host-side hooks used to classify child-exit, plugin-IPC, and QMP I/O
-//! failures.
+//! Infrastructure failures around a QEMU child are surfaced as a crashed-node
+//! status, not retried or conflated with an intended scenario fault. This
+//! module provides both the scheduler-facing status model and the host-side
+//! hooks used to classify child-exit, plugin-IPC, and QMP I/O failures.
 
 use std::io::{self, ErrorKind};
 use std::process::{Child, ExitStatus};

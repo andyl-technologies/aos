@@ -48,7 +48,7 @@
     inherit lib;
     entry = ../../crates/crucible/crucible-qemu-plugin/src/teardown.rs;
   };
-  pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
+  pluginSpec = builtins.readFile ../../docs/engineering/crucible/qemu-plugin.md;
   shmemLib = import ./_crucible-shmem-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -274,14 +274,14 @@
     ];
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
+    failuresFor "docs/engineering/crucible/qemu-plugin.md" pluginSpec [
       {
-        label = "cross-process ordering wording";
-        needle = "Enforce the cross-process atomic-ordering rules";
+        label = "shared-memory ordering funnel";
+        needle = "`PluginShmemOrdering`";
       }
       {
-        label = "relaxed single-threaded wording";
-        needle = "self-owned counters outside shmem";
+        label = "relaxed atomics only for local counters";
+        needle = "Relaxed atomics appear only for plugin-local counters";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/lib.rs" pluginLib [

@@ -41,7 +41,7 @@
   };
   phase2AppRandomGate = builtins.readFile ./phase2-plugin-app-random-doorbell.nix;
   virtualMemorySpikeGate = builtins.readFile ./phase4-guest-host-virtual-memory-spike.nix;
-  guestHostDoc = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
+  guestHostChannelDoc = builtins.readFile ../../docs/engineering/crucible/guest-host-channel.md;
   defaultChecks = builtins.readFile ./default.nix;
   virtualMemorySpike = import ./phase4-guest-host-virtual-memory-spike.nix {
     inherit pkgs lib phase0S5;
@@ -72,11 +72,7 @@
     else [];
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/16-guest-host-channel.md" guestHostDoc [
-      {
-        label = "T-GHC-16 callback and engine evidence";
-        needle = "Callback-core and engine-model evidence is provided by";
-      }
+    failuresFor "docs/engineering/crucible/guest-host-channel.md" guestHostChannelDoc [
       {
         label = "random request kind table";
         needle = "5    random_request";

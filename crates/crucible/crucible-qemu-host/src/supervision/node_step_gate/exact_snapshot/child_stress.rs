@@ -8,7 +8,7 @@
 //! attempt so the next lifecycle restages against the same template. The
 //! flight holds the source to its baseline thread and descriptor counts at
 //! every sample and reports how its private dirty memory moved after a
-//! warm-up, which is the leak evidence the RFC's stress task asks for.
+//! warm-up, which is the evidence that repeated forks do not leak.
 
 use std::fs;
 use std::path::Path;

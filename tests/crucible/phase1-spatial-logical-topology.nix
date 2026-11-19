@@ -13,19 +13,19 @@
   crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
   shmemRoot = import ./_crucible-shmem-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
-  spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
+  scenarioModelDoc = builtins.readFile ../../docs/engineering/crucible/scenario-model.md;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/06-spatial-graph.md" spatialGraph [
+    failuresFor "docs/engineering/crucible/scenario-model.md" scenarioModelDoc [
       {
-        label = "T-SPAT-9 completion names logical-only world";
-        needle = "`World::nodes` is the one\n    heterogeneous logical VM/block/9p collection";
+        label = "logical-only world nodes";
+        needle = "`World::nodes` is the one heterogeneous logical";
       }
       {
-        label = "T-SPAT-9 completion names physical layout invariance";
-        needle = "vary real shmem layout and host\n    memory geometry";
+        label = "physical layout is not identity";
+        needle = "logical; the layout is derived; the derivation is not identity.";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [

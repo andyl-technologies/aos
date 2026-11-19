@@ -30,7 +30,7 @@
     inherit lib;
     entry = ../../crates/crucible/crucible-qemu-host/tests/qmp.rs;
   };
-  qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
+  qemuSpec = builtins.readFile ../../docs/engineering/crucible/qemu-integration.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -55,25 +55,25 @@
   ];
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/10-qemu-integration.md" qemuSpec [
+    failuresFor "docs/engineering/crucible/qemu-integration.md" qemuSpec [
       {
-        label = "completion note names bounded async driver";
-        needle = "bounded async driver";
+        label = "bounded async driver";
+        needle = "The bounded async driver";
       }
       {
-        label = "completion note preserves shmem-only hot path";
+        label = "shmem-only hot path";
         needle = "no per-quantum QMP or plugin-IPC";
       }
       {
-        label = "completion note names timeout crash escalation";
-        needle = "timeouts are converted into typed crashed-node";
+        label = "timeout crash escalation";
+        needle = "typed crashed-node status";
       }
       {
-        label = "completion note names concrete node path";
+        label = "concrete node path";
         needle = "QemuNode::advance_to_ceiling";
       }
       {
-        label = "completion note names QMP timeout stream";
+        label = "QMP timeout stream";
         needle = "timeout-capable stream";
       }
     ]

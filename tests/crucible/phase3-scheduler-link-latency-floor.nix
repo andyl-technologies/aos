@@ -9,36 +9,32 @@
 
   model = import ./_crucible-model-source.nix {inherit lib;};
   libSource = import ./_crucible-tests-source.nix {inherit lib;};
-  schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
-  spatialDoc = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
+  schedulingDoc = builtins.readFile ../../docs/engineering/crucible/scheduling.md;
+  scenarioModelDoc = builtins.readFile ../../docs/engineering/crucible/scenario-model.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/08-scheduling.md" schedulingDoc [
+    failuresFor "docs/engineering/crucible/scheduling.md" schedulingDoc [
       {
-        label = "T-SCHED-10 completion note";
-        needle = "Completed by `checks.crucible.phase3.schedulerLinkLatencyFloor`";
+        label = "minimum latency floor";
+        needle = "`MIN_LINK_LATENCY` in `crates/crucible/crucible-engine/src/model.rs`";
       }
       {
-        label = "minimum latency floor requirement";
-        needle = "minimum link-latency floor";
-      }
-      {
-        label = "scenario hash requirement";
-        needle = "include it in the scenario content hash";
+        label = "floor enters scenario identity";
+        needle = "`min_link_latency_ticks`";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/06-spatial-graph.md" spatialDoc [
+    ++ failuresFor "docs/engineering/crucible/scenario-model.md" scenarioModelDoc [
       {
-        label = "spatial graph defines floor";
+        label = "scenario model defines floor";
         needle = "pub const MIN_LINK_LATENCY";
       }
       {
-        label = "spatial graph rejects zero";
-        needle = "a link MUST have a strictly positive latency";
+        label = "scenario model rejects zero";
+        needle = "strictly positive latency.";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [

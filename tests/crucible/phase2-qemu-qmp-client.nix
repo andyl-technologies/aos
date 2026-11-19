@@ -14,7 +14,7 @@
     entry = ../../crates/crucible/crucible-qemu-host/src/qmp.rs;
   };
   qmpTest = builtins.readFile ../../crates/crucible/crucible-qemu-host/tests/qmp.rs;
-  qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
+  qemuSpec = builtins.readFile ../../docs/engineering/crucible/qemu-integration.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -22,14 +22,14 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/10-qemu-integration.md" qemuSpec [
+    failuresFor "docs/engineering/crucible/qemu-integration.md" qemuSpec [
       {
-        label = "QEMU-19 typed QMP client requirement";
-        needle = "**[QEMU-19]** The host MUST provide a typed QMP client";
+        label = "typed QMP client";
+        needle = "`QmpClient<S>` is a typed client";
       }
       {
-        label = "QEMU-20 version-nine checkpoint requirement";
-        needle = "Production checkpoints MUST capture and restore complete\n  version-nine state";
+        label = "patched exact checkpoint commands";
+        needle = "Exact checkpoints use the patched";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-qemu-host/Cargo.toml" qemuCargo [

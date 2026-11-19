@@ -8,7 +8,6 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  advancedDoc = builtins.readFile ../../docs/rfcs/0010-crucible/22-advanced-features.md;
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
   strategyGateTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/gate_search_strategies.rs;
   defaultChecks = builtins.readFile ./default.nix;
@@ -65,13 +64,7 @@
     forbidden;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/22-advanced-features.md" advancedDoc [
-      {
-        label = "T-ADV-8 completion note";
-        needle = "Completed by `checks.crucible.phase6.searchStrategies`";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" temporalGraph [
+    failuresFor "crates/crucible/crucible-engine/src/model.rs" temporalGraph [
       {
         label = "search strategy enum";
         needle = "pub enum SearchStrategy";

@@ -158,7 +158,6 @@ in rec {
     crateArtifactTypes = import ./phase1-crate-artifact-types.nix {inherit pkgs lib;};
     crateFeaturePowerset = import ./phase1-crate-feature-powerset.nix {inherit pkgs lib;};
     crateLayerGraph = import ./phase1-crate-layer-graph.nix {inherit pkgs lib;};
-    crateSpecIndex = import ./phase1-crate-spec-index.nix {inherit pkgs lib;};
     crateUnsafeFence = import ./phase1-crate-unsafe-fence.nix {inherit pkgs lib;};
     concurrencyAbiOracleStandards = import ./phase1-concurrency-abi-oracle-standards.nix {inherit pkgs lib;};
     decisionRecording = import ./phase1-decision-recording.nix {inherit pkgs lib;};
@@ -244,7 +243,6 @@ in rec {
     simAccel = import ./phase1-sim-accel.nix {inherit pkgs lib;};
     phaseGateOrdering = import ./phase1-phase-gate-ordering.nix {inherit pkgs lib;};
     phaseGateWiring = import ./phase1-phase-gate-wiring.nix {inherit pkgs lib;};
-    rfcConsistency = import ./phase1-rfc-consistency.nix {inherit pkgs lib;};
     rustdocBar = import ./phase1-rustdoc-bar.nix {inherit pkgs lib;};
     sameIcountTieBreak = import ./phase1-same-icount-tie-break.nix {inherit pkgs lib;};
     simDouble = import ./phase1-sim-double.nix {inherit pkgs lib;};

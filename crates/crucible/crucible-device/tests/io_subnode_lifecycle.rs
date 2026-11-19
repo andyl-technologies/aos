@@ -1,8 +1,8 @@
-//! Integration tests for the uniform I/O sub-node lifecycle (CS-IO-1).
+//! Integration tests for the uniform I/O sub-node lifecycle.
 //!
-//! These drive an [`IoCore`] through the in-process double pattern of spec
-//! §15.7: construct a sub-node, enqueue requests, advance the clock, and assert
-//! the emitted responses and their delivery icounts — with no real QEMU. The
+//! These drive an [`IoCore`] through the in-process double pattern: construct a
+//! sub-node, enqueue requests, advance the clock, and assert the emitted
+//! responses and their delivery icounts — with no real QEMU. The
 //! `EchoDevice` below is a minimal [`IoSubNode`] whose `compute` deliberately
 //! consults a host-timing-like counter to prove that COMPUTE wall-clock never
 //! leaks into the delivery icount or any payload byte ([IO-4], [IO-31]).

@@ -21,32 +21,28 @@
       entry = ../../crates/crucible/crucible-qemu-shmem/src/shmem/frame_node.rs;
     }
     + builtins.readFile ../../crates/crucible/crucible-qemu-shmem/src/shmem/frame_node/frame_entry.rs;
-  ioDoc = builtins.readFile ../../docs/rfcs/0010-crucible/15-io-subnodes.md;
+  ioDoc = builtins.readFile ../../docs/engineering/crucible/io-subnodes.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/15-io-subnodes.md" ioDoc [
+    failuresFor "docs/engineering/crucible/io-subnodes.md" ioDoc [
       {
-        label = "T-IO-3 completion note";
-        needle = "Completed by `checks.crucible.phase3.blockWireAbi`";
+        label = "fixed little-endian wire";
+        needle = "fixed little-endian field";
       }
       {
-        label = "fixed little-endian wire note";
-        needle = "fixed little-endian field order";
-      }
-      {
-        label = "reserved rejection note";
+        label = "reserved rejection";
         needle = "reserved bytes are zero on emit and rejected on decode";
       }
       {
-        label = "SLOT_BLK_IO routing note";
+        label = "SLOT_BLK_IO routing";
         needle = "`SLOT_BLK_IO` shared-memory rings";
       }
       {
-        label = "delivery icount note";
+        label = "delivery icount";
         needle = "`FrameEntry.delivery_icount` is the computed completion icount";
       }
     ]

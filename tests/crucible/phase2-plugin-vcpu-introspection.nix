@@ -17,9 +17,9 @@
     (builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/abi/tests/capabilities.rs)
   ];
   pluginInertness = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/inertness.rs;
-  pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
-  patchSpec = builtins.readFile ../../docs/rfcs/0010-crucible/11-qemu-patches.md;
-  qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
+  pluginSpec = builtins.readFile ../../docs/engineering/crucible/qemu-plugin.md;
+  patchSpec = builtins.readFile ../../docs/engineering/crucible/qemu-patch.md;
+  qemuSpec = builtins.readFile ../../docs/engineering/crucible/qemu-integration.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -28,46 +28,46 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
+    failuresFor "docs/engineering/crucible/qemu-plugin.md" pluginSpec [
       {
-        label = "per-vCPU register wording";
-        needle = "per-vCPU register-file";
+        label = "per-vCPU register reader";
+        needle = "`PluginVcpuIntrospector::read_nvcpu_fingerprint_inputs`";
       }
       {
-        label = "round-robin cursor wording";
-        needle = "round-robin cursor reads";
+        label = "round-robin cursor read";
+        needle = "the round-robin cursor through `qemu_plugin_rr_cursor`";
       }
       {
         label = "side-effect-free wording";
-        needle = "side-effect-free wrt `S`/`T`";
+        needle = "side-effect-free with respect to the instruction stream";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/11-qemu-patches.md" patchSpec [
+    ++ failuresFor "docs/engineering/crucible/qemu-patch.md" patchSpec [
       {
-        label = "PATCH-46 register export";
+        label = "register export";
         needle = "qemu_plugin_read_vcpu_regs";
       }
       {
-        label = "PATCH-46 cursor export";
+        label = "cursor export";
         needle = "qemu_plugin_rr_cursor";
       }
       {
         label = "arbitrary vCPU wording";
-        needle = "arbitrary vCPU index, not only the current one";
+        needle = "reads an arbitrary vCPU index, not only the";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/10-qemu-integration.md" qemuSpec [
+    ++ failuresFor "docs/engineering/crucible/qemu-integration.md" qemuSpec [
       {
-        label = "QEMU-34 all-vCPU registers";
+        label = "all-vCPU registers";
         needle = "all N vCPUs' register files";
       }
       {
-        label = "QEMU-34 cursor";
-        needle = "round-robin cursor";
+        label = "fingerprint cursor";
+        needle = "plus the round-robin cursor";
       }
       {
-        label = "first_cpu defect wording";
-        needle = "reading only `first_cpu` is a defect";
+        label = "first-CPU-only defect wording";
+        needle = "only QEMU's first CPU would leave the interleaving unchecked";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/lib.rs" pluginLib [

@@ -6,7 +6,6 @@
   patchDir = ../../pkgs/emulation/qemu-patches;
   atomicPatch = import ../../pkgs/emulation/qemu-patches/_atomic-patch.nix;
   qemuNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
-  qemuPatchSpec = builtins.readFile ../../docs/rfcs/0010-crucible/11-qemu-patches.md;
   defaultChecks = builtins.readFile ./default.nix;
   patchSource = builtins.readFile (patchDir + "/${atomicPatch.file}");
   microtestSource = builtins.readFile ./phase1-qemu-sim-correctness.c;
@@ -206,20 +205,6 @@
       }
     ]
     ++ failuresFor "pkgs/emulation/qemu-patches/${atomicPatch.file}" patchSource patchRequirements
-    ++ failuresFor "docs/rfcs/0010-crucible/11-qemu-patches.md" qemuPatchSpec [
-      {
-        label = "PATCH-34 cross reference";
-        needle = "PATCH-34";
-      }
-      {
-        label = "sim loop patch catalog";
-        needle = "crucible-sim-loop-fix";
-      }
-      {
-        label = "sim shmem dispatch patch catalog";
-        needle = "crucible-sim-shmem-dispatch";
-      }
-    ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
         label = "phase1 exposes QEMU sim-correctness check";

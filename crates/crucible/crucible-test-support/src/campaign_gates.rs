@@ -1,6 +1,6 @@
 //! Executable gate contracts for RFC-0020 campaign requirements.
 //!
-//! RFC-0020 defines gates beyond the original RFC-0010 determinism catalog.
+//! RFC-0020 defines gates beyond the canonical determinism gate catalog.
 //! This registry records whether each campaign gate has an isolable automated
 //! target wired to a Nix check.
 

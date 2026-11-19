@@ -5,7 +5,7 @@
   taskIds ? ["T-DCE-1"],
   dependencies ? [],
 }: let
-  dceDoc = builtins.readFile ../../docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md;
+  distributedExplorationDoc = builtins.readFile ../../docs/engineering/crucible/distributed-exploration.md;
   casSource =
     builtins.readFile ../../crates/crucible/crucible-store/src/lib.rs
     + builtins.readFile ../../crates/crucible/crucible-store/src/cas/tests.rs;
@@ -23,21 +23,15 @@
   fleetEquivalenceWrapperDependency = "dependencies = [phase2.gates.singleVmFingerprint e2eDeterminism phase7.crucibleFleetStore phase7.crucibleSharedDagStore phase7.crucibleFrontierLeases phase7.crucibleFourLayerDedup phase7.crucibleDeterminismGuardrail phase7.crucibleCasFleetRatchetSeam];";
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md" dceDoc [
+    failuresFor "docs/engineering/crucible/distributed-exploration.md" distributedExplorationDoc [
       {
-        label = "T-DCE-1 completion note";
-        needle = "Completed by `checks.crucible.phase7.crucibleSharedDagStore`";
-      }
-      {
-        label = "DCE-3 shared backend invariant";
+        label = "shared backend invariant";
         needle = "share a single content-addressed `DagStore` backend";
       }
       {
-        label = "DCE-4 idempotent concurrent put invariant";
-        needle = "idempotent, convergent\n  concurrent `put`";
+        label = "idempotent concurrent put invariant";
+        needle = "`put` is idempotent and convergent under concurrent writers";
       }
-    ]
-    ++ forbiddenFor "docs/rfcs/0010-crucible/35-distributed-continuous-exploration.md" dceDoc [
     ]
     ++ failuresFor "crates/crucible/crucible-store/src/lib.rs" casSource [
       {

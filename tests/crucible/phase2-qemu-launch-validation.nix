@@ -13,7 +13,7 @@
   launchTest =
     builtins.readFile ../../crates/crucible/crucible-qemu-host/tests/deterministic_launch.rs
     + builtins.readFile ../../crates/crucible/crucible-qemu-host/tests/deterministic_launch/launch_artifacts.rs;
-  qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
+  qemuSpec = builtins.readFile ../../docs/engineering/crucible/qemu-integration.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -21,14 +21,14 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/10-qemu-integration.md" qemuSpec [
+    failuresFor "docs/engineering/crucible/qemu-integration.md" qemuSpec [
       {
-        label = "QEMU-2 launch-configuration rejection";
-        needle = "before spawning any child";
+        label = "pre-spawn launch rejection";
+        needle = "`validate_pre_spawn_qemu_launch_args` checks the final argv before spawning";
       }
       {
-        label = "QEMU-43 RR validation";
-        needle = "Round-robin single-thread launch validation";
+        label = "RR single-thread validation";
+        needle = "`thread=multi` (`MultiThreadTcg`) or a missing `thread=single`";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-qemu-host/src/lib.rs" qemuLib [

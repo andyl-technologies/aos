@@ -15,7 +15,6 @@
   };
   observedStateTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/observed_state_materialization.rs;
   deterministicConditionTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/deterministic_condition_evaluation.rs;
-  assertionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
@@ -30,13 +29,7 @@
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/18-assertions-properties.md" assertionDoc [
-      {
-        label = "T-ASRT-4 completion note";
-        needle = "Completed by `checks.crucible.phase4.observedStateMaterialization`";
-      }
-    ]
-    ++ failuresFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [
+    failuresFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [
       {
         label = "observed state view";
         needle = "pub struct ObservedState<'log>";

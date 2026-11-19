@@ -1,11 +1,15 @@
-//! Checks that the RFC-0010 phase-gate plan is executable ordering data.
+//! Checks that the phase-gate plan is executable ordering data.
+//!
+//! The documented ordering, layer precedences, and advanced-feature ladder live
+//! in `docs/engineering/crucible/testing-and-gates.md`; these tests keep that
+//! page, `crucible_test_support::phase_plan`, and the Nix wiring aligned.
 
 #![forbid(unsafe_code)]
 
 #[path = "support/workspace.rs"]
 mod workspace;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fs;
 use std::path::PathBuf;
@@ -19,18 +23,26 @@ use crucible_test_support::phase_plan::{
     terminal_acceptance_gate,
 };
 
+/// The engineering page that documents the phase-gate plan.
+const TESTING_AND_GATES_DOC: &str = "docs/engineering/crucible/testing-and-gates.md";
+
 #[test]
-fn phase_gate_plan_matches_rfc_section_13_and_nix_wiring() -> Result<(), Box<dyn Error>> {
+fn phase_gate_plan_matches_documented_order_and_nix_wiring() -> Result<(), Box<dyn Error>> {
     let root = workspace_root();
-    let rfc =
-        fs::read_to_string(root.join("docs/rfcs/0010-crucible/24-determinism-harness-testing.md"))?;
+    let testing_and_gates = fs::read_to_string(root.join(TESTING_AND_GATES_DOC))?;
     let default_checks = fs::read_to_string(root.join("tests/crucible/default.nix"))?;
 
-    let actual: Vec<(&str, &str)> = phase_gate_order()
+    let actual: Vec<(&str, &str, &str)> = phase_gate_order()
         .iter()
-        .map(|occurrence| (occurrence.phase.label(), occurrence.gate_name))
+        .map(|occurrence| {
+            (
+                occurrence.phase.label(),
+                occurrence.gate_name,
+                occurrence.attr_path,
+            )
+        })
         .collect();
-    let expected = rfc_section_13_phase_order(&rfc)?;
+    let expected = documented_phase_gate_order(&testing_and_gates)?;
     assert_eq!(actual, expected);
 
     let mut missing_attrs = Vec::new();
@@ -143,11 +155,9 @@ fn terminal_signal_fault_occurrence_remains_in_phase7_acceptance_set() -> Result
 fn sim_double_is_available_before_dependent_gate_occurrences() -> Result<(), Box<dyn Error>> {
     let root = workspace_root();
     let default_checks = fs::read_to_string(root.join("tests/crucible/default.nix"))?;
-    let sim_double_check = fs::read_to_string(root.join("tests/crucible/phase1-sim-double.nix"))?;
 
     assert_eq!(SIM_DOUBLE_AVAILABLE_PHASE, PhasePlanPhase::Phase1);
     assert!(default_checks.contains("simDouble = import ./phase1-sim-double.nix"));
-    assert!(sim_double_check.contains("Completed by `crucible_engine::SimDouble`"));
 
     let phase1_dependencies: BTreeSet<&str> = phase_gate_order()
         .iter()
@@ -211,18 +221,36 @@ fn layer_gate_precedences_keep_lower_layer_checks_first() {
 #[test]
 fn advanced_feature_ladder_keeps_fuzzing_above_search_and_coverage() -> Result<(), Box<dyn Error>> {
     let root = workspace_root();
-    let advanced_features =
-        fs::read_to_string(root.join("docs/rfcs/0010-crucible/22-advanced-features.md"))?;
+    let testing_and_gates = fs::read_to_string(root.join(TESTING_AND_GATES_DOC))?;
     let default_checks = fs::read_to_string(root.join("tests/crucible/default.nix"))?;
 
     assert!(
         advanced_feature_ladder_failures(phase_gate_order(), advanced_feature_task_order())
             .is_empty()
     );
-    assert!(advanced_features.contains("**T-ADV-1**"));
-    assert!(advanced_features.contains("exact-determinism →"));
-    assert!(advanced_features.contains("coverage-guided fuzzing"));
     assert!(default_checks.contains("checks.crucible.phase6.gates.replayOracle"));
+
+    // The documented ladder chain and per-rung entry counts must match the code.
+    let rung_labels = ADVANCED_FEATURE_RUNGS
+        .iter()
+        .map(|rung| rung.label())
+        .collect::<Vec<_>>();
+    assert!(
+        testing_and_gates.contains(&rung_labels.join(" -> ")),
+        "{TESTING_AND_GATES_DOC} does not document the ladder `{}`",
+        rung_labels.join(" -> ")
+    );
+
+    let mut code_entry_counts = BTreeMap::new();
+    for task in advanced_feature_task_order() {
+        *code_entry_counts
+            .entry(task.rung.label())
+            .or_insert(0_usize) += 1;
+    }
+    assert_eq!(
+        documented_ladder_entry_counts(&testing_and_gates)?,
+        code_entry_counts
+    );
     let schedule_failures =
         advanced_feature_schedule_failures(&default_checks, advanced_feature_task_order());
     assert!(
@@ -230,15 +258,12 @@ fn advanced_feature_ladder_keeps_fuzzing_above_search_and_coverage() -> Result<(
         "advanced-feature schedule failures: {schedule_failures:#?}"
     );
 
-    let checklist_task_ids = advanced_checklist_task_ids(&advanced_features);
     let ladder_task_ids = advanced_feature_task_order()
         .iter()
         .map(|task| task.task_id.to_string())
         .collect::<Vec<_>>();
 
-    let checklist_ids = checklist_task_ids.iter().collect::<BTreeSet<_>>();
     let task_ids = ladder_task_ids.iter().collect::<BTreeSet<_>>();
-    assert_eq!(task_ids, checklist_ids);
     assert_eq!(task_ids.len(), ADVANCED_FEATURE_TASK_ORDER.len());
     assert_eq!(task_ids.len(), 21);
     for index in 1..=21 {
@@ -478,19 +503,6 @@ fn advanced_feature_ladder_rejects_tasks_before_foundation_gates() {
     );
 }
 
-fn advanced_checklist_task_ids(document: &str) -> Vec<String> {
-    document
-        .lines()
-        .filter(|line| line.trim_start().starts_with("- ["))
-        .filter_map(|line| {
-            let marker = "**T-ADV-";
-            let start = line.find(marker)? + marker.len() - "T-ADV-".len();
-            let end = line[start..].find("**")?;
-            Some(line[start..start + end].to_string())
-        })
-        .collect()
-}
-
 #[test]
 fn phase_plan_invariants_reject_synthetic_drift() -> Result<(), Box<dyn Error>> {
     let mut missing_terminal = phase_gate_order().to_vec();
@@ -536,33 +548,23 @@ fn phase_plan_invariants_reject_synthetic_drift() -> Result<(), Box<dyn Error>> 
     Ok(())
 }
 
-fn rfc_section_13_phase_order(content: &str) -> Result<Vec<(&str, &str)>, Box<dyn Error>> {
-    let mut in_section = false;
-    let mut in_block = false;
+/// Every advanced-feature rung, lowest first.
+const ADVANCED_FEATURE_RUNGS: [AdvancedFeatureRung; 6] = [
+    AdvancedFeatureRung::ExactDeterminism,
+    AdvancedFeatureRung::SaveRestore,
+    AdvancedFeatureRung::Fork,
+    AdvancedFeatureRung::Search,
+    AdvancedFeatureRung::CoverageFeedback,
+    AdvancedFeatureRung::Fuzzing,
+];
+
+/// Parses the `phase gate attr-path` lines of the first text block under the
+/// page's "Gate ordering" heading.
+fn documented_phase_gate_order(content: &str) -> Result<Vec<(&str, &str, &str)>, Box<dyn Error>> {
+    let section = section_after_heading(content, "## Gate ordering")?;
     let mut order = Vec::new();
 
-    for line in content.lines() {
-        if line.starts_with("## 13. How the gates compose into the phase plan") {
-            in_section = true;
-            continue;
-        }
-        if in_section && line.starts_with("## ") {
-            break;
-        }
-        if !in_section {
-            continue;
-        }
-        if line.trim() == "```text" {
-            in_block = true;
-            continue;
-        }
-        if in_block && line.trim() == "```" {
-            break;
-        }
-        if !in_block {
-            continue;
-        }
-
+    for line in first_text_block(section)?.lines() {
         let mut parts = line.split_whitespace();
         let phase = match parts.next() {
             Some(value) if value.starts_with("phase") => value,
@@ -571,10 +573,76 @@ fn rfc_section_13_phase_order(content: &str) -> Result<Vec<(&str, &str)>, Box<dy
         let gate = parts
             .next()
             .ok_or("phase-plan line is missing a gate name")?;
-        order.push((phase, gate));
+        let attr_path = parts
+            .next()
+            .ok_or("phase-plan line is missing a Nix attribute path")?;
+        order.push((phase, gate, attr_path));
     }
 
     Ok(order)
+}
+
+/// Parses the rung-to-entry-count table under the "Advanced-feature ladder"
+/// heading.
+fn documented_ladder_entry_counts(content: &str) -> Result<BTreeMap<&str, usize>, Box<dyn Error>> {
+    let section = section_after_heading(content, "### Advanced-feature ladder")?;
+    let mut counts = BTreeMap::new();
+
+    for line in section.lines().filter(|line| line.starts_with("| `")) {
+        let mut cells = line.split('|').map(str::trim).skip(1);
+        let rung = cells
+            .next()
+            .map(|cell| cell.trim_matches('`'))
+            .ok_or("ladder row is missing a rung")?;
+        let entries = cells
+            .next()
+            .ok_or("ladder row is missing an entry count")?
+            .parse::<usize>()?;
+        counts.insert(rung, entries);
+    }
+
+    Ok(counts)
+}
+
+/// Returns the text after `heading` up to the next heading of the same or a
+/// higher level.
+fn section_after_heading<'a>(content: &'a str, heading: &str) -> Result<&'a str, Box<dyn Error>> {
+    let level = heading.chars().take_while(|ch| *ch == '#').count();
+    let mut offset = 0;
+    let mut found = false;
+
+    for line in content.split_inclusive('\n') {
+        offset += line.len();
+        if line.trim_end() == heading {
+            found = true;
+            break;
+        }
+    }
+    if !found {
+        return Err(format!("missing `{heading}` heading").into());
+    }
+
+    let body = &content[offset..];
+    let mut end = 0;
+    for line in body.split_inclusive('\n') {
+        let hashes = line.chars().take_while(|ch| *ch == '#').count();
+        if hashes > 0 && hashes <= level && line[hashes..].starts_with(' ') {
+            break;
+        }
+        end += line.len();
+    }
+
+    Ok(&body[..end])
+}
+
+/// Returns the body of the first fenced `text` block in `section`.
+fn first_text_block(section: &str) -> Result<&str, Box<dyn Error>> {
+    let fence = "```text\n";
+    let start = section.find(fence).ok_or("missing text block")? + fence.len();
+    let end = section[start..]
+        .find("```")
+        .ok_or("unterminated text block")?;
+    Ok(&section[start..start + end])
 }
 
 fn green_attr_paths_before(phase: PhasePlanPhase) -> Vec<&'static str> {

@@ -22,8 +22,7 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  triageDoc = builtins.readFile ../../docs/rfcs/0010-crucible/34-failure-triage.md;
-  planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
+  failureTriagePage = builtins.readFile ../../docs/engineering/crucible/failure-triage.md;
   modelSource = import ./_crucible-model-source.nix {inherit lib;};
   libSource = import ./_rust-module-source.nix {
     inherit lib;
@@ -37,24 +36,10 @@
   taskList = builtins.concatStringsSep "," taskIds;
 
   failures =
-    failuresFor "docs/rfcs/0010-crucible/34-failure-triage.md" triageDoc [
-      {
-        label = "T-TRI-5 completion note";
-        needle = "Completed by `checks.crucible.phase6.signaturePreservingMinimization`";
-      }
+    failuresFor "docs/engineering/crucible/failure-triage.md" failureTriagePage [
       {
         label = "signature-preserving minimization invariant";
-        needle = "accepts only candidates whose active-policy `FailureSignatureKey` equals the";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
-      {
-        label = "T-TRI-5 plan summary";
-        needle = "checks.crucible.phase6.signaturePreservingMinimization";
-      }
-      {
-        label = "downstream triage report gate";
-        needle = "checks.crucible.phase6.perClusterReports";
+        needle = "accepts only candidates whose active-policy";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" modelSource [

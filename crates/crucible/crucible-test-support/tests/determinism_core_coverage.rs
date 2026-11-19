@@ -1,4 +1,4 @@
-//! Checks the RFC-0010 determinism-core coverage floor.
+//! Checks the Crucible determinism-core coverage floor.
 
 #![forbid(unsafe_code)]
 

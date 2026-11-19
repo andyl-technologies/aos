@@ -1,4 +1,4 @@
-##! crucible-fixtures — minimal RFC-0010 guest root-image fixtures
+##! crucible-fixtures — minimal Crucible guest root-image fixtures
 {
   lib,
   stdenv,

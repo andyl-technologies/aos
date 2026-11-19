@@ -22,20 +22,16 @@
     + builtins.readFile ../../crates/crucible/crucible-engine/tests/fault_observation_log.rs;
   formalTraceTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/formal_trace_export.rs;
   reproductionTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/assertion_violation_reproduction.rs;
-  observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;
+  eventLogDoc = builtins.readFile ../../docs/engineering/crucible/event-log.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "docs/rfcs/0010-crucible/19-observability-event-log.md" observabilityDoc [
+    failuresFor "docs/engineering/crucible/event-log.md" eventLogDoc [
       {
-        label = "T-OBS-3 completion note";
-        needle = "Completed by `checks.crucible.phase4.eventLogPayload`";
-      }
-      {
-        label = "diagnostic escape hatch requirement";
+        label = "diagnostic escape hatch";
         needle = "`diagnostic` escape hatch";
       }
     ]

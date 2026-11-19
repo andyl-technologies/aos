@@ -27,8 +27,7 @@
     builtins.readFile ../../crates/crucible/crucible-qemu-host/tests/deterministic_launch.rs
     + builtins.readFile ../../crates/crucible/crucible-qemu-host/tests/deterministic_launch/launch_artifacts.rs;
   deterministicLaunchCheck = builtins.readFile ./phase1-deterministic-launch.nix;
-  determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
-  risksSpikes = builtins.readFile ../../docs/rfcs/0010-crucible/30-risks-spikes.md;
+  determinismDoc = builtins.readFile ../../docs/engineering/crucible/determinism.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
@@ -114,24 +113,10 @@
         needle = "shipped default appends nokaslr";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/04-determinism-contract.md" determinismContract [
+    ++ failuresFor "docs/engineering/crucible/determinism.md" determinismDoc [
       {
-        label = "T-DET-6 references RISK-13 retirement";
-        needle = "RISK-13";
-      }
-    ]
-    ++ failuresFor "docs/rfcs/0010-crucible/30-risks-spikes.md" risksSpikes [
-      {
-        label = "S6 retired";
-        needle = "**RISK-13** is retired by `T-RISK-6`";
-      }
-      {
-        label = "D-31 flip on S6 evidence";
-        needle = "On this evidence, **D-31** made the stock guest cmdline";
-      }
-      {
-        label = "no fallback adopted";
-        needle = "fallback_adopted=none";
+        label = "KASLR and ASLR stay enabled";
+        needle = "Left enabled; randomization derives from the seeded boot entropy above";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

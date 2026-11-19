@@ -1125,12 +1125,12 @@ pub(super) fn execute_backend_selection_plan(
 ) -> Result<(), CliError> {
     if !plan.has_consistent_route() {
         return Err(CliError::Backend(
-            "CLI backend selection violates the RFC-0010 local/remote split".to_string(),
+            "CLI backend selection violates the local/remote split".to_string(),
         ));
     }
     if !plan.proves_t_cli_5() {
         return Err(CliError::Backend(
-            "CLI QEMU discovery violates the RFC-0010 hermetic discovery contract".to_string(),
+            "CLI QEMU discovery violates the hermetic discovery contract".to_string(),
         ));
     }
 

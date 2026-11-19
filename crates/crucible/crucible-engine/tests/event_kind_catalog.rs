@@ -37,7 +37,7 @@ fn event_kind_catalog_is_versioned_sorted_and_single_source_for_classes() {
 }
 
 #[test]
-fn event_kind_catalog_contains_rfc_19_7_required_kinds() {
+fn event_kind_catalog_contains_required_kinds() {
     for (kind, class) in [
         ("state_transition", SchedulerEventLogClass::Causal),
         ("signal_transition", SchedulerEventLogClass::Causal),
@@ -89,7 +89,7 @@ fn event_kind_catalog_contains_rfc_19_7_required_kinds() {
         ),
     ] {
         let entry = event_kind_catalog_entry(kind)
-            .unwrap_or_else(|| panic!("catalog should contain RFC kind {kind}"));
+            .unwrap_or_else(|| panic!("catalog should contain required kind {kind}"));
         assert_eq!(entry.class(), class, "{kind}");
     }
 }
