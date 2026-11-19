@@ -1380,6 +1380,13 @@
     outputHashAlgo = "sha256";
     preferLocalBuild = true;
   };
+
+  # Bazel 9 source patches carry their own context and must apply exactly;
+  # older versions keep their separately maintained source trees.
+  isBazel9 = builtins.compareVersions version "9.0.0" >= 0;
+
+  # Offline workspace checks execute the packaged Bazel on the build host.
+  hasOfflineChecks = isBazel9 && !isCross;
 in
   mkQualifiedDerivation {
     passthru.sourceBootstrap = buildBazelBootstrap;
@@ -1460,6 +1467,11 @@ in
       {
         name = "patch";
         script = ''
+                  ${lib.optionalString isBazel9 ''
+            # Re-hash disk cache entries before trusting them. A shared cache
+            # must not turn one damaged file into wrong package outputs.
+            patch --batch -p1 < ${./bazel-patches/disk-cache-integrity.patch}
+          ''}
                   ${lib.optionalString (source != null && builtins.compareVersions version "9.0.0" < 0) ''
             # The dist archive bundles an empty Android emulator
             # snapshot. Recreate it with AOS-built qemu-img and zip.
@@ -2008,22 +2020,86 @@ in
       testing,
       self,
       pkgs,
-    }: {
-      version = testing.mkVMTest {
-        name = "build-systems-bazel-${version}-version";
-        rootfsDeps = [self];
-        testScript = ''
-          OUTPUT=$(bazel --version 2>&1)
-          case "$OUTPUT" in
-            *"${versionCheck}"*)
-              echo "==> bazel version: PASS"
-              ;;
-            *)
-              echo "==> ERROR: unexpected bazel version: $OUTPUT" >&2
-              exit 1
-              ;;
-          esac
-        '';
+    }: let
+      offlineCheck = import ./_bazel-offline-check.nix {
+        inherit lib sourceModules;
+        inherit (pkgs) runCommand;
+        bazel = self;
+        registry = "${vendorDeps}/_registries/bcr.bazel.build";
       };
-    };
+    in
+      {
+        version = testing.mkVMTest {
+          name = "build-systems-bazel-${version}-version";
+          rootfsDeps = [self];
+          testScript = ''
+            OUTPUT=$(bazel --version 2>&1)
+            case "$OUTPUT" in
+              *"${versionCheck}"*)
+                echo "==> bazel version: PASS"
+                ;;
+              *)
+                echo "==> ERROR: unexpected bazel version: $OUTPUT" >&2
+                exit 1
+                ;;
+            esac
+          '';
+        };
+      }
+      // lib.optionalAttrs hasOfflineChecks {
+        # A corrupt disk cache entry must be a miss: the action re-executes,
+        # produces the correct output and replaces the damaged entry.
+        disk-cache-integrity = offlineCheck {
+          name = "bazel-${version}-disk-cache-integrity";
+          files = {
+            "MODULE.bazel" = ''
+              module(name = "disk_cache_integrity")
+            '';
+            "BUILD.bazel" = ''
+              genrule(
+                  name = "greeting",
+                  outs = ["greeting.txt"],
+                  cmd = "echo cached-greeting > $@",
+              )
+            '';
+          };
+          script = ''
+            expected="cached-greeting"
+            cache="$TMPDIR/disk-cache"
+
+            build_greeting() {
+              run_bazel "$TMPDIR/output-$1" build //:greeting \
+                --disk_cache="$cache" \
+                --execution_log_json_file="$out/$1-execution.json"
+              cat "$TMPDIR/output-$1/execroot/_main/bazel-out/k8-fastbuild/bin/greeting.txt"
+            }
+
+            test "$(build_greeting populate)" = "$expected"
+
+            # CAS entries are named by the SHA-256 of their content.
+            digest=$(printf '%s\n' "$expected" | sha256sum | cut -d' ' -f1)
+            blob="$cache/cas/''${digest:0:2}/$digest"
+            test -f "$blob"
+
+            # Keep the size intact so only a content hash can tell.
+            printf 'corrupted-value\n' > "$blob"
+            test "$(wc -c < "$blob")" = "$(printf '%s\n' "$expected" | wc -c)"
+
+            actual=$(build_greeting recover)
+            if [ "$actual" != "$expected" ]; then
+              echo "disk cache served corrupt content: $actual" >&2
+              exit 1
+            fi
+
+            # The recovery must have re-executed the action, not reused it.
+            if ! grep -q '"runner": "local"' "$out/recover-execution.json"; then
+              echo "corrupt disk cache entry was not re-executed" >&2
+              exit 1
+            fi
+
+            # The re-executed action replaces the evicted entry.
+            test "$(sha256sum < "$blob" | cut -d' ' -f1)" = "$digest"
+          '';
+        };
+      };
   }
