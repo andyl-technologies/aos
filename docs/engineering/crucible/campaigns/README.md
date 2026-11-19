@@ -75,7 +75,8 @@ never identity.
 | [Storage](storage.md) | Content envelope, blob and ref backends, composition graph, durability, transfer, retention, garbage collection |
 | [Observability and findings](observability-and-findings.md) | Measurements, event streams, findings, reproduction artifacts, explanation |
 | [Security and operations](security-and-operations.md) | Trust domains, resource admission, license boundary, compatibility, authorization, failure handling |
-| [Performance and validation](performance-and-validation.md) | Cost model, gated performance targets, correctness gates, release acceptance, measurement records |
+| [Performance and validation](performance-and-validation.md) | Cost model, gated performance targets, correctness gates, release acceptance, planner cost profile |
+| [Campaign performance baseline](performance-baseline.md) | Measuring and pinning the reference baseline for `gate:campaign-performance` |
 | [Schema registry](schema-registry.md) | The registry of versioned campaign and process-boundary formats |
 | [Worked network fixture](worked-network-fixture.md) | The executable five-VM (three routers, two traffic endpoints) reference campaign |
 

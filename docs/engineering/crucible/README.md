@@ -112,6 +112,8 @@ Exploration and debugging:
 Building and qualifying:
 
 - [Testing and gates](testing-and-gates.md): the layered determinism harness.
+- [Gate evidence scope](gate-evidence.md): component tests versus live QEMU
+  evidence.
 - [Engineering standards](engineering-standards.md): Crucible-specific checks.
 - [Crate structure](crate-structure.md): crates, layers, and dependencies.
 - [Performance](performance.md): the cost model and measured checks.

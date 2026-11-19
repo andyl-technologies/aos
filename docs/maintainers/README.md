@@ -14,7 +14,7 @@ the first row is the place to start.
 | --- | --- |
 | [Development builds](../engineering/build/development-builds.md) | Set up the development shell, `aos-dev`, and the build caches |
 | [Tutorial: build and boot AOS from source](source-build-quickstart.md) | Build a custom server image and boot it under the AOS-built QEMU and UEFI firmware |
-| [Build concurrency and resource pressure](build-concurrency.md) | Investigate builds that fail under high parallelism |
+| [Build concurrency and resource pressure](../engineering/build/build-concurrency.md) | Investigate builds that fail under high parallelism |
 | [Code style guide](../engineering/code-style.md) | Apply the Rust and Nix conventions to new and modified code |
 | [Engineering documentation](../engineering/README.md) | Read how each component is implemented; update the relevant page in the change that alters a design |
 
@@ -36,7 +36,6 @@ The sections [Build the source tree](#build-the-source-tree),
 | Page | Use it to |
 | --- | --- |
 | [Upgrade packages with `aos maintain`](package-upgrades.md) | Discover upstream releases, plan and run updates in isolated worktrees, and open the pull request |
-| [Package maintenance audit, 2026-09-05](package-audit-2026-09-05.md) | Read the dated record of one full maintenance sweep; it is a snapshot, not current state |
 
 Application packages have a separate
 [authoring guide](../users/aos/package-authoring.md).
@@ -75,8 +74,8 @@ continue with the [registry operator documentation](../users/registry/).
 
 | Page | Use it to |
 | --- | --- |
-| [Crucible gate evidence scope](crucible-gate-evidence.md) | Tell component tests apart from live QEMU evidence |
-| [Crucible campaign performance baseline](crucible-campaign-performance-baseline.md) | Collect and pin the reference baseline for `gate:campaign-performance` |
+| [Crucible gate evidence scope](../engineering/crucible/gate-evidence.md) | Tell component tests apart from live QEMU evidence |
+| [Crucible campaign performance baseline](../engineering/crucible/campaigns/performance-baseline.md) | Collect and pin the reference baseline for `gate:campaign-performance` |
 
 ## Glossary
 

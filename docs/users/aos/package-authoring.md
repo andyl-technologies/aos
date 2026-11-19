@@ -150,7 +150,7 @@ log, then reproduce the failure before choosing a workaround. Fix missing
 dependency edges or shared-output races where a reproducer demonstrates them.
 Do not treat a successful retry at a lower job count as a diagnosis of compiler
 corruption or as evidence for a permanent package-specific limit. See the
-[build concurrency notes](../../maintainers/build-concurrency.md) for packages
+[build concurrency notes](../../engineering/build/build-concurrency.md) for packages
 to watch under resource pressure and the available reproduction results.
 
 A recipe `version` can carry its compatibility policy: `"^7.4.2"`, `"~7.4.2"`,

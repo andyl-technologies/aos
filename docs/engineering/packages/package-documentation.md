@@ -7,10 +7,10 @@ CLI, Hub, and editors) through one shared reader. No surface keeps its own
 copy of package option or ability semantics, and no reader evaluates Nix.
 
 How to read documentation is covered in the user guides:
-[configuration](../users/aos/configuration.md),
-[ability inspection](../users/aos/ability-inspection.md), the Hub
-[web interface](../users/aos-hub/web.md), [API](../users/aos-hub/api.md#read-native-release-documentation),
-and [CLI](../users/aos-hub/cli.md#read-published-native-documentation).
+[configuration](../../users/aos/configuration.md),
+[ability inspection](../../users/aos/ability-inspection.md), the Hub
+[web interface](../../users/aos-hub/web.md), [API](../../users/aos-hub/api.md#read-native-release-documentation),
+and [CLI](../../users/aos-hub/cli.md#read-published-native-documentation).
 
 ## Generation
 

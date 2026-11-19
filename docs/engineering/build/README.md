@@ -13,6 +13,8 @@ explains how the build machinery implements them.
   their compatibility contract, development caches, and parallel Rust tests.
 - [Development builds](development-builds.md) covers the development shell,
   `aos-dev`, the shared VM image cache, and the image reproducibility check.
+- [Build concurrency](build-concurrency.md) lists the builds that are
+  sensitive to high parallelism and how to validate removing a limit.
 
 ## Layers
 

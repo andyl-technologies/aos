@@ -59,6 +59,8 @@ makes it. The [code style guide](code-style.md#documentation) gives the rules.
   artifacts, their compatibility contract, development caches, and nextest.
 - [Development builds](build/development-builds.md) covers the development
   shell, `aos-dev`, the shared VM image cache, and image reproducibility.
+- [Build concurrency](build/build-concurrency.md) lists the builds that are
+  sensitive to high parallelism and how to validate removing a limit.
 
 ## Downstream builds
 
@@ -104,7 +106,7 @@ makes it. The [code style guide](code-style.md#documentation) gives the rules.
   service declaration becomes the unit's confinement.
 - [Package and generation attestation](packages/attestation.md) covers the
   PCR 15 record of the committed native package generation.
-- [Package documentation](package-documentation.md) covers generation of
+- [Package documentation](packages/package-documentation.md) covers generation of
   package reference documents, their signed publication, Hub verification and
   search projections, and the shared readers.
 - [Package maintenance](package-maintenance/README.md) covers the
@@ -265,6 +267,8 @@ Building and qualifying:
 
 - [Testing and determinism gates](crucible/testing-and-gates.md) covers the
   layered gate harness.
+- [Gate evidence scope](crucible/gate-evidence.md) distinguishes component
+  tests from live QEMU evidence.
 - [Engineering standards](crucible/engineering-standards.md) adds
   Crucible-specific code rules.
 - [Crate structure](crucible/crate-structure.md) covers crates, layers, and
@@ -298,6 +302,8 @@ Building and qualifying:
   covers trust boundaries and fail-closed operation.
 - [Performance and validation](crucible/campaigns/performance-and-validation.md)
   covers the campaign gate catalog and its performance checks.
+- [Campaign performance baseline](crucible/campaigns/performance-baseline.md)
+  covers measuring and pinning the baseline for `gate:campaign-performance`.
 - [Schema registry](crucible/campaigns/schema-registry.md) covers the single
   registry of independently versioned schemas.
 - [Worked network fixture](crucible/campaigns/worked-network-fixture.md) covers

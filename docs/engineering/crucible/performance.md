@@ -379,7 +379,7 @@ different clock contracts, such as ordinary TCG versus `sim` at 50 ticks per
 instruction, do not measure equal-instruction overhead.
 
 Campaign throughput has its own baseline procedure; see
-[the campaign performance baseline guide](../../maintainers/crucible-campaign-performance-baseline.md).
+[the campaign performance baseline guide](campaigns/performance-baseline.md).
 
 ## Limits of the evidence
 
