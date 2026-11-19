@@ -447,7 +447,7 @@ report and completion approvals.
 ### 4c. `andyl/main`: `production/stable` (`soak`)
 
 Publish a final version to `production/candidate` first, following the monthly
-train in RFC-0017. The same bundle then enters `production/stable`.
+release train ([release model](../engineering/release-publishing/release-model.md)). The same bundle then enters `production/stable`.
 
 - [ ] **Confirm the complete matrix and test assignment.** Run
   `aos maintain release explain --to production/stable`.

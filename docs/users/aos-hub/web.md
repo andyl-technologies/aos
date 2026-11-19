@@ -118,7 +118,7 @@ Released and shared objects keep their other retention roots.
 
 Default public catalogs and channels omit unpublished candidates. Direct refs,
 digests, cache paths, and CDN URLs may expose uploaded bytes; stage hiding is a
-publication boundary. See [release stages](../../registry/release-stages.md)
+publication boundary. See [release stages](../../engineering/registry/release-stages.md)
 for the common APR, Hub, and filesystem contracts.
 
 ## Sign in and administer a Hub

@@ -46,6 +46,11 @@ resources.
   identity, recovery, storage retention, monitoring, upgrades, and incidents.
 - [Deploy to Cloudflare](cloudflare.md) covers the packaged installer,
   resources, secrets, updates, domains, email, and observability.
+- [Serve OCI containers](oci-containers.md) covers rollout gates and pull and
+  push behavior; the [OCI GC runbook](oci-gc.md) covers container
+  administration and garbage collection.
+- [Hub engineering documentation](../../engineering/hub/README.md) explains
+  the runtime, tenancy, topology, delivery, and retention model.
 
 ## Native runtime ability documents
 

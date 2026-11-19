@@ -24,6 +24,8 @@
   - [Use the API](aos-hub/api.md)
   - [Choose the right CLI](aos-hub/cli.md)
   - [Trust an internal AOS Hub deployment](aos-hub/trust.md)
+  - [Serve OCI containers](aos-hub/oci-containers.md)
+  - [Collect OCI garbage](aos-hub/oci-gc.md)
 - [Operate an AOS package registry](registry/)
   - [Publish a signed local registry](registry/quickstart.md)
   - [Publish packages and releases](registry/publishing.md)

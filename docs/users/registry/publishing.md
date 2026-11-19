@@ -292,7 +292,7 @@ released objects keep their other retention roots. `apr cache gc` honors these
 roots while collecting eligible aged stage objects and cache pairs; it retains
 stage records and workspaces. A release stage is
 independent of a deployment named staging. See
-[Release stages](../../registry/release-stages.md) for the state, discovery,
+[Release stages](../../engineering/registry/release-stages.md) for the state, discovery,
 transport, and garbage-collection contracts.
 
 ## Publish to a smart Git remote

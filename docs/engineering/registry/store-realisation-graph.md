@@ -4,7 +4,7 @@ A registry release authenticates package metadata through its signed tag,
 commit, and tree. The `store/` realisation graph extends that authentication
 from the *shape* of every closure to the exact *bytes* of every closure
 member, so the binary cache that serves NARs is only a transport. The
-on-disk format is summarized in [`repo-layout.md`](../../registry/repo-layout.md)
+on-disk format is summarized in [`repository-layout.md`](repository-layout.md)
 §5; this page explains why it is shaped the way it is and how producer and
 consumer use it.
 
@@ -162,7 +162,7 @@ the `ca:` column is recorded for content-addressed consumers but not used by
 
 ## Related reading
 
-- [`signing-and-trust.md`](../../registry/signing-and-trust.md) for the tag
+- [`signing-and-trust.md`](signing-and-trust.md) for the tag
   and roster trust chain the graph inherits.
-- [`nix-cache-compatibility.md`](../../registry/nix-cache-compatibility.md)
+- [`nix-cache.md`](nix-cache.md)
   for how stock Nix substitution relates to the graph.
