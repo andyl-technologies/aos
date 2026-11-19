@@ -12,7 +12,7 @@ reference owner. The built-in store uses a SQLite immutable-object leaf and
 durable directory refs; an explicit store deployment may use a composed graph.
 
 The repository defines release qualification in the
-[automated packaged-QEMU matrix](../../rfcs/0020-crucible-campaigns/14-automated-release-validation.md).
+[automated packaged-QEMU matrix](../../engineering/crucible/campaigns/performance-and-validation.md#release-acceptance).
 Its determinism gate exercises a three-VM nginx, curl, and I/O-probe scenario under
 live TCG with same-host one-, two-, and four-core profiles and bounded scheduling
 and I/O jitter. It checks byte-identical artifacts and results. Separate
@@ -119,7 +119,7 @@ direnv environment:
 aos-dev build package crucible
 ```
 
-Generate the RFC-0020 worked-network reference fixture into a new private
+Generate the worked-network reference fixture into a new private
 directory:
 
 ```sh
@@ -131,7 +131,7 @@ directory:
 The generator refuses to overwrite an existing directory. It writes owner-only
 canonical scenario, schedule, lineage, policy, and dependency-ordered generator
 files, then validates the emitted import manifest before returning success. The
-fixture contains the RFC topology (three routers and two traffic endpoints),
+fixture contains the reference topology (three routers and two traffic endpoints),
 semantic recovery boundaries, measurement contracts, safety properties, and a
 progressive-PUCT policy. Without boot-artifact options, its VM records carry no
 kernel or root-image references and exercise the import/create/control-plane
@@ -141,8 +141,8 @@ path. For the five-VM AOS Envoy workload, build `.#pkg-linux` and
 QEMU and plugin through `--qemu` and `--plugin` so the generated lineage uses
 their authenticated build identity and current protocol versions. This binds
 all five VM roles to the actual guest image and produces new scenario, lineage,
-and policy identities. RFC-0020's
-[automated release validation](../../rfcs/0020-crucible-campaigns/14-automated-release-validation.md)
+and policy identities.
+[Release acceptance](../../engineering/crucible/campaigns/performance-and-validation.md#release-acceptance)
 requires separate packaged gates for this five-VM Envoy workload and for the
 same-host deterministic replay profiles.
 
@@ -160,10 +160,10 @@ offline before opening repository state:
 Validation derives the exact stored identities, rejects symlinks and oversized
 files, and does not contact a daemon. The manifest accepted by `serve` is the
 same strict format. The currently authoritative field grammar is shown by the
-`CampaignImportManifest` decoder in the CLI and frozen by its tests; RFC-0020's
-[worked network campaign](../../rfcs/0020-crucible-campaigns/13-worked-network-campaign.md)
-explains the modeled network policy represented by the generated fixture; its
-future-looking execution narrative is not a substitute for
+`CampaignImportManifest` decoder in the CLI and frozen by its tests. The
+[worked network fixture](../../engineering/crucible/campaigns/worked-network-fixture.md)
+page describes the topology, selectables, measurements, and policy the
+generated fixture contains; it is not a substitute for
 `crucible campaign --help`.
 
 Compile a full canonical Crucible scenario TOML into a new importable genesis

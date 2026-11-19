@@ -1,7 +1,8 @@
 # Crucible campaign performance baseline
 
-RFC-0020 §10.4 requires a measured baseline and a regression ratchet on the
-pinned reference host. `gate:campaign-performance` deliberately returns
+Campaign planner overhead is held to a measured baseline and a regression
+ratchet on the pinned reference host (see
+[campaign performance and validation](../engineering/crucible/campaigns/performance-and-validation.md#campaign-planner-overhead)). `gate:campaign-performance` deliberately returns
 `BLOCKED` while `campaign-performance-reference-baseline-v1.env` is absent or
 its reviewed SHA-256 is unset. Do not fill either value from an estimate or a
 synthetic result. The first accepted sample must come from the production QEMU
