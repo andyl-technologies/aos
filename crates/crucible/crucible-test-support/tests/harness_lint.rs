@@ -57,7 +57,7 @@ fn gate_evidence_references_are_integral() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn user_reference_names_every_executable_effect_kind() -> Result<(), Box<dyn Error>> {
-    let reference = fs::read_to_string(repo_root().join("docs/users/crucible/reference.md"))?;
+    let reference = fs::read_to_string(repo_root().join("docs/users/crucible/reference-plan.md"))?;
     let registry = fs::read_to_string(
         workspace_root().join("crucible/crucible-engine/src/model/fault_signal/effect_registry.rs"),
     )?;

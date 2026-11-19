@@ -121,7 +121,7 @@ also load the provisioned campaign-executor deployment described under
 Local QEMU runs require a durable `CRUCIBLE_RUN_STATE_ROOT` and a provisioned
 campaign-executor deployment. An administrator must supply the dedicated
 cgroup-v2 and ext4 project-quota roots described in
-[campaign setup](campaigns.md#start-the-single-host-owner). Building the package
+[campaign setup](campaigns-host.md#start-the-single-host-owner). Building the package
 does not provision these host resources. Select the owner-only deployment file
 with `--campaign-deployment`, `CRUCIBLE_CAMPAIGN_DEPLOYMENT`, or the default
 `/etc/crucible/packaged-executor.toml`.
@@ -236,18 +236,25 @@ After the quickstart, the remaining pages are grouped by task.
 - [Lazy campaigns](campaigns.md) covers the single-host campaign repository,
   verified import, lifecycle control, authenticated inspection, and current
   executor-attachment boundary.
+  Its pages are [campaign inputs](campaigns-inputs.md),
+  [owner and host setup](campaigns-host.md),
+  [operating a campaign](campaigns-operating.md), and
+  [store maintenance](campaigns-store.md).
 
 **Operate**
 
 - [Daemon operation](daemon.md) documents the remote control plane and its
   current fidelity limitation.
-- [Lazy campaigns](campaigns.md#start-the-single-host-owner) also describes
+- [Lazy campaigns](campaigns-host.md#start-the-single-host-owner) also describes
   the host resources and deployment file that local QEMU runs require.
 
 **Reference**
 
 - [Reference](reference.md) lists every command and option and the canonical
-  scenario schema.
+  scenario schema. Its pages are the
+  [command-line reference](reference-cli.md), the
+  [scenario and world reference](reference-world.md), and the
+  [plan and property reference](reference-plan.md).
 - [Feature coverage](coverage.md) inventories every packaged command, model
   surface, topology family, signal family, effect adapter, evidence path, and
   continuation workflow.
@@ -261,12 +268,12 @@ After the quickstart, the remaining pages are grouped by task.
 | Audit whether a feature is documented | [Feature coverage](coverage.md) | Implementation registry and coverage tests |
 | Decide whether a surface is operationally supported | [Support boundaries](support.md) | [Reference](reference.md) |
 | Build and run a first workload | [Representative-scenario quickstart](quickstart.md) | [Running Crucible](running.md) |
-| Generate a signal-driven scenario | [Authoring fault scenarios](authoring.md) | [Signals and bindings](reference.md#plans-signals-bindings-and-faults) |
-| Declare fault-addressable objects | [Fault topology reference](topology.md) | [Canonical scenario reference](reference.md#canonical-scenario-document) |
-| Simulate network failures | [Network faults](network-faults.md) | [Effect registry](reference.md#exhaustive-effect-registry) |
-| Simulate storage, VM, or hardware failures | [Storage, node, and hardware faults](storage-node-faults.md) | [Effect registry](reference.md#exhaustive-effect-registry) |
+| Generate a signal-driven scenario | [Authoring fault scenarios](authoring.md) | [Signals and bindings](reference-plan.md#plans-signals-bindings-and-faults) |
+| Declare fault-addressable objects | [Fault topology reference](topology.md) | [Canonical scenario reference](reference-world.md#canonical-scenario-document) |
+| Simulate network failures | [Network faults](network-faults.md) | [Effect registry](reference-plan.md#exhaustive-effect-registry) |
+| Simulate storage, VM, or hardware failures | [Storage, node, and hardware faults](storage-node-faults.md) | [Effect registry](reference-plan.md#exhaustive-effect-registry) |
 | Use recorded physical or packet data | [Recorded signal inputs](recorded-signals.md) | [Trace API](../../../crates/crucible/crucible-engine/src/model/fault_signal/trace_import.rs) |
-| Reproduce or explore a failure | [Reproduction and branching](reproduction.md), [Exploration](exploration.md) | [Command reference](reference.md#command-line-interface) |
+| Reproduce or explore a failure | [Reproduction and branching](reproduction.md), [Exploration](exploration.md) | [Command reference](reference-cli.md#command-line-interface) |
 | Find a production-backed example | [Certification examples](examples.md) | Repository Nix checks and crate rustdoc |
 
 ## Stability and source of truth

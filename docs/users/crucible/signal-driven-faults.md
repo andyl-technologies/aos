@@ -6,7 +6,7 @@ constant outage, a short pulse, a recorded trace, movement through a radio
 field, a storage failure, and an architectural CPU or memory mutation.
 
 This guide explains how to design those experiments. The
-[reference](reference.md#plans-signals-bindings-and-faults) is the exhaustive
+[reference](reference-plan.md#plans-signals-bindings-and-faults) is the exhaustive
 field and value catalog. The implementation source of truth is the
 [signal model](../../../crates/crucible/crucible-engine/src/model/fault_signal/mod.rs),
 [binding model](../../../crates/crucible/crucible-engine/src/model/fault_signal/binding.rs), and

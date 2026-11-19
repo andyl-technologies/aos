@@ -26,7 +26,13 @@ Complete user coverage requires all applicable columns below:
 | Example | A complete recipe or implementation-backed executable when the feature benefits from one. |
 
 The [canonical reference](reference.md) remains the exhaustive CLI and scenario
-exchange vocabulary. Task guides explain how those fields form an experiment.
+exchange vocabulary, split into the [command-line](reference-cli.md),
+[scenario and world](reference-world.md), and
+[plan and property](reference-plan.md) pages. Campaigns are covered by the
+[lazy campaigns](campaigns.md) pages for [inputs](campaigns-inputs.md),
+[owner and host setup](campaigns-host.md),
+[operation](campaigns-operating.md), and
+[store maintenance](campaigns-store.md). Task guides explain how those fields form an experiment.
 Cross-domain worked patterns are in the [fault experiment cookbook](cookbook.md),
 and programmatic surfaces are mapped in the [Rust integration API](rust-api.md).
 
@@ -37,37 +43,37 @@ still have narrower daemon or backend behavior, which its guide must state.
 
 | Command | Primary behavior | User documentation | Boundary |
 |---|---|---|---|
-| `run` | Execute one canonical scenario to a bounded terminal condition. | [Running Crucible](running.md), [Reference](reference.md#run) | Local packaged-QEMU is primary; ordinary run does not attach the DAG store as a signal-artifact store. |
-| `verify` | Compare independent reductions or retained artifacts. | [Reproduction](reproduction.md#verify-repeated-execution), [Reference](reference.md#verify) | Live verification uses fresh matched-QEMU execution; ordinary verify has the same signal-store boundary as run. |
+| `run` | Execute one canonical scenario to a bounded terminal condition. | [Running Crucible](running.md), [Reference](reference-cli.md#run) | Local packaged-QEMU is primary; ordinary run does not attach the DAG store as a signal-artifact store. |
+| `verify` | Compare independent reductions or retained artifacts. | [Reproduction](reproduction.md#verify-repeated-execution), [Reference](reference-cli.md#verify) | Live verification uses fresh matched-QEMU execution; ordinary verify has the same signal-store boundary as run. |
 | `selftest` | Exercise the small packaged live-QEMU gate subset. | [Running Crucible](running.md#self-test) | Repository certification contains many gates that are not selectable here. |
-| `save` | Materialize an exact savepoint at an admitted boundary. | [Reproduction](reproduction.md#savepoints), [Reference](reference.md#save) | Requires a durable DAG store and a supported boundary. |
-| `resume` | Continue an exact retained world. | [Reproduction](reproduction.md#resume), [Reference](reference.md#resume) | Fails closed when the closure, scenario, scheduler identity, or backend identity differs. |
-| `replay` | Reproduce an artifact and optionally compare or bisect evidence. | [Reproduction](reproduction.md#replay), [Reference](reference.md#replay) | Reproduction artifacts may carry authenticated signal objects and resolved-effect traces. |
-| `search` | Explore bounded alternate schedules and fault choices. | [Exploration](exploration.md#state-space-search), [Reference](reference.md#search) | Local search attaches `--store` for signal search material; budgets are mandatory for useful exploration. |
-| `fuzz` | Instantiate and explore a bounded scenario family. | [Exploration](exploration.md#coverage-guided-fuzzing), [Reference](reference.md#fuzz) | Packaged local campaigns exist; fleet campaign orchestration remains an API/certification surface. |
-| `triage` | Cluster and minimize the findings retained by a campaign snapshot. | [Exploration](exploration.md#findings-and-triage), [Reference](reference.md#triage) | Requires a connected campaign service and an exact snapshot; it does not read findings-ledger files. |
-| `debug` | Inspect a retained or running execution. | [Debugging](debugging.md#debug-command), [Reference](reference.md#debug) | Some actions require a daemon session, debug gateway, guest agent, or explicit mutable fork. |
-| `serve` | Run the mutual-TLS or explicitly trusted cleartext HTTP/2 lifecycle control plane. | [Daemon operation](daemon.md), [Reference](reference.md#serve) | Not a distributed scheduler and not equivalent to every local CLI workflow. |
-| `campaign` | Author campaign inputs offline, and inspect or control a lazy campaign through the local daemon. | [Lazy campaigns](campaigns.md), [Reference](reference.md#campaign) | Single-host; most subcommands need a connected campaign socket and an authorized principal. |
-| `store` | Inspect or maintain a configured content store. | [Lazy campaigns](campaigns.md#inspect-and-collect-a-composed-store), [Reference](reference.md#store) | Operates on an explicit composed store deployment file; garbage collection, cleanup, and repair require a stopped owner. |
-| `completions` | Emit an offline shell completion definition. | [Running Crucible](running.md#shell-completions), [Reference](reference.md#completions) | Reads only command schema and does not discover a backend. |
+| `save` | Materialize an exact savepoint at an admitted boundary. | [Reproduction](reproduction.md#savepoints), [Reference](reference-cli.md#save) | Requires a durable DAG store and a supported boundary. |
+| `resume` | Continue an exact retained world. | [Reproduction](reproduction.md#resume), [Reference](reference-cli.md#resume) | Fails closed when the closure, scenario, scheduler identity, or backend identity differs. |
+| `replay` | Reproduce an artifact and optionally compare or bisect evidence. | [Reproduction](reproduction.md#replay), [Reference](reference-cli.md#replay) | Reproduction artifacts may carry authenticated signal objects and resolved-effect traces. |
+| `search` | Explore bounded alternate schedules and fault choices. | [Exploration](exploration.md#state-space-search), [Reference](reference-cli.md#search) | Local search attaches `--store` for signal search material; budgets are mandatory for useful exploration. |
+| `fuzz` | Instantiate and explore a bounded scenario family. | [Exploration](exploration.md#coverage-guided-fuzzing), [Reference](reference-cli.md#fuzz) | Packaged local campaigns exist; fleet campaign orchestration remains an API/certification surface. |
+| `triage` | Cluster and minimize the findings retained by a campaign snapshot. | [Exploration](exploration.md#findings-and-triage), [Reference](reference-cli.md#triage) | Requires a connected campaign service and an exact snapshot; it does not read findings-ledger files. |
+| `debug` | Inspect a retained or running execution. | [Debugging](debugging.md#debug-command), [Reference](reference-cli.md#debug) | Some actions require a daemon session, debug gateway, guest agent, or explicit mutable fork. |
+| `serve` | Run the mutual-TLS or explicitly trusted cleartext HTTP/2 lifecycle control plane. | [Daemon operation](daemon.md), [Reference](reference-cli.md#serve) | Not a distributed scheduler and not equivalent to every local CLI workflow. |
+| `campaign` | Author campaign inputs offline, and inspect or control a lazy campaign through the local daemon. | [Lazy campaigns](campaigns.md), [Reference](reference-cli.md#campaign) | Single-host; most subcommands need a connected campaign socket and an authorized principal. |
+| `store` | Inspect or maintain a configured content store. | [Lazy campaigns](campaigns-store.md#inspect-and-collect-a-composed-store), [Reference](reference-cli.md#store) | Operates on an explicit composed store deployment file; garbage collection, cleanup, and repair require a stopped owner. |
+| `completions` | Emit an offline shell completion definition. | [Running Crucible](running.md#shell-completions), [Reference](reference-cli.md#completions) | Reads only command schema and does not discover a backend. |
 
 Global options, environment variables, input resolution, output formats,
 terminal conditions, and exit codes are cataloged in
-[Running Crucible](running.md) and the [command-line reference](reference.md#command-line-interface).
+[Running Crucible](running.md) and the [command-line reference](reference-cli.md#command-line-interface).
 
 ## Scenario model inventory
 
 | Surface | Authority | Status | Documentation |
 |---|---|---|---|
 | `ScenarioDef = World + Plan + Properties + Seed` | `crucible_engine::model` | Packaged and public API | [Operating Crucible](README.md#the-model), [Scenarios](scenarios.md) |
-| Canonical TOML and derived content IDs | `ScenarioDefForm` and TOML model | Packaged and public API | [Scenarios](scenarios.md#authoring-surfaces), [Reference](reference.md#canonical-scenario-document) |
-| VM nodes and logical links | `World`, `WorldNode`, `LinkDef` | Packaged and public API | [Scenarios](scenarios.md#world), [Reference](reference.md#worldnode-vm-fields) |
+| Canonical TOML and derived content IDs | `ScenarioDefForm` and TOML model | Packaged and public API | [Scenarios](scenarios.md#authoring-surfaces), [Reference](reference-world.md#canonical-scenario-document) |
+| VM nodes and logical links | `World`, `WorldNode`, `LinkDef` | Packaged and public API | [Scenarios](scenarios.md#world), [Reference](reference-world.md#worldnode-vm-fields) |
 | Block and 9p I/O sub-nodes | `WorldIoNode` | Public API and certified live adapter | [Scenarios](scenarios.md), [Storage and hardware faults](storage-node-faults.md) |
 | Fault-addressable topology | `WorldFaultTopology` | Public API and certified adapters | [Fault topology reference](topology.md), [Authoring](authoring.md#2-declare-fault-addressable-topology) |
 | Signal-driven plan | `FaultSignalPlan`, `SignalProgram`, `FaultBinding` | Public API and certified adapters | [Signal programs](signals.md), [Fault bindings](bindings.md), [Signal-driven faults](signal-driven-faults.md), [Authoring](authoring.md) |
-| Event/control graph | `Plan` event graph | Packaged and public API | [Scenarios](scenarios.md#plan), [Reference](reference.md#planevent-fields-and-actions) |
-| Temporal properties | `Properties`, `Property`, `Predicate` | Packaged and public API | [Properties and evidence](properties-and-evidence.md), [Scenarios](scenarios.md#properties), [Reference](reference.md#properties-and-predicates) |
+| Event/control graph | `Plan` event graph | Packaged and public API | [Scenarios](scenarios.md#plan), [Reference](reference-plan.md#planevent-fields-and-actions) |
+| Temporal properties | `Properties`, `Property`, `Predicate` | Packaged and public API | [Properties and evidence](properties-and-evidence.md), [Scenarios](scenarios.md#properties), [Reference](reference-plan.md#properties-and-predicates) |
 | Deterministic seed and keyed choices | `Seed`, RNG stream identities | Packaged and public API | [Scenarios](scenarios.md#seed), [Running Crucible](running.md#seed-resolution) |
 
 Continuation and retained-output object types are mapped in
@@ -121,7 +127,7 @@ The closed signal registry currently contains:
 | Spatial | point set, grids, zones, path profiles, fields, transmitters | Host model; may drive supported adapters | [Signal-driven faults](signal-driven-faults.md) |
 | Stochastic | Bernoulli, uniform integer, exponential wait, Weibull wait | Public API and certified evaluator/search | [Signal-driven faults](signal-driven-faults.md) |
 | Telemetry | One-boundary-delayed adapter state | Public API and certified evaluator | [Signal-driven faults](signal-driven-faults.md) |
-| Pure transforms | Arithmetic, comparison, Boolean, selection, lookup, geometry, events | Public API and certified evaluator | [Reference](reference.md#plans-signals-bindings-and-faults) |
+| Pure transforms | Arithmetic, comparison, Boolean, selection, lookup, geometry, events | Public API and certified evaluator | [Reference](reference-plan.md#plans-signals-bindings-and-faults) |
 | Stateful transforms | Hysteresis, debounce, integrators, FSM, Markov, burst, counter, queue | Public API; checkpointed evaluator state | [Signal-driven faults](signal-driven-faults.md) |
 
 ## Binding and opportunity inventory
@@ -131,7 +137,7 @@ typed mappings; exact, target-set, fault-domain, and dynamic-path selectors;
 phase sets; impulse, persistent, opportunity, and
 state-machine lifetimes; search policy; observability policy; and optional
 opportunity filters. The closed registries include every fault operation and
-target kind listed in the [reference](reference.md#fault-opportunity-operation-values).
+target kind listed in the [reference](reference-plan.md#fault-opportunity-operation-values).
 
 Admission resolves selectors, verifies signal shapes, and validates the
 effect/target/phase/lifetime/operation tuple before boot. Runtime composition is
@@ -153,7 +159,7 @@ There are 71 executable effect kinds:
 | Clock | 2 | Matched guest-visible QEMU clock-source capability. | [Storage and hardware faults](storage-node-faults.md) |
 | Accelerator | 4 | Declared deterministic Crucible accelerator fault device. | [Storage and hardware faults](storage-node-faults.md) |
 
-The [exhaustive effect registry](reference.md#exhaustive-effect-registry)
+The [exhaustive effect registry](reference-plan.md#exhaustive-effect-registry)
 and domain guides document every effect's top-level parameter shape, nested
 closed variants, legal tuple, composition, capability, and family-level
 evidence/continuation behavior. The [cookbook](cookbook.md) supplies reusable

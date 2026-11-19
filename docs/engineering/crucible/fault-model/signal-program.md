@@ -38,7 +38,7 @@ micrometres per hour.
 Arithmetic uses checked 128-bit intermediates over 64-bit stored values.
 Overflow and rounding are explicit `SignalOverflow` and `SignalRounding`
 policies, whose closed values are listed in the reference under
-[`[[plan.signal]]` common fields](../../../users/crucible/reference.md#plansignal-common-fields).
+[`[[plan.signal]]` common fields](../../../users/crucible/reference-plan.md#plansignal-common-fields).
 Saturation is never implicit.
 
 ## Evaluation domains

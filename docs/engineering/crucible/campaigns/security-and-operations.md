@@ -150,7 +150,7 @@ same-owner sockets, and different socket paths cannot let two daemons share one
 campaign ref namespace. `crucible serve --read-only` denies every campaign
 mutation after ordinary authorization, so a permissive policy file cannot
 weaken it. The user guide shows a policy example in
-[Start the single-host owner](../../../users/crucible/campaigns.md#start-the-single-host-owner).
+[Start the single-host owner](../../../users/crucible/campaigns-host.md#start-the-single-host-owner).
 
 ## Failure behavior
 

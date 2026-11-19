@@ -221,7 +221,7 @@ search exactly. The CLI maps `crucible search --strategy bfs|dfs|guided` to
 failure-oracle variant from `crucible-cli/src/cli/exploration/search.rs`. The
 remaining flags (`--max-depth`, `--max-states`, `--on-violation stop|collect`,
 `--findings-out`) are documented in the
-[user reference](../../users/crucible/reference.md#search).
+[user reference](../../users/crucible/reference-cli.md#search).
 
 `search_with_strategy_and_failure_oracle` attaches a `SearchFailureOracle`. The
 oracle is a read-only reporter: when a reached configuration fails, the search

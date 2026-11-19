@@ -86,7 +86,7 @@ Sources include constants, steps, pulses, periodic signals, normalized traces,
 spatial fields, event sequences, and keyed stochastic processes. Pure
 operators transform values without memory; stateful operators carry declared,
 checkpointed state. [Signal programs](signals.md) explains every family and the
-[reference](reference.md#plans-signals-bindings-and-faults) lists exact fields.
+[reference](reference-plan.md#plans-signals-bindings-and-faults) lists exact fields.
 
 For a one-time outage, prefer an event or pulse. For a fault that stays active
 until a later transition, use a Boolean step/pulse with a persistent binding.
@@ -113,7 +113,7 @@ from persistence loss at flush.
 Use [Fault bindings](bindings.md) for the complete bridge contract, then the
 effect selection tables in [Network faults](network-faults.md) and
 [Storage, node, and hardware faults](storage-node-faults.md). The
-[reference effect registry](reference.md#exhaustive-effect-registry) gives the exact legal
+[reference effect registry](reference-plan.md#exhaustive-effect-registry) gives the exact legal
 target kinds, phases, lifetimes, and operations for every effect.
 
 ## 5. Resolve the plan against the world

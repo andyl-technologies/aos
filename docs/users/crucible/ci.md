@@ -21,7 +21,7 @@ Run these commands from the repository root in `nix develop` or its direnv
 environment. `--release` selects ordinary derivations and requests no shared
 compiler-cache mounts. Daemon-wide static mounts can remain visible; use a
 separate builder if qualification requires a cache-free sandbox.
-Provision the [guarded host resources](campaigns.md#start-the-single-host-owner)
+Provision the [guarded host resources](campaigns-host.md#start-the-single-host-owner)
 before running `selftest` or a scenario, and set `CRUCIBLE_CAMPAIGN_DEPLOYMENT` to the
 owner-only deployment file and `CRUCIBLE_RUN_STATE_ROOT` to a durable writable
 directory. The deployment must admit the example's 100,000 execution quanta.

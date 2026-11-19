@@ -247,7 +247,7 @@ normalized, exact-owner, and not group- or other-writable. Key files are exact
 kinds. Graph construction returns the administration capabilities separately,
 and the daemon never lends them to the campaign service, planner, runtime, or
 executor. Operator commands for inspecting and collecting a composed store are
-in [the user guide](../../../users/crucible/campaigns.md#inspect-and-collect-a-composed-store).
+in [the user guide](../../../users/crucible/campaigns-store.md#inspect-and-collect-a-composed-store).
 
 ### Object profiles and durability
 

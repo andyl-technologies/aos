@@ -12,7 +12,7 @@ kernel, root image, patched QEMU, plugin, and standalone debugger gateway.
 
 The same command hosts the local campaign service through its `--campaign-*`
 options; see
-[Start the single-host owner](campaigns.md#start-the-single-host-owner).
+[Start the single-host owner](campaigns-host.md#start-the-single-host-owner).
 
 ## Start a daemon
 

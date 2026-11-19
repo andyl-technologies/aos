@@ -11,7 +11,7 @@ through the same typed constructors
 and artifact verifier used by campaign import, and it writes an owner-only
 import set that it revalidates before reporting success. Operator steps for
 generating, validating, and running it are in
-[Operating lazy campaigns](../../../users/crucible/campaigns.md#build-and-validate-inputs).
+[Operating lazy campaigns](../../../users/crucible/campaigns-inputs.md#build-and-validate-inputs).
 
 ## Question under test
 

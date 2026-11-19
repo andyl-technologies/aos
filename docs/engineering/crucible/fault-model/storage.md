@@ -127,7 +127,7 @@ loss applies to the actual state.
 - `storage.array_state` atomically replaces an array's complete member, path,
   selection, rebuild, and consistency policy; deactivation restores the
   declared baseline. The closed layouts are listed in the reference under
-  [fault-topology canonical locations](../../../users/crucible/reference.md#fault-topology-canonical-locations).
+  [fault-topology canonical locations](../../../users/crucible/reference-plan.md#fault-topology-canonical-locations).
   A logical array device can never also be a backing member.
 - `storage.read_transform` applies bit flips, stale versions, or misdirected
   reads to returned bytes only; it does not mutate media.

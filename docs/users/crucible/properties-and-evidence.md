@@ -165,6 +165,6 @@ avoids passing only because the test never reached the fault site.
 6. CI distinguishes violation, timeout, backend failure, and invalid input.
 7. Failure artifacts retain the trace and exact terminal checkpoint.
 
-See the [schema reference](reference.md#properties-and-predicates),
+See the [schema reference](reference-plan.md#properties-and-predicates),
 [Artifacts and replay](artifacts.md), and [Debugging](debugging.md) for the
 corresponding configuration and investigation workflows.

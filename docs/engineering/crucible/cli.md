@@ -285,7 +285,7 @@ outcome codes come from `BackendCommandStatus`:
 source's code. Non-passing outcomes (`Failed`, `Crashed`, `Timeout`) are the
 statuses that write a reproduction artifact and print the replay footer. The
 user-facing status classes are listed in the
-[reference](../../users/crucible/reference.md#output-artifacts-and-exit-status).
+[reference](../../users/crucible/reference-cli.md#output-artifacts-and-exit-status).
 
 ## `serve`
 

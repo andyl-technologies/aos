@@ -135,7 +135,7 @@ CLI restarts. Use `CRUCIBLE_INITRD` only when the guest requires one.
 Local QEMU runs require a provisioned deployment selected by the global
 `--campaign-deployment PATH`, `CRUCIBLE_CAMPAIGN_DEPLOYMENT`, or
 `/etc/crucible/packaged-executor.toml`. The file must meet the exact ownership,
-mode, and version requirements in [campaign setup](campaigns.md#start-the-single-host-owner).
+mode, and version requirements in [campaign setup](campaigns-host.md#start-the-single-host-owner).
 The same setup describes the dedicated cgroup-v2 root, ext4 project quotas,
 reserved project IDs, and child credentials. Package installation does not
 create them, and an arbitrary temporary directory is not an alternative.

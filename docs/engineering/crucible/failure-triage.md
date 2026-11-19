@@ -447,7 +447,7 @@ re-clustering. Its material is hashed under
 
 This section records the surface that `checks.crucible.phase6.triageCliSurface`
 holds the driver to. The operator-facing description of the same flags is the
-[user reference](../../users/crucible/reference.md#triage). Triage runs over
+[user reference](../../users/crucible/reference-cli.md#triage). Triage runs over
 the authenticated findings retained by a campaign snapshot:
 
 ```text
