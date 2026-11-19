@@ -1,7 +1,7 @@
 //! Verifies canonical Hub RPC metadata, capability classification, and browser coverage.
 //!
 //! Repository consistency is tested here so generating portable API bindings
-//! never depends on application implementation source or checked RFC manifests.
+//! never depends on application implementation source or design-document manifests.
 
 use std::collections::BTreeSet;
 use std::error::Error;

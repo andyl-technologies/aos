@@ -6,7 +6,7 @@
 //! publishing destination already has the `<hash>.narinfo` object.
 //!
 //! The [`CacheMembership`] trait is the seam a future bulk membership index
-//! (RFC-0195) would replace: callers depend only on `narinfo(hash) -> bool`,
+//! (NixOS RFC 195) would replace: callers depend only on `narinfo(hash) -> bool`,
 //! not on the per-destination `HEAD` requests [`HeadMembership`] issues today.
 
 use anyhow::Result;

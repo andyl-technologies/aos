@@ -665,7 +665,7 @@
               When non-null, config paths with no matching option
               declaration are merged through this type's `merge`
               function rather than being rejected. Mirrors nixpkgs'
-              RFC 0042 freeform modules. May also be written as a
+              freeform modules (NixOS RFC 42). May also be written as a
               top-level module attribute (`{ freeformType = …; … }`).
             '';
           };

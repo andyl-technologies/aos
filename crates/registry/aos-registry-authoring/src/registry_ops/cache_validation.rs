@@ -311,7 +311,7 @@ fn collect_cache_validation_entries(
     // Newer registries record output NAR hashes in the store/ graph rather
     // than the package TOML; load it once for the fallback. A malformed graph
     // is a hard error (matching Registry::load) - silently treating it as
-    // absent would validate nothing on a post-RFC registry.
+    // absent would validate nothing on a graph-bearing registry.
     let store_graph = StoreMap::load(dir).context("loading store/ graph for cache validation")?;
 
     for letter_entry in std::fs::read_dir(&packages_dir)
