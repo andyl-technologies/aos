@@ -23,7 +23,7 @@ case " $* " in
   *' category checks '*' scope build.aos-dev '*) : ;;
   *' category checks '*' scope build '*) printf 'build.aos-dev-cli\nbuild.aos-dev-cache-identity' ;;
   *' category checks '*) printf 'eval\nbuild' ;;
-  *' category images '*) printf 'server:qcow2' ;;
+  *' category images '*) printf 'server:qcow2\nserver-secureboot:installer' ;;
   *' category containers '*) printf 'aos:oci' ;;
   *' category builds '*)
     [[ ${AOS_DEV_TEST_BLOCK_BUILD_LIST:-0} != 1 ]] || exit 19
@@ -140,6 +140,10 @@ fi
 AOS_DEV_SYSTEM=x86_64-linux bash "$root/tools/dev/aos-dev" --release all builds --dry-run >/dev/null
 grep -Fq -- '-A allPackages --no-out-link --dry-run' "$AOS_DEV_TEST_LOG"
 grep -Fq -- '-A systems.server.build.image.qcow2 --no-out-link --dry-run' "$AOS_DEV_TEST_LOG"
+grep -Fq -- '-A systems.server-secureboot.installerMedia --no-out-link --dry-run' "$AOS_DEV_TEST_LOG"
+bash "$root/tools/dev/aos-dev" --release build image server-secureboot:installer \
+  --arg hostConfiguration ./host.nix --no-out-link >/dev/null
+grep -Fq -- '-A systems.server-secureboot.installerMedia --arg hostConfiguration ./host.nix --no-out-link' "$AOS_DEV_TEST_LOG"
 grep -Fq -- '-A containerImages.aos.platforms.x86_64-linux.ociLayout --no-out-link --dry-run' "$AOS_DEV_TEST_LOG"
 grep -Fq -- '-A systems.server.build.toplevel --no-out-link --dry-run' "$AOS_DEV_TEST_LOG"
 bash "$root/tools/dev/aos-dev" release plan --dry-run

@@ -13,6 +13,22 @@
       then map (format: "${variant}:${format}") (names aos.systems.${variant}.build.image)
       else []
   ) (names aos.systems);
+  # Installer media wraps a locally signed raw image; externally finalized and
+  # unsigned systems refuse to build it. Probe only that policy so listing
+  # never evaluates the media's second system evaluation.
+  installerNames = builtins.concatMap (
+    variant: let
+      secureBoot = aos.systems.${variant}.config.aos.boot.secureBoot;
+      supported = builtins.tryEval (
+        aos.systems.${variant}.build ? image
+        && secureBoot.enable
+        && !secureBoot.externalFinalization.enable
+      );
+    in
+      if supported.success && supported.value
+      then ["${variant}:installer"]
+      else []
+  ) (names aos.systems);
   containerNames = builtins.concatMap (
     variant:
       map (kind: "${variant}:${kind}") [
@@ -34,7 +50,7 @@
   ) (names aos.systems);
   values = {
     packages = aos.pkgs.packageNames;
-    images = imageNames;
+    images = imageNames ++ installerNames;
     containers = containerNames;
     checks =
       if scope == ""
