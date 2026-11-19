@@ -56,7 +56,7 @@ credentials, and storage remain isolated. Do not create `andyl/staging` or sign
 a staging-only registry name.
 
 A surface is either an AOS Hub deployment or a
-[static origin](canonical-releases.md#static-surfaces) served from a
+[static origin](release-static-surfaces.md#static-surfaces) served from a
 filesystem, S3, or SFTP location and read back over HTTPS. A registry does not
 require a Hub. A Hub staging surface may pair with a Hub or static production
 surface; a static staging surface requires a static production surface.

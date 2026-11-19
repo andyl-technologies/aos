@@ -121,3 +121,79 @@ declared in `crates/hub/aos-hub-worker/wrangler.toml` and named in
 `handlers::bindings`. Deployment is described in
 [Deploy to Cloudflare](../../users/aos-hub/cloudflare.md) and
 [AOS Hub deployment](../../maintainers/aos-hub-deployment.md).
+
+### Worker outbound boundary
+
+Code: the gateway's request and response envelopes are in
+`crates/hub/aos-hub-service/src/egress_protocol.rs`; the gateway is the
+`aos-hub-egress` binary in `crates/hub/aos-hub-native`.
+
+Cloudflare Worker deployments use the platform Fetch API directly by default.
+This is a complete Worker-only deployment: registry and cache placements,
+OIDC, domain probes, mail relay, webhooks, and Cloudflare control-plane
+observation require no VM or metal component. Cloudflare mediates outbound
+connections; AOS additionally requires HTTPS and rejects URL credentials,
+fragments, and literal non-global addresses before Fetch, constructs requests
+from a closed method and header set, bounds redirects, forbids mutating
+redirects, and forbids authenticated cross-origin redirects. Individual
+consumers retain their request and response size limits.
+
+Worker Fetch does not expose the connected peer address or allow AOS to pin a
+validated DNS answer to a connection. An installation that requires those
+stronger guarantees may configure the repository-owned `aos-hub-egress` router
+with `HUB_EGRESS_GATEWAY_URL` and `HUB_EGRESS_GATEWAY_KEY`. The pair is
+optional but atomic: neither may be configured alone. Selecting it routes all
+outbound HTTP through that transport rather than creating inconsistent
+per-feature paths. The runtime ignores a key that has been pre-staged without a
+URL so the installer can use direct Fetch as a safe transition state; desired
+configuration and generated Wrangler configuration never contain only half of
+the pair. The staged-key state is used only during a first-install bootstrap;
+router updates keep the existing router selected throughout rotation.
+
+The repository packages the gateway as `aos-hub-egress`. It disables
+environment proxies and automatic redirects, resolves all addresses at connect
+time, rejects the whole DNS answer set if any address is non-global, and gives
+reqwest only that validated set while preserving hostname SNI. Redirects are
+bounded and revalidated per hop; mutating requests cannot redirect, and a
+request carrying authorization cannot redirect across origins. Request,
+response, redirect, connect, and total-request limits are closed constants.
+
+The gateway rebuilds the response header set rather than forwarding it. It
+signs the request nonce, final URL, connected peer IP, upstream status, and
+timestamp. The Worker accepts bytes only when that signed response record is
+fresh, nonce-bound, status-consistent, and names a global peer. Missing
+configuration, an unavailable gateway, a stale record, an unknown peer, or a
+signature failure fails closed. Gateway failures and logs never include target
+URLs, presigned queries, authorization values, or bodies.
+
+The gateway accepts each request nonce once:
+
+- After authenticating the envelope and checking its timestamp, it atomically
+  inserts the nonce into a durable strongly-consistent database before
+  starting the upstream request.
+- Every replica uses that same database, so the nonce primary key accepts each
+  nonce once across replicas and process restarts.
+- Replicated deployments use PostgreSQL; file-backed SQLite is valid only for
+  a singleton gateway process.
+- Expired rows may be reclaimed, but a live conflict always fails before an
+  upstream side effect.
+
+The deployment interface takes optional `--egress-gateway-url` and an
+operator-provisioned `HUB_EGRESS_GATEWAY_KEY` encoded as one atomic
+`KEY_ID:KEY` value. It never mints that key, and it installs the scoped
+provider token separately. Whenever the optional transport is selected, the
+installer first completes a fresh, mutually authenticated `/v1/challenge`.
+The key and router are then installed in an order that never leaves half of
+the pair selected:
+
+- **Rotation.** Every router replica accepts the bounded current/next key-id
+  overlap before the installer challenges the new router.
+- **Existing deployment.** The installer stages the challenged overlap key
+  while the existing router remains selected and publishes the new router URL
+  only after every secret mutation succeeds.
+- **First install.** The installer may publish a direct-Fetch bootstrap
+  version, install the first complete secret set, and then select the router.
+- **Retirement.** The old router id is removed only after the Worker has
+  switched.
+
+There is one egress abstraction and one selected transport.

@@ -9,7 +9,7 @@ and host configuration.
 This guide explains that complete chain and its operational limits. Registry
 configuration is covered in [Configure package registries](registries.md), and
 package-owned runtime resources are covered in [Understand native package
-runtime policy](package-sandbox.md).
+runtime policy](package-runtime-policy.md).
 
 The checked-in Secure Boot and measured-boot variants use public test keys.
 They demonstrate and test the mechanisms but provide no production identity.
@@ -150,7 +150,7 @@ stock Nix substitution and does not replace registry verification.
 Registry signatures prove which registry owner authorized exact content. They
 do not prove that the package is harmless. Inspect its signed contract and the
 selected native resources as described in [Understand native package runtime
-policy](package-sandbox.md).
+policy](package-runtime-policy.md).
 
 ## Validate an image before installation
 

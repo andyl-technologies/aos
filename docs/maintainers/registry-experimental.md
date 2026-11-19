@@ -11,7 +11,7 @@ stable streams, and the edge stream that leads to them, belong to
 rehearsed first. Its signing material remains separate from `andyl/main`.
 
 `andyl/experimental` does not use an HSM. Its release signer is the
-[file-backed adapter](canonical-releases.md#file-backed-signer-for-registries-without-an-hsm)
+[file-backed adapter](release-step-commands.md#file-backed-signer-for-registries-without-an-hsm)
 reading operator-held key files. The intended key management for
 `andyl/main` is documented in [Registry key management](registry-key-management.md).
 
@@ -68,7 +68,7 @@ manifests, private requests, and conditional requests continue through the Hub.
    and production using [`aos-hub-deployment.md`](aos-hub-deployment.md). An
    empty experimental-only Hub reset may use that runbook's direct-production setup
    procedure; it does not substitute for the staging publication required by
-   `production/edge`. A [static surface](canonical-releases.md#static-surfaces)
+   `production/edge`. A [static surface](release-static-surfaces.md#static-surfaces)
    needs only its origin, read-back route, and `.aos-surface` identity.
 4. Take and verify the backup set in
    [`aos-hub-backup-recovery.md`](aos-hub-backup-recovery.md), unless this is an
@@ -239,7 +239,7 @@ building. That value is the disk version and the OCI signed release identity;
 the `aos` package version remains separate provenance.
 
 Before freezing the epoch-one public `.1` plan, create and retain the
-[non-public qualification predecessor](canonical-releases.md#create-a-first-qualification-predecessor)
+[non-public qualification predecessor](release-step-commands.md#create-a-first-qualification-predecessor)
 at `2026.10.0-dev.20261002.0`. Its protected source revision carries the `.0`
 experimental profile and uses the reserved snapshot release id and source tag. After
 offline verification, advance the profile to `.1` in a later reviewed protected
@@ -290,7 +290,7 @@ ships both Linux platforms. A listed platform ships nothing: the contract
 exports it as `deferred_platforms` (check with `aos maintain release step
 contract --registry andyl/experimental --json`), every package cell on it is
 blocked with `platform-release-deferred`, `images.json` must give its image
-cell the [blocked decision](canonical-releases.md#prepare-a-plan-request), the
+cell the [blocked decision](release-step-commands.md#prepare-a-plan-request), the
 container bundle omits its manifest, and the frozen plan records all of it.
 Deferring or releasing a platform is a reviewed source change followed by a
 later edge release. The x86_64 maintainer tooling closure carries both the
@@ -299,7 +299,7 @@ machine is needed to qualify aarch64 claims.
 
 Both Hub surfaces authenticate through their `aos hub login` profiles unless
 the configuration sets `token_credential`. Only the active profile is used
-(see [Hub credentials](canonical-releases.md#hub-credentials)): sign in to
+(see [Hub credentials](release-maintainer-machine.md#hub-credentials)): sign in to
 `https://aos.staging.andyl.org` before the staging steps below and to
 `https://aos.andyl.org` before the production ones.
 
@@ -324,7 +324,7 @@ clone with more than its root commit, and a clone named other than
 `andyl-experimental` or `experimental`.
 
 Then install that base on both surfaces before publishing, following
-[Bootstrap the first registry base](canonical-releases.md#bootstrap-the-first-registry-base):
+[Bootstrap the first registry base](release-step-commands.md#bootstrap-the-first-registry-base):
 
 1. Write the staging and production `aos.release.registry-bootstrap-intent/v1`
    payloads for the printed plan digest and base commit, with the deployment

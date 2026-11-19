@@ -30,7 +30,7 @@ Linux disk/container staging scenarios, with dedicated recovery and K3s
 package scenarios. Install the exact platform closures and run them against
 the published staging artifacts. Required report-backed scenarios still need
 real campaign or operator evidence; do not substitute synthetic fleet reports.
-Follow the [executor setup](qualification.md#native-executors) before treating
+Follow the [executor setup](qualification-executors.md#native-executors) before treating
 the test environments as ready. Main remains closed until its
 [launch requirements](registry-main.md) are satisfied.
 
@@ -81,9 +81,9 @@ Complete this section before starting builds or requesting signatures.
   destinations; an edge version plans both edge destinations.
 
 - [ ] **Check the maintainer configuration.** Open the
-  [maintainer configuration](canonical-releases.md#maintainer-configuration)
+  [maintainer configuration](release-maintainer-machine.md#maintainer-configuration)
   for this registry and the
-  [maintainer-machine configuration](canonical-releases.md#configure-the-designated-maintainer-machine).
+  [maintainer-machine configuration](release-maintainer-machine.md#configure-the-designated-maintainer-machine).
   Locate the configured signer programs, independently obtained public keys,
   surfaces, receipt keys, executors, reviewer key, and alert destination.
 
@@ -93,7 +93,7 @@ Complete this section before starting builds or requesting signatures.
   key IDs, verification identities, threshold, and provider revision match that
   roster, `[git]` names the organization's public release identity for
   registry commits, and the shell runs the installed
-  [release tooling closure](canonical-releases.md#release-tooling-environment).
+  [release tooling closure](release-maintainer-machine.md#release-tooling-environment).
   One configuration serves one registry; load only its credentials.
 
 - [ ] **Verify source and contributor authorization.** Use the protected source
@@ -104,7 +104,7 @@ Complete this section before starting builds or requesting signatures.
 
   **Check when:** Git reports no changes, the commit matches the release record,
   and authorization is verified. An emergency hotfix source follows the
-  [hotfix rule](canonical-releases.md#generate-the-plan). Missing or unknown
+  [hotfix rule](release-step-commands.md#generate-the-plan). Missing or unknown
   authorization stops the release.
 
 - [ ] **Confirm the test environments are ready.** Confirm real test programs
@@ -121,7 +121,7 @@ Complete this section before starting builds or requesting signatures.
   and live-state commands in the [experimental](registry-experimental.md#preconditions)
   or [main](registry-main.md#inspect-live-state) runbook. For each surface,
   confirm its identity: the Hub deployment ID, or the `.aos-surface` identity of
-  a [static surface](canonical-releases.md#static-surfaces). Record the
+  a [static surface](release-static-surfaces.md#static-surfaces). Record the
   registry base commit/generation and trust-root epoch.
 
   **Check when:** both surfaces identify the intended builds and registry, and
@@ -146,7 +146,7 @@ Complete this section before starting builds or requesting signatures.
 ## 2. Freeze what will be released
 
 - [ ] **Record the support matrix and acceptance criteria.** Use the
-  [target support matrix](qualification.md#target-support-matrix).
+  [target support matrix](qualification-acceptance.md#target-support-matrix).
   List the required QEMU and OCI configurations, every published package/platform
   cell, and additional physical, cloud or device claims. For each claim, record
   its compatibility scope, required assurance, release-blocking status, assigned
@@ -168,7 +168,7 @@ Complete this section before starting builds or requesting signatures.
   needs a retained signed test snapshot as its predecessor; an empty registry
   base is not an installed OS to upgrade from. When no prior release exists,
   follow the
-  [restricted qualification snapshot workflow](canonical-releases.md#create-a-first-qualification-predecessor)
+  [restricted qualification snapshot workflow](release-step-commands.md#create-a-first-qualification-predecessor)
   before freezing the public plan.
 
   **Check when:** the predecessor bundle verifies offline against independently
@@ -193,7 +193,7 @@ Complete this section before starting builds or requesting signatures.
   ```
 
   **Check when:** the check passes, so every member of the
-  [downstream toolchain set](canonical-releases.md#publish-the-downstream-toolchain-closures)
+  [downstream toolchain set](release-step-commands.md#publish-the-downstream-toolchain-closures)
   is an eligible public package on both Linux platforms and enters the frozen
   package matrix. A failure stops the release until the toolchain set, the
   package's platform support, or the platform deferral is fixed in a reviewed
@@ -209,11 +209,11 @@ Complete this section before starting builds or requesting signatures.
   For a registry's first release, when no surface holds a publication yet,
   add `--first-release --source-registry <clean single-commit clone>` as
   described in
-  [plan a registry's first release](canonical-releases.md#plan-a-registrys-first-release).
+  [plan a registry's first release](release-commands.md#plan-a-registrys-first-release).
   For an emergency, add `--override DIR`, or immediately run
   `aos maintain release advance --to production/stable --override DIR` before any
   other `advance`, as described in
-  [plan an emergency override](canonical-releases.md#plan-an-emergency-override).
+  [plan an emergency override](release-commands.md#plan-an-emergency-override).
 
   **Check when:** the command exits zero and the printed summary contains the
   intended source, registry, version, predecessor, both surfaces, every
@@ -226,7 +226,7 @@ Complete this section before starting builds or requesting signatures.
   base, record its receipt and mark this item inapplicable. For a plan frozen
   with `--first-release`, obtain the separate staging and production bootstrap
   approvals for this plan. Run
-  [release bootstrap](canonical-releases.md#bootstrap-the-first-registry-base)
+  [release bootstrap](release-step-commands.md#bootstrap-the-first-registry-base)
   on the staging surface first with `--output <work>/bootstrap/staging`,
   verify its result, then repeat for production with that surface's approval
   and access profile and `--output <work>/bootstrap/production`.
@@ -261,7 +261,7 @@ For a final `andyl/main` version, repeat with `--to staging/stable` once
 so only the channel moves.
 
 - [ ] **Build and repeat-build the frozen outputs.** Let the driver run
-  [release build](canonical-releases.md#build-the-frozen-package-matrix). Run
+  [release build](release-step-commands.md#build-the-frozen-package-matrix). Run
   the source regression suite as well:
 
   ```sh
@@ -273,7 +273,7 @@ so only the channel moves.
   `State: built`. Save the Nix result path and logs.
 
 - [ ] **Finalize both Linux images and the OCI artifacts.** The driver runs
-  [finalize-image](canonical-releases.md#finalize-each-linux-image) for each
+  [finalize-image](release-step-commands.md#finalize-each-linux-image) for each
   planned Linux assembly into `images/<platform>/<variant>/`. When it waits
   for the OCI sidecar, follow the registry runbook's external container signing
   and immutable graph upload procedure and place the result in
@@ -289,7 +289,7 @@ so only the channel moves.
 - [ ] **Review the isolated registry transaction.** Mark inapplicable for
   `andyl/experimental`, whose `smoke` profile does not stop here. For `andyl/main`
   the driver waits after
-  [prepare-registry](canonical-releases.md#prepare-and-finalize-the-isolated-registry).
+  [prepare-registry](release-step-commands.md#prepare-and-finalize-the-isolated-registry).
   Review `registry/transaction.json` and the retained tree in
   `registry/prepared/` together, then run
   `aos maintain release advance --to staging/candidate --accept-transaction`.
@@ -301,7 +301,7 @@ so only the channel moves.
 
 - [ ] **Review build evidence and close the bundle.** When the driver waits
   for the advisory disposition, prepare the canonical disposition described in
-  [close and sign the bundle](canonical-releases.md#close-and-sign-the-bundle)
+  [close and sign the bundle](release-step-commands.md#close-and-sign-the-bundle)
   at `inputs/advisory-disposition.json`. Review the assembled payload and unsigned manifest
   before the driver requests signatures.
 
@@ -310,7 +310,7 @@ so only the channel moves.
   reports `State: finalized`.
 
 - [ ] **Verify the bundle independently.** Run
-  [release verify](canonical-releases.md#verify-a-captured-bundle-offline) on
+  [release verify](release-step-commands.md#verify-a-captured-bundle-offline) on
   `finalized/bundle/` with `finalized/release-journal.jsonl` and public keys
   obtained independently of the bundle and of the maintainer configuration.
 
@@ -319,7 +319,7 @@ so only the channel moves.
   and mismatched digests stop the release.
 
 - [ ] **Confirm the staging publication.** The driver
-  [publishes](canonical-releases.md#publish-to-a-destination) with staging-only
+  [publishes](release-step-commands.md#publish-to-a-destination) with staging-only
   credentials, reads every object back anonymously, and advances the staging
   channel's single ring.
 
@@ -329,7 +329,7 @@ so only the channel moves.
   planned.
 
 - [ ] **Download the downstream toolchains from staging.** Run
-  [`toolchain-cache-check`](canonical-releases.md#publish-the-downstream-toolchain-closures)
+  [`toolchain-cache-check`](release-step-commands.md#publish-the-downstream-toolchain-closures)
   with `--realise` and a fresh `--store`, using only the staging surface's
   cache and its cache public key.
 
@@ -359,7 +359,7 @@ report and completion approvals.
 
 - [ ] **Run the functional tests.** Run
   `aos maintain release advance --to production/edge`. The driver runs
-  [qualify-run](canonical-releases.md#run-the-native-qualification-matrix)
+  [qualify-run](release-step-commands.md#run-the-native-qualification-matrix)
   for the staging phase and signs the report with the qualification authority.
 
   **Check when:** every case listed by `explain` has a passing result in the
@@ -420,7 +420,7 @@ report and completion approvals.
 
 - [ ] **Review and sign the exact report.** The independent reviewer runs
   `aos maintain release review` against the prepared report, following
-  [collect, review, and sign](qualification.md#collect-review-and-sign).
+  [collect, review, and sign](qualification-results.md#collect-review-and-sign).
 
   **Check when:** the reviewer approved these exact report bytes and the
   driver's next run signs them with the qualification authority. Changing a
@@ -493,7 +493,7 @@ Repeat the next two items for **each** ring, keeping separate results:
 
   **Check when:** the reviewer approved the health of the exact next partition
   range, the driver
-  [advanced](canonical-releases.md#advance-a-planned-channel-ring) only that
+  [advanced](release-step-commands.md#advance-a-planned-channel-ring) only that
   ring, and a new channel receipt exists under
   `channels/production-stable/ring-N/`.
 
@@ -522,7 +522,7 @@ Repeat the next two items for **each** ring, keeping separate results:
 
   **Check when:** every approval exists as
   `channels/production-stable/completion-<key_id>.json`, the driver ran
-  [channel complete](canonical-releases.md#complete-a-rollout), and
+  [channel complete](release-step-commands.md#complete-a-rollout), and
   `aos maintain release status` reports `production/stable` `complete`.
 
 ## 5. Close the release

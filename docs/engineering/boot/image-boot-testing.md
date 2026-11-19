@@ -6,10 +6,9 @@ real raw image under UEFI firmware, the same way a machine boots the shipped
 artifact: OVMF (the EDK II firmware for virtual machines), systemd-boot, a
 unified kernel image (UKI), and the systemd initrd. Installing is writing the
 image to a disk and letting first boot carve the remaining storage with
-`systemd-repart`; the image-boot tests copy the image directly. The unattended
-USB installer (`crates/boot/aos-installer`, `modules/image/installer.nix`)
-performs the same write from boot media and never partitions or formats
-storage itself. `tests/fleet/install-from-usb.nix` exercises it.
+`systemd-repart`; the image-boot tests copy the image directly. The
+[unattended installer](installer.md) performs the same write from USB media
+and never partitions or formats storage itself.
 
 The harness lives in `lib/testing/fleet.nix`, `lib/testing/fleet-spec.nix`,
 and the Python driver under `pkgs/tools/aos/aos-test-driver/aos_test_driver/`.

@@ -18,7 +18,7 @@ versions when needed.
 
 For packages that contribute services, inspect the signed package contract and
 selected resources described in [Understand native package runtime
-policy](package-sandbox.md). [Secure Boot and package trust](secure-boot.md)
+policy](package-runtime-policy.md). [Secure Boot and package trust](secure-boot.md)
 explains how image-baked registry anchors connect package admission to the boot
 chain.
 Package builds and their dependencies live in the shared `/nix/store`. Users
@@ -99,7 +99,7 @@ apm depends curl
 ```
 
 For packages that expose services, see
-[Understand native package runtime policy](package-sandbox.md) and the
+[Understand native package runtime policy](package-runtime-policy.md) and the
 package's generated
 configuration reference, available through `apm docs` and `apm options`.
 

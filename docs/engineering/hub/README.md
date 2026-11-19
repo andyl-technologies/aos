@@ -21,16 +21,17 @@ earlier one defines. Terms used across pages are collected in the
 
 | Page | What it covers |
 |---|---|
-| [runtime.md](runtime.md) | The shared application core, runtime ports, the database backend, and how the native server and the Worker execute requests. |
+| [runtime.md](runtime.md) | The shared application core, runtime ports, the database backend, how the native server and the Worker execute requests, and the Worker outbound boundary and egress gateway. |
 | [tenancy-and-auth.md](tenancy-and-auth.md) | Organizations, projects, principals, the role ladder and scope grammar, credentials and authentication methods, and audit. |
 | [topology.md](topology.md) | Goals, terminology, and invariants of the surface topology: surfaces, bindings, placements, routes, and their separation of effects. |
 | [domain-model.md](domain-model.md) | The topology records and their identities. |
-| [delivery.md](delivery.md) | Route matching, delivery modes, authorization, network-policy gates, direct and proxied serving, placement failover, webhook delivery, and replicated publication. |
+| [delivery.md](delivery.md) | Route matching, delivery modes, authorization, network-policy gates, direct and proxied serving, placement failover, and replicated publication. |
 | [registry-cache-relations.md](registry-cache-relations.md) | Consumer cache stacks, retention subscriptions, and population targets between registries and caches. |
 | [retention-and-gc.md](retention-and-gc.md) | Release artifact snapshots, retention roots, and fail-closed cache garbage collection. |
-| [configuration.md](configuration.md) | SQL configuration change-sets and revert, git-backed change requests, and webhook events. |
-| [control-plane.md](control-plane.md) | The API, CLI, and web console parity contract, the plan/apply mutation protocol, CLI and browser authentication flows, and the checked manifests. |
-| [topology-cutover.md](topology-cutover.md) | The signed evidence bundle for moving a deployment onto the topology model, the commands that generate and verify it, and the operator procedure it attests. |
+| [oci-gc-and-registry-deletion.md](oci-gc-and-registry-deletion.md) | The OCI blob inventory, OCI GC run states, and the `delete_registry` operation and its blockers. |
+| [configuration.md](configuration.md) | SQL configuration change-sets and revert, git-backed change requests, and webhook events, signing, and durable delivery. |
+| [control-plane.md](control-plane.md) | The API, CLI, and web console parity contract, the plan/apply mutation protocol, CLI and browser authentication flows, the checked manifests, and the public browser's release, support, and Docs views. |
+| [topology-cutover.md](topology-cutover.md) | The signed evidence bundle for moving a deployment onto the topology model: its artifact and semantic validation rules, and the commands that generate and verify it. |
 
 ## Crates
 

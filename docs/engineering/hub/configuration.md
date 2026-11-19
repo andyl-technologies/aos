@@ -74,8 +74,8 @@ When a registry changes through a Hub-mediated path, the Hub commits a webhook
 event to the topology outbox in the same transaction
 (`crates/hub/aos-hub-model/src/webhook.rs`). Each event is fanned out to the
 organization's active subscriptions and delivered at least once; the outbox,
-leases, retry budget, and limits are specified in
-[delivery.md](delivery.md#webhook-durability-and-delivery-identity).
+leases, retry budget, and limits are specified under
+[Webhook durability and delivery identity](#webhook-durability-and-delivery-identity).
 
 | Event type | Raised when |
 |---|---|
@@ -90,3 +90,47 @@ subscribers verify in constant time. Subscriptions are managed through
 `WebhookService` with `members.manage` on the organization, and the API never
 accepts or returns signing material: a subscription names an operator-managed
 secret version.
+
+### Webhook durability and delivery identity
+
+Code: the event taxonomy, signing, and retry policy are in
+`crates/hub/aos-hub-model/src/webhook.rs`; events are committed to the outbox
+by `crates/hub/aos-hub-service/src/webhook.rs`. The event types, request
+headers, and subscription management are described above; this section is the
+delivery mechanism.
+
+A topology mutation inserts its immutable `topology_event_outbox` row in the
+same checked transaction as the mutation. A bounded materializer converts each
+event into its audit record and one `webhook_deliveries` row per matching active
+organization subscription. `(webhook_id, outbox_event_id)` is unique, so a
+materializer retry cannot fan out the same event twice. Operational registry
+events such as index completion also enter this outbox under a deterministic
+semantic identity, so producer retries converge before subscription fanout.
+
+Every delivery receives an immutable `delivery_id`. Queue messages contain only
+that identifier; the consumer reloads the current durable row, wins a bounded
+lease with a fresh fencing token (a value a commit must present, so a holder
+whose lease was taken over cannot commit), and may commit an outcome only with
+that token. Active duplicate consumers do no work. An expired lease is
+recoverable
+after a process or isolate crash. Native Hub performs a bounded periodic claim;
+Worker Cron materializes a bounded event batch, enqueues the resulting stable
+identifiers, and also claims a bounded due batch as a backstop. Thus Queue
+redelivery and Cron overlap are safe and an unavailable Queue cannot strand a
+committed delivery.
+
+Delivery is at least once. A crash after the receiver accepts the HTTP request
+but before Hub commits `delivered` can repeat the POST, so receivers deduplicate
+on `X-AOS-Delivery-ID`. All retries retain that value. Non-2xx responses,
+transport failures, and temporarily unavailable secret or egress providers
+consume the same bounded attempt budget and exponential backoff in both
+runtimes; an unsafe URL or credential-fingerprint drift is terminal. The
+database caps payloads at 1 MiB, claim batches at 100 rows, leases at 300
+seconds, and retained subscriptions at 100 per organization.
+
+Webhook configuration persists only the immutable provider version reference
+and required SHA-256 fingerprint. A delivery resolves that exact version on
+demand, verifies the fingerprint, signs the body, drops the plaintext owner,
+and only then awaits network I/O. The plaintext secret is absent from plans,
+API and CLI responses, revision history, audit data, topology events, queue
+messages, and logs.

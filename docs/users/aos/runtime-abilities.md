@@ -1,5 +1,12 @@
 # Runtime abilities: modules, packages, and execution
 
+This page is for people who write AOS package modules or need to understand
+how a package's configuration becomes changes on a host. Operators who only
+install and configure packages can stay with [Manage packages](packages.md)
+and [Configure an AOS host](configuration.md). Implementation internals are in
+the [abilities engineering pages](../../engineering/abilities/README.md) and
+the [handler process protocol](../../engineering/abilities/execution.md#handler-process-protocol).
+
 An AOS package can carry both built software and a configuration module. Modules
 compose through Nix's recursive `options`/`config` fixed point. Ability operations
 add typed, deferred host modifications to that configuration. Evaluation produces

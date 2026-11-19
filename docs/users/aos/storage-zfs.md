@@ -243,6 +243,7 @@ key can no longer be released is unrecoverable.
 
 ## See also
 
-- [Installation](installation.md) for creating the pool
+- [Install redundant encrypted ZFS storage](../../maintainers/system-images.md#install-redundant-encrypted-zfs-storage)
+  for creating the pool
 - [Operations](operations.md) for day-to-day host inspection
 - [Recovery](recovery.md) for the signed recovery environment

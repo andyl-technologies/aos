@@ -186,7 +186,7 @@ journalctl -u nftables.service -b
 
 Keep routing, listener ownership, selected network-policy resources, and
 firewall rules as separate checks. See [Understand native package runtime
-policy](package-sandbox.md) for package-owned resource declarations.
+policy](package-runtime-policy.md) for package-owned resource declarations.
 
 ## Diagnose a running host
 

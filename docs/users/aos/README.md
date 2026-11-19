@@ -89,7 +89,7 @@ and [Recover an AOS host](recovery.md) at hand for the first boot.
   from a file.
 - [Configure package registries](registries.md) covers the built-in registry,
   other public and internal registries, priorities, credentials, and trust.
-- [Understand native package runtime policy](package-sandbox.md) explains how
+- [Understand native package runtime policy](package-runtime-policy.md) explains how
   typed package requests become concrete host resources.
 - [Packages in AOS containers](containers.md) covers installing packages in
   container images, init selection, and startup recovery.
@@ -137,9 +137,10 @@ and [Recover an AOS host](recovery.md) at hand for the first boot.
   mergeable operation contracts, composed handlers, and the build-to-runtime
   path. Use `aos docs runtime` to inspect generated references and deferred
   transactions. The guide marks the remaining consumer migration explicitly.
-- [Use the AOS command-line tools](cli.md) is the maintainer reference for the
-  `aos` repository CLI, image download, local VMs, and attestation
-  verification.
+- [Use the AOS command-line tools](cli.md) covers `aos` image download, local
+  VMs, output modes, completions, and attestation verification. The commands
+  that need a source checkout are in
+  [Use the repository CLI](../../maintainers/repository-cli.md).
 - [Maintain the source tree](../../maintainers/) covers Nix builds, image
   production, the repository CLI, and tests.
 - [Build and boot from source](../../maintainers/source-build-quickstart.md) is

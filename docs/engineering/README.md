@@ -20,9 +20,8 @@ makes it. The [code style guide](code-style.md#documentation) gives the rules.
    change.
 3. Read [Rust workspace](rust-workspace.md) to find the crate that owns a
    piece of Rust code.
-4. Go to the section below for the component you are changing. Most
-   directories have a `README.md` that maps their pages and names the code
-   they describe.
+4. Go to the section below for the component you are changing. Each directory
+   has a `README.md` that maps its pages and names the code it describes.
 
 ## Repository map
 
@@ -59,11 +58,15 @@ makes it. The [code style guide](code-style.md#documentation) gives the rules.
   artifacts, their compatibility contract, development caches, and nextest.
 - [Development builds](build/development-builds.md) covers the development
   shell, `aos-dev`, the shared VM image cache, and image reproducibility.
+- [Package builder notes](build/package-builders.md) records recipe rules for
+  dependency probing, hardening exceptions, Bazel, and fixed-output fetches.
 - [Build concurrency](build/build-concurrency.md) lists the builds that are
   sensitive to high parallelism and how to validate removing a limit.
 
 ## Downstream builds
 
+- [Downstream builds](downstream/README.md) maps the pages for repositories
+  that take AOS as a flake input.
 - [Downstream quickstart](downstream/quickstart.md) starts a repository that
   takes AOS as its only flake input and tests it against a local checkout.
 - [Downstream flake API](downstream/flake-api.md) is the versioned contract
@@ -83,6 +86,8 @@ makes it. The [code style guide](code-style.md#documentation) gives the rules.
   sealing of the `/var` encryption key to an authorized boot.
 - [Recovery](boot/recovery.md) covers the signed recovery UKIs and the
   noninteractive initrd failure paths.
+- [Unattended installer](boot/installer.md) covers USB installer media, its
+  signed payload, the installer initrd, and the install operation.
 - [Image-boot testing](boot/image-boot-testing.md) covers the checks that boot
   the real raw image under UEFI firmware.
 
@@ -102,6 +107,8 @@ makes it. The [code style guide](code-style.md#documentation) gives the rules.
 - [Deferred execution and generations](abilities/execution.md) covers graph
   admission, the handler protocol, effect identity, package generations, and
   recovery.
+- [Packages](packages/README.md) maps the pages on package confinement,
+  attestation, and documentation.
 - [Package service sandbox](packages/service-sandbox.md) covers how a typed
   service declaration becomes the unit's confinement.
 - [Package and generation attestation](packages/attestation.md) covers the
@@ -173,16 +180,19 @@ makes it. The [code style guide](code-style.md#documentation) gives the rules.
   targets.
 - [Retention and garbage collection](hub/retention-and-gc.md) covers rooting
   and safe deletion of binary-cache objects.
+- [OCI GC and registry deletion](hub/oci-gc-and-registry-deletion.md) covers
+  the OCI blob inventory, OCI GC run states, and the `delete_registry`
+  operation and its blockers.
 - [Configuration changes and webhooks](hub/configuration.md) covers SQL
   change-sets, git-backed registry change requests, and webhooks.
 - [Control plane and console](hub/control-plane.md) covers API, CLI, and web
-  console parity and the manifests that check it.
+  console parity, the manifests that check it, and the public browser.
 - [Runtime](hub/runtime.md) covers the shared application core, runtime ports,
-  the database backend, and the native and Worker runtimes.
+  the database backend, the native and Worker runtimes, and the Worker
+  outbound boundary.
 - [Topology cutover](hub/topology-cutover.md) covers the signed evidence
-  bundle for moving a deployment onto the topology model, the
-  `aos hub topology cutover` commands that generate and verify it, and the
-  operator procedure it attests.
+  bundle for moving a deployment onto the topology model and the
+  `aos hub topology cutover` commands that generate and verify it.
 
 ## Release publishing
 

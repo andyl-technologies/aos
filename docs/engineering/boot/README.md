@@ -21,6 +21,7 @@ host](../../users/aos/recovery.md); maintainer key and release policy lives in
 | [Secure Boot](secure-boot.md) | Firmware build, artifact signing, key enrollment, lockdown kernel, key custody |
 | [Measured boot](measured-boot.md) | TPM stack, signed PCR policy, `/var` sealing and unlock, PCR 12 migration |
 | [Recovery](recovery.md) | Locked initrd, boot-identity guard, paired recovery UKIs, offline restore |
+| [Unattended installer](installer.md) | Installer media layout, signed payload, installer initrd, and the install operation |
 | [Image-boot testing](image-boot-testing.md) | How fleet tests boot real images under OVMF with a vTPM |
 
 ## Shape of the chain
@@ -66,5 +67,6 @@ over the whole PE.
 | `pkgs/security/_aos-boot-identity/`, `crates/boot/aos-boot-identity/` | Boot-identity parser and guard |
 | `pkgs/security/_aos-verity-root-guard/` | Full read of the verity root before `/var` |
 | `crates/boot/aos-recovery/` | Recovery console, slot verifier, restore writer |
+| `crates/boot/aos-installer/`, `modules/image/installer.nix` | Unattended installer and its media |
 | `crates/release/aos-image-finalizer/` | External signing and final image assembly |
 | `systems/server-secureboot*.nix`, `systems/server-measured-boot.nix`, `systems/server-verity.nix` | Test fixtures |

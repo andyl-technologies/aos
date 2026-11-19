@@ -327,14 +327,6 @@ See also: [`signing-and-trust.md`](signing-and-trust.md) (keys, rotation/revocat
 [`http-layout.md`](http-layout.md) (served layout), and
 [`implementation.md`](implementation.md) (code map).
 
-The public browser scopes Packages, Docs, Images, and Containers to a published
-release. `[registry].default_release` is an optional semantic version used for
-initial navigation; it does not change package-manager tracking or channel
-assignments. Without it, the browser selects the highest verified non-prerelease
-version across all published branches, then the highest verified prerelease.
-A selected version remains in page URLs, filters, searches, and installation
-instructions. An unavailable release does not fall back to another catalog.
-
 `[support]` states how long each stable train (`major.minor`) receives updates.
 It is the qualification contract's `support` export, so consumers and Hubs read
 the reviewed promise from the signed registry. `default.kind` and
@@ -350,15 +342,7 @@ only `support.trains."T"`, taken from its own contract, and the publisher
 refuses a contract that names any other train. `support.default` is written
 only by a release whose train is the newest in the registry. Everything else in
 `registry.toml` stays operator-owned and byte-identical across publications.
-The public Releases page shows one tile per supported train with its newest
-release, marks trains within ninety days of their end date, and lists older
-trains as end of life. Without the table, the browser applies the default rule
-alone.
 
-Docs combines the release's configuration paths into one tree. Any path may be
-opened as a subtree. Child lists, variant lists, and indexed search results use
-50-item cursor pages. Expanding a branch fetches only its immediate children;
-selecting an option loads its exact verified documentation object. Search covers
-the entire release unless the reader chooses the current subtree. Typed path
-segments preserve literal dots and dynamic attributes without confusing them
-with hierarchy separators.
+The public browser's use of `default_release` and `[support]`, and its Docs
+view, are described in
+[Hub control plane and console](../hub/control-plane.md#public-browser).

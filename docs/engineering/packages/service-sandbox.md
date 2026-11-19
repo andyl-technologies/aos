@@ -4,7 +4,7 @@ A package service's confinement is declared in its `serviceManagement` effect
 input and rendered by the systemd handler. There is no separate permission
 manifest: the typed service declaration is the only source of the unit's
 privilege, and the generated reference documents it. The operator view is
-[Understand native package runtime policy](../../users/aos/package-sandbox.md);
+[Understand native package runtime policy](../../users/aos/package-runtime-policy.md);
 the ability machinery is described in [runtime abilities](../abilities/README.md).
 
 | Piece | Location |

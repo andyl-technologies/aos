@@ -14,6 +14,7 @@ the first row is the place to start.
 | --- | --- |
 | [Development builds](../engineering/build/development-builds.md) | Set up the development shell, `aos-dev`, and the build caches |
 | [Tutorial: build and boot AOS from source](source-build-quickstart.md) | Build a custom server image and boot it under the AOS-built QEMU and UEFI firmware |
+| [Use the repository CLI](repository-cli.md) | Build and inspect packages, run checks, and prefetch source hashes with `aos` |
 | [Build concurrency and resource pressure](../engineering/build/build-concurrency.md) | Investigate builds that fail under high parallelism |
 | [Code style guide](../engineering/code-style.md) | Apply the Rust and Nix conventions to new and modified code |
 | [Engineering documentation](../engineering/README.md) | Read how each component is implemented; update the relevant page in the change that alters a design |
@@ -52,8 +53,15 @@ Application packages have a separate
 | Page | Use it to |
 | --- | --- |
 | [Release checklist](release-checklist.md) | Start every release here: the order of operations, manual checks, and conditions for proceeding |
-| [Canonical release coordinator](canonical-releases.md) | Look up `aos maintain release` commands, the maintainer configuration, and static surfaces |
-| [Release qualification](qualification.md) | Look up destinations, profiles, fitness attestations, acceptance checks, and result formats |
+| [Canonical release coordinator](canonical-releases.md) | Read the release model overview and find the command reference pages below |
+| [Release commands](release-commands.md) | Look up `aos maintain release` `new`, `advance`, `publish`, `status`, `explain`, `review`, and `fitness`, and the work directory layout |
+| [Release maintainer machine and configuration](release-maintainer-machine.md) | Configure the coordinator services, tooling closure, maintainer configuration, and Hub credentials |
+| [Release step commands](release-step-commands.md) | Look up each `aos maintain release step` operation for arguments, recovery, and audit |
+| [Static release surfaces](release-static-surfaces.md) | Publish to a filesystem, S3, or SFTP origin instead of a Hub |
+| [Release qualification](qualification.md) | Look up destinations, profiles, fitness attestations, profile overrides, and release-train support |
+| [Qualification support matrix and acceptance checks](qualification-acceptance.md) | Look up assurance levels, required coverage, and the acceptance checks for each target kind |
+| [Qualification results and approvals](qualification-results.md) | Look up cases, the release journal, report review and signing, and the public release record |
+| [Qualification executors](qualification-executors.md) | Set up and understand the native executors that run qualification cases |
 | [`andyl/experimental` release retention policy](release-retention-policy.md) | Read the retention policy that release plans bind by digest; do not edit it in place |
 
 ## Operate registries and the hosted Hub
@@ -92,7 +100,7 @@ page linked from its entry.
 | Profile | The named set of checks a destination requires: `build`, `smoke`, `functional`, or `soak`. See [profiles](qualification.md#profiles). |
 | Partition, ring | A channel has 256 partitions. A ring is a cumulative partition count that a rollout reaches before it is observed and widened. |
 | Soak | The minimum observation window a profile requires before a rollout completes. |
-| Assurance level (A0 to A3) | How much testing backs a compatibility claim, from unassessed (A0) to qualified (A3). See [assurance levels](qualification.md#assurance-levels). |
+| Assurance level (A0 to A3) | How much testing backs a compatibility claim, from unassessed (A0) to qualified (A3). See [assurance levels](qualification-acceptance.md#assurance-levels). |
 | Fitness attestation | A signed, dated record that a recovery exercise (backup restore, key rotation, and so on) succeeded. See [fitness attestations](qualification.md#fitness-attestations). |
 | Plan | The frozen, reviewed description of one release; its digest is bound by every later step. |
 | Bundle | The closed, signed set of release artifacts and its manifest. |

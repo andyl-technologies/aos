@@ -52,7 +52,7 @@ aos hub registry mirror show --hub https://aos.andyl.org andyl/main
 ```
 
 Use `https://aos.staging.andyl.org` for the staging pass. For a
-[static surface](canonical-releases.md#static-surfaces), read its
+[static surface](release-static-surfaces.md#static-surfaces), read its
 `.aos-surface` identity, registry head, and channel generation records from the
 read-back origin instead. A mirror or consumer
 cache stack is a separately reviewed signed configuration; follow the generic
@@ -67,7 +67,7 @@ role-separated release/TUF/image authorities. Plan the first main release with
 takes the clone's single root commit as the base, then bootstrap that exact
 empty base with threshold-approved intents first in staging and then
 production using `aos maintain release step bootstrap`, as described in
-[`canonical-releases.md`](canonical-releases.md#bootstrap-the-first-registry-base).
+[`canonical-releases.md`](release-step-commands.md#bootstrap-the-first-registry-base).
 Never reuse an experimental key or import an experimental registry history. Both
 bootstrap destinations must be empty for `andyl/main`.
 
@@ -147,7 +147,7 @@ not a separate class:
 4. Run `aos maintain release new` with `--override DIR`, or run it and then
    `aos maintain release advance --to production/stable --override DIR` before any
    build, as described in
-   [plan an emergency override](canonical-releases.md#plan-an-emergency-override).
+   [plan an emergency override](release-commands.md#plan-an-emergency-override).
 
 The override changes only soak and rings. Reviews, fitness, the complete
 matrix, transaction review, staging publication, and every signature and

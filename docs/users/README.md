@@ -12,7 +12,7 @@
   - Packages
     - [Manage packages](aos/packages.md)
     - [Configure package registries](aos/registries.md)
-    - [Understand native package runtime policy](aos/package-sandbox.md)
+    - [Understand native package runtime policy](aos/package-runtime-policy.md)
     - [Use packages in containers](aos/containers.md)
   - Day-to-day operation
     - [Operate a host](aos/operations.md)

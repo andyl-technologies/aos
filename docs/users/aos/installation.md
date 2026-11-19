@@ -50,48 +50,11 @@ aos image download \
   --output aos-server.qcow2
 ```
 
-`download` resumes the image NAR from the registry's CDN cache, verifies its
-signed NAR identity, extracts the single regular-file output, and verifies the
-signed disk byte size and SHA-256 before placing the final file. Omit
-`--output` to use the useful filename from signed release metadata. Use
-`--no-resume` to restart a partial transfer. Existing final files are never
-overwritten.
-
-Public registries need no credentials. For a private registry, set
-`AOS_TOKEN` or pass `--token`; use HTTPS whenever a bearer token is present:
-
-```sh
-AOS_TOKEN=REPLACE_WITH_TOKEN aos image list \
-  --hub https://HUB \
-  --registry PRIVATE_REGISTRY \
-  --channel stable
-```
-
-To boot a downloaded raw or QCOW2 image locally without modifying the verified
-artifact, install the opt-in `pkgs.aos-vm` host package and use its packaged
-QEMU workflow:
-
-```sh
-nix-build -A pkgs.aos-vm -o result-aos-vm
-./result-aos-vm/bin/aos vm run ./aos-server.qcow2 \
-  --host-config ./host.nix \
-  --disk-size-gib 16 \
-  --ssh-port 2222
-```
-
-The command prepares a persistent writable disk and UEFI variable store, fixes
-the enlarged disk's backup GPT, and reports the exact launch configuration
-before starting QEMU. Use `--dry-run` to inspect the plan. The default chooses
-KVM on Linux when accessible and HVF on macOS. Linux warns before falling back
-to TCG emulation. Use `--accel kvm` or `--accel hvf` when the absence of the
-corresponding hardware accelerator should be an error.
-
-Use `aos --json image list` or `aos --json image show` for automation. The
-record includes the store and NAR identity, ordered cache URLs, format, target
-compatibility, media type, compression, exact size, SHA-256, release-signature
-and boot verification states, and the associated integrity-bound
-`image-delivery.json` and provider `image-info.json`. Secure Boot plus dm-verity
-images also include paired recovery UKI and authenticated recovery-bundle metadata.
+[Discover and download system images](cli.md#discover-and-download-system-images)
+covers resuming a transfer, exact releases, private-registry tokens, and JSON
+output. To boot a downloaded raw or QCOW2 image locally without modifying the
+verified artifact, see
+[Run a downloaded image locally](cli.md#run-a-downloaded-image-locally).
 
 ## Choose an image format
 
@@ -323,116 +286,10 @@ naming rules, encryption policy, and mount units.
 
 ## Install redundant encrypted ZFS storage
 
-> [!NOTE]
-> ZFS is supported when configured, at the lowest of the
-> [filesystem support tiers](support-status.md#filesystem-support-tiers).
-> OpenZFS is an out-of-tree module whose Linux integration has produced memory
-> retention, write stalls, and kernel panics on large hosts that no
-> configuration bounds. Prefer the ext4 layout above unless a deployment needs
-> ZFS features, and qualify ZFS on the exact host and kernel first.
-
-The reusable `aos.profiles.bareMetalZfs` profile provides a different
-bare-metal layout. Every selected disk receives an independently bootable ESP
-sized from the golden image's artifact contract and a ZFS member. Adjacent
-members form mirrors, and the mirrors are striped by the pool, so two disks
-produce a mirror and four or more disks produce RAID10-style storage. The
-encrypted pool contains mutable datasets and contract-sized zvols for both
-immutable EROFS roots and both dm-verity hash trees. There is no LUKS layer
-below ZFS.
-
-Create a deployment system module from the production server baseline, enable
-dm-verity and measured boot, enable the profile, list one ESP identity per
-target disk, and supply deployment-owned Secure Boot and PCR-policy keys. Do
-not import the checked-in Secure Boot or measured-boot system fixtures: those
-also select test-only packages and keys. For example:
-
-```nix
-{
-  imports = [./systems/server.nix];
-
-  aos.security.verity.enable = true;
-
-  aos.profiles.bareMetalZfs = {
-    enable = true;
-    espDevices = [
-      "/dev/disk/by-partlabel/aos-esp-1"
-      "/dev/disk/by-partlabel/aos-esp-2"
-      "/dev/disk/by-partlabel/aos-esp-3"
-      "/dev/disk/by-partlabel/aos-esp-4"
-    ];
-    nvidiaOpen = true;
-    serverManagement = true;
-  };
-
-  # These values must be Nix path values from a private deployment input or
-  # an isolated signing builder, not untracked absolute-path strings.
-  aos.boot.secureBoot = {
-    enable = true;
-    dbKey = toString ./private-signing/db.key;
-    dbCert = toString ./private-signing/db.crt;
-    enrollAuthDir = toString ./public-enrollment;
-    measuredBoot = {
-      enable = true;
-      pcrPrivateKey = toString ./private-signing/pcr.key;
-      pcrPublicKey = toString ./public-signing/pcr.pem;
-    };
-  };
-}
-```
-
-The private deployment input must be available to a controlled build sandbox;
-these are Nix path values so their contents are copied into that builder's
-store. Use a signing builder whose store, logs, and substituter outputs are not
-shared, then destroy its private-key-bearing store paths after the build. Never
-commit or publish the private input. The repository's measured-boot systems are
-test fixtures with public keys; do not install them on a real machine.
-
-The ZFS installation bundle below requires this in-build signing. To keep
-private keys out of the Nix store entirely, use external finalization instead.
-Set `aos.boot.secureBoot.externalFinalization.enable = true`, omit `dbKey`,
-`lockdown.moduleSigningKey`, and `measuredBoot.pcrPrivateKey`, and supply only
-public material: `dbCert`, `enrollAuthDir`, `lockdown.moduleSigningCert`, and
-`measuredBoot.pcrPublicKey`. External finalization also requires lockdown,
-measured boot, recovery, and dm-verity to be enabled. Nix then builds the
-unsigned `system.build.unsignedImageAssembly` and no signed disk images or
-installation bundle. `aos maintain release step finalize-image` signs that
-assembly through an external signer process under a release plan and writes
-the signed raw, QCOW2, VMDK, and VHD disks. The signer interface, the bundled
-file-backed signer, and the full command are described in
-[Finalize each Linux image](../../maintainers/canonical-releases.md#finalize-each-linux-image).
-
-Build the module's `system.build.installBundle` output on x86 Linux. Run the
-bundle's `bin/aos-install-zfs` from a trusted AOS recovery environment that has the exact ZFS
-kernel module loaded, the deployment Secure Boot keys enrolled, Secure Boot
-enforcing, and a working TPM2. The command is intentionally destructive and
-accepts only stable whole-disk identities with no existing partition table:
-
-```sh
-/path/to/install-bundle/bin/aos-install-zfs \
-  --confirm ERASE-AND-INSTALL \
-  --recovery-key-output /recovery-media/zfs-recovery.key \
-  --disk /dev/disk/by-id/REPLACE_WITH_DISK_1 \
-  --disk /dev/disk/by-id/REPLACE_WITH_DISK_2 \
-  --disk /dev/disk/by-id/REPLACE_WITH_DISK_3 \
-  --disk /dev/disk/by-id/REPLACE_WITH_DISK_4
-```
-
-The number of `--disk` arguments must equal the configured ESP count and must
-be even. Before the first destructive write, the installer rejects duplicate,
-mounted, partitioned, or kernel-name-only disks; an existing or relative
-recovery output; a topology mismatch; and a non-enforcing Secure Boot state.
-It creates native AES-256-GCM encryption, verifies the root payloads fit their
-zvol capacities, seals the pool key to the configured PCR policy, copies the
-sealed credential and boot artifacts to every ESP, and exports the pool.
-
-Move the recovery key off the installation environment before rebooting. Test
-both unattended TPM unlock and recovery-key import, then test booting through
-each firmware-visible ESP and surviving one failed mirror member before
-placing data on the system.
-
-Kernel lockdown is a separate opt-in policy. If enabled, the deployment must
-also sign both the ZFS and NVIDIA external modules with a key trusted by the
-kernel; the bare-metal profile does not generate or retain that private key.
+The encrypted-ZFS bare-metal layout is selected in the image definition and
+installed with its own installer; the procedure is in
+[Install redundant encrypted ZFS storage](../../maintainers/system-images.md#install-redundant-encrypted-zfs-storage).
+[Run ZFS storage](storage-zfs.md) covers operating the pool.
 
 ## Supply first-boot metadata
 
@@ -517,23 +374,9 @@ If first boot stops before the target, inspect the units and state in
 - MD arrays declared in `host.nix` protect persistent state only; the image
   slots and EFI System Partition are not mirrored, and the recovery console
   does not yet open a mirrored `/var`.
-- The ZFS installer supports mirrored pairs striped into RAID10-style pools.
-  RAID0-only topology is intentionally not exposed because it cannot satisfy
-  the redundant-storage contract.
-- The initrd carries a focused firmware subset for supported pre-root server
-  storage and network adapters, not the general runtime bundle. Image
-  definitions for other hardware must add the required firmware package to
-  `aos.boot.initrd.firmwarePackages`; runtime firmware remains available after
-  the immutable root is mounted.
-- Set `aos.kernel.includeFirmware = false` in the image definition to omit
-  device firmware from both the initrd and immutable root. The default is
-  `true`. The existing firmware package lists select which files are included
-  when the flag is enabled. NVIDIA open kernel modules require it enabled.
-- NVIDIA support in this repository stops at open kernel modules and matching
-  GSP firmware. CUDA, OpenGL, Vulkan, management utilities, and other matching
-  proprietary userspace components must be supplied separately.
-- Installer media is built only for locally signed Secure Boot systems. The
-  production external-finalization path does not yet produce it.
+- Limits that apply when defining an image, such as initrd firmware, NVIDIA
+  support, the ZFS installer topology, and installer-media signing, are in
+  [Image definition limits](../../maintainers/system-images.md#image-definition-limits).
 - `apm image download PACKAGE --system --format raw --output FILE` downloads an image
   published in a system registry. It does not write a disk or provision a
   machine.
