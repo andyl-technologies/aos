@@ -262,15 +262,14 @@ fn assert_selectable_v1_golden_vectors() {
 
 #[test]
 fn guest_selectable_current_schemas_are_registered_exactly() {
-    let registry =
-        include_str!("../../../../docs/rfcs/0020-crucible-campaigns/schema-registry.tsv");
+    let registry = crucible_test_support::schema_registry::SCHEMA_REGISTRY;
     for schema in [
         "crucible.guest-selectable.register",
         "crucible.guest-selectable.request",
         "crucible.guest-selectable.reply",
     ] {
         let expected = format!(
-            "{schema}\t1\tcrucible-protocol::selectable\tprocess-protocol-message\tgate:typed-choice,gate:abi-conformance"
+            "{schema}\t1\tcrucible-qemu-protocol::selectable\tprocess-protocol-message\tgate:typed-choice,gate:abi-conformance"
         );
         assert!(
             registry.lines().any(|line| line == expected),
@@ -278,14 +277,14 @@ fn guest_selectable_current_schemas_are_registered_exactly() {
         );
     }
     let catalog_plan = format!(
-        "crucible.guest-selectable.catalog-plan\t{SELECTABLE_CATALOG_PLAN_VERSION}\tcrucible-protocol::selectable_catalog_plan\tprocess-protocol-message\tgate:typed-choice,gate:abi-conformance"
+        "crucible.guest-selectable.catalog-plan\t{SELECTABLE_CATALOG_PLAN_VERSION}\tcrucible-qemu-protocol::selectable_catalog_plan\tprocess-protocol-message\tgate:typed-choice,gate:abi-conformance"
     );
     assert!(
         registry.lines().any(|line| line == catalog_plan.as_str()),
         "missing exact selectable catalog-plan schema row"
     );
     let pending_request = format!(
-        "crucible.guest-selectable.pending-request\t{}\tcrucible-protocol::selectable_transport\tprocess-protocol-message\tgate:typed-choice,gate:abi-conformance",
+        "crucible.guest-selectable.pending-request\t{}\tcrucible-qemu-protocol::selectable_transport\tprocess-protocol-message\tgate:typed-choice,gate:abi-conformance",
         SELECTABLE_PENDING_TRANSPORT_VERSION,
     );
     assert!(
@@ -294,7 +293,7 @@ fn guest_selectable_current_schemas_are_registered_exactly() {
             .any(|line| line == pending_request.as_str()),
         "missing exact selectable pending-request schema row"
     );
-    let setup_plan = "crucible.qemu-plugin.setup-plan\t2\tcrucible-protocol::plugin_setup_plan\tprocess-protocol-message\tgate:typed-choice,gate:abi-conformance";
+    let setup_plan = "crucible.qemu-plugin.setup-plan\t2\tcrucible-qemu-protocol::plugin_setup_plan\tprocess-protocol-message\tgate:typed-choice,gate:abi-conformance";
     assert!(
         registry.lines().any(|line| line == setup_plan),
         "missing exact plugin setup-plan schema row"

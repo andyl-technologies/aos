@@ -17,8 +17,7 @@ fn hot_fork_qmp_schemas_have_current_registry_owners() {
         QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION,
     };
 
-    let registry =
-        include_str!("../../../../../docs/rfcs/0020-crucible-campaigns/schema-registry.tsv");
+    let registry = crucible_test_support::schema_registry::SCHEMA_REGISTRY;
     let schemas = [
         ("template", QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION),
         (
@@ -68,7 +67,7 @@ fn hot_fork_qmp_schemas_have_current_registry_owners() {
 
     for (name, version) in schemas {
         let row = format!(
-            "crucible.qemu.hot-fork.{name}\t{version}\tcrucible-qemu::qmp::hot_fork\tprocess-protocol-message\t"
+            "crucible.qemu.hot-fork.{name}\t{version}\tcrucible-qemu-host::qmp::hot_fork\tprocess-protocol-message\t"
         );
         assert!(
             registry.lines().any(|line| line.starts_with(&row)),
@@ -78,7 +77,9 @@ fn hot_fork_qmp_schemas_have_current_registry_owners() {
 
     let registered = registry
         .lines()
-        .filter(|line| line.contains("\tcrucible-qemu::qmp::hot_fork\tprocess-protocol-message\t"))
+        .filter(|line| {
+            line.contains("\tcrucible-qemu-host::qmp::hot_fork\tprocess-protocol-message\t")
+        })
         .filter_map(|line| line.split_once('\t'))
         .map(|(name, _)| name)
         .filter(|name| name.starts_with("crucible.qemu.hot-fork."))
@@ -99,8 +100,7 @@ fn hot_fork_qmp_schemas_have_current_registry_owners() {
 fn cold_stop_qapi_contract_matches_its_patch_owned_schema() {
     let patch =
         include_str!("../../../../../pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch");
-    let registry =
-        include_str!("../../../../../docs/rfcs/0020-crucible-campaigns/schema-registry.tsv");
+    let registry = crucible_test_support::schema_registry::SCHEMA_REGISTRY;
     let version = 1;
     let owner = format!(
         "crucible.qemu.hot-fork.cold-stop\t{version}\tqemu-patch::hot-fork-cold-stop\tprocess-protocol-message\t"
@@ -148,8 +148,7 @@ fn patched_qapi_commands_have_schema_owners_or_qapi_only_contracts() {
 
     let patch =
         include_str!("../../../../../pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch");
-    let registry =
-        include_str!("../../../../../docs/rfcs/0020-crucible-campaigns/schema-registry.tsv");
+    let registry = crucible_test_support::schema_registry::SCHEMA_REGISTRY;
 
     // These commands exchange a separately versioned Crucible payload.
     let versioned = [

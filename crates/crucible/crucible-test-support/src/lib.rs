@@ -17,7 +17,8 @@
 //! cost-model perf-bench gate substrate, [`phase_plan`] records the ordered gate
 //! occurrences, [`replay_oracle`] compares replay hashes, [`reproduction`] owns
 //! the versioned reproduction artifact format, [`segment_replay`] coordinates
-//! checkpoint-parallel replay, and [`workspace_crates`] lists the Crucible
+//! checkpoint-parallel replay, [`schema_registry`] owns the canonical
+//! versioned-schema registry, and [`workspace_crates`] lists the Crucible
 //! crates that workspace-wide lints iterate.
 
 #![forbid(unsafe_code)]
@@ -35,6 +36,7 @@ pub mod perf;
 pub mod phase_plan;
 pub mod replay_oracle;
 pub mod reproduction;
+pub mod schema_registry;
 pub mod segment_replay;
 pub mod workspace_crates;
 

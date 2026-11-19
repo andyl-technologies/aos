@@ -14,3 +14,6 @@ libc = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
 unicode-normalization = { workspace = true }
+
+[dev-dependencies]
+crucible-test-support = { path = "../crucible-test-support" }

@@ -913,7 +913,7 @@ struct CampaignFixtureArgs {
 
 #[derive(Subcommand, Debug, PartialEq, Eq)]
 enum CampaignFixtureCommand {
-    /// Generate the adaptive network-recovery worked-example campaign.
+    /// Generate the adaptive network-recovery reference campaign.
     WorkedNetwork(CampaignWorkedNetworkFixtureArgs),
 }
 

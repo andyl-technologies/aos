@@ -2747,15 +2747,10 @@ mod run_lock_schema_tests {
         assert_eq!(decoded.version, PRODUCTION_RUN_LOCK_VERSION);
         assert_eq!(decoded.owner, owner);
 
-        let registry =
-            include_str!("../../../../docs/rfcs/0020-crucible-campaigns/schema-registry.tsv");
-        let registry_version = registry
-            .lines()
-            .find_map(|line| line.strip_prefix("crucible.production-run-lock\t"))
-            .and_then(|fields| fields.split('\t').next())
-            .ok_or_else(|| std::io::Error::other("missing production run lock registry row"))?
-            .parse::<u32>()?;
-        assert_eq!(registry_version, PRODUCTION_RUN_LOCK_VERSION);
+        let registry_entry =
+            crucible_test_support::schema_registry::find_schema("crucible.production-run-lock")?
+                .ok_or_else(|| std::io::Error::other("missing production run lock registry row"))?;
+        assert_eq!(registry_entry.version, PRODUCTION_RUN_LOCK_VERSION);
 
         let unversioned = serde_json::json!({ "owner": owner.clone() });
         fs::write(&path, serde_json::to_vec(&unversioned)?)?;

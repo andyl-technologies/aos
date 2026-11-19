@@ -45,6 +45,7 @@ crucible-engine = { path = "../crucible-engine", features = ["test-double", "tes
 crucible-control-api = { path = "../crucible-control-api" }
 crucible-guest = { path = "../crucible-guest" }
 crucible-qemu-host = { path = "../crucible-qemu-host", features = ["test-support"] }
+crucible-test-support = { path = "../crucible-test-support" }
 
 [[test]]
 name = "gate_campaign_component_contract"

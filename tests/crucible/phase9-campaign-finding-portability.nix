@@ -97,7 +97,7 @@ in
 
           grep -Fqx \
             'crucible.campaign.finding-bundle	2	crucible-cli::cli_campaign::finding_bundle	export-directory	gate:campaign-replay,gate:campaign-store-composition' \
-            docs/rfcs/0020-crucible-campaigns/schema-registry.tsv
+            crates/crucible/crucible-test-support/data/schema-registry.tsv
 
           test "$(sed -n '1p' ${packagedReplay}/result)" = PASS
           test "$(grep -Fxc 'gate=gate:campaign-replay' ${packagedReplay}/result || true)" -eq 1

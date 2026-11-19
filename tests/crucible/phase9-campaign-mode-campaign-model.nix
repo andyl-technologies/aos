@@ -7,11 +7,6 @@
 }: let
   repositoryRoot = ../..;
   repositoryRootString = toString repositoryRoot;
-  campaignRfcDirectory = "${repositoryRootString}/docs/rfcs/0020-crucible-campaigns";
-  requiredCampaignRfcFiles = [
-    "${campaignRfcDirectory}/schema-registry.tsv"
-    "${campaignRfcDirectory}/11-implementation-plan.md"
-  ];
   daemonScenarioFixture = "${repositoryRootString}/tests/crucible/fixtures/e2e-determinism.scenario.toml";
   source = builtins.path {
     path = repositoryRoot;
@@ -29,10 +24,6 @@
         == repositoryRootString
         || pathString == "${repositoryRootString}/crates"
         || lib.hasPrefix "${repositoryRootString}/crates/" pathString
-        || pathString == "${repositoryRootString}/docs"
-        || pathString == "${repositoryRootString}/docs/rfcs"
-        || pathString == campaignRfcDirectory
-        || builtins.elem pathString requiredCampaignRfcFiles
         || pathString == "${repositoryRootString}/tests"
         || pathString == "${repositoryRootString}/tests/crucible"
         || pathString == "${repositoryRootString}/tests/crucible/fixtures"

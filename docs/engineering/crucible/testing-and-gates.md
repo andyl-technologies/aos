@@ -34,6 +34,7 @@ workspace member that no runtime crate may depend on. Its module map:
 | `perf` | The cost-model substrate of `gate:perf-bench` |
 | `assertion` | Test-only determinism assertion labels (`crucible-assert.v1`) |
 | `campaign_gates` | Executable contracts of the campaign gates |
+| `schema_registry` | `SCHEMA_REGISTRY`: the canonical versioned-schema registry (`data/schema-registry.tsv`) and its typed row parser |
 | `workspace_crates` | `crucible_crates()`: the Crucible crate list that workspace-wide lints iterate |
 
 ## Test layers

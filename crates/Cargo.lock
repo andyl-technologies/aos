@@ -2840,6 +2840,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "crucible-store",
+ "crucible-test-support",
  "ed25519-dalek",
  "num-bigint",
  "num-integer",
@@ -2970,6 +2971,7 @@ dependencies = [
  "crucible-session",
  "crucible-store",
  "crucible-store-s3",
+ "crucible-test-support",
  "ed25519-dalek",
  "rand 0.9.4",
  "rustix",
@@ -3053,6 +3055,7 @@ dependencies = [
  "crucible-engine",
  "crucible-qemu-protocol",
  "crucible-qemu-shmem",
+ "crucible-test-support",
  "libc",
  "rustix",
  "serde",
@@ -3083,6 +3086,7 @@ name = "crucible-qemu-protocol"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "crucible-test-support",
  "libc",
  "sha2 0.10.9",
  "thiserror 2.0.18",
