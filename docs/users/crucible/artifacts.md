@@ -14,8 +14,8 @@ different portability and retention contracts. This guide separates them.
 | Checkpoint | Exact scheduler, VM, adapter, signal, property, and object-closure state | `resume`, replay/debug | Addressed through the store or embedded artifact. |
 | Savepoint handle | Typed selector and proof naming a checkpoint | `resume`, `debug`, `replay --to` | No; referenced store closure must remain available. |
 | Reproduction artifact v3 | Authenticated inputs, schedule, live recipe, evidence scope, terminal checkpoint and reachable signal objects | `replay`, compare, bisect | Yes within its declared backend/build requirements. |
-| Findings ledger | Signed search/fuzz findings and identities | `triage`, replay/minimize | Findings carry or reference self-contained reproduction material. |
-| Triage report | Human/machine cluster, comparison, minimization output | operator/CI | Preserve alongside source ledgers and artifacts. |
+| Findings ledger | Signed search/fuzz findings and identities | retention, `campaign finding-bundle` | Findings carry or reference self-contained reproduction material. |
+| Triage report | Human/machine cluster and minimization output | operator/CI | Preserve alongside the triaged campaign snapshot identity and artifacts. |
 
 Content hashes use `blake3:<64 lowercase hexadecimal digits>`. A hash proves
 content identity; it does not fetch missing content from a remote service.
@@ -134,8 +134,9 @@ input, schedule, evidence, and terminal-fingerprint divergence.
 `search` and `fuzz` always write the requested signed findings ledger, including
 an empty ledger. Each retained finding identifies the property/timeout outcome,
 scenario materialization, schedule, coverage/evidence, and replay recipe.
-`triage` authenticates ledgers, clusters equivalent failures, compares evidence,
-and can minimize within declared budgets.
+`triage` works on the findings retained by a campaign snapshot rather than on
+a ledger file: it authenticates them through the campaign service, clusters
+equivalent failures, and can minimize within declared budgets.
 
 Do not treat arbitrary JSONL logs as findings ledgers. The signature and typed
 identity are part of the input contract.

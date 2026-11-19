@@ -87,9 +87,10 @@ the live terminal tuple, event stream, and execution-fingerprint stream to
 match exactly. Remote verification reports that artifact retention was skipped
 when the daemon does not provide producer provenance.
 
-Search and fuzz also emit a signed `.crucible-findings` ledger that can be passed
-directly to `triage`. Use `--findings-out <path>` for a fixed ledger location;
-otherwise it is content-addressed below `<artifact-dir>/findings`.
+Search and fuzz also emit a signed `.crucible-findings` ledger. Use
+`--findings-out <path>` for a fixed ledger location; otherwise it is
+content-addressed below `<artifact-dir>/findings`. The current `triage` command
+reads campaign snapshots, not ledger files.
 
 ## Replay
 

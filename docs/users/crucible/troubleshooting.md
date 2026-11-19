@@ -90,12 +90,13 @@ Use the same store root as the producing command:
 
 Bare checkpoint hashes are not portable savepoints and fail normal admission.
 
-### Triage input lacks discovery evidence
+### Triage rejects a ledger or artifact path
 
-`triage` accepts the signed findings ledger emitted by `search` or `fuzz`, not
-a directory of reproduction artifacts and not an individual `.crucible`
-artifact. Rerun the campaign with `--findings-out <path>` when automation needs
-a predictable ledger path, then pass that path to `triage`.
+`triage` reads the findings retained by an exact campaign snapshot through the
+campaign service. It takes `--campaign-socket`, `--principal`, the campaign
+name, and `--snapshot`; it does not accept a findings ledger, a directory of
+reproduction artifacts, or an individual `.crucible` artifact. See
+[Findings and triage](exploration.md#findings-and-triage).
 
 ## Exit `3`: identity, oracle, crash, or server failure
 

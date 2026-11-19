@@ -39,8 +39,11 @@
 //! 8       4     src_node
 //! 12      4     seq
 //! 16      2     len
-//! 18      6     padding
-//! 24      N     payload bytes
+//! 18      1     delivery_state
+//! 19      1     padding
+//! 20      4     delivery_attempts
+//! 24      8     last_delivery_attempt_icount
+//! 32      4608  payload bytes (MAX_FRAME_DATA)
 //! ```
 //!
 //! Per-node slot wire layout:

@@ -92,21 +92,26 @@ Fuzzing is currently local. `--daemon` fuzz is rejected.
 
 ## Findings and triage
 
-`triage` is offline: it loads a findings ledger, groups failures by signature,
-optionally minimizes representatives, stores the result, and writes reports.
-The input is the signed ledger itself, not a directory of reproduction
-artifacts and not an individual `.crucible` artifact. Only the ledger retains
-the discovery-time signature and evidence binding needed for deterministic
-clustering and `--recompute-signatures`.
+`triage` clusters the findings retained by an exact campaign snapshot. It
+connects to the campaign owner, authenticates snapshot membership, every
+retained finding occurrence, its reproduction objects, and its native replay
+proof, then groups failures by signature, optionally minimizes
+representatives, stores the result, and writes reports. It does not read a
+local findings ledger.
 
 ```sh
 ./result/bin/crucible \
   --format markdown \
-  triage findings.crucible-findings \
+  triage --campaign-socket "$CAMPAIGN_SOCKET" --principal operator \
+  network-recovery --snapshot "$SNAPSHOT" \
   --policy default \
   --minimize representative \
   --report .crucible/triage
 ```
+
+`crucible campaign --socket "$CAMPAIGN_SOCKET" --principal operator triage
+network-recovery --snapshot "$SNAPSHOT"` is the equivalent long form. See
+[Campaigns](campaigns.md) for creating campaigns and selecting snapshots.
 
 Signature policies are `coarse`, `default`, `fine`, and `exact`. Finer policies
 split more findings; coarser policies are more aggressive about grouping.
@@ -117,28 +122,22 @@ Minimization modes are:
 - `representative` — minimize one deterministic representative per cluster;
 - `all` — minimize every selected representative.
 
-Use `--recompute-signatures` when auditing a retained ledger. It recomputes
-signatures and fails if discovery-time signature bytes drift.
+Use `--recompute-signatures` when auditing retained findings. It recomputes
+signatures and fails if retained signature evidence drifts.
 
-Compare a result with another content-addressed triage result using:
+Without `--report`, triage reports go to `--artifact-dir`. Triage objects are
+stored under `<artifact-dir>/campaign-triage-store`.
 
-```sh
---compare <blake3:result-hash>
-```
-
-By default, triage reports go to `--artifact-dir`, and triage objects use the
-same default `<artifact-dir>/store` as other offline operations.
-
-Search and fuzz write a signed v4 ledger automatically when they retain at
-least one finding. Its default location is
+Search and fuzz write a signed v4 findings ledger automatically when they
+retain at least one finding. Its default location is
 `<artifact-dir>/findings/<digest>.crucible-findings`; use
 `--findings-out <path>` on either command when automation needs a fixed path.
-An explicit path is created even when the campaign has zero findings, yielding
-a valid signed ledger with `finding_count=0` that can be passed to `triage` and
-compared across campaigns. Without an explicit path, a zero-finding campaign
-does not create a ledger. The ledger binds each artifact to its exact event
-frames, coverage fingerprint, typed finding evidence, and discovery signature. `triage
---recompute-signatures` verifies that binding.
+An explicit path is created even when the run has zero findings, yielding a
+valid signed ledger with `finding_count=0`. Without an explicit path, a
+zero-finding run does not create a ledger. The ledger binds each artifact to
+its exact event frames, coverage fingerprint, typed finding evidence, and
+discovery signature. Retain it with the run's reproduction artifacts; the
+current `triage` command does not accept it as input.
 
 Timeout clusters are reportable but not shrinkable by the offline model
 minimizer. When minimization is requested, triage retains the original timeout

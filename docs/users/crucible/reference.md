@@ -256,12 +256,14 @@ Supply the family either positionally or with `--family`, never both.
 
 | Argument or option | Required/default | Meaning |
 | --- | --- | --- |
-| `FINDINGS` | Required | Signed findings ledger emitted by `search` or `fuzz`. |
+| `--campaign-socket <path>` | Required | Connected campaign service socket. |
+| `--principal <principal>` | Required | Authenticated campaign principal. |
+| `NAME` | Required | Canonical campaign name. |
+| `--snapshot <snapshot>` | Required | Exact authenticated campaign snapshot whose retained findings are triaged. |
 | `--policy <coarse\|default\|fine\|exact>` | Default `default` | Select how much failure evidence participates in a cluster signature. Finer policies split more findings. |
 | `--minimize <none\|representative\|all>` | Default `representative` | Skip minimization, minimize one deterministic representative per cluster, or minimize every selected representative. |
 | `--report <dir>` | Default below `--artifact-dir` | Write per-cluster reports here. |
-| `--recompute-signatures` | Off | Recompute signatures and fail if discovery-time bytes drift. |
-| `--compare <other-triage-result>` | Optional | Compare against another content-addressed triage result. |
+| `--recompute-signatures` | Off | Recompute signatures and fail if retained evidence drifts. |
 
 Triage policy values:
 
@@ -678,8 +680,8 @@ one state transition; when it deactivates, the declaration baseline resumes.
 | `cancel_timer` | `name` | Cancel the timer. |
 | `start_node` | `node` | Start a declared stopped node. |
 | `stop_node` | `node` | Stop a declared node. |
-| `create_savepoint` | optional `label` | Materialize a savepoint at the firing boundary. |
-| `fork` | optional `label` | Fork a child execution at the firing boundary. |
+| `create_savepoint` | optional `label` | Record a labeled savepoint request at the firing boundary in the trigger action state and event log. The run does not materialize a checkpoint from it; use `save` or a debugger session for that. |
+| `fork` | optional `label` | Record a labeled fork request at the firing boundary in the trigger action state and event log. The run does not start a child execution from it; use `campaign branch` for an alternate execution. |
 | `pass` | none | Produce an explicit passing terminal verdict. |
 | `fail` | `reason` | Produce an explicit failing terminal verdict. |
 | `log` | `level`, `message` | Emit deterministic text; level is `debug`, `info`, `warn`, or `error`. |

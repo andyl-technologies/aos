@@ -127,7 +127,7 @@ transition rather than an ordinary configuration edit. The image contains:
 
 - registry bootstrap keys under `/etc/apm/trusted-keys.d`;
 - registry definitions and bootstrap caches under `/etc/apm/registries.d`;
-- Secure Boot catalog certificates under `/etc/apm/trusted-sb-certs.d`; and
+- Secure Boot db certificates under `/etc/apm/trusted-sb-certs.d`; and
 - signed-configuration keys under `/etc/apm/trusted-config-keys.d`.
 
 The first three are authenticated by dm-verity when the root hash is bound by
@@ -136,6 +136,12 @@ overlay under `/var/lib/apm/config`; platform-trusted configuration may do the
 same when the deployment chooses the platform metadata channel as authority.
 Document and review that choice. The baked anchor establishes first contact,
 not an immutable ban on later authorized policy changes.
+
+APM does not currently read `/etc/apm/trusted-sb-certs.d`. Upgrades do not
+check a candidate UKI's Secure Boot signer or SBAT generation; firmware
+enforcement at boot and boot counting cover a rejected candidate, and the
+recovery environment verifies UKIs against the db certificates in its own
+initrd.
 
 Do not use the checked-in test keys for enrollment or storage sealing. A
 production image requires deployment-owned firmware and signing roles,
