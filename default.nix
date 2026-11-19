@@ -1748,6 +1748,10 @@ in rec {
       downstream-toolchain-cache-check = downstream.toolchain-cache-check;
       config-provenance = configProvenanceChecks.suites;
       rendered-evaluation = builtins.removeAttrs renderedEvalSuites ["rendered-system"];
+      system-images = import ./lib/testing/system-image-evaluation.nix {
+        inherit pkgs lib;
+        systems = discoverSystems;
+      };
     };
     eval = pkgs.mkDerivation {
       pname = "aos-native-evaluation-checks";

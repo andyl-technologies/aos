@@ -6,9 +6,11 @@
 ##! tooling (efitools + `aos-sb-enroll`). As a test fixture it re-bundles
 ##! the `aos-test-agent` package (the server profile keeps it out of the
 ##! production image, but the fleet harness needs it to drive image-boot
-##! machines); `tests/fleet/secure-boot.nix` boots this image, enrolls
-##! keys, reboots into enforcing mode, and asserts SB is active — then
-##! tampers the UKI and asserts the firmware refuses it.
+##! machines). Its authored policy enables the server role, so it also
+##! bundles that role's chrony and OpenSSH packages, keeping the image
+##! buildable as a standalone system. `tests/fleet/secure-boot.nix` boots
+##! this image, enrolls keys, reboots into enforcing mode, and asserts SB
+##! is active — then tampers the UKI and asserts the firmware refuses it.
 ##!
 ##! Auto-registers as `systems.server-secureboot`.
 {
@@ -58,6 +60,23 @@
   aos.packages.aos-test-agent = {
     package = pkgs.aos-test-agent;
     bundle = lib.mkIf ((config.aos.boot.stage or "host") == "host") true;
+  };
+
+  # The authored secure-boot policy enables aos.roles.server in the image's own
+  # host stage, and that role enables the chrony and SSH services. The role
+  # only names them in aos.apm.desiredPackages, which the on-host evaluator
+  # resolves from a registry; image assembly never resolves that list, so the
+  # build-time host evaluation must already carry the service packages or the
+  # enabled services have no package-owned lifecycle. Bundle exactly the role's
+  # requirements, the same payload that _server-test-packages.nix supplies to
+  # the fleet tests that compose this fixture.
+  aos.packages.chrony = {
+    package = pkgs.chrony;
+    bundle = true;
+  };
+  aos.packages.openssh = {
+    package = pkgs.openssh.server;
+    bundle = true;
   };
 
   aos.boot.secureBoot = {
