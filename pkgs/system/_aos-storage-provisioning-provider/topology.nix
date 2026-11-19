@@ -16,7 +16,8 @@
   # is then never part of the boot-time storage chain.
   zfsState = config.aos.boot.storage.backend == "zfs-zvol";
   hostStage = config.aos.boot.stage == "host";
-  initrdStage = config.aos.boot.stage == "initrd";
+  # Installer media boots no installed system, so installed-system effects are absent.
+  initrdStage = config.aos.boot.stage == "initrd" && !(config.aos.boot.installerMedia or false);
   mounts = config.aos.abilities.mount.operations.ensure.effects;
 
   volumeType = lib.types.submodule {

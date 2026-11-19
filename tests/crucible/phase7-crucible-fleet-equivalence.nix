@@ -366,7 +366,7 @@ in
           test "$(grep -Fxc PASS "$e2e_result")" -eq 1
           test "$(grep -Fxc 'gate=gate:e2e-determinism' "$e2e_result")" -eq 1
           test "$(grep -Fxc 'campaign_mode=${campaignComposition.mode}' "$e2e_result")" -eq 1
-          test "$(grep -Fxc 'campaign_configuration_identity=${campaignComposition.system.config.aos.services.crucibleCampaign._runtimeIdentity}' "$e2e_result")" -eq 1
+          test "$(grep -Fxc 'campaign_configuration_identity=${campaignComposition.system.config.aos.crucible.campaign._runtimeIdentity}' "$e2e_result")" -eq 1
           test "$(grep -Fxc 'campaign_toplevel=${campaignComposition.system.config.system.build.toplevel}' "$e2e_result")" -eq 1
           test "$(grep -Fxc 'native_qemu_execution=true' "$e2e_result")" -eq 1
           test "$(grep -Fxc 'artifact_replay=true' "$e2e_result")" -eq 1

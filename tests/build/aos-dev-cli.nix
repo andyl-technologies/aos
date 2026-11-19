@@ -31,6 +31,8 @@ in
       pkgs.coreutils
       pkgs.findutils
       pkgs.gawk
+      # The source-tracking check asks Git which files its ignore rules hide.
+      pkgs.git-minimal
       pkgs.grep
       pkgs.sed
       pkgs.util-linux
