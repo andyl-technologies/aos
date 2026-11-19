@@ -7,7 +7,7 @@
   `pkgs/system/_systemd-abilities/platform/_uki-builder.nix`, the APM system-image lifecycle, and Secure
   Boot/measured-boot fleet tests.
 - **Relates to:** [RFC-0006](../0006-secure-boot/README.md),
-  [RFC-0011](../0011-on-host-config-eval/README.md).
+  [host configuration](../../engineering/host-configuration.md).
 - **Plan:** [`implementation.md`](implementation.md)
 
 ## Summary
@@ -44,7 +44,7 @@ current A/B design:
 
 This RFC does **not** adopt a single-ESP installer, ESP-resident `rootfs.bin`,
 or first-boot root `CopyBlocks=` design. Those ideas conflict with the
-implemented A/B image lifecycle and RFC-0011's authenticated, host-driven
+implemented A/B image lifecycle and the authenticated, host-driven
 storage provisioning boundary.
 
 ## Current state
@@ -92,7 +92,7 @@ work:
 
 | Security item | Current disposition |
 | --- | --- |
-| Root hash in the signed UKI command line | Already implemented by RFC-0011; retained unchanged |
+| Root hash in the signed UKI command line | Already implemented by on-host configuration; retained unchanged |
 | Stable ESP partlabel | Already implemented as `/dev/disk/by-partlabel/ESP` |
 | Signed recovery profile | Redesigned here as separate, paired, uncounted recovery UKIs |
 | Exclude recovery from normal PCR-11 authorization | Required here by building recovery without the normal `.pcrsig` |

@@ -45,3 +45,9 @@ is; when the code changes, the page changes with it.
   repair boundary.
 - [Update contract](package-maintenance/update-contract.md) describes the
   `mkUpstream` declaration that update tooling reads and edits.
+
+## Host configuration
+
+- [Host configuration](host-configuration.md) covers the image and host
+  boundary, metadata acquisition and authorization, storage commit, pure
+  on-host evaluation, and journaled configuration generations.
