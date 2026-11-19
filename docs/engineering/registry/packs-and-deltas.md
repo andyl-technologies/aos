@@ -9,7 +9,8 @@
 > indexing, and **zstd** compression for thin-delta transport.
 >
 > This is the transport that carries the registry's **git objects** (the
-> package-TOML tree) over dumb HTTP. It is **not** the NAR/blob substitution path
+> package-TOML tree) over dumb HTTP. It is **not** the Nix archive (NAR)
+> substitution path
 > (see [nix-cache.md](nix-cache.md)).
 >
 > `registry::pack` implements the producer pack primitives, and
@@ -135,42 +136,41 @@ or by the loose-object fallback.
 
 ## 4. Client resolution
 
-Given a client currently on release **C** that wants to advance to target **T**,
-resolution walks from cheapest to most-universal:
+Given a client that wants to advance to target **T**, the resolver first
+checks whether every object reachable from `refs/tags/<T>` is already present
+and valid locally; if so it transfers nothing. Otherwise it tries exactly three
+mechanisms, cheapest first (`resolve_objects`,
+`crates/registry/aos-registry-client/src/registry/fetch.rs`):
 
-1. **Retained-base delta.** Prefer a `delta-<B>.pack` published *at T* whose base
-   `B` the client **retains** (per [§5](#5-client-retention)). One fetch,
-   one `--fix-thin`. This is the common case and is guaranteed to exist when
-   `C` is a retained base of `T` under the [§3](#3-the-guaranteed-delta-graph)
-   graph.
-2. **Walk back.** If no delta at `T` has a base the client retains, walk releases
-   **backward** from `T`, fetching the chain of deltas (or stopping at) the first
-   release the client can reach — accumulating thin packs and completing each with
-   `--fix-thin`.
-3. **Full pack.** If the walk reaches an `X.Y.0` anchor the client does not yet
-   have, fetch that anchor's `pack-<sha256>.pack` (self-contained), then any
-   remaining deltas forward to `T`.
-4. **Loose fallback.** If no pack path resolves, fetch the needed **loose
-   objects** over dumb HTTP from the central root `/objects/<xx>/<62-hex>`, where
-   the loose objects for **every** release live. (`objects/info/alternates` lists
-   every per-release `objects/` dir newest→oldest and doubles as the full release
-   index — but it serves **pack discovery + the release index**, not object
-   completeness, since loose objects are centralized.) This is **always correct**
-   for any sha256-capable git client.
+1. **Retained-base delta.** For each delta base the graph guarantees at `T`
+   ([§3](#3-the-guaranteed-delta-graph)), in order, use the first
+   `delta-<B>.pack.zst` published *at T* whose base `B` the client **retains**
+   (per [§5](#5-client-retention)). One fetch, completed and indexed locally
+   against the retained base. This is the common case.
+2. **Anchor full pack.** Otherwise fetch the self-contained
+   `pack-<sha256>.pack` of `T`'s `X.Y.0` anchor. When `T` is a patch release,
+   follow it with the single `delta-<X.Y.0>.pack.zst` published at `T`; if that
+   delta is missing or unusable, the remaining objects come from step 3.
+3. **Loose fallback.** Fetch the release tag over the plain dumb-HTTP path:
+   packs listed in `info/packs`, then any still-missing **loose objects** from
+   the central root `/objects/<xx>/<62-hex>`, where the loose objects for
+   **every** release live. This is **always correct**.
 
-**Cross-major jumps** degrade to *“minor-base full pack + walk”*: fetch the
-target major/minor's full pack, then apply forward patch deltas to reach `T`,
-rather than chaining many small deltas across a major boundary.
+There is no multi-hop walk: the planner never chains deltas across several
+releases. A client too far behind for a retained-base delta, including one
+crossing a major boundary, goes straight to the target's anchor full pack. An
+unusable artifact (a corrupt download or a failed index) is reported as a
+warning and the next mechanism is tried.
 
 ```
- want T, have C
+ want T
    │
-   ├─ delta-<B>.pack at T with B retained? ── yes ─▶ fetch 1 delta, --fix-thin ─▶ done
-   │                                          no
-   ├─ walk back from T collecting deltas ── reaches retained release? ─▶ apply chain ─▶ done
-   │                                          no
-   ├─ reach an X.Y.0 anchor? ── yes ─▶ fetch full pack-<sha256>.pack, then forward deltas ─▶ done
-   │                            no
+   ├─ all objects of T already local and valid? ── yes ─▶ done (no transfer)
+   │                                              no
+   ├─ delta-<B>.pack.zst at T with B retained? ── yes ─▶ fetch 1 delta, index ─▶ done
+   │                                              no
+   ├─ full pack at T's X.Y.0 anchor? ── yes ─▶ fetch it, then delta-<X.Y.0> if T is a patch ─▶ done
+   │                                    no
    └─ fetch loose objects from root /objects/ (always correct) ─▶ done
 ```
 
@@ -185,12 +185,12 @@ for **at least**:
 |---|---|
 | `X.0.0` (current major) | base for the next minor's `delta-<X.0.0>` and cross-major full-pack anchor |
 | `X.Y.0` (current minor) | base for the next patch's `delta-<X.Y.0>` and the minor full-pack anchor |
-| `X.Y.Z` (current patch) | base for the next patch's `delta-<X.Y.(Z-1)>` chain |
+| `X.Y.Z` (current patch) | base for the next patch's `delta-<X.Y.(Z-1)>` |
 
 Retention is **co-designed** with the delta graph: every guaranteed delta names a
 base that one of these three retained trees provides. A client may retain more
 (e.g. the last few patches to widen its delta options) but never fewer, or it
-loses the single-delta fast path and falls back to walk-back / full-pack.
+loses the single-delta fast path and falls back to the anchor full pack.
 
 ---
 
@@ -203,13 +203,13 @@ thin pack. Instead:
 - Cloning a **`X.Y.0`** release uses its self-contained `pack-<sha256>.pack`
   directly (listed in `info/packs`).
 - Cloning a **patch `X.Y.Z`** pulls the **minor-base full pack** (discovered via
-  the minor release's `objects/info/alternates`) **plus** the patch's **new loose
+  the root `objects/info/alternates`) **plus** the patch's **new loose
   objects** from the central root `/objects/<xx>/<62-hex>` (all loose objects, for
   every release, live there). No thin packs needed; correctness is guaranteed by
   the loose objects.
 
 The AOS-only thin deltas are a strict efficiency add-on that never breaks the
-stock surface. See
+stock git layout. See
 [http-layout.md](http-layout.md) for the dumb-HTTP compatibility contract.
 
 ### 6.1 The relative `info/alternates` file
@@ -223,17 +223,11 @@ per-release `objects/` dir, newest→oldest:
 ../releases/1/0/0/objects/
 ```
 
-Git resolves a relative alternate against the **repo's `objects/` URL**, so each
-`../` strips the `objects` segment to reach the repo root — therefore the correct
-depth is **one** `../`, not two. The file is **host-independent**: it bakes in no
-hostname and is byte-identical across CDN, mirror, and `localhost`. The dumb-HTTP
-walker reads `http-alternates` first and **falls back to `alternates`**, so a
-single relative `info/alternates` works for **HTTP and local-FS** alike.
-
-Because loose objects are **centralized** at the root `/objects/`, alternates no
-longer carry object completeness — they serve **pack discovery** (where each
-release's `objects/pack/` lives) and the **release index** (the enumerable list
-of releases). Object correctness is the root `/objects/` store's job.
+Alternates serve **pack discovery** (where each release's `objects/pack/`
+lives) and the **release index** (the enumerable list of releases). Object
+completeness is the root `/objects/` store's job. The path depth, host
+independence, and HTTP/local-FS behavior of the file are described in
+[http-layout.md](http-layout.md) §4.3.
 
 ---
 
@@ -253,7 +247,8 @@ validation, relative alternates, and `git update-server-info`.
 
 `crates/registry/aos-registry-client/src/registry/fetch.rs` implements the consumer resolution
 layer: retained-base delta selection, target-anchor full-pack fallback, and a
-final `git fetch` fallback for the dumb-HTTP loose-object correctness floor.
+final plain fetch of the release tag for the dumb-HTTP loose-object correctness
+floor.
 Channel sync calls this resolver after the signed tag chain and semver floor
 check succeed, then persists the `{X.0.0, X.Y.0, X.Y.Z}` retained set.
 
@@ -262,7 +257,7 @@ The producer pack helpers remain available as focused building blocks, and
 release, writes packs/deltas, refreshes indexes, advances channels, and uploads
 the static origin.
 
-The production VM perf check is:
+The VM performance check is:
 
 ```sh
 nix-build -A checks.vm.apm.registry-validation-pack-delta-perf
@@ -310,32 +305,26 @@ release's `objects/pack/` and adds it to `objects/info/packs`.
 ### 8.3 Client completion
 
 Thin deltas ship as `.pack.zst` **only** — no `.idx`. The client decompresses the
-transport artifact, builds the index, and stitches in the base while indexing:
-
-```sh
-zstd -d delta-<from-semver>.pack.zst
-# then index the resulting delta-<from-semver>.pack with libgit2's pack writer
-# while the <from> base is already present locally.
-```
+transport artifact in-process (the equivalent of `zstd -d`), then indexes the
+resulting pack with libgit2's pack writer while the `<from>` base is already
+present locally, which builds the index and resolves the thin references.
 
 ### 8.4 Expensive-producer tuning
 
-The old plan described literal `git pack-objects` tuning flags. In the libgit2
-implementation those flags are no longer the public contract; the contract is the
-artifact shape above plus producer-side effort to keep thin deltas small.
+The contract is the artifact shape above, not a set of `git pack-objects`
+flags: the producer may spend whatever effort it likes to keep thin deltas
+small, as long as the result is a valid thin pack.
 
 `registry::thinpack` keeps delta chains shallow enough for cheap local
-reconstruction and spends producer CPU comparing candidate encodings. Future
-tuning should adjust those Rust strategies directly instead of documenting
-unimplemented `pack-objects` flags as current behavior.
+reconstruction and spends producer CPU comparing candidate encodings.
 
 ---
 
 ## 9. Thin-delta zstd transport
 
 Git's pack format **hard-codes zlib per object**, so naively running `zstd` over
-a normally-compressed pack is near-useless. The working trick still applies to
-thin deltas: `registry::thinpack` emits stored zlib entries, equivalent to
+a normally-compressed pack is near-useless. Thin deltas avoid that:
+`registry::thinpack` emits stored zlib entries, equivalent to
 `pack-objects --compression=0`, and `zstd --ultra -22 --long=27` entropy-codes
 the whole delta-encoded stream.
 
@@ -346,14 +335,8 @@ the whole delta-encoded stream.
   beating zlib-9 because it operates over the full stream with a large window
   instead of zlib's per-object DEFLATE.
 
-**Serve `.pack.zst`. The client reverses it before indexing:**
-
-```sh
-zstd -d delta-<from>.pack.zst
-# AOS then completes and indexes delta-<from>.pack with libgit2's pack writer.
-```
-
-The intermediate `.pack` is always valid git. The static origin serves
+The origin serves `.pack.zst`; the client decompresses it before indexing
+(§8.3). The intermediate `.pack` is always valid git. The static origin serves
 the compressed thin-delta transport form; clients that cannot handle it fall back
 to a full pack or the loose-object floor.
 
@@ -367,7 +350,7 @@ to a full pack or the loose-object floor.
 
 The `.idx` is shipped **only** for self-contained full packs, primarily for
 stock dumb Git. Thin delta packs are `.pack.zst` only; the client's local pack
-indexing builds their index. The `--compression=0`/zstd trick is current for thin
+indexing builds their index. The stored-entry/zstd encoding applies to thin
 deltas; full packs are libgit2-generated plain `.pack` files.
 
 ---
@@ -379,10 +362,10 @@ PRODUCER (pays once, expensively)              CONSUMER (cheap, every host)
 ┌──────────────────────────────────┐          ┌────────────────────────────────────┐
 │ commit metadata tree             │          │ resolve C → T (§4)                  │
 │ tag + sign release (semver)      │          │  prefer retained-base delta         │
-│ libgit2 full pack + .idx         │   HTTP   │  else walk back / full pack         │
+│ libgit2 full pack + .idx         │   HTTP   │  else anchor full pack (+1 delta)   │
 │ thinpack delta + zstd            │  ──────▶ │  else loose from root /objects/     │
 │                                  │   .pack  │ fetch .pack.zst                     │
-│                                  │   .zst   │  zstd -d | local pack indexing      │
+│                                  │   .zst   │  decompress, local pack indexing    │
 │ zstd --ultra -22 the .pack       │          │ retain X.0.0 / X.Y.0 / X.Y.Z (§5)   │
 │ write info/packs + info/alternates│          │ verify signed tag chain (separate)  │
 └──────────────────────────────────┘          └────────────────────────────────────┘
@@ -391,8 +374,9 @@ PRODUCER (pays once, expensively)              CONSUMER (cheap, every host)
 For the full producer pipeline (commit → sign → pack/delta/zstd →
 `update-server-info` → advance partitions → upload) see
 [publishing.md](publishing.md). For where these files live on the origin and
-their CDN TTLs see [http-layout.md](http-layout.md). For how a client picks a
-release (bucket → channel tag → semver tag) before it ever resolves a pack, see
+their content delivery network (CDN) TTLs see [http-layout.md](http-layout.md).
+For how a client picks a release (bucket → channel tag → semver tag) before it
+ever resolves a pack, see
 [versioning-and-channels.md](versioning-and-channels.md). For the signature
 chain that authenticates the release a pack reconstructs see
 [signing-and-trust.md](signing-and-trust.md).

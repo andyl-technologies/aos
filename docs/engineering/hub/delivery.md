@@ -7,6 +7,11 @@ uses are defined in [domain-model.md](domain-model.md).
 
 ## One Hub route pipeline
 
+Code: request-path parsing, longest-prefix matching, and capability
+classification are in `crates/hub/aos-hub-model/src/delivery.rs`; conditional,
+range, and cache-header semantics are in
+`crates/hub/aos-hub-model/src/delivery_http.rs`.
+
 Every Hub-proxy or Hub-redirect request reaches the same pipeline:
 
 ```text
@@ -34,10 +39,13 @@ probes. Routes that cannot be probed from an authorized network are explicitly
 
 ## Endpoint transport
 
+Code: `crates/hub/aos-hub-model/src/endpoint.rs`.
+
 Routes select a typed endpoint, never an opaque origin string. The
 endpoint fixes scheme, DNS/IPv4/IPv6 host, effective port, and ingress/network
 boundary. It is an inbound client URL and is distinct from the outbound storage
-origin, which remains an independently credentialed SSRF boundary.
+origin, which is an independently credentialed boundary guarded against
+server-side request forgery (SSRF).
 
 Plain HTTP requires explicit cleartext acknowledgement and is valid only for
 anonymous public machine data or inside a named network policy whose
@@ -72,15 +80,10 @@ Unexpected origin redirects and non-retriable origin failures become a
 sanitized `502`. Cache and content headers are derived from verified metadata,
 not trusted blindly from a mutable backend.
 
-Selection and origin open may retry another eligible placement only for the
-typed policy failure contract: connect failure, timeout before response
-headers, origin `429`/`502`/`503`/`504`, exact-presence mismatch, or verified
-corruption. A `404` with an exact presence record is a presence mismatch; an
-ordinary absent object remains `404`. Once response headers or body bytes have
-been sent, the selected origin is fixed: the Hub never splices two objects into
-one response. A missing exact presence record is ineligible, not an invitation
-to probe arbitrary storage. Authentication, authorization, malformed range,
-and other client errors never fail over.
+Before response headers are sent, the Hub may retry another eligible
+placement, but only for the failures listed under
+[Placement failover](#placement-failover). Once headers or body bytes have
+been sent the selected origin is fixed.
 
 This is the most capable mode and the default for private surfaces.
 
@@ -91,10 +94,10 @@ selection, the Hub returns a short-lived, path-specific presigned origin URL.
 
 The redirect is a temporary bearer capability. Its TTL is bounded, it is never
 written into a registry configuration or setup snippet, and responses carrying
-it are private/no-store. Use this mode only where URL disclosure for the TTL is
-an acceptable policy. Fall back to streaming proxy when the origin cannot
-presign, the client cannot follow the redirect safely, or stricter confinement
-is required.
+it are private/no-store. The mode is appropriate only where URL disclosure for
+the TTL is an acceptable policy; Hub proxy is the alternative when the origin
+cannot presign, the client cannot follow the redirect safely, or stricter
+confinement is required.
 
 Presigning occurs only after the same authorization, policy selection, exact
 presence, publication-watermark, and origin-condition checks as proxy mode.
@@ -200,8 +203,10 @@ identity headers are stripped and never establish an access class or
 principal. Direct routes rely on the provider itself and cannot claim Hub
 authentication.
 
-The implemented Hub-proxy mechanism is a versioned HMAC ingress assertion in
-`X-AOS-Delivery-Attestation`. The operator configures the same secret in the
+The Hub-proxy mechanism is a versioned HMAC ingress assertion in
+`X-AOS-Delivery-Attestation`
+(`crates/hub/aos-hub-service/src/delivery_attestation.rs`). The operator
+configures the same secret in the
 trusted adapter and Hub (`--delivery-attestation-key-file` for native Hub or
 the `HUB_DELIVERY_ATTESTATION_KEY` Worker secret). The assertion seals the
 exact method, authority, raw path and query, client-facing scheme, ingress
@@ -214,11 +219,10 @@ assertion header is removed before downstream dispatch. Missing configuration,
 replay, clock skew, route updates, and any request or access-field mismatch all
 fail closed.
 
-This signed adapter is the only implemented trusted-ingress assertion source
-for private-network and external-provider Hub routes.
-Native mTLS/source-CIDR extraction and provider-specific JWT validation are not
-implicitly supported; adding either requires another explicit verifier adapter
-with the same route binding and durable replay contract.
+This signed adapter is the only trusted-ingress assertion source for
+private-network and external-provider Hub routes. The Hub does not itself
+extract mTLS identities or source CIDRs, and does not validate
+provider-specific JWTs.
 
 ### Private network
 
@@ -230,8 +234,9 @@ and exact immutable revision and uses its configured in-boundary health probe.
 A redirect is valid only when the presigned origin independently enforces that
 same named boundary revision for the capability's lifetime and the exact
 revision is currently observed `verified`. Unknown, stale, mismatched, or
-degraded boundary observation makes the redirect ineligible. Merely authenticating the
-initial Hub request does not confine a bearer URL to the network.
+degraded boundary observation makes the redirect ineligible. Merely
+authenticating the initial Hub request does not confine a bearer URL to the
+network.
 
 ## Surface visibility constraints
 
@@ -250,9 +255,7 @@ access-provider changes.
 
 A public binding does not force every surface on it to be public. It does mean
 that a private prefix cannot rely on the binding itself for isolation; any
-route or leaked origin URL could bypass Hub authorization. The console should
-therefore warn or reject private placements on origins whose object ACLs cannot
-enforce prefix isolation.
+route or leaked origin URL could bypass Hub authorization.
 
 ## Origin authentication
 
@@ -299,10 +302,11 @@ Binary cache acme/shared
 All routes remain live. “Canonical” selects setup-snippet and stable-reference
 behavior; it does not disable alternatives.
 
-Canonical URLs should normally be stable Hub-owned endpoints. A canonical Hub
-route may proxy or redirect to an efficient direct placement. Registries then
-commit stable endpoints in signed consumer cache stacks while operators may
-change storage/CDN topology without rewriting every registry.
+A canonical URL on a stable Hub-owned endpoint decouples clients from
+storage: the canonical Hub route may proxy or redirect to an efficient direct
+placement, registries commit the stable endpoint in their signed consumer
+cache stacks, and operators change storage or CDN topology without rewriting
+every registry.
 
 ## Capabilities and path behavior
 
@@ -324,26 +328,44 @@ and is removed from canonical/advertised selection when it becomes invalid.
 
 ## Placement failover
 
-Hub routes may select among placements. Reads fail over only on transport,
-origin, missing-presence, or verified-corruption conditions defined by the
-placement policy. Authentication failures and client errors never trigger a
-fallback that could broaden access.
+Code: `crates/hub/aos-hub-service/src/placement_read.rs`. The policy records
+are defined in
+[domain-model.md](domain-model.md#placement-groups-and-selection).
+
+Hub routes may select among placements. Selection and origin open may retry
+another eligible placement only for the typed policy failure contract:
+
+- connect failure;
+- timeout before response headers;
+- origin `429`, `502`, `503`, or `504`;
+- exact-presence mismatch; or
+- verified corruption.
+
+A `404` with an exact presence record is a presence mismatch; an ordinary
+absent object remains `404`. A missing exact presence record is ineligible,
+not an invitation to probe arbitrary storage. Once response headers or body
+bytes have been sent, the selected origin is fixed: the Hub never splices two
+objects into one response. Authentication, authorization, malformed range, and
+other client errors never fail over, so a fallback cannot broaden access.
 
 For immutable objects, failover is request-local. For mutable registry
 pointer requests, route resolution first snapshots the surface's committed
-publication-head id; only complete placements with that exact watermark are
-eligible for the lifetime of the request. The route exposes generation lag in
-health and must not serve a newer pointer whose referenced immutable objects
-are absent from the selected placement set.
-Mutable pointers are never read from shard placements.
+publication-head id before placement selection. Only complete placements that
+carry that exact publication watermark and all required presence records are
+eligible for the lifetime of the request; selection and failover retain the
+snapshot even if a newer head commits concurrently, and a retry never
+re-resolves to a different head. The route exposes generation lag in health
+and must not serve a newer pointer whose referenced immutable objects are
+absent from the selected placement set. Mutable pointers are never read from
+shard placements.
 
 `ordered_failover` uses its stored order. `local_then_remote` first filters by
 the request access class and then uses stored order. The class is `local` only
 when the request arrives through an endpoint pinning the policy's exact
 boundary revision, that revision is currently observed `verified`, and its
 configured mutually authenticated ingress or local network listener asserts
-the boundary; every direct, untrusted, or unclassified
-request is `remote`. Remote requests use only remote members. Local requests
+the boundary; every direct, untrusted, or unclassified request is `remote`.
+Remote requests use only remote members. Local requests
 use local members first and may use remote members only when the immutable
 policy revision sets `allow_remote_fallback`. `hash_partition` computes
 `hash_range_v1`, selects the exact range's replica group, and uses its stored
@@ -357,6 +379,13 @@ error classes. Backends do not choose failover or weaken route authorization.
 
 ## Webhook durability and delivery identity
 
+Code: the event taxonomy, signing, and retry policy are in
+`crates/hub/aos-hub-model/src/webhook.rs`; events are committed to the outbox
+by `crates/hub/aos-hub-service/src/webhook.rs`. The event types, request
+headers, and subscription management are described in
+[configuration.md](configuration.md#webhooks); this section is the delivery
+mechanism.
+
 A topology mutation inserts its immutable `topology_event_outbox` row in the
 same checked transaction as the mutation. A bounded materializer converts each
 event into its audit record and one `webhook_deliveries` row per matching active
@@ -367,8 +396,10 @@ semantic identity, so producer retries converge before subscription fanout.
 
 Every delivery receives an immutable `delivery_id`. Queue messages contain only
 that identifier; the consumer reloads the current durable row, wins a bounded
-lease with a fresh fencing token, and may commit an outcome only with that
-token. Active duplicate consumers do no work. An expired lease is recoverable
+lease with a fresh fencing token (a value a commit must present, so a holder
+whose lease was taken over cannot commit), and may commit an outcome only with
+that token. Active duplicate consumers do no work. An expired lease is
+recoverable
 after a process or isolate crash. Native Hub performs a bounded periodic claim;
 Worker Cron materializes a bounded event batch, enqueues the resulting stable
 identifiers, and also claims a bounded due batch as a backstop. Thus Queue
@@ -392,6 +423,10 @@ API and CLI responses, revision history, audit data, topology events, queue
 messages, and logs.
 
 ## Worker outbound boundary
+
+Code: the gateway's request and response envelopes are in
+`crates/hub/aos-hub-service/src/egress_protocol.rs`; the gateway is the
+`aos-hub-egress` binary in `crates/hub/aos-hub-native`.
 
 Cloudflare Worker deployments use the platform Fetch API directly by default.
 This is a complete Worker-only deployment: registry and cache placements,
@@ -428,32 +463,47 @@ signs the request nonce, final URL, connected peer IP, upstream status, and
 timestamp. The Worker accepts bytes only when that signed response record is
 fresh, nonce-bound, status-consistent, and names a global peer. Missing
 configuration, an unavailable gateway, a stale record, an unknown peer, or a
-signature failure fails closed. Gateway failures and logs never include target URLs, presigned
-queries, authorization values, or bodies.
+signature failure fails closed. Gateway failures and logs never include target
+URLs, presigned queries, authorization values, or bodies.
 
-After authenticating the envelope and checking its timestamp, the gateway
-atomically inserts the nonce into a durable strongly-consistent database before
-starting the upstream request. Every replica uses that same database, so the
-nonce primary key accepts each nonce once across replicas and process restarts.
-Replicated deployments use PostgreSQL; file-backed SQLite is valid only for a
-singleton gateway process. Expired rows may be reclaimed, but a live conflict
-always fails before an upstream side effect.
+The gateway accepts each request nonce once:
+
+- After authenticating the envelope and checking its timestamp, it atomically
+  inserts the nonce into a durable strongly-consistent database before
+  starting the upstream request.
+- Every replica uses that same database, so the nonce primary key accepts each
+  nonce once across replicas and process restarts.
+- Replicated deployments use PostgreSQL; file-backed SQLite is valid only for
+  a singleton gateway process.
+- Expired rows may be reclaimed, but a live conflict always fails before an
+  upstream side effect.
 
 The deployment interface takes optional `--egress-gateway-url` and an
-operator-provisioned `HUB_EGRESS_GATEWAY_KEY` encoded as one atomic `KEY_ID:KEY`
-value. It never mints that key. During rotation every router
-replica accepts the bounded current/next key-id overlap before the installer
-challenges the new router. On an existing deployment it stages the challenged
-overlap key while the existing router remains selected and publishes the new
-router URL only after every secret mutation succeeds. On first install it may
-publish a direct-Fetch bootstrap version, install the first complete secret set,
-and then select the router; the old router id is removed only after the
-Worker has switched. The installer completes a fresh, mutually authenticated
-`/v1/challenge` before this sequence whenever the optional transport is
-selected. It installs the scoped provider token separately. There is one egress
-abstraction and one selected transport.
+operator-provisioned `HUB_EGRESS_GATEWAY_KEY` encoded as one atomic
+`KEY_ID:KEY` value. It never mints that key, and it installs the scoped
+provider token separately. Whenever the optional transport is selected, the
+installer first completes a fresh, mutually authenticated `/v1/challenge`.
+The key and router are then installed in an order that never leaves half of
+the pair selected:
+
+- **Rotation.** Every router replica accepts the bounded current/next key-id
+  overlap before the installer challenges the new router.
+- **Existing deployment.** The installer stages the challenged overlap key
+  while the existing router remains selected and publishes the new router URL
+  only after every secret mutation succeeds.
+- **First install.** The installer may publish a direct-Fetch bootstrap
+  version, install the first complete secret set, and then select the router.
+- **Retirement.** The old router id is removed only after the Worker has
+  switched.
+
+There is one egress abstraction and one selected transport.
 
 ## Writes
+
+Code: registry-publication manifest admission is in
+`crates/hub/aos-hub-service/src/service/publication_manifest.rs`; cache-object
+upload operations are the `uploads_*.rs` files in
+`crates/hub/aos-hub-service/src/service/operations/caches/`.
 
 Consumer routes do not imply write authority. Registry producers use
 `PublishService`: they declare an exact publication manifest, upload through
@@ -474,8 +524,12 @@ objects in strict chunk order under a renewable ownership lease. Every accepted
 chunk has a durable digest record, so retrying a lost response is exact while a
 conflicting or out-of-order retry fails closed. Seal re-derives the complete
 manifest digest from the durable declarations and atomically freezes the
-required placement set. The legacy one-request `BeginRegistryPublication`
-remains a compatibility operation.
+required placement set.
+
+`BeginRegistryPublication` is the one-request form of the same declaration:
+its request carries the complete object inventory, up to 50,000 objects
+(`MAX_REGISTRY_PUBLICATION_OBJECTS`), and it begins the same placement-aware
+publication.
 
 The returned object URLs contain opaque publication/object identities rather
 than registry slugs or storage paths. Each upload verifies the declared path,
@@ -501,10 +555,10 @@ signed release metadata and all required placement copies are available.
 
 `CreateCacheObjectUploads` accepts one or up to 256 unique, exact
 cache-relative paths. Bound-R2 proxy ticket creation resolves topology once,
-reads all active same-key slots in one query, and creates every unoccupied ticket in
-one checked transaction. Exact retries return the durable ticket already
-occupying that key; incompatible or stale slots remain fenced and return no
-URL until recovery settles them.
+reads all active same-key slots in one query, and creates every unoccupied
+ticket in one checked transaction. Exact retries return the durable ticket
+already occupying that key; incompatible or stale slots remain fenced and
+return no URL until recovery settles them.
 For a small object it returns either a short-lived direct-origin PUT capability
 or an authenticated typed Hub proxy URL. An empty URL means the object requires
 the `BeginCacheMultipartUpload`, typed part upload, and

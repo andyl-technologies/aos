@@ -25,18 +25,15 @@ Related reference docs:
 [apt-comparison](apt-comparison.md)
 
 
-Unpublished candidates follow the [release-stage contract](release-stages.md).
-Maintainer branches are authoring workspaces. Configured channel branch names
-reserve the published frontier, public `HEAD` names the default channel, and
-signed semver releases and the 256-partition schema retain their existing
-meaning. Default catalogs and channels omit drafts; a known ref, digest, cache
-URL, or CDN path may still expose candidate bytes.
+Unpublished release candidates, and how they stay out of the channel refs
+and partitions described here, are covered in
+[release-stages.md](release-stages.md).
 
 ---
 
 ## 1. Overview
 
-In this architecture the registry is a **bare git repository (sha256)
+The registry is a **bare git repository (sha256)
 served as static files over dumb HTTP** (see [architecture](architecture.md) and
 [http-layout](http-layout.md)). On top of that object store, three concepts give
 us versioning and fleet rollout:
@@ -50,7 +47,7 @@ us versioning and fleet rollout:
 The release tag is the **immutable, signed unit of distribution**. The channel
 *branch* is an **unsigned convenience pointer** at the rollout *frontier* (the
 newest release any partition targets). The channel *partitions* are the **signed,
-bucketed rollout surface** the AOS client actually follows.
+bucketed rollout pointers** the AOS client actually follows.
 
 ```
                        ┌─────────────────────────────────────────┐
@@ -130,7 +127,8 @@ A release's object store lives under
 | `1.1.0-alpha.1` | `/releases/1/1/0-alpha.1/` |
 | `1.0.0-beta+exp.sha.5114f85` | `/releases/1/0/0-beta+exp.sha.5114f85/` |
 
-Releases are **immutable** once published and may carry a long CDN TTL (see
+Releases are **immutable** once published and may carry a long content
+delivery network (CDN) TTL (see
 [http-layout](http-layout.md) §CDN policy).
 
 ---
@@ -163,7 +161,7 @@ HEAD ──symref──► refs/heads/stable ──► commit(1.1.0)   ← front
 > rollout gating for stock clients. Acceptable by design (§1): rollout is fleet
 > policy enforced by AOS, not by the git ref graph.
 
-### 3.2 The partitions (the rollout surface) — see §4.
+### 3.2 The partitions (the rollout pointers) — see §4.
 
 The frontier is a *derived* value: when the publisher advances even one partition
 to a newer release, the branch head moves to that newer release's commit. The
@@ -324,7 +322,7 @@ else:
     adopt target; floor ← target
 ```
 
-The current consumer persists this floor in `[registry.state]` and applies it
+The consumer persists this floor in `[registry.state]` and applies it
 when channel partitions resolve to a signed semver release. See
 [signing-and-trust](signing-and-trust.md) for how the signed tag chain feeds
 this.
@@ -353,34 +351,39 @@ the floor check and rolls out normally. The semantics: "roll back" means "roll
 
 ---
 
-## 8. Current implementation status
+## 8. Tracking modes
 
-A host subscribes via `~/.config/apm/registries.d/{name}.toml`; the resolved mode
-is `TrackingMode`:
+A host subscribes to a registry through a `registries.d/<name>.toml` file.
+`apm` reads that file from every configuration layer and merges them, lowest
+precedence first: the read-only `/etc/apm` image seed, the system runtime
+layer `/var/lib/apm/config`, and, for user scope only, `~/.config/apm`
+(`ProfileScope::config_layers`,
+`crates/registry/aos-registry-client/src/types.rs`). At most one tracking field
+is set, and it resolves to a `TrackingMode`
+(`crates/registry/aos-registry-format/src/consumer.rs`):
 
-```rust
-// types.rs
-pub enum TrackingMode {
-    Commit(String),                  // frozen to an exact commit hash
-    Branch(String),                  // track HEAD of a named branch
-    Channel(String),                 // bucketed signed partition resolution
-    Tag(String),                     // pinned to an exact tag
-    Version(semver::VersionReq),     // semver constraint on tags
-    Default,                         // no field set -> default branch HEAD
-}
-```
+| Config field | `TrackingMode` | What is followed |
+|---|---|---|
+| `channel = "stable"` | `Channel` | The host's bucketed, signed partition for that channel (§4-§6), subject to the floor (§7). |
+| `branch = "stable"` | `Branch` | The head of the named branch, with no rollout bucketing. |
+| `tag = "1.1.0"` | `Tag` | The exact signed tag `refs/tags/1.1.0` (§2). |
+| `version = "~1.1"` | `Version` | The best signed semver tag matching the constraint. |
+| `commit = "<sha>"` | `Commit` | Exactly that commit. |
+| none | `Default` | The registry's default channel, tracked as a `Channel`. |
 
-The `Channel` variant and `channel = "stable"` config field are active. Producer
-commands can write the 256 signed partition overlay, and the consumer resolves
-its persisted bucket through that overlay before applying the floor check. The
-natural mapping is:
+`Default` does not follow the default branch head. On first sync `apm` reads
+the origin's symbolic `HEAD` to discover which channel is the default, records
+it as `default_channel` in `[registry.state]`, and from then on resolves that
+channel's signed partitions exactly as an explicit `channel = "..."` would
+(`discover_default_channel`,
+`crates/registry/aos-registry-client/src/registry/git.rs`). `HEAD` only names
+the channel; the release is still selected by the signed partition chain. The
+recorded channel is reused on later syncs, so a changed `HEAD` does not
+silently move the host to another channel.
 
-| Intent | Mechanism |
-|---|---|
-| `branch = "stable"` (track a line) | `channel = "stable"` → bucketed partitions (§4–§6) |
-| `tag = "1.1.0"` (pin a release) | unchanged — signed semver tag `refs/tags/1.1.0` (§2) |
-| `commit = "<sha>"` (freeze) | unchanged — exact commit |
-| `version = "~1.1"` (constraint) | unchanged — semver `VersionReq` over signed tags |
+A commit, a tag, or an exact-version constraint is an immutable pin: AOS-TUF
+(The Update Framework) timestamp expiry is not enforced for it
+([signing-and-trust](signing-and-trust.md) §4).
 
 ---
 
@@ -449,10 +452,11 @@ The host transiently follows partition `80`'s release for this run; once partiti
   fallback): [packs-and-deltas](packs-and-deltas.md).
 - **The producer pipeline** that tags/signs, packs, runs `update-server-info`, and
   **advances partitions**: [publishing](publishing.md).
-- **As-built grounding** for tracking modes, state, and channel resolution:
+- **Module map** for tracking modes, state, and channel resolution:
   [implementation](implementation.md).
-- **The Nix binary-cache superset** (`nix-cache-info`/`.narinfo`/`nar`), configured
-  client-side or served by the origin — never advertised in signed tags:
+- **The Nix binary-cache superset** (`nix-cache-info`/`.narinfo`/`nar`), located
+  through the committed `registry.toml` `[caches]` stack — never advertised in
+  signed tags:
   [nix-cache](nix-cache.md).
 - **APT precedent** (signed flat-file lineage, `pool`, phased rollout → 256
   partitions): [apt-comparison](apt-comparison.md).

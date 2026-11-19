@@ -1,6 +1,6 @@
 # Package and generation attestation
 
-AOS extends PCR 15 with a record describing the committed native host package
+AOS extends TPM platform configuration register (PCR) 15 with a record describing the committed native host package
 generation, so a remote verifier can bind a TPM quote to the exact package set a
 host activated. Measured boot (PCRs 7, 11, and 12) covers the image; PCR 15
 covers what the package runtime committed on top of it. The verifier workflow is
@@ -18,8 +18,8 @@ and the trust obligations are in
 
 ## Event log
 
-Measurements are appended to `/run/log/aos-packages.cel`, a JSON-lines log in
-the `aos-package-cel-v1` format. Each record carries its sequence number, PCR
+Measurements are appended to `/run/log/aos-packages.cel`, a JSON-lines
+canonical event log (CEL) in the `aos-package-cel-v1` format. Each record carries its sequence number, PCR
 index (15), the `sha256` bank digest, the event type, and the canonical event
 text, plus type-specific fields. The event types are:
 
@@ -88,7 +88,8 @@ AOS-built TPM tools and quotes `sha256:7,11,12,15` over a verifier nonce. The
 tool paths and TCTI can be overridden through `AOS_TPM2_*` environment
 variables, which the fleet harness uses with a software TPM.
 
-`apm attest enroll` records a quote bundle's AK/EK identity into a verifier
+`apm attest enroll` records a quote bundle's attestation-key and
+endorsement-key (AK/EK) identity into a verifier
 catalog together with its enrollment proof. `apm attest catalog` prints the
 golden package measurements from registry metadata. `apm attest verify` replays
 the CEL from its baseline, checks the result against a quoted or supplied PCR 15

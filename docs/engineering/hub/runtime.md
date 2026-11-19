@@ -9,7 +9,10 @@ deferred work.
 
 `aos-hub-service` contains authorization, indexing, storage coordination,
 authentication flows, Connect handlers, and server-rendered pages. It reaches
-the platform only through ports, each implemented once per runtime:
+the platform only through ports, each implemented once per runtime. In the
+Worker column, *seal-gated* means that the internal SQL endpoint accepts a
+call only when it carries the deployment seal, a deployment secret
+(`HUB_SEAL_KEY`), so no public request can reach it.
 
 | Port | Contract | Native | Worker |
 |---|---|---|---|
@@ -44,10 +47,21 @@ checked_batch(&[CheckedStatement])-> ()   (atomic row-count assertions)
 
 `checked_batch` rolls the whole transaction back when a guarded statement
 affects an unexpected number of rows; multi-row mutations use it so a concurrent
-change fails closed instead of partially applying. Migrations live in
-`crates/hub/aos-hub-db/src/db/schema.sql` and run on first use. A `Backend`
-decorator can record per-statement timing when the timing feature is enabled
-(`backend/timing.rs`).
+change fails closed instead of partially applying.
+
+The schema is the ordered `MIGRATIONS` list in
+`crates/hub/aos-hub-db/src/db/mod.rs`. Its first script, `schema.sql`, is the
+baseline; each later script is one further schema version. On first use the
+database applies every script beyond the recorded `schema_version` and refuses
+a database whose version is newer than the build supports. Pending scripts and
+the version marker commit in one transaction, which on the Worker is one
+Durable Object transaction. MySQL DDL implicitly commits, so there the
+database applies replay-safe statements one at a time, checks indexes through
+the catalog, and advances a keyed singleton ledger after each complete
+migration.
+
+A `Backend` decorator can record per-statement timing when the timing feature
+is enabled (`backend/timing.rs`).
 
 ## Hot state off the relational path
 
@@ -94,8 +108,9 @@ Durable Object (`requestshard.rs`): a control singleton for instance-wide work,
 or a tenant, registry, or cache shard. A shard bridges the request to the shared
 router (`bridge.rs`) and makes only short, seal-gated SQL calls to `HubDb`,
 the single transactional system of record; it never copies relational state.
+(Seal-gated is defined under [Shared core and ports](#shared-core-and-ports).)
 This keeps cross-resource constraints atomic while request parsing, response
-construction, and provider I/O no longer serialize behind unrelated resources.
+construction, and provider I/O do not serialize behind unrelated resources.
 SQL and administrative endpoints remain pinned to `HubDb`, and Cron and queue
 handlers keep provider and network I/O outside its serialized request turn.
 

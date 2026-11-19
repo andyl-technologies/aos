@@ -11,6 +11,36 @@ is; when the code changes, the page changes with it. A design decision is
 recorded in the page for the component it affects, in the same change that
 makes it. The [code style guide](code-style.md#documentation) gives the rules.
 
+## Start here
+
+1. Read [`AGENTS.md`](../../AGENTS.md) for the build rules every change must
+   follow, then [code style](code-style.md).
+2. Read [build system](build/README.md) and
+   [development builds](build/development-builds.md) to build and test a
+   change.
+3. Read [Rust workspace](rust-workspace.md) to find the crate that owns a
+   piece of Rust code.
+4. Go to the section below for the component you are changing. Most
+   directories have a `README.md` that maps their pages and names the code
+   they describe.
+
+## Repository map
+
+| Path | Contents | Described in |
+| --- | --- | --- |
+| `stdenv/` | Source bootstrap, GCC toolchain tiers, and the standard build environment | [Build system](build/README.md) |
+| `lib/` | The Nix library: module evaluation, effects, `mkDerivation`, image and test builders, and the downstream API | [Build system](build/README.md), [runtime abilities](abilities/README.md) |
+| `pkgs/` | Package expressions, with `_`-prefixed directories for the modules and helpers a package owns | [Code style](code-style.md#nix) |
+| `modules/` | Auto-discovered system modules, organized by feature | [Code style](code-style.md#nix) |
+| `systems/` | System variants that compose modules, and test fixtures | [Boot chain](boot/README.md) |
+| `crates/` | The Rust workspace: the `aos`, `apm`, and `apr` CLIs, Hub, Crucible, and their libraries | [Rust workspace](rust-workspace.md) |
+| `api/proto/` | Protocol sources for the build and Hub APIs | [Rust workspace](rust-workspace.md#portable-data-and-native-effects) |
+| `qualification/` | The Nix-evaluated release qualification contract | [Release model](release-publishing/release-model.md) |
+| `tests/` | Check derivations; `tests/fleet/` holds the multi-VM tests | [Image-boot testing](boot/image-boot-testing.md) |
+| `templates/` | The downstream flake template | [Downstream quickstart](downstream/quickstart.md) |
+| `tools/` | Development scripts, including `aos-dev` | [Development builds](build/development-builds.md) |
+| `default.nix`, `flake.nix` | The package set, systems, and the `checks` tree; the flake exports them | [Downstream flake API](downstream/flake-api.md) |
+
 ## Repository-wide
 
 - [Code style](code-style.md) covers Rust APIs and implementation, Dendritic Nix
@@ -27,6 +57,8 @@ makes it. The [code style guide](code-style.md#documentation) gives the rules.
   GCC tiers, per-tier stdenv, and producer validation rules.
 - [Rust builds](build/rust-builds.md) covers reusable Cargo dependency
   artifacts, their compatibility contract, development caches, and nextest.
+- [Development builds](build/development-builds.md) covers the development
+  shell, `aos-dev`, the shared VM image cache, and image reproducibility.
 
 ## Downstream builds
 
@@ -145,8 +177,10 @@ makes it. The [code style guide](code-style.md#documentation) gives the rules.
   console parity and the manifests that check it.
 - [Runtime](hub/runtime.md) covers the shared application core, runtime ports,
   the database backend, and the native and Worker runtimes.
-- [Topology cutover](hub/topology-cutover.md) specifies the one-shot migration
-  of an older deployment and its signed evidence bundle.
+- [Topology cutover](hub/topology-cutover.md) covers the signed evidence
+  bundle for moving a deployment onto the topology model, the
+  `aos hub topology cutover` commands that generate and verify it, and the
+  operator procedure it attests.
 
 ## Release publishing
 

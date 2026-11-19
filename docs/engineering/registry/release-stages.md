@@ -3,7 +3,7 @@
 A release stage is an unpublished candidate for a signed registry release. It
 lets a maintainer upload part of a catalog, inspect the recorded object
 inventory, resume interrupted work, and finalize the exact reviewed revision.
-It uses the registry's existing Git, cache, signing, and publication machinery.
+It uses the registry's ordinary Git, cache, signing, and publication machinery.
 AOS-specific builds and qualification compose this machinery through
 `aos maintain release`; ordinary registry maintainers use `apr release`.
 
@@ -26,8 +26,8 @@ branch never grants release authority.
 For a new origin, upload the signed registry initialization and its default
 `HEAD` before staging the first version. Stage publication adds the immutable
 release; initialize or advance a channel separately afterward. `--stage` and
-`--from-stage` reject channel convenience flags. Direct releases retain their
-existing optional channel workflow.
+`--from-stage` reject channel convenience flags. Direct releases keep their
+optional channel workflow.
 
 For an initial Hub registry bootstrap, publish the prepared signed static
 surface with its configured Hub authentication profile:
@@ -71,31 +71,44 @@ existing immutable bytes rather than rebuilding or retagging them.
 ## Portable schema and local persistence
 
 The portable revision schema is `aos.registry-stage/v1`. Its strict record
-binds the registry, stage id, monotonic revision, semver `release_id`, ordinary
-`source_branch`, exact prepared `commit`, canonical `inventory_digest`, and
-retained `store_roots`. `inventory` is sorted by unique origin-relative path;
-each entry carries `path`, `sha256`, `byte_size`, `kind`, and `media_type`.
-`publication` retains exact prepared pointer bytes separately from immutable
-objects so draft upload cannot accidentally publish refs or channel pointers.
-An optional `container` graph binds the OCI repository, signed container release,
-and complete descriptor inventory. Capturing the graph includes every manifest,
-index, configuration, layer, and declared provenance/referrer artifact; it does
-not treat a sidecar or an index digest alone as a complete upload. File and
-static transports retain verified graph bytes under `oci/blobs/sha256/<digest>`;
-the signed Git sidecar and immutable version tag retain release authority.
-This archive does not provision a Docker Distribution endpoint. The Hub
-adapter separately uploads real Distribution repository memberships and binds
-its immutable OCI version tag. Distribution upload checkpoints retain
-server-confirmed offsets for interrupted large blobs.
-The Hub's advertised OCI endpoint is discovered from its surface capabilities;
-it need not have the same base path as registry object storage.
+has these parts:
+
+- **Identity.** The registry, stage id, monotonic revision, semver
+  `release_id`, ordinary `source_branch`, exact prepared `commit`, canonical
+  `inventory_digest`, and retained `store_roots`.
+- **`inventory`.** Sorted by unique origin-relative path; each entry carries
+  `path`, `sha256`, `byte_size`, `kind`, and `media_type`.
+- **`publication`.** The exact prepared pointer bytes, kept separately from
+  immutable objects so draft upload cannot accidentally publish refs or
+  channel pointers.
+- **`container` (optional).** A graph that binds the OCI (Open Container
+  Initiative) repository, signed container release, and complete descriptor
+  inventory.
+
+Container graphs follow these rules:
+
+- Capturing the graph includes every manifest, index, configuration, layer,
+  and declared provenance/referrer artifact. A sidecar or an index digest
+  alone is not a complete upload.
+- File and static transports retain verified graph bytes under
+  `oci/blobs/sha256/<digest>`; the signed Git sidecar and immutable version
+  tag retain release authority. This archive does not provision a Docker
+  Distribution endpoint.
+- The Hub adapter separately uploads real Distribution repository memberships
+  and binds its immutable OCI version tag. Distribution upload checkpoints
+  retain server-confirmed offsets for interrupted large blobs.
+- The Hub's advertised OCI endpoint is discovered from its surface
+  capabilities; it need not have the same base path as registry object
+  storage.
 
 OCI readiness requires the complete verified graph on every required physical
-write placement. A standard Distribution upload materializes the primary
-placement; existing authorized placement replication must fill any remaining
-stores before the stage becomes ready. Staging does not provision replication.
-Routing aliases for the same physical store add no requirement, and a single
-write placement needs no replication.
+write placement:
+
+- A standard Distribution upload materializes the primary placement.
+- Already-authorized placement replication must fill any remaining stores
+  before the stage becomes ready. Staging does not provision replication.
+- Routing aliases for the same physical store add no requirement, and a
+  single write placement needs no replication.
 
 The local producer adapter stores these records below its Git directory:
 
@@ -136,7 +149,8 @@ discovery, and channel partitions. Public pointers continue to identify the
 last published release while a candidate is incomplete.
 
 This is a publication boundary, not a confidentiality boundary. An explicitly
-addressed authoring ref, object digest, cache URL, or CDN path may expose already
+addressed authoring ref, object digest, cache URL, or content delivery
+network (CDN) path may expose already
 uploaded candidate bytes. Sensitive artifacts require access control on their
 storage and transport. Hiding a stage from the catalog cannot revoke a URL
 that a reader already knows.
@@ -157,39 +171,55 @@ without a Hub account or service.
 
 ## Shared services and transport adapters
 
-The pure registry schema owns stage identity, revisions, inventories, and
-state transitions. Producer libraries own authoring, cache construction,
-signatures, and release artifacts. Transport adapters provide narrow
-operations for object inventory, object upload and read-back, stage persistence,
-and publication. Static filesystem/HTTP/S3/SFTP adapters and the Hub adapter
-compose the existing shared service machinery around those operations.
+Responsibilities are split across three layers:
 
-Candidate metadata is prepared before the transaction's review digests freeze.
-APR and the AOS caller share the four-role registry catalog TUF producer and APM
-verifier. External catalog signatures use the active registry authority and
-committed catalog root, with role/version-bound `CatalogTuf` requests in the
-`aos-registry-tuf-v1` SSHSIG namespace. Distribution-bundle TUF keys and digest
-domains remain independent. A changed catalog carrying the base commit's stale
-metadata fails verification before a release tag is created. Root rotation
-checks use the highest published root metadata version; each role takes its
-maximum version across all published tags as its floor. This history comes
-from the local authoring registry and does not independently authenticate its
-refs. Existing root cross-signature checks and final release verification
-preserve the trust boundary, including a hotfix from an older release line.
+| Layer | Owns |
+| --- | --- |
+| Pure registry schema | Stage identity, revisions, inventories, and state transitions |
+| Producer libraries | Authoring, cache construction, signatures, and release artifacts |
+| Transport adapters | Narrow operations for object inventory, object upload and read-back, stage persistence, and publication |
 
-AOS distribution metadata uses a separate, role-separated TUF contract. Hub
-stage admission binds its prepared timestamp to the exact immutable snapshot,
-root, targets, and delegated metadata bytes, then applies the existing
-publication admission and monotonic timestamp rules. The signed registry tag
-check authenticates the registry release. Consumers verify distribution TUF
-signatures against independently pinned roots; admitting staged metadata does
-not establish a new root authority.
+The static filesystem/HTTP/S3/SFTP adapters and the Hub adapter compose the
+same shared service machinery around those adapter operations.
+
+### Registry catalog TUF
+
+TUF (The Update Framework) metadata for the registry catalog is prepared with
+the candidate, before the transaction's review digests freeze.
+
+- APR and the AOS caller share the four-role registry catalog TUF producer
+  and the APM verifier.
+- External catalog signatures use the active registry authority and committed
+  catalog root, with role/version-bound `CatalogTuf` requests in the
+  `aos-registry-tuf-v1` SSHSIG (OpenSSH signature) namespace.
+- Distribution-bundle TUF keys and digest domains remain independent.
+- A changed catalog carrying the base commit's stale metadata fails
+  verification before a release tag is created.
+- Root rotation checks use the highest published root metadata version; each
+  role takes its maximum version across all published tags as its floor.
+- That version history comes from the local authoring registry and does not
+  independently authenticate its refs. Root cross-signature checks and final
+  release verification preserve the trust boundary, including for a hotfix
+  from an older release line.
+
+### AOS distribution TUF
+
+AOS distribution metadata uses a separate, role-separated TUF contract.
+
+- Hub stage admission binds its prepared timestamp to the exact immutable
+  snapshot, root, targets, and delegated metadata bytes, then applies the
+  ordinary publication admission and monotonic timestamp rules.
+- The signed registry tag check authenticates the registry release.
+- Consumers verify distribution TUF signatures against independently pinned
+  roots; admitting staged metadata does not establish a new root authority.
+
+### One release library, two callers
 
 The common release library drives both APR's ordinary registry workflow and
 AOS's maintainer orchestrator. `aos maintain release` adds frozen source plans,
 platform matrices, qualification, destination policy, receipts, and rollout
 journals. It does not run APR subprocesses or duplicate the registry release
-protocol. `aos release` has been removed; there is no compatibility alias.
+protocol. There is no `aos release` command.
 
 ## Retention
 
@@ -218,11 +248,11 @@ without creating or deleting files.
 
 ## Related documentation
 
-- [Publishing](publishing.md) describes the producer's command surface and
+- [Publishing](publishing.md) describes the producer's commands and
   immutable-first public upload order.
 - [Publish packages and releases](../../users/registry/publishing.md) gives the
   operator workflow.
-- [Versioning and channels](versioning-and-channels.md) specifies the existing
+- [Versioning and channels](versioning-and-channels.md) specifies the
   frontier refs and signed partition schema.
 - [Release publishing](../release-publishing/README.md) describes AOS
   destinations, qualification, and production publication policy.

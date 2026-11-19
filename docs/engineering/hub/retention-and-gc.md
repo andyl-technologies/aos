@@ -5,6 +5,20 @@ manual pins, and leases, and how garbage collection plans and applies deletion
 without ever deleting a live object. The relationships that create retention
 sources are in [registry-cache-relations.md](registry-cache-relations.md).
 
+Where in the code:
+
+- selector evaluation, the SemVer requirement grammar, and recent-release
+  ordering: `crates/hub/aos-hub-model/src/retention.rs`;
+- retention, root-reason, object-presence, mark, plan, and apply persistence:
+  `crates/hub/aos-hub-db/src/db/gc_topology.rs`;
+- cache physical inventory: `crates/hub/aos-hub-service/src/cache_scan.rs`;
+- physical deletion of cache objects:
+  `crates/hub/aos-hub-service/src/gc_controller.rs`;
+- OCI placement deletion:
+  `crates/hub/aos-hub-service/src/oci_gc_controller.rs`; and
+- registry deletion operations:
+  `crates/hub/aos-hub-service/src/registry_delete_controller.rs`.
+
 ## Correct source data
 
 Retention by release requires an immutable artifact snapshot for each verified
@@ -41,8 +55,8 @@ The indexer verifies the release tag, reads the registry tree at its target
 commit, derives a manifest digest, and records the snapshot header and artifact
 rows before publishing that snapshot as complete in one transaction. At most
 one complete snapshot exists for an immutable release. A complete zero-artifact
-snapshot is different from a release that has never been indexed. Existing complete
-snapshots are immutable and remain intact when a later index or verification
+snapshot is different from a release that has never been indexed. Complete
+snapshots are immutable and stay intact when a later index or verification
 attempt fails; failed attempts are separate snapshot rows and never replace the
 complete pointer. A selector that needs a release without a complete snapshot
 is not safe for destructive GC.
@@ -77,16 +91,8 @@ RetentionSelector
   all_releases
 ```
 
-The recommended initial default is:
-
-```text
-current_catalog
-union all channel partition targets
-union latest 5 verified releases
-```
-
-The count is editable per subscription. Organizations may define a different
-default, and archival caches may select all releases.
+A subscription's selector is the union of the terms it sets; an archival
+cache, for example, selects `all_releases`.
 
 `recent_releases.count` is an integer from 1 through 100. It considers only
 verified releases with a complete artifact snapshot and a valid SemVer 2.0.0
@@ -125,8 +131,9 @@ OWS         = *( SP | HTAB )
 ```
 
 Tokens use longest-match lexing. Leading/trailing OWS is accepted and removed
-by canonicalization. Caret, tilde, wildcard, partial, implicit-equality, hyphen-range, and bare-space
-conjunction syntax are rejected. Parsing enforces SemVer 2.0.0 numeric and
+by canonicalization. Caret, tilde, wildcard, partial, implicit-equality,
+hyphen-range, and bare-space conjunction syntax are rejected. Parsing enforces
+SemVer 2.0.0 numeric and
 identifier rules. Canonicalization normalizes whitespace away, renders numeric
 identifiers without leading zeroes, deduplicates comparators, sorts comparators
 within each conjunction by `(operator UTF-8 bytes, canonical version UTF-8
@@ -164,10 +171,9 @@ OID, release id `u64be(1)` sorts before `u64be(2)`. A candidate with count 0 or
 101 is invalid, and an unverified, incomplete-snapshot, invalid-SemVer, or
 filtered prerelease candidate is ineligible before sorting.
 
-`current_catalog` deliberately preserves the current safe behavior: every
-package-output and image store path still published at the registry's current
-indexed commit is rooted. Release selectors add historical correctness rather
-than replacing current-catalog safety.
+`current_catalog` roots every package-output and image store path published
+at the registry's current indexed commit. Release selectors add historical
+coverage on top of it; they do not replace current-catalog safety.
 
 ## Root reasons
 
@@ -209,7 +215,9 @@ partition, and channel source revision.
 
 The refresh remains unreachable while building. Commit verifies the exact
 reason count, every source reference, and the unchanged subscription version,
-parent pointer, selector digest, source revision, and cache GC epoch. One atomic
+parent pointer, selector digest, source revision, and cache GC epoch (the
+per-cache counter defined under
+[Portable cache epoch](#portable-cache-epoch)). One atomic
 batch marks it complete, sets activation and parent-grace times, advances the
 subscription's `current_refresh_id`, and advances the cache epoch. A failed
 refresh records its error but never becomes current. The active root query
@@ -219,19 +227,26 @@ cutoff. A retired subscription contributes that lineage only through its
 explicit retirement grace. No query treats every historical reason row as
 active.
 
-Manual roots have stable ids and are logically deleted rather than overwritten.
-A root is either indefinite, contributing a manual reason, or lease-governed,
-contributing no separate indefinite reason. A lease-governed root stores one
-`current_lease_id`. The active lease reason exists only when that exact lease is
-the current head, is not revoked or superseded, and contains the GC cutoff in
-`[begins_at, expires_at)`. Renewal atomically creates a successor linked by
-`renewed_from_lease_id`, marks the prior head superseded, advances the root
-pointer/version, and advances the cache epoch. Revocation marks the current
-head revoked, clears the pointer, and advances the same versions; it cannot
-revoke a historical predecessor. Wall-clock expiry is derived and needs no
-unsafe background rewrite. Root deletion clears either form of protection and
-is likewise epoch-guarded. Ordinary unreferenced grace still begins before the
-object becomes eligible for collection.
+Manual roots have stable ids and are logically deleted rather than
+overwritten. A root takes one of two forms:
+
+- **Indefinite**: it contributes a manual reason.
+- **Lease-governed**: it contributes no separate indefinite reason and stores
+  one `current_lease_id`. The active lease reason exists only when that exact
+  lease is the current head, is not revoked or superseded, and contains the GC
+  cutoff in `[begins_at, expires_at)`.
+
+Lease-governed roots change through these epoch-guarded transitions:
+
+| Transition | Effect |
+| --- | --- |
+| Renewal | Atomically creates a successor linked by `renewed_from_lease_id`, marks the prior head superseded, advances the root pointer/version, and advances the cache epoch. |
+| Revocation | Marks the current head revoked, clears the pointer, and advances the same versions. It cannot revoke a historical predecessor. |
+| Expiry | Derived from the wall clock; it needs no unsafe background rewrite. |
+| Root deletion | Clears either form of protection. |
+
+After any of them, the ordinary unreferenced grace still has to elapse before
+the object becomes eligible for collection.
 
 ## Cache object identity
 
@@ -258,7 +273,8 @@ control-plane transition.
 Cache-wide inventory is a leased, single-owner generation. The scanner
 heartbeats its durable owner token while paging every placement, and all staged
 object, presence, candidate, manifest, and publication writes are fenced by
-that token. A second scanner cannot take over a live lease. Once the lease has
+that token: a write that does not present the current owner token fails. A
+second scanner cannot take over a live lease. Once the lease has
 expired, it may delete the abandoned unpublished generation and recreate that
 same successor generation atomically; cascades discard the abandoned staging
 set before the new owner can publish. Cleanup from the crashed or delayed owner
@@ -314,24 +330,25 @@ batch as its domain change:
 - creation, completion, or cancellation of an object-mutation fence.
 
 Routes that only change delivery do not affect logical membership and do not
-advance the epoch. A desired/observed write-authority CAS alone also does not
-change membership, inventory, or deletion targets and retains its portable
-single-row contract. Reconciliation that can publish bytes creates an object-
-mutation fence first; that fence, its publication, and any placement lifecycle
-or presence change advance the epoch. GC never changes or derives write
-authority.
-Informational root, graph, inventory, and topology generation fields remain in
-plans for explanation, but the single epoch is the portable race arbiter.
+advance the epoch. A desired/observed write-authority compare-and-swap (CAS)
+alone also does not change membership, inventory, or deletion targets and
+retains its portable single-row contract. Reconciliation that can publish
+bytes creates an object-mutation fence first; that fence, its publication, and
+any placement lifecycle or presence change advance the epoch. GC never changes
+or derives write authority. Informational root, graph, inventory, and topology
+generation fields are kept in plans for explanation, but the single epoch is
+the portable race arbiter.
 
-Native SQL transactions and Worker Durable Object atomic batches implement the same rule.
-A one-row mutation combines its domain and epoch CAS in one statement and sets
+Native SQL transactions and Worker Durable Object atomic batches implement the
+same rule. A one-row mutation combines its domain change and its epoch CAS in
+one statement and sets
 `epoch_owner_token` to its operation token. A multi-row mutation first creates
 a claim unique on `(cache_id, expected_epoch)`, advances the epoch while setting
 that claim as `epoch_owner_token`, and gates every write and final assertion on
 both the claim and matching owner token. It uses the final `CHECK (ok = 1)`
 pattern defined for GC apply below and never assumes that a zero affected-row
-statement aborts a Durable Object batch. A root refresh and GC apply, or two applies, racing
-from one epoch therefore have exactly one winner.
+statement aborts a Durable Object batch. A root refresh and GC apply, or two
+applies, racing from one epoch therefore have exactly one winner.
 
 ## Logical GC and placement GC
 
@@ -398,9 +415,9 @@ abandonment records leaked bytes and permits tombstone lifecycle completion,
 but never reports them as reclaimed. Database state must not claim storage was
 freed until the backend confirms it.
 
-The OCI provider inventory that supplies the strong ETags for registry
-placement deletion enumerates only the `oci/blobs/sha256/` namespace of a
-registry placement. The placement also
+The OCI (Open Container Initiative) provider inventory that supplies the
+strong ETags for registry placement deletion enumerates only the
+`oci/blobs/sha256/` namespace of a registry placement. The placement also
 holds the binary cache and git objects, which a blob inventory must never
 page through, so the surface listing port takes a key prefix that every
 backend applies natively (an object-store list prefix or a filesystem walk
@@ -420,9 +437,9 @@ buckets provide `DeleteObject` with `If-Match`; AOS does not substitute
 size-only conditions. The Cloudflare Workers R2 binding exposes conditional
 `get` and `put`, but its `delete` has no condition, and R2's S3 compatibility
 does not advertise conditional `DeleteObject`. External R2 bindings reached
-through S3 credentials therefore remain a blocked GC capability until they
-gain a proven conditional delete. A read-then-delete sequence is not
-sufficient on a shared bucket because it can delete a replacement written
+through S3 credentials are therefore a blocked GC capability: a cache with
+such a placement cannot enable destructive GC. A read-then-delete sequence is
+not sufficient on a shared bucket because it can delete a replacement written
 between those calls.
 
 The deployment bucket (`deployment_r2`) and `local_fs` use a cooperative
@@ -435,27 +452,43 @@ between the identity check and the delete, so a head-then-delete that compares
 the strong ETag and size observed by inventory is equivalent to a provider
 conditional delete for those backends.
 
+### OCI GC runs and registry teardown
+
 Registry deletion requires an empty catalog, but signed releases and tags are
 permanent roots of ordinary collection. A reviewed *retiring* run drops the
 catalog-owned roots (signed releases, tags, retained tag history) and collects
-without grace. It fails closed while any enabled route serves the registry's
-OCI surface, including an enabled registry OCI namespace or an enabled instance
-OCI route that names the registry as its default, at planning and inside the
-apply transaction, and once it is applying the indexer refuses to re-project
-container-release roots for that registry. Every physical deletion of a retiring run uses the same inventory,
-capability, and finalization fences as an ordinary run.
+without grace.
 
-An OCI GC run is `planned` after review, `applying` once apply tombstones its
-candidates and takes the registry GC lock, and `complete` after finalization;
-a plan that fails closed while planning is recorded as `failed`. An unapplied
-plan holds no lock, delete credential, or tombstone, and no worker can claim
-its frozen placement actions, so it ends in the terminal `aborted` state in one
-of two equivalent ways: its fifteen-minute review expires and the maintenance
-sweep records `review expired before apply`, or a registry configurator
-cancels it with `ContainerService.CancelContainerGcRun`, which records
-`cancelled by operator before apply`. Cancellation binds the run's resource
-version, fails closed for an `applying` run, whose recovery belongs to action
-requeue and finalization, and returns an already terminal run unchanged.
+- It fails closed, at planning and inside the apply transaction, while any
+  enabled route serves the registry's OCI paths. That includes an enabled
+  registry OCI namespace and an enabled instance OCI route that names the
+  registry as its default.
+- Once it is applying, the indexer refuses to re-project container-release
+  roots for that registry.
+- Every physical deletion of a retiring run uses the same inventory,
+  capability, and finalization fences as an ordinary run.
+
+An OCI GC run moves through these states:
+
+| State | Meaning |
+| --- | --- |
+| `planned` | The plan has been reviewed. It holds no lock, delete credential, or tombstone, and no worker can claim its frozen placement actions. |
+| `applying` | Apply has tombstoned the candidates and taken the registry GC lock. |
+| `complete` | Finalization has finished. |
+| `failed` | The plan failed closed while planning. |
+| `aborted` | Terminal state of a plan that was never applied. |
+
+A `planned` run becomes `aborted` in one of two equivalent ways:
+
+- its fifteen-minute review expires and the maintenance sweep records
+  `review expired before apply`; or
+- a registry configurator cancels it with
+  `ContainerService.CancelContainerGcRun`, which records
+  `cancelled by operator before apply`.
+
+Cancellation binds the run's resource version, fails closed for an `applying`
+run, whose recovery belongs to action requeue and finalization, and returns an
+already terminal run unchanged.
 
 Only applied GC work blocks registry teardown: an `applying` run and the
 unfinished placement actions of a run that was applied. Apply rejects an
@@ -668,7 +701,9 @@ first-sweep acknowledgement rules still apply.
 
 ## Safety gates
 
-Before destructive GC is enabled for a migrated cache:
+Every cache starts with destructive GC disabled
+(`cache_gc_state.destructive_enabled`), and nothing but a reviewed first-sweep
+acknowledgement enables it. Before destructive GC is enabled for a cache:
 
 1. object and presence inventories complete a full scan;
 2. release-artifact snapshots exist for every selector that depends on them;
@@ -678,8 +713,13 @@ Before destructive GC is enabled for a migrated cache:
 5. no required placement is stale or unknown; and
 6. an operator acknowledges the first real sweep.
 
-Migration defaults to retain-all or current safe-superset behavior. The rewrite
-must never turn schema migration into implicit reclamation.
+The acknowledgement is its own plan/apply pair. It is bound to one unapplied,
+unexpired GC plan built on the current mark generation, and to the cache epoch
+and GC policy version that plan captured. It is refused while any placement of
+the cache cannot enforce identity-checked deletion. Applying it enables
+destructive GC and advances the cache epoch, which makes the acknowledged plan
+stale: it deletes nothing itself, and a fresh plan must be built and reviewed
+before any tombstone or deletion job is created.
 
 Destructive apply is also blocked while a required subscription has not
 refreshed to the registry's current indexed source revision, while population

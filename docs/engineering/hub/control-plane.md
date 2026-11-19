@@ -18,13 +18,14 @@ access. Every capability in that boundary has:
 - equivalent native and Cloudflare Worker behavior.
 
 Public registry browsing, package installation, system-image discovery, and
-downloads use their existing end-user surfaces. They remain API- and CLI-backed
-where applicable, but do not move inside settings merely to satisfy parity.
+downloads use their own end-user interfaces. They are API- and CLI-backed
+where applicable, but are not part of settings merely to satisfy parity.
 
 The following are not end-user control-plane capabilities:
 
 - starting or configuring the native Hub process or Worker deployment;
-- schema migration, backup restoration, root recovery, or seal-key recovery;
+- schema migration, backup restoration, root recovery, or recovery of the
+  key that seals secrets at rest;
 - controller reconciliation reports and storage-provider callbacks;
 - direct database inspection or repair; and
 - offline topology-cutover artifact generation and verification.
@@ -37,12 +38,15 @@ missing interface is never treated as an implicit exclusion.
 The Connect API is the sole management authority:
 
 ```text
-browser session --CSRF exchange--> five-minute bearer --+
-                                                        |
-aos hub device login --> access/refresh credential -----+--> aos.hub.v1
-                                                        |
-service account --> scoped access token ----------------+
+browser session --CSRF exchange--> five-minute access JWT --+
+                                                            |
+aos hub login --> access JWT + refresh credential ----------+--> aos.hub.v1
+                                                            |
+service account --> access token --> access JWT ------------+
 ```
+
+The credential terms (access token, access JWT, refresh credential) are
+defined in [tenancy-and-auth.md](tenancy-and-auth.md#credentials).
 
 The Web application does not submit management forms to bespoke HTTP handlers.
 The CLI does not inspect Hub storage or invoke hidden operator endpoints. Both
@@ -55,7 +59,8 @@ native and Worker dispatchers reject a missing, repeated, or different value.
 This is one protocol constant used by all clients and servers, not parallel
 client-specific spellings.
 
-The authenticated organization inventory is also the tenant-bootstrap surface.
+The authenticated organization inventory is also the tenant-bootstrap entry
+point.
 A user with no memberships can open it and the dedicated organization-creation
 page. The API remains the sole authority for live invite-only and signup-domain
 policy when the user plans creation; route visibility does not duplicate or
@@ -111,21 +116,22 @@ path; direct table seed helpers are compiled only into test fixtures.
 ## Capability manifest
 
 [`hub-control-plane-capabilities-v1.json`](../../../crates/hub/aos-hub-api/contracts/hub-control-plane-capabilities-v1.json)
-is the closed, versioned parity contract. Its HTTP entries identify non-Connect authentication surfaces. Its
-service entries identify the audience, owning API methods, CLI command
-families, and Web workflows for one protobuf service. Native and Worker are the
-only supported runtimes.
+is the closed, versioned parity contract. Its HTTP entries identify
+non-Connect authentication endpoints. Its service entries identify the
+audience, owning API methods, CLI command families, and Web workflows for one
+protobuf service. Native and Worker are the only supported runtimes.
 
 The `aos-hub-api` `contract_inventory` integration tests compare this manifest
 with the generated protobuf descriptor. API generation itself reads only the
-canonical protobuf sources under `api/proto/`, independent of browser code. Every API method appears exactly once. Every method owned by an
-`end-user` or `public` service must also be referenced by the browser client.
+canonical protobuf sources under `api/proto/`, independent of browser code.
+Every API method appears exactly once. Every method owned by an `end-user` or
+`public` service must also be referenced by the browser client.
 An exact method may instead have a non-empty `web_method_exceptions` reason
 when another browser call returns the same complete model or the action is an
 explicit retained authentication ceremony. Unknown, duplicate, and stale
-exceptions fail the integration gate. The service authorization implementation remains
-the authority for each method's permission and scope; the manifest does not
-duplicate that security policy.
+exceptions fail the integration gate. The service authorization
+implementation is the authority for each method's permission and scope; the
+manifest does not duplicate that security policy.
 
 Browser method coverage recognizes generated path identifiers only as Rust
 code, excluding comments and string literals, so prose cannot satisfy the
@@ -136,7 +142,9 @@ the production Worker route stack.
 
 ## Browser application boundary
 
-The management application is a Rust/Leptos CSR workspace member. It imports
+The management application (`crates/hub/aos-hub-console`) is a Rust/Leptos
+workspace member rendered entirely in the browser (client-side rendering). It
+imports
 the wasm-clean messages and generated Connect paths from `aos-hub-api` and
 uses a typed transport over browser `fetch`. It does not maintain handwritten
 wire structs or method URLs.
@@ -155,11 +163,11 @@ the content-addressed console assets. The client renders the same masthead,
 session links, settings navigation, page measure, controls, forms, tables,
 badges, attached-help behavior, focus behavior, responsive disclosure, and
 version statline with configured legal links used by the server-rendered
-surfaces. The management shell does not expose transport implementation
-labels. Console CSS is strictly additive: packaging
-fails if it declares a root theme, forces a color scheme, selects a replacement
-font, or introduces dashboard-style elevation. Public, login, account, and
-other existing server-rendered pages remain unchanged.
+pages. The management shell does not expose transport implementation labels.
+Console CSS is strictly additive: packaging fails if it declares a root theme,
+forces a color scheme, selects a replacement font, or introduces
+dashboard-style elevation, so public, login, account, and other
+server-rendered pages keep their appearance.
 
 The client owns:
 
@@ -186,17 +194,18 @@ Connect API. It requires:
 The request names the current canonical deep link in `x-aos-console-route`.
 The Hub resolves that route to its immutable authorization scope and evaluates
 permissions from live grants; an unknown or mismatched route produces an empty
-permission set. The `no-store` response contains a five-minute bearer,
+permission set. The `no-store` response contains a five-minute access JWT,
 principal summary, effective grants, and the evaluated route permissions. The
-application holds it only in memory and filters navigation from those server-
-evaluated capabilities. After
-one API `401`, the application may exchange once and retry once. A second
-failure navigates to `/login?next=<current-deep-link>`.
+application holds it only in memory and filters navigation from those
+server-evaluated capabilities. After one API `401`, the application may
+exchange once and retry once. A second failure navigates to
+`/login?next=<current-deep-link>`.
 
 Login, account password and passkey management, session revocation, OIDC
-callbacks, invitation redemption, and device approval remain server-rendered.
+callbacks, invitation redemption, and device approval are server-rendered.
 They establish or alter authentication state and are not management API
-shortcuts.
+shortcuts. The sign-in methods themselves are described in
+[tenancy-and-auth.md](tenancy-and-auth.md#credentials).
 
 ## CLI authentication and profiles
 
@@ -206,22 +215,24 @@ shortcuts.
 2. Display the verification URI and code and optionally open a browser.
 3. Poll the token endpoint at the server-provided interval.
 4. Handle pending, slow-down, denial, and expiry responses.
-5. Store the resulting access and refresh credentials for that normalized Hub
-   origin in a mode-0600 user configuration file.
+5. Store the resulting access JWT and refresh credential for that normalized
+   Hub origin in a mode-0600 user configuration file.
 
-Access JWTs last one hour. Opaque refresh credentials have a 30-day idle and
-90-day absolute lifetime, are hashed at rest, rotate on every refresh, and are
-bound into a family. Reuse of a consumed refresh credential revokes the family.
-`aos hub logout` revokes the family and removes the local profile.
+The CLI refreshes an expired access JWT with its refresh credential, which
+rotates on every refresh; their shapes and lifetimes are in
+[tenancy-and-auth.md](tenancy-and-auth.md#credentials). `aos hub logout`
+revokes the refresh-credential family and removes the local profile.
 
 Command connection resolution is, in order: explicit `--hub`/`--token`,
 `AOS_HUB`/`AOS_TOKEN`, then the active stored Hub profile. `aos hub whoami`
 shows the resolved origin, principal, credential expiry, memberships, and
 effective grants.
 
-The provisioning-secret bootstrap is an explicit token grant for initial
-automation. The old untyped exchange and provisioning-secret-only login syntax
-are not retained.
+Automation that holds an access token exchanges it for an access JWT through
+an explicit token grant: it presents the `aos_` secret as the
+`Authorization: Bearer` value of a
+`urn:aos:params:oauth:grant-type:provisioning-token` request. That grant
+returns no refresh credential.
 
 The three runtime-identical endpoints are:
 
@@ -243,7 +254,9 @@ Service accounts are organization-owned principals with list, get, create,
 rename, and delete operations. Memberships grant users or service accounts a
 role at an instance, organization, or resource scope.
 
-Access tokens replace registry-specific token resources. Issuance records:
+An access token is the long-lived `aos_` secret defined in
+[tenancy-and-auth.md](tenancy-and-auth.md#credentials). It is issued at any
+authorization scope, not as a registry-specific resource. Issuance records:
 
 - owner principal;
 - canonical scope;
@@ -262,79 +275,95 @@ Organization IAM parity also includes membership inventory and replacement,
 invitations, OIDC configuration, and captured email-domain claim, verification,
 and release.
 
+### Invitations
+
 An invitation is a durable pending grant proposal, never a membership alias.
-Administrator creation and cancellation use ordinary immutable plan/apply
-pairs. Creation generates a high-entropy `aosi_` acceptance secret, stores its
-SHA-256 verifier, and retains only an AES-GCM-sealed recovery copy under the
-Hub's durable at-rest key. An exact idempotent apply retry unseals that same
-secret, closing the mutation-to-response crash window without persisting
-plaintext credential material or coupling invitations to ephemeral JWT keys.
-Acceptance and cancellation erase the recovery copy. Bounded native maintenance
-and Worker Cron passes erase expired recovery copies and release their live keys
-atomically. A durable live-invitation key enforces at most one pending invitation
-for an organization, email, and scope. The invited user presents the secret
-through the `AcceptInvitation` identity ceremony after authenticating with the
-exact canonical email. That ceremony is the narrow exception to administrator review:
-the secret and matching live identity are its preconditions, and one checked
-transaction both marks the invitation accepted and creates the exact direct
-membership. A conflict rolls both changes back. Pending, accepted, cancelled,
-and time-derived expired states remain inspectable; creation never pre-creates
-a user. Each transition emits a secret-redacted IAM audit event in the same
-checked transaction as its state and membership effects. Native and
-Worker deployments use the same service and migration, and Worker schema DDL
-advances its migration ledger in the same Durable Object transaction. Native
-PostgreSQL and SQLite migrate transactionally; MySQL uses a keyed singleton
-ledger plus replay-safe DDL and exact index-catalog checks because MySQL DDL
-implicitly commits.
+Creation never pre-creates a user.
+
+- **Create and cancel.** Administrator creation and cancellation use ordinary
+  immutable plan/apply pairs. A durable live-invitation key enforces at most
+  one pending invitation for an organization, email, and scope.
+- **Acceptance secret.** Creation generates a high-entropy `aosi_` acceptance
+  secret, stores its SHA-256 verifier, and retains only an AES-GCM-sealed
+  recovery copy under the Hub's durable at-rest key. An exact idempotent apply
+  retry unseals that same secret, closing the mutation-to-response crash
+  window without persisting plaintext credential material or coupling
+  invitations to ephemeral JWT keys.
+- **Recovery-copy erasure.** Acceptance and cancellation erase the recovery
+  copy. Bounded native maintenance and Worker Cron passes erase expired
+  recovery copies and release their live keys atomically.
+- **Acceptance.** The invited user presents the secret through the
+  `AcceptInvitation` identity ceremony after authenticating with the exact
+  canonical email. That ceremony is the narrow exception to administrator
+  review: the secret and matching live identity are its preconditions, and one
+  checked transaction both marks the invitation accepted and creates the exact
+  direct membership. A conflict rolls both changes back.
+- **States and audit.** Pending, accepted, cancelled, and time-derived expired
+  states remain inspectable. Each transition emits a secret-redacted IAM audit
+  event in the same checked transaction as its state and membership effects.
+
+Native and Worker deployments use the same service and schema migrations
+([runtime.md](runtime.md#database-backend)).
 
 ## Settings hierarchy
 
-Every scope root is its first navigation entry and is labeled **Overview**.
-The organization group order is:
+The settings navigation is data. Each settings scope has a `PageSpec` table
+in `crates/hub/aos-hub-ui/src/lib.rs` (`INSTANCE_PAGES`,
+`ORGANIZATION_PAGES`, `REGISTRY_PAGES`, and `CACHE_PAGES`) whose entries are in
+final navigation order and name each page's key, label, navigation group,
+canonical route suffix, and capability-manifest workflow. Those tables are
+the source of truth; the summary below follows them.
 
-1. Overview
-2. Projects
-3. Registries
-4. Binary caches
-5. Storage
-6. Networking
-7. Identity & access
-8. Signing
-9. Webhooks
-10. Operations
-11. Audit
-12. Danger
+Every scope root is its first navigation entry, is labeled **Overview**, and
+belongs to no group. Creation pages such as "Create registry" also carry no
+group. The remaining pages are grouped as follows:
 
-Networking contains domains, network policies, endpoints, storage
-gateways, and routes. Registry and cache pages reuse the same Overview,
-Delivery, Placements, Integrations, Security, Operations, Activity, and Danger
-grammar. Registry content owns packages, releases, channels, images,
-publication, mirror, and configuration. Cache content owns objects, closures,
-retention, population, coverage, and garbage collection.
+| Scope | Group | Pages |
+| --- | --- | --- |
+| Organization | Resources | Projects, Registries, Binary caches |
+| Organization | Infrastructure | Bindings, Domains, Network policies, Endpoints, Gateways, Topology defaults |
+| Organization | Access & trust | Identity & access, Members, SSO, Signing keys, Access tokens |
+| Organization | Automation | Webhooks |
+| Organization | Activity | Operations, Audit log |
+| Organization | Danger zone | Danger zone |
+| Registry | Topology | Storage & replicas, Delivery, Binary caches |
+| Registry | Access & trust | Identity & access, Signing keys, Access tokens |
+| Registry | Publishing | Staged releases, Containers, Upstream mirror |
+| Registry | Activity | Configuration history, Change requests, Publications, Operations & health |
+| Registry | Danger zone | Danger zone |
+| Binary cache | Topology | Storage & replicas, Delivery |
+| Binary cache | Content | Objects & closures, Integrations |
+| Binary cache | Access & trust | Identity & access, Signing keys, Access tokens |
+| Binary cache | Policy | Retention, Garbage collection |
+| Binary cache | Activity | Operations & health |
+| Binary cache | Danger zone | Danger zone |
+
+Registry and cache scopes share the Topology, Access & trust, Activity, and
+Danger zone groups. Routes are edited on a surface's Delivery page.
 
 Pages have one primary mutation domain. Topological context appears as links
-and backlinks instead of duplicated editors. In particular:
-
-- a placement edits storage intent, not delivery;
-- a route edits one simultaneous client path, not storage identity;
-- a registry cache stack edits signed consumer configuration;
-- a retention subscription edits GC roots; and
-- a population target edits desired byte presence.
+and backlinks instead of duplicated editors: a placement page edits storage
+intent, not delivery, and a route page edits one client path, not storage
+identity. The registry/cache relationship pages follow the same rule; the
+single effect of each record is listed in
+[topology.md](topology.md#one-relationship-one-effect).
 
 ## Publication uploads
 
-Connect requests remain bounded control messages. Large NAR, blob, and disk
-image bytes use upload tickets and direct or multipart object transfers.
+Connect requests are bounded control messages. Large NAR (Nix archive), blob,
+and disk image bytes use upload tickets and direct or multipart object
+transfers. The publication and upload protocols are specified in
+[delivery.md](delivery.md#writes).
 The Web application begins a publication, uploads immutable objects, and
 commits only after every required object and placement verifies. Cache-object
 uploads use `CreateCacheObjectUploads`; a direct-origin capability receives no
-Hub bearer, while a typed same-origin proxy receives the in-memory bearer.
-When a single-request upload ticket carries no URL, the browser uses the typed begin,
-part, complete, and abort multipart protocol. A partial or failed registry
-publication is not discoverable.
+Hub bearer, while a typed same-origin proxy receives the in-memory access
+JWT. When a single-request upload ticket carries no URL, the browser uses the
+typed begin, part, complete, and abort multipart protocol. A partial or failed
+registry publication is not discoverable.
 
 The browser does not persist upload state or authorization material. Durable
-publication sessions remain discoverable from the Hub, so a user can reopen an
+publication sessions are discoverable from the Hub, so a user can reopen an
 exact publication and upload its remaining declared objects. An interrupted
 cache-object multipart transfer is aborted and restarted from a newly reviewed
 upload ticket.
@@ -342,9 +371,9 @@ upload ticket.
 ## Server-rendered routes
 
 Canonical management GET URLs are application deep links that return the
-console shell. There are no management POST routes, redirects, aliases,
-dual-write paths, or feature flags. The retained server-rendered route classes
-are limited to:
+console shell. Management has no server-rendered POST routes, redirects,
+aliases, dual-write paths, or feature flags; every management mutation is an
+`aos.hub.v1` call. The server-rendered route classes are limited to:
 
 - login, logout, OIDC, magic-link, and passkey authentication;
 - account password, passkey, and session management;
@@ -354,5 +383,6 @@ are limited to:
 The exact route classes and rejection rules are recorded in the
 [web route ledger](../../../crates/cli/aos-cli/hub-topology-cutover/web-route-ledger-v1.md).
 Repository guards in `crates/cli/aos-cli/tests/hub_topology_cutover.rs` and
-`crates/hub/aos-hub-api/tests/contract_inventory.rs` fail if a removed
-management handler, direct database mutation, or POST route reappears.
+`crates/hub/aos-hub-api/tests/contract_inventory.rs` fail if a management
+handler outside these classes, a direct database mutation, or a management
+POST route appears.

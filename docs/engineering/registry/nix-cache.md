@@ -5,37 +5,39 @@
 > Nix-cache files at publish, and architects reasoning about the git-metadata
 > layer versus the NAR-cache layer.
 >
-> **Up front — the registry runs no server.** The registry's Nix binary cache is
-> **dumb static files on the HTTP CDN, generated ahead-of-time (AOT) at publish**
-> (`{cache-base}/nix-cache-info`, `{cache-base}/<storehash>.narinfo`,
-> `{cache-base}/nar/<…>.nar.zst`). There is **no process** answering requests at
-> serve-time — a stock `nix` / `apm` reads these files as an ordinary static
-> binary cache (the strict superset). The narinfo **format / sign / FileHash
-> logic** is shared library code —
-> `aos-nar/src/info.rs` (the shared `NarInfo` type) and
-> `aos-nar/src/cache.rs` (`render_static_narinfo`, `NarInfoSigner`,
-> `nix_cache_info`, and `nar_url`). The **producer reuses these as a library** to
-> *generate* the static files. The live `aos-build-server` cache
-> (a host serving its **own** Nix store, nix-serve-style) is a **separate use
-> case the registry never runs**. The consumer (`aos-package-manager/src/download.rs`) is
-> narinfo-driven and works against a dumb static cache. The producer path
-> is `apr cache generate`: it AOT-generates those static files,
-> can upload them through `aos-nix-cache`, and can update the committed
-> `registry.toml` `[[caches]]` pointer.
+> **The registry runs no cache server.** In short:
+>
+> - The Nix binary cache is static files on the content delivery network
+>   (CDN), generated ahead of time (AOT) at publish:
+>   `{cache-base}/nix-cache-info`, `{cache-base}/<storehash>.narinfo`, and
+>   `{cache-base}/nar/<…>.nar.zst`. A NAR is a Nix archive, the serialized
+>   form of one store path.
+> - No process answers requests at serve time. Stock `nix` and `apm` read the
+>   files as an ordinary static binary cache.
+> - `apr cache generate` is the producer. It writes the files, can upload
+>   them through `aos-nix-cache`, and can update the committed
+>   `registry.toml` `[caches]` pointer.
+> - The narinfo format, signing, and `FileHash` logic is shared library code
+>   in `aos-nar` (`src/info.rs`, `src/cache.rs`), which the producer calls to
+>   generate the files.
+> - The consumer (`aos-package-manager/src/download.rs`) is narinfo-driven and
+>   needs nothing beyond those static files.
+> - The live `aos-build-server` cache, a host serving its own Nix store, is a
+>   separate use case that the registry never runs.
 
-This document explains how an AOS registry's Nix binary cache is, by design, a
-**strict superset** of the standard Nix binary-cache (substituter) protocol,
-**delivered as pre-generated static files on the CDN** — not by a running
-server. The NAR-cache surface is **orthogonal** to the git-object metadata
-layer: it is not part of the trust chain that `apm` walks. Its location is
-**not** advertised in signed tags — signed tags are pure signed pointers and
-carry no structured payload. The substituter location lives in the **committed
-git-repo-root `registry.toml`** `[[caches]]` table (a tree file authenticated
+An AOS registry's Nix binary cache is a **strict superset** of the standard
+Nix binary-cache (substituter) protocol, delivered as pre-generated static
+files rather than by a running server. The cache is orthogonal to the
+git-object metadata layer: it is not part of the trust chain that `apm` walks.
+
+Its location is not advertised in signed tags, which are pure signed pointers
+with no structured payload. The cache location lives in the committed
+repo-root `registry.toml` `[caches]` stack (a tree file authenticated
 transitively by the signed tag — see
-[`repository-layout.md`](repository-layout.md)), with the consumer's client-side
-`registries.d/<name>.toml` as an **optional override/supplement**. The static
-cache files MAY be co-located with the git metadata on the same origin or live
-on a separate CDN host.
+[`repository-layout.md`](repository-layout.md)), with the consumer's
+client-side `registries.d/<name>.toml` as an optional supplement. The static
+cache files may share an origin with the git metadata or live on a separate
+CDN host.
 
 See also:
 [README.md](README.md) ·
@@ -53,7 +55,7 @@ See also:
 
 ## 1. Two orthogonal layers
 
-An AOS registry origin serves **two layers that do not depend on each other**:
+An AOS registry origin serves two layers that do not depend on each other:
 
 1. **The git metadata layer** — a bare, sha256 git repository served over dumb
    HTTP. Channels are branches, releases are signed tags, and the package
@@ -65,29 +67,29 @@ An AOS registry origin serves **two layers that do not depend on each other**:
    consumes this layer.
 
 2. **The NAR-cache layer** — the stock Nix `nix-cache-info` / `<storehash>.narinfo`
-   / `nar/` surface, **delivered as pre-generated static files on the CDN**
+   / `nar/` files, delivered as pre-generated static files on the CDN
    (AOT-generated at publish; no running process). A stock `nix` substituter
    consumes this layer for dev-shell substitution. It is a **strict superset** of
    the standard Nix binary cache.
 
-The link between them is deliberately thin. The **signed tag** carries no cache
-advertisement — but the git layer does name the cache, in the **committed
-git-repo-root `registry.toml`** `[[caches]]` table inside the tree the signed tag
+The link between them is deliberately thin. The signed tag carries no cache
+advertisement, but the git layer does name the cache: the committed repo-root
+`registry.toml` `[caches]` stack sits inside the tree the signed tag
 authenticates (tag → commit → tree → file; see
-[`repository-layout.md`](repository-layout.md)). The NAR cache may physically live anywhere —
-co-located with the git repo on the same origin (a relative `[[caches]]` url like
-`./nar`) or on a separate host (an absolute url). A consumer's client-side
-`registries.d/<name>.toml` may **override or supplement** that committed list.
-Neither layer's correctness depends on the other:
+[`repository-layout.md`](repository-layout.md)). The NAR cache may live on any
+host the stack names. A consumer's client-side `registries.d/<name>.toml` may
+add caches to that committed list. When neither names a cache, `apm` uses the
+registry URL itself as the cache base, which is how a co-located cache is
+found. Neither layer's correctness depends on the other:
 
 ```
             ┌──────────────────────────────────────────┐
   apm   ──► │  git metadata layer  (bare sha256 repo)   │  ← trust root
             │  channels=branches · releases=signed tags │     (signed tags)
             │  signed tag = pure signed pointer         │     (no cache payload)
-            │  tree: registry.toml [[caches]] ──────────┼──┐  (authenticated via tag)
+            │  tree: registry.toml [caches] ────────────┼──┐  (authenticated via tag)
             └──────────────────────────────────────────┘  │
-                                                           ▼ committed [[caches]]
+                                                           ▼ committed [caches]
             ┌──────────────────────────────────────────┐    (+ client-side override)
   nix   ──► │  NAR-cache layer (static CDN files, AOT)  │  ← NOT in apm trust chain
             │  nix-cache-info · <storehash>.narinfo     │     (per-narinfo Sig:)
@@ -95,11 +97,9 @@ Neither layer's correctness depends on the other:
             └──────────────────────────────────────────┘
 ```
 
-The cache is **named in-tree, not in the tag**: its location comes from the
-committed `registry.toml` `[[caches]]` (authenticated via the tag), which the
-consumer's client-side `registries.d/<name>.toml` may override. The metadata
-layer is authoritative; the NAR cache is a content-addressed, swappable
-substituter whose pointer the tag chain governs.
+The cache is named in-tree, not in the tag. The metadata layer is
+authoritative; the NAR cache is a swappable substituter whose pointer the tag
+chain governs.
 
 ---
 
@@ -107,7 +107,7 @@ substituter whose pointer the tag chain governs.
 
 A standard Nix binary cache is a dumb HTTP origin that answers three kinds of
 request, all relative to a **cache base URL** — and it can be served entirely
-from **static files**, no application logic required:
+from static files, no application logic required:
 
 1. `GET {cache}/nix-cache-info` — a fixed-name capability/identity stub.
 2. `GET {cache}/<storehash>.narinfo` — per-store-path text metadata, keyed by the
@@ -120,7 +120,7 @@ them to the CDN, so any host that knows nothing about AOS can point a stock
 `nix` at the cache URL and use it as an ordinary substituter. AOS adds nothing
 the Nix protocol cannot ignore — that is the **strict superset**.
 
-**Shared code.** The narinfo **format / sign / FileHash logic** is reusable
+**Shared code.** The narinfo format, signing, and `FileHash` logic is reusable
 library code:
 
 - `crates/artifacts/aos-nar/src/info.rs` defines the shared `NarInfo` type and its
@@ -131,21 +131,18 @@ library code:
   it walks registry store paths, dumps/compresses NARs, computes `FileHash` /
   `FileSize`, writes signed `.narinfo` files and `nix-cache-info`, optionally
   uploads them to one or more repeatable `--upload-url` destinations, and can
-  commit the root `registry.toml` `[[caches]]` pointer.
+  commit the root `registry.toml` `[caches]` pointer.
 
-The **registry producer uses this library** to *emit static files* at publish
-time — it does **not** run `aos-build-server`'s request handlers
-(`routes.rs` `cache_info_handler` / `narinfo_handler` / `nar_handler`), which
-serve a live host's own store dynamically and are a **different use case the
-registry never runs**. The `aos-nix-cache` backends
+The registry producer uses this library to emit static files at publish time.
+It does not run `aos-build-server`'s request handlers (`routes.rs`
+`cache_info_handler` / `narinfo_handler` / `nar_handler`), which serve a live
+host's own store dynamically. The `aos-nix-cache` backends
 (`crates/packages/aos-nix-cache/src/backend/{s3,sftp,http,fs}.rs`,
 `has_narinfo` / `get_narinfo` / `put_narinfo`, `backend/mod.rs`) are a
-related building block — object-store I/O that reads/writes the same static
-surface. A stock `nix` consumes the resulting static files unchanged; so can
-`apm` (§4).
+related building block: object-store I/O that reads and writes the same static
+files. A stock `nix` consumes the resulting files unchanged; so can `apm` (§4).
 
-Production validation for the stock-Nix/static-cache surface is covered by the
-Nix VM test-suite check:
+The stock-Nix path through the static cache is covered by a Nix VM check:
 
 ```sh
 nix-build -A checks.vm.apm.registry-validation-stock-nix-backend-array
@@ -159,39 +156,53 @@ for an invalid URL. The Rust and CLI cache
 e2e tests remain available as lower-level host-store-mutating checks behind
 `AOS_PACKAGE_TEST_REAL_NIX_CACHE=1`; ordinary Rust test runs skip them.
 
-> **Why the projection lines up so cleanly:** Nix's two-level naming — a
-> store-hash narinfo that *indirects* to a content-addressed NAR — is exactly how
-> AOS already names blobs. AOS records a `store_path` (carrying the store-hash)
-> and a `nar_hash` (content address of the blob) per package version. The static
-> narinfo the producer emits is just a reprojection of metadata AOS already holds
-> in its git tree.
+> **Why the projection lines up:** Nix names a cache entry in two levels: a
+> narinfo keyed by the store-path hash, which points at a NAR file. Package
+> TOML already records each output's `store_path`, so the narinfo key is
+> derived from committed metadata, and the `store/` realisation graph records
+> the NAR hash the downloaded bytes must match
+> ([`store-realisation-graph.md`](store-realisation-graph.md)).
 
 ---
 
 ## 3. Where the cache location comes from
 
 The cache is **not** advertised in any signed tag. Signed tags are pure signed
-pointers and carry no structured payload — there is no tag-message TOML, no
-`[meta]`, no `[[caches]]` *in the tag*. Instead the cache list lives in the
-**committed git-repo-root `registry.toml`** `[[caches]]` table — a tree file
-authenticated transitively by the signed tag (tag → commit → tree → file), the
-existing `RegistryRootConfig` (`crates/packages/aos-package-manager/src/types.rs`). See
+pointers and carry no structured payload: there is no tag-message TOML and no
+cache list *in the tag*. Instead the cache list lives in the committed
+repo-root `registry.toml` `[caches]` table — a tree file authenticated
+transitively by the signed tag (tag → commit → tree → file), parsed as
+`RegistryRootConfig` (`crates/registry/aos-registry-format/src/manifest.rs`). See
 [`repository-layout.md`](repository-layout.md) §2 for the full tree shape.
 
-The substituter location therefore comes from:
+The cache location therefore comes from:
 
-1. **Committed `registry.toml` `[[caches]]` (the authoritative source).** Each
-   entry is `CacheEntry { url, priority }`. The `url` may be **absolute** (a
-   separate cache host) or **relative** (e.g. `./nar`, the same origin that serves
-   the git metadata). Because the file is in the tree the signed tag covers, the
-   cache pointer is **authenticated** — though, as §1 and §8.1 note, an
-   authenticated-but-wrong pointer still cannot serve bad bytes (NARs are
-   content-addressed).
-2. **Client-side `registries.d/<name>.toml` (optional override/supplement).** The
-   consumer may add or override caches locally, exactly as a stock `nix` host lists
-   `extra-substituters` in `nix.conf` (§10). Where the client-side list and the
-   committed list both name a cache, the **higher priority wins** (entries are
-   sorted descending — §4).
+1. **Committed `registry.toml` `[caches]` (the authoritative source).** The
+   table is one stack expression: an endpoint, an ordered `try` group, or a
+   `mirror` group of replicas, and groups may nest
+   (`crates/registry/aos-registry-format/src/stack.rs`):
+
+   ```toml
+   [caches]
+   kind = "try"
+   members = [
+     { endpoint = "https://cache.aos.dev" },
+     { endpoint = "https://cache-backup.aos.dev" },
+   ]
+   ```
+
+   Only this table form is accepted; an array-shaped `[[caches]]` list is a
+   schema error. Because the file is in the tree the signed tag covers, the
+   cache pointer is **authenticated** — though, as §8.1 notes, an
+   authenticated-but-wrong pointer still cannot serve bad bytes.
+2. **Client-side `registries.d/<name>.toml` (optional supplement).** The
+   consumer may add caches locally as `[[registry.caches]]` entries, each a
+   `url` plus an optional `priority` (default `100`), much as a stock `nix`
+   host lists `extra-substituters` in `nix.conf` (§10). The two lists are
+   merged and tried in descending priority (§4), so a client-side entry with a
+   higher priority is tried before the committed ones.
+3. **The registry URL (fallback).** When neither source names a cache, `apm`
+   uses the registry URL itself as the cache base.
 
 Whichever base URL is selected, the standard Nix relative paths give the three
 superset endpoints:
@@ -202,27 +213,28 @@ superset endpoints:
 <cache-url>/nar/<key>.nar.zst          Nix: NAR blob          (§9)
 ```
 
-- A consumer may end up with multiple substituter URLs (committed + client-side);
-  ordering across them follows the AOS `priority` field (descending, higher wins —
+- A consumer may end up with multiple cache URLs (committed + client-side);
+  ordering across them follows the AOS priority (descending, higher first —
   §4), while a stock `nix` host orders *its own* substituters by each cache's
   `nix-cache-info` `Priority` (§5). These are distinct knobs.
-- Because the cache list is **in-tree (signed-by-extension) plus an optional
-  client-side override** — rather than embedded in a signed tag — there is no
-  unsigned *in-band* side-channel served by the origin to reconcile.
+- Because the cache list is in-tree (signed by extension) plus an optional
+  client-side supplement, the origin serves no unsigned in-band cache pointer.
 
 ---
 
 ## 4. Cache resolution in the consumer
 
 The committed `registry.toml` cache list is parsed by `RegistryRootConfig`
-(`crates/registry/aos-registry-format/src/manifest.rs`). The unified `[caches]`
+(`crates/registry/aos-registry-format/src/manifest.rs`). The `[caches]`
 value is a small try/mirror stack expression
-(`crates/registry/aos-registry-format/src/stack.rs`) that flattens to
-`CacheEntry { url, priority }` entries; priority defaults to `100` and higher is
-tried first. `resolve_mirrors_for_registry`
-(`crates/registry/aos-registry-client/src/registry/mirrors.rs`) merges the
-committed list with any client-side `registries.d/<name>.toml` caches and sorts
-the result descending by priority.
+(`crates/registry/aos-registry-format/src/stack.rs`).
+`RegistryRootConfig::cache_entries` flattens it depth-first into
+`CacheEntry { url, priority }` values: the first endpoint gets priority `100`
+and each later one gets one less, so committed order is the preference order.
+`resolve_mirrors_for_registry`
+(`crates/registry/aos-registry-client/src/registry/mirrors.rs`) merges that
+list with any client-side `registries.d/<name>.toml` caches and sorts the
+result descending by priority.
 
 `apm` then works purely from narinfo
 (`crates/packages/aos-package-manager/src/download.rs`):
@@ -260,13 +272,12 @@ Priority: 40
 
 The producer writes this static file locally, then uploads that exact body
 through `aos-nix-cache` so backend upload does not rewrite the chosen `Priority`.
-For reference, the **live**
+For reference, the live
 `aos-build-server` cache returns its own variant dynamically — with `Priority: 30` and
 a `Capabilities: pack-upload query-missing sse-logs zstd xz content-range` line
-(`cache_info_handler`, `routes.rs`) — but that is the **separate
-nix-serve-style host use case the registry does not run**, and its
-`Capabilities` advertise an `aos-build-server`-specific dynamic extension surface that
-has no meaning for a static CDN cache.
+(`cache_info_handler`, `routes.rs`). That is the separate host use case the
+registry does not run, and its `Capabilities` advertise `aos-build-server`
+extensions that have no meaning for a static CDN cache.
 
 | Key | Meaning | Registry static value |
 |---|---|---|
@@ -277,16 +288,16 @@ has no meaning for a static CDN cache.
 
 > Note: the `nix-cache-info` `Priority` is the **Nix-cache** preference knob,
 > consumed by stock `nix` to order substituters. It is distinct from the AOS
-> `priority` field in the committed `registry.toml` `[[caches]]` (and any
-> client-side `registries.d` override), which orders the caches `apm` has
-> resolved (§3, §4).
+> priority derived from the committed `registry.toml` `[caches]` order (and set
+> explicitly on client-side `registries.d` entries), which orders the caches
+> `apm` has resolved (§3, §4).
 
 ---
 
 ## 6. narinfo field mapping
 
-A narinfo is line-oriented `Key: value` text. The table below **describes the
-fields the producer writes into each static `.narinfo`**, using
+A narinfo is line-oriented `Key: value` text. The table below describes the
+fields the producer writes into each static `.narinfo`, using
 `render_static_narinfo` in `crates/artifacts/aos-nar/src/cache.rs`. That function
 projects plain `StaticNarInfoInput` into the shared `NarInfo` shape in
 `crates/artifacts/aos-nar/src/info.rs`. The consumer parses the same static text back
@@ -295,7 +306,7 @@ into `NarInfo` and reads exactly these fields (`crates/packages/aos-package-mana
 | narinfo field | Source in `render_static_narinfo` / `registry::nixcache` | Notes |
 |---|---|---|
 | `StorePath` | `<store_dir>/<basename(store_path)>` | Full store path; `basename` comes from `aos_nar::info`. |
-| `URL` | `nar_url(store_path, nar_hash, compression)` | Relative to the cache URL; `nar/{store_hash}-{nar_hash with ':' -> '-'}.{ext}`. The consumer joins it via `join_cache_url`. |
+| `URL` | `nar_url(store_path, file_hash, compression)` | Relative to the cache URL; `nar/{store_hash}-sha256-{file_hash as lowercase hex}.{ext}`, built from the compressed file's hash (§9). The consumer joins it via `join_cache_url`. |
 | `Compression` | `NarCompression::{None,Zstd,Xz}.name()` | `zstd`, `xz`, or `none`. |
 | `FileHash` | compressed-bytes SHA-256 computed by `registry::nixcache` | Always emitted. Consumer verifies the wire bytes against it (integrity precheck). |
 | `FileSize` | compressed-byte length computed by `registry::nixcache` | Always emitted. |
@@ -322,7 +333,7 @@ round trip is lossless for the fields AOS uses.
 > uncompressed SHA-256 and size must match a blessed entry, and a narinfo
 > `NarHash` disagreeing with `store/` always resolves in favor of `store/`. Only
 > registries that publish no graph at all fall back to trusting `NarHash`
-> (with a warning). Stock-Nix consumers, which cannot read `ca/`, keep the
+> (with a warning). Stock-Nix consumers, which cannot read `store/`, keep the
 > narinfo `Sig:` Ed25519 signature (§8) as their substitution defence.
 
 ### 6.1 Example static narinfo
@@ -331,7 +342,7 @@ Shape of the static file the producer emits via `render_static_narinfo`:
 
 ```
 StorePath: /nix/store/abc123def456abc123def456abc123de-curl-8.5.0
-URL: nar/abc123def456abc123def456abc123de-sha256-1f2e3d….nar.zst
+URL: nar/abc123def456abc123def456abc123de-sha256-1f2e3d4c….nar.zst
 Compression: zstd
 FileHash: sha256:1f2e3d4c5b6a79880011223344556677889900aabbccddeeff00112233445566
 FileSize: 1894572
@@ -342,16 +353,17 @@ Deriver: q8mn2pv73w0x…-curl-8.5.0.drv
 Sig: aos-core:base64signature==
 ```
 
-Note the `URL:` form: `nar/{store_hash}-{nar_hash}.{ext}` with the `nar_hash`'s
-colon rewritten to a dash.
+Note the `URL:` form: `nar/{store_hash}-sha256-{hex}.{ext}`, where the hex
+digest is the `FileHash` of the compressed file, not the `NarHash` (§9).
 
 ### 6.2 Sysroot images are their own store paths
 
-For sysroot packages, each pre-compiled image (`SysrootImageEntry`, carried in
-`PackageMeta.images`, `types.rs` and defined at `types.rs`) is
+For sysroot packages, each pre-compiled image (`SysrootImageEntry`, defined in
+`crates/registry/aos-registry-format/src/manifest.rs` and carried in
+`PackageMeta.images`, `consumer.rs`) is
 itself a distinct store path with its own `store_path` / `nar_hash` /
 `download_hash`. Because narinfos are keyed by store-path hash, the producer
-emits a **separate static `<storehash>.narinfo`** for each such image, via the
+emits a separate static `<storehash>.narinfo` for each such image, via the
 same `render_static_narinfo` logic (§6) — no per-image special case. The field
 mapping is identical; the image is just another store path.
 
@@ -360,8 +372,8 @@ mapping is identical; the image is just another store path.
 ## 7. References basename expansion
 
 Nix narinfo `References` requires **store-path basenames** of the form
-`<hash>-<name>`, not bare hashes. The reusable format logic **writes them in this
-form**: `render_static_narinfo` maps every full store-path reference through
+`<hash>-<name>`, not bare hashes. The reusable format logic writes them in this
+form: `render_static_narinfo` maps every full store-path reference through
 `basename` before joining them space-separated. Since `registry::nixcache` reads
 full references from `nix path-info --json`, the basename call yields the
 `<hash>-<name>` form stock `nix` expects in each static narinfo.
@@ -413,10 +425,12 @@ operators rotate cache trust without rotating the registry root.
 ### 8.1 Why a per-narinfo `Sig` exists at all
 
 `apm`'s trust is rooted in the **signed git tag chain**: the Ed25519-signed
-`tag → tag → commit` authenticates the whole git tree (a Merkle DAG) → every
-package TOML → every NAR SHA-256 recorded in those TOMLs.
+`tag → tag → commit` authenticates the whole git tree (a Merkle DAG), which
+includes every package TOML and the `store/` realisation graph recording each
+blessed NAR's SHA-256 and size.
 So `apm` needs **no** per-NAR signature; NARs are authenticated transitively and
-verified by content hash (`download.rs`).
+verified against `store/` after download (`verify_downloads`,
+`crates/packages/aos-package-manager/src/verify.rs`).
 
 The per-narinfo `Sig:` exists **only** to satisfy a stock `nix` substituter
 without forcing the operator to set `require-sigs = false`. It is a compatibility
@@ -424,7 +438,7 @@ affordance for the Nix protocol — orthogonal to the AOS trust chain, exactly a
 the NAR-cache layer itself is (§1).
 
 ```
-apm trust:   signed tag chain ──► TOML ──► NAR sha256   (transitive, no Sig needed)
+apm trust:   signed tag chain ──► store/ ──► NAR sha256 (transitive, no Sig needed)
 nix trust:   cache-role narinfo Sig ──► NarHash         (per-path, satisfies require-sigs)
 ```
 
@@ -436,12 +450,12 @@ name-binding, and the `tag → tag → commit` chain.
 ## 9. NAR blob layout and the `URL:` field
 
 The narinfo `URL:` is a relative path under the configured cache URL (§3),
-pointing at a **static `.nar.zst` file the producer uploaded**. The format logic
+pointing at a static `.nar.zst` file the producer uploaded. The format logic
 and consumer already agree on it:
 
 1. **`URL:` written into the static narinfo.** `nar_url` writes
-   `nar/{store_hash}-{file_hash with ':' -> '-'}.{ext}`. The colon in the
-   compressed file's `sha256:<hex>` hash is rewritten to a dash, so the key is colon-free
+   `nar/{store_hash}-sha256-{hex}.{ext}`. The compressed file's hash is
+   canonicalized to lowercase hex, so the key is colon-free
    (e.g. `nar/<storehash>-sha256-<hex>.nar.zst`). The producer uploads the
    compressed NAR to exactly this static `.nar.zst` / `.nar.xz` / `.nar` path.
    Because `FileHash` identifies the transferred bytes, changing compression
@@ -449,22 +463,20 @@ and consumer already agree on it:
    remains unchanged.
 2. **Consumer resolution.** `apm` downloads from the cache base joined
    with the narinfo-supplied `URL:` — `join_cache_url(mirror_url, narinfo.url)`
-   (`crates/packages/aos-package-manager/src/download.rs`, applied at `download.rs`). It
-   does not synthesize the key; it trusts the `URL:` the narinfo carries.
-3. **Cache placement (committed `[[caches]]`, optionally overridden).** The cache
-   may be co-located with the git repo on one origin (a relative `[[caches]]` url
-   like `./nar`) or on a separate host (an absolute url); the pointer lives in the
-   committed `registry.toml` `[[caches]]`, which a client-side `registries.d`
-   override may supersede (§3). The narinfo `URL:` is resolved relative to whichever
-   cache base `apm` ends up selecting (§3, §10).
+   (`crates/packages/aos-package-manager/src/download.rs`). It
+   does not synthesize the key; it uses the `URL:` the narinfo carries.
+3. **Cache placement.** The cache base comes from the committed
+   `registry.toml` `[caches]` stack, any client-side `registries.d` entries,
+   or the registry URL itself (§3). The narinfo `URL:` is resolved relative to
+   whichever cache base `apm` ends up selecting.
 
 ```
-<cache-url>/nar/<storehash>-sha256-<hex>.nar.zst   <-- emitted key (colon → dash)
+<cache-url>/nar/<storehash>-sha256-<hex>.nar.zst   <-- emitted key (colon-free)
         └── narinfo URL: nar/<storehash>-sha256-<hex>.nar.zst
 ```
 
-> **Colon-in-filename:** because the format logic rewrites the file-hash colon to
-> a dash in the `URL:`, the static object key is colon-free, so
+> **Colon-in-filename:** because the format logic writes the file hash as
+> `sha256-<hex>` in the `URL:`, the static object key is colon-free, so
 > CDN/edge layers that mangle a literal `:` are not a concern for the
 > generated static files. (The `aos-nix-cache` backend keys —
 > `<storehash>.narinfo` / `nar/<filename>` — are likewise colon-free.)
@@ -475,14 +487,14 @@ and consumer already agree on it:
 
 Once the producer has published the static `nix-cache-info` + `*.narinfo` +
 `nar/` files with per-narinfo `Sig:` (§4, §5, §6, §8), a non-AOS host running
-stock `nix` consumes them as an ordinary binary cache — **dumb static files, no
-server** — exactly like any other static substituter. A **stock `nix` host has
-no AOS git layer**, so it simply names the substituter URL directly in
-`nix.conf` (§10.1). An **AOS host**, by contrast, resolves the cache from the
-committed `registry.toml` `[[caches]]` (authenticated via the tag), optionally
-overridden by its client-side `registries.d/<name>.toml` (§3). Either way there
-is no tag to decode — the cache pointer is a tree file or local config, not a tag
-payload.
+stock `nix` consumes them as an ordinary binary cache — static files, no
+server — exactly like any other static substituter. A stock `nix` host has
+no AOS git layer, so it simply names the substituter URL directly in
+`nix.conf` (§10.1). An AOS host, by contrast, resolves the cache from the
+committed `registry.toml` `[caches]` stack (authenticated via the tag),
+optionally supplemented by its client-side `registries.d/<name>.toml` (§3).
+Either way there is no tag to decode — the cache pointer is a tree file or
+local config, not a tag payload.
 
 ### 10.1 `nix.conf`
 
@@ -493,15 +505,15 @@ payload.
 # from each cache's nix-cache-info `Priority` (§5).
 extra-substituters = https://registry.aos.dev/core/nar
 
-# Trust the registry's Ed25519 key in Nix's <name>:<base64> form (§8).
+# Trust the cache-signing Ed25519 key in Nix's <name>:<base64> form (§8).
 extra-trusted-public-keys = aos-core:base64publickeyhere==
 ```
 
 - Use `extra-substituters` / `extra-trusted-public-keys` (the `extra-` prefix
   **appends** to the defaults) so `cache.nixos.org` is retained.
-- The key value is the **`<name>:<base64>`** encoding — the same underlying
-  Ed25519 key as the `aos-core:Ed25519:<base64>` apm form, just the Nix-flavored
-  projection (§8).
+- The key value is the cache-signing public key in Nix's `<name>:<base64>`
+  encoding. It is a different key from the registry's
+  `aos-core:Ed25519:<base64>` tag-signing key (§8).
 - Do **not** set `require-sigs = false`. Emitting `Sig:` (§8) is what lets
   signature verification stay on.
 
@@ -535,7 +547,7 @@ nix build .#devShell \
 ### 10.4 What a substitution looks like
 
 ```
-host nix              AOS static CDN cache (URL from registry.toml [[caches]] / override)
+host nix              AOS static CDN cache (the URL named in nix.conf)
    │                                   │   (dumb static files, no server)
    │  GET /nix-cache-info               │   static stub: StoreDir/Priority/WantMassQuery (§5)
    │ ─────────────────────────────────►│
@@ -549,28 +561,25 @@ host nix              AOS static CDN cache (URL from registry.toml [[caches]] / 
 ```
 
 `apm` on an AOS host, meanwhile, walks the git metadata layer (channel partition
-tag → semver tag → commit → package TOML) and fetches NARs by content hash from
-the cache named in the committed `registry.toml` `[[caches]]` (or a client-side
-override) — verifying the content hash (`download.rs`), never the narinfo
-`Sig:`. The two clients share the blobs but trust them via independent layers (§1).
+tag → semver tag → commit → package TOML and `store/`) and fetches NARs from
+the cache named in the committed `registry.toml` `[caches]` stack (or a
+client-side entry) — verifying the bytes against `store/` (`verify.rs`), never
+the narinfo `Sig:`. The two clients share the blobs but trust them via
+independent layers (§1).
 
 ---
 
 ## 11. Implementation map
 
-The narinfo **format / sign / FileHash logic**, the **narinfo-driven consumer**,
-and the **static producer** are summarized here. The registry runs **no server**: its Nix
-cache is dumb static files on the CDN, generated AOT by `apr cache generate` and
-optionally uploaded through `aos-nix-cache` to one or more destinations.
-
-**Reusable logic and producer surface.** These are libraries and commands the
-producer calls; none of them is a server the registry runs.
+The shared narinfo logic, the narinfo-driven consumer, and the static producer
+are summarized here. These are libraries and commands; none of them is a
+server the registry runs.
 
 | Capability | Where it lives | Cite |
 |---|---|---|
 | Shared `NarInfo` type + `parse`/`format` | `aos-nar` | `src/info.rs` |
 | Static narinfo rendering, URL construction, cache-info body, and Nix `Sig:` | `aos-nar` | `src/cache.rs` |
-| Static cache generation, local completeness checks, compressed NAR writing, upload, and `[[caches]]` update | `aos-registry-authoring` | `registry/nixcache.rs`; `registry_ops.rs run_cache` |
+| Static cache generation, local completeness checks, compressed NAR writing, upload, and `[caches]` update | `aos-registry-authoring` | `registry/nixcache.rs`; `run_cache` in `registry_ops/distribution.rs` |
 | Static object upload backends (`put_*`, `put_cache_info`) | `aos-nix-cache` | `backend/mod.rs`; backend implementations |
 | Consumer (`apm`) reads a dumb static narinfo cache | `aos-package-manager` | `download.rs` |
 
@@ -584,7 +593,7 @@ selected `registries.d/<name>.toml` (persisted by `apr origin config`) and are
 then overridden by env/CLI values on `apr cache generate`.
 Stock-Nix host wiring remains ordinary
 `nix.conf` / flake `nixConfig` setup (§10).
-The production validation VM check for this surface is
+The VM check that validates this path is
 `checks.vm.apm.registry-validation-stock-nix-backend-array`.
 
 
@@ -595,7 +604,7 @@ The production validation VM check for this surface is
 - [architecture.md](architecture.md) — the git-over-dumb-HTTP layer and where the
   NAR cache sits relative to it.
 - [repository-layout.md](repository-layout.md) — the committed git tree, including
-  `registry.toml` `[[caches]]` (where the cache list lives) and `keys.toml`.
+  `registry.toml` `[caches]` (where the cache list lives) and `keys.toml`.
 - [http-layout.md](http-layout.md) — full HTTP/object layout and CDN TTLs.
 - [signing-and-trust.md](signing-and-trust.md) — role separation, name-binding,
   `tag → tag → commit`.

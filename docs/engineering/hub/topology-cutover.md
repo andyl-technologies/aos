@@ -3,10 +3,36 @@
 This page specifies the one-shot, maintenance-mode migration of a Hub
 deployment that predates the current [topology](topology.md) model, and the
 signed evidence bundle that `aos hub topology cutover` generates and verifies
-for it (`crates/cli/aos-cli/src/commands/hub_cutover_verify/`). It is a
-maintenance-mode replacement, not an expand/contract migration. The transformer may read legacy state only inside the maintenance
+for it. It is a maintenance-mode replacement, not an expand/contract
+migration. The transformer may read legacy state only inside the maintenance
 operation. The target runtime has one topology model, one API, and no legacy
 parser, route, schema, flag, alias, or dual-read branch.
+
+What this repository implements:
+
+- The offline bundle commands `aos hub topology cutover materialize-verifier`,
+  `generate`, and `verify`, in
+  `crates/cli/aos-cli/src/commands/hub_cutover_verify/`. They are described
+  under [Validation and bundle generation](#validation-and-bundle-generation).
+- The closed schemas, fixture sources, and web route ledger in
+  `crates/cli/aos-cli/hub-topology-cutover/`, exercised by
+  `crates/cli/aos-cli/tests/hub_topology_cutover.rs`.
+
+What it does not implement: the transformer, and the backup, quiescence, and
+switch steps of sections 1 through 10. A bundle refers to the transformer only
+as an authenticated node (`transformer_node_id` in the plan), and the fixture
+bundle carries a placeholder for it. Those sections are the operator procedure
+whose evidence the verifier checks, not a description of code in this tree.
+
+The identifiers on this page are the bundle's own closed vocabulary, defined
+by the plan and report schemas, and some differ from the running Hub's names.
+The bundle's database kinds are `sqlite`, `d1`, `durable_object_sqlite`,
+`postgres`, and `mysql`, although the current Worker stores its database in a
+Durable Object ([runtime.md](runtime.md#cloudflare-worker)). The bundle's
+route `access_policy` values are `public`, `hub_authenticated`,
+`origin_authenticated`, and `private_network`, whereas the runtime names its
+route access policies `public`, `hub_auth`, `external_provider`, and
+`private_network`.
 
 The signed plan, report, and verification documents conform to the closed
 `aos-cutover-schema/v1` schemas in
@@ -69,8 +95,9 @@ The operator aborts before the switch if any invariant cannot be proved:
 ## Artifact rules
 
 Plans, reports, verification payloads, and the signer-key map use the closed
-`aos-cutover-jcs-ascii-v1` dialect: RFC 8785 JSON Canonicalization Scheme over
-integer-only UTF-8 I-JSON with ASCII-only object member names. ASCII member
+`aos-cutover-jcs-ascii-v1` dialect: RFC 8785 JSON Canonicalization Scheme
+(JCS) over integer-only UTF-8 I-JSON with ASCII-only object member names.
+ASCII member
 names therefore have identical UTF-8 byte and RFC 8785 UTF-16 sort order; the
 parser rejects duplicate members and the canonicalizer rejects any non-ASCII
 member name instead of silently defining a second ordering. They are complete

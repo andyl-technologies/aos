@@ -72,9 +72,10 @@ serves the committed history and config diffs to the console and remote `apr`.
 
 When a registry changes through a Hub-mediated path, the Hub commits a webhook
 event to the topology outbox in the same transaction
-(`crates/hub/aos-hub-model/src/webhook.rs`). A materializer fans each event out
-to active subscriptions, and native and Worker delivery loops send the durable
-deliveries at least once with a bounded backoff schedule.
+(`crates/hub/aos-hub-model/src/webhook.rs`). Each event is fanned out to the
+organization's active subscriptions and delivered at least once; the outbox,
+leases, retry budget, and limits are specified in
+[delivery.md](delivery.md#webhook-durability-and-delivery-identity).
 
 | Event type | Raised when |
 |---|---|
@@ -82,8 +83,10 @@ deliveries at least once with a bounded backoff schedule.
 | `channel.advanced` | A channel's partitions move to a release. |
 | `release.published` | A new release tag is indexed. |
 
-Each delivery carries the event type in `X-AOS-Event` and
+Each delivery carries the event type in `X-AOS-Event`, a stable
+`X-AOS-Delivery-ID` that every retry repeats, and
 `X-AOS-Signature: sha256=<hex>`, the HMAC-SHA256 of the exact body bytes, which
-subscribers verify in constant time. Subscriptions are managed through `WebhookService` with
-`members.manage` on the organization, and the API never accepts or returns
-signing material: a subscription names an operator-managed secret version.
+subscribers verify in constant time. Subscriptions are managed through
+`WebhookService` with `members.manage` on the organization, and the API never
+accepts or returns signing material: a subscription names an operator-managed
+secret version.

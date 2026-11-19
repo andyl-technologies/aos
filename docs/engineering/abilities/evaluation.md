@@ -44,9 +44,10 @@ The builder exposes these derived values:
 
 The JSON companions are separate derivations, so payload construction stays lazy
 with respect to deployment evaluation. `mkDerivation` injects no host
-configuration, service-specific lowering, or authored documentation schema. The
-removed `abilities` and `configModule` recipe arguments fail when the deployment
-envelope is requested.
+configuration, service-specific lowering, or authored documentation schema. A
+recipe that passes an `abilities` or `configModule` argument fails when its
+deployment envelope is requested; `module` is the only way to attach
+configuration.
 
 A deployment module receives ordinary evaluator arguments: `lib`, `config`,
 `options`, its own `package` artifact, and its named runtime `dependencies`.

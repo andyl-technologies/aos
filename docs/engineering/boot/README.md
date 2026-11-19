@@ -3,6 +3,14 @@
 This section describes how AOS implements verified boot: UEFI Secure Boot,
 kernel lockdown, measured boot with TPM-sealed persistent state, the signed
 recovery environment, and the image-boot test harness that exercises them.
+A new reader should take the pages in the order of the table below.
+
+Abbreviations used throughout: a UKI (unified kernel image) is one PE binary
+holding the kernel, initrd, and command line; the ESP is the EFI System
+Partition; a PCR is a TPM platform configuration register, which records
+measurements and cannot be set directly; `db`, KEK, and PK are the UEFI
+signature database, key-exchange key, and platform key; sd-boot and sd-stub
+are systemd-boot and the UEFI stub inside each UKI.
 Operator procedures live in [Use Secure Boot and verify package
 trust](../../users/aos/secure-boot.md) and [Recover an AOS
 host](../../users/aos/recovery.md); maintainer key and release policy lives in

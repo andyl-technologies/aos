@@ -21,7 +21,8 @@ ancestor project names. Registries and caches may also sit directly under an
 organization or, for an instance-level unowned public registry, outside any
 organization. Membership is open by invitation: a user may create their own
 organization subject to the instance signup policy and a per-owner cap, and
-joins others by accepting an invitation.
+joins others by accepting an invitation
+([control-plane.md](control-plane.md#invitations)).
 
 ## Principals
 
@@ -77,31 +78,49 @@ without granting registry administration.
 ## Credentials
 
 All high-entropy secrets are stored only as SHA-256 hashes
-(`crates/hub/aos-hub-model/src/auth/`).
+(`crates/hub/aos-hub-model/src/auth/`). The Hub pages use these terms for
+bearer credentials, and no others:
+
+- **Access token**: the long-lived, scoped `aos_` secret that the API
+  (`IdentityService.IssueAccessToken`), `aos hub access-token`, and the
+  console's Access tokens pages issue and list. The model crate and the OAuth
+  grant name call the same secret a *provisioning* token.
+- **Access JWT**: the short-lived signed bearer that every API and
+  machine-path request carries.
+- **Refresh credential**: the opaque `aosr_` secret a CLI login uses to
+  obtain the next access JWT.
 
 | Credential | Holder | Shape and lifetime |
 |---|---|---|
-| Provisioning token | User or service account | `aos_` plus 40 hex characters; shown once at creation or rotation. A rotated token's old secret remains valid for a one-hour grace period. |
-| Access token | Client | Short-lived HS256 JWT minted at `POST /oauth2/token` from a provisioning token. It carries the owner, stable scope, and explicit permission verbs, so request gates decide without a database read. |
+| Access token | User or service account | `aos_` plus 40 hex characters; shown once at creation or rotation. A rotated token's old secret remains valid for a one-hour grace period. |
+| Access JWT | Client | HS256 JWT minted at `POST /oauth2/token` from a device approval, a refresh credential, or an access token; it lasts one hour. The browser console receives a five-minute one from `POST /-/auth/session-token`. It carries the owner, stable scope, and explicit permission verbs, so request gates decide without a database read. |
+| Refresh credential | CLI login | `aosr_` plus 64 hex characters, returned with the access JWT by the device and refresh grants. It has a 30-day idle and 90-day absolute lifetime, rotates on every refresh, and belongs to a family: reuse of a consumed refresh credential revokes the family. |
 | Session cookie | Browser user | 256-bit opaque secret in `__Host-aos_session` (`Secure; HttpOnly; SameSite=Lax; Path=/`); 7-day idle and 30-day absolute lifetime. A session is sudo-capable for 15 minutes after re-authentication, which destructive operations require. |
-| Device grant | CLI login | OAuth device authorization at `/oauth2/device_authorization`: the CLI polls with a 64-hex device code while the user approves a short user code at `/activate`; approval mints a provisioning token clamped to the approver's grants. |
+| Device grant | CLI login | OAuth device authorization at `/oauth2/device_authorization`: the CLI polls with a 64-hex device code while the user approves a short user code at `/activate`. Approval records a token identity whose scope and permissions are clamped to the approver's grants; the next poll returns an access JWT and a refresh credential for it. |
+
+The OAuth endpoints, the CLI login sequence, and access-token issuance are
+described in
+[control-plane.md](control-plane.md#cli-authentication-and-profiles).
 
 Browser sessions sign in with any of these methods, all served by the shared
 router on both runtimes (`crates/hub/aos-hub-service/src/auth/`):
 
 - **Magic links** — single-use, emailed links that prove mailbox control; also
   the account recovery path.
-- **Passwords** — Argon2id PHC hashes with constant-time verification.
+- **Passwords** — Argon2id hashes stored in PHC (Password Hashing
+  Competition) string format, with constant-time verification.
 - **Passkeys** — a first-party WebAuthn relying party that accepts only
   `attestation: "none"` and verifies Ed25519, ES256, and RS256 COSE keys.
 - **Per-organization OIDC SSO** — one identity provider per organization,
-  authorization code with PKCE and JWKS-backed RS256 ID-token verification.
+  authorization code with PKCE (Proof Key for Code Exchange) and JWKS-backed
+  RS256 ID-token verification.
   Email-first login routes an address in a captured domain to that
   organization's provider.
 
-The console's browser application exchanges its session and CSRF token for an
-in-memory bearer at `POST /-/auth/session-token` and then calls the same API as
-the CLI.
+The console's browser application exchanges its session and CSRF
+(cross-site request forgery) token for an in-memory access JWT at
+`POST /-/auth/session-token` and then calls the same API as the CLI
+([control-plane.md](control-plane.md#browser-authentication)).
 
 ## Audit and offboarding
 

@@ -64,8 +64,8 @@ the case, and golden data includes its regeneration and review procedure.
 
 Within `modules/`, AOS follows the Dendritic pattern: each auto-discovered file
 owns one feature's option declarations, configuration, and checks. Its path
-names the feature, such as `services/registry-hub.nix`, rather than a layer such
-as `options.nix` or `config.nix`. Files under `systems/` compose features and
+names the feature, such as `services/repart.nix`, rather than a layer such as
+`options.nix` or `config.nix`. Files under `systems/` compose features and
 describe variant-specific choices. `modules/default.nix` remains the discovery
 point, and `_`-prefixed paths hold deliberately imported implementation details.
 

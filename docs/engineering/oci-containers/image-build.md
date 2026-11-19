@@ -1,5 +1,11 @@
 # Image build
 
+This page covers how Nix turns a container definition into an OCI image:
+evaluation, closure layers and their byte-level archive ABI, the facade and
+metadata layers, and the entrypoint that initializes the image's Nix store at
+run time. [Distribution and publication](distribution.md) covers what happens
+to the image afterwards.
+
 ## Definitions and evaluation
 
 Container definitions are typed submodules of the same system evaluation that
@@ -181,7 +187,8 @@ schema=aos.container.read-only/v1
 A runtime can start a second process while the entrypoint is still
 initializing, and that process does not inherit PID 1's environment. Every
 APM process with `AOS_RUNTIME=container` therefore consults the filesystem
-(`aos-package-manager/src/container_admission.rs`): it waits for a readiness
+(`aos-package-manager/src/container_environment.rs` and
+`container_init_sync.rs`): it waits for a readiness
 marker that matches the current PID 1, takes the init lock in shared mode, and
 derives read-only admission from write probes and the persistent marker.
 Malformed markers fail closed. Host-only package operations are rejected before
