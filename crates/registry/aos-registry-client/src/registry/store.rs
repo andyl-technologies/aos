@@ -3,7 +3,7 @@
 //!
 //! A registry's signed tree names store paths by their input-addressed (IA)
 //! hashes, which promise *how* a path was built but not *what bits* it
-//! contains. The `store/` graph closes that gap (RFC-0005): one file per IA
+//! contains. The `store/` graph closes that gap: one file per IA
 //! store path records, for every blessed build, its exact NAR bytes, its
 //! content-addressed (CA) realisation, and the realisations of its direct
 //! dependencies. The node is a Nix-style realisation, so the realisation
@@ -287,7 +287,7 @@ impl StoreMap {
 ///
 /// - The path's registry publishes a graph → the path is **enforced**: a
 ///   missing record/`nar:` is a hard failure (a gap in a published graph is
-///   indistinguishable from a stripping attack, RFC-0005 §2.6), independent of
+///   indistinguishable from a stripping attack), independent of
 ///   what any *other* involved registry does.
 /// - The path's registry publishes no graph (legacy) → the path falls back to
 ///   the unauthenticated narinfo hash with a warning.
@@ -360,7 +360,7 @@ impl<'a> TrustContext<'a> {
         out
     }
 
-    /// Enforce closure totality (RFC-0005 §2.6): every member that any mapped
+    /// Enforce closure totality: every member that any mapped
     /// registry carries must have a blessed NAR. Runs over the **whole
     /// closure**, not just downloaded members, so a stripped or partial graph
     /// fails loudly even when the gap falls on an already-local path.

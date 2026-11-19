@@ -10,7 +10,7 @@
 //! Two closure strategies are used:
 //!
 //! 1. **`store/` realisation graph**: registries ship a per-path dependency
-//!    record; resolution walks those edges from the root (RFC-0005).
+//!    record; resolution walks those edges from the root.
 //! 2. **BFS fallback**: a legacy registry with no `store/` graph is walked
 //!    over the `references` field of each [`PackageMeta`] instead.
 //!

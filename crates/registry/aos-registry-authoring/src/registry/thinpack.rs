@@ -1,4 +1,4 @@
-//! Pure-Rust thin packfile generation for RFC-0005 delta release transfer.
+//! Pure-Rust thin packfile generation for delta release transfer.
 //!
 //! libgit2's `PackBuilder` only emits self-contained packs, so it cannot
 //! replace `git pack-objects --thin` (delta-encode the objects new in a release

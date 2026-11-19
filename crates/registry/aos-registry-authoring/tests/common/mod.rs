@@ -209,7 +209,7 @@ key = "{}"
     }
 
     /// Write a `store/<shard>/<hash>` realisation record for the path: a
-    /// leaf IA-only record carrying one blessed NAR (RFC-0005). Named
+    /// leaf IA-only record carrying one blessed NAR. Named
     /// `write_closure` for historical call-site compatibility.
     pub fn write_closure(&self, store_path: &str) -> Result<()> {
         let hash = store_path

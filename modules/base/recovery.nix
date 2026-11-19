@@ -1,6 +1,6 @@
 ##! Signed recovery environment
 ##!
-##! Builds the dedicated recovery initrd used by RFC-0013 recovery UKIs. The
+##! Builds the dedicated recovery initrd used by the signed recovery UKIs. The
 ##! recovery archive has its own static unit graph; it does not inherit the
 ##! normal initrd and then attempt to mask normal root, provisioning, TPM
 ##! unlock, networking, or switch-root services.

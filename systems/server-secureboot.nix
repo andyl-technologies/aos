@@ -1,4 +1,4 @@
-##! systems/server-secureboot.nix — Secure Boot test fixture (RFC-0006)
+##! systems/server-secureboot.nix — Secure Boot test fixture
 ##!
 ##! Identical to systems/server.nix but with Secure Boot signing turned
 ##! on, pointed at the throwaway `secure-boot-test-keys`. Its image's UKI

@@ -319,7 +319,7 @@ async fn run_inner(
             .collect()
     };
 
-    // Trust-graph totality (RFC-0005 §2.6): seed the context from the WHOLE
+    // Trust-graph totality: seed the context from the WHOLE
     // graph closure of each root (every reachable member, including
     // anonymous non-package store paths), so a stripped or partial graph
     // fails loudly and every byte that gets imported is enforced - not just
@@ -437,7 +437,7 @@ async fn run_inner(
         downloaded_count = results.len();
 
         // Verify downloads against each path's source-registry store/ graph
-        // map (RFC-0005), falling back to narinfo hashes for legacy
+        // map, falling back to narinfo hashes for legacy
         // registries. Closure totality was already enforced above.
         printer.step(4, 7, "Verifying downloads...");
         verify_downloads(&results, &trust_ctx, printer)?;

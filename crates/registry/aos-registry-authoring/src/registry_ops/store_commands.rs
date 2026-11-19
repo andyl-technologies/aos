@@ -34,8 +34,7 @@ use std::path::Path;
 ///
 /// Fails when cache generation, an upload, the pointer commit, or the
 /// object-store refresh fails.
-/// `apr store` - maintains the registry's `store/` realisation graph
-/// (RFC-0005).
+/// `apr store` - maintains the registry's `store/` realisation graph.
 ///
 /// The graph is append-mostly: `bless` adds a realisation computed from the
 /// local Nix store, `revoke` removes one (a security event with the same

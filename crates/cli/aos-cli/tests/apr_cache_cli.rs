@@ -698,7 +698,7 @@ async fn apr_release_store_path_publishes_signed_cache_channel_and_installs() ->
         package_toml.contains(&format!("store_path = \"{}\"", fixture.tool_store_path)),
         "{package_toml}",
     );
-    // RFC-0005: dependency edges live in the `store/` realisation graph, not
+    // Dependency edges live in the `store/` realisation graph, not
     // the package TOML (which now records only store_path/closure_size). The
     // published tool record must list the helper as a runtime dependency, and
     // the helper must have its own realisation record.

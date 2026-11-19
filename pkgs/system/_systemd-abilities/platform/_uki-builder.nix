@@ -11,7 +11,7 @@
 ##! the whole PE, covering kernel + initrd + cmdline transitively) ONLY
 ##! when `secureBootKey`/`secureBootCert` are supplied — otherwise it is
 ##! an unsigned, byte-reproducible artifact. SB keys are a deployment
-##! overlay, never baked into the reproducible base (RFC-0006).
+##! overlay, never baked into the reproducible base.
 ##!
 ##! Arguments:
 ##!   kernel     — kernel derivation (provides /boot/vmlinuz-*)
@@ -28,8 +28,7 @@
 ##!   pcrPrivateKey  — optional PCR-policy private key (PEM); when set,
 ##!                    ukify measures the UKI and signs a PCR policy into
 ##!                    the `.pcrsig` section so TPM-sealed secrets unseal
-##!                    against "any UKI signed by this key" (survives OTA —
-##!                    RFC-0006 measured-boot.md)
+##!                    against "any UKI signed by this key" (survives OTA)
 ##!   pcrPublicKey   — optional PCR-policy public key (PEM); embedded in
 ##!                    the `.pcrpkey` section, required with pcrPrivateKey
 ##!   rootHashFile   — optional path to a file containing the dm-verity root

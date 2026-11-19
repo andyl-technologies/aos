@@ -78,8 +78,7 @@ fn build_package_toml_new() {
     assert!(content.contains("name = \"curl\""));
     assert!(content.contains("version = \"8.5.0\""));
     assert!(content.contains("x86_64-linux"));
-    // Output content bindings live in the store/ graph, not the TOML
-    // (RFC-0005).
+    // Output content bindings live in the store/ graph, not the TOML.
     assert!(!content.contains("nar_hash = \"sha256:deadbeef\""));
     assert!(!content.contains("nar_size"));
     assert!(content.contains("source_drv = \"\""));
@@ -276,7 +275,7 @@ references = []
     assert!(content.contains("aarch64-linux"));
     assert!(content.contains("/nix/store/new-curl-8.5.0"));
     // The pre-existing platform's legacy fields survive untouched; the
-    // new platform entry carries no nar_hash (RFC-0005).
+    // new platform entry carries no nar_hash.
     assert!(content.contains("sha256:old"));
     assert!(!content.contains("sha256:new"));
 }

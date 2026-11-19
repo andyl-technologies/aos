@@ -488,7 +488,7 @@ impl LifecycleFixture {
     }
 
     fn write_dependency_store_records(&self) -> Result<()> {
-        // The `store/` realisation graph (RFC-0005): one sharded file per IA
+        // The `store/` realisation graph: one sharded file per IA
         // store path, recording its blessed NAR and dependency edges. beta
         // depends on beta-helper; beta-helper is a leaf.
         const NAR: &str = "nar:sha256:1b8m6vizwgzrbq6ks7yk3pnjnj91xbcrz0v6dyqgxqkj3ka2lkfy:1";

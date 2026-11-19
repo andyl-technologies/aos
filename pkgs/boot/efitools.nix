@@ -5,7 +5,7 @@
 ##! create EFI signature lists / signed auth blobs and read or write the
 ##! SB variables through Linux efivarfs. The `.efi` applications
 ##! (KeyTool, LockDown) are deliberately NOT built: they need the
-##! gnu-efi crt + an EFI ld script and we don't use them — RFC-0006
+##! gnu-efi crt + an EFI ld script and we don't use them — AOS
 ##! enrolls keys guest-side via efivarfs (`efi-updatevar`), mirroring the
 ##! Setup-Mode → User-Mode first-boot path.
 ##!

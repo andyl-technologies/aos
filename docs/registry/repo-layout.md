@@ -34,7 +34,7 @@ URL, or CDN path may still expose candidate bytes.
 │   └── <first-letter>/<name>.toml    ← per-package metadata, sharded by first letter
 └── store/
     ├── r4/r4q1m2kp8v3x               ← realisation graph: one file per IA store path,
-    └── <2-char>/<ia-hash>              sharded git-style (RFC-0005)
+    └── <2-char>/<ia-hash>              sharded git-style
 ```
 
 This is **almost unchanged** from today's code — the git-native redesign changed
@@ -219,8 +219,8 @@ dev = { store_path = "/nix/store/<hash>-curl-8.5.0-dev" }
 
 The output's **content binding (`nar_hash`/`nar_size`) and dependency edges
 (`references`) are not here** - they live in the `store/` realisation graph
-(§5), the single authority for blessed bytes and dependency shape (RFC-0005).
-Pre-RFC-0005 registries still carry these fields per platform entry; the
+(§5), the single authority for blessed bytes and dependency shape.
+Registries published before the graph existed still carry these fields per platform entry; the
 parser treats them as optional legacy fields and consumers backfill the
 in-memory metadata from `store/` when absent. `store_path` anchors the
 installable `out` output to its IA hash. `named_outputs` retains every other
@@ -233,7 +233,7 @@ sit outside the runtime closure the graph covers.
 
 ---
 
-## 5. `store/<2-char>/<ia-hash>` - the realisation graph (RFC-0005)
+## 5. `store/<2-char>/<ia-hash>` - the realisation graph
 
 Input-addressed store-path hashes promise *how* a path was built, not *what
 bits* it contains. The `store/` graph closes that gap: one file per IA store
@@ -243,8 +243,9 @@ dependencies. The node is a Nix-style realisation, so the realisation graph
 *is* the closure graph - content addresses on the nodes, dependency CA pins
 on the edges - and consumers validate exact bytes against the signed tree
 instead of trusting cache-served narinfos
-(`crates/registry/aos-registry-client/src/registry/store.rs`; design record:
-[RFC-0005](../rfcs/0005-ca-trust-map.md)).
+(`crates/registry/aos-registry-client/src/registry/store.rs`; design and
+enforcement detail: [Store realisation
+graph](../engineering/registry/store-realisation-graph.md)).
 
 One file per IA store path, named by the IA hash, sharded git-style
 (`store/<first-2>/<ia-hash>`). Each file is a sequence of realisation
@@ -319,7 +320,7 @@ assembling objects**; **`http-layout.md` = the transport encoding of that conten
 | `registry.toml` | `[registry]` + unified `[caches]` stack (no signing pubkey) |
 | `keys.toml` | emitted by `apr create` as a schema-1 roster; maintained by `apr keys generate/list/add/retire` (signed roster commits, survivor-vouched retirement preserving immutable release tags); **consumed by clients** during sync (`pin_rotated_keys`) as the authoritative trusted-key set |
 | `packages/<x>/<name>.toml` | nested `PackageToml` (`nar_hash`/`nar_size`/`references` legacy-optional, superseded by `store/`) |
-| `store/<2-char>/<ia-hash>` | realisation graph: blessed NARs + dependency edges + CA realisations (RFC-0005); written by `apr publish`, maintained by `apr store`, enforced by `apm` |
+| `store/<2-char>/<ia-hash>` | realisation graph: blessed NARs + dependency edges + CA realisations; written by `apr publish`, maintained by `apr store`, enforced by `apm` |
 | bootstrap trust | out-of-band anchor — image-baked `aos.apm.registries` → `trusted-keys.d`, or `apr trust pin`, or `[registry.signing] public_key` when the store is empty — then `keys.toml` overlap rotation in-band (no silent TOFU) |
 
 See also: [`signing-and-trust.md`](signing-and-trust.md) (keys, rotation/revocation),

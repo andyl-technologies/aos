@@ -25,7 +25,7 @@
 //! hashes = ["r4q1m2kp8v3x"]
 //! min-format = 1
 //! requires-features = ["native-package-modules-v1", "attestation-v1"]
-//! # nar_hash/nar_size may appear in pre-RFC-0005 registries; newer ones
+//! # nar_hash/nar_size may appear in registries without a store/ graph; newer ones
 //! # publish the output's content binding in the store/ graph instead.
 //! ```
 //!

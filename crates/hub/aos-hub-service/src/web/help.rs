@@ -147,7 +147,7 @@ pub fn card(key: &str) -> Option<HelpCard> {
             "registry",
             "Whether the registry records content addresses in its realisation graph.",
             &[
-                ("On", "the producer records the store/ realisation graph (RFC-0005), so the registry serves both input-addressed and content-addressed consumers. The default."),
+                ("On", "the producer records the store/ realisation graph, so the registry serves both input-addressed and content-addressed consumers. The default."),
                 ("Off", "a pure input-addressed registry; set this only when the producer never records content addresses."),
             ],
         ),

@@ -23,7 +23,7 @@
       default = false;
       description = ''
         Measure boot into the TPM and seal `/var` encryption to a
-        *signed PCR policy* (RFC-0006 phase 3). The UKI gets a signed
+        *signed PCR policy*. The UKI gets a signed
         PCR policy (`.pcrsig`/`.pcrpkey`), and first boot LUKS2-formats
         `/var` and enrolls a TPM2 token sealed to that policy plus a
         recovery key. Because the seal tracks the policy key — not a
@@ -63,7 +63,7 @@
         default is the `/run` tmpfs. A deployment is expected to escrow
         this off-machine (e.g. report it back through the provisioning
         metadata channel) — "escrowed somewhere recoverable, never on
-        /var" is the hard requirement (RFC-0006 measured-boot.md).
+        /var" is the hard requirement.
       '';
     };
   };

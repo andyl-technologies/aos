@@ -1357,7 +1357,7 @@ async fn extract_registry_cache_trust(
     Ok(())
 }
 
-/// Extract the `store/` realisation graph from a git tree (RFC-0005).
+/// Extract the `store/` realisation graph from a git tree.
 ///
 /// Presence semantics matter here: a registry without a committed `store/`
 /// tree must yield NO local `store/` directory - an empty directory would

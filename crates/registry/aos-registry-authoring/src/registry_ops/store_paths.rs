@@ -556,7 +556,7 @@ impl StoreWriteReport {
 }
 
 /// Write `store/` realisation records for every member of a store path's
-/// runtime closure (RFC-0005).
+/// runtime closure.
 ///
 /// Records each member's exact NAR bytes and dependency edges; when
 /// `content_addressed`, also its CA realisation and pinned dependency CAs

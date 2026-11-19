@@ -1,8 +1,8 @@
 # tests/fleet/secure-boot-lockdown.nix — Kernel lockdown under Secure Boot.
 #
-# RFC-0006 phase 2. Phase 1 stops the firmware loading unsigned boot
-# binaries; lockdown stops the running (signed) kernel from being turned
-# into an unsigned-code loader. This boots the lockdown deployment kernel
+# Firmware Secure Boot stops unsigned boot binaries from loading;
+# lockdown stops the running (signed) kernel from being turned into an
+# unsigned-code loader. This boots the lockdown deployment kernel
 # under enforcing SB and proves lockdown is active and enforcing:
 #
 #   1. Boot (Setup Mode) → enroll db/KEK/PK → reboot into enforcing SB
@@ -15,7 +15,7 @@
 #      verifies the appended signature before symbol resolution).
 #
 # Uses the lockdown deployment kernel, so this is a heavy CI run (a full
-# kernel rebuild) — kept separate from the phase-1 secure-boot test.
+# kernel rebuild) — kept separate from the firmware secure-boot test.
 {
   lib,
   pkgs,

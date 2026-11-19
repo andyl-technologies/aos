@@ -162,9 +162,10 @@ This RFC composes rather than replaces:
 
 - the Git-native registry and rollout protocol in
   [`docs/registry/`](../../registry/README.md);
-- Secure Boot, measured boot, and registry catalog validation in
-  [RFC-0006](../0006-secure-boot/README.md);
-- signed A/B recovery in [RFC-0013](../0013-recovery-uki/README.md);
+- Secure Boot and measured boot in
+  [`docs/engineering/boot/`](../../engineering/boot/README.md);
+- signed A/B recovery in
+  [Recovery](../../engineering/boot/recovery.md);
 - Hub surface and placement topology in
   [RFC-0012](../0012-hub-surface-topology/README.md);
 - authenticated package documentation in

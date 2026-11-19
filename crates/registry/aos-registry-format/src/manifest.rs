@@ -137,13 +137,13 @@ pub struct PlatformEntry {
     pub named_outputs: BTreeMap<String, OutputMeta>,
     /// NAR hash of the output (`sha256:...`).
     ///
-    /// Legacy (pre-RFC-0005) field: newer registries publish the hash in
+    /// Legacy field: registries with a `store/` graph publish the hash in
     /// the `store/` graph instead, and consumers backfill it from there.
     #[serde(default)]
     pub nar_hash: String,
     /// Uncompressed NAR size in bytes.
     ///
-    /// Legacy (pre-RFC-0005) field, superseded by the `store/` graph like
+    /// Legacy field, superseded by the `store/` graph like
     /// `nar_hash`.
     #[serde(default)]
     pub nar_size: u64,
@@ -1319,7 +1319,7 @@ pub struct RegistryRootMeta {
     )]
     pub default_release: Option<String>,
     /// Whether the producer records content addresses in the `store/`
-    /// realisation graph (RFC-0005), so the registry serves both
+    /// realisation graph, so the registry serves both
     /// input-addressed and content-addressed consumers. Default `true`;
     /// set `false` for a pure input-addressed registry.
     #[serde(default = "default_content_addressed")]

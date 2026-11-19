@@ -6,7 +6,7 @@
 ##!     builder reads to sign its boot artifacts. Signing is OFF by default,
 ##!     so the base image stays
 ##!     byte-reproducible and carries no key — SB material is a
-##!     deployment overlay (RFC-0006 key-custody.md).
+##!     deployment overlay.
 ##!
 ##!  2. Installs the guest-side enrollment path: efitools plus an
 ##!     `aos-sb-enroll` command that writes the db → KEK → PK
@@ -77,7 +77,7 @@
     then "/nonexistent/aos-secure-boot-auth"
     else cfg._effectiveEnrollAuthDir;
 
-  # Lockdown deployment kernel (phase 2). The reproducible base kernel
+  # Lockdown deployment kernel. The reproducible base kernel
   # deliberately omits lockdown + module signing (they require a
   # non-public key — pkgs/kernel/config/security.config). Here we build
   # a deployment variant via the kernel's extraConfig hook: lockdown LSM
@@ -249,7 +249,7 @@ in {
           the firmware enforces SB; it auto-engages under SB via
           LOCK_DOWN_IN_EFI_SECURE_BOOT). Closes the gap a signed-but-not-
           locked kernel leaves open — loading unsigned modules,
-          /dev/mem, kexec of an unsigned image (RFC-0006 phase 2).
+          /dev/mem, kexec of an unsigned image.
         '';
       };
 

@@ -209,7 +209,7 @@ struct CacheValidationEntry {
     store_hash: String,
     /// Acceptable NAR hashes for this path. A legacy TOML entry has one;
     /// a `store/` record may have several blessed realisations, any
-    /// of which a cache may legitimately serve (RFC-0005 §2.2).
+    /// of which a cache may legitimately serve.
     nar_hashes: Vec<String>,
 }
 
@@ -384,7 +384,7 @@ fn collect_cache_validation_entries_from_package(
             };
             // Acceptable hashes: the legacy TOML nar_hash, or ALL blessed
             // NARs from the store/ graph (a cache may legitimately serve any
-            // of them - RFC-0005 §2.3).
+            // of them).
             let mut nar_hashes: Vec<String> = entry
                 .get("nar_hash")
                 .and_then(|v| v.as_str())
