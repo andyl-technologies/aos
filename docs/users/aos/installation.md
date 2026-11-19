@@ -2,8 +2,9 @@
 
 AOS is installed from a signed UEFI disk image published by an AOS
 registry. A Hub can provide discovery, but static Git/HTTP registries also work. There is no `aos install` command that writes a disk: installation
-means downloading a verified image, importing it into a hypervisor, or writing
-it with the target platform's normal imaging tool.
+means downloading a verified image, importing it into a hypervisor, writing
+it with the target platform's normal imaging tool, or booting
+[USB installer media](#install-from-a-usb-stick) on bare metal.
 
 Before enrollment or first boot, read [Use Secure Boot and verify package
 trust](secure-boot.md) for the full chain, production-key requirements, and the
@@ -171,9 +172,83 @@ sudo sync
 sudo sgdisk -e /dev/disk/by-id/REPLACE_WITH_TARGET
 ```
 
-The repository intentionally does not wrap this destructive step in an AOS
-command. Use the deployment system's normal image-import or disk-imaging
-workflow, with its audit and confirmation controls.
+No AOS command performs this write on a running workstation. Use the
+deployment system's normal image-import or disk-imaging workflow, with its
+audit and confirmation controls, or boot the installer media described next.
+
+## Install from a USB stick
+
+Installer media installs a release onto a bare-metal machine without another
+operating system. It boots a signed installer UKI, evaluates the `host.nix` on
+the stick exactly as the installed system's first boot will, and writes the
+release image only when that `host.nix` names the target disk.
+
+The media is a raw GPT image with three partitions:
+
+| Partition | Contents |
+| --- | --- |
+| `aos-installer-esp` | The signed installer UKI as the removable-media boot loader |
+| `aos-payload` | The compressed release image, its metadata, and a manifest signed with the release's Secure Boot db key |
+| `aos-meta`, filesystem label `AOS-META` | FAT32, holding the operator's `host.nix` and optional `host.nix.sig` |
+
+The installer partition is not labeled `ESP` and the stick carries no root
+partitions, so it never collides with the installed disk.
+
+Build the media from a locally signed Secure Boot system. Pass the `host.nix`
+to bake it in, or leave it out and copy `host.nix` onto the FAT `AOS-META`
+partition from any workstation after writing the stick:
+
+```sh
+nix-build -E '(import ./. {}).systems.my-server.installerMedia {
+  hostConfiguration = ./host.nix;
+}'
+sudo dd if=result/aos-aos-installer.img \
+  of=/dev/disk/by-id/REPLACE_WITH_USB_STICK bs=16M oflag=direct status=progress
+```
+
+Installation is unattended and must be enabled in `host.nix`. Name the whole
+disk to erase by its stable identity; it becomes the root disk, so storage
+partitions on it omit their `device`:
+
+```nix
+{
+  aos.provisioning.install = {
+    mode = "unattended";
+    targetDevice = "/dev/disk/by-id/nvme-Samsung_SSD_990_PRO_2TB_S7KHNJ0X000000";
+  };
+
+  aos.provisioning.storage.partitions.var.sizeMin = "64G";
+}
+```
+
+Boot the machine from the stick. The installer:
+
+1. authorizes and evaluates `host.nix` under the image's trust policy, and
+   stops unless installation is enabled;
+2. verifies the payload manifest against the image's db certificates and
+   every payload file against the manifest;
+3. requires the target to be a present, whole, non-removable, unused disk that
+   is not the stick, carries no AOS partitions, and fits the image plus the
+   bounded first-boot partitions, and requires every other disk named by
+   `aos.provisioning.storage` to be present;
+4. announces the release and target, then counts down for ten seconds; power
+   off during the countdown to abort;
+5. writes the image, verifies it by reading it back, and relocates the
+   backup GPT header to the end of the disk; and
+6. adds a first-priority firmware boot entry for the installed disk, sets
+   `BootNext`, and reboots.
+
+Leave the stick attached through that reboot. The installed system's first
+boot reads the same `host.nix` from `AOS-META`, provisions storage, and
+activates the rest of the configuration. Remove the stick after first boot
+reaches `multi-user.target`; later boots restore the last evaluated input.
+If the stick stays attached, every boot reads its `host.nix` again, so edits
+on the stick become configuration changes under `platform` trust. Use
+`signed` trust for media that may be handled by others.
+
+Any failure stops before the disk is written, or reports that the disk may
+hold a partial image, and never reboots. The installer refuses a disk that
+already carries AOS partitions; wipe it explicitly to reinstall.
 
 ## Install redundant ext4 storage
 
@@ -345,7 +420,7 @@ AOS accepts a literal `host.nix` through the following transports:
 
 | Platform | Transport and payload |
 | --- | --- |
-| AOS metadata drive | Filesystem label `aos-metadata`, with `/host.nix`; optional `/host.nix.sig` and `/facts.json` |
+| AOS metadata drive | Filesystem label `AOS-META`, with `/host.nix`; optional `/host.nix.sig` and `/facts.json` |
 | NoCloud | Filesystem label `cidata`; `/user-data` contains literal Nix, with optional `/user-data.sig` |
 | OpenStack config drive | Filesystem label `config-2`; `openstack/latest/user_data` contains literal Nix |
 | QEMU | `fw_cfg` blob `opt/org.andyl/host-nix`, with optional `opt/org.andyl/host-nix.sig` |
@@ -368,7 +443,7 @@ tests:
 mkdir -p metadata
 cp host.nix metadata/host.nix
 xorriso -as mkisofs \
-  -V aos-metadata \
+  -V AOS-META \
   -o metadata.iso \
   metadata
 ```
@@ -453,6 +528,8 @@ If first boot stops before the target, inspect the units and state in
 - NVIDIA support in this repository stops at open kernel modules and matching
   GSP firmware. CUDA, OpenGL, Vulkan, management utilities, and other matching
   proprietary userspace components must be supplied separately.
+- Installer media is built only for locally signed Secure Boot systems. The
+  production external-finalization path does not yet produce it.
 - `apm image download PACKAGE --system --format raw --output FILE` downloads an image
   published in a system registry. It does not write a disk or provision a
   machine.

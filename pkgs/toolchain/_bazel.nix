@@ -1380,6 +1380,13 @@
     outputHashAlgo = "sha256";
     preferLocalBuild = true;
   };
+
+  # Bazel 9 source patches carry their own context and must apply exactly;
+  # older versions keep their separately maintained source trees.
+  isBazel9 = builtins.compareVersions version "9.0.0" >= 0;
+
+  # Offline workspace checks execute the packaged Bazel on the build host.
+  hasOfflineChecks = isBazel9 && !isCross;
 in
   mkQualifiedDerivation {
     passthru.sourceBootstrap = buildBazelBootstrap;
@@ -1460,6 +1467,17 @@ in
       {
         name = "patch";
         script = ''
+                  ${lib.optionalString isBazel9 ''
+            # Re-hash disk cache entries before trusting them. A shared cache
+            # must not turn one damaged file into wrong package outputs.
+            patch --batch -p1 < ${./bazel-patches/disk-cache-integrity.patch}
+
+            # Run shell commands through a pinned Bash instead of /bin/sh,
+            # which hermetic sandboxes need not provide. The placeholder is
+            # resolved after the path rewrites below, which would otherwise
+            # rewrite the /bin/bash suffix of the pinned path again.
+            patch --batch -p1 < ${./bazel-patches/pinned-command-shell.patch}
+          ''}
                   ${lib.optionalString (source != null && builtins.compareVersions version "9.0.0" < 0) ''
             # The dist archive bundles an empty Android emulator
             # snapshot. Recreate it with AOS-built qemu-img and zip.
@@ -1513,9 +1531,14 @@ in
                         "$f" 2>/dev/null || true
                     done
 
-                  # Patch Python bootstrap template shebang placeholder
-                  sed -i "s|%shebang%|#!${buildPython3}/bin/python3|" \
+                  # These Python launcher templates are not used to build Bazel;
+                  # they ship in its embedded tools and run on the installed
+                  # host. Use that host's AOS interpreters, never the build
+                  # platform's or a system path such as /bin/sh.
+                  sed -i "s|%shebang%|#!${python3}/bin/python3|" \
                     tools/python/python_bootstrap_template.txt 2>/dev/null || true
+                  sed -i '1s|^#!/bin/sh$|#!${bash}/bin/bash|' tools/python/pywrapper_template.txt
+                  test "$(head -n 1 tools/python/pywrapper_template.txt)" = "#!${bash}/bin/bash"
 
                   # Apply strict_action_env patch (substitute placeholder with AOS tool paths)
                   patch --batch -p1 < ${./bazel-patches/strict_action_env.patch} || true
@@ -1526,6 +1549,20 @@ in
                   patch --batch -p1 < ${./bazel-patches/bazel_rc.patch} || true
                   sed -i "s|@bazelSystemBazelRCPath@|/dev/null|g" \
                     src/main/cpp/option_processor.cc
+
+                  ${lib.optionalString isBazel9 ''
+            # The shell is compiled into the installed Bazel, so it must be
+            # the target platform's Bash even when cross-building.
+            shell_sources=$(grep -rl --include='*.java' '@aosShell@' src/main/java)
+            test "$(printf '%s\n' "$shell_sources" | wc -l)" = 4
+            sed -i 's|@aosShell@|${bash}/bin/bash|g' $shell_sources
+            # Documentation comments may still mention /bin/sh as an example.
+            if grep -rn --include='*.java' '"/bin/sh"\|#!/bin/sh' src/main/java |
+              grep -v '^[^:]*:[0-9]*: *\(\*\|//\)'; then
+              echo "Bazel source still hard-codes /bin/sh" >&2
+              exit 1
+            fi
+          ''}
 
                   # Strip rules_python toolchain/pip registrations from MODULE.bazel
                   # (same as vendor FOD step — prevents downloading pre-built Python)
@@ -2008,22 +2045,127 @@ in
       testing,
       self,
       pkgs,
-    }: {
-      version = testing.mkVMTest {
-        name = "build-systems-bazel-${version}-version";
-        rootfsDeps = [self];
-        testScript = ''
-          OUTPUT=$(bazel --version 2>&1)
-          case "$OUTPUT" in
-            *"${versionCheck}"*)
-              echo "==> bazel version: PASS"
-              ;;
-            *)
-              echo "==> ERROR: unexpected bazel version: $OUTPUT" >&2
-              exit 1
-              ;;
-          esac
-        '';
+    }: let
+      offlineCheck = import ./_bazel-offline-check.nix {
+        inherit lib sourceModules;
+        inherit (pkgs) runCommand;
+        bazel = self;
+        registry = "${vendorDeps}/_registries/bcr.bazel.build";
       };
-    };
+    in
+      {
+        version = testing.mkVMTest {
+          name = "build-systems-bazel-${version}-version";
+          rootfsDeps = [self];
+          testScript = ''
+            OUTPUT=$(bazel --version 2>&1)
+            case "$OUTPUT" in
+              *"${versionCheck}"*)
+                echo "==> bazel version: PASS"
+                ;;
+              *)
+                echo "==> ERROR: unexpected bazel version: $OUTPUT" >&2
+                exit 1
+                ;;
+            esac
+          '';
+        };
+      }
+      // lib.optionalAttrs hasOfflineChecks {
+        # A corrupt disk cache entry must be a miss: the action re-executes,
+        # produces the correct output and replaces the damaged entry.
+        disk-cache-integrity = offlineCheck {
+          name = "bazel-${version}-disk-cache-integrity";
+          files = {
+            "MODULE.bazel" = ''
+              module(name = "disk_cache_integrity")
+            '';
+            "BUILD.bazel" = ''
+              genrule(
+                  name = "greeting",
+                  outs = ["greeting.txt"],
+                  cmd = "echo cached-greeting > $@",
+              )
+            '';
+          };
+          script = ''
+            expected="cached-greeting"
+            cache="$TMPDIR/disk-cache"
+
+            build_greeting() {
+              run_bazel "$TMPDIR/output-$1" build //:greeting \
+                --disk_cache="$cache" \
+                --execution_log_json_file="$out/$1-execution.json"
+              cat "$TMPDIR/output-$1/execroot/_main/bazel-out/k8-fastbuild/bin/greeting.txt"
+            }
+
+            test "$(build_greeting populate)" = "$expected"
+
+            # CAS entries are named by the SHA-256 of their content.
+            digest=$(printf '%s\n' "$expected" | sha256sum | cut -d' ' -f1)
+            blob="$cache/cas/''${digest:0:2}/$digest"
+            test -f "$blob"
+
+            # Keep the size intact so only a content hash can tell.
+            printf 'corrupted-value\n' > "$blob"
+            test "$(wc -c < "$blob")" = "$(printf '%s\n' "$expected" | wc -c)"
+
+            actual=$(build_greeting recover)
+            if [ "$actual" != "$expected" ]; then
+              echo "disk cache served corrupt content: $actual" >&2
+              exit 1
+            fi
+
+            # The recovery must have re-executed the action, not reused it.
+            if ! grep -q '"runner": "local"' "$out/recover-execution.json"; then
+              echo "corrupt disk cache entry was not re-executed" >&2
+              exit 1
+            fi
+
+            # The re-executed action replaces the evicted entry.
+            test "$(sha256sum < "$blob" | cut -d' ' -f1)" = "$digest"
+          '';
+        };
+
+        # Bazel must build without /bin/sh, including the workspace status
+        # command, which Bazel runs through its own shell rather than the
+        # configured shell executable.
+        no-bin-sh = offlineCheck {
+          name = "bazel-${version}-no-bin-sh";
+          buildDeps = [pkgs.util-linux];
+          files = {
+            "MODULE.bazel" = ''
+              module(name = "no_bin_sh")
+            '';
+            "BUILD.bazel" = ''
+              genrule(
+                  name = "status",
+                  outs = ["status.txt"],
+                  stamp = 1,
+                  cmd = "grep '^STABLE_SHELL_FREE ' bazel-out/stable-status.txt > $@",
+              )
+            '';
+            # No shebang: the status command is interpreted by Bazel's shell.
+            "workspace-status.sh" = ''
+              echo "STABLE_SHELL_FREE ok"
+            '';
+          };
+          script = ''
+            chmod +x workspace-status.sh
+            mkdir "$TMPDIR/empty-bin"
+            export -f run_bazel
+
+            # Hide the sandbox's /bin in a private mount namespace.
+            unshare --user --map-root-user --mount -- ${pkgs.bash}/bin/bash -euc '
+              mount --bind "$TMPDIR/empty-bin" /bin
+              test ! -e /bin/sh
+              run_bazel "$TMPDIR/output" build //:status \
+                --workspace_status_command="$PWD/workspace-status.sh"
+            '
+
+            test "$(cat "$TMPDIR/output/execroot/_main/bazel-out/k8-fastbuild/bin/status.txt")" \
+              = "STABLE_SHELL_FREE ok"
+          '';
+        };
+      };
   }

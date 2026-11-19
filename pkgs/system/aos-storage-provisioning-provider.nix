@@ -13,6 +13,10 @@
   e2fsprogs,
   xfsprogs,
   dosfstools,
+  efibootmgr,
+  gptfdisk,
+  openssl,
+  zstd,
   bash,
   coreutils,
   jq,
@@ -60,8 +64,8 @@
     };
     cargoRoot = "crates";
     cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-activation-storage --bin aos-storage-provisioning-provider --bin aos-storage-provisioning-marker-observer"
-      "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-activation-storage -p aos-storage-layout"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-activation-storage --bin aos-storage-provisioning-provider --bin aos-storage-provisioning-marker-observer -p aos-installer --bin aos-installer"
+      "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-activation-storage -p aos-storage-layout -p aos-installer -p aos-boot-media"
     ];
     preBuild = staticBuildSetup;
     buildDeps = [patchelf];
@@ -94,11 +98,11 @@ in
     inherit version cargoDeps cargoArtifacts cargoArtifactContract;
     cargoRoot = "crates";
     cargoNextest = true;
-    cargoFlags = "-p aos-activation-storage --bin aos-storage-provisioning-provider --bin aos-storage-provisioning-marker-observer";
-    cargoTestFlags = "-p aos-activation-storage -p aos-storage-layout";
+    cargoFlags = "-p aos-activation-storage --bin aos-storage-provisioning-provider --bin aos-storage-provisioning-marker-observer -p aos-installer --bin aos-installer";
+    cargoTestFlags = "-p aos-activation-storage -p aos-storage-layout -p aos-installer -p aos-boot-media";
     doCheck = true;
     buildDeps = [patchelf];
-    runtimeDeps = [systemd util-linux mdadm e2fsprogs xfsprogs dosfstools bash coreutils jq aos];
+    runtimeDeps = [systemd util-linux mdadm e2fsprogs xfsprogs dosfstools efibootmgr gptfdisk openssl zstd bash coreutils jq aos];
 
     module = ./_aos-storage-provisioning-provider;
     moduleDeps = [aos-metadata-provider aos-nix-store-provider service-management storage-interface aos-boot-storage];
@@ -128,6 +132,7 @@ in
         "${util-linux}/sbin/sfdisk" "${jq}/bin/jq"
       test -x "$out/bin/aos-storage-provisioning-provider"
       test -x "$out/bin/aos-storage-provisioning-marker-observer"
+      test -x "$out/bin/aos-installer"
       if patchelf --print-interpreter "$out/bin/aos-storage-provisioning-provider" \
           > "$TMPDIR/provider.interpreter" 2>/dev/null; then
         printf '%s unexpectedly has ELF interpreter: ' aos-storage-provisioning-provider

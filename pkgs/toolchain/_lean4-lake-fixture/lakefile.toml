@@ -1,0 +1,9 @@
+name = "fixture"
+defaultTargets = ["fixture"]
+
+[[lean_lib]]
+name = "Fixture"
+
+[[lean_exe]]
+name = "fixture"
+root = "Main"

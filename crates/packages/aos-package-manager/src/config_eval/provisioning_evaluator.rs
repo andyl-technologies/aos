@@ -12,6 +12,7 @@ use anyhow::{Context as _, Result, ensure};
 use aos_activation::adapter::CancellationToken;
 use aos_core::Sha256Digest;
 use aos_module_format::ABILITY_LIMITS_V1;
+use aos_storage_layout::install::{InstallPlan, validate_install_plan};
 use aos_storage_layout::{
     AuthorizedProvisioningInput, CanonicalProvisioningSource, ProvisioningIntent,
     ProvisioningMarkerObservation, ProvisioningMarkerState, ProvisioningPlan,
@@ -160,9 +161,17 @@ pub(crate) fn evaluate(
         retained_inputs,
     };
 
-    let storage = evaluator.provisioning_storage(scratch.path(), timeout_ms, cancellation)?;
-    let plan: ProvisioningPlan =
-        serde_json::from_value(json!({"schema":"aos.provisioning-plan/v1", "storage":storage}))?;
+    let projection = evaluator.provisioning(scratch.path(), timeout_ms, cancellation)?;
+    let plan: ProvisioningPlan = serde_json::from_value(
+        json!({"schema":"aos.provisioning-plan/v1", "storage":projection.get("storage")}),
+    )?;
+    let install_plan: InstallPlan = serde_json::from_value(
+        projection
+            .get("install")
+            .cloned()
+            .context("provisioning projection has no install subtree")?,
+    )?;
+    validate_install_plan(&install_plan, &plan)?;
     let marker_uuid = marker_uuid_for_source(&parameters.marker, authorized.source)?;
     let plan = canonicalize_provisioning_plan(
         plan,
@@ -173,7 +182,11 @@ pub(crate) fn evaluate(
     // Persist the exact validated plan before disk mutation. Full host graph
     // evaluation belongs to host admission, after storage has been prepared.
     let canonical_plan = String::from_utf8(aos_core::json::to_vec(&plan)?)?;
-    Ok(json!({"provisioning_plan":plan,"canonical_plan":canonical_plan}))
+    Ok(json!({
+        "provisioning_plan": plan,
+        "canonical_plan": canonical_plan,
+        "install_plan": install_plan,
+    }))
 }
 
 // Payload catalogs remain authenticated data; projection retains only sources.
@@ -305,6 +318,7 @@ mod tests {
         let plan_results = json!({
             "canonical_plan": String::from_utf8(aos_core::json::to_vec(&plan)?)?,
             "provisioning_plan": plan,
+            "install_plan": {"mode": "disabled", "targetDevice": null},
         });
         assert!(plan_results["provisioning_plan"]["partitions"]["var"]["size_max"].is_null());
         assert!(plan_results["provisioning_plan"]["partitions"]["var"]["format"].is_null());

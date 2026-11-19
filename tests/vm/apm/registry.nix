@@ -12,7 +12,7 @@ in
   })
   // (import ./registry/publish.nix {
     inherit testing pkgs aosPkg;
-    inherit (shared) fixtures publishDeps publishSysrootImage publishSysrootDisk publishSysrootInfo publishSysrootUki setupNixPublishEnv setupAltNixPublishEnv;
+    inherit (shared) fixtures publishDeps publishSysrootImage publishSysrootDisk publishSysrootInfo setupNixPublishEnv setupAltNixPublishEnv;
   })
   // (import ./registry/unpublish.nix {
     inherit testing pkgs;

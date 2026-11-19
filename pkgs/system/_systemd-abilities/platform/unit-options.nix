@@ -108,8 +108,8 @@ in rec {
   # `[Install]`-section directives. Both static and runtime package units honor
   # these via the renderer in `lib.nix`'s `commonUnitText`: stage 2 ALSO
   # populates `.wants` / `.requires` / `.upholds` via `generateUnits`'s
-  # symlink farm (the `[Install]` lines are idempotent for it);
-  # runtime preset policy relies on these directives as its source of truth.
+  # symlink farm (the `[Install]` lines are idempotent for it); an explicit
+  # `systemctl preset` or `systemctl enable` reads these directives.
   commonInstallOptions = {
     requiredBy = mkOption {
       default = [];
@@ -138,19 +138,14 @@ in rec {
         for starting a unit by default at boot time is to set this
         option to `["multi-user.target"]` for system services.
 
-        Two install paths consume this option:
-
-        - **Stage 2** writes a `.wants` symlink in the named target's
-          `.wants/` dir at image-build time via `generateUnits` —
-          stateless, no `systemctl enable` needed.
-        - **Preset policy** has no symlink-farm phase, so renderers also
-          emit an `[Install] WantedBy=` line (alongside `Alias=`,
-          `RequiredBy=`, `UpheldBy=` when those fields are set). The
-          every-boot `aos-preset.service` runs `systemctl preset-all`,
-          which walks `[Install]` to create runtime symlinks in the
-          tmpfs `/etc` upper. The `[Install]` lines are idempotent for
-          stage 2 (whose symlinks already exist) but load-bearing for
-          dynamically installed RFC-0001 package targets.
+        Stage 2 writes a `.wants` symlink in the named target's
+        `.wants/` dir at image-build time via `generateUnits` —
+        stateless, no `systemctl enable` needed. Renderers also emit an
+        `[Install] WantedBy=` line (alongside `Alias=`, `RequiredBy=`,
+        `UpheldBy=` when those fields are set) for an explicit
+        `systemctl preset` or `systemctl enable`; no boot service applies
+        presets, and the lines are idempotent when the stage-2 symlinks
+        already exist.
       '';
     };
 

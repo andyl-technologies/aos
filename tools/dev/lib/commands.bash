@@ -116,14 +116,43 @@ aos_dev_all() {
     checks) aos_dev_nix_build -A allChecks "$@" ;;
     builds) aos_dev_all_builds "$@" ;;
     format) aos_dev_fmt all --check "$@" ;;
+    sources) aos_dev_check_sources "$@" ;;
     ci)
+      aos_dev_check_sources
       aos_dev_fmt all --check
       aos_dev_nix_build -A checks.eval "$@"
       aos_dev_all_builds "$@"
       aos_dev_nix_build -A allChecks "$@"
       ;;
-    *) aos_dev_error 'all requires packages, checks, builds, format, or ci' ;;
+    *) aos_dev_error 'all requires packages, checks, builds, format, sources, or ci' ;;
   esac
+}
+
+aos_dev_check_sources() {
+  (($# == 0)) || aos_dev_error 'all sources takes no arguments'
+
+  # Path-based Nix sources copy ignored files from the working tree, so a
+  # build can pass locally while the commit lacks a file it needs. Reject
+  # source-shaped files that ignore rules hide from Git, tracked or not.
+  git -C "$aos_dev_root" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+    || aos_dev_error 'all sources requires a Git checkout'
+
+  # Pathspec exclusions keep Git from walking Cargo target directories.
+  local hidden path
+  hidden=$(
+    git -C "$aos_dev_root" ls-files --cached --others --ignored --exclude-standard -- \
+      '*.rs' '*.nix' '*Cargo.toml' \
+      ':(exclude)crates/target' ':(exclude)cli/target' \
+      ':(exclude).claude' ':(exclude).worktrees' ':(exclude).direnv'
+  ) || aos_dev_error 'cannot list ignored source files'
+
+  if [[ -n $hidden ]]; then
+    printf 'aos-dev: ignore rules hide these source files from Git:\n' >&2
+    while IFS= read -r path; do
+      printf '  %s\n' "$path" >&2
+    done <<< "$hidden"
+    exit 1
+  fi
 }
 
 aos_dev_all_builds() {
@@ -209,7 +238,7 @@ _aos_dev_complete() {
   if (( COMP_CWORD == 1 )); then
     COMPREPLY=( $(compgen -W 'list build run all fmt release cache completion help --image-cache --no-image-cache --release --no-cache --cache --cache-dir --go-cache --no-go-cache --bazel-cache --no-bazel-cache --rust-target-cache --no-rust-target-cache --rust-incremental --no-rust-incremental --accache --no-accache' -- "$current") )
   elif (( COMP_CWORD == 2 )); then
-    COMPREPLY=( $(compgen -W 'aos apm apr package image container check build eval packages images containers checks builds evals ci format nix rust go bazel all init doctor verify-mount status usage entries intermediates builds prune compact clear' -- "$current") )
+    COMPREPLY=( $(compgen -W 'aos apm apr package image container check build eval packages images containers checks builds evals ci format sources nix rust go bazel all init doctor verify-mount status usage entries intermediates builds prune compact clear' -- "$current") )
   elif (( COMP_CWORD == 3 )) && [[ ${COMP_WORDS[1]} == build || ${COMP_WORDS[1]} == run ]]; then
     COMPREPLY=( $(compgen -W "$(aos-dev list "${COMP_WORDS[2]}" "$current" 2>/dev/null)" -- "$current") )
   fi

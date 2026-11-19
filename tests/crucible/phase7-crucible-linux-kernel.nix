@@ -11,6 +11,7 @@
   linuxCrucibleNix = builtins.readFile ../../pkgs/kernel/linux-crucible.nix;
   linuxNix = builtins.readFile ../../pkgs/kernel/linux.nix;
   baseBuildModule = builtins.readFile ../../modules/base/build.nix;
+  systemKernelSelection = builtins.readFile ../../systems/_kernel.nix;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -316,16 +317,24 @@
         needle = "if gawk '/^CONFIG_MODULES=y$/ { found = 1 } END { exit found ? 0 : 1 }' .config; then\n            make modules_install";
       }
     ]
+    # System compositions select the kernel provider; the base build module
+    # only publishes that selection as system.build.kernel.
     ++ failuresFor "modules/base/build.nix" baseBuildModule [
       {
-        label = "generic system kernel remains default";
-        needle = "system.build.kernel = pkgs.linux;";
+        label = "system kernel follows the selected provider";
+        needle = "system.build.kernel = config.aos.kernel.packageRoot;";
       }
     ]
-    ++ forbiddenFor "modules/base/build.nix" baseBuildModule [
+    ++ failuresFor "systems/_kernel.nix" systemKernelSelection [
+      {
+        label = "generic system kernel remains default";
+        needle = "aos.kernel.packageRoot = pkgs.linux;";
+      }
+    ]
+    ++ forbiddenFor "systems/_kernel.nix" systemKernelSelection [
       {
         label = "linux-crucible as default system kernel";
-        needle = "system.build.kernel = pkgs.linux-crucible;";
+        needle = "aos.kernel.packageRoot = pkgs.linux-crucible;";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

@@ -404,23 +404,8 @@ fn matching_ukis(expected_sha256: &str) -> Result<Vec<PathBuf>, VerificationErro
 }
 
 fn sha256(path: &Path) -> Result<String, VerificationError> {
-    let output = Command::new("/bin/openssl")
-        .args(["dgst", "-sha256", "-r"])
-        .arg(path)
-        .output()?;
-    if !output.status.success() {
-        return Err(VerificationError::Helper(stderr_reason(&output)));
-    }
-    let text = String::from_utf8(output.stdout)
-        .map_err(|error| VerificationError::Helper(error.to_string()))?;
-    let digest = text.split_ascii_whitespace().next().unwrap_or_default();
-    if digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        Ok(digest.to_ascii_lowercase())
-    } else {
-        Err(VerificationError::Helper(
-            "openssl returned a malformed SHA-256 digest".into(),
-        ))
-    }
+    aos_boot_media::digest::sha256_file(&aos_boot_media::Tools::initrd(), path)
+        .map_err(|error| VerificationError::Helper(error.to_string()))
 }
 
 fn extract_text_section(
