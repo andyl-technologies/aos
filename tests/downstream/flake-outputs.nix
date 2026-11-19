@@ -5,9 +5,8 @@
 ##! instantiates each `packages`, `devShells`, `checks`, and `formatter`
 ##! derivation, each app program, each `lib` toolchain, and each `aosSystems`
 ##! top level for those systems: what `nix flake check --all-systems
-##! --no-build` instantiates for them, minus the listed outputs that do not
-##! evaluate yet. Like `fixture-eval`, it keeps only the `.drv` files as
-##! inputs, so building it never builds an output.
+##! --no-build` instantiates for them. Like `fixture-eval`, it keeps only the
+##! `.drv` files as inputs, so building it never builds an output.
 {
   pkgs,
   lib,
@@ -25,22 +24,10 @@
     map builtins.unsafeDiscardOutputDependency
     (builtins.attrNames (builtins.getContext app.program));
 
-  # Cross evaluation of the measured-boot system variants fails: the enabled
-  # chrony service has no lifecycle configuration. Remove these entries
-  # together with the fix.
-  brokenVariants = [
-    "server-measured-boot"
-    "server-secureboot"
-    "server-secureboot-lockdown"
-    "server-verity"
-  ];
-  isBrokenImage = name:
-    builtins.any (variant: lib.hasPrefix "${variant}-image-" name) brokenVariants;
-
   forSystem = system: let
     attrsDrvs = attrs: map drvFile (builtins.attrValues attrs);
-    packages = lib.filterAttrs (name: _: !(isBrokenImage name)) flakeOutputs.packages.${system};
-    variants = builtins.removeAttrs flakeOutputs.aosSystems.${system} brokenVariants;
+    packages = flakeOutputs.packages.${system};
+    variants = flakeOutputs.aosSystems.${system};
   in
     attrsDrvs packages
     ++ attrsDrvs flakeOutputs.devShells.${system}
