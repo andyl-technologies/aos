@@ -1,0 +1,13 @@
+{"target":
+ ["/nix/store/w1y6k8se-dev-env",
+  "/nix/store/a0vz6wfr-python3-3.13.7",
+  "/nix/store/q9rj2b0d-bash-5.3",
+  "/nix/store/7p2kds9a-openssl-3.6.0",
+  "/nix/store/3x1hmq3l-glibc-2.42"],
+ "actions":
+ [{"path": "/nix/store/w1y6k8se-dev-env", "op": "addRoot"},
+  {"path": "/nix/store/3x1hmq3l-glibc-2.42", "op": "mount"},
+  {"path": "/nix/store/q9rj2b0d-bash-5.3", "op": "mount"},
+  {"path": "/nix/store/7p2kds9a-openssl-3.6.0", "op": "mount"},
+  {"path": "/nix/store/a0vz6wfr-python3-3.13.7", "op": "mount"},
+  {"path": "/nix/store/w1y6k8se-dev-env", "op": "mount"}]}

@@ -81,6 +81,13 @@ makes it. The [code style guide](code-style.md#documentation) gives the rules.
 - [Update contract](package-maintenance/update-contract.md) describes the
   `mkUpstream` declaration that update tooling reads and edits.
 
+## Local sandboxes
+
+- [Local sandboxes](sandbox/README.md) gives the single-host sandbox design,
+  its components, and the store mount model.
+- [Formal model](sandbox/formal-model.md) covers the Lean specification, its
+  theorems and platform assumptions, and the conformance vectors.
+
 ## OCI containers
 
 - [OCI containers](oci-containers/README.md) gives the build and distribution

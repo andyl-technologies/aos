@@ -26,6 +26,9 @@ result-*
 # Wrangler local state and caches
 .wrangler/
 
+# Lake build output for the Lean models under formal/
+.lake/
+
 # Doc index cache
 .aos-doc-cache.json
 

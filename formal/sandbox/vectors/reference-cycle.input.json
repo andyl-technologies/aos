@@ -1,0 +1,21 @@
+{
+  "graph": [
+    {
+      "path": "/nix/store/aaaa-left",
+      "refs": [
+        "/nix/store/bbbb-right"
+      ]
+    },
+    {
+      "path": "/nix/store/bbbb-right",
+      "refs": [
+        "/nix/store/aaaa-left"
+      ]
+    }
+  ],
+  "roots": [],
+  "mounted": [],
+  "desired": [
+    "/nix/store/aaaa-left"
+  ]
+}

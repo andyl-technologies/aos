@@ -1,0 +1,24 @@
+# Formal model of the local-node sandbox. The project has no dependencies, so
+# `lake build` never reaches the network. Every warning is an error: a proof
+# left as `sorry` fails the build before the axiom audit runs.
+name = "sandbox"
+version = "0.1.0"
+defaultTargets = ["Sandbox", "SandboxAudit", "sandbox-model"]
+
+[leanOptions]
+autoImplicit = false
+warningAsError = true
+
+[[lean_lib]]
+name = "Sandbox"
+
+# Importing the audit runs it: elaboration fails when any model declaration
+# depends on an axiom outside Lean's standard three.
+[[lean_lib]]
+name = "SandboxAudit"
+
+# Executable reference model. Implementations replay the vectors in
+# `vectors/` against it; see the engineering documentation.
+[[lean_exe]]
+name = "sandbox-model"
+root = "Main"
