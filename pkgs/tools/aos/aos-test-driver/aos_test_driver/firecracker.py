@@ -174,7 +174,7 @@ class FirecrackerMachine(Machine):
         if self.metadata_copy is not None:
             # Firecracker has no CD-ROM support, so the ISO rides as a
             # read-only virtio-blk drive. blkid still probes the ISO9660
-            # superblock and exposes /dev/disk/by-label/aos-metadata.
+            # superblock and exposes /dev/disk/by-label/AOS-META.
             drives.append(
                 {
                     "drive_id": "metadata",

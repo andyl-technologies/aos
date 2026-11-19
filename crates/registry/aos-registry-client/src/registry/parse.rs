@@ -50,13 +50,13 @@ type PackageMetaValidator = fn(&PackageMeta) -> Result<()>;
 // Package TOML schema (registry format)
 // ---------------------------------------------------------------------------
 
-// The pure manifest schema structs moved to the wasm-clean
-// `aos-registry-format` crate so the registry hub's `Database`/indexer and the
-// Cloudflare Worker can share them without depending on the native client
-// (which is native-only). Re-exported here so
-// `aos_registry_client::registry::parse::{PackageToml, …}` paths are unchanged.
-// The canonical structs carry the `store/` graph fields
-// (`source_drv`/`source_nar_hash`, legacy `nar_hash`/`nar_size`) and
+// The pure manifest schema structs moved to the wasm-clean `aos-registry-format`
+// crate so the registry hub's `Database`/indexer and the Cloudflare Worker can
+// share them without depending on the native client (which is native-only).
+// Re-exported here so `aos_registry_client::registry::parse::{PackageToml, …}`
+// paths are unchanged. The canonical structs carry the `store/` graph fields
+// (`source_drv`/`source_nar_hash`, legacy `nar_hash`/`nar_size`), sysroot image
+// entries whose delivery binds an opaque provider-owned artifact contract, and
 // authenticated package metadata (the structural `references` gate plus
 // BPF-LSM, attestation, documentation, and package contract fields and helpers
 // such as `PlatformEntry::attestation` and the `ReferenceField` accessors).

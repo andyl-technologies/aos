@@ -1,0 +1,56 @@
+--- a/src/main/java/com/google/devtools/build/lib/analysis/test/AnalysisTestActionBuilder.java
++++ b/src/main/java/com/google/devtools/build/lib/analysis/test/AnalysisTestActionBuilder.java
+@@ -48,7 +48,7 @@
+     if (ruleContext.isDefaultExecGroupExecutingOnWindows()) {
+       sb.append("@echo off\n");
+     } else {
+-      sb.append("#!/bin/sh\n");
++      sb.append("#!@aosShell@\n");
+     }
+     for (String line : Splitter.on("\n").split(escapedMessage)) {
+       sb.append("echo ").append(line).append("\n");
+--- a/src/main/java/com/google/devtools/build/lib/runtime/commands/CleanCommand.java
++++ b/src/main/java/com/google/devtools/build/lib/runtime/commands/CleanCommand.java
+@@ -205,7 +205,7 @@
+             .addArgs("-l", "/dev/null")
+             .addArgs("-p", "/dev/null")
+             .addArg("--")
+-            .addArgs("/bin/sh", "/bin/sh", "-c", command)
++            .addArgs("@aosShell@", "@aosShell@", "-c", command)
+             .setWorkingDir(tempPath.getParentDirectory())
+             .build()
+             .execute();
+--- a/src/main/java/com/google/devtools/build/lib/sandbox/LinuxSandboxedSpawnRunner.java
++++ b/src/main/java/com/google/devtools/build/lib/sandbox/LinuxSandboxedSpawnRunner.java
+@@ -548,7 +548,7 @@
+     if (!sandboxOptions.sandboxDebug) {
+       return null;
+     }
+-    return commandLineBuilder.buildForCommand(ImmutableList.of("/bin/sh", "-i"));
++    return commandLineBuilder.buildForCommand(ImmutableList.of("@aosShell@", "-i"));
+   }
+ 
+   private final LinuxSandboxCommandLineBuilder.NetworkNamespace getNetworkNamespace() {
+--- a/src/main/java/com/google/devtools/build/lib/util/CommandBuilder.java
++++ b/src/main/java/com/google/devtools/build/lib/util/CommandBuilder.java
+@@ -46,7 +46,10 @@
+  */
+ public final class CommandBuilder {
+ 
+-  private static final ImmutableList<String> SHELLS = ImmutableList.of("/bin/sh", "/bin/bash");
++  // AOS: /bin/sh need not exist; use the shell pinned when Bazel is built.
++  private static final String SHELL = "@aosShell@";
++
++  private static final ImmutableList<String> SHELLS = ImmutableList.of(SHELL, "/bin/bash");
+ 
+   private static final Splitter ARGV_SPLITTER = Splitter.on(CharMatcher.anyOf(" \t"));
+ 
+@@ -133,7 +136,7 @@
+     if (useShell && !argvStartsWithSh()) {
+       // c.g.io.base.shell.Shell.shellify() actually concatenates argv into the space-separated
+       // string here. Not sure why, but we will do the same.
+-      return ImmutableList.of("/bin/sh", "-c", Joiner.on(' ').join(argv));
++      return ImmutableList.of(SHELL, "-c", Joiner.on(' ').join(argv));
+     }
+     return ImmutableList.copyOf(argv);
+   }
