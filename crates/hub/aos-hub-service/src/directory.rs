@@ -1,4 +1,4 @@
-//! The global registry directory projection (RFC-0004 ch.14 Phase D).
+//! The global registry directory projection.
 //!
 //! The instance home lists every public registry. Served live, that is a
 //! `list_registries` plus a per-registry visibility/index fan-out — the N+1 that

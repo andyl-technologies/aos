@@ -908,7 +908,7 @@ async fn index_registry_inner(
     // documentation and SQL projections expand the selected public catalog.
     drop(reader);
 
-    // The committed [caches] cache stack (RFC-0004) is flattened into the
+    // The committed [caches] cache stack is flattened into the
     // priority list stack-unaware clients and the display table resolve; when
     // it is in stack form its JSON is also stored for stack-aware validation.
     // A malformed stack flattens to an empty list (logged) rather than failing
@@ -1000,13 +1000,13 @@ async fn index_registry_inner(
     }
     tracing::info!(phase = "snapshot", "registry index phase completed");
 
-    // Cross-reference the verified HEAD commit with the change-set log
-    // (RFC-0004 "Configuration management"): a commit carrying an
-    // `AOS-Change-Id` trailer that names a known draft change request marks it
-    // applied (a maintainer promoted the draft via `apr change merge`); a
-    // verified commit *without* a known trailer is an out-of-band publish, for
-    // which we synthesize one idempotent `external` audit entry so the feed is
-    // complete over managed and direct changes alike.
+    // Cross-reference the verified HEAD commit with the change-set log: a
+    // commit carrying an `AOS-Change-Id` trailer that names a known draft
+    // change request marks it applied (a maintainer promoted the draft via `apr
+    // change merge`); a verified commit *without* a known trailer is an
+    // out-of-band publish, for which we synthesize one idempotent `external`
+    // audit entry so the feed is complete over managed and direct changes
+    // alike.
     record_commit_provenance(
         db,
         registry,
@@ -1917,8 +1917,8 @@ fn store_hash_component(path: &str) -> String {
 }
 
 /// A roster public-key → key-id map for resolving a commit signer to a roster
-/// identity (RFC-0004: the external audit entry resolves the signing-key
-/// fingerprint to a roster id where possible).
+/// identity (the external audit entry resolves the signing-key fingerprint
+/// to a roster id where possible).
 ///
 /// `roster` is the `(key_id, trusted-key-line, status)` set the index built;
 /// only active entries with key material contribute, keyed on the base64 blob
@@ -3234,9 +3234,9 @@ async fn resolve_channels(
 
 /// Probe the per-release `objects/info/packs` listing for pack presence.
 ///
-/// Per `docs/registry/http-layout.md`, release `X.Y.Z[-pre][+build]`
-/// lives under `releases/<X>/<Y>/<Z[-pre][+build]>/` and its full packs
-/// are listed in `objects/info/packs` inside it.
+/// Per `docs/engineering/registry/http-layout.md`, release
+/// `X.Y.Z[-pre][+build]` lives under `releases/<X>/<Y>/<Z[-pre][+build]>/` and
+/// its full packs are listed in `objects/info/packs` inside it.
 async fn probe_pack_presence(fetch: &dyn SurfaceFetch, semver_str: &str) -> Result<bool> {
     let mut parts = semver_str.splitn(3, '.');
     let (Some(major), Some(minor), Some(rest)) = (parts.next(), parts.next(), parts.next()) else {
@@ -3472,7 +3472,7 @@ mod tests {
 
     #[test]
     fn pack_path_splits_semver_components() {
-        // Mirrors the worked example in docs/registry/http-layout.md:
+        // Mirrors the worked example in docs/engineering/registry/http-layout.md:
         // prerelease/build metadata stays in the third path component.
         let mut parts = "1.0.0-beta+exp.sha.5114f85".splitn(3, '.');
         assert_eq!(parts.next(), Some("1"));

@@ -685,7 +685,7 @@ impl Database {
     /// Converts a registry-bound root OCI route into an instance OCI route.
     ///
     /// The canonical rendered URL stays byte-identical, so the conversion is an
-    /// update in RFC-0012 terms: the new instance route binds the old route's
+    /// update in topology terms: the new instance route binds the old route's
     /// existing URL reservation. The converted registry's namespace is enabled
     /// and becomes the route's default registry, so both namespaced and legacy
     /// unnamespaced references keep resolving. The old route rows are retired

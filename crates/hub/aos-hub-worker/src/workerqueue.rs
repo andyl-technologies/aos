@@ -1,12 +1,12 @@
 //! The Cloudflare Queues implementation of the shared [`Queue`] port
 //! (wasm32-only).
 //!
-//! RFC-0004 chapter 14 Phase D defers post-write propagation (surface
-//! regeneration, the directory projection rebuild, read-model invalidation,
-//! webhook delivery, re-indexing) to an asynchronous queue so the synchronous
-//! write stays fast. This is the Worker's producer side: [`WorkerQueue`]
-//! implements [`aos_hub_service::jobs::Queue`] over a bound Cloudflare Queue,
-//! wrapping each [`Job`](aos_hub_service::jobs::Job) in a versioned, replay-safe
+//! The hub defers post-write propagation (surface regeneration, the directory
+//! projection rebuild, read-model invalidation, webhook delivery, re-indexing)
+//! to an asynchronous queue so the synchronous write stays fast. This is the
+//! Worker's producer side: [`WorkerQueue`] implements
+//! [`aos_hub_service::jobs::Queue`] over a bound Cloudflare Queue, wrapping
+//! each [`Job`](aos_hub_service::jobs::Job) in a versioned, replay-safe
 //! [`JobEnvelope`](aos_hub_service::jobs::JobEnvelope) message body. The
 //! consumer is an `#[event(queue)]` handler (added with the deploy config); the
 //! native hub drains the same [`Job`]s on a tokio runner behind the same port.

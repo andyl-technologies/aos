@@ -23,7 +23,7 @@ pub struct LastOwnerError(pub String);
 #[error("membership or actor authority changed before apply")]
 pub struct MembershipMutationConflictError;
 
-/// The editable instance-wide settings bundle (RFC-0004 console).
+/// The editable instance-wide settings bundle.
 ///
 /// Every field is persisted in the `instance_config` key/value table and is
 /// configurable via the WebUI, the API, and the CLI; the deploy seeds initial

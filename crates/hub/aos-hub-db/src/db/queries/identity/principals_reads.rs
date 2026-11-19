@@ -6,7 +6,7 @@ impl Database {
     /// Whether a user holds any role grant at any scope.
     ///
     /// Used by the `invite_only` signup gate: an existing member of some org
-    /// may create another org without an invitation (RFC-0004).
+    /// may create another org without an invitation.
     ///
     /// # Errors
     ///

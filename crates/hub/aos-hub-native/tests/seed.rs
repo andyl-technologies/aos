@@ -1,4 +1,4 @@
-//! Integration coverage for the dev seed (RFC-0004 `serve --dev --seed`).
+//! Integration coverage for the dev seed.
 //!
 //! Verifies that [`seed_dev`](aos_hub_native::seed::seed_dev) populates a
 //! fresh hub with the demo org/user/instance-binding/registry, that the generated

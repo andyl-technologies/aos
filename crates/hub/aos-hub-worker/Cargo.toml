@@ -35,8 +35,8 @@ aos-hub-db = { workspace = true }
 aos-registry-format = { workspace = true }
 ed25519-dalek = { workspace = true }
 toml = { workspace = true }
-# The shared runtime-agnostic core (RFC-0004 Phase 5): the Database/Backend
-# abstraction the Worker drives over HubDb colocated SQLite, so the Worker runs the exact same
+# The shared runtime-agnostic core: the Database/Backend abstraction the Worker
+# drives over HubDb colocated SQLite, so the Worker runs the exact same
 # read/write logic as the native hub rather than a divergent reimplementation.
 aos-hub-service = { workspace = true }
 aos-oci-types = { workspace = true }
@@ -84,12 +84,12 @@ worker = { version = "0.8", features = ["queue"] }
 # PITR methods that workers-rs 0.8 has not wrapped yet.
 worker-sys = "0.8"
 
-# The worker fold (RFC-0004 Phase 5 step 4e): the Worker serves the *same*
-# shared Connect-JSON axum router as the native hub (aos_hub_service::connect),
-# bridged to the Workers runtime by hand (no axum-cloudflare-adapter — no release
-# tracks the worker version pinned here). axum types-only (default-features=false) is the
-# wasm-clean config; tower's ServiceExt::oneshot drives the Router; http builds
-# the request/response at the bridge boundary.
+# The Worker serves the *same* shared Connect-JSON axum router as the native hub
+# (aos_hub_service::connect), bridged to the Workers runtime by hand (no
+# axum-cloudflare-adapter — no release tracks the worker version pinned here).
+# axum types-only (default-features=false) is the wasm-clean config; tower's
+# ServiceExt::oneshot drives the Router; http builds the request/response at the
+# bridge boundary.
 axum = { version = "0.8", default-features = false, features = ["json"] }
 tower = { version = "0.5", features = ["util"] }
 http = { workspace = true }

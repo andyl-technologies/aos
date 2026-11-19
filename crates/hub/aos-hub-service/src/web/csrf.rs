@@ -12,7 +12,7 @@
 //! The functions here are pure and runtime-neutral — they take an axum
 //! [`HeaderMap`] (a type, not a server) and a session secret, so they compile
 //! to `wasm32-unknown-unknown` and are shared by the native hub and the
-//! Cloudflare Worker (RFC-0004 Phase 5).
+//! Cloudflare Worker.
 //!
 //! - [`mint_csrf_token`] derives the token an SSR form embeds.
 //! - [`verify_csrf_token`] checks a submitted token against the session secret.

@@ -1,5 +1,5 @@
 //! `apr change list|show|merge` over a SHA-256 registry with hub change
-//! requests (RFC-0004 "Configuration management", git-backed path).
+//! requests.
 //!
 //! Builds a real SHA-256 bare origin carrying a `refs/hub/changes/<id>` draft
 //! (a hub-authored edit to `registry.toml`), clones it under a temp

@@ -1,12 +1,11 @@
-//! The async job-queue port: deferred post-write propagation (RFC-0004 ch.14
-//! Phase D).
+//! The async job-queue port: deferred post-write propagation.
 //!
 //! A write (a publish, a config change) should commit its durable state fast and
 //! defer the *expensive propagation* — regenerating the machine surface,
 //! rebuilding the global directory projection, delivering webhooks, and
 //! re-indexing — to an asynchronous worker. That
 //! keeps the synchronous write latency low ("writes can be higher latency, but
-//! the durable part is fast") and matches the chapter's split.
+//! the durable part is fast").
 //!
 //! [`Queue`] is the port both shells implement:
 //!
@@ -84,7 +83,7 @@ pub enum Job {
         registry_id: i64,
     },
     /// Rebuild the global registry/cache **directory** projection (the instance
-    /// home's cached listing — RFC-0004 ch.14 Phase D, `crate::directory`).
+    /// home's cached listing; see `crate::directory`).
     RebuildDirectory,
     /// Re-index a published registry's surface in `HubDb` (the event-driven
     /// counterpart to the Cron indexer).

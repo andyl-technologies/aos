@@ -3,9 +3,8 @@
 //! Builds a complete, *correctly signed* registry surface on disk — loose
 //! objects, refs, channel partitions, and nix-cache files — using only the
 //! hub's own primitives plus `ed25519-dalek`. This is the seed of the
-//! parser-divergence fixture set from RFC-0004's testing story: the same
-//! directories are valid input for `apm` (they are exactly what
-//! `apr origin upload` would have written).
+//! parser-divergence fixture set: the same directories are valid input for
+//! `apm` (they are exactly what `apr origin upload` would have written).
 
 use std::fs;
 use std::path::{Path, PathBuf};

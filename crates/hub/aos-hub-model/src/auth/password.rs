@@ -1,11 +1,9 @@
 //! Password credentials: Argon2id hashing and constant-time verification.
 //!
-//! RFC-0004 originally said the hub would have **no passwords** — magic links
-//! and passkeys were the human-login baseline. That stance is reversed by
-//! explicit operator request: a first-class email + password login is now
-//! supported alongside magic links and passkeys. Passwords are stored only as
-//! a one-way hash, never in plaintext, in the `users.password_hash` column
-//! (migration v18; `NULL` = no password set).
+//! A first-class email + password login is supported alongside magic links and
+//! passkeys. Passwords are stored only as a one-way hash, never in plaintext,
+//! in the `users.password_hash` column (migration v18; `NULL` = no password
+//! set).
 //!
 //! # Key derivation
 //!

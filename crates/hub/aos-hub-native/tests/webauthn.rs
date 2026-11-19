@@ -1,5 +1,5 @@
 //! End-to-end coverage for the in-house WebAuthn relying-party verifier
-//! (RFC-0004 passkeys, `attestation: none`).
+//! (passkeys, `attestation: none`).
 //!
 //! A tiny in-process *software authenticator* (Ed25519 and P-256) plays the
 //! browser: it mints a keypair, builds `authenticatorData`/`clientDataJSON`,

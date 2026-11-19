@@ -1,13 +1,11 @@
-//! The SQL-backed configuration change-set engine (RFC-0004
-//! "Configuration management").
+//! The SQL-backed configuration change-set engine.
 //!
-//! Half of the hub's configuration is a git repo (handled by phase 4); the
-//! other half — orgs, projects, members, roles, tokens metadata,
-//! visibility, and bindings — is the SQL system of record. This
-//! module is the engine that makes *every* SQL-backed mutation a reviewed,
-//! revertible **change-set**, recorded in the append-only
-//! `change_requests` / `change_request_revisions` / `audit_log` tables (see the
-//! [`aos_hub_db::db`] module docs for the schema).
+//! Half of the hub's configuration is a git repo (see [`crate::gitwrite`]); the
+//! other half — orgs, projects, members, roles, tokens metadata, visibility,
+//! and bindings — is the SQL system of record. This module is the engine that
+//! makes *every* SQL-backed mutation a reviewed, revertible **change-set**,
+//! recorded in the append-only `change_requests` / `change_request_revisions` /
+//! `audit_log` tables (see the [`aos_hub_db::db`] module docs for the schema).
 //!
 //! # The change-set lifecycle
 //!
@@ -28,7 +26,7 @@
 //!
 //! # Revert
 //!
-//! [`revert`] implements RFC-0004's **snapshot-targeted forward revert**: it
+//! [`revert`] implements a **snapshot-targeted forward revert**: it
 //! drafts a *new* change-set whose revisions target each original
 //! revision's `old_json` (a `create` reverts to a `delete`, a `delete` to a
 //! `create`, an `update` to an `update` back to the old snapshot). It does
@@ -38,7 +36,7 @@
 //! **conflict** in the returned change-set summary rather than silently
 //! clobbering the divergence.
 //!
-//! Security objects are revert-exempt by type (RFC-0004): a `token` revert
+//! Security objects are revert-exempt by type: a `token` revert
 //! renders as an "issue replacement" note (a no-op create — a revoked token
 //! is never resurrected), and a `membership` delete reverts to an
 //! *invitation* rather than a silent re-admit. These are encoded as the
@@ -213,8 +211,8 @@ fn render_value(v: &Value) -> String {
         Value::Null => "null".to_string(),
         Value::Bool(b) => b.to_string(),
         Value::Number(n) => n.to_string(),
-        // Nested objects/arrays render as compact JSON (RFC-0004: field
-        // diffs are semantic; nested structure is shown as a JSON string).
+        // Nested objects/arrays render as compact JSON: field diffs are
+        // semantic, and nested structure is shown as a JSON string.
         other => other.to_string(),
     }
 }
@@ -428,8 +426,8 @@ pub struct RevertDraft {
 
 /// Drafts a snapshot-targeted forward revert of an applied change-set.
 ///
-/// Builds a *new* `draft` change-set whose revisions undo the original's
-/// (RFC-0004): a `create` reverts to a `delete`, a `delete` to a `create`
+/// Builds a *new* `draft` change-set whose revisions undo the original's:
+/// a `create` reverts to a `delete`, a `delete` to a `create`
 /// of the old snapshot, and an `update` to an `update` back to `old_json`.
 /// The original change-set's `reverted_by_change_id` is stamped to the new
 /// id. The revert is *not* applied here — the caller applies the returned
@@ -501,7 +499,7 @@ where
         match revision.object_type.as_str() {
             // Security exemption: a token is never reverted into a live
             // credential. Render the revert as a no-op create carrying an
-            // "issue replacement" note (RFC-0004).
+            // "issue replacement" note.
             "token" => {
                 let note = serde_json::json!({
                     "note": "issue replacement token",
@@ -519,7 +517,7 @@ where
                 .await?;
             }
             // Security exemption: a membership removal reverts to an
-            // *invitation*, not a silent re-admit (RFC-0004).
+            // *invitation*, not a silent re-admit.
             "membership" if revision.op == ConfigOp::Delete => {
                 let invite = invitation_from_membership(revision.old_json.as_ref());
                 stage(
@@ -777,12 +775,12 @@ pub async fn change_membership(
 /// Prepares a channel-advance as a draft change-set for client-side signing.
 ///
 /// Channel advances are signed-tag operations, which a commit-style change
-/// request cannot carry (RFC-0004 "Configuration management"). For a BYO-key
-/// org the hub records the exact intent — channel, target release, partition
-/// count — as a **prepared operation**: a draft change-set with a single
-/// `channel_advance` revision whose `new_json` is the intent. The maintainer
-/// executes `apr channel advance --from-hub <change_id>` to fetch, verify,
-/// sign the partition tags locally, and push. The preparation is audited.
+/// request cannot carry. For a BYO-key org the hub records the exact intent —
+/// channel, target release, partition count — as a **prepared operation**: a
+/// draft change-set with a single `channel_advance` revision whose `new_json`
+/// is the intent. The maintainer executes `apr channel advance --from-hub
+/// <change_id>` to fetch, verify, sign the partition tags locally, and push.
+/// The preparation is audited.
 ///
 /// Returns the new [`ChangeId`]; the change-set stays in `draft` status (it
 /// is never applied by the generic draft-change mechanism).

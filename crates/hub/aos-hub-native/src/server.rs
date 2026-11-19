@@ -452,14 +452,14 @@ pub(crate) fn client_ip_for(
 /// [`CLIENT_IP_HEADER`](aos_hub_service::web::console::CLIENT_IP_HEADER) so the
 /// shared console's pre-auth login handlers meter on it.
 ///
-/// The shared `/login` and `/login/password` handlers (RFC-0004 Phase 5,
-/// console-dedup stage D) are wasm-clean and cannot read the native
-/// [`ConnectInfo`] peer socket or the per-deployment reverse-proxy trust flag, so
-/// they read the connecting IP from a header instead. This middleware resolves
-/// the *trusted* IP with the hub's existing [`client_ip_for`] (the same
-/// resolution every other auth path uses — peer socket by default, last
-/// forwarded hop only when `trusted_proxy`) and **overwrites** the header with
-/// it, replacing any inbound value of the same name.
+/// The shared `/login` and `/login/password` handlers are wasm-clean and cannot
+/// read the native [`ConnectInfo`] peer socket or the per-deployment
+/// reverse-proxy trust flag, so they read the connecting IP from a header
+/// instead. This middleware resolves the *trusted* IP with the hub's existing
+/// [`client_ip_for`] (the same resolution every other auth path uses — peer
+/// socket by default, last forwarded hop only when `trusted_proxy`) and
+/// **overwrites** the header with it, replacing any inbound value of the same
+/// name.
 ///
 /// # Security invariant
 ///

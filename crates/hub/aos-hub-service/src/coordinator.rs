@@ -1,10 +1,10 @@
 //! The coordination port: strongly-consistent counters, leases, and floors.
 //!
-//! RFC-0004 chapter 14 routes the hub's *atomic* state — fixed-window rate
-//! limits, the publish lease, and channel anti-rollback floors — onto
-//! a primitive that gives **strict serializability** without a per-request SQL
-//! round-trip. Workers KV is the wrong tool (eventually consistent, ~1 write/sec
-//! per key, no atomic increment); the right one is a **Durable Object**:
+//! The hub routes its *atomic* state — fixed-window rate limits, the publish
+//! lease, and channel anti-rollback floors — onto a primitive that gives
+//! **strict serializability** without a per-request SQL round-trip. Workers KV
+//! is the wrong tool (eventually consistent, ~1 write/sec per key, no atomic
+//! increment); the right one is a **Durable Object**:
 //!
 //! - the **Cloudflare Worker** backs [`Coordinator`] with a Durable Object whose
 //!   single-threaded, single-instance execution serializes every operation
@@ -19,7 +19,7 @@
 //! - [`admit`](Coordinator::admit) — a fixed-window rate-limit counter: record
 //!   one attempt against a window budget, atomically, returning whether it was
 //!   admitted without running a relational upsert on every
-//!   browse request (RFC-0004 ch.14 "no writes on read paths").
+//!   browse request.
 //! - [`acquire_lease`](Coordinator::acquire_lease) /
 //!   [`release_lease`](Coordinator::release_lease) — a generic holder/deadline
 //!   lease (the publish lease, keyed by registry).

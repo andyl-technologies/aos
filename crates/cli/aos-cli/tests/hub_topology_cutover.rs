@@ -16,6 +16,15 @@ const ROOT_SIGNER_ID: &str = "key/root/example";
 const DOCUMENT_SIGNER_ID: &str = "key/release/example";
 const VERIFICATION_SIGNER_ID: &str = "key/verification/example";
 
+/// Workspace-relative path of the checked Hub API method manifest.
+const HUB_API_MANIFEST: &str = "crates/hub/aos-hub-api/contracts/hub-api-manifest-v1.json";
+
+/// Workspace-relative directory holding the cutover schemas and fixtures.
+const CUTOVER_DATA_DIR: &str = "crates/cli/aos-cli/hub-topology-cutover";
+
+/// Workspace-relative path of the stable `aos hub --json` envelope schema.
+const HUB_CLI_JSON_SCHEMA: &str = "crates/cli/aos-cli/contracts/hub-cli-json-schema-v1.json";
+
 #[test]
 fn topology_api_has_no_legacy_endpoint_update_surface() -> Result<()> {
     let root = workspace_root();
@@ -23,7 +32,7 @@ fn topology_api_has_no_legacy_endpoint_update_surface() -> Result<()> {
         root.join("api/proto/aos/hub/v1/hub.proto"),
         root.join("crates/hub/aos-hub-service/src/connect.rs"),
         root.join("crates/hub/aos-hub-client/src/hub.rs"),
-        root.join("docs/rfcs/0012-hub-surface-topology/hub-api-manifest-v1.json"),
+        root.join(HUB_API_MANIFEST),
     ];
     sources.extend(rust_sources(
         &root.join("crates/cli/aos-cli/src/commands/hub"),
@@ -92,7 +101,7 @@ fn registry_mutations_are_plan_apply_only() -> Result<()> {
         root.join("api/proto/aos/hub/v1/hub.proto"),
         root.join("crates/hub/aos-hub-service/src/connect.rs"),
         root.join("crates/hub/aos-hub-client/src/hub.rs"),
-        root.join("docs/rfcs/0012-hub-surface-topology/hub-api-manifest-v1.json"),
+        root.join(HUB_API_MANIFEST),
     ];
     for path in files {
         let source = fs::read_to_string(&path)?;
@@ -533,10 +542,11 @@ impl CutoverFixture {
         fs::create_dir(&bundle)?;
         fs::create_dir(&source)?;
 
-        let docs = workspace_root().join("docs/rfcs/0012-hub-surface-topology");
+        let workspace = workspace_root();
         let recipe = root.path().join("bundle-generation.json");
-        fs::copy(
-            docs.join("hub-topology-cutover-bundle-generation-v1.fixture.json"),
+        copy_input(
+            &workspace,
+            BundleInput::Cutover("hub-topology-cutover-bundle-generation-v1.fixture.json"),
             &recipe,
         )?;
         let recipe_value: Value = serde_json::from_slice(&fs::read(&recipe)?)?;
@@ -551,11 +561,11 @@ impl CutoverFixture {
             create_parent(&source.join(relative))?;
         }
 
-        for (relative, fixture) in source_files() {
-            copy_fixture(&docs, fixture, &source.join(relative))?;
+        for (relative, input) in source_files() {
+            copy_input(&workspace, *input, &source.join(relative))?;
         }
-        for (relative, fixture) in static_bundle_files() {
-            copy_fixture(&docs, fixture, &bundle.join(relative))?;
+        for (relative, input) in static_bundle_files() {
+            copy_input(&workspace, *input, &bundle.join(relative))?;
         }
 
         let bundled_verifier = bundle.join("bin/aos");
@@ -724,121 +734,143 @@ fn create_parent(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn copy_fixture(docs: &Path, fixture: &str, output: &Path) -> Result<()> {
-    fs::copy(docs.join(fixture), output)
-        .with_context(|| format!("copying {fixture} to {}", output.display()))?;
+/// Names a checked-in file that the fixture copies into a bundle tree.
+#[derive(Clone, Copy)]
+enum BundleInput {
+    /// A schema or fixture file in the cutover data directory.
+    Cutover(&'static str),
+    /// The checked Hub API method manifest.
+    HubApiManifest,
+    /// The stable `aos hub --json` envelope schema.
+    HubCliJsonSchema,
+}
+
+impl BundleInput {
+    fn path(self, workspace: &Path) -> PathBuf {
+        match self {
+            Self::Cutover(name) => workspace.join(CUTOVER_DATA_DIR).join(name),
+            Self::HubApiManifest => workspace.join(HUB_API_MANIFEST),
+            Self::HubCliJsonSchema => workspace.join(HUB_CLI_JSON_SCHEMA),
+        }
+    }
+}
+
+fn copy_input(workspace: &Path, input: BundleInput, output: &Path) -> Result<()> {
+    let path = input.path(workspace);
+    fs::copy(&path, output)
+        .with_context(|| format!("copying {} to {}", path.display(), output.display()))?;
     Ok(())
 }
 
-fn source_files() -> &'static [(&'static str, &'static str)] {
+fn source_files() -> &'static [(&'static str, BundleInput)] {
     &[
         (
             "documents/plan.json",
-            "hub-topology-cutover-plan-v1.fixture-source.json",
+            BundleInput::Cutover("hub-topology-cutover-plan-v1.fixture-source.json"),
         ),
         (
             "documents/report.json",
-            "hub-topology-cutover-report-v1.fixture-source.json",
+            BundleInput::Cutover("hub-topology-cutover-report-v1.fixture-source.json"),
         ),
         (
             "documents/verification.json",
-            "hub-topology-cutover-digest-verification-v1.fixture-source.json",
+            BundleInput::Cutover("hub-topology-cutover-digest-verification-v1.fixture-source.json"),
         ),
         (
             "trust/signer-key-map.json",
-            "hub-topology-cutover-signer-key-map-v1.fixture-source.json",
+            BundleInput::Cutover("hub-topology-cutover-signer-key-map-v1.fixture-source.json"),
         ),
         (
             "schemas/bundle-generation.json",
-            "hub-topology-cutover-bundle-generation-v1.schema.json",
+            BundleInput::Cutover("hub-topology-cutover-bundle-generation-v1.schema.json"),
         ),
         (
             "schemas/plan.json",
-            "hub-topology-cutover-plan-v1.schema.json",
+            BundleInput::Cutover("hub-topology-cutover-plan-v1.schema.json"),
         ),
         (
             "schemas/report.json",
-            "hub-topology-cutover-report-v1.schema.json",
+            BundleInput::Cutover("hub-topology-cutover-report-v1.schema.json"),
         ),
         (
             "schemas/verification.json",
-            "hub-topology-cutover-digest-verification-v1.schema.json",
+            BundleInput::Cutover("hub-topology-cutover-digest-verification-v1.schema.json"),
         ),
         (
             "schemas/signer-key-map.json",
-            "hub-topology-cutover-signer-key-map-v1.schema.json",
+            BundleInput::Cutover("hub-topology-cutover-signer-key-map-v1.schema.json"),
         ),
     ]
 }
 
-fn static_bundle_files() -> &'static [(&'static str, &'static str)] {
+fn static_bundle_files() -> &'static [(&'static str, BundleInput)] {
     &[
         (
             "evidence/backup-d1.sql",
-            "hub-topology-cutover-backup-d1-v1.fixture.json",
+            BundleInput::Cutover("hub-topology-cutover-backup-d1-v1.fixture.json"),
         ),
         (
             "evidence/backup-do-topology.json",
-            "hub-topology-cutover-backup-do-v1.fixture.json",
+            BundleInput::Cutover("hub-topology-cutover-backup-do-v1.fixture.json"),
         ),
         (
             "evidence/source-deployment.json",
-            "hub-topology-cutover-source-deployment-v1.fixture.json",
+            BundleInput::Cutover("hub-topology-cutover-source-deployment-v1.fixture.json"),
         ),
         (
             "evidence/source-export.json",
-            "hub-topology-cutover-source-export-v1.fixture.json",
+            BundleInput::Cutover("hub-topology-cutover-source-export-v1.fixture.json"),
         ),
         (
             "evidence/cutover.json",
-            "hub-topology-cutover-evidence-v1.fixture.json",
+            BundleInput::Cutover("hub-topology-cutover-evidence-v1.fixture.json"),
         ),
-        ("manifests/api.json", "hub-api-manifest-v1.json"),
-        ("manifests/cli.json", "hub-cli-json-schema-v1.json"),
+        ("manifests/api.json", BundleInput::HubApiManifest),
+        ("manifests/cli.json", BundleInput::HubCliJsonSchema),
         (
             "fixtures/cases.json",
-            "hub-topology-cutover-fixtures-v1.json",
+            BundleInput::Cutover("hub-topology-cutover-fixtures-v1.json"),
         ),
-        ("manifests/routes.md", "11-web-route-cutover-ledger.md"),
+        ("manifests/routes.md", BundleInput::Cutover("web-route-ledger-v1.md")),
         (
             "rules/database-restore.json",
-            "hub-topology-cutover-database-restore-rules-v1.fixture.json",
+            BundleInput::Cutover("hub-topology-cutover-database-restore-rules-v1.fixture.json"),
         ),
         (
             "schemas/bundle.json",
-            "hub-topology-cutover-bundle-v1.schema.json",
+            BundleInput::Cutover("hub-topology-cutover-bundle-v1.schema.json"),
         ),
         (
             "schemas/bundle-generation.json",
-            "hub-topology-cutover-bundle-generation-v1.schema.json",
+            BundleInput::Cutover("hub-topology-cutover-bundle-generation-v1.schema.json"),
         ),
         (
             "schemas/dialect.json",
-            "aos-cutover-schema-v1.metaschema.json",
+            BundleInput::Cutover("aos-cutover-schema-v1.metaschema.json"),
         ),
         (
             "schemas/fixtures.json",
-            "hub-topology-cutover-fixtures-v1.schema.json",
+            BundleInput::Cutover("hub-topology-cutover-fixtures-v1.schema.json"),
         ),
         (
             "schemas/plan.json",
-            "hub-topology-cutover-plan-v1.schema.json",
+            BundleInput::Cutover("hub-topology-cutover-plan-v1.schema.json"),
         ),
         (
             "schemas/report.json",
-            "hub-topology-cutover-report-v1.schema.json",
+            BundleInput::Cutover("hub-topology-cutover-report-v1.schema.json"),
         ),
         (
             "schemas/signature-envelope.json",
-            "hub-topology-cutover-signature-envelope-v1.schema.json",
+            BundleInput::Cutover("hub-topology-cutover-signature-envelope-v1.schema.json"),
         ),
         (
             "schemas/signer-key-map.json",
-            "hub-topology-cutover-signer-key-map-v1.schema.json",
+            BundleInput::Cutover("hub-topology-cutover-signer-key-map-v1.schema.json"),
         ),
         (
             "schemas/verification.json",
-            "hub-topology-cutover-digest-verification-v1.schema.json",
+            BundleInput::Cutover("hub-topology-cutover-digest-verification-v1.schema.json"),
         ),
     ]
 }

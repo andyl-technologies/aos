@@ -252,11 +252,10 @@ async fn seed_org(
 /// `127.0.0.1` fake IdP is reachable in tests.
 ///
 /// `complete_login` now takes the `HttpClient` port instead of a bare
-/// `reqwest::Client` (RFC-0004 Phase 5, console-dedup stage F); the hub's
-/// [`HubHttpClient`] is that port. It wraps whatever client it is given, so a
-/// plain client here keeps the loopback IdP reachable while still exercising the
-/// real `post_form`/`get` (error-for-status + body-cap) path the production code
-/// runs.
+/// `reqwest::Client`; the hub's [`HubHttpClient`] is that port. It wraps
+/// whatever client it is given, so a plain client here keeps the loopback IdP
+/// reachable while still exercising the real `post_form`/`get`
+/// (error-for-status + body-cap) path the production code runs.
 fn test_http() -> HubHttpClient {
     HubHttpClient::new(reqwest::Client::new())
 }

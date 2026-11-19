@@ -5,12 +5,11 @@
 //! and mutations do not have a second Web-only server implementation: the
 //! browser application invokes the generated Connect API used by the CLI.
 //!
-//! The pre-auth `/login`, `/login/password` (stage D), `/auth/passkey/begin`,
-//! and `/activate` (stage E) paths are shared: they meter on the
-//! [`CLIENT_IP_HEADER`] each shell stamps on ingress rather than on a native
-//! peer socket. The OIDC flow (`/auth/sso`, `/auth/oidc/start`,
-//! `/auth/oidc/callback`, stage F) is shared too: its token exchange and JWKS
-//! fetch go through the [`HttpClient`] port.
+//! The pre-auth `/login`, `/login/password`, `/auth/passkey/begin`, and
+//! `/activate` paths are shared: they meter on the [`CLIENT_IP_HEADER`] each
+//! shell stamps on ingress rather than on a native peer socket. The OIDC flow
+//! (`/auth/sso`, `/auth/oidc/start`, `/auth/oidc/callback`) is shared too: its
+//! token exchange and JWKS fetch go through the [`HttpClient`] port.
 
 pub mod handlers;
 pub mod manifest;

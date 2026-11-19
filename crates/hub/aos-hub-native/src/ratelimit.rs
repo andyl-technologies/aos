@@ -1,4 +1,4 @@
-//! In-memory per-endpoint rate limiting (RFC-0004 "Quotas and limits").
+//! In-memory per-endpoint rate limiting.
 //!
 //! A multi-tenant hub must bound the abuse surface of its unauthenticated and
 //! pre-authentication endpoints. This module is a small, dependency-free
@@ -6,7 +6,7 @@
 //! `Mutex<HashMap>` on [`AppState`](crate::server::AppState). It is
 //! deliberately process-local and approximate — a multi-process deployment
 //! wanting a shared limiter is a later phase — but it is exact enough to stop
-//! the email-bombing and credential-spray surfaces the RFC calls out.
+//! the email-bombing and credential-spray surfaces.
 //!
 //! # Classes and the trust model
 //!

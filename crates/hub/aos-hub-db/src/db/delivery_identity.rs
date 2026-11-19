@@ -273,7 +273,7 @@ pub enum NetworkPolicyIdentitySpec {
 }
 
 impl NetworkPolicyIdentitySpec {
-    /// Returns the canonical RFC-0012 kind.
+    /// Returns the canonical network-policy kind.
     #[must_use]
     pub const fn kind(&self) -> &'static str {
         match self {
@@ -395,7 +395,7 @@ pub struct NetworkPolicyRecord {
     pub kind: String,
     /// Canonical non-secret typed identity JSON.
     pub identity_spec_json: String,
-    /// RFC-0012 identity fingerprint.
+    /// Canonical identity fingerprint.
     pub identity_fingerprint: String,
     /// Default active revision for new plans.
     pub default_revision: Option<i64>,

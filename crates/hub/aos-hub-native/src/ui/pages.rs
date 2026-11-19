@@ -1,11 +1,11 @@
 //! Page composition, re-exported from [`aos_hub_service::web::browse_pages`].
 //!
-//! RFC-0004 Phase 5 (console-dedup stage G) moved the rich, session-aware browse
-//! renderer — the instance home, registry home, the searchable/sortable package
-//! index and data-rich package detail, the channel partition grid and bucket
-//! calculator, the releases list, and the per-registry health page — into the
-//! shared, wasm-clean core crate so the Cloudflare Worker serves the *identical*
-//! branded/searchable/session-aware browse the native hub does.
+//! The rich, session-aware browse renderer — the instance home, registry home,
+//! the searchable/sortable package index and data-rich package detail, the
+//! channel partition grid and bucket calculator, the releases list, and the
+//! per-registry health page — into the shared, wasm-clean core crate so the
+//! Cloudflare Worker serves the *identical* branded/searchable/session-aware
+//! browse the native hub does.
 //!
 //! The plain data types, enums, and constants ([`SortColumn`], [`SortDir`],
 //! [`PackageBrowse`], [`ResolvedDependency`], [`PackageClosure`],

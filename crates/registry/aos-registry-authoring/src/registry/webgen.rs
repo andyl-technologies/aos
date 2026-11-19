@@ -1,14 +1,13 @@
 //! Static web-surface generation for a registry's own CDN bucket.
 //!
 //! Producer-side tooling that turns the committed registry tree
-//! (`registry.toml` plus `packages/<x>/<name>.toml`) into the static,
-//! no-JS web surface RFC-0004 calls the registry's *`web` surface*: a set
-//! of content-bearing HTML pages and JSON snapshots a registry serves
-//! directly from its own object store, with **zero hub in the serving
-//! path**. The artifacts produced here are the *no-JS tier* (RFC-0004's
-//! tier 3): real, content-bearing pages that the Leptos-CSR WASM SPA
-//! (`aos-registry-web`) progressively enhances when it is dropped in
-//! alongside — the floor is always the deliverable.
+//! (`registry.toml` plus `packages/<x>/<name>.toml`) into the static, no-JS
+//! registry *`web` surface*: a set of content-bearing HTML pages and JSON
+//! snapshots a registry serves directly from its own object store, with **zero
+//! hub in the serving path**. The artifacts produced here are the *no-JS tier*:
+//! real, content-bearing pages that the Leptos-CSR WASM SPA
+//! (`aos-registry-web`) progressively enhances when it is dropped in alongside
+//! — the floor is always the deliverable.
 //!
 //! This surface is deliberately a distribution listing. Its snapshots contain
 //! registry package and artifact coordinates only; they do not claim to be a
@@ -77,12 +76,11 @@
 //! }
 //! ```
 //!
-//! Every page is strictly first-party (RFC-0004's asset policy): inline
-//! CSS, no external stylesheet, script, font, or analytics URL. All dynamic
-//! text is HTML-escaped so a hostile package description cannot inject
-//! markup. `config.json`'s `hub_url`, when set, is the *only* place an
-//! absolute off-origin URL is recorded, and it is data the SPA reads — never
-//! an asset reference baked into a page.
+//! Every page is strictly first-party: inline CSS, no external stylesheet,
+//! script, font, or analytics URL. All dynamic text is HTML-escaped so a
+//! hostile package description cannot inject markup. `config.json`'s `hub_url`,
+//! when set, is the *only* place an absolute off-origin URL is recorded, and it
+//! is data the SPA reads — never an asset reference baked into a page.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -133,7 +131,7 @@ pub struct WebConfig {
     ///
     /// When set, [`generate_web_surface`] copies the dist's hash-named
     /// `*_bg.wasm`, `*.js`, and `*.css` into `web/` (normalized to the
-    /// RFC-0004 names `app-<hash>_bg.wasm`, `app-<hash>.js`,
+    /// web-surface names `app-<hash>_bg.wasm`, `app-<hash>.js`,
     /// `style-<hash>.css`) and injects a same-origin `<script
     /// type="module">` loader and stylesheet `<link>` into every generated
     /// page, so the CSR SPA progressively enhances the no-JS floor. Absent,
@@ -790,7 +788,7 @@ impl SpaAssets {
 }
 
 /// Copy a built SPA dist into `output_dir/web/`, normalizing the filenames
-/// to the RFC-0004 artifact shape and returning the same-origin paths the
+/// to the web-surface artifact shape and returning the same-origin paths the
 /// page loaders reference.
 ///
 /// `trunk build --release` emits hash-named `<bin>-<hash>.js`,

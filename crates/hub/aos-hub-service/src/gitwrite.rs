@@ -1,5 +1,4 @@
-//! Writing git-backed configuration change requests (RFC-0004
-//! "Configuration management", git-backed path).
+//! Writing git-backed configuration change requests.
 //!
 //! Half of a registry's configuration — `registry.toml`, `keys.toml`,
 //! `packages/` — lives in the committed git tree, and consumers trust only

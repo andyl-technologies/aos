@@ -1,9 +1,9 @@
 //! The shared Connect-JSON `axum` router for the `aos.hub.v1` API.
 //!
-//! RFC-0004 Phase 5 serves the registry-hub RPC surface as a single transport
-//! on both deployment targets: **Connect-JSON** — the Connect protocol's JSON
-//! encoding — over plain `axum` handlers. The native hub mounts this router via
-//! `axum::serve`; the Cloudflare Worker mounts the *same* router via
+//! The registry-hub RPC surface uses a single transport on both deployment
+//! targets: **Connect-JSON** — the Connect protocol's JSON encoding — over
+//! plain `axum` handlers. The native hub mounts this router via `axum::serve`;
+//! the Cloudflare Worker mounts the *same* router via
 //! `axum-cloudflare-adapter`. The `connectrpc` server runtime (hyper/tokio) is
 //! not used on the registry path at all, so this compiles to
 //! `wasm32-unknown-unknown`.
@@ -54,8 +54,7 @@ use crate::web::host_delivery::HostRoutes;
 /// The reserved human-namespace marker segment (`/{slug}/-/…`).
 ///
 /// Browse pages and the JSON read API live under this segment so they can never
-/// be shadowed by the machine surface that owns the registry root (RFC-0004
-/// "The `/-/` namespace").
+/// be shadowed by the machine surface that owns the registry root.
 const BROWSE_MARKER: &str = "-";
 const DOMAIN_PROBE_PATH: &str = "/.well-known/aos-domain-probe";
 
@@ -777,7 +776,7 @@ pub fn apply_delivery_attestation(
     Ok(request)
 }
 
-/// Canonicalizes one raw HTTP request path under the RFC-0012 rules.
+/// Canonicalizes one raw HTTP request path under the delivery-path rules.
 fn canonical_request_path(raw: &str) -> Result<String, ()> {
     if !raw.starts_with('/') || raw.contains(['\\', '\0']) || raw.contains("//") {
         return Err(());
@@ -3245,7 +3244,7 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         get_changeset
     );
     // IdentityService — service-account / grant / token management (the machine API
-    // behind the console's identity settings; RFC-0004 ch.14).
+    // behind the console's identity settings).
     r = rpc_route!(r, "/aos.hub.v1.IdentityService/WhoAmI", who_am_i);
     r = rpc_route!(
         r,

@@ -1,4 +1,4 @@
-//! Shared transactional-email rendering (RFC-0004).
+//! Shared transactional-email rendering.
 //!
 //! The hub sends two human-facing transactional emails — a magic-link sign-in
 //! and an org-invite notice — and both must read identically whether they are

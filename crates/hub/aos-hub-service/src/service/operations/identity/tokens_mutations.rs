@@ -4,8 +4,7 @@ use super::*;
 
 impl RpcService {
     /// Validates an API-token secret, caching only its secret-to-id resolution
-    /// in KV when one is attached (RFC-0004 ch.14 Phase C, `tok:{hash}` +
-    /// `tokrev:{token_id}`).
+    /// in KV when one is attached (`tok:{hash}` + `tokrev:{token_id}`).
     ///
     /// Token auth runs on every API request; this serves the validated
     /// [`TokenAuth`](aos_hub_db::db::TokenAuth) secret resolution from KV for

@@ -372,8 +372,8 @@ impl Database {
     /// the org's own immutable scope (`scope_key == org.stable_id`). This
     /// returns the slugs of orgs for which `user_id` is the only human owner —
     /// exactly the orgs whose
-    /// ownership must be transferred before the user can be deleted (RFC-0004
-    /// offboarding). Soft-deleted orgs are skipped (they are en route to purge
+    /// ownership must be transferred before the user can be deleted.
+    /// Soft-deleted orgs are skipped (they are en route to purge
     /// anyway).
     ///
     /// # Errors

@@ -20,19 +20,18 @@ pub mod bindings {
     /// The KV namespace binding name for sessions (`[[kv_namespaces]]`).
     pub const KV_SESSIONS: &str = "SESSIONS";
     /// The Durable Object binding name for the coordinator (rate-limit/lease/
-    /// floor), `[[durable_objects.bindings]]`. RFC-0004 ch.14 Phase B.
+    /// floor), `[[durable_objects.bindings]]`.
     pub const COORDINATOR: &str = "COORDINATOR";
     /// The Cloudflare Queue binding name for deferred post-write jobs
-    /// (`[[queues.producers]]`). RFC-0004 ch.14 Phase D.
+    /// (`[[queues.producers]]`).
     pub const QUEUE: &str = "JOBS";
     /// Edge Rate Limiting bindings (`[[ratelimits]]`), one per budget tier
-    /// (all `period = 60`). RFC-0004 ch.14 (corrected: edge-local, no DO hop).
+    /// (all `period = 60`); edge-local, with no Durable Object hop.
     pub const RL_BURST5: &str = "RL_BURST5";
     pub const RL_BURST10: &str = "RL_BURST10";
     pub const RL_BROWSE120: &str = "RL_BROWSE120";
     /// The colocated-SQLite system-of-record Durable Object
     /// (`[[durable_objects.bindings]]`, `new_sqlite_classes` class `HubDb`).
-    /// RFC-0004 ch.14 Phase E.
     pub const HUB_DB: &str = "HUB_DB";
     /// Request-execution Durable Object namespace for instance-wide control work.
     pub const HUB_CONTROL_SHARDS: &str = "HUB_CONTROL_SHARDS";

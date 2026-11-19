@@ -494,13 +494,12 @@ impl Database {
     ///
     /// Called by the indexer when it re-walks a registry surface and finds the
     /// verified HEAD commit carries an `AOS-Change-Id: <change_id>` trailer
-    /// matching a `draft` change request (RFC-0004 "Configuration management",
-    /// cross-referencing): the maintainer's `apr change merge` re-signed and
-    /// pushed the draft, so the change request is now live. Stamps
-    /// `status = 'applied'`, `applied_at = now`, and rewrites `git_commit` to
-    /// the *promoting* (roster-signed) commit oid — the draft commit is
-    /// superseded. Idempotent: re-marking an already-applied row is a harmless
-    /// no-op on a status-guarded `UPDATE`.
+    /// matching a `draft` change request: the maintainer's `apr change merge`
+    /// re-signed and pushed the draft, so the change request is now live.
+    /// Stamps `status = 'applied'`, `applied_at = now`, and rewrites
+    /// `git_commit` to the *promoting* (roster-signed) commit oid — the draft
+    /// commit is superseded. Idempotent: re-marking an already-applied row is a
+    /// harmless no-op on a status-guarded `UPDATE`.
     ///
     /// # Errors
     ///

@@ -70,7 +70,7 @@ impl Database {
 
     /// Connect to a hub database by URL, dispatching on the scheme.
     ///
-    /// The native self-hosting entry point (RFC-0004 "Database abstraction"):
+    /// The native self-hosting entry point:
     ///
     /// - `sqlite://<path>`, `file://<path>`, or a bare filesystem path → the
     ///   always-available sqlite [`SqlxBackend`].

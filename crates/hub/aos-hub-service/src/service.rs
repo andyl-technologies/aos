@@ -1146,8 +1146,8 @@ pub struct SurfaceObjectResponse {
     pub vary: Option<&'static str>,
     /// When `Some`, the object is not served inline but as a temporary (`302`)
     /// redirect to this presigned origin URL — the authenticated-origin read of
-    /// a private external binding (RFC-0004 "presigned GET → 302"). `302`
-    /// (temporary), never a cacheable permanent redirect, since the URL expires.
+    /// a private external binding. `302` (temporary), never a cacheable
+    /// permanent redirect, since the URL expires.
     pub redirect: Option<String>,
 }
 
@@ -1577,7 +1577,7 @@ pub struct RpcService {
     pub origin_fetch: Option<Arc<dyn crate::fetch::OriginFetch>>,
     /// The hot-state key-value store ([`KvStore`](crate::kv::KvStore)) for
     /// read-through caching of point-key lookups — sessions, tokens, instance
-    /// config and trust rosters (RFC-0004 ch.14 Phase C).
+    /// config and trust rosters.
     ///
     /// `None` (the default) routes every such read straight to the database, the
     /// pre-Phase-C behavior; wired per shell via [`with_kv`](Self::with_kv) — the
@@ -1662,7 +1662,7 @@ fn session_cache_key(secret: &str) -> String {
 }
 
 /// The serializable projection of a [`ResolvedSession`](crate::web::session::ResolvedSession)
-/// stored in KV (RFC-0004 ch.14 Phase C).
+/// stored in KV.
 ///
 /// Mirrors `SessionAuth`'s integer fields plus the user's email — everything the
 /// resolution carries except the secret (re-attached on read). Kept local to the

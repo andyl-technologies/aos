@@ -1,13 +1,13 @@
 //! Outbound webhook delivery: the native HTTP worker that drains the queue.
 //!
 //! The event taxonomy ([`WebhookEvent`]), the HMAC-SHA256 body [`sign_body`],
-//! the db-enqueue [`dispatch`], and the [`backoff_secs`] retry schedule moved to
-//! [`aos_hub_service::webhook`] (RFC-0004 Phase 5) so the Cloudflare Worker
-//! shares them; they are re-exported here so the hub's `webhook::…` paths are
-//! stable. What stays native is the delivery side: [`deliver_one`] `POST`s a
-//! queued delivery with a hardened reqwest client (re-validating the URL through
-//! the SSRF guard first), and [`run_delivery_worker`] sweeps the due queue on a
-//! tokio interval.
+//! the db-enqueue [`dispatch`], and the [`backoff_secs`] retry schedule moved
+//! to [`aos_hub_service::webhook`] so the Cloudflare Worker shares them; they
+//! are re-exported here so the hub's `webhook::…` paths are stable. What stays
+//! native is the delivery side: [`deliver_one`] `POST`s a queued delivery with
+//! a hardened reqwest client (re-validating the URL through the SSRF guard
+//! first), and [`run_delivery_worker`] sweeps the due queue on a tokio
+//! interval.
 //!
 //! # Delivery wire format
 //!

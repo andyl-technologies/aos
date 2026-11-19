@@ -1,4 +1,4 @@
-//! Server-rendered browse pages: the no-JS tier of RFC-0004's design.
+//! Server-rendered browse pages: the hub's no-JS tier.
 //!
 //! - [`render`] — escaping, the shared layout (masthead, crumbs, footer
 //!   state line), relative ages, key fingerprints, and table/size

@@ -1,7 +1,7 @@
 //! Single-use email magic links.
 //!
-//! Magic links are RFC-0004's v1 human-login baseline and the recovery
-//! path (there are no passwords). The hub mints a high-entropy link secret,
+//! Magic links are a human-login method alongside passwords and passkeys,
+//! and the account-recovery path. The hub mints a high-entropy link secret,
 //! emails the human a URL embedding it, and consumes the secret exactly
 //! once on click — proving control of the mailbox. Only the SHA-256 hash is
 //! stored; the link expires in [`MAGIC_LINK_TTL_SECS`].

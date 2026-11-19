@@ -90,7 +90,7 @@ impl RpcService {
     }
 
     /// The instance settings, read-through cached in KV when one is attached
-    /// (RFC-0004 ch.14 Phase C, the `cfg:instance` singleton).
+    /// (the `cfg:instance` singleton).
     ///
     /// A short-TTL cache off the database; the eventual-consistency contract
     /// (≤ [`HOT_TTL_SECS`](crate::cache::HOT_TTL_SECS) staleness) is acceptable

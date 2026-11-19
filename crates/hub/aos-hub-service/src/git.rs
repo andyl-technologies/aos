@@ -1,5 +1,5 @@
-//! Reading a registry's committed git surface (RFC-0004 "Configuration
-//! management", read side).
+//! Reading a registry's committed git surface (the read side of
+//! configuration management).
 //!
 //! Half of a registry's configuration — `registry.toml`, `keys.toml`,
 //! `packages/` — lives in a committed git tree the hub indexes and the WebUI
@@ -36,7 +36,7 @@ use aos_registry_format::object::{self, Commit, ObjectKind, Oid};
 pub const GIT_LOG_LIMIT: usize = 1000;
 
 /// The commit-message trailer key cross-referencing a hub change request to
-/// its `change_id` (RFC-0004).
+/// its `change_id`.
 pub const CHANGE_ID_TRAILER: &str = "AOS-Change-Id";
 
 /// The committed config files a [`diff_config_files`] diff covers (the

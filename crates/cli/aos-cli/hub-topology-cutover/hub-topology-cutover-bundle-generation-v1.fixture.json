@@ -1,6 +1,6 @@
 {
   "schema_version": "aos-cutover-bundle-generation/v1",
-  "bundle_id": "bundle/rfc-0012/fixture-1",
+  "bundle_id": "bundle/hub-topology/fixture-1",
   "dialect": "aos-cutover-schema/v1",
   "layout": [
     {

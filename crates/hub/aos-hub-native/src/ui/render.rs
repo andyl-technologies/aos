@@ -1,17 +1,16 @@
 //! HTML rendering primitives for the no-JS tier.
 //!
 //! Plain string-building with strict escaping — no client-side framework
-//! is required for any page this module renders, which is the design
-//! floor RFC-0004 commits to.
+//! is required for any page this module renders, which is the hub's design
+//! floor.
 //!
-//! The pure primitives (`escape`, `table`, `human_size`, `key_fingerprint`)
-//! and the retained identity-page foundation — the page chrome (`page_with_session`,
-//! `StateLine`, `SessionIndicator`, `Pager`, `csrf_field`, `ago`, the
-//! small table/`meter`/`datalist`/`urlencode` helpers) — are single-sourced in
-//! the shared, wasm-clean [`aos_hub_service::web`] (RFC-0004 Phase 5,
-//! console-dedup stage A) so the hub and Worker render byte-identically. They
-//! are re-exported here so every
-//! `crate::ui::render::…` call site is unchanged.
+//! The pure primitives (`escape`, `table`, `human_size`, `key_fingerprint`) and
+//! the retained identity-page foundation — the page chrome
+//! (`page_with_session`, `StateLine`, `SessionIndicator`, `Pager`,
+//! `csrf_field`, `ago`, the small table/`meter`/`datalist`/`urlencode` helpers)
+//! — are single-sourced in the shared, wasm-clean [`aos_hub_service::web`] so
+//! the hub and Worker render byte-identically. They are re-exported here so
+//! every `crate::ui::render::…` call site is unchanged.
 //!
 //! What stays native to the hub is the *task-local* session middleware seam:
 //! [`with_session_email`] scopes the signed-in identity per request and [`page`]

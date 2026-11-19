@@ -43,7 +43,7 @@ pub enum RunState {
     MergeEligibleObserved,
     /// Remote observations prove the protected merge identity.
     MergedObserved,
-    /// The protected merge identity is ready for RFC-0017 consumption.
+    /// The protected merge identity is ready for the release pipeline.
     ReleaseHandoff,
     /// No acceptable newer candidate exists.
     NoChange,

@@ -1,7 +1,7 @@
 //! Hub storage: the registry system of record plus the rebuildable index.
 //!
 //! Three kinds of tables live in one sqlite database, with sharply
-//! different contracts (RFC-0004 "Stance"):
+//! different contracts:
 //!
 //! - **System of record** — `registries`, `channel_floors`, the
 //!   phase-2a tenancy tables `orgs`, `projects`, `users`,
@@ -47,7 +47,7 @@
 //!
 //! Registry mirroring configuration and observations are system-of-record
 //! state. Delivery identity, endpoints, gateways, and routes are modeled by
-//! the normalized topology tables described in RFC-0012.
+//! the normalized topology tables owned by the `topology` submodule.
 //!
 //! The phase-future passkeys / WebAuthn tables (v17) are **system of record**:
 //! `webauthn_credentials` (one registered passkey per row — the base64url
@@ -71,10 +71,10 @@
 //!
 //! # Tenancy hierarchy (v3)
 //!
-//! Phase 2a adds the multi-tenant system of record. A **project** locates
-//! itself inside its org with a *materialized path* — the slash-joined
-//! chain of ancestor project names, with `''` for a project that sits
-//! directly under the org root. A registry then lives at
+//! The multi-tenant system of record is a tree of orgs and projects. A
+//! **project** locates itself inside its org with a *materialized path* — the
+//! slash-joined chain of ancestor project names, with `''` for a project that
+//! sits directly under the org root. A registry then lives at
 //! `{org}/{project_path}/{registry_slug}`. Those strings are routing and
 //! display identities only. Authorization uses separately generated,
 //! non-reusable scope keys stored in `authorization_scopes`:
@@ -92,9 +92,8 @@
 //! generate unrelated identities. The pure graph-context decision logic lives in
 //! [`aos_hub_model::domain::iam`]; this module only stores and lists the rows.
 //!
-//! Existing phase-1 `registries` rows acquire `org_id IS NULL`,
-//! `project_path = ''`, and `visibility = 'public'` — the RFC's
-//! instance-level *unowned public registry* that phase 2 adopts unchanged.
+//! A registry row with `org_id IS NULL`, `project_path = ''`, and
+//! `visibility = 'public'` is an instance-level *unowned public registry*.
 //!
 //! # Storage topology
 //!
@@ -120,8 +119,7 @@
 //!
 //! # Configuration history (v7)
 //!
-//! Phase 3a adds the SQL system-of-record's configuration history
-//! (RFC-0004 "Configuration management" and "Tenancy and IAM"). Three
+//! The SQL system of record also keeps the configuration history. Three
 //! append-only tables — never `UPDATE`d row-by-row except for the
 //! changeset lifecycle stamps — record every mutation of the SQL-backed
 //! config (visibility, memberships, tokens metadata, bindings,
@@ -163,17 +161,17 @@
 //!
 //! ## Security-object revert exemptions
 //!
-//! Reverting a security-sensitive object never resurrects a live
-//! credential or grant (RFC-0004): a `token` revert renders as an
-//! "issue replacement" note (a no-op create), and a `membership` delete
-//! reverts to an *invitation* rather than a silent re-admit. These are
-//! encoded as operation/notes by the service configuration-revert operation.
+//! Reverting a security-sensitive object never resurrects a live credential or
+//! grant: a `token` revert renders as an "issue replacement" note (a no-op
+//! create), and a `membership` delete reverts to an *invitation* rather than a
+//! silent re-admit. These are encoded as operation/notes by the service
+//! configuration-revert operation.
 //!
 //! # Per-org OIDC SSO (v9)
 //!
-//! Phase 3d adds per-org single sign-on (RFC-0004 "Per-org OIDC SSO"). Three
-//! tables hold facts that exist nowhere on the surface: an org's identity
-//! provider, the domains it has captured, and the in-flight login state.
+//! Per-org single sign-on uses three tables holding facts that exist nowhere on
+//! the surface: an org's identity provider, the domains it has captured, and
+//! the in-flight login state.
 //!
 //! ```text
 //! org_idp_configs   org_id 1  issuer "https://idp.acme.example"
@@ -214,10 +212,9 @@
 //!
 //! # Outbound webhooks (v11)
 //!
-//! Phase 4 adds **webhooks** (RFC-0004 "webhooks/notifications"). An org
-//! subscribes an HTTP endpoint to a set of registry event types; each event
-//! the hub raises ([`aos_hub_model::webhook::WebhookEvent`]) fans out into a durable
-//! at-least-once delivery queue.
+//! **Webhooks**: an org subscribes an HTTP endpoint to a set of registry event
+//! types; each event the hub raises ([`aos_hub_model::webhook::WebhookEvent`])
+//! fans out into a durable at-least-once delivery queue.
 //!
 //! ```text
 //! webhooks            id 1  org_id 1  url "https://ci.acme/aos-hook"
@@ -237,9 +234,9 @@
 //!
 //! # Operations: quotas, signup policy, soft-delete (v13)
 //!
-//! The operations chapter of RFC-0004 ("Operations: migrations, backup,
-//! quotas, observability, offboarding") adds four tables/columns that are all
-//! **system of record** — none is rebuildable from the surface.
+//! Operations support (quotas, signup policy, offboarding) adds four
+//! tables/columns that are all **system of record** — none is rebuildable from
+//! the surface.
 //!
 //! ```text
 //! org_quotas       org_id 1  max_bytes 1073741824  max_objects 100000
@@ -267,7 +264,7 @@
 //!   `invite_only`, the default, requires an invitation or existing
 //!   membership). See [`Database::signup_policy`].
 //! - The `orgs.deleted_at`/`orgs.purge_after` columns implement soft-delete
-//!   with a grace window (RFC-0004 offboarding): [`Database::soft_delete_org`]
+//!   with a grace window for offboarding: [`Database::soft_delete_org`]
 //!   stamps both, [`Database::restore_org`] clears them, the purge job
 //!   ([`Database::list_purgeable_orgs`] + [`Database::hard_purge_org`]) hard
 //!   deletes past the grace, and the serving paths
@@ -497,8 +494,7 @@ pub use topology::*;
 pub use worker_jobs::*;
 
 /// Grace period, in seconds, during which a rotated token's old secret
-/// keeps validating after its `revoked_at` stamp (RFC-0004 fixes the
-/// `aos-build-server` bug where this window was recorded but not honored).
+/// keeps validating after its `revoked_at` stamp.
 const ROTATION_GRACE_SECS: i64 = 3600;
 
 /// Maximum `audit_log` rows scanned per [`Database::list_audit`] call.

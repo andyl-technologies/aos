@@ -1,6 +1,6 @@
 //! Normalized storage and delivery topology persistence.
 //!
-//! This module owns the RFC-0012 resources whose identities and immutable
+//! This module owns the topology resources whose identities and immutable
 //! configuration generations must be shared by the native Hub and the Worker.
 //! Desired configuration, controller observations, authorization grants, and
 //! live grant pins are deliberately separate records.

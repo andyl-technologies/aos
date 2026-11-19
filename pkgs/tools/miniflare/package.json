@@ -2,7 +2,7 @@
   "name": "aos-miniflare-tooling",
   "version": "0.0.0",
   "private": true,
-  "description": "AOS-vendored Cloudflare local test tooling (wrangler + miniflare) for RFC-0004 registry-worker tests.",
+  "description": "AOS-vendored Cloudflare local test tooling (wrangler + miniflare) for AOS Hub Worker tests.",
   "dependencies": {
     "wrangler": "4.119.0",
     "miniflare": "3.20240909.0",

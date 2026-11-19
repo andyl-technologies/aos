@@ -2,6 +2,6 @@
 # generators) requires BOTH the `wasm_js` cargo feature AND this backend cfg to
 # compile for the Cloudflare Workers target (wasm32-unknown-unknown). Without
 # the cfg, getrandom 0.3 emits a compile error on that target. This applies only
-# to wasm32 builds; native builds use the OS CSPRNG directly. RFC-0004 Phase 5.
+# to wasm32 builds; native builds use the OS CSPRNG directly.
 [target.wasm32-unknown-unknown]
 rustflags = ['--cfg', 'getrandom_backend="wasm_js"']

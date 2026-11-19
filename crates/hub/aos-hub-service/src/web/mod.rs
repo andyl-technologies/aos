@@ -1,6 +1,6 @@
 //! The shared no-JS browse UI: one renderer and one set of handlers.
 //!
-//! RFC-0004 Phase 5 unifies the human browse surface (the no-JS HTML pages and
+//! The hub unifies the human browse surface (the no-JS HTML pages and
 //! the JSON read API) on a single code path so the native hub and the
 //! Cloudflare Worker render it identically:
 //!
@@ -14,11 +14,11 @@
 //!   ([`crate::connect`]) turns into an HTTP response. Browse reads
 //!   anonymously, so only `public` registries resolve.
 //! - [`browse_pages`] — the *rich*, session-aware browse renderer lifted from
-//!   the native hub (console-dedup stage G): the searchable/sortable package
-//!   index, the data-rich package detail with closure resolution, the channel
-//!   partition grid and bucket calculator, and the per-registry health page.
-//!   It renders from the [`db`](aos_hub_db::db) record types (richer than the proto
-//!   read shapes) and threads the signed-in identity via an explicit
+//!   the native hub: the searchable/sortable package index, the data-rich
+//!   package detail with closure resolution, the channel partition grid and
+//!   bucket calculator, and the per-registry health page. It renders from the
+//!   [`db`](aos_hub_db::db) record types (richer than the proto read shapes)
+//!   and threads the signed-in identity via an explicit
 //!   [`SessionIndicator`](console_render::SessionIndicator), superseding the
 //!   anonymous proto-shaped builders in [`render`].
 //! - [`host_delivery`] — whether the request's exact host delivers each listed

@@ -1,10 +1,10 @@
 //! Authentication: the credentials principals present and the machinery
 //! that verifies them.
 //!
-//! This module owns RFC-0004's "Authentication: sessions, tokens, SSO"
-//! plane — *who you are*, as distinct from the pure *what you may do*
-//! authorization kernel in [`crate::domain::iam`], which it reuses for
-//! every access decision. Two principal planes that never cross:
+//! This module owns the authentication plane (sessions, tokens, SSO) — *who you
+//! are*, as distinct from the pure *what you may do* authorization kernel in
+//! [`crate::domain::iam`], which it reuses for every access decision. Two
+//! principal planes that never cross:
 //!
 //! - **Machines** use the shared OAuth device/refresh flow or present an
 //!   `aos_`-prefixed [provisioning token](token) through the explicit bootstrap
@@ -35,11 +35,11 @@
 //!   (`attestation: none` only): `clientDataJSON`/`authenticatorData` checks,
 //!   COSE key decode, ES256/Ed25519/RS256 signature verification, and the
 //!   registration/assertion ceremonies.
-//! - [`oidc`] — per-org OIDC SSO: the authorization-code + PKCE flow, JWKS-backed
-//!   RS256 id_token verification, and the [`oidc::SecretSealer`] seam. The flow
-//!   itself moved to [`aos_hub_service::auth::oidc`] (RFC-0004 Phase 5,
-//!   console-dedup stage F); this `oidc` module is a re-export shim so existing
-//!   `crate::auth::oidc::…` paths are unchanged.
+//! - [`oidc`] — per-org OIDC SSO: the authorization-code + PKCE flow,
+//!   JWKS-backed RS256 id_token verification, and the [`oidc::SecretSealer`]
+//!   seam. The flow itself moved to [`aos_hub_service::auth::oidc`]; this
+//!   `oidc` module is a re-export shim so existing `crate::auth::oidc::…` paths
+//!   are unchanged.
 //! - [`extract`] — the axum extractors and middleware that gate requests:
 //!   [`extract::BearerAuth`], [`extract::SessionAuth`],
 //!   [`extract::MaybeSession`]. The runtime-neutral OAuth HTTP handlers live in
@@ -54,10 +54,10 @@ pub mod extract;
 pub mod oidc;
 pub mod seal;
 
-// The runtime-agnostic auth primitives moved to aos-hub-service (RFC-0004
-// Phase 5) so the Worker shares them; re-exported here so every
+// The runtime-agnostic auth primitives moved to aos-hub-service so the Worker
+// shares them; re-exported here so every
 // `crate::auth::{token,session,magic,device,password,permission_from_str,
-// webauthn,jwt}::…` path is unchanged. (jwt's HS256 is now hmac/sha2-based —
-// no jsonwebtoken/ring — so it builds for wasm32.)
+// webauthn,jwt}::…` path is unchanged. (jwt's HS256 is now hmac/sha2-based — no
+// jsonwebtoken/ring — so it builds for wasm32.)
 pub use aos_hub_model::auth::{device, jwt, password, permission_from_str, session, token};
 pub use aos_hub_service::auth::{magic, webauthn};

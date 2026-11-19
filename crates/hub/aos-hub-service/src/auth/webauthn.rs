@@ -1,6 +1,6 @@
 //! The in-house WebAuthn relying-party verifier, `attestation: none` only.
 //!
-//! RFC-0004 ships passkeys as a small first-party WebAuthn relying party (RP)
+//! The hub ships passkeys as a small first-party WebAuthn relying party (RP)
 //! rather than the `webauthn-rs` crate, which cannot build on the Cloudflare
 //! Workers target (OpenSSL backend). The hub adopts a hard
 //! **`attestation: "none"`** policy, which deletes the hard 80% of WebAuthn —

@@ -1,8 +1,8 @@
 //! Fetch → verify → load → index orchestration (re-export shim).
 //!
-//! The canonical indexer was relocated to [`aos_hub_service::indexer`]
-//! (RFC-0004 Phase 5) so the native hub's reindex and the Cloudflare Worker's
-//! Cron job run the *same* indexing logic over the
+//! The canonical indexer was relocated to [`aos_hub_service::indexer`] so the
+//! native hub's reindex and the Cloudflare Worker's Cron job run the *same*
+//! indexing logic over the
 //! [`SurfaceFetch`](aos_hub_service::fetch::SurfaceFetch) port. This module
 //! re-exports it unchanged so every existing `crate::indexer::…` caller — the
 //! facade reindex via [`HubReindexer`](crate::coreports::HubReindexer), the CLI

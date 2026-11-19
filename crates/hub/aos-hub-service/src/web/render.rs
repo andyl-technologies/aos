@@ -1,20 +1,20 @@
 //! No-JS HTML rendering for the shared browse pages.
 //!
-//! RFC-0004 Phase 5 unifies the browse UI on one renderer so the native hub
-//! and the Cloudflare Worker render it from a single code path. These builders
-//! are **transport- and task-local-free**: the masthead brand and the
-//! signed-in email (the login indicator) are passed explicitly via
-//! [`PageChrome`] rather than read from a task-local, so the module compiles to
-//! `wasm32-unknown-unknown` (no `axum`, no `tokio`, no `std::fs`).
+//! The browse UI uses one renderer so the native hub and the Cloudflare Worker
+//! render it from a single code path. These builders are **transport- and
+//! task-local-free**: the masthead brand and the signed-in email (the login
+//! indicator) are passed explicitly via [`PageChrome`] rather than read from a
+//! task-local, so the module compiles to `wasm32-unknown-unknown` (no `axum`,
+//! no `tokio`, no `std::fs`).
 //!
 //! Every page renders from the `aos.hub.v1` read shapes the
-//! [`RpcService`](crate::service::RpcService) returns
-//! ([`aos_hub_api`] structs) — the same data the JSON read API serializes —
-//! and is a complete document built by [`page`]: a masthead with the brand, a
-//! breadcrumb trail, and the optional session indicator; the body; and a footer
-//! state line carrying the surface commit and index freshness. No stylesheet
-//! link to a third-party CDN — every asset is first-party (RFC-0004 asset
-//! policy); the layout is one that `curl` and `lynx` render as real content.
+//! [`RpcService`](crate::service::RpcService) returns ([`aos_hub_api`] structs)
+//! — the same data the JSON read API serializes — and is a complete document
+//! built by [`page`]: a masthead with the brand, a breadcrumb trail, and the
+//! optional session indicator; the body; and a footer state line carrying the
+//! surface commit and index freshness. No stylesheet link to a third-party CDN
+//! — every asset is first-party; the layout is one that `curl` and `lynx`
+//! render as real content.
 //!
 //! The pure primitives — [`escape`], [`table`], [`human_size`],
 //! [`key_fingerprint`] — are byte-compatible with the native hub's richer

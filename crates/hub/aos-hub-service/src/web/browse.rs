@@ -1,23 +1,21 @@
 //! The shared, session-aware no-JS browse handlers and JSON read API.
 //!
-//! RFC-0004 Phase 5 (console-dedup stage G) serves the human browse surface from
-//! one code path on both deployment targets, **identically branded, searchable,
-//! session-aware, and private-visibility-aware**. These functions sit one level
-//! below the transport: each takes the shared
-//! [`RpcService`] and the request's headers/query,
-//! resolves the caller's session (so a member sees their org's internal and any
-//! granted-private registries while an anonymous visitor sees public only),
-//! reads the rich [`db`](aos_hub_db::db) record types, and returns a [`Rendered`]
-//! outcome the transport layer ([`crate::connect`]) turns into an HTTP response.
-//! They are free of `axum` extractors (only `axum::http` *types*) so the same
-//! functions drive the native hub and the Cloudflare Worker (whose handler
-//! futures are `?Send`).
+//! The human browse surface is served from one code path on both deployment
+//! targets, **identically branded, searchable, session-aware, and
+//! private-visibility-aware**. These functions sit one level below the
+//! transport: each takes the shared [`RpcService`] and the request's
+//! headers/query, resolves the caller's session (so a member sees their org's
+//! internal and any granted-private registries while an anonymous visitor sees
+//! public only), reads the rich [`db`](aos_hub_db::db) record types, and
+//! returns a [`Rendered`] outcome the transport layer ([`crate::connect`])
+//! turns into an HTTP response. They are free of `axum` extractors (only
+//! `axum::http` *types*) so the same functions drive the native hub and the
+//! Cloudflare Worker (whose handler futures are `?Send`).
 //!
 //! # URL grammar
 //!
 //! Human pages and the JSON read API live under the reserved `/-/` segment so
-//! they can never shadow the machine surface that owns the registry root
-//! (RFC-0004 "The `/-/` namespace"):
+//! they can never shadow the machine surface that owns the registry root:
 //!
 //! ```text
 //! /                                hub home — registries (?q= search)
@@ -44,7 +42,7 @@
 //!
 //! # Visibility
 //!
-//! The HTML pages enforce the RFC-0004 access matrix end to end (the same
+//! The HTML pages enforce the hub's access matrix end to end (the same
 //! matrix the producer console's
 //! [`authorize_registry_read`](crate::web::console::handlers) applies, reused
 //! here over [`RpcService`]'s database and JWT keys): a registry under a
@@ -185,8 +183,8 @@ fn accepts_html(headers: &HeaderMap) -> bool {
 /// the page chrome reflects the login state. An anonymous or invalid cookie (or
 /// any database error) yields the anonymous indicator.
 pub(super) async fn session_indicator(svc: &RpcService, headers: &HeaderMap) -> SessionIndicator {
-    // RFC-0004 ch.14 Phase C: resolve through the KV read-through cache when one
-    // is attached (off the relational read path), else straight from the database.
+    // Resolve through the KV read-through cache when one is attached (off the
+    // relational read path), else straight from the database.
     let resolved = match session::session_secret_from_headers(headers) {
         Some(secret) => svc.resolve_session_cached(&secret).await,
         None => Ok(None),
@@ -598,11 +596,11 @@ pub async fn home(
     }
     let started = Instant::now();
     let session = session_indicator(svc, headers).await;
-    // RFC-0004 ch.14 Phase D: anonymous fast path — serve the public listing
-    // from the KV directory projection (one KV read, no per-registry database
-    // fan-out — the home N+1) when it has been built. Authenticated requests
-    // fall through to the live path, which also resolves private/internal
-    // registries the caller may see; a cold projection falls through too.
+    // Anonymous fast path: serve the public listing from the KV directory
+    // projection (one KV read, no per-registry database fan-out — the home N+1)
+    // when it has been built. Authenticated requests fall through to the live
+    // path, which also resolves private/internal registries the caller may see;
+    // a cold projection falls through too.
     if session.email.is_none() {
         if let Some(kv) = &svc.kv {
             let entries = match crate::directory::read(kv.as_ref()).await {
@@ -1845,7 +1843,7 @@ pub async fn health(svc: &RpcService, headers: &HeaderMap, slug: &str) -> Render
 
 // -- JSON read API ------------------------------------------------------------
 //
-// -- Managed cache browse (RFC-0004 "11-caches") --------------------------
+// -- Managed cache browse -----------------------------------------------------
 
 /// Whether `cache` is readable by this caller — visibility-gated exactly like a
 /// registry ([`can_read_registry`]), but scoped on the cache's *owning org*

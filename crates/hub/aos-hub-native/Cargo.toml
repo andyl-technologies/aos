@@ -3,7 +3,7 @@ name = "aos-hub-native"
 version = "0.1.0"
 edition = "2021"
 license.workspace = true
-description = "Multi-tenant AOS registry management WebUI and read index (RFC-0004)"
+description = "Multi-tenant AOS registry management WebUI and read index"
 
 [dependencies]
 aos-registry-client = { workspace = true }
@@ -52,9 +52,8 @@ aos-registry-format = { workspace = true }
 
 [features]
 default = []
-# Enable the postgres / mysql sqlx Database backends (RFC-0004 phase 5). sqlite
-# is always compiled in; native drivers and their gated enum arms live in
-# aos-hub-db.
+# Enable the postgres / mysql sqlx Database backends. sqlite is always compiled
+# in; native drivers and their gated enum arms live in aos-hub-db.
 postgres = ["aos-hub-db/postgres"]
 mysql = ["aos-hub-db/mysql"]
 # Makes live-dialect configuration mandatory for the hermetic parity gate.
@@ -73,13 +72,13 @@ aos-oci-types = { workspace = true }
 aos-hub-api = { workspace = true }
 aos-nix-cache = { workspace = true }
 aos-hub-client = { workspace = true }
-# The OIDC SSO verifier moved to aos-hub-service (RFC-0004 Phase 5,
-# console-dedup stage F), so the hub no longer needs jsonwebtoken at build time.
-# The OIDC e2e test (`tests/oidc.rs`) still uses it to *encode* the signed
-# id_tokens its fake IdP serves, so it stays as a dev-dependency only.
+# The OIDC SSO verifier moved to aos-hub-service, so the hub no longer needs
+# jsonwebtoken at build time. The OIDC e2e test (`tests/oidc.rs`) still uses it
+# to *encode* the signed id_tokens its fake IdP serves, so it stays as a
+# dev-dependency only.
 jsonwebtoken = { workspace = true }
 # Migration tests stage old-schema sqlite files with raw rusqlite, then reopen
-# them through the sqlx Database to assert the upgrade path (RFC-0004 Phase 5).
+# them through the sqlx Database to assert the upgrade path.
 rusqlite = { workspace = true }
 sqlx = { workspace = true, features = ["postgres", "mysql"] }
 tower = { workspace = true }

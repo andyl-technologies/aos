@@ -1,5 +1,4 @@
-//! Operations-chapter integration coverage (RFC-0004 "Operations:
-//! migrations, backup, quotas, observability, offboarding").
+//! Operations-chapter integration coverage.
 //!
 //! Drives the real router and database for the operations surface:
 //!

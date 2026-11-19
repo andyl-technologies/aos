@@ -1,4 +1,4 @@
-//! The registry web-surface SPA (RFC-0004): a Leptos CSR WASM app.
+//! The registry web-surface SPA: a Leptos CSR WASM app.
 //!
 //! Every AOS registry gets a static **`web` surface** — a polished UI
 //! uploaded to the registry's own bucket and served by plain S3/HTTP file

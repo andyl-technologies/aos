@@ -1,10 +1,10 @@
 //! Typed endpoint origins and request-authority validation.
 //!
-//! Endpoints are inbound client identities, not storage origins. This
-//! module canonicalizes their scheme, DNS/IPv4/IPv6 host, and effective port;
-//! rejects URL aliases that could split routing identity; and derives the
-//! stable RFC-0012 endpoint digest using a NetworkPolicy identity
-//! fingerprint rather than a replaceable database id.
+//! Endpoints are inbound client identities, not storage origins. This module
+//! canonicalizes their scheme, DNS/IPv4/IPv6 host, and effective port; rejects
+//! URL aliases that could split routing identity; and derives the stable
+//! endpoint digest using a NetworkPolicy identity fingerprint rather than a
+//! replaceable database id.
 
 use sha2::{Digest, Sha256};
 use std::fmt;
@@ -17,7 +17,7 @@ const ENDPOINT_IDENTITY_DOMAIN: &[u8] = b"aos-hub-delivery-endpoint-v1\0";
 /// The transport scheme of a endpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DeliveryScheme {
-    /// Cleartext HTTP, permitted only under RFC-0012's explicit policy gates.
+    /// Cleartext HTTP, permitted only under explicit network-policy gates.
     Http,
     /// TLS-protected HTTP.
     Https,

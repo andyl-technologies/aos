@@ -30,7 +30,7 @@
   cutoverRecipe = pkgs.writeTextFile {
     name = "hub-native-operations-cutover-recipe";
     destination = "/recipe.json";
-    text = builtins.readFile ../../docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-bundle-generation-v1.fixture.json;
+    text = builtins.readFile ../../crates/cli/aos-cli/hub-topology-cutover/hub-topology-cutover-bundle-generation-v1.fixture.json;
   };
 in
   testing.mkVMTest {

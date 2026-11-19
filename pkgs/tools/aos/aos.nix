@@ -892,7 +892,7 @@
         ''
         else ''
           wrapperMaterializerRoot="$NIX_BUILD_TOP/aos-cutover-wrapper-materializer"
-          bundleRecipe="$NIX_BUILD_TOP/source/docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-bundle-generation-v1.fixture.json"
+          bundleRecipe="$NIX_BUILD_TOP/source/crates/cli/aos-cli/hub-topology-cutover/hub-topology-cutover-bundle-generation-v1.fixture.json"
           mkdir -p "$wrapperMaterializerRoot/bundle/bin"
           $out/bin/aos hub topology cutover materialize-verifier \
             --bundle "$wrapperMaterializerRoot/bundle" \

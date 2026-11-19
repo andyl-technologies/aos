@@ -1,18 +1,18 @@
-//! Machine-surface path classification and R2 key mapping (RFC-0004).
+//! Machine-surface path classification and R2 key mapping.
 //!
 //! Every registry URL is simultaneously a dumb-HTTP git origin and a Nix binary
-//! cache (RFC-0004 "URL design"). This module is the **single, runtime-neutral**
-//! source of truth for classifying a request path into the machine surface and
-//! deriving its `Cache-Control`/`Content-Type` — the byte-faithful serving
-//! contract (the immutable/60-second cache split `apr origin upload` writes)
-//! must hold identically on the native hub and the Cloudflare Worker. Both
-//! shells use these functions (the native hub's `compat` and the Worker's
-//! facade re-export them), so the two facades cannot drift.
+//! cache. This module is the **single, runtime-neutral** source of truth for
+//! classifying a request path into the machine surface and deriving its
+//! `Cache-Control`/`Content-Type` — the byte-faithful serving contract (the
+//! immutable/60-second cache split `apr origin upload` writes) must hold
+//! identically on the native hub and the Cloudflare Worker. Both shells use
+//! these functions (the native hub's `compat` and the Worker's facade re-export
+//! them), so the two facades cannot drift.
 //!
 //! It also maps a registry prefix + machine path to an R2 object key, since a
-//! registry is a *prefix* within a shared hub-owned bucket (RFC-0004 "Storage").
-//! These are pure functions free of any platform types, so they compile to
-//! `wasm32` and are unit-tested once here.
+//! registry is a *prefix* within a shared hub-owned bucket. These are pure
+//! functions free of any platform types, so they compile to `wasm32` and are
+//! unit-tested once here.
 //!
 //! # R2 key layout
 //!
@@ -32,10 +32,10 @@ pub use aos_registry_format::keymap::{
 /// Map a registry prefix and a machine path to its R2 object key.
 ///
 /// The registry's surface lives under `{prefix}` in the hub-owned bucket
-/// (RFC-0004 "Storage": registries as prefixes in a shared bucket). The key is
-/// the prefix joined to the machine path with a single `/` separator; a leading
-/// `/` on either side is normalized so an empty prefix (a dedicated
-/// bucket-per-registry, or a test) maps the path through unchanged.
+/// (registries are prefixes in a shared bucket). The key is the prefix joined
+/// to the machine path with a single `/` separator; a leading `/` on either
+/// side is normalized so an empty prefix (a dedicated bucket-per-registry, or a
+/// test) maps the path through unchanged.
 ///
 /// # Examples
 ///

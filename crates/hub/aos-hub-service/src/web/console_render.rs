@@ -277,9 +277,8 @@ impl StateLine {
 /// or a "log in" link for an anonymous visitor.
 ///
 /// Passed to [`page_with_session`] so every authenticated identity page shows
-/// who is signed in (RFC-0004's masthead "[log in]" affordance).
-/// `None` renders the anonymous indicator; the browse pages pass `None` and
-/// remain unchanged.
+/// who is signed in (the masthead "[log in]" affordance). `None` renders the
+/// anonymous indicator; the browse pages pass `None` and remain unchanged.
 #[derive(Debug, Default, Clone)]
 pub struct SessionIndicator {
     /// The signed-in user's email, or `None` when anonymous.
@@ -702,7 +701,7 @@ fn release_glyphs(
 /// Render the 16×16 partition grid as a `<pre>` block plus its legend table.
 ///
 /// Uses the same glyph and color conventions as the consumer channel page.
-/// The grid is content, following RFC-0004's presentation rules.
+/// The grid is content, not decoration.
 #[must_use]
 pub fn channel_grid_pre(channel: &ChannelSummary) -> String {
     let (release_order, class_for) = release_glyphs(channel);

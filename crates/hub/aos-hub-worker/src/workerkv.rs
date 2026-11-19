@@ -1,6 +1,6 @@
 //! The Workers KV implementation of the shared [`KvStore`] port (wasm32-only).
 //!
-//! RFC-0004 chapter 14 moves the request hot path's point-key state — sessions,
+//! The hub keeps the request hot path's point-key state — sessions,
 //! API tokens, instance config, the host→registry routing table, trust rosters —
 //! in **Workers KV**, whose hot reads are edge-cached. This is the Worker's
 //! [`KvStore`](aos_hub_service::kv::KvStore) impl over a bound KV namespace (the

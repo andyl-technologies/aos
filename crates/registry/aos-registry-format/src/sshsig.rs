@@ -184,8 +184,8 @@ pub fn verify_armored_namespace(
 /// Sign `payload` as an armored SSHSIG with namespace `git`.
 ///
 /// The hub never signs registry artifacts in production (signing is
-/// client-side, per RFC-0004); this exists for fixture construction in
-/// tests and provider-custodied retained signing operations.
+/// client-side); this exists for fixture construction in tests and
+/// provider-custodied retained signing operations.
 pub fn sign_armored(payload: &[u8], signing_key: &ed25519_dalek::SigningKey) -> String {
     sign_armored_namespace(payload, signing_key, "git")
 }

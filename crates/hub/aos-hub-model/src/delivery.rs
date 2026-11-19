@@ -3,7 +3,7 @@
 //! Native AOS Hub and the Worker call this module before framework path
 //! decoding. It owns the canonical request-path grammar, segment-boundary
 //! longest-prefix matching, reserved control namespaces, machine capability
-//! classification, and RFC-0012's versioned object partition keys.
+//! classification, and versioned object partition keys.
 //!
 //! A canonical delivery path has one leading slash, no trailing slash except
 //! for `/`, no empty or dot segments, and NFC-normalized Unicode. Percent
@@ -359,7 +359,7 @@ fn is_registry_git_path(path: &str) -> bool {
         || path.starts_with("publication-receipts/")
 }
 
-/// A digest-algorithm tag in RFC-0012 object identities.
+/// A digest-algorithm tag in delivery object identities.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum DigestAlgorithm {
@@ -446,7 +446,7 @@ pub enum PartitionKeyError {
     },
 }
 
-/// Derives RFC-0012's immutable 32-byte object partition key.
+/// Derives the immutable 32-byte object partition key.
 ///
 /// # Errors
 ///
@@ -465,7 +465,7 @@ pub fn partition_key(identity: PartitionObjectIdentity<'_>) -> Result<[u8; 32], 
     Ok(hasher.finalize().into())
 }
 
-/// Derives the RFC-0012 hash-range selector digest and bucket.
+/// Derives the hash-range selector digest and bucket.
 #[must_use]
 pub fn hash_range_v1(partition_key: &[u8; 32]) -> ([u8; 32], u16) {
     let mut hasher = Sha256::new();

@@ -1,5 +1,5 @@
 //! [`SqlDoBackend`]: a [`Backend`] over a Durable Object's **colocated** SQLite
-//! (wasm32-only) — the Phase E system-of-record substrate (RFC-0004 ch.14).
+//! (wasm32-only) — the Worker's system-of-record substrate.
 //!
 //! The relational system of record lives in a Durable Object whose SQLite
 //! storage runs **in the same thread** as
@@ -11,7 +11,7 @@
 //!
 //! It is constructed only **inside** a Durable Object, from
 //! `state.storage().sql()`; the request Worker reaches it by routing tenant
-//! operations to the DO (Phase E3). Because the engine is local and synchronous,
+//! operations to the DO. Because the engine is local and synchronous,
 //! ordinary `async` trait methods complete without yielding. Batch methods
 //! await the promise returned by the Durable Object transaction wrapper so a
 //! closure error is observed as a rollback before control returns.

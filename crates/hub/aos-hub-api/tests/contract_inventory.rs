@@ -120,7 +120,7 @@ fn rust_constant_identifier(value: &str) -> String {
 
 fn verify_checked_api_manifest(generated: &[ConnectMethod]) -> BuildResult<()> {
     let manifest_path = manifest_dir()?
-        .join("../../../docs/rfcs/0012-hub-surface-topology/hub-api-manifest-v1.json");
+        .join("contracts/hub-api-manifest-v1.json");
 
     let manifest_source = std::fs::read_to_string(&manifest_path)?;
     let manifest: serde_json::Value = serde_json::from_str(&manifest_source)?;
@@ -178,7 +178,7 @@ fn verify_checked_api_manifest(generated: &[ConnectMethod]) -> BuildResult<()> {
 
 fn verify_checked_capability_manifest(generated: &[ConnectMethod]) -> BuildResult<()> {
     let manifest_path = manifest_dir()?.join(
-        "../../../docs/rfcs/0012-hub-surface-topology/hub-control-plane-capabilities-v1.json",
+        "contracts/hub-control-plane-capabilities-v1.json",
     );
 
     let manifest_source = std::fs::read_to_string(&manifest_path)?;
