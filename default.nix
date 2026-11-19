@@ -1672,6 +1672,8 @@ in rec {
       crucible-guest = pkgs.crucible-guest;
     };
     advisories = import ./tests/advisory-gate {inherit pkgs;};
+    # Lean models: proofs, the axiom audit, and executable conformance vectors.
+    formal = import ./tests/formal {inherit pkgs;};
     # Pure ability suites evaluate focused module fixed points. Full image
     # construction belongs to the build and qualification checks.
     ability-suites = import ./tests/abilities {inherit pkgs lib;};
