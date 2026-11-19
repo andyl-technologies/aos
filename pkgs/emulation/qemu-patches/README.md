@@ -2,7 +2,7 @@
 
 This directory contains the atomic integration patch and reconstructible Git
 bundle applied to QEMU for Crucible. QEMU and these modifications are on the GPL/upstream side of the
-[Crucible process boundary](../../../docs/rfcs/0010-crucible/37-licensing-process-boundary.md).
+[Crucible process boundary](../../../docs/legal/licensing.md#crucibleqemu-process-boundary).
 
 The atomic patch follows the license of each upstream file it modifies and must
 not remove or replace a more specific upstream notice. New, unmarked QEMU files

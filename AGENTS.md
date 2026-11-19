@@ -29,9 +29,7 @@ and the
 ## Crucible/QEMU license boundary
 
 These invariants are mandatory for maintainers and automated agents. The
-normative policy is
-[`docs/legal/licensing.md`](docs/legal/licensing.md) and RFC-0010
-[`37-licensing-process-boundary.md`](docs/rfcs/0010-crucible/37-licensing-process-boundary.md).
+normative policy is [`docs/legal/licensing.md`](docs/legal/licensing.md).
 
 - The Apache-licensed Crucible host and GPL-side QEMU/plugin MUST remain
   separate processes. Their only integration surfaces are the versioned Unix
