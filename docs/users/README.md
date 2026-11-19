@@ -1,21 +1,39 @@
 # AOS user documentation
 
 - [Install and operate AOS](aos/)
-  - [Build and boot a server from source](../maintainers/source-build-quickstart.md)
-  - [Install an image](aos/installation.md)
-  - [Customize an image and first-boot storage](aos/configuration.md)
-  - [Understand and operate host.nix](aos/host-nix.md)
-  - [Use the repository CLI](aos/cli.md)
-  - [Manage packages](aos/packages.md)
-  - [Configure package registries](aos/registries.md)
-  - [Understand native package runtime policy](aos/package-sandbox.md)
-  - [Use Secure Boot and verify package trust](aos/secure-boot.md)
-  - [Control access](aos/access-control.md)
-  - [Harden an AOS host](aos/security-hardening.md)
-  - [Audit an AOS host](aos/auditing.md)
-  - [Manage certificates and CA trust](aos/certificates.md)
-  - [Upgrade and roll back a host](aos/upgrades.md)
-  - [Troubleshoot a host](aos/troubleshooting.md)
+  - Start here
+    - [Overview and operating model](aos/README.md)
+    - [Support status](aos/support-status.md)
+    - [Install an image](aos/installation.md)
+    - [Configure a host](aos/configuration.md)
+    - [Understand and operate host.nix](aos/host-nix.md)
+    - [Configure networking](aos/networking.md)
+    - [Deploy in production](aos/deployment.md)
+  - Packages
+    - [Manage packages](aos/packages.md)
+    - [Configure package registries](aos/registries.md)
+    - [Understand native package runtime policy](aos/package-sandbox.md)
+    - [Use packages in containers](aos/containers.md)
+  - Day-to-day operation
+    - [Operate a host](aos/operations.md)
+    - [Upgrade and roll back a host](aos/upgrades.md)
+    - [Run ZFS storage](aos/storage-zfs.md)
+    - [Troubleshoot a host](aos/troubleshooting.md)
+    - [Recover a host](aos/recovery.md)
+  - Security
+    - [Use Secure Boot and verify package trust](aos/secure-boot.md)
+    - [Control access](aos/access-control.md)
+    - [Harden a host](aos/security-hardening.md)
+    - [Audit a host](aos/auditing.md)
+    - [Manage certificates and CA trust](aos/certificates.md)
+    - [Manage secrets](aos/secrets.md)
+  - Packaging and reference
+    - [Package an application](aos/package-authoring.md)
+    - [Runtime abilities](aos/runtime-abilities.md)
+    - [Inspect ability plans and retained execution](aos/ability-inspection.md)
+    - [Use the AOS command-line tools](aos/cli.md)
+    - [Build and boot from source](aos/quickstart.md), a pointer to the
+      [maintainer tutorial](../maintainers/source-build-quickstart.md)
 - [Operate AOS Hub](aos-hub/)
   - [Run a local Hub](aos-hub/quickstart.md)
   - [Deploy the native server](aos-hub/native.md)
@@ -35,12 +53,6 @@
   - [Manage trust and incidents](registry/trust.md)
 - [Operate Crucible](crucible/)
   - [Run Nginx and Curl in Crucible](crucible/quickstart.md)
-
-## Package runtime configuration
-
-The [runtime abilities guide](aos/runtime-abilities.md) shows how package,
-interface, operator, and handler modules produce deferred execution graphs, with
-Nix examples and matching CLI/Hub inspection paths.
 
 ## Related documentation
 

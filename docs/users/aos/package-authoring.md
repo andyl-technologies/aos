@@ -69,14 +69,6 @@ begin with `_`, and files named `default.nix`, are not published as packages.
 The file above therefore creates `pkgs.acme-health-agent` and the flake output
 `pkg-acme-health-agent`.
 
-A discovered file that returns a callable package factory instead of a
-derivation must be listed in `packageFactories` in `pkgs/default.nix`. Keep the
-factory available through `pkgs.<name>` for its callers, but exclude it from
-`packageNames`, the `pkg-*` flake outputs, and `packages.<system>.all`; Nix
-cannot build a function. Use this explicit inventory because dynamically
-probing every discovered value would evaluate unrelated packages and trigger
-their IFDs during otherwise isolated builds.
-
 The builder shell is POSIX `sh`. Keep phase scripts portable, and use explicit
 AOS package paths in generated scripts. Do not use `/bin/bash`,
 `/usr/bin/env`, host tools, or nixpkgs packages.
@@ -348,11 +340,11 @@ See [runtime inspection](runtime-abilities.md#inspect-the-generated-reference-an
 ## Build and inspect the payload
 
 Add source files to Git before using flake outputs, then use the repository
-build entry point:
+build entry point. `aos-dev` is on `PATH` inside the development shell:
 
 ```sh
-bash ./aos-dev build package acme-health-agent --no-out-link
-bash ./aos-dev build check effects --no-out-link
+aos-dev build package acme-health-agent --no-out-link
+aos-dev build check effects --no-out-link
 ```
 
 Use package-specific checks for program behavior, linking, protocols, and runtime

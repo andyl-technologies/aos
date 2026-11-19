@@ -55,7 +55,8 @@ aos.filesystems.zfs.memory = {
 ```
 
 The effective budget is the lesser of `maxBytes` and `maxPercent` of installed
-RAM, resolved at boot by `aos-zfs-memory-policy.service`. The absolute ceiling
+RAM, resolved at boot by `zfs-storage.zfs-memory-policy.service`. The absolute
+ceiling
 is what protects a large host; the percentage is what keeps the same
 configuration safe on a small one. The share options divide that budget and
 must sum to at most 100.
@@ -126,16 +127,22 @@ recover.
 ## Operating a pool
 
 The event daemon, scheduled scrubs and trims, health checks, and metrics come
-from `aos.services.zfsMaintenance`, which follows `aos.filesystems.zfs.enable`.
+from `aos.filesystems.zfs.maintenance`, which follows
+`aos.filesystems.zfs.enable`. Its units are named `zfs-storage.<task>.service`.
 
 ```sh
-systemctl status zfs-zed.service
-systemctl list-timers 'aos-zfs-*'
-systemctl start aos-zfs-health.service
+systemctl status zfs-storage.zfs-zed.service
+systemctl list-timers
+systemctl start zfs-storage.zfs-health.service
 zpool status -v
 ```
 
-`aos-zfs-health.service` fails when the pool is not online, when devices have
+The scrub, trim, health, and metrics timers have generated names; identify
+them in the `list-timers` output by the `zfs-storage.zfs-*.service` unit each
+one activates.
+
+`zfs-storage.zfs-health.service` fails when the pool is not online, when
+devices have
 accumulated read, write, or checksum errors, or when the pool pins no feature
 set. A failing health check appears in `systemctl --failed`.
 
@@ -178,9 +185,9 @@ step, taken once every slot that could be rolled back to can read them.
 
 ## Reading the telemetry
 
-`aos-zfs-metrics.service` publishes `/var/lib/aos-metrics/zfs.prom` in the
-Prometheus textfile format. The series worth alerting on are the ones that move
-before anything else does:
+`zfs-storage.zfs-metrics.service` publishes `/var/lib/aos-metrics/zfs.prom` in
+the Prometheus textfile format. The series worth alerting on are the ones that
+move before anything else does:
 
 | Series | What a bad value looks like |
 |---|---|
@@ -201,7 +208,8 @@ is fixed as each cache is created and cannot be corrected at runtime, so a host
 that applied new configuration without rebooting keeps its previous allocation
 policy with no other visible signal.
 
-`aos-zfs-verify-parameters.service` exists to make that visible. It fails when:
+`zfs-storage.zfs-verify-parameters.service` exists to make that visible. It
+fails when:
 
 - a load-time parameter does not match the configuration, naming the parameter
   and saying a reboot is required;
@@ -213,8 +221,8 @@ policy with no other visible signal.
 - ZFS and compressed swap together commit more than `committedPercentLimit`.
 
 ```sh
-systemctl status aos-zfs-verify-parameters.service
-journalctl -u aos-zfs-verify-parameters.service
+systemctl status zfs-storage.zfs-verify-parameters.service
+journalctl -u zfs-storage.zfs-verify-parameters.service
 ```
 
 ## Recovery

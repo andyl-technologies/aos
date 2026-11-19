@@ -1,10 +1,17 @@
 # Install an AOS image
 
 AOS is installed from a signed UEFI disk image published by an AOS
-registry. A Hub can provide discovery, but static Git/HTTP registries also work. There is no `aos install` command that writes a disk: installation
+registry. A Hub can provide discovery, but static Git/HTTP registries also
+work. There is no `aos install` command that writes a disk: installation
 means downloading a verified image, importing it into a hypervisor, writing
 it with the target platform's normal imaging tool, or booting
 [USB installer media](#install-from-a-usb-stick) on bare metal.
+
+The download commands below use the `aos` CLI on a workstation or operations
+host, not on the machine being installed; an AOS image puts only `apm` on its
+`PATH`. [Use the AOS command-line tools](cli.md) describes how to run `aos`.
+This guide abbreviates the unified kernel image as UKI and the EFI System
+Partition as ESP.
 
 Before enrollment or first boot, read [Use Secure Boot and verify package
 trust](secure-boot.md) for the full chain, production-key requirements, and the
@@ -429,60 +436,40 @@ kernel; the bare-metal profile does not generate or retain that private key.
 
 ## Supply first-boot metadata
 
-AOS accepts a literal `host.nix` through the following transports:
+AOS accepts a literal `host.nix` through one of these transports:
 
-| Platform | Transport and payload |
-| --- | --- |
-| AOS metadata drive | Filesystem label `AOS-META`, with `/host.nix`; optional `/host.nix.sig` and `/facts.json` |
-| NoCloud | Filesystem label `cidata`; `/user-data` contains literal Nix, with optional `/user-data.sig` |
-| OpenStack config drive | Filesystem label `config-2`; `openstack/latest/user_data` contains literal Nix |
-| QEMU | `fw_cfg` blob `opt/org.andyl/host-nix`, with optional `opt/org.andyl/host-nix.sig` |
-| AWS | Native user-data, as literal Nix or a content-pinned pointer document |
-| GCP, Azure, DigitalOcean, OpenStack | Native user-data as literal Nix |
+- an AOS metadata drive with filesystem label `AOS-META`;
+- a NoCloud drive with filesystem label `cidata`;
+- an OpenStack config drive with filesystem label `config-2`;
+- the QEMU `fw_cfg` blob `opt/org.andyl/host-nix`; or
+- native user-data on AWS, GCP, Azure, DigitalOcean, and OpenStack.
+
+[Choose a delivery channel](host-nix.md#choose-a-delivery-channel) lists the
+exact file and signature location for each transport and shows how to build an
+`AOS-META` ISO or pass the QEMU blob. An AOS metadata ISO is more portable
+across QEMU and physical installation tests than `fw_cfg`; attach it as a
+CD-ROM for the first boot.
 
 NoCloud user-data is not cloud-config. A JSON provisioning object is also not
 accepted. The payload must evaluate as a Nix module.
 
-For QEMU, the direct channel is:
+Other clouds, bare metal, Hyper-V, VMware, and VirtualBox use image defaults
+unless an offline metadata or config drive is attached. AOS does not infer an
+unrecorded provider metadata protocol.
 
-```sh
--fw_cfg name=opt/org.andyl/host-nix,file=host.nix
-```
-
-An AOS metadata ISO is more portable across QEMU and physical installation
-tests:
-
-```sh
-mkdir -p metadata
-cp host.nix metadata/host.nix
-xorriso -as mkisofs \
-  -V AOS-META \
-  -o metadata.iso \
-  metadata
-```
-
-Attach `metadata.iso` as a CD-ROM for the first boot. The
-[configuration guide](configuration.md) explains runtime activation;
-the complete metadata lifecycle and storage recipe reference is in
+The [configuration guide](configuration.md) explains runtime activation; the
+complete metadata lifecycle and storage recipe reference is in
 [Understand and operate `host.nix`](host-nix.md).
-
-The native network metadata providers support AWS IMDSv2, GCP, Azure,
-DigitalOcean, and OpenStack. Other clouds, bare metal, Hyper-V, VMware, and
-VirtualBox use image defaults unless an offline metadata or config drive is
-attached. AOS does not infer an unrecorded provider metadata protocol.
 
 ## Trust policy
 
 The default `platform` policy treats access to the platform's metadata channel
 as configuration authority. Deployments that do not trust that transport can
 build an image with `aos.config.evalAtBoot.trust = "signed"` and one or more
-`aos.apm.configKeys` trust anchors. When a `host.nix` is supplied in signed
-mode, a missing key, missing signature, or invalid signature rejects that
-input. With no operator input, AOS provisions the image's fallback storage
-defaults.
-
-Trust anchors belong in the image definition. The detached signature travels
-next to `host.nix` as described above.
+`aos.apm.configKeys` trust anchors; the detached signature then travels next
+to `host.nix`. [Choose the trust
+policy](host-nix.md#choose-the-trust-policy) covers key format, signing, and
+failure behavior.
 
 Signed mode requires a transport that carries a detached signature: AOS
 metadata media, NoCloud, OpenStack config drive, QEMU `fw_cfg`, or an AWS
@@ -503,8 +490,12 @@ cat /etc/os-release
 cat /var/lib/aos-provisioning/audit.json
 cat /var/lib/profiles/image/state.json
 cat /var/lib/profiles/system/state.json
-cat /run/aos/activation.json
+apm config status
 ```
+
+`systemctl is-system-running` prints `running` when no unit has failed and
+`degraded` when at least one has; `systemctl --failed` then lists them.
+`audit.json` is the durable provisioning record.
 
 If first boot stops before the target, inspect the units and state in
 [Troubleshoot an AOS host](troubleshooting.md).

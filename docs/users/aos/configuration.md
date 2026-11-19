@@ -12,7 +12,8 @@ the runtime configuration-generation path is active.
 | System modules in the source tree | Golden-image and release policy | Maintainer workflow, evaluated when the image is built |
 
 Keep a tested console or image-baked break-glass path while changing network or
-access policy. A failed stage-2 transaction retains the previous generation,
+access policy. Stage 2 is the host stage that runs after the initrd hands off.
+A failed stage-2 transaction retains the previous generation,
 but a valid configuration can still make a host unreachable.
 
 ## Configure first-boot storage

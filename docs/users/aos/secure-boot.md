@@ -2,9 +2,9 @@
 
 AOS composes firmware verification, measured boot, dm-verity, image-baked trust
 anchors, and signed package metadata. The immutable operating-system image is
-the bridge: its signed UKI authenticates the root hash, and the authenticated
-root contains the initial keys used to verify registries and host
-configuration.
+the bridge: its signed unified kernel image (UKI) authenticates the root hash,
+and the authenticated root contains the initial keys used to verify registries
+and host configuration.
 
 This guide explains that complete chain and its operational limits. Registry
 configuration is covered in [Configure package registries](registries.md), and
@@ -94,10 +94,11 @@ verified-boot variant.
 
 ## Authenticate persistent state
 
-Measured-boot systems seal `/var` to a signed PCR policy. PCR 7 records Secure
-Boot state, PCR 11 records UKI sections and boot phases, and PCR 12 records
-external boot input. The PCR-policy signer authorizes expected UKI measurements
-without sharing the firmware db private key.
+Measured-boot systems seal `/var` to a signed policy over TPM platform
+configuration registers (PCRs). PCR 7 records Secure Boot state, PCR 11 records
+UKI sections and boot phases, and PCR 12 records external boot input. The
+PCR-policy signer authorizes expected UKI measurements without sharing the
+firmware db private key.
 
 UEFI Setup Mode is enrollment state, not normal operation. The measured-boot
 image uses temporary plaintext `/var` until Secure Boot is enforcing; the first
@@ -193,7 +194,7 @@ systemctl is-system-running
 systemctl --failed
 cat /var/lib/profiles/image/state.json
 cat /var/lib/profiles/system/state.json
-cat /run/aos/activation.json
+apm config status
 ```
 
 Record the effective registry policy and active packages:
@@ -218,11 +219,12 @@ root against its dm-verity root hash, requires the candidate UKI to name the
 opposite slot and the same root hash, and checks the identity of any recovery
 UKI it installs.
 
-APM does not check the candidate UKI's Secure Boot signer or SBAT generation
-before staging. The firmware enforces both when it boots the candidate. A UKI
-that the firmware rejects never reaches blessing, so boot counting returns to
-the known-good slot. The signed recovery environment separately verifies UKIs
-against the db certificates carried in its own initrd before it restores them.
+APM does not check the candidate UKI's Secure Boot signer or SBAT (Secure Boot
+Advanced Targeting) generation before staging. The firmware enforces both when
+it boots the candidate. A UKI that the firmware rejects never reaches blessing,
+so boot counting returns to the known-good slot. The signed recovery
+environment separately verifies UKIs against the db certificates carried in its
+own initrd before it restores them.
 
 The candidate uses systemd-boot counting. AOS blesses it only after it boots,
 re-evaluates configuration against its own ABI, reaches the ready PCR phase,

@@ -177,8 +177,8 @@ partial path and exits with status 130.
 All three subcommands support the global JSON output mode:
 
 ```sh
-aos --json image list --registry andyl/main --channel stable
-aos --json image show --registry andyl/main --release 2026.3.0 \
+aos --json image list --registry andyl --channel stable
+aos --json image show --registry andyl --release 2026.3.0 \
   --architecture x86_64 --format raw
 ```
 
@@ -242,6 +242,7 @@ aos lint zlib
 
 # Test layers.
 aos test eval
+aos test rust
 aos test build
 aos test vm
 aos test fleet
@@ -252,7 +253,8 @@ aos prefetch --package zlib
 aos prefetch --all
 ```
 
-`aos test` with no layer runs evaluation, build, VM, and fleet tests in order.
+`aos test` with no layer runs evaluation, Rust, build, VM, and fleet tests in
+order.
 VM and fleet layers need a Linux host with KVM. `aos prefetch --update` edits
 package source hashes; inspect its diff before committing.
 
@@ -302,15 +304,41 @@ aos completions zsh > _aos
 aos completions fish > aos.fish
 ```
 
-The generated script covers the `aos` command tree. `apm` and `apr` do not
-currently expose their own completion generators.
+The generated script covers the `aos` command tree by default. `apm` and `apr`
+have no `completions` subcommand of their own; generate their scripts with
+`--command`:
+
+```sh
+aos completions bash --command apm > apm.bash
+aos completions bash --command apr > apr.bash
+```
+
+## Inspect native runtime documentation
+
+`aos docs` is an alias for `aos doc`. Native artifact inspection works without
+Nix, a checkout, or a network connection:
+
+```sh
+aos docs runtime options.json
+aos docs runtime transaction.json --format json
+aos docs runtime transaction.json --format html --output execution.html
+```
+
+The input must be an `aos.module.documentation` reference or an
+`aos.package.transaction`. Output defaults to text; global `--json` selects JSON
+unless `--format` is explicit. `--output` writes a file. Runtime mode does not
+accept installed-package, registry, search, or Hub selectors.
+
+See [runtime abilities](runtime-abilities.md) for artifact generation and example
+execution paths. Existing `doc package`, `doc hub`, and `ability` consumers have
+not yet migrated to these native formats.
 
 ## Verify runtime attestation evidence
 
-`apm attest verify` replays the package and generation events in the AOS CEL.
-A bare `--pcr15` value verifies only event-log consistency. A full generation
-decision requires an identity-pinned TPM quote, the generation record, and a
-verifier-owned policy:
+`apm attest verify` replays the package and generation events in the AOS
+canonical event log (CEL). A bare `--pcr15` value verifies only event-log
+consistency. A full generation decision requires an identity-pinned TPM quote,
+the generation record, and a verifier-owned policy:
 
 ```sh
 apm attest verify --system \
@@ -319,8 +347,7 @@ apm attest verify --system \
   --nonce-file host-evidence/nonce.hex \
   --quote-identity-file verifier/quote-identities.json \
   --generation-attestation host-evidence/gen-attestation.json \
-  --generation-policy-file verifier/generation-policy.json \
-  --rederived-manifest verifier/rederived-manifest.json
+  --generation-policy-file verifier/generation-policy.json
 ```
 
 Generation measurement retains the complete canonical record in the AOS CEL
@@ -350,9 +377,7 @@ The command verifies the quote against an enrolled AK/EK identity, binds the
 record to its unique activation event and PCR-15 prefix, checks PCR 7, PCR 11, PCR 12,
 dm-verity, facts, and host-input authorization, and reconstructs config-module
 membership and realization from the signed release commit. It rejects missing,
-revoked, or mismatched release receipts. `--rederived-manifest` supplies an
-independently produced manifest for the final reproducibility gate and is
-mandatory for image-authored configuration.
+revoked, or mismatched release receipts.
 
 Create the quote-identity catalog only after completing the selected enrollment
 workflow:
@@ -373,31 +398,12 @@ build, evaluation, download, hash, and package errors use nonzero codes suited
 to their command surface. A declined package-operation confirmation exits
 `100`.
 
-Configuration activation can report a degraded result after the new generation
-is live, while image staging and boot assessment have a separate A/B state.
-See [Upgrade and roll back a host](upgrades.md#interpret-configuration-activation-results)
-before automating system upgrades.
+A configuration transaction can commit a new generation while a service in it
+fails, and image staging and boot assessment have a separate A/B state. See
+[Upgrade and roll back a
+host](upgrades.md#interpret-configuration-activation-results) before automating
+system upgrades.
 
 Continue with [Manage packages](packages.md) for `apm`, or
 [Operate an AOS package registry](../registry/) for producer-side `apr`
 workflows.
-
-## Inspect native runtime documentation
-
-`aos docs` is an alias for `aos doc`. Native artifact inspection works without
-Nix, a checkout, or a network connection:
-
-```sh
-aos docs runtime options.json
-aos docs runtime transaction.json --format json
-aos docs runtime transaction.json --format html --output execution.html
-```
-
-The input must be an `aos.module.documentation` reference or an
-`aos.package.transaction`. Output defaults to text; global `--json` selects JSON
-unless `--format` is explicit. `--output` writes a file. Runtime mode does not
-accept installed-package, registry, search, or Hub selectors.
-
-See [runtime abilities](runtime-abilities.md) for artifact generation and example
-execution paths. Existing `doc package`, `doc hub`, and `ability` consumers have
-not yet migrated to these native formats.

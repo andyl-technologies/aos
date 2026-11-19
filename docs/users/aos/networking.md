@@ -108,18 +108,20 @@ the deployment must then provide a complete resolver path itself.
 
 ## Know the advanced-networking boundary
 
-The module declares `mtu`, `vlans`, and `bonds`, but those options are not a
-complete production interface today:
+The module declares `mtu`, `vlans`, and `bonds`, and the systemd network
+handler renders them into networkd units:
 
-- `aos.networking.mtu` is not rendered into a link or network unit;
-- VLAN netdevs are created, but the parent link is not told to attach them;
-- bond netdevs are created, but member interfaces are not enslaved to them;
-- VLAN and bond address models omit gateways and per-link DNS.
+- a nonzero `aos.networking.mtu` is written as `MTUBytes` on every managed
+  link;
+- each VLAN gets a `.netdev` and is attached to its parent link;
+- each bond gets a `.netdev` and its member interfaces are attached to it.
 
-Do not rely on those options for production connectivity until their rendered
-networkd topology and VM coverage are completed. If a deployment must use one
-of these layouts now, provide the complete `.netdev` and `.network` files as
-build-time configuration and test the exact image on representative hardware.
+The remaining limit is addressing: VLAN and bond address models omit gateways
+and per-link DNS. If a deployment needs either on such a link, provide the
+complete `.netdev` and `.network` files as build-time configuration instead.
+
+Test any of these layouts on the exact image and representative hardware, with
+console access, before relying on them for production connectivity.
 
 ## Tune network sysctls carefully
 
@@ -150,7 +152,7 @@ ports owned by services in the active image or package generation:
 
 ```nix
 {
-  aos.firewall = {
+  aos.networkPolicy = {
     enable = true;
     defaultPolicy = "drop";
     forwardPolicy = "drop";
