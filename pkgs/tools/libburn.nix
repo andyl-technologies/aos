@@ -3,7 +3,7 @@
 ##! Part of the libburnia trio (libburn, libisofs, libisoburn). libburn
 ##! handles the raw SCSI / BD-RE layer; libisofs reads and writes the
 ##! ISO9660 filesystem on top; libisoburn ties the two together and
-##! ships the `xorriso` CLI we actually consume (for the `aos-metadata`
+##! ships the `xorriso` CLI we actually consume (for the `AOS-META`
 ##! ISO in the VM test harness). AOS only needs ISO image creation, not
 ##! physical media burning — but xorriso's configure marks libburn as
 ##! a FATAL prerequisite so it's packaged unconditionally.

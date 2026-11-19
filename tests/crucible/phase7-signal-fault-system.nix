@@ -119,7 +119,7 @@
     ];
   };
   expectedConfigurationIdentity =
-    campaignComposition.system.config.aos.services.crucibleCampaign._runtimeIdentity;
+    campaignComposition.system.config.aos.crucible.campaign._runtimeIdentity;
   expectedToplevel = campaignComposition.system.config.system.build.toplevel;
   authenticationScript = ''
     set -eu

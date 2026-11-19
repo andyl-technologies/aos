@@ -111,7 +111,6 @@
   server2Image = candidate.config.system.build.image.raw;
   server2ImageDisk = candidate.config.system.build.imageArtifacts.raw.disk;
   server2ImageInfo = candidate.config.system.build.imageArtifacts.raw.info;
-  server2Uki = candidate.config.system.build.initialBootExecutable;
 
   targetSystem = mkSystem [
     ../../systems/server-verity.nix
@@ -120,7 +119,12 @@
       # The registry workflow uses basic Git transport operations. Reuse the
       # runtime client without pulling development-language helpers into boot.
       environment.systemPackages = [pkgs.git-minimal];
-      aos.image.budgets.maxRootMiB = 640;
+      # The test packages and Git client exceed the production download
+      # budget; keep the larger contract local to this fixture image.
+      aos.image.budgets = {
+        maxRootMiB = 640;
+        maxDownloadMiB = 1024;
+      };
     }
   ];
 
@@ -195,7 +199,6 @@ in {
         server2Image
         server2ImageDisk
         server2ImageInfo
-        server2Uki
         pkgs.bc
         pkgs.aos.apr
         pkgs.gawk
@@ -305,8 +308,9 @@ in {
       gen = target.succeed("readlink /var/lib/profiles/system/current").strip()
       assert gen == "gen-1", f"expected gen-1 after install, got {gen!r}"
 
-      # Enroll the image's disposable test keys so the upgrade path validates
-      # the candidate UKIs against the firmware's active db certificate.
+      # Enroll the image's disposable test keys before the upgrade. APM does
+      # not check the candidate's Secure Boot signer; enforcing firmware does,
+      # so the reboot below proves the staged UKI is accepted by the db.
       assert efivar_byte("SetupMode") == 1
       keys = "${pkgs.secure-boot-test-keys}"
       efi_update = (
@@ -369,9 +373,6 @@ in {
           release = "$SIGNING_KEY"
           EOF
           REG_DIR=$HOME/.local/share/apm/registries/sysreg
-          # Recovery-bundle verification uses the same db certificate as the UKIs.
-          mkdir -p "$REG_DIR/sb-certs"
-          cp ${pkgs.secure-boot-test-keys}/db.crt "$REG_DIR/sb-certs/db.pem"
           DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
           ORIGIN=/var/lib/aos-registry-server/registries/sysreg
           git init --bare --object-format=sha256 "$ORIGIN"
@@ -388,9 +389,6 @@ in {
             --key-id release \\
             --no-commit
 
-          set -- '${server2Uki}'/*.efi
-          test "$#" -eq 1
-          CANDIDATE_UKI="$1"
           if ! ${pkgs.aos.apr}/bin/apr --json publish '${server2Top}' \\
             --name aos \\
             --version test-2 \\
@@ -401,7 +399,7 @@ in {
             --image-payload '${server2Image}' \\
             --image-disk '${server2ImageDisk}' \\
             --image-info '${server2ImageInfo}' --image-format raw \\
-            --image-uki "$CANDIDATE_UKI" \\
+            --image-contract-schema aos.image.metadata/v1 \\
             --no-ca \\
             --registry sysreg \\
             --key-id release \\
@@ -409,14 +407,6 @@ in {
             cat /tmp/publish-system.json >&2
             exit 1
           fi
-          index=0
-          ${pkgs.jq}/bin/jq -r \\
-            '.images[].ukis[].sb_signer_cert_sha256' \\
-            /tmp/publish-system.json | sort -u | while IFS= read -r signer; do
-              ${pkgs.aos.apr}/bin/apr sb-certs add "image-db-$index" \\
-                --cert-sha256 "$signer" --registry sysreg --no-commit
-              index=$((index + 1))
-            done
           ${pkgs.aos.apr}/bin/apr verify --registry sysreg
 
           ${pkgs.aos.apr}/bin/apr cache generate \\
@@ -440,6 +430,20 @@ in {
             ${pkgs.coreutils}/bin/chown -R "$git_owner" "$ORIGIN"
           echo "$DEFAULT_BRANCH" > /tmp/sysreg-branch
       """), timeout=1200)
+
+      # The publication must catalog exactly one provider-owned image whose
+      # contract binds the candidate's metadata document and raw payload.
+      publication = json.loads(registry.succeed("cat /tmp/publish-system.json"))
+      images = publication.get("images", [])
+      assert len(images) == 1, images
+      contract = images[0]["delivery"]["artifact_contract"]
+      assert contract["schema"] == "aos.image.metadata/v1", contract
+      assert contract["document"]["store_path"] == '${server2ImageInfo}', contract
+      assert contract["artifacts"]["store_path"] == '${server2Image}', contract
+      info_digest = registry.succeed(
+          "${pkgs.coreutils}/bin/sha256sum '${server2ImageInfo}'"
+      ).split()[0]
+      assert contract["document"]["sha256"] == info_digest, contract
 
       branch = registry.succeed("cat /tmp/sysreg-branch").strip()
 

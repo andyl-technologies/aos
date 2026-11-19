@@ -36,7 +36,7 @@ Builders produce packages that run on the `<system>` key's platform.
 
 - `x86_64-linux` builds natively.
 - `aarch64-linux` is the package set AOS itself publishes for that platform.
-  The AOS bootstrap starts from an i386 seed, so AOS cross-builds
+  The AOS bootstrap starts from an i386 seed, so AOS always cross-builds
   `aarch64-linux` outputs on `x86_64-linux`, and its derivations, including
   those from `lib.aarch64-linux` builders, are scheduled on an
   `x86_64-linux` builder. Downloading them from the binary cache works on any
@@ -44,6 +44,14 @@ Builders produce packages that run on the `<system>` key's platform.
   the local machine or a remote builder. Rebuilding the AOS toolchain itself
   additionally needs QEMU binfmt emulation for `aarch64-linux` in that
   builder's sandbox.
+
+The same rule covers every per-system output of the AOS flake, including
+the `packages`, `devShells`, `checks`, `apps`, and `formatter` outputs that
+are not part of this contract. Their `aarch64-linux` copies hold cross-built
+`aarch64-linux` programs that run on an `aarch64-linux` machine once they are
+downloaded or built on an `x86_64-linux` builder. A native `aarch64-linux`
+evaluation would need a builder that runs the i386 seed, so AOS never
+performs one.
 
 Other cross-compilation targets are not part of this version.
 
@@ -307,8 +315,9 @@ identical store paths instead of building them.
 the set would build anything locally. It embeds the toolchain derivations of
 every supported system, so one machine can check both platforms. Like every
 `aarch64-linux` derivation, the `aarch64-linux` copy of the command builds on
-an `x86_64-linux` builder; the `x86_64-linux` copy alone covers both
-platforms.
+an `x86_64-linux` builder or downloads from the cache; the `x86_64-linux`
+copy alone covers both platforms. The same command is also available as
+`packages.<system>.toolchain-cache-check`.
 
 ```text
 toolchain-cache-check [--realise] [--store DIR] [--system SYSTEM]... [-- NIX_ARGUMENT...]
@@ -376,6 +385,11 @@ These checks guard the contract. All but the fixture build run in
   would leave the release package matrix on either Linux platform, and
   `checks.downstream.toolchain-cache-check` tests the cache check command
   against recorded Nix output.
+- `checks.downstream.flake-outputs` instantiates every `aarch64-linux`
+  output of the AOS flake without building any of them, as
+  `nix flake check --all-systems --no-build` does. It runs in
+  `nix-build -A checks.downstream` rather than `checks.eval` because it
+  evaluates the complete cross-built package set and its system images.
 
 When you add a name, add its row and bump the minor version here and in
 `apiVersion`; the fixture should exercise new builders.

@@ -64,12 +64,13 @@
         type = lib.types.listOf lib.types.str;
         default = [];
         description = ''
-          Secure Boot db certificate(s) in PEM form that this registry's
-          images may be signed with, typically kept for certificate-rotation
-          overlap. Each entry is a PEM block; they are concatenated into
-          `/etc/apm/trusted-sb-certs.d/<name>.pem` and appended to the
-          image's authorized db-certificate snapshot, which the recovery
-          initrd uses to authenticate UKIs and recovery media.
+          Additional Secure Boot db certificates in PEM form, one block per
+          entry, such as the certificates of a db key rotation overlap.
+          On a Secure Boot image the recovery environment accepts a UKI or
+          signed slot manifest that the image's own db certificate or any
+          of these certificates authorizes. The entries are also
+          concatenated into `/etc/apm/trusted-sb-certs.d/<name>.pem`;
+          `apm` does not read that file.
         '';
       };
     };

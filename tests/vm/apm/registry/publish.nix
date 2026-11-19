@@ -8,7 +8,6 @@
   publishSysrootImage,
   publishSysrootDisk,
   publishSysrootInfo,
-  publishSysrootUki,
   setupNixPublishEnv,
   setupAltNixPublishEnv,
 }: {
@@ -281,7 +280,6 @@
         publishSysrootImage
         publishSysrootDisk
         publishSysrootInfo
-        publishSysrootUki
       ];
     memory = 512;
     testScript = ''
@@ -305,7 +303,7 @@
         --image-disk ${publishSysrootDisk} \
         --image-info ${publishSysrootInfo} \
         --image-format raw \
-        --image-uki ${publishSysrootUki}/systemd-bootx64.efi \
+        --image-contract-schema aos.image.metadata/v1 \
         --registry test-reg
 
       # Verify sysroot flag
@@ -317,6 +315,13 @@
         "format = \"raw\"" "TOML has image format"
       assert_file_contains "$REG_DIR/packages/s/server.toml" \
         "images" "TOML has images section"
+
+      # The image binds an opaque provider contract by schema and store path.
+      assert_file_contains "$REG_DIR/packages/s/server.toml" \
+        'schema = "aos.image.metadata/v1"' "TOML records the image contract schema"
+      assert_file_contains "$REG_DIR/packages/s/server.toml" \
+        "$(basename ${publishSysrootInfo} | cut -d- -f1)" \
+        "TOML records the image contract store path"
 
       check_fail
     '';

@@ -1,15 +1,18 @@
 {
   service-management,
   aos-filesystem-provider,
+  coreutils,
   mkDerivation,
   writeShellScriptBin,
 }: let
+  # Native services start with a minimal PATH, so every external command the
+  # recorder runs is referenced by store path.
   recorder = writeShellScriptBin "landlock-argv-test-recorder" ''
     set -eu
 
     state_dir=$1
     shift
-    mkdir -p "$state_dir"
+    ${coreutils}/bin/mkdir -p "$state_dir"
     out=$state_dir/argv
     : > "$out"
     printf 'argc=%s\n' "$#" >> "$out"
