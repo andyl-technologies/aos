@@ -1,0 +1,84 @@
+--- a/src/main/java/com/google/devtools/build/lib/remote/disk/DiskCacheClient.java
++++ b/src/main/java/com/google/devtools/build/lib/remote/disk/DiskCacheClient.java
+@@ -33,6 +33,7 @@
+ import com.google.devtools.build.lib.remote.common.MaybePathBacked;
+ import com.google.devtools.build.lib.remote.common.RemoteCacheClient.ActionKey;
+ import com.google.devtools.build.lib.remote.common.RemoteCacheClient.Blob;
++import com.google.devtools.build.lib.remote.util.DigestOutputStream;
+ import com.google.devtools.build.lib.remote.util.DigestUtil;
+ import com.google.devtools.build.lib.remote.util.Utils;
+ import com.google.devtools.build.lib.vfs.FileSystemUtils;
+@@ -70,6 +71,7 @@
+ 
+   private final ImmutableMap<Store, Path> storeRootMap;
+   private final Path tmpRoot;
++  private final DigestUtil digestUtil;
+ 
+   // Disk cache operations are almost entirely I/O-bound as digests are only computed as part of
+   // I/O operations, so using virtual threads is appropriate.
+@@ -79,6 +81,7 @@
+           Executors.newThreadPerTaskExecutor(Thread.ofVirtual().name("disk-cache-", 0).factory()));
+ 
+   public DiskCacheClient(Path root, DigestUtil digestUtil) throws IOException {
++    this.digestUtil = digestUtil;
+     Path fnRoot =
+         isOldStyleDigestFunction(digestUtil.getDigestFunction())
+             ? root
+@@ -134,6 +137,32 @@
+     FileSystemUtils.renameToleratingConcurrentCreation(src, target);
+   }
+ 
++  /**
++   * Returns whether the CAS entry at {@code path} still hashes to {@code digest}.
++   *
++   * <p>A shared disk cache can be damaged by an interrupted copy, a faulty disk or another writer.
++   * Its file name is only a claim about the content, so every entry is re-hashed from its bytes
++   * before Bazel relies on it. A mismatching entry is deleted, which lets the next upload of the
++   * correct content replace it, and is then reported as absent. Deleting can race with a
++   * concurrent writer storing the correct content; that costs one extra cache miss, never a
++   * corrupt result.
++   *
++   * @throws IOException if the entry cannot be read or deleted.
++   */
++  private boolean verifyOrEvict(Digest digest, Path path) throws IOException {
++    DigestOutputStream hashed = digestUtil.newDigestOutputStream(OutputStream.nullOutputStream());
++    try (InputStream in = path.getInputStream()) {
++      in.transferTo(hashed);
++    } catch (FileNotFoundException e) {
++      return false;
++    }
++    if (hashed.digest().equals(digest)) {
++      return true;
++    }
++    path.delete();
++    return false;
++  }
++
+   private ListenableFuture<Void> download(Digest digest, OutputStream out, Store store) {
+     return executorService.submit(
+         () -> {
+@@ -141,6 +170,12 @@
+           if (!refresh(path)) {
+             throw new CacheNotFoundException(digest);
+           }
++          // Verify before writing anything to the caller, so that a corrupt entry is a clean miss
++          // rather than a partially written output. Action cache entries are keyed by the action
++          // digest, not by their content, and cannot be checked this way.
++          if (store == Store.CAS && !verifyOrEvict(digest, path)) {
++            throw new CacheNotFoundException(digest);
++          }
+           Path outPath = null;
+           if (out instanceof MaybePathBacked maybePathBacked) {
+             outPath = maybePathBacked.maybeGetPath();
+@@ -182,6 +217,11 @@
+     if (!refresh(path)) {
+       throw new CacheNotFoundException(digest);
+     }
++    // An action result is only a hit if every output it names is intact. Checking here turns a
++    // corrupt output into a re-execution, including outputs that are never downloaded.
++    if (!verifyOrEvict(digest, path)) {
++      throw new CacheNotFoundException(digest);
++    }
+   }
+ 
+   private void checkOutputDirectory(Directory dir) throws IOException {

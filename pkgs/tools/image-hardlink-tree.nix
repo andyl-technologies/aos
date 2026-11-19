@@ -21,7 +21,9 @@ in
       role = "build-input";
     };
     src = null;
-    buildDeps = [helper];
+    # The install phase only copies the helper. Listing it as a build
+    # dependency would require running it on the builder, which a cross
+    # build of this package cannot do.
     runtimeDeps = [bash coreutils findutils util-linux];
     propagatedDeps = [];
     dontNukeRefs = true;

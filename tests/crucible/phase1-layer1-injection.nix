@@ -227,7 +227,7 @@
         "$tie_break_result"; do
         require_line "$result" "campaign_mode=${campaignComposition.mode}"
         require_line "$result" \
-          "campaign_configuration_identity=${campaignComposition.system.config.aos.services.crucibleCampaign._runtimeIdentity}"
+          "campaign_configuration_identity=${campaignComposition.system.config.aos.crucible.campaign._runtimeIdentity}"
         require_line "$result" \
           "campaign_toplevel=${campaignComposition.system.config.system.build.toplevel}"
       done

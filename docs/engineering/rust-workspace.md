@@ -171,8 +171,10 @@ The workspace has 78 member packages. Packages inherit the workspace
 | `aos-oci-types` | [artifacts/aos-oci-types](../../crates/artifacts/aos-oci-types/Cargo.toml) | Wasm-friendly OCI image and Distribution contracts for AOS |
 | `libssh2-sys` | [bindings/libssh2-sys](../../crates/bindings/libssh2-sys/Cargo.toml) | Native bindings to the AOS-built libssh2 package (`MIT OR Apache-2.0`) |
 | `aos-boot-identity` | [boot/aos-boot-identity](../../crates/boot/aos-boot-identity/Cargo.toml) | Normal and recovery boot identity parsing and UKI inspection |
+| `aos-boot-media` | [boot/aos-boot-media](../../crates/boot/aos-boot-media/Cargo.toml) | Dependency-free block-device, digest, and db-trust primitives for boot-time media handling |
 | `aos-boot-runtime` | [boot/aos-boot-runtime](../../crates/boot/aos-boot-runtime/Cargo.toml) | Retained boot preparation, image staging, boot selection, and initrd store operations |
 | `aos-configuration-image` | [boot/aos-configuration-image](../../crates/boot/aos-configuration-image/Cargo.toml) | Deterministic configuration images, verified boot mounting, and certificate bundles |
+| `aos-installer` | [boot/aos-installer](../../crates/boot/aos-installer/Cargo.toml) | Unattended installation of a signed AOS release image from boot media |
 | `aos-platform-metadata` | [boot/aos-platform-metadata](../../crates/boot/aos-platform-metadata/Cargo.toml) | Platform facts acquisition, configuration authorization, and first-boot network values |
 | `aos-recovery` | [boot/aos-recovery](../../crates/boot/aos-recovery/Cargo.toml) | Recovery boot validation and emergency recovery runtime |
 | `aos-storage-layout` | [boot/aos-storage-layout](../../crates/boot/aos-storage-layout/Cargo.toml) | Validated storage provisioning intent, block topology, and canonical layout values |

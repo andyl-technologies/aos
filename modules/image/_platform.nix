@@ -206,6 +206,10 @@
           type = nullableArtifact;
           description = "Optional fixed-layout recovery artifact bundle.";
         };
+        installerMedia = lib.mkOption {
+          type = nullableArtifact;
+          description = "Optional bootable installer media, present only in installer-media evaluations.";
+        };
         recoveryInitrd = lib.mkOption {
           type = nullableArtifact;
           description = "Optional selected-provider recovery initrd.";
@@ -244,6 +248,7 @@
         value.unsignedAssembly
         != null
         && value.installBundle == null
+        && value.installerMedia == null
         && lib.all (value: !value) selfContainedPresent
         && lib.all (value: !value) present
       else

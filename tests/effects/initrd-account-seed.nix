@@ -112,7 +112,7 @@
     registration = "unused";
     accountSeed = baselineSeed;
   };
-  archiveBuilder = builtins.head (builtins.filter (dependency: (dependency.name or "") == "aos-initrd-archive") builder.buildDeps);
+  archiveBuilder = builder.passthru.archive;
   accountPhase = builtins.head (builtins.filter (phase: phase.name == "seed-accounts") archiveBuilder.phases);
   expectedFile = name:
     pkgs.writeTextFile {

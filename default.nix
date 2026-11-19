@@ -456,6 +456,13 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
           # `environment.etc`) can overlay a fragment without rebuilding the
           # module list. Retains this variant's native stage sources.
           inherit (evaluated) extendModules;
+          # Installer media for writing to a USB stick; pass hostConfiguration
+          # to place a host.nix on its AOS-META partition.
+          installerMedia = {hostConfiguration ? null}:
+            lib.build.installerMedia {
+              system = evaluated;
+              inherit hostConfiguration;
+            };
           build = {
             toplevel = evaluated.config.system.build.toplevel;
             kernel = evaluated.config.system.build.kernel;
@@ -709,7 +716,6 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       checks = qualificationRequirementChecks "ability-native-adapter-matrix";
       inherit nativeOperationSpec;
       nativeOperationCohorts = nativeOperationRegistration.cohorts;
-      stagingHubUrl = "https://aos.staging.andyl.org";
     };
     ability-native-recovery = mkNativeAbilityScenario {
       scenarioId = "ability-native-recovery";
@@ -890,10 +896,6 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       else acc
   ) {} (builtins.attrNames pkgs);
 
-  packagePresetCheck = import ./tests/packages/preset.nix {
-    inherit pkgs testing;
-    mkSystem = mkFixtureSystem;
-  };
   apmInstallAtBootCheck = import ./lib/testing/apm-install-at-boot.nix {
     inherit pkgs testing;
     mkSystem = mkFixtureSystem;
@@ -1711,6 +1713,12 @@ in rec {
         lib.${hostPlatform.system} = downstreamLib;
         legacyPackages.${hostPlatform.system} = pkgs;
       };
+      # The flake's outputs cover every system, so only the coordinator's
+      # native evaluation checks them; a cross copy would repeat the work.
+      flakeOutputs =
+        if isCrossBuild
+        then null
+        else (import ./flake.nix).outputs {};
     };
     # The core remains a quick authoring gate. The public eval aggregate below
     # also reaches native policy, provider, stage and provenance coverage.
@@ -2166,7 +2174,6 @@ in rec {
     };
     systemd-credentials = import ./tests/abilities/systemd-credentials.nix {inherit pkgs lib;};
     systemd-verity = build.systemd-verity;
-    package-preset = packagePresetCheck;
     selinux-base = selinuxBaseCheck;
     apm-install-at-boot = apmInstallAtBootCheck;
     lint = import ./tests/packages/lint.nix {inherit pkgs lib;};
@@ -2180,7 +2187,6 @@ in rec {
         hub-settings = hubSettingsTest;
         apm-install-at-boot = apmInstallAtBootCheck;
         homes-enabled = homesEnabledCheck;
-        package-preset = packagePresetCheck;
         selinux-base = selinuxBaseCheck;
       };
     integration = packageChecks // stdenvChecks;

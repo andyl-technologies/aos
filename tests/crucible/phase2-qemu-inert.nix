@@ -668,7 +668,7 @@
       grep -Fxq 'campaign_mode=${campaignComposition.mode}' "$PATCH_MICROTESTS_RESULT" \
         || fail "mode-specific patch-microtests mode is absent"
       grep -Fxq \
-        'campaign_configuration_identity=${campaignComposition.system.config.aos.services.crucibleCampaign._runtimeIdentity}' \
+        'campaign_configuration_identity=${campaignComposition.system.config.aos.crucible.campaign._runtimeIdentity}' \
         "$PATCH_MICROTESTS_RESULT" \
         || fail "mode-specific patch-microtests configuration identity is absent"
       grep -Fxq 'campaign_toplevel=${campaignComposition.system.config.system.build.toplevel}' \

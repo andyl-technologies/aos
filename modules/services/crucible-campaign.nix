@@ -10,7 +10,7 @@
   pkgs,
   ...
 }: let
-  cfg = config.aos.services.crucibleCampaign;
+  cfg = config.aos.crucible.campaign;
   listenPrefix =
     if lib.hasPrefix "127.0.0.1:" cfg.listenAddress
     then "127.0.0.1:"
@@ -43,7 +43,10 @@
     inherit (cfg) enable listenAddress socketPath stateDirectory;
   });
 in {
-  options.aos.services.crucibleCampaign = {
+  # `aos.services` is the native service registry, where every enabled entry
+  # must declare a native lifecycle. This module renders its own systemd unit,
+  # so its options live outside that registry.
+  options.aos.crucible.campaign = {
     enable = lib.mkOption {
       type = lib.types.bool;
       default = false;
@@ -82,7 +85,7 @@ in {
       assertions = [
         {
           assertion = listenPort > 0 && listenPort <= 65535;
-          message = "aos.services.crucibleCampaign.listenAddress must be a numeric loopback address with a valid nonzero TCP port";
+          message = "aos.crucible.campaign.listenAddress must be a numeric loopback address with a valid nonzero TCP port";
         }
         {
           assertion = builtins.all hasNoControlCharacters [
@@ -94,11 +97,11 @@ in {
         }
         {
           assertion = socketPathIsOwned;
-          message = "aos.services.crucibleCampaign.socketPath must be a normalized file below /run/crucible-campaign";
+          message = "aos.crucible.campaign.socketPath must be a normalized file below /run/crucible-campaign";
         }
         {
           assertion = stateDirectoryIsOwned;
-          message = "aos.services.crucibleCampaign.stateDirectory must be a normalized path at or below /var/lib/crucible-campaign";
+          message = "aos.crucible.campaign.stateDirectory must be a normalized path at or below /var/lib/crucible-campaign";
         }
       ];
 

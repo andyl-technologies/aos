@@ -428,3 +428,29 @@ grep -Fq "would remove $AOS_DEV_CACHE_DIR/bazel/large-entry" "$scratch/size-prev
 test -f "$AOS_DEV_CACHE_DIR/bazel/large-entry"
 bash "$root/tools/dev/aos-dev" cache prune --days 999 --max-gib 1 >/dev/null
 test ! -e "$AOS_DEV_CACHE_DIR/bazel/large-entry"
+
+# Ignore rules must not hide source files that path-based builds still copy.
+sources=$scratch/source-tracking
+mkdir -p "$sources/src/result"
+printf 'result\n' > "$sources/.gitignore"
+printf '// module\n' > "$sources/src/result/operations.rs"
+GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git -C "$sources" init --quiet
+
+if (
+  aos_dev_root=$sources
+  source "$root/tools/dev/lib/common.bash"
+  source "$root/tools/dev/lib/commands.bash"
+  aos_dev_check_sources
+) 2> "$scratch/sources.err"; then
+  echo 'ignored source file was accepted' >&2
+  exit 1
+fi
+grep -Fxq '  src/result/operations.rs' "$scratch/sources.err"
+
+printf 'result\n!result/\n' > "$sources/.gitignore"
+(
+  aos_dev_root=$sources
+  source "$root/tools/dev/lib/common.bash"
+  source "$root/tools/dev/lib/commands.bash"
+  aos_dev_check_sources
+)

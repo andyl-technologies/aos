@@ -9,11 +9,11 @@
 ##!     signer allowlist for privileged shared-root ownership.
 ##!   - `/etc/apm/trusted-keys.d/<name>.pub` — every trust key, one per
 ##!     line (`apm` reads this directory in both profile scopes).
-##!   - `/etc/apm/trusted-sb-certs.d/<name>.pem` — the registry's Secure
-##!     Boot db certificate(s) (`sbDbCerts`). Distinct key, same delivery
-##!     mechanism as the registry trust anchor, provisioned at install.
-##!     The same certificates join the image's authorized db snapshot that
-##!     the recovery initrd verifies UKIs and recovery media against.
+##!   - `/etc/apm/trusted-sb-certs.d/<name>.pem` — the registry's
+##!     additional Secure Boot db certificates (`sbDbCerts`). `apm` does
+##!     not read this file; the same certificates join the image's
+##!     recovery db trust set, which authorizes recovery UKIs and signed
+##!     slot manifests.
 ##!   - `/etc/apm/trusted-config-keys.d/<op>.pub` — provisioning-signing
 ##!     key(s) (`aos.apm.configKeys`). Under signed provisioning policy, the
 ##!     initrd verifies the complete input against the same public anchors

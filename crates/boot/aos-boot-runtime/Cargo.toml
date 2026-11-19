@@ -8,12 +8,13 @@ description = "Retained boot preparation, image staging, boot selection, and ini
 [features]
 default = ["boot-tools"]
 # The preparation handler also runs before the complete image tooling is present.
-boot-tools = ["dep:aos-boot-identity", "dep:aos-nix", "dep:aos-release-format", "dep:hex", "dep:sha2", "dep:rustix", "dep:tempfile", "dep:zstd"]
+boot-tools = ["dep:aos-boot-identity", "dep:aos-boot-media", "dep:aos-nix", "dep:aos-release-format", "dep:hex", "dep:sha2", "dep:rustix", "dep:tempfile", "dep:zstd"]
 
 [dependencies]
 anyhow.workspace = true
 aos-activation.workspace = true
 aos-boot-identity = { workspace = true, optional = true }
+aos-boot-media = { workspace = true, optional = true }
 aos-core.workspace = true
 aos-nix = { workspace = true, optional = true }
 aos-release-format = { workspace = true, optional = true }
