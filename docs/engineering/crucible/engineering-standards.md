@@ -4,8 +4,12 @@ Crucible code is a determinism artifact. A bug in ordinary code produces a
 wrong answer; a determinism bug produces a flaky answer, which is the exact
 failure the system exists to remove. The standards on this page add
 Crucible-specific rules on top of the repository-wide Rust and documentation
-standard in the root `AGENTS.md` and [`docs/engineering/code-style.md`](../code-style.md).
-Where they appear to differ, the root guidance wins.
+standard in the root [`AGENTS.md`](../../../AGENTS.md) and
+[`docs/engineering/code-style.md`](../code-style.md). Where they appear to
+differ, the root guidance wins. Sections below state only what Crucible adds
+and which check enforces it; they do not repeat the repository-wide rules.
+Terms such as decision RNG, virtual time, icount, and gate are defined in the
+[glossary](glossary.md).
 
 The standards form layered defenses, each refusing a class of nondeterminism
 the next would miss:
@@ -41,35 +45,26 @@ crate layering, the unsafe fence, and feature rules are in
 
 ## Rustdoc bar
 
-Every Crucible crate meets the docs.rs-quality bar of the root `AGENTS.md`.
+Every Crucible crate meets the Rust documentation standard in the root
+[`AGENTS.md`](../../../AGENTS.md) (module headers, item docs, `# Errors` and
+`# Panics`, tagged fences, the clap derive caveat, ASCII punctuation).
 Rustdoc's own lints cover missing public docs and broken intra-doc links: crate
 roots set `#![deny(missing_docs)]` (all but `crucible-store-s3` today), and
 `cargo doc` is part of the build. `tests/rustdoc_bar.rs` checks the source
-shape that rustdoc does not model:
+shape that rustdoc does not model. Beyond the repository-wide rules it adds:
 
-- Every `.rs` file starts with a `//!` module header, and every crate root has
-  a `Module map:` paragraph naming its modules.
-- A module that owns an on-disk or wire format shows it in a tagged format
-  sketch. The checked format owners are the shared-memory ABI
-  (`crucible-qemu-shmem/src/lib.rs`), the wire protocol
-  (`crucible-qemu-protocol/src/lib.rs`), and the golden-vector records
-  (`crucible-test-support/src/abi.rs`). Other format-owning modules, such as
-  the reproduction-artifact format, follow the same convention.
-- Every rustdoc fence is tagged `text`, `rust`, `toml`, `no_run`, or `ignore`.
-  An untagged fence becomes a doctest in the hermetic build, so an untagged
-  format example is a build failure. `crucible-cli` and `crucible-qemu-plugin`
-  are not covered by `cargo test --doc`, so a `rust` or `no_run` fence there is
-  a finding. Prefer `no_run` for examples, and add runnable examples only when
-  they compile against public API alone.
-- Public functions returning `Result` carry `# Errors`; items with a reachable
-  panic carry `# Panics`. Because Crucible errors are usually
-  determinism-relevant (a divergence, a hash mismatch, an ABI version
-  mismatch), the `# Errors` text names the invariant or gate the error defends
-  where one applies.
-- `#[derive(Parser)]`, `#[derive(Subcommand)]`, and `#[derive(Args)]`
-  containers carry no `///` docs, because clap turns them into `--help` text.
-  Field docs are user-facing CLI text: short, imperative, accurate.
-- Comments and docs use ASCII punctuation.
+- Every crate root has a `Module map:` paragraph naming its modules.
+- The checked format owners, which must show their format in a tagged sketch,
+  are the shared-memory ABI (`crucible-qemu-shmem/src/lib.rs`), the wire
+  protocol (`crucible-qemu-protocol/src/lib.rs`), and the golden-vector
+  records (`crucible-test-support/src/abi.rs`). Other format-owning modules,
+  such as the reproduction-artifact format, follow the same convention.
+- The accepted fence tags are `text`, `rust`, `toml`, `no_run`, and `ignore`.
+  `crucible-cli` and `crucible-qemu-plugin` are not covered by
+  `cargo test --doc`, so a `rust` or `no_run` fence there is a finding.
+- Because Crucible errors are usually determinism-relevant (a divergence, a
+  hash mismatch, an ABI version mismatch), the `# Errors` text names the
+  invariant or gate the error defends where one applies.
 
 ## Error handling and logging
 
@@ -77,10 +72,10 @@ The harness lint's error and logging pass (`error_logging.rs` under
 `tests/support/harness_lint/`) applies to production sources of every Crucible
 crate; `#[cfg(test)]` code and test-only sources are exempt.
 
-- `.unwrap()` and `.expect()` are findings (`panic-shortcut`). A
-  determinism-invariant violation that must fail loudly does so with an
-  explicit `panic!` or `assert!` whose message names the invariant, never a
-  bare unwrap.
+- The repository-wide ban on `.unwrap()` and `.expect()` is the
+  `panic-shortcut` rule. A determinism-invariant violation that must fail
+  loudly does so with an explicit `panic!` or `assert!` whose message names
+  the invariant.
 - Library crates model errors with typed enums: the manifest declares
   `thiserror` or the crate defines its own typed error. Erased error crates
   (`anyhow`, `eyre`, `miette`) and `bail!` are findings (`erased-error`) in a
@@ -183,16 +178,13 @@ weakened to make a change pass: a finding is fixed at its root.
 
 ## Unsafe discipline
 
-`unsafe` appears only in the enumerated boundary crates, for shared-memory
-mapping, the lock-free SPSC ring, the QEMU plugin C ABI, descriptor handover,
-and the guest doorbell. Every other crate forbids it at the crate root. In a
-boundary crate, every `unsafe` block or impl carries an adjacent
-`// SAFETY:` comment stating the invariant it relies on, every unsafe callable
-item carries a `# Safety` doc section, and the `unsafe` sits behind a safe
-wrapper whose safe surface upholds the invariant. The SPSC ring's `unsafe` is
-relied on only after the exhaustive ordering model passes. The fence lists and
-the per-crate safe-wrapper contracts are in
-[crate-structure.md](crate-structure.md).
+The fence lists, the per-crate safe-wrapper contracts, and the `// SAFETY:`
+and `# Safety` rules that `tests/crate_unsafe_fence.rs` enforces are in
+[crate-structure.md](crate-structure.md#unsafe-fence). One rule is specific to
+this page: the SPSC ring's `unsafe` is relied on only after the exhaustive
+ordering model described under
+[Concurrency, ABI, and oracle tests](#concurrency-abi-and-oracle-tests)
+passes.
 
 ## Testing standards
 
@@ -266,13 +258,12 @@ perturbs the determinism tests themselves.
 `tests/engineering_hygiene.rs` (`checks.crucible.phase1.engineeringHygiene`)
 owns the source-shape and review-policy rules.
 
-**Size.** Authors reconsider a hand-written module's responsibilities when its
-implementation or its test section grows beyond 1000 lines, and a section
-beyond 1500 lines needs a cohesion argument. `#[cfg(test)]` modules count
-separately from the implementation, and a test-only source counts wholly as
-tests. Exactly 1000 or 1500 lines does not cross a boundary. Each section above
-1000 lines is recorded in `tests/crucible/engineering-hygiene-baseline.txt`
-as a content-bound review:
+**Size.** The 1000-line and 1500-line review thresholds are the
+repository-wide ones in [code-style.md](../code-style.md). The check counts
+`#[cfg(test)]` modules separately from the implementation and a test-only
+source wholly as tests; exactly 1000 or 1500 lines does not cross a boundary.
+Each section above 1000 lines is recorded in
+`tests/crucible/engineering-hygiene-baseline.txt` as a content-bound review:
 
 ```text
 shape-review|path|sha256:digest|implementation-or-tests|section-lines|responsibilities|cohesion
@@ -281,10 +272,11 @@ shape-review|path|sha256:digest|implementation-or-tests|section-lines|responsibi
 The SHA-256 digest is over the whole source file, so any later change to the
 file invalidates the review. Sections of 1500 lines or fewer record
 `threshold-not-reached` as their cohesion; a record is stale once its section
-returns to 1000 lines or fewer. Older `shape-line|path|cap` rows are a frozen
-inventory from an earlier, stricter limit: a file at or below its cap stays
-grandfathered, growth above the cap needs a `shape-review`, and caps are never
-raised.
+returns to 1000 lines or fewer. The baseline also holds `shape-line|path|cap`
+rows, a fixed per-file line cap: a file at or below its cap needs no review,
+growth above the cap needs a `shape-review`, and caps are never raised. A
+row is stale, and a failure, once its file is gone or small enough to need no
+cap.
 
 **Modules.** Every `.rs` file is a module with a `//!` header and owns one
 coherent concern: one ABI format, one scheduler concern, one fault family. A
@@ -306,13 +298,15 @@ rules as `atomic-logical-change`, `imperative-summary`,
 
 ## Documentation hygiene
 
+The first rule restates the root [`AGENTS.md`](../../../AGENTS.md) rule, and
+`tests/documentation_hygiene.rs` requires both files to carry it.
+
 **Documenting existing code is comments-only.** A documentation pass does
 NOT reorder, rename, or reformat code; it adds `//!`, `///`, and `// SAFETY:`
 comments only. If a doc claim contradicts the code, the doc is fixed to match
 the observed behavior and the discrepancy is flagged in the PR for separate
 resolution. This keeps a determinism-relevant code change from hiding inside a
-documentation diff. `tests/documentation_hygiene.rs` checks that the root
-`AGENTS.md` carries the same rule.
+documentation diff.
 
 **Doc-lint and the gate catalog.** Gate names are checked between the code and
 the documentation. The gate catalog table in
@@ -325,13 +319,12 @@ defined-but-unreferenced gate, or a drifted catalog table fails
 
 ## License-boundary review
 
-Code and documentation that touch QEMU integration, `crucible-qemu-plugin`,
-`crucible-qemu-protocol`, `crucible-qemu-shmem`, packaging, or guest doorbells
-preserve the component, dependency, and public-protocol rules in
+The component, dependency, and public-protocol rules for code and
+documentation that touch QEMU integration, the plugin, the two public protocol
+crates, packaging, or guest doorbells are in
 [../../legal/licensing.md](../../legal/licensing.md). The `Always` gate
-`gate:license-boundary`, owned by `crucible-test-support`, fails closed on any
-dependency, license-scope, protocol-shape, package-source, or
-corresponding-source violation.
+`gate:license-boundary` enforces them and fails closed; its pass criterion is
+in the [gate catalog](testing-and-gates.md#gate-catalog).
 
 ## Determinism review checklist
 
@@ -343,9 +336,10 @@ every change to an engine, scheduler, or transport crate
 ordering-significant path. A green `gate:harness-lint` is not sufficient for
 such a change.
 
-A reviewer MUST apply the checklist below to any PR touching an engine/scheduler/transport crate,
-and MUST block the PR on any unchecked item. The
-completed checklist is recorded in the PR description or review.
+A reviewer MUST apply the checklist below to
+any PR touching an engine/scheduler/transport crate, and MUST block the PR on
+any unchecked item. The completed checklist is recorded in the PR description
+or review.
 
 ```text
 DETERMINISM REVIEW CHECKLIST (apply to any engine/scheduler/transport PR)
@@ -403,9 +397,10 @@ Tests and gates
     green; any new crucible-lint allow has a written rationale.
 ```
 
-When the checklist surfaces a leak, the fix MUST be at the
-source of the nondeterminism, never a workaround that smooths it over: no retry, no
-jitter tolerance, no comparison with a fudge factor. A change that papers over a determinism leak
-rather than eliminating it is blocked even if CI is green, because the gates
-prove only the interleavings they test and the leak will resurface. This is
-the same localize-never-smooth-over rule that divergence bisection serves.
+When the checklist surfaces a leak, the fix MUST be at the source of the
+nondeterminism, never a workaround that smooths it over: no retry, no
+jitter tolerance, no comparison with a fudge factor. A change that
+papers over a determinism leak rather than eliminating it is blocked even if
+CI is green, because the gates prove only the interleavings they test and the
+leak will resurface. This is the same localize-never-smooth-over rule that
+divergence bisection serves.

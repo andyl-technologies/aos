@@ -13,7 +13,8 @@ that reads them is in [assertions.md](assertions.md); trigger evaluation is in
 [conditions-and-triggers.md](conditions-and-triggers.md); checkpoint offsets
 and fork structure are in [execution-graph.md](execution-graph.md); the
 determinism contract the causal comparison enforces is in
-[determinism.md](determinism.md).
+[determinism.md](determinism.md). Shared vocabulary (tick, raw retired count,
+virtual time, decision) is defined in the [glossary](glossary.md).
 
 ## Code map
 
@@ -94,14 +95,16 @@ pub struct EventLogTickStamp {
 
 `EventLogTime` is `VirtualTime` plus an exact logical tick, with a node on
 node-local stamps and an optional independently observed raw retirement
-witness. For a resolved `backend_input` entry, `virtual_time` is the
-scheduler's logical delivery time and the stamp records the target VM's exact
-physical retired-instruction count, computed when the scheduler resolves the
-delivery, before a later backend restart can rebase that node's
-logical-to-physical mapping. The segment decoder rejects a `backend_input`
-entry whose stamp lacks a retired count or whose source is not
-`EventSource::Node` for the stamped node. Virtual-time units are defined in
-[virtual-time.md](virtual-time.md).
+witness. Virtual-time units are defined in
+[virtual-time.md](virtual-time.md). A resolved `backend_input` entry has
+three extra rules:
+
+- `virtual_time` is the scheduler's logical delivery time.
+- The stamp records the target VM's exact raw retired-instruction count. It
+  is computed when the scheduler resolves the delivery, before a later
+  backend restart can rebase that node's logical-to-physical mapping.
+- The segment decoder rejects an entry whose stamp lacks a retired count or
+  whose source is not `EventSource::Node` for the stamped node.
 
 ### Source
 
@@ -211,12 +214,18 @@ event_kind_catalog.dependencies=<n>
 dependency consumer=<surface> kinds=<kind>,<kind>,...
 ```
 
-The dependency map records which consumer surfaces read which kinds: the
-assertion engine reads `assertion_evaluated`, `assertion_state_changed`,
-`assertion_proximity`, and `guest_marker`; the control plane and API read every
-kind (`*`); search and fuzzing read `coverage` and `assertion_proximity`; the
-determinism harness reads the full causal set. Consumers read this catalog; none
-defines a parallel kind vocabulary.
+The dependency map records which consumer surfaces read which kinds:
+
+| Consumer | Kinds |
+|----------|-------|
+| `fault-signal-recording` | The fourteen signal-driven fault evidence kinds |
+| `guest-measurement` | `guest_measurement_begin`, `guest_measurement_end`, `guest_metric_sample`, `guest_semantic_marker` |
+| `assertions` | `assertion_evaluated`, `assertion_state_changed`, `assertion_proximity`, `guest_marker` |
+| `session`, `control-api` | Every kind (`*`) |
+| `exploration` | `coverage`, `assertion_proximity` |
+| `determinism-harness` | The full causal set |
+
+Consumers read this catalog; none defines a parallel kind vocabulary.
 
 The current catalog (56 kinds):
 
@@ -231,13 +240,16 @@ The current catalog (56 kinds):
 | Observational: guest channel | `guest_marker`, `guest_measurement_begin`, `guest_metric_sample`, `guest_measurement_end`, `guest_semantic_marker` |
 | Observational: other | `diagnostic`, `assertion_proximity` |
 
-The signal-driven fault kinds are documented with the fault model in
-the [signal-driven faults](../../users/crucible/signal-driven-faults.md)
-guide. Some causal kinds
-(`event_activated`, `state_transition`, the node, timer, and message lifecycle
-kinds, `savepoint`, `tick`) have fixed classes in the catalog but no emitter in
-the current scheduler codec; I/O completions are recorded as `io_completion`
-and frame deliveries as `backend_input`.
+The signal-driven fault kinds are documented with the
+[fault model](fault-model/README.md) and in the
+[signal-driven faults](../../users/crucible/signal-driven-faults.md) guide.
+Some causal kinds (`event_activated`, `state_transition`,
+`probabilistic_effect`, the node, timer, and message lifecycle kinds,
+`savepoint`, `tick`) have fixed classes in the catalog but no emitter in the
+current scheduler codec; I/O completions are recorded as `io_completion` and
+frame deliveries as `backend_input`. `fork` is not produced by a quantum
+either: its only constructor is the debug-fork marker
+(`SchedulerEventLogEntry::fork_marker`).
 
 Notes on specific kinds:
 

@@ -4,6 +4,13 @@ Campaigns retain complete machine state, accept structured guest input, run
 large adaptive workloads, and move artifacts through pluggable stores. This page
 describes their trust boundaries and fail-closed operational behavior.
 
+Source: local authorization in
+[`crucible-daemon/src/campaign_policy.rs`](../../../../crates/crucible/crucible-daemon/src/campaign_policy.rs);
+submission authority in
+[`crucible-campaign/src/authority.rs`](../../../../crates/crucible/crucible-campaign/src/authority.rs);
+archive manifests in
+[`crucible-campaign/src/archive.rs`](../../../../crates/crucible/crucible-campaign/src/archive.rs).
+
 ## Trust domains
 
 ```text
@@ -42,12 +49,17 @@ never published as a guest timeout.
 
 ## Resource admission
 
-Before running, the daemon validates ceilings for selectables, candidate and
-observation cardinality, branch depth and path length, request, proposal,
-attempt, and finding counts per grant, event-log, coverage, metric, and
-projection bytes, hot templates, live worlds, vCPUs, RAM, dirty pages,
-descriptors, and overlays, exact-closure and store quotas, and per-step planner
-computation, output, reads, fuel, cancellation, and wall-clock supervision.
+Before running, the daemon validates ceilings for:
+
+- selectables, and candidate and observation cardinality;
+- branch depth and path length;
+- request, proposal, attempt, and finding counts per grant;
+- event-log, coverage, metric, and projection bytes;
+- hot templates, live worlds, vCPUs, RAM, dirty pages, descriptors, and
+  overlays;
+- exact-closure and store quotas;
+- per-step planner computation, output, reads, fuel, cancellation, and
+  wall-clock supervision.
 
 No admitted policy algorithm may have a single poll, decode, or validation step
 that is unbounded in its admitted input. Resource exhaustion pauses or rejects
@@ -56,13 +68,19 @@ conditions, or modeled faults.
 
 ## Hot-fork isolation
 
-The fork coordinator is a high-risk QEMU capability. It requires a closed
-supported-device and backend manifest, one authorized host controller and
-generation, exact quiescence acknowledgements, complete inherited-descriptor
-disposition, new branch-private disks, rings, sockets, logs, and temporary
-files, containment reapplied before resume, a template that cannot receive
-child commands, children that cannot reach siblings, and rollback of every
-child on a partial world-fork failure. A child executes no guest instruction
+The fork coordinator is a high-risk QEMU capability. It requires:
+
+- a closed supported-device and backend manifest;
+- one authorized host controller and generation;
+- exact quiescence acknowledgements;
+- complete inherited-descriptor disposition;
+- new branch-private disks, rings, sockets, logs, and temporary files;
+- containment reapplied before resume;
+- a template that cannot receive child commands, and children that cannot
+  reach siblings;
+- rollback of every child on a partial world-fork failure.
+
+A child executes no guest instruction
 before its rebind is acknowledged, and the capability is unavailable for any
 launch profile, device, backend, or kernel outside the validated manifest. See
 [hot fork and checkpoints](hot-fork-and-checkpoints.md).
@@ -154,9 +172,10 @@ models that failure through a recorded selection and execution evidence.
 ## Export
 
 An archive is described by a content-addressed `CampaignArchiveManifest`
-(`crucible_campaign::archive`): the source snapshot, the closure policy
-(`metadata`, `findings`, `debug`, `executable`, or `mirror`), the selected exact
-checkpoints, the retained roots, and digests of the selected and omitted
+([`crucible-campaign/src/archive.rs`](../../../../crates/crucible/crucible-campaign/src/archive.rs)):
+the source snapshot, the closure policy (one of those listed under
+[publication and transfer](storage.md#publication-and-transfer)), the selected
+exact closures, the retained roots, and digests of the selected and omitted
 inventory pages. Inspection reports object counts and logical bytes split into
 metadata, evidence, and guest-state classes for both the selected and omitted
 sets, so an operator can see how much retained guest state an export carries

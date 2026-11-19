@@ -7,6 +7,11 @@ socket: the frame format, the closed tag registry, the version handshake, the
 descriptor handover, setup completion, the lifecycle, shutdown escalation,
 inertness, and the conformance corpus.
 
+This is the host/plugin socket protocol inside one node. It is not the
+operator-facing RPC API that clients use to drive the daemon; that is
+[control-api.md](control-api.md). Shared vocabulary is defined in the
+[glossary](glossary.md).
+
 The control protocol is a public process protocol, like the shared-memory
 region it bootstraps. Either side can be implemented from this specification
 without the other's private code; see the
@@ -372,10 +377,12 @@ installs a fresh private control endpoint, it wraps it with
 that endpoint will ever accept is the terminal `Quit`.
 
 The plugin's teardown (`crates/crucible/crucible-qemu-plugin/src/teardown.rs`)
-accepts exactly two shutdown proofs: the region's `shutdown_requested` flag or
-a `Quit` read through the lifecycle stream. On either, it marks the node
-`STATUS_DONE`, seals further shared-memory access, and invokes QEMU's shutdown
-hook.
+accepts exactly three shutdown triggers (`PluginTeardownTrigger`): the
+region's `shutdown_requested` flag (`ShutdownRequested`), a `Quit` read
+through the lifecycle stream (`HostQuit`), and a run-control fault
+(`RunControlFault`), which is the rejected or malformed run-phase frame
+described above. On any of them, it marks the node `STATUS_DONE`,
+seals further shared-memory access, and invokes QEMU's shutdown hook.
 
 ## Failure handling
 

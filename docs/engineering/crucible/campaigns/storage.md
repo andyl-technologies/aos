@@ -7,12 +7,14 @@ tiering, packing, verification, compression, encryption, quotas, write-back,
 and eviction are composable layers whose physical choices never enter campaign
 or configuration identity.
 
-The contracts live in `crucible_store::content_store` and
-`crucible_store::content_envelope`; the AWS SDK transport for the S3 leaf
-lives in `crucible-store-s3`. Daemon-side composition, GC, retention, and
-transfer live in `crucible-daemon` (`campaign_store_composition`,
-`campaign_store_quota`, `campaign_gc`, `campaign_retention`,
-`exact_pin_retention`, `campaign_transfer`).
+Source: the contracts in
+[`crucible-store/src/content_store.rs`](../../../../crates/crucible/crucible-store/src/content_store.rs) and
+[`content_envelope.rs`](../../../../crates/crucible/crucible-store/src/content_envelope.rs);
+the AWS SDK transport for the S3 leaf in
+[`crucible-store-s3`](../../../../crates/crucible/crucible-store-s3/);
+daemon-side composition, GC, retention, and transfer in the `crucible-daemon`
+modules `campaign_store_composition`, `campaign_store_quota`, `campaign_gc`,
+`campaign_retention`, `exact_pin_retention`, and `campaign_transfer`.
 
 One campaign namespace has one authoritative mutable ref backend. Immutable
 content may occupy any number of tiers. Archival transfer and offline
@@ -65,6 +67,9 @@ A campaign stays semantically readable when every ephemeral record and every
 unpinned acceleration or projection is absent.
 
 ## Blob and ref interfaces
+
+The traits below are abridged to their data-path methods; the definitions in
+`content_store.rs` are authoritative.
 
 ```rust,ignore
 pub trait ImmutableBlobBackend: Send + Sync {

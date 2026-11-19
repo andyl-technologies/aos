@@ -6,6 +6,17 @@ performance gates prove that hot forking actually improves the cost model. The
 canonical gate catalog is `crucible_test_support::campaign_gates`, and each
 gate is wired to a check in `tests/crucible/default.nix`.
 
+Source: the gate catalog in
+[`crucible-test-support/src/campaign_gates.rs`](../../../../crates/crucible/crucible-test-support/src/campaign_gates.rs);
+the Nix wiring in
+[`tests/crucible/default.nix`](../../../../tests/crucible/default.nix).
+
+Relationship to the parent pages: [performance](../performance.md) covers
+the single-run cost model and the perf-bench gate, and
+[testing and gates](../testing-and-gates.md) covers the test layers, the
+ordered gate catalog, and gate targets. This page covers only the
+campaign-specific gates and targets.
+
 ## Cost model
 
 For latent possibilities `L`, branch requests `B`, proposals `P`, admitted
@@ -64,7 +75,13 @@ The gate also enforces these measured targets on the reference profile:
 `gate:campaign-performance` requires planner and queue overhead below 5% of
 guest continuation time on the short-branch corpus, measured by the production
 scaling flight on a pinned reference host, and it ratchets later measurements
-against a reviewed baseline. `gate:campaign-metadata-million` authenticates one
+against a reviewed baseline. No reviewed baseline is pinned yet: only the
+host profile `tests/crucible/fixtures/campaign-performance-reference-host-v1.env`
+is checked in, and until
+`tests/crucible/fixtures/campaign-performance-reference-baseline-v1.env`
+exists the check in `tests/crucible/phase9-campaign-performance.nix` reports
+`BLOCKED` with reason `versioned-reference-baseline-unmeasured` instead of
+enforcing the bound. `gate:campaign-metadata-million` authenticates one
 million real admissions (62,500 requests of 16) with bounded object, index,
 physical-store, and peak-memory evidence. The procedure for measuring and
 pinning the baseline is in
@@ -114,7 +131,8 @@ ancestry replay.
 To reproduce, build the test without running it:
 
 ```text
-nix develop -c cargo test --manifest-path crates/Cargo.toml --release \
+nix develop --file cargo-shell.nix -c cargo test \
+  --manifest-path crates/Cargo.toml --release \
   -p crucible-daemon --test gate_campaign_metadata_million --no-run
 ```
 

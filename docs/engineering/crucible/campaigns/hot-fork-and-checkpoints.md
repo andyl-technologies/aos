@@ -7,12 +7,22 @@ executor may then realize its attempt by hot fork, exact restore, or thin
 replay. Two process children given the same recorded selection are duplicate
 realizations of one edge, not two branches.
 
-The GPL-side mechanisms live in the patched QEMU
-(`pkgs/emulation/qemu-patches/`). The host side lives in
-`crucible_qemu_host::qmp::hot_fork` (typed QMP commands and response parsers)
-and in `crucible-daemon` (`qemu_hot_fork_world*`, `hot_checkpoint_*`,
-`qemu_hot_first_router`, `exact_checkpoint_store`, `exact_checkpoint_restore`,
-`vm_lifecycle`).
+Source: the GPL-side mechanisms in the patched QEMU
+([`pkgs/emulation/qemu-patches/`](../../../../pkgs/emulation/qemu-patches/README.md));
+typed QMP commands and response parsers in
+[`crucible-qemu-host/src/qmp/hot_fork.rs`](../../../../crates/crucible/crucible-qemu-host/src/qmp/hot_fork.rs);
+and the `crucible-daemon` modules `qemu_hot_fork_world*`, `hot_checkpoint_*`,
+[`qemu_hot_first_router.rs`](../../../../crates/crucible/crucible-daemon/src/qemu_hot_first_router.rs),
+[`exact_checkpoint_store.rs`](../../../../crates/crucible/crucible-daemon/src/exact_checkpoint_store.rs),
+[`exact_checkpoint_restore.rs`](../../../../crates/crucible/crucible-daemon/src/exact_checkpoint_restore.rs), and
+[`vm_lifecycle.rs`](../../../../crates/crucible/crucible-daemon/src/vm_lifecycle.rs).
+
+Terms: a *hot template* is a paused, fork-ready world (module names say hot
+checkpoint or hot source); an *exact closure* is the durable, portable capture
+(module names say exact checkpoint, and "durable checkpoint" means the same);
+*thin replay* rebuilds a configuration from its schedule. *icount* is QEMU's
+retired-instruction counter and TCG its software emulator; see the
+[glossary](../glossary.md#qemu-and-transport).
 
 ## Realization tiers
 
@@ -36,8 +46,8 @@ pack / location   replaceable physical representation
 ```
 
 `qemu_hot_first_router` tries a whole-world retained hot source first and
-delegates an explicit decline to the lower-tier runner. Durable checkpoint
-resumes bypass hot fork. Hot fork is an acceleration, never a prerequisite:
+delegates an explicit decline to the lower-tier runner. Resumes from an exact
+closure bypass hot fork. Hot fork is an acceleration, never a prerequisite:
 when the launch profile, kernel, device set, memory pressure, or fork gate does
 not admit it, the executor uses exact restore or thin replay, and status
 explains the fallback. Disabling hot fork does not change the configuration or
@@ -123,27 +133,37 @@ Descriptor and mapping disposition and child-runtime reconstruction are child
 results; a parent cannot assert them.
 
 Before `prepare` can report ready, the host stages one complete branch-private
-resource set: a shrink-sealed memfd holding the canonical private plugin-ring
-image, distinct plugin control and wake endpoints, private diagnostics, QMP,
-and console streams, the child process contract, sorted descriptor replacement
-and retention tables, writable shared-mapping dispositions, and branch-private
-block overlays, network and 9p endpoints, and temporary files. Descriptors
-cross QMP only through `getfd` and typed staging operations; QEMU independently
-authenticates each one by kernel identity, size, seals, socket cookie, and
-generation. Descriptor tables allow at most 4,096 replacements and 4,096
-retained slots; mapping authentication accepts at most 65,536 records.
+resource set:
+
+- a shrink-sealed memfd holding the canonical private plugin-ring image;
+- distinct plugin control and wake endpoints;
+- private diagnostics, QMP, and console streams;
+- the child process contract;
+- sorted descriptor replacement and retention tables;
+- writable shared-mapping dispositions;
+- branch-private block overlays, network and 9p endpoints, and temporary
+  files.
+
+Descriptors cross QMP only through `getfd` and typed staging operations; QEMU
+independently authenticates each one by kernel identity, size, seals, socket
+cookie, and generation. Descriptor tables allow at most 4,096 replacements and
+4,096 retained slots; mapping authentication accepts at most 65,536 records.
 
 The fork command binds the exact template and every staged resource
 generation. Preparation, `fork(2)`, and parent disposition run on the QEMU
-main loop. The child arms parent-death containment, applies the descriptor
-table with signal and descriptor admission closed, authenticates retained
-mappings, reconstructs thread, mutex, RCU, AIO, timer, block, plugin, monitor,
-QMP, console, and device owners, and only then sends its private QMP greeting
-and releases guest execution. The host authenticates the child's readiness
-report on the staged private QMP stream before constructing a child node. A
-reported PID is correlation data, not process authority: the parent QEMU
-retains child status until the daemon transfers that exact generation into its
-cgroup, pidfd, and lifecycle owners.
+main loop. The child then, in order:
+
+1. arms parent-death containment;
+2. applies the descriptor table with signal and descriptor admission closed;
+3. authenticates retained mappings;
+4. reconstructs thread, mutex, RCU, AIO, timer, block, plugin, monitor, QMP,
+   console, and device owners;
+5. sends its private QMP greeting and releases guest execution.
+
+The host authenticates the child's readiness report on the staged private QMP
+stream before constructing a child node. A reported PID is correlation data,
+not process authority: the parent QEMU retains child status until the daemon
+transfers that exact generation into its cgroup, pidfd, and lifecycle owners.
 
 QEMU-private pointers, structures, callbacks, and native enum layouts never
 cross the process boundary. All coordinator, inventory, fork, and

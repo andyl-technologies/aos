@@ -98,6 +98,22 @@ and vibration values may still be signal sources that drive the supported
 effects, for example a temperature trace driving `cpu.service`. Any target or
 effect outside the registry is rejected as unknown.
 
+## Reading order
+
+1. This page: the four concepts and the invariants.
+2. [Signal programs](signal-program.md): how causes are computed.
+3. [Bindings and runtime](bindings-and-runtime.md): how a cause reaches an
+   opportunity and what state that keeps.
+4. [Effects and taxonomy](effects-and-taxonomy.md): the closed list of what a
+   binding may ask for.
+5. The adapter for the domain you are changing: [network](network.md),
+   [storage](storage.md), or [node and QEMU](node-and-qemu.md).
+
+[Replay and observability](replay-and-observability.md) and
+[resource limits](resource-limits.md) are reference pages that apply to every
+adapter. General Crucible terms (configuration, schedule, checkpoint, virtual
+time, quantum) are defined in the [glossary](../glossary.md).
+
 ## Pages
 
 | Page | Contents |

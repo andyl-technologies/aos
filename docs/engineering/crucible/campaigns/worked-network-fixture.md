@@ -4,7 +4,10 @@
 used to exercise the whole model end to end: a routed network product that
 chooses its recovery strategy in the guest while Crucible independently shapes
 the network disruption. It is built in
-`crucible-cli/src/cli/campaign/fixture.rs` through the same typed constructors
+[`crucible-cli/src/cli/campaign/fixture.rs`](../../../../crates/crucible/crucible-cli/src/cli/campaign/fixture.rs)
+(topology in
+[`fixture/topology.rs`](../../../../crates/crucible/crucible-cli/src/cli/campaign/fixture/topology.rs))
+through the same typed constructors
 and artifact verifier used by campaign import, and it writes an owner-only
 import set that it revalidates before reporting success. Operator steps for
 generating, validating, and running it are in

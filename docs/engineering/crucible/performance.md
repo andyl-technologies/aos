@@ -21,6 +21,21 @@ The perf gate result itself states the split:
 `evidence_scope=deterministic-cost-model` and
 `live_qemu_acceptance=not-established-by-this-check`.
 
+Terms such as lookahead, horizon, quantum, tick, and ceiling are defined in
+the [glossary](glossary.md).
+
+## Code map
+
+| Path | Owns |
+| --- | --- |
+| `crates/crucible/crucible-test-support/src/perf/model.rs` | The closed-form cost model and its constants |
+| `crates/crucible/crucible-test-support/src/perf/corpus.rs` | Canonical corpus, baseline, and host profile |
+| `crates/crucible/crucible-test-support/src/perf/sweeps.rs` | Latency, core-count, rendezvous, and fleet sweeps |
+| `crates/crucible/crucible-test-support/src/perf/admission.rs` | Host-parallelism admission register |
+| `crates/crucible/crucible-test-support/src/perf/gate.rs`, `perf/report.rs` | `run_perf_bench_gate` and `PerfBenchReport` |
+| `crates/crucible/crucible-test-support/tests/gate_perf_bench.rs` and `gate_perf_bench/` | The gate test target, syscall accounting, and hot-path source scan |
+| `tests/crucible/phase7-perf-bench.nix` | The Nix gate and its live dependency checks |
+
 ## The cost model
 
 Guests run under QEMU TCG with instruction-count virtual time (see
@@ -67,7 +82,7 @@ never trades exactness for speed. Two consequences follow:
   synchronization events, and drives `P` toward 1. This is the one real
   performance trade a scenario author controls. It never changes determinism,
   and the link-latency floor keeps it from collapsing to zero-width windows
-  (see [scenario-model.md](scenario-model.md)).
+  (see [scheduling.md](scheduling.md#link-latency-floor)).
 
 Host worker count is a host resource, not scenario content. It must never
 enter a content hash or change state, time, or the canonical log.
@@ -206,15 +221,14 @@ current integration in an `AdvanceSyscallCount`:
 | `per_quantum_socket_control_round_trips` | Always 0. |
 
 This is bookkeeping, not observed syscalls, and it does not count QEMU-side
-eventfd reads or event-loop polls. A future optimization may wake only armed
-waiters without changing the shared-memory ABI.
+eventfd reads or event-loop polls.
 
 Arithmetic cannot see source-level I/O, so the gate test target adds a source
 scan. `crates/crucible/crucible-test-support/tests/gate_perf_bench/hot_path_io.rs`
-holds an explicit inventory of hot-path owners, among them
-`crucible-qemu-host/src/async_driver/driver.rs`,
-`async_driver/hot_path.rs`, `supervision/host_io_runtime.rs`, and
-`supervision/block_io_servicer.rs`, plus targeted QEMU patch sources. Each
+holds an explicit inventory of hot-path owners, plus targeted QEMU patch
+sources. Among the owners, all under `crates/crucible/crucible-qemu-host/src/`,
+are `async_driver/driver.rs`, `async_driver/hot_path.rs`,
+`supervision/host_io_runtime.rs`, and `supervision/block_io_servicer.rs`. Each
 owner carries identity markers, and the scan fails if socket, QMP, or
 plugin-control APIs appear in that scope. Moving or replacing an owner
 requires updating the inventory.
@@ -277,11 +291,15 @@ to be false must be disabled, not tolerance-banded.
 
 ### The admitted mechanisms
 
-- **Cross-node host workers.** The scheduler selects a run set of nodes whose
-  horizons do not constrain each other, orders it by a completion-order key
-  computed from the plans, and commits outcomes in that order, never in worker
-  completion order. Speculative preparation and the authoritative commit live
-  in `crates/crucible/crucible-engine/src/scheduler/concurrent_prepare.rs`
+- **Cross-node host workers.** The scheduler selects a run set from the same
+  candidates as serial PICK: every candidate that starts at the common
+  frontier and shares the minimum target, or only the canonical first
+  candidate when it is not at the frontier (see
+  [scheduling.md](scheduling.md#host-concurrency)). It orders the set by a
+  completion-order key computed from the plans and commits outcomes in that
+  order, never in worker completion order. Speculative preparation and the
+  authoritative commit live in
+  `crates/crucible/crucible-engine/src/scheduler/concurrent_prepare.rs`
   (`SchedulerConcurrentRunSet`), parameterized by `max_host_workers`; the QEMU
   node set dispatches in
   `crates/crucible/crucible-qemu-host/src/node_set/concurrent.rs`. Until this

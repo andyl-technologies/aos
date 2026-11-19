@@ -8,8 +8,9 @@ implementation enforces, lists every entropy source and the mechanism that
 eliminates it, and describes the fingerprints and checks that defend it.
 
 Time is the backbone of the contract; its units and handoff protocol are in
-[virtual-time.md](virtual-time.md). Operator workflows for reproducing and
-verifying runs are in
+[virtual-time.md](virtual-time.md). Terms such as tick, raw icount, launch
+profile, and replay oracle are defined in the [glossary](glossary.md).
+Operator workflows for reproducing and verifying runs are in
 [../../users/crucible/reproduction.md](../../users/crucible/reproduction.md).
 
 ## The contract
@@ -71,12 +72,16 @@ State(t) = reduce(ScenarioDef, Schedule[0..t])
 ```
 
 `reduce` in `crates/crucible/crucible-engine/src/model/runtime.rs` maps a
-`ScenarioDef` and a `Schedule` to a content-addressed `State`. A
+`ScenarioDef` and a `Schedule` to a `State` that carries only an identity hash
+of the scenario id, seed, and schedule. It does not execute a guest; the
+concrete guest state is produced by the backend that realizes the
+configuration, and the replay oracle checks that every realization path agrees
+(see [execution-model.md](execution-model.md#reduce-the-pure-meaning)). A
 `Configuration` is exactly `(def, schedule)`; `Configuration::genesis` starts
 with an empty schedule, and `try_step` appends one `Decision`. No wall-clock
 value, host scheduling order, host entropy, or uncontrolled external input is
-a free variable of `reduce`. Start, resume, fork, replay, and search are all
-evaluations of the same function; see
+a free variable of `reduce` or of a conforming realization. Start, resume,
+fork, replay, and search are all evaluations of the same function; see
 [execution-model.md](execution-model.md) and
 [execution-graph.md](execution-graph.md).
 
@@ -139,9 +144,9 @@ Contract B rests on four mechanisms:
    already passed a delivery tick is a contract violation that fails loudly;
    it is never papered over by late delivery.
 3. **Deterministic tie-break.** Simultaneous inputs to one consumer are
-   ordered by `(virtual_time, consumer node, producer node, sequence)`
-   (`ScheduledEventKey` in the scheduler, `FrameDeliveryKey` in shared
-   memory).
+   ordered by the fixed key in `ScheduledEventKey` (scheduler) and
+   `FrameDeliveryKey` (shared memory); see
+   [scheduling.md](scheduling.md#event-ordering).
 4. **One authoritative scheduler.** All virtual-time advancement and all
    cross-node ordering decisions flow through the single scheduler actor; see
    [scheduling.md](scheduling.md).
@@ -157,31 +162,62 @@ current code eliminates it. "Launch" means the validated QEMU command line,
 "patch" the atomic QEMU patch in `pkgs/emulation/qemu-patches/`, and "plugin"
 `crates/crucible/crucible-qemu-plugin`.
 
+**CPU, entropy, and memory**
+
 | Source | Leak | Elimination | Where |
 | --- | --- | --- | --- |
 | Hardware RNG (`RDRAND`, `RDSEED`) | Guest reads host entropy | CPU model must not enable them; `-rdrand,-rdseed` are appended when absent | Launch |
 | CPU model variation | Host feature bits change semantics | Fixed `-cpu` (default `qemu64,-rdrand,-rdseed`), never `host`; AArch64 requires `pmu=off` | Launch |
 | Floating point | Host FPU behavior | TCG soft-float under a fixed CPU model | Launch |
-| Idle warp | QEMU advances virtual time by host time when idle | Warp disabled under `sim`; idle time moves only by authorized jumps | Patch, plugin |
-| Realtime deadlines in the TB budget | Instructions per TB depend on host speed | `sim` budget uses `QEMU_CLOCK_VIRTUAL` deadlines only | Patch |
-| TSC (`RDTSC`, `RDTSCP`) | Host-correlated cycle counter | TSC is `floor(logical_tick / 250)`, uniform per vCPU | Patch |
+| Guest entropy pool | Guest CSPRNG seeded from host entropy | 32-byte seed at `fw_cfg` name `opt/crucible/seed` derived from the scenario seed; `virtio-rng-pci` backed by `rng-builtin` | Launch |
+| QEMU-internal RNG | Device IDs, MACs, UUIDs from host entropy | `-seed <run_seed>` seeds `qemu_guest_getrandom` and GLib's global PRNG; details below | Patch, launch |
+| KASLR and userspace ASLR | Randomized layout changes `T` | Left enabled; randomization derives from the seeded boot entropy above | Launch |
+| Uninitialized memory and reset values | Power-on state differs | Deterministic reset: zeroed fresh RAM, fixed device reset | Launch |
+
+**Time and interrupts**
+
+| Source | Leak | Elimination | Where |
+| --- | --- | --- | --- |
+| Idle warp | QEMU advances virtual time by host time when idle | Warp disabled under `sim`; idle time moves only by authorized jumps ([virtual-time.md](virtual-time.md#no-warp-and-no-realtime-budget)) | Patch, plugin |
+| Realtime deadlines in the TB budget | Instructions per TB depend on host speed | `sim` budget uses `QEMU_CLOCK_VIRTUAL` deadlines only ([virtual-time.md](virtual-time.md#no-warp-and-no-realtime-budget)) | Patch |
+| TSC (`RDTSC`, `RDTSCP`) | Host-correlated cycle counter | TSC is `floor(logical_tick / 250)`, uniform per vCPU ([virtual-time.md](virtual-time.md#guest-visible-clocks)) | Patch |
 | RTC and wall-clock reads | Guest reads host time | `-rtc base=2026-01-01T00:00:00,clock=vm`; host `base`/`clock` rejected | Launch |
 | Timer devices (LAPIC, PIT, HPET, RTC) | Fire timing relative to instructions | Driven by `QEMU_CLOCK_VIRTUAL` at picosecond resolution | Patch |
 | Interrupt delivery timing | One instruction earlier or later forks the path | TCG delivers at deterministic TB boundaries under icount | Launch |
-| Async virtio completions | Host main-loop bottom half picks the completion instruction | In `sim` mode, rng/block/net/console kicks dispatch on the requesting vCPU; `rng-builtin` completes synchronously at the request; shared-memory block devices launch with `ioeventfd=off` | Patch, launch |
-| Guest entropy pool | Guest CSPRNG seeded from host entropy | 32-byte seed at `fw_cfg` name `opt/crucible/seed` derived from the scenario seed; `virtio-rng-pci` backed by `rng-builtin` | Launch |
-| QEMU-internal RNG | Device IDs, MACs, UUIDs from host entropy | `-seed <run_seed>` seeds `qemu_guest_getrandom` and GLib's global PRNG; under `sim`, a guest-random request without `-seed` fails instead of using host crypto | Patch, launch |
-| KASLR and userspace ASLR | Randomized layout changes `T` | Left enabled; randomization derives from the seeded boot entropy above | Launch |
+
+**vCPU interleaving**
+
+| Source | Leak | Elimination | Where |
+| --- | --- | --- | --- |
 | Multi-vCPU interleaving | MTTCG interleaves on host threads | `-accel sim,thread=single`; MTTCG and stock TCG rejected | Launch, patch |
 | RR switch quantum | Switch granularity fixes the interleaving | Fixed `rr_switch_quantum` in retired instructions, ascending vCPU rotation | Launch, patch |
-| Inter-vCPU IPI timing | IPI taken one instruction earlier or later on the target | All vCPUs share one RR thread, so IPIs land at deterministic boundaries; a commanded IPI is planned by `plan_deterministic_ipi_delivery` at sender icount plus a fixed modeled IPI latency, rounded up to the next RR boundary | Patch, plugin |
+| Inter-vCPU IPI timing | IPI taken one instruction earlier or later on the target | One RR thread gives deterministic boundaries; commanded IPIs are planned by `plan_deterministic_ipi_delivery`; details below | Patch, plugin |
 | vCPU bring-up and hotplug | SIPI timing or topology change | Fixed-at-genesis topology; runtime hotplug forbidden | Launch |
 | Host thread scheduling | Order of QEMU threads | Single RR thread plus icount; synchronous time-control handshake at idle and advance | Patch, plugin |
-| Uninitialized memory and reset values | Power-on state differs | Deterministic reset: zeroed fresh RAM, fixed device reset | Launch |
+
+**Devices, input, and restore**
+
+| Source | Leak | Elimination | Where |
+| --- | --- | --- | --- |
+| Async virtio completions | Host main-loop bottom half picks the completion instruction | In `sim` mode device kicks dispatch on the requesting vCPU and `rng-builtin` completes at the request; details below | Patch, launch |
 | Interactive input | Asynchronous host input | No keyboard, mouse, monitor, or serial input; all input is stamped | Launch |
 | Network arrival timing | Producer/consumer race | Contract B | Plugin, scheduler |
 | Block and 9p completion timing | Host I/O latency | I/O sub-nodes compute completion ticks; see [io-subnodes.md](io-subnodes.md) | Plugin, scheduler |
 | Snapshot restore | Lost icount, bias, or device state | Exact checkpoints restore raw icount and logical tick together; replay oracle checks them | Patch, host |
+
+Three rows need more than a table cell:
+
+- **Async virtio completions.** In `sim` mode, rng, block, net, and console
+  kicks dispatch on the requesting vCPU instead of a host main-loop bottom
+  half. `rng-builtin` completes synchronously at the request, and
+  shared-memory block devices launch with `ioeventfd=off`.
+- **QEMU-internal RNG.** `-seed <run_seed>` seeds `qemu_guest_getrandom` and
+  GLib's global PRNG. Under `sim`, a guest-random request without `-seed`
+  fails instead of using host crypto.
+- **Inter-vCPU IPI timing.** All vCPUs share one round-robin (RR) thread, so
+  IPIs land at deterministic boundaries. A commanded IPI is planned by
+  `plan_deterministic_ipi_delivery` at the sender's icount plus a
+  fixed modeled IPI latency, rounded up to the next RR boundary.
 
 ### The validated launch profile
 
@@ -191,7 +227,8 @@ The host turns these eliminations into a validated profile in
 
 - a `host` CPU model or one enabling `rdrand`/`rdseed`;
 - any accelerator other than `sim,thread=single`;
-- zero vCPUs, a zero RR quantum, or a quantum above `i32::MAX`;
+- zero guest memory, zero vCPUs, a zero RR quantum, or a quantum above
+  `i32::MAX`;
 - an RTC clock other than `vm`;
 - a run seed different from the scenario seed;
 - a reset mode other than `MachineResetMode::Deterministic`;
@@ -200,14 +237,21 @@ The host turns these eliminations into a validated profile in
 - `InputPolicy::HostInteractive`.
 
 Independently, `validate_pre_spawn_qemu_launch_args` re-checks the final argv
-before spawn. It rejects KVM, HVF, and WHPX; any non-`sim` accelerator;
-`thread=multi`; an unpinned single-thread mode; a `-machine accel=` other than
-`sim`; a missing or nonzero icount shift, `shift=auto`, or `sleep`/`align`
-other than `off`; an unpinned RR quantum; `-cpu host`; enabled entropy
-features; `/dev/random` and `/dev/urandom`; `rng-random` and `rng-egd`
-objects; `-realtime`; host RTC bases; and host-facing network, character, and
-USB input options. The validator rejects MTTCG rather than accepting it with a
-warning.
+before spawn. It rejects:
+
+- accelerators: KVM, HVF, and WHPX; any non-`sim` accelerator; `thread=multi`
+  (the validator rejects MTTCG, multi-threaded TCG, rather than accepting it
+  with a warning); an unpinned single-thread mode; a `-machine accel=` other
+  than `sim`;
+- instruction counting: a missing or nonzero icount shift, `shift=auto`,
+  `sleep`/`align` other than `off`, or an unpinned RR quantum;
+- CPU and entropy: `-cpu host`; enabled entropy features; `/dev/random` and
+  `/dev/urandom`; `rng-random` and `rng-egd` objects;
+- host time: `-realtime` and host RTC bases;
+- host input: host-facing network, character, and USB input options.
+
+The launch builder and the full validation order are described in
+[qemu-integration.md](qemu-integration.md#pre-spawn-validation).
 
 `scenario_hash_material` renders the profile as `crucible.launch.v3`
 canonical text that enters the scenario hash. Representative lines:
@@ -309,8 +353,10 @@ Crucible's own host code must also be deterministic.
 ```toml
 disallowed-methods = [
   { path = "std::time::Instant::now", ... },
+  { path = "std::time::Instant::elapsed", ... },
   { path = "std::time::SystemTime::now", ... },
   { path = "rand::thread_rng", ... },
+  { path = "rand::rng", ... },
   { path = "rand::random", ... },
   { path = "getrandom::getrandom", ... },
 ]
@@ -416,11 +462,11 @@ backsteps, and host I/O stalls.
 
 [testing-and-gates.md](testing-and-gates.md) describes the gate structure.
 
-The replay oracle is the structural form of the contract: if `reduce` is
-pure, a fat checkpoint's materialized state hashes equal to its thin
-derivation by construction, so an oracle failure is a determinism defect.
-`instantiate` checks exact cached snapshots against the oracle before loading
-them whenever a baked genesis root exists.
+The replay oracle is the structural form of the contract: if realization is
+a pure function of `(def, schedule)`, a fat checkpoint's materialized state
+hashes equal to its thin derivation by construction, so an oracle failure is a
+determinism defect. The oracle and the points where it runs are described in
+[execution-model.md](execution-model.md#the-replay-oracle).
 
 ## Build identity
 
@@ -513,7 +559,7 @@ when the channel is enabled but unused.
 | --- | --- |
 | Purity of reduction | `State(t) = reduce(ScenarioDef, Schedule[0..t])` with no host inputs |
 | Replay-oracle equality | Materialized and replayed checkpoints hash equal |
-| Total order | Cross-node events order by `(virtual_time, consumer node, producer node, sequence)` |
+| Total order | Cross-node events order by the one fixed key in [scheduling.md](scheduling.md#event-ordering) |
 | Instruction-derived time | Logical ticks come from retirement plus authorized idle jumps only |
 | Instruction-derived interleaving | vCPU switches and interrupt points depend only on node icount, `rr_switch_quantum`, and preemption decisions |
 | Guest non-modification | Copy-on-write overlays only; no required in-guest content |

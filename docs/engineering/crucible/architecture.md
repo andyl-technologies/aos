@@ -9,7 +9,9 @@ be replayed exactly and the space of schedules can be searched systematically.
 
 This page is the map: the model the code implements, the processes and crates,
 how data flows through a run, and the design decisions that shape the layout.
-Each topic links to the page that owns its detail.
+Each topic links to the page that owns its detail. The Rust crates named here
+live under `crates/crucible/`; vocabulary is defined in the
+[glossary](glossary.md).
 
 ## The model in one paragraph
 
@@ -21,7 +23,9 @@ State(t) = reduce(ScenarioDef, Schedule[0..t])
 ```
 
 The `ScenarioDef` is the spatial definition: World (nodes and links), Plan,
-Properties, and Seed, content-addressed as one value. The `Schedule` is the
+Properties, and Seed, content-addressed as one value. Its id also covers
+declared measurements, selectables, and the app-random draw cap; see
+[scenario-model.md](scenario-model.md#identity-hashes). The `Schedule` is the
 ordered list of `Decision`s the scheduler resolved. A `Configuration` is the
 pair `(ScenarioDef, Schedule)` and is the only identity-bearing execution
 state; live QEMU processes, memory images, and scheduler queues are caches of
@@ -78,7 +82,7 @@ it. The code organizes this as two graphs joined by one reduction:
  | QEMU PROCESS per VM (GPL-2.0)                                       |
  |   patched QEMU, TCG `sim` accelerator, -icount shift=0              |
  |   crucible-qemu-plugin (cdylib): time control, delivery at exact    |
- |   icount, observation callbacks, doorbell decoding                  |
+ |   tick, observation callbacks, doorbell decoding                    |
  |      +-----------------------------------------------------------+  |
  |      | GUEST (unmodified kernel + root image)                    |  |
  |      |   optional crucible-guest white-box emitter (doorbell)    |  |
@@ -117,8 +121,10 @@ The setup frame of the control protocol carries three descriptors in a fixed
 order: the shared-memory region, the wake descriptor, and the immutable
 version-matched plugin plan. After setup, per-quantum traffic is shared-memory
 writes plus wakes. A wake carries no timing decision or payload; every input
-carries its delivery icount in-band, so the plugin makes it visible at that
-icount regardless of when the bytes arrived.
+carries its delivery tick in-band, so the plugin makes it visible at that
+tick regardless of when the bytes arrived. (The shared-memory fields that
+carry ticks are still named `*_icount` for historical reasons; see
+[virtual-time.md](virtual-time.md#the-ceiling-handoff).)
 
 ## Layers and crates
 
@@ -149,7 +155,8 @@ The crate-by-crate inventory, including test-only and packaging crates, is in
 ## Data flow through one run
 
 ```text
- 1 define      TOML or ScenarioBuilder -> ScenarioDefForm
+ 1 define      canonical TOML -> ScenarioDefForm, or
+               ScenarioBuilder -> ScenarioDef
                validate, canonicalize, content-address
  2 bake        boot each VM once to its ready point, capture the genesis
                checkpoint
@@ -160,7 +167,7 @@ The crate-by-crate inventory, including test-only and packaging crates, is in
                  PICK    minimum-horizon node
                  RUN     SimulationBackend::step_to(ceiling)
                  RESOLVE due frames, I/O completions, signal effects in
-                         (virtual_time, consumer, producer, sequence) order
+                         the one total event order
                  EMIT    content-addressed event-log segment
                  STEP    append decisions, advance the frontier
  5 observe     triggers and assertions evaluate over the event log
@@ -209,19 +216,23 @@ contract is in [determinism.md](determinism.md).
 
 - **Intra-VM hermeticity.** One VM produces a bit-identical instruction stream
   for fixed inputs. `crucible-qemu-host` refuses to spawn QEMU unless the argv
-  selects the TCG-derived `sim` accelerator, fixed `-icount` with `shift=0`, a
-  pinned round-robin switch quantum, no KVM or MTTCG `thread=multi`, no host
-  CPU entropy, and no host-timing devices (`validate_pre_spawn_qemu_launch_args`
-  in `crates/crucible/crucible-qemu-host/src/launch/validation.rs`). The patch
+  passes `validate_pre_spawn_qemu_launch_args`
+  (`crates/crucible/crucible-qemu-host/src/launch/validation.rs`), which
+  requires the TCG-derived `sim` accelerator, fixed instruction counting, and
+  no host entropy or host-timing source; the rules are in
+  [qemu-integration.md](qemu-integration.md#pre-spawn-validation). The patch
   and plugin are described in [qemu-patch.md](qemu-patch.md) and
   [qemu-plugin.md](qemu-plugin.md).
-- **Injection determinism.** The icount at which an external input reaches a
+- **Injection determinism.** The tick at which an external input reaches a
   VM is a pure function of virtual time. A frame is delivered at its emission
   time plus link latency; an I/O completion at the time the sub-node model
   computes. Simultaneous events break ties by the fixed key
-  `(virtual_time, consumer, producer, sequence)` carried in `EventKey`.
-- **Harness determinism.** The engine is a reduction island:
-  `crucible-engine` forbids `unsafe`, reads no wall clock or host RNG on
+  `(virtual_time, consumer, producer, sequence)`: `ScheduledEventKey` in the
+  scheduler, recorded in decisions as `EventKey`. See
+  [scheduling.md](scheduling.md#event-ordering).
+- **Harness determinism.** The engine is a reduction island, meaning code
+  that may depend only on the scenario and the schedule: `crucible-engine`
+  forbids `unsafe`, reads no wall clock or host RNG on
   ordering paths, and iterates ordered collections. Intended randomness comes
   only from `DecisionRng` forks rooted at the scenario `Seed` and is recorded
   as `Decision`s.
@@ -256,7 +267,8 @@ decisions, so a re-derived state and a stored snapshot of the same point have
 the same identity. The Plan stays in the spatial definition because it is
 reproducible structure; only resolved choices enter the Schedule.
 
-**Conservative PDES with exact local horizons.** A node advances only into
+**Conservative PDES with exact local horizons.** Crucible is a conservative
+parallel discrete-event simulation (PDES). A node advances only into
 virtual time no peer can still affect, so nothing is ever rolled back; rolling
 back a full VM image would be expensive and a determinism hazard. Timers and
 I/O completions are computed host-side and give exact horizons, so only

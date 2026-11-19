@@ -3,7 +3,8 @@
 Node effects change a guest machine itself: lifecycle, vCPU service and state,
 registers, instructions, interrupts, memory, guest clocks, and the
 deterministic accelerator device. They are applied inside the patched QEMU at
-exact retired-instruction boundaries. The Apache-licensed host decides *what*
+exact retired-instruction boundaries; *icount* below is QEMU's count of
+retired instructions. The Apache-licensed host decides *what*
 to apply; QEMU applies it through a versioned shared-memory command protocol.
 
 Sources: effect parameters in

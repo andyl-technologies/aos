@@ -11,7 +11,10 @@ plane that lets the Apache-licensed host and the GPL-side QEMU plugin
 cooperate without linking to each other; see the
 [Crucible/QEMU process boundary](../../legal/licensing.md#crucibleqemu-process-boundary).
 The setup-time control socket that hands the region to the plugin is described
-in [control-protocol.md](control-protocol.md).
+in [control-protocol.md](control-protocol.md). Vocabulary such as tick, raw
+retired count, ceiling, node slot, and delivery tick is defined in the
+[glossary](glossary.md). The rings are single-producer, single-consumer
+(SPSC): each has exactly one writing process and one reading process.
 
 ## Source of truth
 
@@ -64,7 +67,9 @@ waiter-armed optimization that skips unnecessary wakes is not implemented.
 ## Units
 
 Fields whose names end in `_icount` or `_tick` hold exact logical ticks, not
-raw retired instructions. The constants are in `src/lib.rs`:
+raw retired instructions. The `_icount` suffix is historical; this page says
+"tick" for the logical coordinate and "raw icount" for QEMU's
+retired-instruction count. The constants are in `src/lib.rs`:
 
 | Constant | Value | Meaning |
 | --- | --- | --- |
@@ -174,7 +179,8 @@ one ring would break the SPSC discipline. The router executor re-stamps
 `delivery_icount` per the link model. None of these slots or `MAX_NODES`
 appears in the engine's logical topology: the logical-to-physical mapping is
 made at allocation time, and exceeding the slot capacity is an allocation
-error of this layer. The region-layout check scans for `MAX_NODES` escaping
+error of this layer. The region-layout check
+(`checks.crucible.phase2.shmemRegionLayout`) scans for `MAX_NODES` escaping
 the shmem crates. See [io-subnodes.md](io-subnodes.md).
 
 ## RegionHeader
@@ -311,7 +317,8 @@ The node mutates several related fields (`current_icount`, `current_ns`,
 `status`, `idle_wake_icount`, `logical_time_raw_icount`, `device_io_active`,
 the restore acknowledgement, and the timer witness) without a lock while the
 scheduler or a snapshotter reads them from another process. `publish_gen` is a
-seqlock that makes torn reads detectable:
+seqlock (a sequence counter that is odd while a write is in progress, so a
+reader retries instead of blocking) that makes torn reads detectable:
 
 ```text
 writer (node)                            reader (scheduler / snapshotter)
@@ -533,7 +540,9 @@ is not used. See [time-travel-debugging.md](time-travel-debugging.md).
 `device_completion_deadline_tick` is host-written: the exact tick at which a
 pending device completion for this VM will be delivered, or 0 for none. A
 plugin whose guest is blocked on device I/O idle-jumps to it. It is distinct
-from `idle_wake_icount` so the two directions never share a field.
+from `idle_wake_icount` so the two directions never share a field. The hold
+and the advance that use this field are described in
+[io-subnodes.md](io-subnodes.md#live-qemu-path-dispatch-hold-and-advance).
 
 The timer witness fields record one plugin-validated actual QEMU
 `QEMU_CLOCK_VIRTUAL` callback: the armed expiry in picoseconds and logical
@@ -737,7 +746,7 @@ quiescent.
 The marker ring is observational: separate from every causal ring, drained
 only at completed quantum boundaries, decoded by the canonical white-box
 decoder, and appended to the event log. Malformed entries, unsupported kinds,
-regressing or future icounts, and overflow fail the run; nothing falls back
+regressing or future ticks, and overflow fail the run; nothing falls back
 to a causal ring or the control socket. See
 [guest-host-channel.md](guest-host-channel.md).
 
@@ -753,17 +762,34 @@ accounting.
 
 ### Guest-introspection and accelerator entries
 
-`GuestIntrospectionEntry`, align 64, 4,672 bytes: `sequence` u64 at 0
-(nonzero, directional), `len` u16 at 8, zero pad at 10, one complete bounded
-`CRGI` record in `data[4608]` at 16, `_reserved[48]` at 4624. Entries carry no
-pointer, descriptor, callback, or QEMU-private value. A full ring applies
-backpressure and never overwrites; malformed entries fail closed.
+`GuestIntrospectionEntry`, align 64, 4,672 bytes:
 
-`AcceleratorEntry`, align 64, 4,736 bytes: `sequence` u64 at 0, `generation`
-u64 at 8, `device_id[32]` at 16, `class`, `job_kind`, `queue_id`, `status`,
-`protocol_version`, `flags` (u16 each) at 48..60, `data_len` u32 at 60,
-`service_units` u64 at 64, `output_capacity` u32 at 72, `data[4608]` at 76,
-`_reserved[52]` at 4684. `ACCELERATOR_PROTOCOL_VERSION = 1`.
+```text
+0     8     sequence         nonzero, directional
+8     2     len
+10    6     pad              zero
+16    4608  data             one complete bounded CRGI record
+4624  48    _reserved        zero
+```
+
+Entries carry no pointer, descriptor, callback, or QEMU-private value. A full
+ring applies backpressure and never overwrites; malformed entries fail closed.
+
+`AcceleratorEntry`, align 64, 4,736 bytes
+(`ACCELERATOR_PROTOCOL_VERSION = 1`):
+
+```text
+0     8     sequence
+8     8     generation
+16    32    device_id
+48    12    class, job_kind, queue_id, status, protocol_version, flags
+            (u16 each)
+60    4     data_len
+64    8     service_units
+72    4     output_capacity
+76    4608  data
+4684  52    _reserved
+```
 
 ### Fault transports
 

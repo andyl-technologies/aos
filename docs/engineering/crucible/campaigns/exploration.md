@@ -2,9 +2,18 @@
 
 Exhaustive search is usually impossible. A campaign selects a small, useful,
 replayable subset of a very large mixed discrete and integral space while
-keeping an exact account of what was and was not explored. The policy and
-generator vocabulary lives in `crucible_campaign::policy`; the pure planner in
-`crucible_campaign::planner_service` and `crucible_campaign::exploration`.
+keeping an exact account of what was and was not explored.
+
+Source: the policy and generator vocabulary in
+[`crucible-campaign/src/policy.rs`](../../../../crates/crucible/crucible-campaign/src/policy.rs);
+the pure planner in
+[`planner_service.rs`](../../../../crates/crucible/crucible-campaign/src/planner_service.rs) and
+[`exploration.rs`](../../../../crates/crucible/crucible-campaign/src/exploration.rs).
+
+Relationship to the parent page: [exploration](../exploration.md) describes
+the engine operations (fork, search, fuzzing, minimization) on one temporal
+graph. This page describes only how a campaign decides which typed selection
+to try next.
 
 ## Two nested decisions
 
@@ -77,16 +86,25 @@ offsets, where `S = min(initial_strata, C)` and
 branch point has at least `r * feedback_interval` distinct descendant credits,
 and between thresholds the continuation reports
 `WaitingForFeedback(completed, required)`. Each refinement chooses one maximal
-interval of unselected legal offsets. Intervals are ranked by the exact-mean
-discontinuity between their two selected endpoints in coverage rarity, then
-finding reward, then novelty, then objective reward, then by the number of
-producer landmarks inside the interval, the endpoint PUCT score difference,
-interval length, and finally the lower offset. The chosen interval emits the
-landmark closest to its lower midpoint, or the midpoint itself when it holds no
-landmark. Reaching `L` is `Exhausted` only when the domain fits in the
-proposal budget; otherwise it is a budget-limited `Closed`.
+interval of unselected legal offsets. Intervals are ranked by these keys in
+order, each breaking ties in the one before:
 
-**Corpus mutation.** For the request's branch point the owner scans at most
+1. the exact-mean discontinuity between the interval's two selected endpoints
+   in coverage rarity;
+2. the same discontinuity in finding reward;
+3. in novelty;
+4. in objective reward;
+5. the number of producer landmarks inside the interval;
+6. the endpoint PUCT score difference;
+7. interval length;
+8. the lower offset.
+
+The chosen interval emits the landmark closest to its lower midpoint, or the
+midpoint itself when it holds no landmark. Reaching `L` is `Exhausted` only
+when the domain fits in the proposal budget; otherwise it is a budget-limited
+`Closed`.
+
+**Corpus mutation.** For the request's branch point the coordinator scans at most
 4,096 completed credits whose attempt names the same opportunity and domain and
 whose child is still in the corpus. For each anchor in canonical order it tries
 distance one below, then above, then distance two, up to `maximum_distance`.
@@ -117,8 +135,10 @@ point may remain dormant indefinitely without consuming execution resources.
 ## Tree policy: deterministic PUCT
 
 `ExplorerPolicy` is `TreeSearch { puct, widening }`, `Beam { width,
-novelty_reserve }`, or `Exhaustive { maximum_cardinality }`. Tree search uses a
-fixed-point PUCT score with `S = 1_000_000`. For parent visits `N`, edge
+novelty_reserve }`, or `Exhaustive { maximum_cardinality }`. Tree search uses
+PUCT (predictor upper confidence bound for trees): each edge is scored by its
+mean reward plus an exploration term that grows with its prior and shrinks as
+it is visited. The score is fixed point with `S = 1_000_000`. For parent visits `N`, edge
 visits `n`, exploration weight `c`, and normalized prior `p` in `[0, S]`:
 
 ```text
@@ -151,7 +171,7 @@ duplicate causes are credited once. The inputs are:
   `finding.divergence`, and `finding.timeout` add a policy-weighted positive
   reward once per authenticated cluster occurrence credited to the branch
   point.
-- **Objectives.** Owner-published objective evaluations contribute a signed
+- **Objectives.** Coordinator-published objective evaluations contribute a signed
   scalar reward converted to millionths.
 
 An unseen offered edge is scored as one prospective addition with zero visits
@@ -255,7 +275,7 @@ back to biased frequency.
 - The **sequential Monte Carlo design** keeps that finite flight as stage zero,
   fixes the particle count, and predeclares every later stage's distribution and
   selector. A selector binds declaration, domain, producer instance, model, and
-  stop before the parent observation exists. The owner issues one request per
+  stop before the parent observation exists. The coordinator issues one request per
   particle slot, waits for every observation in a stage, and derives the next
   generation. The systematic resampler draws one exact offset from the campaign
   seed, next-stage coordinate, and nonce; observation content never enters it.

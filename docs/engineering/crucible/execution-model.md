@@ -8,6 +8,8 @@ code path and one correctness check.
 
 The model lives in `crates/crucible/crucible-engine/src/model/`. The live,
 controllable driver around it lives in `crates/crucible/crucible-session/`.
+The vocabulary used here (configuration, schedule, checkpoint, ready point,
+replay oracle) is defined in the [glossary](glossary.md).
 
 ```text
   ScenarioDef                 immutable definition     (scenario-model.md)
@@ -75,7 +77,7 @@ resolved them.
 | `Decision::RngDraw` | `RngDecision { stream: RngStreamId, value }` | One raw `u64` draw from a named seeded stream |
 | `Decision::Override` | `OverrideDecision { point: SchedulingPoint, choice: ChoiceTag }` | A search or fuzzing override at a scheduling point |
 | `Decision::Preemption` | `PreemptionDecision { node, at: SimInstant, kind }` | A vCPU switch or interrupt at an exact tick |
-| `Decision::Selection` | `SelectionDecision` | A typed campaign selection whose producer evidence is validated on replay |
+| `Decision::Selection` | `SelectionDecision` | A typed campaign selection; replay regenerates the choice domain it was taken from and rejects a selection that does not reproduce |
 
 `PreemptionKind` is `VcpuSwitch { from_vcpu, to_vcpu }` or
 `InterruptAt { target_vcpu, irq }`. An `InterruptAt` on a single-vCPU node
@@ -84,7 +86,7 @@ varies when the periodic timer or an external interrupt preempts that vCPU.
 The canonical hash writes a fixed variant tag before each payload
 (`DeliveryOrder` 0, `RngDraw` 1, `Override` 2, `Preemption` 3, `Selection` 5)
 so payloads of different variants never collide. `EventKey` carries the full
-ordering key `(virtual_time, consumer, producer, sequence)`.
+ordering key described in [scheduling.md](scheduling.md#event-ordering).
 
 `Schedule` (in `model/configuration.rs`) is append-only and value-like:
 
@@ -105,11 +107,11 @@ source:
 - **Seeded draws.** `DecisionRecorder::draw_u64` (in
   `crates/crucible/crucible-engine/src/decision.rs`) forks a stream from the
   scenario `Seed`, draws, and appends `Decision::RngDraw`. A
-  `Decision::RngDraw` records its `RngStreamId` (a domain plus a name), and
-  streams are forked by name-hash in per-entity domains, so adding, removing,
-  or renaming an unrelated node never perturbs another stream's draws. A new
-  recorder hydrates stream positions from the existing schedule, so a resumed
-  run never repeats a draw.
+  `Decision::RngDraw` records its `RngStreamId` (a domain plus a name). Streams are forked by name hash, so
+  unrelated entities never perturb each other; the forking rule is in
+  [determinism.md](determinism.md#intended-randomness-the-seeded-decision-source).
+  A new recorder hydrates stream positions from the existing schedule, so a
+  resumed run never repeats a draw.
 - **Default preemptions.** `DecisionRecorder::default_rr_preemption` derives
   the round-robin vCPU switch at a nonzero multiple of `rr_switch_quantum` from
   the node, the icount, the quantum, and the vCPU count. It returns a
@@ -117,10 +119,15 @@ source:
   deterministic engine behavior, not search decisions.
 - **Explorer preemptions.** A non-default preemption is recorded as a
   `Decision::Selection` immediately followed by the `Decision::Preemption` it
-  selects. `preemption_branch_choices` generates the bounded domain (at most
-  4096 alternatives) at an exact parent, and `validate_preemption_branch_schedule`
-  regenerates it at every recorded parent during `instantiate`, replay, and
-  reproduction. Missing or non-reproducing producer evidence is an error.
+  selects. The selection retains the `PreemptionBranchConfig` it was chosen
+  under; this retained configuration is the selection's producer evidence.
+  `preemption_branch_choices` generates the bounded domain (at most 4096
+  alternatives) from that configuration and the parent, meaning the
+  configuration whose schedule is the prefix just before the selection.
+  `validate_preemption_branch_schedule` regenerates the domain at every
+  recorded parent during `instantiate`, replay, and reproduction, and fails if
+  the evidence is missing or does not reproduce the recorded selection and
+  preemption.
 - **App-requested randomness.** A guest that opted into the white-box channel
   can request random values. The plugin reports each served value as
   `BackendRngEvidence { node, stream, request_id, width, value }`.
@@ -183,7 +190,7 @@ instantiate(graph, config):
         load the baked genesis checkpoint for config.def
         (EngineError::MissingBakedGenesis if absent)
     elif graph has an exact cached snapshot of config.id():
-        if an independent replay path exists:
+        if the graph holds a baked genesis for config.def:
             graph.replay_checkpoint(config, snapshot)   # replay oracle
         load the snapshot
     elif graph.nearest_cached_ancestor(config) = ancestor:
@@ -250,6 +257,12 @@ The model `bake` (in `model/runtime.rs`):
      `crucible.model.node-baked-blob.v1`), and
    - per-node icounts: the target count for `ReadyPoint::FixedIcount`, zero for
      the other policies.
+
+`World::scenario_def` is the World with an empty Plan, empty Properties, and
+the default Seed, so the checkpoint `bake` returns is the genesis of that
+scenario only. A scenario with its own Plan, Properties, or Seed has a
+different genesis id and needs a fat genesis checkpoint recorded for its own
+`Configuration::genesis(def)`.
 
 A genesis checkpoint is registered per scenario with
 `TemporalGraph::with_baked_genesis` or `cache_baked_genesis`, which require a
@@ -318,8 +331,9 @@ is `EngineError::ReplayOracleMismatch`; a fat checkpoint without state is
 
 The oracle runs at every point where a fat cache would be trusted:
 
-- `instantiate` checks an exact cached snapshot before loading it whenever an
-  independent replay path exists.
+- `instantiate` checks an exact cached snapshot before loading it whenever the
+  graph holds a baked genesis for the scenario, which is the root a thin
+  replay starts from.
 - `replay_oracle_admit_cached_snapshot` admits cached ancestors from genesis
   outward before checking the target, so a corrupt ancestor cannot make a
   matching corrupt descendant look valid. A rejected entry is evicted back to
@@ -345,14 +359,15 @@ deterministic (`SearchReplayOracleSamplingConfig`). See
 
 ## Operations as model expressions
 
-| Operation | Model expression | Entry point |
-| --- | --- | --- |
-| start | `instantiate(genesis(def))` | `TemporalGraph::resume` on genesis |
-| resume | `instantiate((def, schedule))` at the tip | `TemporalGraph::resume` |
-| fork | `instantiate` of a prefix, then `try_step` with different decisions | `TemporalGraph::fork` |
-| replay | thin re-derivation compared with a stored fat checkpoint | `TemporalGraph::replay` |
-| save | materialize a fat checkpoint keyed by `Configuration::id()` | `TemporalGraph::save_checkpoint`, `TemporalGraph::save` |
-| search | enumerate decisions at a frontier, `try_step` each, dedupe by id | `TemporalGraph::enumerate_frontier`, `TemporalGraph::search` |
+Every operation is one of the expressions above applied to the temporal
+graph: start, resume, and fork are `instantiate` of a genesis, tip, or prefix
+configuration; replay is a thin re-derivation compared with a stored fat
+checkpoint; save (`TemporalGraph::save_checkpoint`, `TemporalGraph::save`)
+materializes a fat checkpoint keyed by `Configuration::id()`; search
+(`TemporalGraph::search`) enumerates decisions at a frontier and applies
+`try_step` to each. The
+table of operations and their `TemporalGraph` entry points is in
+[execution-graph.md](execution-graph.md#operations-on-the-graph).
 
 A configuration reached by two decision paths that denote the same
 `(def, schedule)` is one graph node, so search deduplicates instead of

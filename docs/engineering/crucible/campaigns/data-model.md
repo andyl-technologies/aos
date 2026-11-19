@@ -3,8 +3,17 @@
 The campaign model keeps immutable content under one mutable user-visible
 reference. Its authoritative state is a set of facts and their Merkle
 projections. Daemon queues, iterators, and frontier indexes are rebuildable
-from that state. The types live in `crucible-campaign` (`model`, `exploration`,
-`choice`, `observation`, `finding`, `policy`, and `repository` modules).
+from that state.
+
+Source: the `crucible-campaign` modules
+[`model.rs`](../../../../crates/crucible/crucible-campaign/src/model.rs),
+[`exploration.rs`](../../../../crates/crucible/crucible-campaign/src/exploration.rs),
+[`choice.rs`](../../../../crates/crucible/crucible-campaign/src/choice.rs),
+[`observation.rs`](../../../../crates/crucible/crucible-campaign/src/observation.rs),
+[`finding.rs`](../../../../crates/crucible/crucible-campaign/src/finding.rs),
+[`policy.rs`](../../../../crates/crucible/crucible-campaign/src/policy.rs), and
+[`repository.rs`](../../../../crates/crucible/crucible-campaign/src/repository.rs),
+each with a same-named directory of submodules.
 
 Examples on this page are simplified field sketches. The registered schema
 version of every record is listed in the [schema registry](schema-registry.md).
@@ -169,12 +178,12 @@ maps rather than a flat log. The current variants of `CampaignFact` are:
 | `AttemptClosed` | A non-modeled terminal disposition for an admitted ordinal |
 | `ObservationCredited` | Canonical incorporation of an observation and its expansion credits |
 | `FindingPublished` | A new or rediscovered finding cluster |
-| `ObjectiveEvaluationPublished` | An owner-recomputed objective evaluation for `(policy, observation)` |
+| `ObjectiveEvaluationPublished` | A coordinator-recomputed objective evaluation for `(policy, observation)` |
 | `PolicyActivated`, `BudgetGranted`, `ControlRequested` | Steering, budget, and lifecycle commands |
 | `PinChanged`, `PinCommandAccepted` | Retention intent for a configuration |
 | `CampaignDerived` | First snapshot of a derived campaign |
 | `DiscoveryRequested` | An idempotent explicit discovery command |
-| `SavepointCaptureRequested`, `SavepointCaptureResolved`, `SavepointContinuationSelected` | Operational capture of a paused attempt boundary and its selected continuation |
+| `SavepointCaptureRequested`, `SavepointCaptureResolved`, `SavepointContinuationSelected` | Operational capture of a paused attempt boundary (a savepoint) and its selected continuation |
 
 Notable rules:
 
@@ -370,7 +379,7 @@ observations root, so restart recovers visit counts without listing the store.
 The exploration root also anchors a continuation index (one compact projection
 per request) and an ordered planner-scan index containing every request whose
 proposal cap is unspent, ordered by branch-point hash then request digest.
-The snapshot owner updates these indexes in the same transition that changes
+The coordinator updates these indexes in the same transition that changes
 the underlying request, proposal, or admission, and cold validation recomputes
 every delta.
 
@@ -384,7 +393,7 @@ created -> running -> paused -> running -> completed
 
 `CampaignState` is `Created`, `Running`, `Paused`, `Completed`, or `Sealed`.
 `CampaignControlAction` is `Resume`, `Pause(ActiveAttemptPolicy)`, `Complete`,
-`Seal`, `Unseal`, or `ActivatePolicy`. The active-attempt policy is `Drain`,
+`Seal`, `Unseal`, `ActivatePolicy`, or `GrantBudget`. The active-attempt policy is `Drain`,
 `ExactCheckpoint`, or `CancelAndRetry`; it is retained from the authoritative
 pause transition until `resume` or `complete` clears it, so a daemon derives
 both state and pause behavior from one authenticated snapshot.
