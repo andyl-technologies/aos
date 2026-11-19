@@ -40,3 +40,8 @@ is; when the code changes, the page changes with it.
 - [Package documentation](package-documentation.md) covers generation of
   package reference documents, their signed publication, Hub verification and
   search projections, and the shared readers.
+- [Package maintenance](package-maintenance/README.md) covers the
+  `aos maintain` update model, components, workflow states, confinement, and
+  repair boundary.
+- [Update contract](package-maintenance/update-contract.md) describes the
+  `mkUpstream` declaration that update tooling reads and edits.

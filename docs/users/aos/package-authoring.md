@@ -440,7 +440,10 @@ file's removal semantics.
 ## Ship a new version
 
 Change the package version and source hash, build it, and run its checks. Then
-publish the new store path and a new registry release. On a canary host, refresh
+publish the new store path and a new registry release. Packages in the AOS
+repository declare their upstream through the
+[update contract](../../engineering/package-maintenance/update-contract.md) so
+maintainers can [update them with `aos maintain`](../../maintainers/package-upgrades.md). On a canary host, refresh
 metadata and inspect the candidate:
 
 ```sh
