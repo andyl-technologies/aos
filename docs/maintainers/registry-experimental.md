@@ -21,8 +21,10 @@ one-of-one threshold in this experimental registry. Because the experimental reg
 edge versions, the stable and candidate delegated roles sign no release. The
 stronger multi-key thresholds remain mandatory for `andyl/main`.
 
-The [public key inventory](registry-experimental-public-keys.json) records separate
-experimental and production Hub receipt authorities. A prepared key is not an
+The [public key inventory](registry-experimental-public-keys.json) records the
+registry, TUF, channel, cache, release-evidence, and qualification keys, and
+the production Hub's separate publication-receipt and channel-receipt
+authorities. A prepared key is not an
 activated release authority: signed trust metadata and the applicable release
 gates still establish where it is accepted. Custody and recovery records are
 maintained separately from the public inventory.
@@ -45,8 +47,8 @@ before advertising that URL.
 The production Hub serves OCI through an instance-owned root route, and the
 experimental registry is exposed on it as the `andyl/experimental` namespace.
 Container references therefore carry the registry slug:
-`<host>/andyl/experimental/aos:<tag>`, so `TESTING_OCI_REFERENCE` is
-`<host>/andyl/experimental/aos:<edge version>` and `aos container publish`
+`<host>/andyl/experimental/aos:<tag>`, so the `TESTING_OCI_REFERENCE` shell
+variable used below is `<host>/andyl/experimental/aos:<edge version>` and `aos container publish`
 strips the `andyl/experimental/` prefix when it records the Hub repository.
 Generic clients pull `<host>/andyl/experimental/aos:<tag>` unchanged.
 
@@ -374,7 +376,9 @@ aos container finalize-signature ./result \
 ```
 
 Upload the immutable OCI graph without a tag or Hub mutation before registry
-finalization:
+finalization. Set `TESTING_OCI_ORIGIN` to the OCI Distribution origin,
+`TESTING_OCI_TOKEN` to the credential for that origin, and
+`AOS_RELEASE_VERSION` to the edge version being released:
 
 ```sh
 aos container publish aos "$TESTING_OCI_REFERENCE" \
@@ -426,30 +430,11 @@ Use `aos maintain` to prepare source updates, not to mutate the registry:
 ```sh
 aos maintain scan --repology-fallback --repology-limit 400
 aos maintain report --outdated
-aos maintain report --advisory
-aos maintain report --vulnerable
-aos maintain report --license-change
-aos maintain plan <unit>
-# Or plan one atomic update cohort:
-aos maintain plan --campaign <cohort>
-
-# For a manually edited package without complete artifact contracts:
-aos maintain refresh-hashes <unit> --check
-aos maintain refresh-hashes <unit>
-
-aos maintain run --plan <plan> --confirm-plan <plan-digest>
-aos maintain diff <run> --patch
-aos maintain accept <run> --confirm <patch-digest>
-aos maintain commit <run> --confirm <run>
-aos maintain test <run> --final
-aos maintain prepare-pr <run>
-aos maintain publish-pr <run> \
-  --expected-remote-head absent \
-  --confirm <publication-request-digest>
-aos maintain observe-pr <run> \
-  --authorization-check <required-check-name>
-aos maintain handoff <run> --confirm <protected-merge-commit>
 ```
+
+[Upgrade packages with `aos maintain`](package-upgrades.md) documents the
+complete workflow: reports, planning, running, repair, acceptance, final
+gates, pull-request publication, and handoff.
 
 The fallback probes a same-named Repology project only when the package does
 not already declare a reviewed Repology mapping. It is a first-signal source:

@@ -662,6 +662,6 @@ state matches, and refuses to continue past a disagreement. Never delete
 evidence to force a retry or edit signed artifacts to make a check pass.
 Changed source, artifacts, or policy need a new release. After public discovery
 changes, publish a reviewed corrective release using the registry runbook. A
-failure on one destination does not undo another destination's admission. A
+failure on one destination does not undo another destination's admission. An
 experimental root reset is a separate operation, not an automatic response to a
 failed release.

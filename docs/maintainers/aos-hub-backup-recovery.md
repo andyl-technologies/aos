@@ -187,3 +187,9 @@ backup, validate all invariants and representative downloads, then destroy the
 exercise resources. Record duration, missing dependencies, object/row counts,
 digests, and operator. A bookmark capture without a successful recovery exercise
 does not satisfy the backup gate.
+
+The monthly cadence is operating practice for the experimental registry, whose
+destinations require no fitness attestation. For `andyl/main`, the same
+procedure is the quarterly `hub-restore`
+[fitness exercise](release-checklist.md#fitness-exercises), and its signed
+attestation must be fresh before a production publication.

@@ -1,6 +1,7 @@
-# Release testing
+# Release qualification
 
-AOS uses one versioned release-test contract for experimental and production.
+AOS uses one versioned qualification (release-test) contract for every
+registry and destination.
 The authoritative inputs are [`qualification/`](../../qualification/default.nix).
 A release is published to one or more **destinations**. Each destination
 selects a named **profile**, and the profile states every check the release
@@ -13,8 +14,8 @@ profile marks overridable.
 Environment recovery is not tested per release. Backup restore, authority
 recovery, Hub restore, key rotation, and alert delivery are **fitness
 exercises** performed on their own cadence. Each produces a signed, dated
-[fitness record](#fitness-attestations) bound to the identities it covered,
-and a profile requires fitness records no older than its stated maximum age.
+[fitness attestation](#fitness-attestations) bound to the identities it covered,
+and a profile requires fitness attestations no older than its stated maximum age.
 
 Start with the [release checklist](release-checklist.md), which gives the order
 of operations and the fitness exercise cadence. This page specifies the
@@ -43,15 +44,15 @@ destination, and plan validation rejects it.
 
 | Destination | Registry tier | Profile | Published after |
 | --- | --- | --- | --- |
-| `staging/edge` | production (`andyl/main`) and experimental (`andyl/experimental`, `andyl/experimental-vN`) | `build` | nothing |
-| `production/edge` | production and experimental | `smoke` | a staging publication |
+| `staging/edge` | production (`andyl/main`) and testing (`andyl/experimental`, `andyl/experimental-vN`) | `build` | nothing |
+| `production/edge` | production and testing | `smoke` | a staging publication |
 | `staging/candidate` | production | `build` | nothing |
 | `production/candidate` | production | `functional` | a staging publication |
 | `staging/stable` | production | `build` | nothing |
 | `production/stable` | production | `soak` | a staging publication |
 
 `andyl/main` carries `edge`, `candidate`, and `stable`. Experimental registries
-carry the `edge` channel only. A channel kind selects the same profile on every
+(the `testing` tier) carry the `edge` channel only. A channel kind selects the same profile on every
 tier that carries it: the tier describes the key custody and pipeline behind a
 registry, not what a release must pass. A per-train channel such as
 `stable-2026.3` has the kind of the prefix before its first `-` and selects
@@ -77,7 +78,7 @@ A profile is a closed set of release requirements. The shipped values are in
 | Profile | Requirements | Claims | Change scoped | Soak | Reviews | Complete matrix | Transaction review | Fitness (max age) | Rings (cumulative partitions @ observation) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `build` | `build-integrity` | none | no | none | 0 | no | no | none | 256 @ 0 |
-| `smoke` | `build-integrity`, `staging-delivery`, `package-function` | functional (A2) | yes | none | 0 | no | no | none | 256 @ 0 |
+| `smoke` | `build-integrity`, `staging-delivery`, `package-function`, native ability requirements | functional (A2) | yes | none | 0 | no | no | none | 256 @ 0 |
 | `functional` | `smoke` plus `rollout-health` | functional (A2) | no | none | 1 | no | yes | `storage-restore` 14 d, `alert-delivery` 14 d, `authority-recovery` 90 d, `hub-restore` 90 d | 256 @ 0 |
 | `soak` | `functional` plus `rollout-observation` | qualified (A2 and A3) | no | 7 days | 1 | yes | yes | `functional` plus `key-rotation` 90 d | 4 @ 24 h, 32 @ 24 h, 128 @ 48 h, 256 @ 0 |
 
@@ -85,7 +86,11 @@ The fields mean:
 
 - **Requirements** are release- and package-scoped requirement IDs, each
   required at its own phase. Image and container requirements enter through
-  the selected claims.
+  the selected claims. The native ability requirements are
+  `ability-native-activation`, `ability-native-kubernetes`,
+  `ability-native-recovery`, `ability-crucible-baseline`, and
+  `ability-native-adapter-matrix`; `functional` and `soak` inherit them from
+  `smoke`.
 - **Claims** selects target claims. `functional` selects every `*-functional`
   claim (A2, staging phase). `qualified` adds every `*-qualified` claim (A3,
   complete phase).
@@ -99,7 +104,7 @@ The fields mean:
 - **Complete matrix** rejects a plan with any blocked package/platform cell.
 - **Transaction review** stops the pipeline after `prepare-registry` until an
   operator accepts the isolated registry transaction.
-- **Fitness** names the fitness record kinds that must be fresh and
+- **Fitness** names the fitness attestation kinds that must be fresh and
   binding-matched when the destination is published or advanced.
 - **Rings** are ordered cumulative partition counts. Each ring must be observed
   for its stated time before the next ring advances. The last ring is always
@@ -176,11 +181,9 @@ affecting. Uncertainty never narrows the set of tests.
 Non-scoped profiles ignore the change scope and exercise every target and
 every published cell.
 
-<a id="fitness-attestations"></a>
+### Fitness attestations
 
-### Fitness records
-
-A fitness record shows that the release environment can recover. Its schema
+A fitness attestation shows that the release environment can recover. Its schema
 is `aos.release.fitness-attestation/v1`. Fitness exercises replace the
 per-release operator recovery exercises of earlier contracts:
 nothing about a single release is observed by restoring a backup, and a quarterly
@@ -202,12 +205,12 @@ report on standard input, after performing the exercise in the
 [release checklist](release-checklist.md#fitness-exercises). The input is an
 `aos.release.fitness-report/v1` exercise report: `performed_at`, `operator`,
 and a `checks` map giving each of the kind's checks as `{passed, detail}`. The
-command copies those fields into the fitness record below, adds the live
+command copies those fields into the fitness attestation below, adds the live
 bindings, and records the report's SHA-256 as `evidence_digest`.
-Profiles accept automated fitness records for at most 14 days and operator
-fitness records for at most 90 days.
+Profiles accept automated fitness attestations for at most 14 days and operator
+fitness attestations for at most 90 days.
 
-A binding names an identity the fitness record carries and publication
+A binding names an identity the fitness attestation carries and publication
 compares with the live value:
 
 | Binding | Live value |
@@ -218,14 +221,14 @@ compares with the live value:
 | `tooling` | Digest of the installed release tooling closure's store path |
 | `alert-config` | Digest of the maintainer configuration's `[alert]` section |
 
-A binding mismatch makes a fitness record unusable regardless of its age. A
+A binding mismatch makes a fitness attestation unusable regardless of its age. A
 new signer roster therefore requires fresh `authority-recovery` and
 `key-rotation` records; a new production surface requires fresh `hub-restore`
 and `key-rotation` records for that surface; a new `aos` tooling closure
 requires the next restore check to run before a `functional` or `soak`
 destination can be published.
 
-A fitness record is canonical JSON signed with the standard signed-record
+A fitness attestation is canonical JSON signed with the standard signed-record
 envelope by a `release-evidence` key, stored under the maintainer
 configuration's `fitness_root` as `<kind>/<performed_at>.json`:
 
@@ -248,8 +251,8 @@ configuration's `fitness_root` as `<kind>/<performed_at>.json`:
 ```
 
 `checks` contains exactly the kind's checks, all passed. `evidence_digest`
-binds the retained restricted report; the fitness record itself carries no
-secret, provider account, or internal address. Fitness records are
+binds the retained restricted report; the fitness attestation itself carries no
+secret, provider account, or internal address. Fitness attestations are
 maintainer-wide, not per release: one fresh record serves every release that
 publishes while it remains valid.
 
@@ -365,8 +368,9 @@ the actual tested configurations and results separately for each release.
 [`containers.nix`](../../qualification/modules/containers.nix) define the four
 mandatory reference configurations. A platform listed in
 [`qualification/deferred-platforms.nix`](../../qualification/deferred-platforms.nix)
-(currently `aarch64-linux`) keeps its configurations, but they are optional and
-carry no claims until the platform returns; the release ships no artifact on it.
+keeps its configurations, but they are optional and carry no claims until the
+platform returns; the release ships no artifact on it. The list is currently
+empty, so both Linux platforms carry their claims.
 Their required checks cannot be waived by lowering assurance. Additional claims
 must state their required level and release-blocking status before the plan is
 frozen. Additional A3 image/container claims require corresponding target cases
@@ -632,6 +636,7 @@ conditions:
 | `package-function` | staging | packages | `smoke`, `functional`, `soak` |
 | `rollout-health` | rollout | release | `functional`, `soak` |
 | `rollout-observation` | complete | release | `soak` |
+| `ability-native-activation`, `ability-native-kubernetes`, `ability-native-recovery`, `ability-crucible-baseline`, `ability-native-adapter-matrix` | staging | release | `smoke`, `functional`, `soak` |
 | `image-installation`, `image-lifecycle`, `image-update-recovery` | staging | image targets | functional claims |
 | `container-lifecycle` | staging | container targets | functional claims |
 | `image-observation`, `container-observation` | complete | image and container targets | qualified claims |
@@ -839,8 +844,8 @@ be provisioned before a campaign. All source regression groups are exposed at
 `checks.qualification.<requirement-id>` and `checks.qualification.all`.
 
 The native ability gates are `ability-native-activation`,
-`ability-native-kubernetes`, `ability-native-recovery`, and
-`ability-native-adapter-matrix`. They use release scope so each staging case
+`ability-native-kubernetes`, `ability-native-recovery`,
+`ability-crucible-baseline`, and `ability-native-adapter-matrix`. They use release scope so each staging case
 binds the complete finalized non-control artifact set, including the exact
 package, native transaction, handler, and image records carried by the release.
 A change to the case subjects, release-test policy, executor, or environment
@@ -1107,7 +1112,7 @@ canonical report at
 `/run/aos-release/qualification-reports/<platform>/<case-digest>.json`.
 The staging container and native ability lifecycle cases execute directly and
 do not read this report directory. Environment recovery exercises are not
-executor cases; they are [fitness records](#fitness-attestations). Each
+executor cases; they are [fitness attestations](#fitness-attestations). Each
 report-backed adapter
 drains the coordinator request, captures the selected report without following
 links, and binds it through `qualification respond`. A missing, changing,

@@ -24,7 +24,7 @@ Each destination selects a qualification profile, listed in the
 kind selects the same profile on both registries. Experimental epochs
 (`andyl/experimental-vN`) carry the same destinations as `andyl/experimental`.
 
-Never move a experimental release into main. Graduation is a new main-registry
+Never move an experimental release into main. Graduation is a new main-registry
 release plan built from a reviewed source commit; it is not a channel move
 across registries. The experimental registry carries only `edge` because its releases never
 graduate: a candidate or stable stream on experimental infrastructure would

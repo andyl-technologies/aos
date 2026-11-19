@@ -71,8 +71,8 @@ VM or fleet gate.
 Useful baseline commands are:
 
 ```sh
-bash ./aos-dev build check effects --no-out-link
-bash ./aos-dev build package PACKAGE --no-out-link
+aos-dev build check effects --no-out-link
+aos-dev build package PACKAGE --no-out-link
 ```
 
 The [service sandbox](../engineering/packages/service-sandbox.md) and

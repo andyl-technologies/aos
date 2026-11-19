@@ -1,5 +1,12 @@
 # `andyl/main` registry runbook
 
+> **Not yet operable.** `andyl/main` is closed and holds no releases. Nothing
+> in this runbook may be run against the main registry until the launch gates
+> in [`canonical-releases.md`](canonical-releases.md) are complete and a
+> maintainer has recorded the go-live decision. Until then, read this page as
+> the intended procedure and use the
+> [experimental runbook](registry-experimental.md) for real releases.
+
 Use the shared [qualification contract](qualification.md) and
 [release checklist](release-checklist.md). Main's production destinations
 select the `smoke`, `functional`, and `soak` profiles of that contract.
@@ -61,7 +68,7 @@ takes the clone's single root commit as the base, then bootstrap that exact
 empty base with threshold-approved intents first in staging and then
 production using `aos maintain release step bootstrap`, as described in
 [`canonical-releases.md`](canonical-releases.md#bootstrap-the-first-registry-base).
-Never reuse a experimental key or import a experimental registry history. Both
+Never reuse an experimental key or import an experimental registry history. Both
 bootstrap destinations must be empty for `andyl/main`.
 
 After the `andyl` organization exists in staging, create the Hub topology row
@@ -94,14 +101,13 @@ Creating the topology row does not authorize or publish a base.
 
 ## Edge, candidate, and stable releases
 
-Main carries three channels and six destinations:
-
-| Destination | Profile | Obligations |
-| --- | --- | --- |
-| `staging/edge`, `staging/candidate`, `staging/stable` | `build` | Reproduced, authorized build; channel moves on publication |
-| `production/edge` | `smoke` | Automated exact-byte functional checks on the changed targets and cells; no review, soak, or fitness |
-| `production/candidate` | `functional` | Every functional claim and package cell, one reviewer per report, transaction review, rollout health, fresh fitness |
-| `production/stable` | `soak` | As candidate, plus a complete matrix, qualified (A3) claims, a seven-day soak, `key-rotation` fitness, and rings of 4, 32, 128, and 256 partitions with a reviewed health approval before each ring |
+Main carries three channels and six destinations: a `staging` and a
+`production` destination for each of `edge`, `candidate`, and `stable`. The
+staging destinations use the `build` profile; `production/edge` uses `smoke`,
+`production/candidate` uses `functional`, and `production/stable` uses `soak`.
+The [release checklist](release-checklist.md) lists what each destination
+requires, and the [qualification contract](qualification.md#profiles) defines
+the profiles.
 
 - Edge releases use a `-dev.YYYYMMDD.N` version and plan only the edge
   destinations. They are cut on changed business days, carry no support
@@ -149,7 +155,7 @@ integrity check remain required.
 
 ## Routine package updates
 
-Use the `aos maintain` workflow documented in the experimental runbook to land source
+Use the [`aos maintain` workflow](package-upgrades.md) to land source
 updates through a reviewed pull request. After merge, the next `edge` release
 picks the change up on its changed-business-day cadence, and the next weekly
 `-rc.N` candidate carries it toward stable. A stable release is a new plan for a final version, whose one

@@ -11,6 +11,8 @@ explains how the build machinery implements them.
   tier's outputs trustworthy.
 - [Rust builds](rust-builds.md) covers reusable Cargo dependency artifacts,
   their compatibility contract, development caches, and parallel Rust tests.
+- [Development builds](development-builds.md) covers the development shell,
+  `aos-dev`, the shared VM image cache, and the image reproducibility check.
 
 ## Layers
 

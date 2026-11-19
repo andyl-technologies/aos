@@ -13,7 +13,7 @@ registry. The shared `aos.release` profile supplies the registry URL
 `https://cdn.aos.andyl.org/<registry>/`), the default Hub (`hubUrl`), trust
 alias, root epoch, channel, and experimental notice. Planning, building, and image
 finalization check this profile from the clean source commit frozen in the
-plan, on every selected platform. A experimental profile fails a main plan and vice
+plan, on every selected platform. An experimental profile fails a main plan and vice
 versa. Every image's baked `hubUrl` must equal the origin of the Hub surface
 consumers will install from: the production surface when the plan has any
 production destination (the same signed bytes reach production, and staging
@@ -158,8 +158,9 @@ the same time.
 ## Porcelain commands
 
 ```text
-aos maintain release new --registry R --version V --images PATH [--release-id ID] [--override DIR] [--work DIR] [--config PATH]
-aos maintain release advance --to <destination> [--ring N] [--override DIR] [--accept-transaction] [--work DIR] [--config PATH]
+aos maintain release new --registry R --version V --images PATH [--release-id ID] [--override DIR] [--first-release --source-registry DIR] [--request-only] [--work DIR] [--config PATH]
+aos maintain release advance --to <destination> [--ring N] [--override DIR] [--stop-after-upload [--stage-revision N]] [--accept-transaction] [--work DIR] [--config PATH]
+aos maintain release publish --to <destination> [--stage-revision N] [--work DIR] [--config PATH]
 aos maintain release status [--work DIR] [--config PATH]
 aos maintain release explain --to <destination> [--work DIR] [--config PATH]
 aos maintain release review [--reject --reason TEXT] [--work DIR] [--config PATH]
@@ -760,8 +761,8 @@ The release contract selects this matrix:
 
 | Artifact | `x86_64-linux` | `aarch64-linux` | `x86_64-darwin` | `aarch64-darwin` |
 | --- | --- | --- | --- | --- |
-| Packages | required cell | required cell (deferred) | required cell | required cell |
-| Images | required cell | required cell (deferred) | not applicable | not applicable |
+| Packages | required cell | required cell | required cell | required cell |
+| Images | required cell | required cell | not applicable | not applicable |
 
 Each package cell is either a frozen set of exact derivation, named-output, and
 store-path identities or an explicit inapplicable or blocked decision. A plan
@@ -770,7 +771,8 @@ blocked cells. Darwin receives packages only.
 
 The contract's `deferred_platforms` (from
 [`qualification/deferred-platforms.nix`](../../qualification/deferred-platforms.nix))
-names Linux platforms that ship nothing in this release. The inventory blocks
+names Linux platforms that ship nothing in this release; the list is currently
+empty. The inventory blocks
 each of their eligible package cells with `platform-release-deferred`, and the
 request must give their image cells a blocked or not-applicable decision; an
 artifact there fails planning, and so does any `soak` destination while the list
@@ -799,7 +801,7 @@ release class allows, and the surfaces must form a
 Run planning from a clean source checkout on the designated maintainer host:
 
 ```sh
-nix run . -- release step plan \
+aos maintain release step plan \
   --request release-request.json \
   --contributor-authorization contributor-authorization.json \
   --predecessor-manifest predecessor/bundle/release-manifest.json \
@@ -864,7 +866,7 @@ Verify the final bundle offline with independently supplied manifest keys and
 retain the JSON result:
 
 ```sh
-aos --json release step verify qualification-snapshot/bundle \
+aos --json maintain release step verify qualification-snapshot/bundle \
   --journal qualification-snapshot/release-journal.jsonl \
   --trusted-key release-1=/media/trust/release-1.pub \
   --trusted-key release-2=/media/trust/release-2.pub \
@@ -885,7 +887,7 @@ captures the completion time after realization, repeat-building, and build
 evidence collection finish:
 
 ```sh
-nix run . -- release step build \
+aos maintain release step build \
   --plan release-plan.json \
   --output release-build \
   --started-at 2026-09-03T10:00:00Z
@@ -2095,7 +2097,7 @@ Do not bypass the isolated registry transaction, closed bundle finalizer,
 role-separated signing, exact-byte publication receipts, public read-back, or
 compare-and-swap channel updates with ad hoc publishes or manual object copies,
 on a Hub or a static origin. `andyl/main` remains fail-closed until its
-remaining launch gates are complete and its fitness attestations are current. A
+remaining launch gates are complete and its fitness attestations are current. An
 experimental publication on a production surface remains explicitly experimental
 and cannot be moved across registries.
 

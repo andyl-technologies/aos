@@ -73,9 +73,10 @@ the canonical policy uses different keys. A verifier must never count one key
 twice toward a threshold or treat a signature from one role as authorization
 for another.
 
-The current preview TUF implementation assigns its four top-level roles to the
-active registry keys and signs them in one process. That is an implemented test
-and development path, not the production role model in the table. A production
+The registry catalog's own TUF metadata assigns its four top-level roles to the
+active registry keys and signs them in one process. That is separate from the
+release bundle's distribution TUF roles, which use one key per role even on
+`andyl/experimental`, and it is not the production role model in the table. A production
 image must instead carry a threshold-authenticated TUF root in addition to the
 registry continuity anchor, and the launch gate must prove role- and path-aware
 verification. See [canonical release security and keys](../engineering/release-publishing/security-and-keys.md).
@@ -106,8 +107,9 @@ roles, gates, deployment identities, and channels. The build step must then:
 1. realize exactly the frozen derivations;
 2. reject deriver or output-path drift;
 3. record source and output NAR identities;
-4. repeat builds with Nix `--check`, failing closed for production registries
-   and recording unreproduced outputs for the testing tier; and
+4. repeat builds with Nix `--check` for a production-tier registry, failing
+   closed on any difference; a testing-tier plan skips the repeat build and
+   records every output as `not-checked`; and
 5. produce the SBOM and append-only evidence required by the plan.
 
 Contributor authorization is a separate source-admission prerequisite. Follow
