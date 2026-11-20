@@ -7,7 +7,7 @@ authorized; a cache or AOS Hub transports their bytes.
 This guide is for people configuring registries on an AOS host. Registry
 maintainers should use [Operate an AOS package registry](../registry/README.md).
 Package runtime policy is a separate control described in [Understand native
-package runtime policy](package-sandbox.md).
+package runtime policy](package-runtime-policy.md).
 
 ## Start with the built-in registry
 
@@ -195,18 +195,19 @@ that validation merely because a cache is signed.
 
 ## Inspect a package before activation
 
-Registry verification establishes origin and exact content. Inspect the
-service privilege contract separately:
+Registry verification establishes origin and exact content. Inspect which
+registry supplies the package and what the package declares separately:
 
 ```sh
 apm show acme-agent --system --registry acme
-apm show acme-agent --system --permissions
 apm policy acme-agent --system
 ```
 
-Review the selected registry as well as the computed confinement label. A
-trusted internal registry can publish a package whose declared privileges make
-it `unconfined`; cryptographic trust does not override local package policy.
+Review the selected registry, then read the package's generated reference
+with `apm docs` and `apm options` as described in [Understand native package
+runtime policy](package-runtime-policy.md). A trusted internal registry can publish a
+package that requests broad host resources; cryptographic trust does not
+replace reviewing those declarations.
 
 ## Handle private registries
 

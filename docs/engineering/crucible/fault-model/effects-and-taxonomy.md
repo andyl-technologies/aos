@@ -33,13 +33,16 @@ Technology detail that does not change observable semantics stays in typed
 world objects and signal inputs referenced by ID; it never becomes a hidden
 effect variant.
 
+A row label that names a prefix omits it from that row's keys: a network key
+is `network.<name>`, a block-storage key `storage.<name>`, and a 9p key
+`ninep.<name>`. Node keys are written in full.
+
 | Domain | Effect keys |
 | --- | --- |
-| Network | `availability`, `flap`, `negotiated_mode`, `profile_delta`, `propagation_delay`, `access_delay`, `jitter`, `service_curve`, `token_bucket`, `queue_policy`, `frame_loss`, `burst_error_state`, `duplicate`, `reorder`, `payload_transform`, `detected_frame_error`, `mtu`, `pause_backpressure`, `recipient_subset`, `forwarder_lifecycle`, `forwarding_mutation`, `route_transition`, `control_plane_service`, `firewall_disposition`, `connection_state`, `shared_medium`, `rf_channel`, `association`, `control_result_transform`, `contact`, `custody_queue` |
-| Storage | `storage.`: `availability`, `reported_capacity`, `latency`, `service`, `operation_failure`, `stall_timeout`, `completion_reorder`, `duplicate_completion`, `read_transform`, `write_disposition`, `persistence_order`, `volatile_cache`, `volatile_cache_loss`, `flush_disposition`, `media_range`, `flash_state`, `controller_lifecycle`, `array_state`; `ninep.`: `result`, `visibility` |
-| Node | `node.lifecycle`, `node.hang`, `cpu.service`, `cpu.vcpu_state`, `cpu.register_transform`, `cpu.instruction_transform`, `cpu.exception`, `interrupt.disposition`, `interrupt.storm`, `memory.mutation`, `memory.access_transform`, `memory.ecc_event`, `memory.region_state`, `memory.service`, `clock.transform`, `clock.source_state`, `accelerator.lifecycle`, `accelerator.result_transform`, `accelerator.memory_event`, `accelerator.service` |
-
-Network keys are prefixed `network.`.
+| Network (`network.`) | `availability`, `flap`, `negotiated_mode`, `profile_delta`, `propagation_delay`, `access_delay`, `jitter`, `service_curve`, `token_bucket`, `queue_policy`, `frame_loss`, `burst_error_state`, `duplicate`, `reorder`, `payload_transform`, `detected_frame_error`, `mtu`, `pause_backpressure`, `recipient_subset`, `forwarder_lifecycle`, `forwarding_mutation`, `route_transition`, `control_plane_service`, `firewall_disposition`, `connection_state`, `shared_medium`, `rf_channel`, `association`, `control_result_transform`, `contact`, `custody_queue` |
+| Storage (`storage.`) | `availability`, `reported_capacity`, `latency`, `service`, `operation_failure`, `stall_timeout`, `completion_reorder`, `duplicate_completion`, `read_transform`, `write_disposition`, `persistence_order`, `volatile_cache`, `volatile_cache_loss`, `flush_disposition`, `media_range`, `flash_state`, `controller_lifecycle`, `array_state` |
+| 9p (`ninep.`) | `result`, `visibility` |
+| Node (full keys) | `node.lifecycle`, `node.hang`, `cpu.service`, `cpu.vcpu_state`, `cpu.register_transform`, `cpu.instruction_transform`, `cpu.exception`, `interrupt.disposition`, `interrupt.storm`, `memory.mutation`, `memory.access_transform`, `memory.ecc_event`, `memory.region_state`, `memory.service`, `clock.transform`, `clock.source_state`, `accelerator.lifecycle`, `accelerator.result_transform`, `accelerator.memory_event`, `accelerator.service` |
 
 ## Composition algebras
 

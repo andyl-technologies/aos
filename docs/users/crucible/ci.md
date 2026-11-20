@@ -21,8 +21,8 @@ Run these commands from the repository root in `nix develop` or its direnv
 environment. `--release` selects ordinary derivations and requests no shared
 compiler-cache mounts. Daemon-wide static mounts can remain visible; use a
 separate builder if qualification requires a cache-free sandbox.
-Provision the [guarded host resources](campaigns.md#start-the-single-host-owner)
-before scenario execution, and set `CRUCIBLE_CAMPAIGN_DEPLOYMENT` to the
+Provision the [guarded host resources](campaigns-host.md#start-the-single-host-owner)
+before running `selftest` or a scenario, and set `CRUCIBLE_CAMPAIGN_DEPLOYMENT` to the
 owner-only deployment file and `CRUCIBLE_RUN_STATE_ROOT` to a durable writable
 directory. The deployment must admit the example's 100,000 execution quanta.
 
@@ -73,17 +73,18 @@ inputs can still reference the store. Preserve it when retaining those inputs.
 
 Crucible uses stable process classes so CI does not need to parse prose:
 
-| Status | Meaning | CI treatment |
-| ---: | --- | --- |
-| 0 | The command completed successfully. | Pass. |
-| 1 | Property failure, divergence, replay mismatch, counterexample, or triage failure. | Fail and retain the reproduction. |
-| 2 | A configured virtual-time or quantum bound expired. | Fail or classify as a scenario timeout. |
-| 3 | Crash, daemon failure, replay-oracle failure, or build-identity mismatch. | Fail and preserve diagnostics. |
-| 4 | The backend failed. | Fail and inspect runner/QEMU diagnostics. |
-| 5 | Invalid scenario, artifact, store object, or local I/O input. | Fail and repair or restore the input. |
-| 64 | Command-line usage error. | Fail and fix the invocation. |
+[Running Crucible](running.md#exit-codes) defines each status. Treat them in
+CI as follows:
 
-See [Running Crucible](running.md#exit-codes) for command-specific detail.
+| Status | CI treatment |
+| ---: | --- |
+| 0 | Pass. |
+| 1 | Fail and retain the reproduction. |
+| 2 | Fail or classify as a scenario timeout. |
+| 3 | Fail and preserve diagnostics. |
+| 4 | Fail and inspect runner/QEMU diagnostics. |
+| 5 | Fail and repair or restore the input. |
+| 64 | Fail and fix the invocation. |
 
 ## Add a determinism gate
 
@@ -118,7 +119,7 @@ canonical log:
 ./result/bin/crucible \
   --store .ci/crucible/store \
   --format jsonl \
-  replay .ci/crucible/artifacts/failure.toml \
+  replay .ci/crucible/artifacts/repro-<failure-kind>-<digest>.crucible \
   --check .ci/crucible/events.jsonl
 ```
 

@@ -8,29 +8,25 @@ and a *superset of the Nix binary cache*. This page covers the three ref layers
 (expensive-producer) philosophy that ties the design together. The crate and
 module map is in [`implementation.md`](implementation.md).
 
-Unpublished candidates follow the [release-stage contract](release-stages.md).
-Maintainer branches are authoring workspaces. Configured channel branch names
-reserve the published frontier, public `HEAD` names the default channel, and
-signed semver releases and the 256-partition schema retain their existing
-meaning. Default catalogs and channels omit drafts; a known ref, digest, cache
-URL, or CDN path may still expose candidate bytes.
+Unpublished release candidates, and how they stay out of the refs and
+channels described here, are covered in [release-stages.md](release-stages.md).
 
 ---
 
 ## 1. One-paragraph mental model
 
-An AOS registry is a **bare git repository in sha256 object format,
-published as plain static files over dumb HTTP**. The package metadata *is* the
-git tree content; there is no separate index file and no smart git server. Because
-it is laid out as a valid dumb-HTTP bare repo, a stock `git clone <url>` works
-unmodified — **channels are branches**, **releases are signed semver tags**, and
-`HEAD` symlinks the default channel. On top of that same byte surface, the origin
-*may also* advertise itself as a **Nix binary cache** (`nix-cache-info` /
-`*.narinfo` / `nar/`) so a stock `nix` substituter can pull the same artifacts.
-The AOS client (`apm`) layers two extra, *additive* surfaces that ride alongside
-without conflict: signed **`/channels/<name>/00..ff`** partition tags for bucketed
-rollout, and **thin `delta-*.pack`s** for cheap incremental fetch. The current
-tools accept active registry Ed25519 keys for release and channel tags;
+An AOS registry is a **bare git repository in sha256 object format, published
+as plain static files over dumb HTTP**. The package metadata *is* the git tree
+content; there is no separate index file and no smart git server. Because it is
+laid out as a valid dumb-HTTP bare repo, a stock `git clone <url>` works
+unmodified — **channels are branches**, **releases are signed semver tags**,
+and `HEAD` is a symref to the default channel. On the same origin, the registry
+*may also* serve a **Nix binary cache** (`nix-cache-info` / `*.narinfo` /
+`nar/`) so a stock `nix` substituter can pull the same artifacts. The AOS
+client (`apm`) uses two extra, *additive* path families that ride alongside
+without conflict: signed **`/channels/<name>/00..ff`** partition tags for
+bucketed rollout, and **thin `delta-*.pack`s** for cheap incremental fetch.
+Release and channel tags are signed with active registry Ed25519 keys;
 canonical production assigns those authorities separate role- and
 channel-scoped keys. The governing design principle is **asymmetric cost: make
 publishing as expensive as possible so that consumption is as cheap as
@@ -46,7 +42,8 @@ the static Nix-cache layer.
 
 The registry is produced as a **bare sha256 git repository** and uploaded as-is to
 any static host. No CGI, no `git-upload-pack`, no `git-http-backend` — git's
-**dumb HTTP** transport is pure `GET` against a known directory tree.
+**dumb HTTP** transport is pure `GET` against a known directory tree. In stock
+git terms the producer does the equivalent of:
 
 ```
   git init --object-format=sha256 --bare
@@ -54,6 +51,9 @@ any static host. No CGI, no `git-upload-pack`, no `git-http-backend` — git's
   git update-server-info            ← regenerates info/refs + objects/info/packs
   upload the tree to S3 / CDN / nginx root / `python -m http.server`
 ```
+
+`apr` performs these steps in-process through libgit2 and its own index
+writers; it does not run a `git` binary.
 
 A client (stock git or AOS) needs only:
 
@@ -67,10 +67,11 @@ A client (stock git or AOS) needs only:
 
 Because **all objects also exist loose**, a dumb client can always reconstruct any
 ref by walking loose objects alone; packs and deltas are an efficiency layer *on
-top of* a guaranteed-correct baseline. The full wire layout and CDN TTL policy live
+top of* a guaranteed-correct baseline. The full wire layout and content
+delivery network (CDN) TTL policy live
 in [`http-layout.md`](http-layout.md).
 
-### 2.1 Two supersets over one byte surface
+### 2.1 Two supersets over one origin
 
 ```
                       ┌──────────────────────────────────────────────┐
@@ -82,7 +83,7 @@ in [`http-layout.md`](http-layout.md).
                       │                                              │
   nix substituter ───▶│  NIX BINARY-CACHE SURFACE  (optional, ⊇)     │  ◀── superset #2
   (stock)             │    nix-cache-info · <storehash>.narinfo      │
-                      │    nar/<…>  (registry.toml [[caches]])       │
+                      │    nar/<…>  (registry.toml [caches])         │
                       │                                              │
   apm (AOS) ─────────▶│  AOS-ONLY ADDITIONS  (additive, ⊇)           │  ◀── apm's extra reach
                       │    channels/<name>/00..ff (signed partitions) │
@@ -94,7 +95,7 @@ The registry is a **strict superset** of git dumb HTTP (superset #1) and *may al
 be a strict superset of the Nix binary cache (superset #2). Neither superset claims
 a path the other needs; the AOS-only additions ride in disjoint namespaces
 (`/channels/**`, `delta-*.pack`) that stock clients simply never request. See
-[`nix-cache.md`](nix-cache.md) for the Nix surface.
+[`nix-cache.md`](nix-cache.md) for the Nix cache.
 
 ---
 
@@ -167,23 +168,24 @@ once published (long CDN TTL). A stock-git user can authenticate any release wit
 tags *are* the trust anchor for stock clients. See
 [`signing-and-trust.md`](signing-and-trust.md).
 
-**Registry-level config lives in the committed tree, not in the tag.** Because the
-tag is a pure pointer, anything a consumer needs *about* the registry —
-the NAR cache pointers (`registry.toml` `[[caches]]`) and the signing-key trust
-roster (`keys.toml`: active key(s) + revoked list) — lives as **committed files in
-the git tree** and is authenticated *transitively* by the signed tag: the chain
-runs **tag → commit → tree → file** (extending the verification hops below). A key
-inside a file authenticated by that key would be circular for bootstrap, so the
-signing pubkey is *not* in `registry.toml`; bootstrap trust is an **out-of-band
-anchor** — baked into the AOS image by `aos.apm.registries`
-(`trusted-keys.d/<registry>.pub`) or pinned with `apr trust pin`, never a silent
-trust-on-first-use. From that anchor the committed `keys.toml` roster is the
-authoritative trusted-key set that clients pin on sync, with rotation and
-revocation published as new signed `keys.toml` versions and reaching machines
-in-band. The committed
-tree is therefore `registry.toml` + `keys.toml` + `packages/<x>/<name>.toml` +
-`store/` realisation graph, distinct from the served object store. See
-[`repository-layout.md`](repository-layout.md) for the full tree and the tree ↔ HTTP mapping.
+**Registry-level config lives in the committed tree, not in the tag.** Because
+the tag is a pure pointer, anything a consumer needs *about* the registry — the
+Nix archive (NAR) cache pointers (`registry.toml` `[caches]`) and the
+signing-key trust roster (`keys.toml`: active key(s) + revoked list) — lives as
+**committed files in the git tree** and is authenticated *transitively* by the
+signed tag: the chain runs **tag → commit → tree → file** (extending the
+verification hops below). A key inside a file authenticated by that key would
+be circular for bootstrap, so the signing pubkey is *not* in `registry.toml`;
+bootstrap trust is an **out-of-band anchor** — baked into the AOS image by
+`aos.apm.registries` (`trusted-keys.d/<registry>.pub`) or pinned with `apr
+trust pin`, never a silent trust-on-first-use. From that anchor the committed
+`keys.toml` roster is the authoritative trusted-key set that clients pin on
+sync, with rotation and revocation published as new signed `keys.toml` versions
+and reaching machines in-band. The committed tree is therefore `registry.toml`
++ `keys.toml` + `packages/<x>/<name>.toml` + `store/` realisation graph,
+distinct from the served object store. See
+[`repository-layout.md`](repository-layout.md) for the full tree and the tree ↔
+HTTP mapping.
 
 ### 3.4 The rollout overlay — `/channels/<name>/00..ff`
 
@@ -209,7 +211,7 @@ path**:
 This **name-binding** check binds a tag object to the path it is served from and
 prevents a cross-serving attack (replaying a validly-signed tag at the wrong URL).
 Once the chain reaches the **commit**, every file in its **tree** — including the
-registry-level config (`registry.toml` `[[caches]]`) and the `keys.toml` trust
+registry-level config (`registry.toml` `[caches]`) and the `keys.toml` trust
 roster — is authenticated by extension (**tag → commit → tree → file**), so no
 config or cache pointer ever needs to ride *in* the tag. Branch refs carry no
 signature and are never trusted; their only job is stock-git convenience. Full
@@ -231,20 +233,17 @@ the committed tree layout is in [`repository-layout.md`](repository-layout.md).
 
 The dumb fetcher reads `info/refs` and `HEAD`, then resolves objects via
 `objects/info/packs` and `objects/info/alternates` — a host-independent file of
-**relative** `../releases/<M>/<m>/<patch…>/objects/` entries (one `../` per entry,
-which strips the `objects` segment to reach the repo root), newest→oldest. The dumb
-walker reads `http-alternates` then falls back to `alternates`, so the one relative
-file serves HTTP and local-FS alike. Because all loose objects are centralized at the
-root `/objects/`, alternates serve **pack discovery + the release index**, not
-object completeness. Conventionally-named **full packs** (`pack-<sha256>.pack` +
-`.idx`, listed in `info/packs`) restore speed; **loose objects** guarantee
-correctness even if no pack helps. AOS clients regenerate pack indexes locally
-rather than trusting server `.idx` files. A stock client never touches
-`/channels/**` or any `delta-*.pack.zst` (thin deltas are deliberately *not*
-listed in `info/packs`, since a dumb client cannot apply a thin pack). sha256 +
-dumb HTTP requires a git client that supports the sha256 object format (the dumb
-protocol has no capability
-negotiation). See [`http-layout.md`](http-layout.md) §"stock git compatibility".
+relative `../releases/<M>/<m>/<patch…>/objects/` entries, newest→oldest, that
+serves pack discovery and the release index (details in
+[`http-layout.md`](http-layout.md) §4.3). Conventionally-named **full packs**
+(`pack-<sha256>.pack` + `.idx`, listed in `info/packs`) restore speed; **loose
+objects** guarantee correctness even if no pack helps. AOS clients regenerate
+pack indexes locally rather than trusting server `.idx` files. A stock client
+never touches `/channels/**` or any `delta-*.pack.zst` (thin deltas are
+deliberately *not* listed in `info/packs`, since a dumb client cannot apply a
+thin pack). sha256 + dumb HTTP requires a git client that supports the sha256
+object format (the dumb protocol has no capability negotiation). See
+[`http-layout.md`](http-layout.md) §"stock git compatibility".
 
 ### 4.2 `apm` (the AOS package manager)
 
@@ -259,12 +258,12 @@ efficiency. End to end:
     3. semver    follow partition tag → refs/tags/<semver> (signed)
                  verify sig + name-binding (name == <semver>)
     4. anti-rollback: reject if <semver> below the monotonic floor
-    5. resolve   walk delta graph C→T (current→target):
+    5. resolve   pick the cheapest way to get the target's objects:
                    prefer delta-<B>.pack.zst whose base B is retained;
-                   else walk releases back to a usable delta / full pack;
-                   else full pack; else loose objects over dumb HTTP
+                   else the target's X.Y.0 full pack (+ one delta from it);
+                   else loose objects over dumb HTTP
     6. fetch     GET .../pack/delta-<…>.pack.zst (or full pack / loose)
-                 zstd -d, then local libgit2 pack indexing
+                 decompress, then local libgit2 pack indexing
     7. checkout  read package TOMLs from the materialized tree
 ```
 
@@ -275,13 +274,13 @@ anti-rollback in [`versioning-and-channels.md`](versioning-and-channels.md).
 ### 4.3 Stock `nix` (superset #2, optional)
 
 Orthogonal to the git-object layer, the NAR binary-cache location lives in the
-committed repo-root `registry.toml` `[[caches]]` (a tree file authenticated
+committed repo-root `registry.toml` `[caches]` stack (a tree file authenticated
 transitively by the signed tag), with the consumer's client-side `registries.d`
-as an optional override (or the origin itself) — it is *not* advertised in any
-signed tag. The origin **may** serve the
-`nix-cache-info` / `<storehash>.narinfo` / `nar/` surface, a strict superset for
+as an optional supplement and the registry URL itself as the fallback — it is
+*not* advertised in any signed tag. The origin **may** serve
+`nix-cache-info` / `<storehash>.narinfo` / `nar/`, a strict superset for
 stock `nix` dev-shell substitution; a separate cache-role Ed25519 key signs
-narinfo in production. The AOS-namespace and git-object surfaces are untouched and
+narinfo in production. The AOS and git-object paths are untouched and
 invisible to `nix`. See [`nix-cache.md`](nix-cache.md).
 
 ---
@@ -347,14 +346,12 @@ subcommands remain available for repair and unusual workflows.
 
 ### 6.2 Rollout (publisher-controlled, fix-forward)
 
-To roll a new release to *N*/256 of the fleet, point *N* partitions at the new
-semver tag and leave the rest on the prior release; this answers "where does the
-rest of the fleet go" explicitly — the un-advanced partitions still name the prior
-release. Advance partitions as confidence grows; completion = all 256 point at the
-new release. Aborting a bad rollout is **fix-forward** (publish a newer release and
-point partitions at it), never partition-decrement — the consumer's monotonic floor
-would block a decrement anyway. See
-[`versioning-and-channels.md`](versioning-and-channels.md).
+To roll a new release to *N*/256 of the fleet, the publisher points *N*
+partitions at the new semver tag and leaves the rest on the prior release.
+Aborting a bad rollout is **fix-forward** (publish a newer release and point
+partitions at it), never partition-decrement. The rollout model and the
+fix-forward rule are specified in
+[`versioning-and-channels.md`](versioning-and-channels.md) §6 and §7.
 
 ### 6.3 Anti-rollback at the architectural level
 
@@ -363,7 +360,7 @@ would block a decrement anyway. See
 | Tamper / MITM | signed semver + partition tags pin every object by sha256; loose-object Merkle DAG |
 | Cross-serving a valid tag at the wrong path | **name-binding**: embedded tag name must equal the serving path's expected name |
 | Rollback to an older release | consumer **monotonic floor** (never moves below current release) |
-| Stale / frozen mirror | AOS-TUF `timestamp.json` gives signed expiry over release metadata; **low CDN TTL** on `/channels` (and `info/refs`, `objects/info`) + consumer **max-staleness** + the monotonic anti-rollback floor bound rollout pointers |
+| Stale / frozen mirror | AOS-TUF (The Update Framework) `timestamp.json` gives signed expiry over release metadata; **low CDN TTL** on `/channels` (and `info/refs`, `objects/info`) + consumer **max-staleness** + the monotonic anti-rollback floor bound rollout pointers |
 
 Full threat model in [`signing-and-trust.md`](signing-and-trust.md).
 
@@ -378,7 +375,7 @@ Full threat model in [`signing-and-trust.md`](signing-and-trust.md).
   `info/refs` / `HEAD` / relative `info/alternates`, root-centralized loose
   `/objects/`, stock-git dumb-HTTP compatibility.
 - [`repository-layout.md`](repository-layout.md) — the committed git **tree** content
-  (`registry.toml` `[[caches]]`, `keys.toml` trust roster, `packages/`, the
+  (`registry.toml` `[caches]`, `keys.toml` trust roster, `packages/`, the
   `store/` realisation graph), authenticated via the signed tag (tag → commit → tree → file),
   and the tree ↔ HTTP mapping.
 - [`versioning-and-channels.md`](versioning-and-channels.md) — semver,
@@ -390,7 +387,7 @@ Full threat model in [`signing-and-trust.md`](signing-and-trust.md).
   signed pointers, name-binding, `tag→tag→commit`, sha256, unsigned branch refs.
 - [`publishing.md`](publishing.md) — the producer pipeline end to end.
 - [`nix-cache.md`](nix-cache.md) — the Nix
-  binary-cache superset located via the committed `registry.toml` `[[caches]]`
-  (client-side `registries.d` as optional override).
+  binary-cache superset located via the committed `registry.toml` `[caches]`
+  stack (client-side `registries.d` as optional supplement).
 - [`apt-comparison.md`](apt-comparison.md) — git-native + dumb-HTTP vs. APT's
   signed-flat-file / `pool` / phased-rollout lineage.

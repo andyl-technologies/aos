@@ -6,7 +6,7 @@ a sandboxed build does not make the resulting program safe to run, and a
 careful runtime declaration cannot repair an unauthenticated build.
 
 The operator-visible runtime model is documented in [Understand native package
-runtime policy](../users/aos/package-sandbox.md). Trust and publication duties
+runtime policy](../users/aos/package-runtime-policy.md). Trust and publication duties
 are documented in [Maintain the AOS trust model](trust-model.md).
 
 ## Preserve the build sandbox
@@ -71,8 +71,8 @@ VM or fleet gate.
 Useful baseline commands are:
 
 ```sh
-bash ./aos-dev build check effects --no-out-link
-bash ./aos-dev build package PACKAGE --no-out-link
+aos-dev build check effects --no-out-link
+aos-dev build package PACKAGE --no-out-link
 ```
 
 The [service sandbox](../engineering/packages/service-sandbox.md) and

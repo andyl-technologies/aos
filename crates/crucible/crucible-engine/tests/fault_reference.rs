@@ -7,7 +7,8 @@ use crucible_engine::model::{
     StatefulSignalOperator,
 };
 
-const REFERENCE: &str = include_str!("../../../../docs/users/crucible/reference.md");
+const REFERENCE: &str = include_str!("../../../../docs/users/crucible/reference-plan.md");
+const CLI_REFERENCE: &str = include_str!("../../../../docs/users/crucible/reference-cli.md");
 const GUIDE_INDEX: &str = include_str!("../../../../docs/users/crucible/README.md");
 const NETWORK_GUIDE: &str = include_str!("../../../../docs/users/crucible/network-faults.md");
 const STORAGE_NODE_GUIDE: &str =
@@ -34,6 +35,9 @@ const USER_GUIDES: &[&str] = &[
     "properties-and-evidence.md",
     "recorded-signals.md",
     "reference.md",
+    "reference-cli.md",
+    "reference-plan.md",
+    "reference-world.md",
     "reproduction.md",
     "running.md",
     "rust-api.md",
@@ -337,7 +341,7 @@ fn security_relevant_daemon_options_are_in_the_reference() {
         "--debug-role",
     ] {
         assert!(
-            REFERENCE.contains(option),
+            CLI_REFERENCE.contains(option),
             "reference must name daemon option `{option}`"
         );
     }

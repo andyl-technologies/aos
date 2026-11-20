@@ -11,6 +11,35 @@ is; when the code changes, the page changes with it. A design decision is
 recorded in the page for the component it affects, in the same change that
 makes it. The [code style guide](code-style.md#documentation) gives the rules.
 
+## Start here
+
+1. Read [`AGENTS.md`](../../AGENTS.md) for the build rules every change must
+   follow, then [code style](code-style.md).
+2. Read [build system](build/README.md) and
+   [development builds](build/development-builds.md) to build and test a
+   change.
+3. Read [Rust workspace](rust-workspace.md) to find the crate that owns a
+   piece of Rust code.
+4. Go to the section below for the component you are changing. Each directory
+   has a `README.md` that maps its pages and names the code it describes.
+
+## Repository map
+
+| Path | Contents | Described in |
+| --- | --- | --- |
+| `stdenv/` | Source bootstrap, GCC toolchain tiers, and the standard build environment | [Build system](build/README.md) |
+| `lib/` | The Nix library: module evaluation, effects, `mkDerivation`, image and test builders, and the downstream API | [Build system](build/README.md), [runtime abilities](abilities/README.md) |
+| `pkgs/` | Package expressions, with `_`-prefixed directories for the modules and helpers a package owns | [Code style](code-style.md#nix) |
+| `modules/` | Auto-discovered system modules, organized by feature | [Code style](code-style.md#nix) |
+| `systems/` | System variants that compose modules, and test fixtures | [Boot chain](boot/README.md) |
+| `crates/` | The Rust workspace: the `aos`, `apm`, and `apr` CLIs, Hub, Crucible, and their libraries | [Rust workspace](rust-workspace.md) |
+| `api/proto/` | Protocol sources for the build and Hub APIs | [Rust workspace](rust-workspace.md#portable-data-and-native-effects) |
+| `qualification/` | The Nix-evaluated release qualification contract | [Release model](release-publishing/release-model.md) |
+| `tests/` | Check derivations; `tests/fleet/` holds the multi-VM tests | [Image-boot testing](boot/image-boot-testing.md) |
+| `templates/` | The downstream flake template | [Downstream quickstart](downstream/quickstart.md) |
+| `tools/` | Development scripts, including `aos-dev` | [Development builds](build/development-builds.md) |
+| `default.nix`, `flake.nix` | The package set, systems, and the `checks` tree; the flake exports them | [Downstream flake API](downstream/flake-api.md) |
+
 ## Repository-wide
 
 - [Code style](code-style.md) covers Rust APIs and implementation, Dendritic Nix
@@ -27,9 +56,17 @@ makes it. The [code style guide](code-style.md#documentation) gives the rules.
   GCC tiers, per-tier stdenv, and producer validation rules.
 - [Rust builds](build/rust-builds.md) covers reusable Cargo dependency
   artifacts, their compatibility contract, development caches, and nextest.
+- [Development builds](build/development-builds.md) covers the development
+  shell, `aos-dev`, the shared VM image cache, and image reproducibility.
+- [Package builder notes](build/package-builders.md) records recipe rules for
+  dependency probing, hardening exceptions, Bazel, and fixed-output fetches.
+- [Build concurrency](build/build-concurrency.md) lists the builds that are
+  sensitive to high parallelism and how to validate removing a limit.
 
 ## Downstream builds
 
+- [Downstream builds](downstream/README.md) maps the pages for repositories
+  that take AOS as a flake input.
 - [Downstream quickstart](downstream/quickstart.md) starts a repository that
   takes AOS as its only flake input and tests it against a local checkout.
 - [Downstream flake API](downstream/flake-api.md) is the versioned contract
@@ -49,6 +86,8 @@ makes it. The [code style guide](code-style.md#documentation) gives the rules.
   sealing of the `/var` encryption key to an authorized boot.
 - [Recovery](boot/recovery.md) covers the signed recovery UKIs and the
   noninteractive initrd failure paths.
+- [Unattended installer](boot/installer.md) covers USB installer media, its
+  signed payload, the installer initrd, and the install operation.
 - [Image-boot testing](boot/image-boot-testing.md) covers the checks that boot
   the real raw image under UEFI firmware.
 
@@ -68,11 +107,13 @@ makes it. The [code style guide](code-style.md#documentation) gives the rules.
 - [Deferred execution and generations](abilities/execution.md) covers graph
   admission, the handler protocol, effect identity, package generations, and
   recovery.
+- [Packages](packages/README.md) maps the pages on package confinement,
+  attestation, and documentation.
 - [Package service sandbox](packages/service-sandbox.md) covers how a typed
   service declaration becomes the unit's confinement.
 - [Package and generation attestation](packages/attestation.md) covers the
   PCR 15 record of the committed native package generation.
-- [Package documentation](package-documentation.md) covers generation of
+- [Package documentation](packages/package-documentation.md) covers generation of
   package reference documents, their signed publication, Hub verification and
   search projections, and the shared readers.
 - [Package maintenance](package-maintenance/README.md) covers the
@@ -139,14 +180,19 @@ makes it. The [code style guide](code-style.md#documentation) gives the rules.
   targets.
 - [Retention and garbage collection](hub/retention-and-gc.md) covers rooting
   and safe deletion of binary-cache objects.
+- [OCI GC and registry deletion](hub/oci-gc-and-registry-deletion.md) covers
+  the OCI blob inventory, OCI GC run states, and the `delete_registry`
+  operation and its blockers.
 - [Configuration changes and webhooks](hub/configuration.md) covers SQL
   change-sets, git-backed registry change requests, and webhooks.
 - [Control plane and console](hub/control-plane.md) covers API, CLI, and web
-  console parity and the manifests that check it.
+  console parity, the manifests that check it, and the public browser.
 - [Runtime](hub/runtime.md) covers the shared application core, runtime ports,
-  the database backend, and the native and Worker runtimes.
-- [Topology cutover](hub/topology-cutover.md) specifies the one-shot migration
-  of an older deployment and its signed evidence bundle.
+  the database backend, the native and Worker runtimes, and the Worker
+  outbound boundary.
+- [Topology cutover](hub/topology-cutover.md) covers the signed evidence
+  bundle for moving a deployment onto the topology model and the
+  `aos hub topology cutover` commands that generate and verify it.
 
 ## Release publishing
 
@@ -231,6 +277,8 @@ Building and qualifying:
 
 - [Testing and determinism gates](crucible/testing-and-gates.md) covers the
   layered gate harness.
+- [Gate evidence scope](crucible/gate-evidence.md) distinguishes component
+  tests from live QEMU evidence.
 - [Engineering standards](crucible/engineering-standards.md) adds
   Crucible-specific code rules.
 - [Crate structure](crucible/crate-structure.md) covers crates, layers, and
@@ -264,6 +312,8 @@ Building and qualifying:
   covers trust boundaries and fail-closed operation.
 - [Performance and validation](crucible/campaigns/performance-and-validation.md)
   covers the campaign gate catalog and its performance checks.
+- [Campaign performance baseline](crucible/campaigns/performance-baseline.md)
+  covers measuring and pinning the baseline for `gate:campaign-performance`.
 - [Schema registry](crucible/campaigns/schema-registry.md) covers the single
   registry of independently versioned schemas.
 - [Worked network fixture](crucible/campaigns/worked-network-fixture.md) covers

@@ -100,5 +100,5 @@ Audit service health does not prove that:
 
 Use [security hardening](security-hardening.md), [Secure Boot](secure-boot.md),
 [registry verification](registries.md), and [native package runtime
-policy](package-sandbox.md)
+policy](package-runtime-policy.md)
 as separate controls.

@@ -4,7 +4,7 @@
 with `-plugin`. It is the only Crucible code that runs inside the emulator.
 It owns the guest's virtual clock, parks the guest when it goes idle,
 intercepts device I/O, and injects cross-node inputs at their exact delivery
-instruction counts. It talks to the host through the shared-memory region
+ticks. It talks to the host through the shared-memory region
 described in [shmem-abi.md](shmem-abi.md) on the hot path and through the
 control socket described in [control-protocol.md](control-protocol.md) once
 at setup and once at shutdown.
@@ -15,6 +15,8 @@ callbacks. It may depend on the dual-licensed `crucible-qemu-protocol` and
 see [../../legal/licensing.md](../../legal/licensing.md). The host side is in
 [qemu-integration.md](qemu-integration.md), and the QEMU APIs the plugin
 calls are listed in [qemu-patch.md](qemu-patch.md#plugin-api-surface).
+Terms such as tick, ceiling, idle jump, and node slot are defined in the
+[glossary](glossary.md).
 
 ## Module map
 
@@ -29,6 +31,10 @@ calls are listed in [qemu-patch.md](qemu-patch.md#plugin-api-surface).
 | `round_robin`, `preemption`, `vcpu_introspection` | vCPU rotation, halt tracking, commanded preemption, per-vCPU reads |
 | `inbound`, `network_rx`, `network_tx` | Inbound ordering, lossless RX injection, TX interception |
 | `device_io`, `block_io`, `ninep_io` | The device-I/O time hold and block and 9p routing |
+| `io_wire_fuzz` | The structure-aware block and 9p wire fuzz target that `gate:abi-conformance` runs |
+| `fault_command` | The bridge from the shared-memory fault-command protocol to QEMU's fault registry, and back for results |
+| `fingerprint_sampler` | Boundary-time capture of the single-VM execution fingerprint sample |
+| `virtual_timer_witness` | Validation of QEMU's virtual-timer callback witness before an idle wake is published |
 | `whitebox_doorbell`, `coverage` | Optional white-box doorbell and basic-block coverage |
 | `teardown` | Shutdown triggers and post-trigger sealing of shared memory |
 | `shmem_ordering` | The single funnel for shared-memory access |
@@ -104,8 +110,9 @@ ParseArguments
 ControlHandshake          Hello -> HelloAck, slot cross-check
 RequestTimeControl        qemu_plugin_request_time_control
 ReceiveSetup              three SCM_RIGHTS descriptors
-MapSharedMemory           mmap exactly region_len, validate header
-ArmWakeFd                 authenticate the setup plan, arm the eventfd
+MapSharedMemory           authenticate the setup plan, mmap exactly
+                          region_len, validate header
+ArmWakeFd                 arm the eventfd and register it with QEMU
 RegisterCallbacks         device, vCPU, coverage, white-box callbacks
 SendSetupAck              SetupAck(0)
 WaitBootBarrier           park until the first ceiling
@@ -221,8 +228,9 @@ preemption) clears node idleness. When the last vCPU halts,
    behind the current count is an error.
 3. **Park.** Publish `idle_wake_icount` and `STATUS_IDLE`, then wait until
    the ceiling reaches the desired wake or shutdown is requested. The wait
-   uses `qemu_plugin_crucible_wait_idle_wake`, which releases QEMU's BQL
-   around one raw non-private futex wait on `wake_signal` with the exact
+   uses `qemu_plugin_crucible_wait_idle_wake`, which releases QEMU's big
+   QEMU lock (BQL) around one raw non-private futex wait on `wake_signal`
+   with the exact
    expected value. Each return is rechecked against the acquire-loaded
    control flags and ceiling, and QEMU rescans its round-robin state before
    doing anything else. There is no busy spin and no wall-clock timeout; a
@@ -339,10 +347,13 @@ host happened to interleave. `PluginDeviceIoFreeze` prevents that:
   pending counter, and returns a non-`Copy` `DeviceIoRequestToken`. The token
   must be consumed by exactly one completion or failure, regardless of
   status, so the counter cannot drift.
-- While device I/O holds, the idle plan suppresses guest timer deadlines. If
-  the host has published `device_completion_deadline_tick`, the node jumps
-  directly to that completion (`IdleWakeCause::DeviceIoCompletion`);
-  otherwise it holds at the ceiling (`IdleWakeCause::DeviceIoFreeze`).
+- While device I/O holds and the host has not yet published
+  `device_completion_deadline_tick`, the idle plan suppresses guest timer
+  deadlines, and with no inbound frame due the node holds at the ceiling
+  (`IdleWakeCause::DeviceIoFreeze`). Once the deadline is published it joins
+  the plan as a candidate (`IdleWakeCause::DeviceIoCompletion`) and timer
+  deadlines compete with it again, so the node wakes at the earliest of the
+  completion, timer, and inbound candidates.
 - The hold is released when the last request of the burst completes.
 
 The hold does not freeze virtual time at the submit instant. The completion

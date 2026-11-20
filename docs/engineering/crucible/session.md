@@ -11,7 +11,9 @@ runtime state, and every control command and every unit of execution is
 serviced on that actor's task, one bounded scheduler quantum at a time.** Pause,
 step, savepoint, fork, and query are ordinary messages applied at quantum
 boundaries, not operations that take a lock over a running engine. Observers
-read a lock-free mirror and never enter the mailbox.
+read a lock-free mirror and never enter the mailbox. Quantum, frontier,
+checkpoint, and the other model terms used here are defined in the
+[glossary](glossary.md).
 
 The crate is `crates/crucible/crucible-session`. It contains no raw QEMU or
 shared-memory access; it drives an engine `QuantumLoop` and is generic over it,
@@ -233,9 +235,13 @@ Invariants:
 - In `Running`, a pending command always wins over stepping, and at most one
   command is applied per iteration, so a busy scheduler cannot starve control.
   A pause or stop is at most one quantum away.
-- One iteration drives at most one scheduler quantum. The sole call into the
-  engine loop is `drive_engine_quantum` (`.../session/core.rs`); the session owns
-  no other backend-advancement API.
+- One iteration drives at most one scheduler quantum. `Engine::step_quantum`
+  (`.../session/engine.rs`) makes a single `QuantumLoop::drive_quantum` call.
+  Lifecycle adapters that keep ownership of their own engine loop advance it
+  through `SessionDriver::drive_quantum`, `drive_engine_quantum`, or, for a
+  host-concurrent round, `drive_engine_concurrent_quantum`
+  (`.../session/core.rs`). Every one of these is a call on the engine's
+  quantum-loop traits; the session has no way to advance a backend directly.
 - The actor calls `tokio::task::yield_now` after every applied command or
   scheduler quantum, so one session never monopolizes its runtime thread.
 - In `Loaded` and `Paused` the actor blocks on the mailbox: no spin, no held
@@ -275,11 +281,13 @@ creates a one-shot `Suspend` breakpoint over a stop `Condition`: a
 `Condition::Named` leaf (`session.step.quantum`, `session.step.event`,
 `session.step.assertion`, `session.step.timer`) answered by a
 `StepConditionLeaves` oracle, or `Condition::At { at: target_frontier }` for
-`Duration`. Applying the command records it and installs
-`self.active_step = Some(ActiveStep::new(*mode, self.frontier));`.
+`Duration`. Applying the command records it and stores the new `ActiveStep`,
+built from the mode and the engine's current frontier, as the engine's active
+step.
 
 `Duration` completion compares the authoritative cross-node scheduler frontier
-(`outcome.frontier >= target`). An individual event or node timestamp at the
+in the quantum outcome with the target and completes once the frontier has
+reached it. An individual event or node timestamp at the
 target does not complete the step while the global frontier is still behind it.
 
 A step only ever advances by bounded quanta through the ordinary loop, so it is
@@ -313,8 +321,9 @@ pub struct SessionControlLogEntry {
 }
 ```
 
-The entry is keyed by `frontier: self.frontier` and `quanta: self.quanta`,
-never by host time. Which applications are recorded:
+The entry is keyed by the engine's frontier and completed-quanta count at the
+boundary where the command applied, never by host time. Which applications are
+recorded:
 
 | Command | Recorded when |
 |---------|---------------|
@@ -402,28 +411,30 @@ call into the temporal graph (see [execution-graph.md](execution-graph.md)),
 and start, resume, and fork all end in the same `instantiate` of a
 configuration.
 
-- **Savepoint.** `CreateSavepoint` calls `save_current_checkpoint`, which runs
-  `self.graph.save_checkpoint(&self.configuration)?`, stamps the boundary's
-  virtual time, and attaches the quantum loop's captured execution closure when
+- **Savepoint.** `CreateSavepoint` calls `save_current_checkpoint`, which
+  saves the current configuration with `TemporalGraph::save_checkpoint`,
+  stamps the boundary's virtual time, and attaches the quantum loop's
+  captured execution closure when
   the loop produces one. It replies with `SavepointInfo { label, configuration,
   checkpoint }`. Valid in `Running` and `Paused`.
 - **Start.** `instantiate_runtime` realizes the loaded configuration with
-  `self.graph.resume(&self.configuration)?.runtime` and lands in
+  `TemporalGraph::resume`, keeps the returned runtime, and lands in
   `Paused(Instantiated)`.
 - **Resume.** `Engine::resume_session_from_checkpoint` resolves the checkpoint
   record and its recorded configuration, realizes it through
-  `self.graph.resume_checkpoint(checkpoint)?`, and builds an independent
+  `TemporalGraph::resume_checkpoint`, and builds an independent
   `SessionActor` with `from_realized_checkpoint`, already paused with
-  `reason: PauseReason::Instantiated`. A resumed session is not a special
+  `PauseReason::Instantiated`. A resumed session is not a special
   restored object; it is an ordinary session at the checkpoint's recorded
   configuration and frontier.
 - **Fork.** `fork_child` records a branch with `TemporalGraph::fork` (base plus
   appended decisions) and builds a paused child actor. `fork_child_from_checkpoint`
   and the `Fork` command use `build_checkpoint_child`, which records the fork
-  with `self.graph.fork(&base, std::iter::empty::<Decision>())?` and an empty
-  schedule delta. Direct forks require the parent to be `Paused` or `Stopped`
-  (`operation: "fork_child_from_checkpoint"` on rejection); the command form
-  first pauses a running parent.
+  with `TemporalGraph::fork` and no appended decisions, so the schedule delta
+  is empty. Direct forks require the parent to be `Paused` or `Stopped` and
+  otherwise fail with `SessionError::InvalidEngineState`; the command form
+  first pauses a running parent. How search uses forks is in
+  [exploration.md](exploration.md#fork).
 
 A forked or resumed child is an independent actor with its own mailbox
 (`SESSION_FORK_MAILBOX_CAPACITY`, 8), live snapshot, lifecycle, and engine
@@ -434,7 +445,7 @@ When an actor is built with `SessionActor::new_with_fork_loop_factory`, the
 `Fork` command is intercepted by `apply_spawned_fork_command`: the source
 checkpoint is resolved first, the factory receives a `SessionForkRequest { id,
 checkpoint, configuration }` and returns the child's `QuantumLoop`, and the child
-is started with `tokio::spawn(async move { ... run_leaf_child() })`. The reply
+is started on its own Tokio task running `run_leaf_child`. The reply
 `SessionHandle` carries a `SessionChildHandle` (mailbox sender and live
 snapshot). Leaf children run without spawning further forks, so the exploration
 tree stays bound to canonical replay rather than free-running processes. Without
@@ -473,7 +484,7 @@ control_log }`. `Engine::replay_control_replay_artifact` (and the
    `ControlReplayBoundaryMismatch`; a different frontier is
    `ControlReplayFrontierMismatch`; a different event-log boundary is
    `ControlReplayRecordInvalid`. Scheduler controls of one batch are applied
-   together with `self.apply_control_operations_at_boundary(controls)?;`.
+   together by one `apply_control_operations_at_boundary` call.
 4. Compare the replayed snapshot with the recorded one
    (`ControlReplayFinalSnapshotMismatch`).
 
@@ -523,7 +534,7 @@ more than one boundary stale.
 `quanta_stepped`, `control_acknowledgements`, `state_transition_sequence`).
 `LiveSnapshot::query(LiveQueryKind)` answers `Status`, `State`, and
 `EventLogLength` from one `read()` without the mailbox. `SessionActor::live_status`
-is `self.live.read()`.
+returns the result of `live.read()` on the actor's mirror.
 
 ### Event-log stream
 
@@ -566,9 +577,10 @@ attach snapshot suppress transitions it already represents.
 ### Exploration lifecycle polling
 
 `ExplorationLifecycleDriver` issues `Pause`, `Resume` (`Continue`), and `Stop`
-for exploration drivers and polls the mirror for acknowledgement within
-`EXPLORATION_LIFECYCLE_RESPONSE_BOUND_QUANTA` (1) quantum and at most
-`EXPLORATION_LIFECYCLE_MAX_ACTOR_YIELDS` (128) actor yields.
+for exploration drivers and polls the mirror for acknowledgement. Its
+acknowledgement record and error cases are described in
+[exploration.md](exploration.md#lifecycle-control-for-exploration-drivers);
+its two bounds are in [Constants](#constants).
 
 ## Debugger commands
 

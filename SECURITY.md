@@ -69,7 +69,7 @@ through the private reporting channel.
 
 - [Security hardening](docs/users/aos/security-hardening.md) describes host
   security settings and their current limits.
-- [Package sandboxing](docs/users/aos/package-sandbox.md) explains service
+- [Package runtime policy](docs/users/aos/package-runtime-policy.md) explains service
   confinement and permissions.
 - [The AOS trust model](docs/maintainers/trust-model.md) describes signing
   authorities, release trust, and compromise response. Checked-in Secure Boot

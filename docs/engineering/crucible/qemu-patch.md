@@ -13,6 +13,11 @@ through the versioned control socket and shared-memory protocols; see
 [../../legal/licensing.md](../../legal/licensing.md). The host side is
 described in [qemu-integration.md](qemu-integration.md) and the in-QEMU Rust
 plugin that calls the new APIs is described in [qemu-plugin.md](qemu-plugin.md).
+Crucible vocabulary such as sim mode, tick, warp, and time control is defined
+in the [glossary](glossary.md). QEMU terms used below: TCG is QEMU's Tiny Code
+Generator, QMP is the QEMU Machine Protocol, the BQL is the big QEMU lock that
+serializes device and main-loop state, and a bottom half is a callback QEMU
+defers to a later main-loop pass.
 
 ## Artifact and provenance
 
@@ -196,12 +201,16 @@ callback.
   (`crucible-plugin-device-wake`).
 - `qemu_plugin_crucible_wait_idle_wake` lets the exact simulated round-robin
   idle callback release the BQL around one raw non-private futex wait on the
-  slot's `wake_signal` word (`plugins/crucible-idle-wait.c`). Holding the BQL
-  while waiting would block the BQL-dependent producers that publish the
-  wake. Every wait return forces the round-robin loop to rescan from the
-  start before any guest execution, device work, receive injection,
-  fingerprint capture, or time advance, because releasing the BQL invalidates
-  the callback's earlier observations.
+  slot's `wake_signal` word (`plugins/crucible-idle-wait.c`):
+  - The BQL is released because holding it while waiting would block the
+    BQL-dependent producers that publish the wake.
+  - Releasing it invalidates the callback's earlier observations, so every
+    wait return forces the round-robin loop to rescan from the start.
+  - The rescan happens before any guest execution, device work, receive
+    injection, fingerprint capture, or time advance.
+
+The plugin's use of these three exports in its idle loop is described in
+[qemu-plugin.md](qemu-plugin.md#the-idle-hot-loop).
 
 ### Observation
 
@@ -306,10 +315,11 @@ async runtime runs inside QEMU.
 
 The supported AArch64 sim profile explicitly selects `pmu=off`; the host
 launch profile rejects an AArch64 CPU model without exactly one `pmu=off`
-(`LaunchProfileError::Aarch64PmuMustBeOff`). The PMU `INST_RETIRED`
-overflow interrupt is driven by a nanosecond timer and cannot fire at the
-exact retired-instruction tick after a fractional or idle advance. Non-sim
-ARM PMU behavior is unchanged.
+(`LaunchProfileError::Aarch64PmuMustBeOff`). QEMU raises PMU counter
+overflow, including `INST_RETIRED`, from a virtual-clock timer (`pmu_timer`
+in `target/arm/cpregs-pmu.c`) and not at an instruction boundary, so the sim
+profile does not admit PMU instruction-retirement timing. Non-sim ARM PMU
+behavior is unchanged.
 
 ## Development-only diagnostics
 

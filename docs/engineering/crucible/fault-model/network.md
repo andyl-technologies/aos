@@ -72,9 +72,10 @@ path:
 - `network.token_bucket` checkpoints tokens, burst size, and refill coordinate
   and feeds the same integration path.
 - `network.queue_policy` bounds a queue by bytes and frames simultaneously and
-  selects a `NetworkQueueDiscipline` (`fifo`, `strict_priority`,
-  `weighted_round_robin`, `deficit_round_robin`, `red`) and an overflow policy
-  (`tail_drop`, `head_drop`, `keyed_drop`, `typed_error`).
+  selects a `NetworkQueueDiscipline` and an overflow policy. Their closed
+  values, like every other network parameter spelling, are listed in the user
+  guide under
+  [closed network parameter choices](../../../users/crucible/network-faults.md#closed-network-parameter-choices).
 - `network.pause_backpressure` pauses one class for a duration or until its
   contribution is removed; sibling classes keep running.
 

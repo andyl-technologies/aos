@@ -7,7 +7,7 @@ effects compose, and what evidence is retained.
 
 Read [Signal programs](signals.md) first when designing causes. Use the
 [guide map](README.md#guide-map) to select an executable effect and the
-[reference](reference.md#plans-signals-bindings-and-faults) for exact TOML shapes.
+[reference](reference-plan.md#plans-signals-bindings-and-faults) for exact TOML shapes.
 
 ## Binding contract
 
@@ -94,7 +94,7 @@ target_kinds = ["network_interface"]
 
 The closed operation vocabulary has 22 network operations, 13 storage
 operations, and 27 node/CPU/memory/interrupt/clock/accelerator operations. Use
-the [operation table](reference.md#fault-opportunity-operation-values) rather
+the [operation table](reference-plan.md#fault-opportunity-operation-values) rather
 than inventing names. Filters are predicates over opportunities already
 declared by an adapter; they do not create new observation points.
 
@@ -238,7 +238,7 @@ Before running a campaign, verify:
 4. Opportunity adapter, operations, phases, and target kinds agree.
 5. Effect parameters, phase, and lifetime are legal, and overlapping
    contributions obey the registry-selected composition algebra in the
-   [effect registry](reference.md#exhaustive-effect-registry).
+   [effect registry](reference-plan.md#exhaustive-effect-registry).
 6. Required topology policy objects and packaged capabilities exist.
 7. Search candidates and all history/work limits are finite and campaign-sized.
 8. Observability retains enough information to explain failures.

@@ -27,6 +27,14 @@ duplicate them, so the trap encoding, frame, and marker vocabulary each have a
 single source. Licensing boundaries are described in
 [../../legal/licensing.md](../../legal/licensing.md).
 
+Shared vocabulary (doorbell, tick, ready point, app-requested randomness) is
+defined in the [glossary](glossary.md). On this page "raw icount" means
+QEMU's retired-instruction count and "tick" means the logical picosecond
+coordinate. The trap is located in raw icount; the coordinate published to the
+host is a tick (see [Exact icount at the trap](#exact-icount-at-the-trap)).
+Unqualified "icount" below, and the `*_icount` identifiers, name the trap
+coordinate without distinguishing the two.
+
 ## Black-box mode: the default and the floor
 
 A guest never needs an in-guest agent, a kernel patch, or image content added
@@ -168,6 +176,13 @@ Every callback runs the same derivation. An inert HINT can sit in the middle
 of a larger translation block, so the instruction callback must not call
 QEMU's committing raw-icount reader. TB metadata that is missing or stale
 fails closed (`LiveWhiteboxError::IcountObservation`).
+
+That derivation is in raw icount. The coordinate published with the marker is
+the matching pre-instruction tick: `pre_instruction_tick_ps` in
+`runtime/live_whitebox.rs` takes the tick observed at the end of the
+translation block and subtracts the remaining instruction distance times
+`TICKS_PER_INSTRUCTION`, which preserves any idle-advance bias in the tick
+clock.
 
 ### Setup validation, collisions, and inertness
 
@@ -510,6 +525,8 @@ deliver exactly one named marker through the shared-memory ring. It also
 covers live collision rejection and a real app-random request and reply. The
 engine tests `guest_host_marker_observability` and
 `guest_host_channel_determinism` cover the scheduler side. `gate:abi-conformance`
-covers the instruction, frame, and marker golden vectors
-(`crates/crucible/crucible-qemu-plugin/tests/gate_abi_conformance.rs`). See
+covers the frame and marker golden vectors in
+`crates/crucible/crucible-qemu-protocol/tests/gate_abi_conformance.rs` and the
+instruction ABI vectors in
+`crates/crucible/crucible-qemu-plugin/tests/gate_abi_conformance.rs`. See
 [testing-and-gates.md](testing-and-gates.md).

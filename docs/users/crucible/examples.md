@@ -18,7 +18,7 @@ signal bindings, node restart policy, and quantified properties. The
 | --- | --- | --- |
 | [`crucible-qemu-live-plugin-install.rs`](../../../crates/crucible/crucible-qemu-host/examples/crucible-qemu-live-plugin-install.rs) | Installs the aggregate plugin protocol and validates sequence-valued white-box observations. | `checks.crucible.phase2.qemuLivePluginInstall` |
 | [`crucible-qemu-live-block-realization.rs`](../../../crates/crucible/crucible-qemu-host/examples/crucible-qemu-live-block-realization.rs) | Realizes the supported shared-memory block transport through the guarded launcher. | `checks.crucible.phase2.qemuLiveBlockRealization` |
-| [`crucible-qemu-live-hot-fork-child.rs`](../../../crates/crucible/crucible-qemu-host/examples/crucible-qemu-live-hot-fork-child.rs) | Exercises the contained native hot-fork child protocol. | Current hot-fork child checks |
+| [`crucible-qemu-live-hot-fork-child.rs`](../../../crates/crucible/crucible-qemu-host/examples/crucible-qemu-live-hot-fork-child.rs) | Exercises the contained native hot-fork child protocol. | `checks.crucible.phase6.qemuHotForkChildVm` |
 
 Build the complete package and run its public self-test surface first:
 

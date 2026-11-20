@@ -70,19 +70,10 @@ that registry's unauthenticated response. The normal fleet paths are:
 - deliver them through `host.nix` authenticated by an image-baked
   configuration key.
 
-Configure the Hub URL, registry name, channel, and trust line together:
-
-```nix
-{
-  aos.apm.registries.acme = {
-    url = "https://hub.acme.example/acme/production/";
-    channel = "stable";
-    priority = 900;
-    required = true;
-    trustKeys = ["acme:Ed25519:BASE64_KEY"];
-  };
-}
-```
+[Bootstrap trust](../registry/trust.md#bootstrap-trust) shows the client
+configuration. For a Hub-hosted registry, set `url` to the registry URL the
+Hub reports, such as `https://hub.acme.example/acme/production/`, and
+configure the channel and trust line together with it.
 
 The Hub's TLS certificate is a separate network identity. Fetching a registry
 key over authenticated organizational TLS can be part of an operator ceremony,
@@ -157,21 +148,16 @@ commands bypass public HTTP authorization, so access to the host and state root
 is instance-administrator authority.
 
 The instance seal key protects stored credentials and optional hosted signing
-material. Back it up with the database and storage recovery point. Losing it
-makes sealed values unreadable; exposing it may disclose them.
+material. Losing it makes sealed values unreadable; exposing it may disclose
+them. Rotate a configured `credentials.jwtSecret` deliberately instead of
+relying on restart invalidation, and enforce per-client edge policy at a
+trusted proxy, because the native service does not trust forwarded
+client-address headers.
 
-Without a configured native JWT credential, access-token signing keys are
-ephemeral and existing short-lived tokens stop working after restart. When the
-AOS service supplies `credentials.jwtSecret`, preserve and rotate that runtime
-credential deliberately instead of relying on restart invalidation.
-
-The native service does not currently trust forwarded client-address headers.
-Behind a proxy, pre-authentication rate limiting sees the proxy peer. Enforce
-per-client edge policy at a trusted proxy rather than accepting arbitrary
-forwarding headers.
-
+The procedures are in [Back up a native Hub](production.md#back-up-a-native-hub)
+and [Put the native server behind TLS](production.md#put-the-native-server-behind-tls).
 See [Deploy AOS Hub as a native service](native.md) for initialization,
-credentials, storage bindings, and backup details.
+credentials, and storage bindings.
 
 ## Protect Cloudflare deployments
 
@@ -180,18 +166,14 @@ live in R2, and KV holds session and hot state. Protect the Cloudflare account,
 deployment token, runtime API token, `HUB_SEAL_KEY`, and `HUB_JWT_SECRET` as
 separate authorities.
 
-`HUB_SEAL_KEY` is recovery-critical. Replacing it without migrating sealed
-data can make OIDC credentials, storage credentials, and hosted signing keys
-unreadable. Rotating `HUB_JWT_SECRET` intentionally invalidates issued access
-tokens. Routine deploys must preserve both unless executing a reviewed rotation
-or recovery.
+`HUB_SEAL_KEY` is recovery-critical and `HUB_JWT_SECRET` signs every access
+token. Routine deploys must preserve both unless executing a reviewed rotation
+or recovery; [Record and protect secrets](cloudflare.md#record-and-protect-secrets)
+explains what each replacement breaks.
 
-Provider account recovery, Durable Object export, R2 retention, KV state,
-domains, Worker configuration, secrets, and log destinations are all part of
-the deployment recovery plan. The packaged installer deploys and migrates the
-application; it is not a provider backup system.
-
-See [Deploy AOS Hub to Cloudflare](cloudflare.md) for resource and deployment
+The recovery plan and its limits are in
+[Back up a Worker deployment](production.md#back-up-a-worker-deployment). See
+[Deploy AOS Hub to Cloudflare](cloudflare.md) for resource and deployment
 details.
 
 ## Authenticate administrators and automation

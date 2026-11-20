@@ -31,9 +31,8 @@ health as the decision inputs, not the aggregate word alone.
 
 ## Inspect services
 
-Use ordinary systemd operations. The commands below use the example
-`acme-agent` service from the [configuration guide](configuration.md); replace
-it with a unit installed on your host:
+Use ordinary systemd operations. The commands below use a hypothetical
+`acme-agent` service; replace it with a unit installed on your host:
 
 ```sh
 systemctl status acme-agent.service
@@ -117,25 +116,23 @@ zpool status
 zpool get autotrim,compatibility
 zfs get encryption,keystatus,mountpoint rpool
 zfs list -t filesystem,volume
-systemctl status aos-zfs-health.service
+systemctl status zfs-storage.zfs-health.service
 ```
 
 Scrubs, trims, the event daemon, health checks, and memory telemetry run from
-`aos.services.zfsMaintenance`; there is no need to schedule them by hand. See
-[ZFS storage](storage-zfs.md) for the memory budget, dataset declarations, the
-metrics to alert on, and device replacement.
+`aos.filesystems.zfs.maintenance`; there is no need to schedule them by hand.
+See [ZFS storage](storage-zfs.md) for the memory budget, dataset declarations,
+the metrics to alert on, and device replacement.
 
 The immutable EROFS and dm-verity payloads live in fixed-size A/B zvols; they
 are replaced only by authenticated image staging. Mutable state lives in
 separate encrypted datasets. Do not snapshot, clone, resize, or write an active
 immutable slot outside the image updater.
 
-Do not delete APM profile directories or generation links by hand. Use
-`apm clean --generations --keep N` for the invoking user's package generations,
-or add `--system` to prune both machine-wide package and configuration
-generations. The current generation is retained even when it falls outside the
-latest-`N` window. Follow with `apm gc --system` to reclaim released config output and
-input roots. A/B image-generation pruning is not implemented.
+Do not delete APM profile directories or generation links by hand. Prune
+package and configuration generations with `apm clean` and `apm gc` as
+described in [Clean up old packages](packages.md#clean-up-old-packages). A/B
+image-generation pruning is not implemented.
 
 ## Operate packages, images, and configuration generations
 

@@ -104,16 +104,17 @@ apr publish /nix/store/HASH-aos-system-toplevel \
   --image-payload /nix/store/HASH-aos-image-qcow2 \
   --image-disk /nix/store/HASH-aos-image-qcow2-disk \
   --image-info /nix/store/HASH-aos-image-qcow2-info \
-  --image-format qcow2 --image-uki /nix/store/HASH-uki/aos.efi \
+  --image-format qcow2 --image-contract-schema QCOW2_CONTRACT_SCHEMA \
   --image-payload /nix/store/HASH-aos-image-raw \
   --image-disk /nix/store/HASH-aos-image-raw-disk \
   --image-info /nix/store/HASH-aos-image-raw-info \
-  --image-format raw --image-uki /nix/store/HASH-uki/aos.efi \
+  --image-format raw --image-contract-schema RAW_CONTRACT_SCHEMA \
   --key-id initial
 ```
 
 Provide one payload, regular-file disk output, regular-file metadata output,
-format, and exact UKI for each image encoding. The disk and metadata outputs
+format, and provider-owned contract schema for each image encoding; the five
+flags must be repeated in complete groups. The disk and metadata outputs
 are published through the registry's Nix cache; the payload supplies layout,
 recovery, and update facts for validation. `--previous` records the prior
 package version when maintaining a version chain. `--source-drv` records
@@ -175,9 +176,9 @@ basename. Use `--version` when the output name does not carry its package
 version, or when the package version intentionally differs from the registry
 snapshot version. Attached image metadata must name that exact package version.
 
-`--cache-key` is optional. When present, it is a Nix narinfo signing key in
-`name:base64-secret` form. It is not the OpenSSH maintainer key used by
-`--key-id`.
+`--cache-key` is optional. When present, it names a protected file containing
+a Nix narinfo signing key in `name:base64-secret` form. It is not the OpenSSH
+maintainer key used by `--key-id`.
 
 Preview the ordered plan without mutation:
 
@@ -309,7 +310,8 @@ git -C "$HOME/.local/share/apm/registries/acme" \
 A smart Git remote is useful for maintainer collaboration and branch or tag
 consumers. A production channel also needs the generated static origin over
 HTTP. Maintainer branches hold workspaces; configured channel branch names remain
-reserved for the published frontier. Use Git as the authoring remote and `apr release --upload-url ...` for the consumer surface.
+reserved for the published frontier. Use Git as the authoring remote and
+`apr release --upload-url ...` for the consumer surface.
 
 ## Use focused commands for repair
 

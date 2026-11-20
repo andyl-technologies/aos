@@ -16,6 +16,12 @@ For the scheduler horizon see [scheduling.md](scheduling.md). Signal-driven
 storage, 9p, and network faults have their own pages in this folder. This page
 covers only the fault-free device model and the transforms it exposes.
 
+Vocabulary such as tick, exact local event, and I/O sub-node is defined in the
+[glossary](glossary.md). Every coordinate on this page is a logical tick. The
+`*_icount` field and parameter names (`delivery_icount`, `submit_icount`,
+`current_icount`) are historical and also hold ticks, not raw retired
+instruction counts.
+
 ## Why I/O is a scheduled event
 
 One alternative is to freeze the guest clock while the host performs I/O and
@@ -89,7 +95,7 @@ Lifecycle invariants:
   `BoundedQueue` mirrors the SPSC ring: power-of-two capacity, `QueueFull` when
   full, and a rejected push hands the item back instead of dropping it. When the
   outbox fills partway through a drain, the undelivered responses go back in
-  flight at their original delivery icounts. Backpressure never drops, reorders,
+  flight at their original delivery ticks. Backpressure never drops, reorders,
   or retimes a response.
 
 ### Shared-memory form
@@ -101,7 +107,7 @@ once slots are freed. `IoCore::advance_to_shmem` (and
 values whose `FrameEntry.delivery_icount` is the computed completion icount. It
 then wakes the consumer with `NodeSlot::wake_for_frame_delivery`. If the response
 ring is full, that response and every later due response are requeued at their
-original icounts. The commit-status variant reports how many frames were
+original ticks. The commit-status variant reports how many frames were
 published before a failure, so a transactional caller can tell a failure before
 publication from one after it.
 
@@ -434,8 +440,8 @@ all use `BTreeMap`, `BTreeSet`, or an explicit key order.
 `DeviceSchedulingSubNode` in `crucible-engine/src/device_subnode.rs` wraps a
 block or 9p `IoCore` with its scheduling identity:
 
-- **Horizon term.** `next_exact_local_event` is the final delivery icount of
-  the in-flight head. The scheduler folds it into the owning VM's
+- **Horizon term.** `next_exact_local_event` is the final delivery tick (the
+  "delivery icount" of the wire fields) of the in-flight head. The scheduler folds it into the owning VM's
   `ExactLocalEvent::IoCompletion` term. An idle requester is therefore advanced
   exactly to its next completion.
 - **Delivery.** `deliver_due(consumer_icount)` emits `IoCompletion` events in
@@ -472,7 +478,7 @@ two points, both active only for the `sim` accelerator with icount:
 - `virtio_queue_notify` skips the host notifier for virtio-9p, virtio-blk, and
   virtio-net, and calls the queue handler inline on the requesting vCPU thread.
 
-The request is observed at the guest's exact kick icount. Completion still
+The request is observed at the guest's exact kick tick. Completion still
 belongs to each device's deterministic delivery path. Plain TCG, sim without
 icount, and every other virtio device keep the upstream behavior. See
 [qemu-patch.md](qemu-patch.md) for the patch layout.
@@ -481,15 +487,20 @@ icount, and every other virtio device keep the upstream behavior. See
 
 While block or 9p requests are in flight, the plugin's `PluginDeviceIoFreeze`
 (`crucible-qemu-plugin/src/device_io.rs`) sets the node slot's
-`device_io_active` flag and keeps a pending count. The idle path then
-suppresses guest HZ timer deadlines, so a gap in host timing cannot advance
-virtual time. Each submit returns a non-`Copy` token. Exactly one completion
-or failure must consume it, so the count cannot drift. The 9p path brackets a
-whole device invocation with `burst_start` and `burst_done` and holds the node
-for the entire burst. A block request uses `begin_independent_submit`, which
-contributes to the hold without blocking an unrelated 9p burst from reaching
-`burst_done`. The block submit marks the hold active before it publishes the
-frame to the ring. If the enqueue fails, the token is failed immediately.
+`device_io_active` flag and keeps a pending count. Until the host publishes a
+completion deadline (next section), the idle path suppresses the guest's
+periodic timer deadlines, so a gap in host timing cannot advance virtual time.
+Once the deadline is published, timer deadlines compete with it again and the
+node wakes at the earliest candidate; the plan is described in
+[qemu-plugin.md](qemu-plugin.md#the-idle-hot-loop). Each submit returns a
+non-`Copy` token. Exactly one completion or failure must consume it, so the
+count cannot drift. The 9p path brackets a whole device invocation with
+`begin_burst` and `burst_done` (called from QEMU's burst-start and burst-done
+callbacks) and holds the node for the entire burst. A block request uses
+`begin_independent_submit`, which contributes to the hold without blocking an
+unrelated 9p burst from reaching `burst_done`. The block submit marks the hold
+active before it publishes the frame to the ring. If the enqueue fails, the
+token is failed immediately.
 
 ### Device-completion advance
 
@@ -509,7 +520,7 @@ so there is no second rounding domain. Once QEMU commits the advance, it wakes
 device waiters and the coroutine retries the poll. Consider the case where the
 deadline is not yet published, or virtual time already admits the response but
 the ring write has not physically landed. The callback returns, and the next
-host wake retries the poll at the same logical icount. Host timing can change
+host wake retries the poll at the same logical tick. Host timing can change
 only how long QEMU waits. It never changes the delivery coordinate the guest
 sees.
 
@@ -522,12 +533,14 @@ enter this path.
 The fast path assumes a guest halts (HLT) while it waits for I/O, which lets
 the scheduler jump to the completion. A guest that busy-polls retires
 instructions throughout the wait. That costs wall-clock time, but the
-completion still lands at its exact icount. Correctness never depends on the
+completion still lands at its exact tick. Correctness never depends on the
 guest halting. `idle_busy_poll_equivalence` in `crucible-device/src/harness.rs`
 runs the same script with one-shot idle advance and with one-tick-at-a-time
-advance, and requires byte-identical delivery logs. `BUSY_POLL_SPIKE` records
-three conclusions: correctness does not depend on poll mode, busy-polling
-affects only performance, and any mitigation must preserve exact delivery.
+advance, and requires byte-identical delivery logs. `BUSY_POLL_SPIKE` is a
+constant that records the conclusions of that characterization (a "spike" here
+is a bounded investigation whose result is kept as data, not a live
+measurement): correctness does not depend on poll mode, busy-polling affects
+only performance, and any mitigation must preserve exact delivery.
 
 ## Verification
 

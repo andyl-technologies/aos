@@ -7,10 +7,28 @@ execution model: the genesis configuration of a run is exactly
 `Configuration::genesis(def)`, and every later state is a reduction of this
 definition under a schedule (see [execution-model.md](execution-model.md)).
 
-The code lives in `crates/crucible/crucible-engine/src/model/`. The operator
-view of the same format is in
+The operator view of the same format is in
 [../../users/crucible/scenarios.md](../../users/crucible/scenarios.md) and
-[../../users/crucible/topology.md](../../users/crucible/topology.md).
+[../../users/crucible/topology.md](../../users/crucible/topology.md). Terms
+such as World, Plan, Seed, ready point, and lookahead are defined in the
+[glossary](glossary.md).
+
+## Code map
+
+Paths are relative to `crates/crucible/crucible-engine/src/model/`.
+
+| Path | Owns |
+| --- | --- |
+| `scenario/definition.rs` | `ScenarioDef` |
+| `configuration.rs` | `ScenarioDefForm`, `Configuration`, `Schedule` |
+| `scenario.rs` | `World` constructors, `static_topology`, ready-point validation |
+| `topology_faults.rs` | `WorldNode`, `WorldIoNode`, `LinkDef`, `ReadyPoint`, `NodeBlobRef` |
+| `plan_properties.rs` | `Plan` and `Properties` |
+| `fault_signal/plan.rs` | `FaultSignalPlan` |
+| `materialized/seed.rs` | `Seed` |
+| `material.rs`, `canonical.rs` | Canonical identity material and `MaterialHasher` |
+| `binary_state.rs` | The compact binary codec |
+| `family.rs`, `family/instances.rs` | `ScenarioBuilder`, `NodeTemplate`, `FamilySpace`, `ScenarioFamily`, `ReproductionArtifact` |
 
 ## A value, not a program
 
@@ -192,9 +210,10 @@ guest modification is implied:
 
 `WorldNode` carries fixed `smp_vcpus`, and the count is part of the hashed
 configuration, so changing it is a different scenario. A multi-vCPU node runs
-under single-threaded round-robin TCG, never MTTCG: `crucible-qemu-host`
-rejects `thread=multi` and requires a pinned round-robin switch quantum before
-spawning QEMU. There is no per-node clock shift; the fixed tick scale enters
+under single-threaded round-robin TCG, never MTTCG (multi-threaded TCG); the
+launch checks that enforce this are in
+[qemu-integration.md](qemu-integration.md#pre-spawn-validation). There is no
+per-node clock shift; the fixed tick scale enters
 World identity through `min_link_latency_ticks`.
 
 Absent by design: host paths, an authored genesis-snapshot path (genesis is
@@ -349,17 +368,14 @@ scenario identity, and all of its bytes feed the decision RNG:
   `crucible.model.seed-decision-rng-root.v1` and takes the first eight bytes
   as the `u64` root of `DecisionRng`.
 - `Seed::fork_stream` and `Seed::stream_seed` fork a `DecisionStream` by
-  name-hash within the stream's domain. Node, link, and device streams use
-  separate domains (`crucible.decision-rng.node-stream.v1`,
-  `crucible.decision-rng.link-stream.v1`,
-  `crucible.decision-rng.device-stream.v1`), so a device named `disk` and a
-  node named `disk` never collide.
+  name hash within the stream's domain, so node, link, and device streams
+  with the same name never collide.
 - `World::seeded_rng_streams` projects the static stream set into seeded
   stream roots.
 
-Forking by name-hash rather than allocation order is what keeps unrelated
-World edits from perturbing other streams' draws. See
-[determinism.md](determinism.md).
+The forking rule, its domains, and why it keeps unrelated World edits from
+perturbing other streams are in
+[determinism.md](determinism.md#intended-randomness-the-seeded-decision-source).
 
 ## Authoring
 

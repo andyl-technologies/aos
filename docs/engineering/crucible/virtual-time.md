@@ -10,7 +10,11 @@ them, the shared-memory handoff, and how the scheduler moves time forward.
 The determinism argument that depends on this model is in
 [determinism.md](determinism.md). Horizon selection and the quantum loop are
 in [scheduling.md](scheduling.md); the full node-slot layout is in
-[shmem-abi.md](shmem-abi.md).
+[shmem-abi.md](shmem-abi.md). Terms such as tick, raw retired count, ceiling,
+idle jump, and horizon are defined in the [glossary](glossary.md). In this
+page "icount" on its own means the raw retired-instruction count; a field
+named `*_icount` may still carry ticks, as noted under
+[the ceiling handoff](#the-ceiling-handoff).
 
 ## Units
 
@@ -85,7 +89,8 @@ The host enforces the same profile before spawn in
 shift, `shift=auto`, or any nonzero shift is rejected, as is any `sleep` or
 `align` value other than `off`. `shift=auto` is rejected because adaptive
 icount makes the number of instructions before a timer deadline depend on host
-speed.
+speed. The complete pre-spawn rule set is in
+[qemu-integration.md](qemu-integration.md#pre-spawn-validation).
 
 The fixed scale is part of launch identity. `scenario_hash_material` emits
 `qemu_icount_shift=0`, `sim_tick=picosecond`, `sim_ticks_per_ns=1000`,
@@ -285,8 +290,9 @@ Ordering and fail-closed rules:
   its own authorization.
 - `publish_idle` requires `idle_wake_icount >= reached tick`.
 - The plugin parks without a host busy-wait: the idle callback calls QEMU's
-  one-shot `qemu_plugin_crucible_wait_idle_wake`, which releases the BQL
-  around one futex wait and forces a fresh all-idle rescan on return.
+  one-shot `qemu_plugin_crucible_wait_idle_wake`, which releases QEMU's big
+  lock (the BQL) around one futex wait and forces a fresh all-idle rescan on
+  return.
 
 `AdvanceStopCondition::Ceiling` completes an advance at the ceiling or at an
 idle park that cannot reach it. `AdvanceStopCondition::NextAuthenticatedIdle`
@@ -364,9 +370,8 @@ instructions passed as `-icount ...,rr_switch_quantum=<n>` and recorded in
 launch identity with `rr_switch_quantum_units=retired-instructions` and
 `rr_vcpu_rotation=ascending-vcpu-id`. The default is
 `DEFAULT_RR_SWITCH_QUANTUM = 4096`; zero and values above `i32::MAX` are
-rejected. The quantum is fixed, so it never adapts to wall time. 4096 was
-chosen as the smallest swept quantum that met the throughput floor without
-losing race discrimination.
+rejected. The quantum is fixed, so it never adapts to wall time. The basis for
+4096 is in [qemu-integration.md](qemu-integration.md#multi-vcpu-launch).
 
 ## Restore and inactive time
 
@@ -388,12 +393,10 @@ current frontier.
 ## Cross-node ordering
 
 Every cross-node event retains its exact tick stamp through delivery. The
-scheduler orders due events by `ScheduledEventKey`, which sorts by
-`(virtual_time, consumer node, producer node, sequence)`; the consumer and
-sequence come from `SharedTimelineKey`. In shared memory, inbound frames
-carry their delivery tick in `FrameEntry::delivery_icount`, and the plugin
-exposes due frames in `FrameDeliveryKey` order
+scheduler orders due events by `ScheduledEventKey`; the key and its tie-break
+rules are in [scheduling.md](scheduling.md#event-ordering). In shared memory,
+inbound frames carry their delivery tick in `FrameEntry::delivery_icount`,
+and the plugin exposes due frames in `FrameDeliveryKey` order
 `(delivery_icount, src_node, seq)`. Visibility depends on the stamped tick,
 never on when the frame appeared in the ring. See
-[determinism.md](determinism.md#contract-b-injection-determinism) and
-[scheduling.md](scheduling.md).
+[determinism.md](determinism.md#contract-b-injection-determinism).

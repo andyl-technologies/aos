@@ -148,7 +148,7 @@ the exception.
 
 ## Inventory
 
-The workspace has 78 member packages. Packages inherit the workspace
+The workspace has 80 member packages. Packages inherit the workspace
 `Apache-2.0` license unless the table lists another one.
 
 | Package | Directory | Responsibility |

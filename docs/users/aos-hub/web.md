@@ -3,7 +3,8 @@
 The Hub has two browser surfaces. Public registry browsing and the login,
 account-security, invitation, and device-approval ceremonies are rendered on
 the server. Authenticated resource management uses the first-party AOS Hub
-console and requires JavaScript. Public registry pages can be read anonymously.
+console, called "the console" throughout these guides, and requires
+JavaScript. Public registry pages can be read anonymously.
 Account, organization, project, registry, and instance changes require a
 signed-in account with permission on the relevant scope.
 
@@ -89,14 +90,17 @@ section only after verifying the record's signed qualification envelope
 against its trusted keys; the served registry remains the authority.
 
 A channel page shows the target release, the minimum allowed release, and the
-share of the 256 rollout buckets assigned, then the rollout bar and a
-colour-coded bucket map. Enter a host's bucket to see which release it gets.
+share of the 256 rollout partitions assigned, then the rollout bar and a
+colour-coded map. The page labels partitions as buckets. Enter a host's bucket
+to see which release it gets.
 
 ## Review unpublished release candidates
 
 Maintainers with the registry's Publish permission use **Publishing** at
 `/<org>/<registry>/-/settings/staged-releases`. Its candidate list is separate
-from the public Releases, Packages, and Images pages. A candidate is a portable
+from the public Releases, Packages, and Images pages. A candidate is the
+console's name for an unpublished
+[release stage](../registry/publishing.md#upload-an-unpublished-candidate): a portable
 `aos.registry-stage/v1` revision, with an ordinary authoring branch, exact
 prepared signed commit, object inventory, and withheld publication pointers.
 
@@ -135,6 +139,8 @@ After signing in, use:
 - the organization and instance settings under `/-/` for administrative work;
 - `/<org>/<registry>/-/settings` for registry configuration.
 
+### Registry settings
+
 The registry settings overview includes **Registry details** for its committed
 name, description, homepage introduction, default browser release, and release
 support policy. The registry needs an indexed publication before these fields
@@ -160,19 +166,23 @@ pinned trust anchors. Enter one public anchor per line as
 removed; applying these operational settings takes effect directly. Trust
 anchors can also be supplied when creating a registry.
 
+### Create resources
+
 Organization resource inventories keep creation separate from browsing:
 `/-/org/<org>/projects/new`, `registries/new`, `caches/new`,
 `bindings/new`, `domains/new`, `network-policies/new`,
 `endpoints/new`, and `gateways/new` open focused reviewed-
 creation workflows below the same organization root. The inventory pages link
 to those routes and do not mix full create forms into the resource list.
-Deployment-wide domain, network-boundary, delivery-endpoint, and
+Deployment-wide domain, network-policy, delivery-endpoint, and
 storage-gateway inventories use the same pattern below `/-/instance`, with a
 `new` route below each collection. A create action is shown only when the live
 scope grants the API permission required by that resource; organization
 creation remains governed by the instance signup policy.
 
-The management console uses the same `aos.hub.v1` Connect API, reviewed
+### Permissions and the console session
+
+The console uses the same `aos.hub.v1` Connect API, reviewed
 plan/apply mutations, and IAM checks as the CLI. It exchanges the HttpOnly
 browser session and page CSRF proof for a five-minute bearer held only in
 memory; it never stores that bearer in local storage or IndexedDB. Canonical
@@ -188,6 +198,8 @@ project, and registry. Roles are task-oriented rather than a simple ladder:
 Admin manages organization settings, while Maintainer owns publishing,
 channels, and keys. Owner has both sets of permissions; Developer and Viewer
 are narrower roles.
+
+### Delivery, storage, and cache objects
 
 Registry and cache settings start with effective configuration. **Delivery**
 shows selected client destinations and offers a [coordinated setup workflow](delivery.md).
@@ -208,6 +220,8 @@ same-origin proxy upload. Large files automatically use the Hub's multipart
 protocol, and a failed part aborts the durable upload. The browser never sends
 its Hub bearer to a direct storage URL.
 
+### Members and invitations
+
 The organization's **Members** page includes member and invitation inventory.
 **Invite a member** creates a reviewed pending invitation and shows its
 acceptance link after apply; it does not pre-create an account or
@@ -219,6 +233,8 @@ return to that clean acceptance page. The invitee reviews and accepts it; the
 Hub then consumes the invitation and creates the membership atomically. Member
 managers can cancel a pending invitation from the same page. Accepted,
 cancelled, and expired invitations remain visible as history.
+
+### Single sign-on
 
 The organization **SSO** page manages one OIDC identity provider and its email
 domains. Provider reads are redacted to a “client secret configured” state.
@@ -268,8 +284,8 @@ authenticated visibility, writes, or stable service methods.
 
 - Password sign-in is enabled by default and can be disabled in instance
   settings.
-- Passkeys provide usernameless WebAuthn sign-in. They require the small
-  first-party browser script mentioned above.
+- Passkeys provide usernameless WebAuthn sign-in. They require JavaScript on
+  the otherwise server-rendered sign-in page.
 - Magic links are single-use and expire after 15 minutes. Native deployments
   currently log them; Worker deployments need Email Service or an HTTP relay
   for delivery.

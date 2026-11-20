@@ -2,7 +2,8 @@
 
 Crucible is AOS's deterministic multi-VM simulation harness for testing systems
 whose failures depend on timing and event order. It runs guest machines under a
-patched QEMU TCG build, advances them under one authoritative scheduler, and
+patched build of QEMU's software emulator (TCG, the Tiny Code Generator),
+advances them under one authoritative scheduler, and
 records the decisions needed to reproduce and explore an execution.
 
 Crucible is currently an experimental developer tool. The local packaged-QEMU
@@ -35,6 +36,32 @@ This distinction matters operationally. A `Plan` says what may happen; a
 `Schedule` records what did happen. A checkpoint is a position in that recorded
 execution. Save, resume, replay, and search all operate on the same
 content-addressed execution graph.
+
+## Terms
+
+These terms recur throughout the guide:
+
+- **Content-addressed**: named by the BLAKE3 hash of its bytes, written
+  `blake3:<64 lowercase hexadecimal digits>`.
+- **Admission**: the validation a scenario, plan, or checkpoint must pass
+  before any guest starts.
+- **Fail closed**: refuse the operation instead of continuing with missing,
+  mismatched, or unverified state.
+- **Scheduler quantum**: one bounded slice of execution between two points at
+  which the scheduler pauses the world; `--max-quanta` counts these.
+- **Reduction**: one independent execution of a scenario and schedule, as in
+  `reduce(ScenarioDef, Schedule)` above. `verify` compares reductions.
+- **Fingerprint**: a digest of deterministic machine and modeled state taken
+  at an admitted boundary and compared between executions.
+- **Frontier**: the alternate choices reachable from an execution prefix that
+  search or a campaign may still explore.
+- **Adapter**: the component that applies fault effects in one domain, such
+  as network, storage, or node.
+- **White-box channel**: the optional guest-host channel through which a
+  guest reports typed markers and requests application randomness.
+- **Reproduction artifact**: the self-contained `.crucible` file that `replay`
+  consumes. One written for a non-passing result is also called a failure
+  artifact.
 
 ## When to use it
 
@@ -85,14 +112,16 @@ Run the live QEMU self-test before authoring or investigating a scenario:
 ```
 
 The production command runs the live QEMU gates by default. It fails closed if
-it cannot discover and validate a matched QEMU/plugin pair.
+it cannot discover and validate a matched QEMU/plugin pair. Its live probes
+also load the provisioned campaign-executor deployment described under
+[First run](#first-run), so the self-test passes only on a provisioned host.
 
 ## First run
 
 Local QEMU runs require a durable `CRUCIBLE_RUN_STATE_ROOT` and a provisioned
 campaign-executor deployment. An administrator must supply the dedicated
 cgroup-v2 and ext4 project-quota roots described in
-[campaign setup](campaigns.md#start-the-single-host-owner). Building the package
+[campaign setup](campaigns-host.md#start-the-single-host-owner). Building the package
 does not provision these host resources. Select the owner-only deployment file
 with `--campaign-deployment`, `CRUCIBLE_CAMPAIGN_DEPLOYMENT`, or the default
 `/etc/crucible/packaged-executor.toml`.
@@ -149,41 +178,30 @@ Start with the [representative-scenario quickstart](quickstart.md). It builds
 the suite, generates a three-VM nginx, curl, and I/O-probe scenario through the
 public Rust API, and installs its content-addressed I/O objects before execution.
 
-For deeper work:
+After the quickstart, the remaining pages are grouped by task.
 
-- [Feature coverage](coverage.md) inventories every packaged command, model
-  surface, topology family, signal family, effect adapter, evidence path, and
-  continuation workflow.
+**Start here**
+
 - [Support boundaries](support.md) distinguishes packaged operator features,
   public APIs, repository certification surfaces, model-only behavior, and
   deliberately rejected device concepts.
 - [Scenarios](scenarios.md) explains scenario identity, authoring, and input
   resolution.
+- [Running Crucible](running.md) covers backend discovery, seeds, terminal
+  conditions, output, and exit codes.
+
+**Author**
+
 - [Authoring fault scenarios](authoring.md) walks through the complete
   World/topology/signal/binding/property/artifact pipeline.
-- [Fault topology reference](topology.md) documents every fault-domain,
-  network, storage, policy, and node-capability declaration.
+- [Signal-driven faults](signal-driven-faults.md) explains how to model static,
+  recorded, spatial, sporadic, shared-cause, network, storage, and node faults.
 - [Signal programs](signals.md) documents all source, pure, and stateful signal
   families, their typing rules, bounds, checkpoint state, and replay contract.
 - [Fault bindings](bindings.md) documents sampling, selectors, mappings,
   opportunity filters, phases, lifetimes, composition, search, and evidence.
-- [Properties, observations, and verdicts](properties-and-evidence.md) explains
-  the complete assertion vocabulary and how effect evidence becomes a verdict.
-- [Stores and artifacts](artifacts.md) distinguishes scenarios, DAG objects,
-  checkpoints, handles, reproduction artifacts, findings, and reports.
-- [Fault experiment cookbook](cookbook.md) provides end-to-end patterns for
-  outages, hazards, congestion, corruption, power loss, recordings, hardware,
-  arrays, contacts, and bounded exploration.
-- [Rust integration API](rust-api.md) maps scenario generation, production
-  lifecycle, control clients, streaming, RPC, debug, and import surfaces.
-- [Running Crucible](running.md) is the command reference for backend discovery,
-  seeds, terminal conditions, output, and exit codes.
-- [CI](ci.md) shows a bounded, reproducible pipeline with retained failure
-  artifacts.
-- [Reference](reference.md) summarizes commands and the canonical scenario
-  schema.
-- [Signal-driven faults](signal-driven-faults.md) explains how to model static,
-  recorded, spatial, sporadic, shared-cause, network, storage, and node faults.
+- [Fault topology reference](topology.md) documents every fault-domain,
+  network, storage, policy, and node-capability declaration.
 - [Network faults](network-faults.md) covers route topology, directional
   outages, loss, delay, queues, forwarders, shared media, assertions, and
   replay.
@@ -191,20 +209,57 @@ For deeper work:
   9p, lifecycle, CPU, interrupt, memory, clock, and accelerator effects.
 - [Recorded signal inputs](recorded-signals.md) documents deterministic CSV,
   JSONL, PCAP, and PCAPNG import, provenance, storage, and runtime attachment.
+- [Properties, observations, and verdicts](properties-and-evidence.md) explains
+  the complete assertion vocabulary and how effect evidence becomes a verdict.
+- [Fault experiment cookbook](cookbook.md) provides end-to-end patterns for
+  outages, hazards, congestion, corruption, power loss, recordings, hardware,
+  arrays, contacts, and bounded exploration.
+- [Rust integration API](rust-api.md) maps scenario generation, production
+  lifecycle, control clients, streaming, RPC, debug, and import surfaces.
+
+**Run and reproduce**
+
 - [Reproduction and branching](reproduction.md) explains `verify`, artifacts,
   `replay`, `save`, and `resume`.
+- [Stores and artifacts](artifacts.md) distinguishes scenarios, DAG objects,
+  checkpoints, handles, reproduction artifacts, findings, and reports.
+- [Interactive control and debugging](debugging.md) covers the current
+  interactive and debugger surfaces.
+- [CI](ci.md) shows a bounded, reproducible pipeline with retained failure
+  artifacts.
+- [Troubleshooting](troubleshooting.md) maps common failures to corrective
+  action.
+
+**Explore**
+
 - [Exploration](exploration.md) covers bounded search, fuzzing, and triage.
 - [Lazy campaigns](campaigns.md) covers the single-host campaign repository,
   verified import, lifecycle control, authenticated inspection, and current
   executor-attachment boundary.
-- [Interactive control and debugging](debugging.md) covers the current
-  interactive and debugger surfaces.
+  Its pages are [campaign inputs](campaigns-inputs.md),
+  [owner and host setup](campaigns-host.md),
+  [operating a campaign](campaigns-operating.md), and
+  [store maintenance](campaigns-store.md).
+
+**Operate**
+
 - [Daemon operation](daemon.md) documents the remote control plane and its
   current fidelity limitation.
+- [Lazy campaigns](campaigns-host.md#start-the-single-host-owner) also describes
+  the host resources and deployment file that local QEMU runs require.
+
+**Reference**
+
+- [Reference](reference.md) lists every command and option and the canonical
+  scenario schema. Its pages are the
+  [command-line reference](reference-cli.md), the
+  [scenario and world reference](reference-world.md), and the
+  [plan and property reference](reference-plan.md).
+- [Feature coverage](coverage.md) inventories every packaged command, model
+  surface, topology family, signal family, effect adapter, evidence path, and
+  continuation workflow.
 - [Certification examples](examples.md) maps supported domains to executable
   examples and named repository checks.
-- [Troubleshooting](troubleshooting.md) maps common failures to corrective
-  action.
 
 ## Feature coverage map
 
@@ -213,12 +268,12 @@ For deeper work:
 | Audit whether a feature is documented | [Feature coverage](coverage.md) | Implementation registry and coverage tests |
 | Decide whether a surface is operationally supported | [Support boundaries](support.md) | [Reference](reference.md) |
 | Build and run a first workload | [Representative-scenario quickstart](quickstart.md) | [Running Crucible](running.md) |
-| Generate a signal-driven scenario | [Authoring fault scenarios](authoring.md) | [Signals and bindings](reference.md#plans-signals-bindings-and-faults) |
-| Declare fault-addressable objects | [Fault topology reference](topology.md) | [Canonical scenario reference](reference.md#canonical-scenario-document) |
-| Simulate network failures | [Network faults](network-faults.md) | [Effect registry](reference.md#exhaustive-effect-registry) |
-| Simulate storage, VM, or hardware failures | [Storage, node, and hardware faults](storage-node-faults.md) | [Effect registry](reference.md#exhaustive-effect-registry) |
+| Generate a signal-driven scenario | [Authoring fault scenarios](authoring.md) | [Signals and bindings](reference-plan.md#plans-signals-bindings-and-faults) |
+| Declare fault-addressable objects | [Fault topology reference](topology.md) | [Canonical scenario reference](reference-world.md#canonical-scenario-document) |
+| Simulate network failures | [Network faults](network-faults.md) | [Effect registry](reference-plan.md#exhaustive-effect-registry) |
+| Simulate storage, VM, or hardware failures | [Storage, node, and hardware faults](storage-node-faults.md) | [Effect registry](reference-plan.md#exhaustive-effect-registry) |
 | Use recorded physical or packet data | [Recorded signal inputs](recorded-signals.md) | [Trace API](../../../crates/crucible/crucible-engine/src/model/fault_signal/trace_import.rs) |
-| Reproduce or explore a failure | [Reproduction and branching](reproduction.md), [Exploration](exploration.md) | [Command reference](reference.md#command-line-interface) |
+| Reproduce or explore a failure | [Reproduction and branching](reproduction.md), [Exploration](exploration.md) | [Command reference](reference-cli.md#command-line-interface) |
 | Find a production-backed example | [Certification examples](examples.md) | Repository Nix checks and crate rustdoc |
 
 ## Stability and source of truth

@@ -196,7 +196,8 @@ work items, retained effect hashes, and branch parent. `FaultExecutionRuntime`
 owns evaluator and adapter state behind one checkpoint surface so neither can
 be persisted without the other.
 
-A fat checkpoint contains all mutable signal, binding, and adapter state
+A fat checkpoint (one that carries materialized state; see the
+[glossary](../glossary.md#graphs-and-checkpoints)) contains all mutable signal, binding, and adapter state
 needed to resume without pre-checkpoint event-log history, except immutable
 content-addressed artifacts. Trace chunks and lookup artifacts referenced by
 state remain explicit store dependencies of exported savepoints.

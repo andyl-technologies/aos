@@ -1,7 +1,8 @@
 # Release security and keys
 
 This page describes the threat model of canonical release publishing, the
-signer roles the release contracts enforce, the TUF metadata layer, and the
+signer roles the release contracts enforce, the TUF (The Update Framework)
+metadata layer, and the
 external signing boundary. Custody procedures for each key are in
 [Registry key management](../../maintainers/registry-key-management.md); the
 registry-level signature and roster model is in
@@ -47,7 +48,7 @@ keys are separate even when two roles use the same algorithm.
 | `secure-boot-db` | Authenticode signatures on systemd-boot and normal/recovery UKIs. |
 | `kernel-module` | Kernel module signatures for the production kernel certificate. |
 | `pcr-policy` | Measured-boot PCR policies embedded in reviewed UKIs. |
-| `provenance` | Provenance DSSE statements. |
+| `provenance` | Provenance statements in DSSE (Dead Simple Signing Envelope) form. |
 | `release-evidence` | The public release manifest, journal evidence, and the completion journal head. |
 | `qualification` | One complete passing qualification matrix over exact staging bytes. |
 | `channel` | Signed channel operations. |

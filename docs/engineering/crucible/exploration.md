@@ -22,24 +22,35 @@ realization goes through the single `instantiate` function in
   reproduce = (scenario form, schedule) artifact; minimize = failure-preserving shrink
 ```
 
-The order in which these capabilities were built, and the gates that guard each
-rung, is recorded in the dependency ladder in
+The gates that guard each capability, and the order in which they must be
+green, are in the dependency ladder in
 [testing-and-gates.md](testing-and-gates.md). Execution-model vocabulary
 (`Configuration`, `Schedule`, `Decision`, `reduce`, `instantiate`) is defined in
 [execution-model.md](execution-model.md), and the checkpoint DAG itself in
 [execution-graph.md](execution-graph.md). Operator usage of `search`, `fuzz`, and
 `triage` is in [the user exploration guide](../../users/crucible/exploration.md).
 
+Three terms recur below; the [glossary](glossary.md) has the rest:
+
+- A *thin* checkpoint is a DAG node with no stored state, rebuilt by replaying
+  its schedule from an ancestor. A *fat* checkpoint also caches materialized
+  state. See
+  [execution-graph.md](execution-graph.md#thin-and-fat-checkpoints).
+- The *frontier* is the set of recorded configurations not yet expanded.
+- A *campaign branch* is a `Decision::Selection` whose `is_campaign_branch()`
+  is set: a typed choice that search may vary, as opposed to a decision that
+  replay merely repeats.
+
 ## Where the code lives
 
 | Area | Path | Key items |
 |------|------|-----------|
 | Fork, resume, replay, unified check | `crucible-engine/src/model/temporal_graph/core.rs` | `TemporalGraph::{resume, fork, replay, search, search_with_strategy, branch_preemptions, validate_unified_operation}` |
-| Checkpoint cache and restore | `crucible-engine/src/model/temporal_graph/core/checkpoint_cache.rs`, `search_storage.rs` | `materialize_checkpoint`, `materialize_hot_checkpoint`, `evict_fat_checkpoint_to_thin`, `replay_oracle_admit_cached_snapshot`, `replay_checkpoint` |
+| Checkpoint cache and restore | `crucible-engine/src/model/temporal_graph/core/checkpoint_cache.rs`, `crucible-engine/src/model/temporal_graph/search_storage.rs` | `materialize_checkpoint`, `materialize_hot_checkpoint`, `evict_fat_checkpoint_to_thin`, `replay_oracle_admit_cached_snapshot`, `replay_checkpoint` |
 | Search vocabulary | `crucible-engine/src/model/exploration.rs` | `SearchStrategy`, `SearchBudget`, `FrontierReductionPolicy`, `FrontierReductionReport` |
 | Frontier ordering, oracles | `crucible-engine/src/model/runtime/search.rs` | `compare_search_frontier_candidates`, `is_genuine_search_frontier_decision` |
 | Reductions | `crucible-engine/src/model/runtime.rs` | `SymmetryReductionClasses`, `PartialOrderReductionPolicy` |
-| Guidance and bandit | `crucible-engine/src/model/exploration/guidance.rs`, `guidance_search.rs`, `adaptive_campaign.rs` | `GuidanceSignal`, `GuidanceSignalComposition`, `AdaptiveStrategyConfig` |
+| Guidance and bandit | `crucible-engine/src/model/exploration/guidance.rs`, `crucible-engine/src/model/guidance_search.rs`, `crucible-engine/src/model/adaptive_campaign.rs`, `crucible-engine/src/model/temporal_graph/guided_search.rs` | `GuidanceSignal`, `GuidanceSignalComposition`, `AdaptiveStrategyConfig`, `TemporalGraph::{search_with_guidance, search_adaptive_campaign}` |
 | Fuzzing and corpus | `crucible-engine/src/model/family/instances.rs`, `runtime/coverage_guidance.rs` | `ScenarioFamily::{fuzz_coverage_guided, fuzz_coverage_guided_corpus}` |
 | App-random branching | `crucible-engine/src/model/app_random_branching.rs` | `TemporalGraph::branch_app_random` |
 | Reproduction, minimization | `crucible-engine/src/model/family/instances.rs`, `failure/model.rs`, `reproduction.rs`, `engine.rs` | `ReproductionArtifact`, `FindingReproductionArtifact::minimize`, `MinimizationConfig` |
@@ -126,7 +137,7 @@ what makes cached snapshots trustworthy:
                   schedule suffix. Depends only on determinism and the recorded
                   schedule; correct by construction. (instantiate_thin_replay)
   exact restore : load the cached fat checkpoint for config.id(). Fast, but it
-                  is a cache of reduce() and can be incomplete or corrupt.
+                  is a cache of realized state and can be incomplete or corrupt.
 
   replay oracle : identity(fat checkpoint) == identity(thin replay)
                   mismatch => EngineError::ReplayOracleMismatch
@@ -140,19 +151,18 @@ The rules the code enforces:
   then inserts it into the exact-snapshot cache. `save_checkpoint` and
   `save(store, configuration)` are this operation plus closure persistence, and
   saving the same configuration twice returns the existing checkpoint.
-- `instantiate` checks a cached snapshot with `replay_checkpoint` before loading
-  it whenever an independent thin path exists. A mismatch is returned as an
-  error; `instantiate` never silently switches to replay.
-- `replay_oracle_admit_cached_snapshot` validates a cache entry (and its cached
-  ancestors) and, when the oracle rejects it, evicts the entry back to its thin
-  node with `evict_fat_checkpoint_to_thin` before returning the error. Eviction
-  changes neither checkpoint identity nor the denoted configuration.
-- `validate_cached_snapshots_with_replay_oracle` admits every cached entry from
-  shortest schedule to longest, so a corrupt ancestor is rejected before any
-  descendant can be restored from it.
+- A rejected cache entry is evicted back to its thin node with
+  `evict_fat_checkpoint_to_thin` before the error is returned. Eviction
+  changes neither checkpoint identity nor the denoted configuration, and
+  `instantiate` never silently switches to replay.
 - `TemporalGraph::replay(configuration)` is the on-demand oracle check for a
   stored fat checkpoint and returns a `ReplayOracleCheck` naming the
   configuration, fat checkpoint, and thin checkpoint identities.
+
+What the oracle compares, and every point where it runs
+(`instantiate`, `replay_oracle_admit_cached_snapshot`,
+`validate_cached_snapshots_with_replay_oracle`), is owned by
+[execution-model.md](execution-model.md#the-replay-oracle).
 
 A replay-oracle mismatch is localized to the first differing decision by the
 bisection helper `localize_replay_oracle_mismatch`
@@ -207,9 +217,11 @@ a budget that exhausts the frontier every strategy reaches the same graph.
 `select_strategy_frontier` exposes the same ordering read-only so a concrete
 backend driver can keep ownership of runtime realization while matching graph
 search exactly. The CLI maps `crucible search --strategy bfs|dfs|guided` to
-`BreadthFirst`, `DepthFirst`, and `CoverageGuided`; see [cli.md](cli.md) for the
+`BreadthFirst`, `DepthFirst`, and `CoverageGuided` and calls the bounded-depth
+failure-oracle variant from `crucible-cli/src/cli/exploration/search.rs`. The
 remaining flags (`--max-depth`, `--max-states`, `--on-violation stop|collect`,
-`--findings-out`).
+`--findings-out`) are documented in the
+[user reference](../../users/crucible/reference-cli.md#search).
 
 `search_with_strategy_and_failure_oracle` attaches a `SearchFailureOracle`. The
 oracle is a read-only reporter: when a reached configuration fails, the search
@@ -229,6 +241,9 @@ and they never rewrite a child configuration. Crucible contains no model
 checker and no specification-language evaluator; when the proof material is
 missing, the candidate is explored.
 
+The enumeration primitives that apply a policy (`enumerate_frontier` and
+`enumerate_frontier_reduced`) are described in
+[execution-graph.md](execution-graph.md#frontier-expansion-and-reduction).
 `FrontierReductionPolicy` carries both inputs, and `FrontierReductionPolicy::none()`
 explores every candidate:
 
@@ -513,9 +528,10 @@ configuration yields the same artifact id whichever path discovered it.
 
 The CLI's portable text form (`crucible.reproduction-artifact.v4`, defined in
 `crucible-test-support/src/reproduction.rs` and `crucible-cli`) adds pinned
-producer identities and content-addressed component references for transport;
-it is documented with the CLI in [cli.md](cli.md) and for operators in
-[the artifacts guide](../../users/crucible/artifacts.md).
+producer identities and content-addressed component references for transport.
+The module documentation of `reproduction.rs` shows the format, and
+[the artifacts guide](../../users/crucible/artifacts.md#reproduction-artifacts)
+describes it for operators.
 
 ## Minimization
 

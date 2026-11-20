@@ -52,8 +52,6 @@ Common causes are:
 Check the current transient state when a recovery shell is available:
 
 ```sh
-systemctl status aos-ability-initrd-controller.service
-journalctl -b -u aos-ability-initrd-controller.service
 cat /run/aos/storage-provisioning/provisioning-plan.json
 find /run/aos/storage-provisioning/repart.d -maxdepth 3 -type f -print
 ```
@@ -65,34 +63,46 @@ public recovery command for that state.
 
 ## Metadata was accepted but activation did not complete
 
-Check full evaluation:
+Stage 2, the host stage that runs after the initrd hands off, selects
+packages, evaluates the complete configuration, and executes its effects. Check
+the units that carry it and the committed result:
 
 ```sh
-systemctl status aos-eval.service
+apm config status
+systemctl status aos-ability-host-receiver.service \
+  aos-ability-host-controller.service
 journalctl -b \
-  -u aos-eval.service \
-  -u aos-graph-compile.service \
+  -u aos-ability-host-receiver.service \
+  -u aos-registry-sync.service \
+  -u aos-ability-host-controller.service \
   -u aos-activate.service
-test -s /run/aos/manifest.json
-cat /run/aos/activation.json
 readlink /var/lib/profiles/system/current
+systemctl --failed
 ```
 
-The manifest is an intermediate result. A complete transaction must also
-authenticate and preflight the checked activation plan, fetch and render its
-authenticated projections, resolve credential references, materialize a
-numbered EROFS lower, switch `/etc`, and publish a matching activation record.
-The journal's
-`config-eval.class=...` tag distinguishes assertion, undefined-option,
-conflict, provider, ABI, fetch, resource-limit, and convergence failures.
+`aos-registry-sync.service` and `aos-activate.service` exist on images that
+enable the host configuration control plane; `journalctl` ignores a unit that
+is absent.
 
-If the activation record is `degraded`, inspect its dropped packages and
-failed units. Re-running the same transaction retries it; checked activation
-does not treat degraded or stale evidence as complete. If no new current pointer
-was committed, the previous configuration remains live.
+A complete transaction must:
+
+1. verify the committed initrd handoff;
+2. select the desired packages and acquire missing ones through the configured
+   signed registries;
+3. evaluate the complete native graph;
+4. execute its effects in dependency order, including the EROFS `/etc` lower;
+   and
+5. publish the system profile's `current` pointer.
+
+The journal names the step that failed. If no new `current` pointer was
+published, the previous configuration remains live, and pending work is
+recovered before another change is accepted. A published pointer does not prove
+that every service is healthy: check failed units and application health too.
+[Inspect configuration state](configuration.md#inspect-configuration-state)
+lists the retained evaluation inputs and journals.
 
 Storage is the exception: it is projected and committed in the initrd before
-the full manifest exists. See the [`host.nix` guide](host-nix.md) for the exact
+stage 2 starts. See the [`host.nix` guide](host-nix.md) for the exact
 lifecycle.
 
 ## SSH is unreachable
@@ -112,7 +122,8 @@ Confirm that:
   `aos.roles.server`/`aos.roles.edge`;
 - the active configuration generation contains the expected
   `/etc/ssh/authorized_keys/USER`;
-- the SSH port is open in `aos.firewall.allowedTCP`;
+- the firewall admits the SSH port (the SSH module contributes its configured
+  port; other ports need `aos.networkPolicy.allowedTCP`);
 - the network interface name and address match the target;
 - the hypervisor or cloud security policy also allows the port.
 
@@ -124,22 +135,23 @@ not proof that login is configured.
 
 ## A package is installed but its command is missing
 
-User package executables are not added to the default `PATH`. Stock images also
-do not provision unprivileged writable user profiles; this procedure assumes
-the operator has created the account's XDG and profile storage. Inspect the
-profile and invoke the binary directly:
+Login sessions put the account's package profile and then the machine-wide
+profile on `PATH`. A shell started before the package was installed, or one
+that replaced `PATH`, may not see the command. Stock images also do not
+provision unprivileged writable user profiles; this procedure assumes the
+operator has created the account's XDG and profile storage. Inspect the profile
+and invoke the binary directly:
 
 ```sh
 apm list --installed
 apm files PACKAGE
+echo "$PATH"
 /var/lib/profiles/per-user/$USER/current/bin/COMMAND --version
 ```
 
-For the current shell:
-
-```sh
-export PATH="/var/lib/profiles/per-user/$USER/current/bin:$PATH"
-```
+If the direct path works, log in again. For a machine-wide package, add
+`--system` to the `apm` commands and look under
+`/var/lib/profiles/system/current/bin` instead.
 
 If the package is not in the profile, synchronize metadata and preview a
 reinstall rather than editing profile symlinks by hand.
@@ -203,7 +215,7 @@ du -x -h -d 2 /var | sort -h
 Relevant persistent trees include:
 
 ```text
-/var/lib/profiles/system
+/var/lib/profiles/image
 /var/lib/profiles/system
 /var/lib/profiles/per-user
 /var/lib/apm
@@ -211,13 +223,12 @@ Relevant persistent trees include:
 /var/log/journal
 ```
 
-Do not delete profile generations or provisioning state by hand.
-`apm clean --generations --keep N` prunes the invoking user's package profile.
-`apm clean --system --generations --keep N` prunes machine-wide package and
-configuration generations, always preserving each current generation; follow
-it with `apm gc --system` to reclaim unreachable store paths. There is no supported A/B
-image-generation prune command, so preserve image rollback capacity and expand
-or reimage the host if the image profile is the material consumer.
+Do not delete profile generations or provisioning state by hand. Prune package
+and configuration generations with `apm clean` and `apm gc` as described in
+[Clean up old packages](packages.md#clean-up-old-packages). There is no
+supported A/B image-generation prune command, so preserve image rollback
+capacity and expand or reimage the host if the image profile is the material
+consumer.
 
 ## Report an issue
 

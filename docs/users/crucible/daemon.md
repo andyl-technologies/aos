@@ -10,6 +10,10 @@ Pass `--production-qemu` to host inline scenarios with the same packaged QEMU
 lifecycle used by local execution. Production service requires the packaged
 kernel, root image, patched QEMU, plugin, and standalone debugger gateway.
 
+The same command hosts the local campaign service through its `--campaign-*`
+options; see
+[Start the single-host owner](campaigns-host.md#start-the-single-host-owner).
+
 ## Start a daemon
 
 Start an authenticated listener:
@@ -100,7 +104,7 @@ The control client has concrete remote workflows for:
 
 - `run`;
 - `verify`;
-- `save`; and
+- `save`;
 - `resume`, including its interactive command path;
 - `debug --session ... --node ... attach-gdb`, using an authenticated local
   loopback GDB relay; and
@@ -117,7 +121,7 @@ Current restrictions include:
 - artifact `replay` refuses a daemon route because the client cannot validate
   producer build provenance remotely;
 - `serve --daemon ...` is invalid because a server cannot route itself to
-  another daemon; and
+  another daemon;
 - the default daemon backend is quiescent; use `serve --production-qemu` for
   live guests; and
 - `--node` must name a VM node configured with the matching packaged

@@ -45,8 +45,32 @@ an absolute store path. It does not put `aos` or `apr` on the image `PATH`.
 This keeps source construction, registry-authoring authority, package
 consumption, and on-host activation as distinct installed capabilities.
 
+## Start here
+
+Read [AOS support status](support-status.md) first to see what is implemented.
+Then follow the pages in order: [install an image](installation.md), supply a
+[`host.nix`](host-nix.md), [configure the host](configuration.md), and
+[manage packages](packages.md). Keep [Troubleshoot a host](troubleshooting.md)
+and [Recover an AOS host](recovery.md) at hand for the first boot.
+
+## Terms used in these guides
+
+| Term | Meaning |
+| --- | --- |
+| A/B slots | Two root partitions; an image update writes the inactive one and the next boot tries it |
+| UKI | Unified kernel image: kernel, initrd, and command line in one signed EFI binary |
+| ESP | EFI System Partition, where firmware finds the boot loader and UKIs |
+| PCR | TPM platform configuration register; measured boot records boot state in PCRs |
+| NAR | Nix archive, the serialized form of a store path that registries sign and caches serve |
+| CEL | Canonical event log of package and generation measurements |
+| sysroot | The registry package that carries an operating-system image |
+| Stage 2 | The host stage after the initrd hands off, where configuration is evaluated and activated |
+| Generation | A numbered, retained package, configuration, or image state that rollback can select |
+
 ## Install and configure
 
+- [AOS support status](support-status.md) lists implemented and incomplete
+  operational surfaces.
 - [Install an image](installation.md) covers image formats, disk sizing,
   metadata transports, and deployment checks.
 - [Understand and operate `host.nix`](host-nix.md) covers first-boot policy,
@@ -55,6 +79,8 @@ consumption, and on-host activation as distinct installed capabilities.
   can change today and what still belongs to the release image.
 - [Configure networking](networking.md) covers DHCP, static addressing, DNS,
   diagnostics, and current advanced-networking limits.
+- [Deploy AOS in production](deployment.md) covers golden-image qualification,
+  platform import, bare metal, and fleet promotion.
 
 ## Operate the host
 
@@ -63,8 +89,10 @@ consumption, and on-host activation as distinct installed capabilities.
   from a file.
 - [Configure package registries](registries.md) covers the built-in registry,
   other public and internal registries, priorities, credentials, and trust.
-- [Understand native package runtime policy](package-sandbox.md) explains how
+- [Understand native package runtime policy](package-runtime-policy.md) explains how
   typed package requests become concrete host resources.
+- [Packages in AOS containers](containers.md) covers installing packages in
+  container images, init selection, and startup recovery.
 - [Operate an AOS host](operations.md) covers services, logs, storage,
   packages, monitoring, and maintenance.
 - [Configure redundant and encrypted storage](host-nix.md#mirror-the-system-state)
@@ -91,8 +119,6 @@ consumption, and on-host activation as distinct installed capabilities.
   disk pressure, Hub state, and reimaging decisions.
 - [Troubleshoot a host](troubleshooting.md) maps boot, provisioning, package,
   and generation failures to the relevant state and logs.
-- [AOS support status](support-status.md) lists implemented and incomplete
-  operational surfaces.
 
 ## Develop and maintain AOS
 
@@ -107,20 +133,20 @@ consumption, and on-host activation as distinct installed capabilities.
   AOS Hub. The generated reference covers nginx, Envoy, k3s and add-ons,
   registry services, containerd, databases and storage, identity services,
   network daemons, and KubeEdge without maintaining a second Markdown schema.
-- [Deploy AOS in production](deployment.md) covers golden-image qualification,
-  platform import, bare metal, and fleet promotion.
+- [Runtime abilities](runtime-abilities.md) explains native package modules,
+  mergeable operation contracts, composed handlers, and the build-to-runtime
+  path. Use `aos docs runtime` to inspect generated references and deferred
+  transactions. The guide marks the remaining consumer migration explicitly.
+- [Use the AOS command-line tools](cli.md) covers `aos` image download, local
+  VMs, output modes, completions, and attestation verification. The commands
+  that need a source checkout are in
+  [Use the repository CLI](../../maintainers/repository-cli.md).
 - [Maintain the source tree](../../maintainers/) covers Nix builds, image
   production, the repository CLI, and tests.
 - [Build and boot from source](../../maintainers/source-build-quickstart.md) is
   the maintainer integration tutorial; it is not the normal installation path.
+  [quickstart.md](quickstart.md) only points there.
 
 Registry producers should continue with
 [Operate an AOS package registry](../registry/). Hub operators should use the
 [AOS Hub guide](../aos-hub/).
-
-## Runtime abilities
-
-[Runtime abilities](runtime-abilities.md) explains native package modules,
-mergeable operation contracts, composed handlers, and the build-to-runtime path.
-Use `aos docs runtime` to inspect generated references and deferred transactions.
-The guide marks the remaining consumer migration explicitly.

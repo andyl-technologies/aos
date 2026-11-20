@@ -1,5 +1,10 @@
 # Distribution and publication
 
+This page covers how a built image leaves the build host: the OCI wire
+contract shared by every AOS component, the Hub's implementation of the OCI
+Distribution API, the signed publication flow, and garbage collection. The
+[image build](image-build.md) page covers how the image is produced.
+
 ## Shared wire contract
 
 `aos-oci-types` is the dependency-light boundary shared by the CLI, native Hub,
@@ -121,15 +126,16 @@ key:
 
 1. Nix emits the unsigned `publicationInputs` graph and its
    `signature-input.json`.
-2. `aos container prepare-signature` writes the exact DSSE PAE bytes; the
-   operator signs them externally with SSHSIG namespace
+2. `aos container prepare-signature` writes the exact pre-authentication encoding (PAE)
+   bytes of the DSSE (Dead Simple Signing Envelope) statement; the operator
+   signs them externally as an SSH signature (SSHSIG) in namespace
    `aos-container-signature-dsse-v1`.
 3. `aos container finalize-signature` verifies the signer identity, namespace,
    and exact bytes, validates the qualified graph, and atomically creates a
    bundle containing `layout/`, `image.oci.tar`, `container-release.json`, and
    `signature-input.json`.
 4. The release transaction commits the `container-release.json` sidecar into
-   the signed package release (`aos release prepare-registry
+   the signed package release (`aos maintain release step prepare-registry
    --container-release ...`), and `aos container publish --stage-only` uploads
    the immutable graph into the registry candidate without moving a tag.
 5. After Hub indexes and authenticates the signed release, `aos container

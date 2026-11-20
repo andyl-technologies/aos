@@ -253,5 +253,5 @@ Exact checkpoints retain storage queues, cache and durability frontiers, media
 state, controller and array epochs, CPU/device rules, signal state, and QEMU
 state. Locked replay validates target, phase, capability, precondition, applied
 result, and terminal fingerprint. Consult the
-[effect registry](reference.md#exhaustive-effect-registry) rather than substituting a
+[effect registry](reference-plan.md#exhaustive-effect-registry) rather than substituting a
 neighboring effect with a superficially similar guest symptom.

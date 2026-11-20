@@ -2,8 +2,8 @@
 
 AOS records two independent generation axes:
 
-- an image generation owns an A/B root slot, UKI, kernel, initrd, base module
-  library, evaluator, and expected measurements;
+- an image generation owns an A/B root slot, unified kernel image (UKI),
+  kernel, initrd, base module library, evaluator, and expected measurements;
 - a configuration generation owns the evaluated manifest, retained inputs,
   package projection, and EROFS `/etc` lower activated on the running image.
 
@@ -101,18 +101,24 @@ boundary.
 
 An A/B installation made before toplevels recorded these two fields has one
 authenticated migration path. The first transition must use `--drain
---reboot`. APM requires both new immutable fields to be absent, requires the
-legacy image record to name no native executor, and first authenticates that it
-is the image that actually booted from the baked toplevel pointer, root slot,
-and verity hash. It then re-authenticates the record against the immutable
-toplevel, base library, UKI identity, and `os-release`. APM takes the legacy
-state version only from the authenticated `AOS_STATE_VERSION` in that
-`os-release`, requires the candidate to preserve it, checks every retained
-configuration generation for unfinished native transactions, and then records
-that state version durably before staging. It does not invent an executor
-identity for the legacy image. A partial new identity or any disagreement among
-the legacy record, boot identity, immutable metadata, and `os-release` is
-rejected.
+--reboot`. Before staging, APM:
+
+1. requires both new immutable fields to be absent and the legacy image record
+   to name no native executor;
+2. authenticates that the record is the image that actually booted, from the
+   baked toplevel pointer, root slot, and verity hash;
+3. re-authenticates the record against the immutable toplevel, base library,
+   UKI identity, and `os-release`;
+4. takes the legacy state version only from the authenticated
+   `AOS_STATE_VERSION` in that `os-release` and requires the candidate to
+   preserve it;
+5. checks every retained configuration generation for unfinished native
+   transactions; and
+6. records that state version durably.
+
+It does not invent an executor identity for the legacy image. A partial new
+identity or any disagreement among the legacy record, boot identity, immutable
+metadata, and `os-release` is rejected.
 
 For a qualified drained reboot, image `state.json` exposes the durable
 `active_rollout` record with schema `aos.image-rollout/v1`. It binds the exact
@@ -133,12 +139,19 @@ automatic fallback without treating an intermediate reboot as a final result.
 
 The candidate UKI carries an sd-boot boot-counting suffix. Each unsuccessful
 attempt decrements its counter; exhaustion demotes the candidate and falls back
-to the other slot. A candidate is blessed only after it boots, re-evaluates the
-host configuration against its own ABI-pinned base library, commits a matching
-configuration generation, reaches the TPM ready phase, and passes local
-verification of the generation quote against the live PCR 7/11/12 values and the
-published image PCR 11. A failed ready transition leaves evaluation and boot
-blessing inactive.
+to the other slot. A candidate is blessed, meaning accepted as the durable
+default, only after it:
+
+1. boots;
+2. re-evaluates the host configuration against its own ABI-pinned base
+   library;
+3. commits a matching configuration generation;
+4. reaches the TPM ready phase; and
+5. passes local verification of the generation quote against the live TPM
+   platform configuration register (PCR) 7, 11, and 12 values and the
+   published image PCR 11.
+
+A failed ready transition leaves evaluation and boot blessing inactive.
 
 On installations with redundant EFI System Partitions, the ESP selected by
 firmware is authoritative for boot assessment. AOS identifies it from the
@@ -154,6 +167,19 @@ the exact UKI hash. AOS verifies it before importing it into durable image
 state. Later registry images obtain the same authority from their signed
 release catalog; a live PCR reading is never promoted into either source.
 
+## Install a selected sysroot
+
+For controlled staging, select the registry and sysroot package explicitly:
+
+```sh
+apm image install aos --registry acme --dry-run
+apm image install aos --registry acme --yes
+```
+
+This accepts exactly one package marked `sysroot = true` and stages its A/B
+image. For ordinary machine-wide packages, use `apm install --system PACKAGE`.
+See [Manage packages](packages.md#install-packages).
+
 ## Verify an image transition
 
 After reboot:
@@ -164,7 +190,7 @@ cat /etc/os-release
 cat /var/lib/profiles/image/state.json
 cat /var/lib/profiles/system/state.json
 readlink /var/lib/profiles/system/current
-cat /run/aos/activation.json
+apm config status
 
 systemctl is-system-running
 systemctl --failed
@@ -172,9 +198,9 @@ journalctl -b -p warning
 ```
 
 Confirm that `running` names the expected image, `pending` has been cleared,
-the current configuration's `image_gen_parent` matches it, and the activation
-record describes the same committed transaction. Verify application health in
-addition to systemd state.
+and the current configuration's `image_gen_parent` matches it.
+`systemctl is-system-running` prints `running` when no unit has failed. Verify
+application health in addition to systemd state.
 
 ## Roll back configuration
 
@@ -236,41 +262,35 @@ successful default.
 
 ## Interpret configuration activation results
 
-Checked activation publishes a transaction-bound record after the pointer and
-`/etc` swap. Its `activation_exit` field has this meaning; the outer `apm`
-command can still report a generic failure from provider orchestration:
-
-| `activation_exit` | State after the command | Operator action |
-| --- | --- | --- |
-| `0` | New generation is live and healthy | Complete application checks |
-| `5` | New generation is live; stale mount cleanup warned | Inspect mounts and schedule cleanup |
-| `6` | New generation is committed but one or more units failed | Inspect failed units; roll back configuration if service is impaired |
-| `1`-`3` | Failure occurred before the `/etc` swap | Previous generation remains live; inspect the reported phase |
-| `4` | `/etc` swap or post-swap evidence is indeterminate | Use console access and the recovery procedure |
-
-Graph recovery does not treat a degraded or stale activation record as a
-completed transaction. Re-running the same transaction retries its package
-and activation work rather than silently skipping it.
-
-## Install a selected sysroot
-
-For controlled staging, select the registry and sysroot package explicitly:
+A configuration transaction publishes the system profile's `current` pointer
+only after its effects commit. After `apm switch`, `apm config apply`, or a
+boot-time activation, decide what happened from three observations:
 
 ```sh
-apm image install aos --registry acme --dry-run
-apm image install aos --registry acme --yes
+readlink /var/lib/profiles/system/current
+apm config status
+systemctl --failed
 ```
 
-This accepts exactly one package marked `sysroot = true` and stages its A/B
-image. For ordinary machine-wide packages, use `apm install --system PACKAGE`.
-See [Manage packages](packages.md#install-packages).
+| Observation | State | Operator action |
+| --- | --- | --- |
+| `current` names the new generation and no unit failed | New generation is live | Complete application checks |
+| `current` names the new generation but units failed | New generation is committed; a service is impaired | Inspect the failed units; roll back configuration if service is impaired |
+| `current` is unchanged | Previous generation remains live | Read the command error and the controller journal, correct the input, and retry |
+
+A failed evaluation or activation leaves the current generation live, and
+pending work is recovered before another change is accepted. If recovery does
+not complete, use console access and the
+[recovery procedure](recovery.md#recover-a-failed-configuration-activation).
+The controller journal is shown in
+[Inspect configuration state](configuration.md#inspect-configuration-state).
 
 ## Keep scopes separate
 
 ```text
 /var/lib/profiles/image             A/B image generations
-/var/lib/profiles/system            configuration generations
-/var/lib/profiles/system   ordinary machine-wide package generations
+/var/lib/profiles/system            configuration and machine-wide package
+                                    generations
 /var/lib/profiles/per-user/$USER    user package generations
 ```
 

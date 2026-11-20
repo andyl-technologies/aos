@@ -3,6 +3,14 @@
 This section describes how AOS implements verified boot: UEFI Secure Boot,
 kernel lockdown, measured boot with TPM-sealed persistent state, the signed
 recovery environment, and the image-boot test harness that exercises them.
+A new reader should take the pages in the order of the table below.
+
+Abbreviations used throughout: a UKI (unified kernel image) is one PE binary
+holding the kernel, initrd, and command line; the ESP is the EFI System
+Partition; a PCR is a TPM platform configuration register, which records
+measurements and cannot be set directly; `db`, KEK, and PK are the UEFI
+signature database, key-exchange key, and platform key; sd-boot and sd-stub
+are systemd-boot and the UEFI stub inside each UKI.
 Operator procedures live in [Use Secure Boot and verify package
 trust](../../users/aos/secure-boot.md) and [Recover an AOS
 host](../../users/aos/recovery.md); maintainer key and release policy lives in
@@ -13,6 +21,7 @@ host](../../users/aos/recovery.md); maintainer key and release policy lives in
 | [Secure Boot](secure-boot.md) | Firmware build, artifact signing, key enrollment, lockdown kernel, key custody |
 | [Measured boot](measured-boot.md) | TPM stack, signed PCR policy, `/var` sealing and unlock, PCR 12 migration |
 | [Recovery](recovery.md) | Locked initrd, boot-identity guard, paired recovery UKIs, offline restore |
+| [Unattended installer](installer.md) | Installer media layout, signed payload, installer initrd, and the install operation |
 | [Image-boot testing](image-boot-testing.md) | How fleet tests boot real images under OVMF with a vTPM |
 
 ## Shape of the chain
@@ -58,5 +67,6 @@ over the whole PE.
 | `pkgs/security/_aos-boot-identity/`, `crates/boot/aos-boot-identity/` | Boot-identity parser and guard |
 | `pkgs/security/_aos-verity-root-guard/` | Full read of the verity root before `/var` |
 | `crates/boot/aos-recovery/` | Recovery console, slot verifier, restore writer |
+| `crates/boot/aos-installer/`, `modules/image/installer.nix` | Unattended installer and its media |
 | `crates/release/aos-image-finalizer/` | External signing and final image assembly |
 | `systems/server-secureboot*.nix`, `systems/server-measured-boot.nix`, `systems/server-verity.nix` | Test fixtures |

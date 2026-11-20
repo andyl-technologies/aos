@@ -13,7 +13,8 @@ Crucible follows the repository build rules in
 `/bin/sh` outside the bootstrap chain and guest rootfs init scripts, and no
 removed features. The licensing policy these packages implement is in
 [../../legal/licensing.md](../../legal/licensing.md); this page describes the
-mechanics, not the policy.
+mechanics, not the policy. Terms such as atomic patch, plugin, build identity,
+and sim mode are defined in the [glossary](glossary.md).
 
 ## Package inventory
 
@@ -275,7 +276,8 @@ and regenerates the conformance golden vectors in the same change (see
 
 These are fixtures for Crucible's own checks. A user guest needs none of them:
 determinism is enforced at the QEMU/host boundary, and `gate:any-guest`
-exercises an unmodified third-party guest (see [determinism.md](determinism.md)).
+exercises an unmodified AOS-built guest that carries no Crucible guest client
+(see [determinism.md](determinism.md)).
 
 ### `linux-crucible`
 

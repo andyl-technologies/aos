@@ -43,6 +43,8 @@ always public-only: they do not use a browser session or bearer token, and the
 current router accepts only single-segment slugs. Use the unary service routes
 for canonical organization/registry paths and authenticated visibility.
 
+### Device authorization
+
 Interactive clients start an RFC 8628 device grant with
 `POST /oauth2/device_authorization`, show the returned verification URL and
 user code, and poll `POST /oauth2/token` at the advertised interval. A
@@ -61,24 +63,29 @@ refresh credential. Reusing a consumed credential revokes the complete family.
 `POST /oauth2/revoke` accepts the refresh credential,
 `client_id=aos-cli`, and `token_type_hint=refresh_token`.
 
+### Provisioning tokens
+
 Publishing automation may instead start with a provisioning token whose secret
 begins with `aos_`. The Hub stores only its hash. Exchange it with the explicit
 grant type `urn:aos:params:oauth:grant-type:provisioning-token` and the secret
-as an `Authorization: Bearer` credential. A native operator can mint scoped
-provisioning tokens with `aos-hub token mint`.
+as an `Authorization: Bearer` credential. `aos hub login --provisioning-token`
+performs this exchange; see the [CLI guide](cli.md).
 
 All OAuth credential responses carry `Cache-Control: no-store`. Native and
 Cloudflare Worker deployments mount the same handlers and return the same
 structured pending, slow-down, denial, expiry, and invalid-grant errors.
 
-The CLI obtains user credentials through `aos hub login`; the browser console
-obtains a short-lived bearer from its signed-in session without exposing it to
-the user. Bootstrap administration through the local `aos-hub` command on
-native deployments or the web console on either runtime. Non-browser API
-clients still need a suitably scoped device-flow or provisioning credential.
+The CLI obtains user credentials through `aos hub login`; the console obtains
+a short-lived bearer from its signed-in session without exposing it to the
+user. Create the first administrator with `aos-hub init` on a native
+deployment or the installer on a Worker deployment, then administer through
+the console or API. Non-browser API clients still need a suitably scoped
+device-flow or provisioning credential.
 
 Browser authentication uses an opaque session cookie and is intentionally
 separate from API bearer tokens.
+
+### Inspect a bearer
 
 Inspect a bearer without exposing its secret through
 `IdentityService/WhoAmI`:
@@ -94,21 +101,25 @@ curl -fsS \
 The response identifies the live user or service account, lists current role
 grants, and separately reports this token's scope, permissions, and expiry.
 
-`IdentityService` manages generic access tokens with
+### Access tokens
+
+`IdentityService` manages access tokens with
 `ListAccessTokens`, `PlanIssueAccessToken`/`IssueAccessToken`, and
 `PlanRetireAccessToken`/`RetireAccessToken`. Requests use canonical stable
-authorization scopes and native permission verbs such as `read`, `publish`,
-`binding.manage`, or `cache.gc.plan`. There are no registry-token RPC
-aliases. Token metadata includes its non-secret comment, creation, expiry,
-last-use, rotation, retirement, and lifecycle state; the plaintext secret is
-returned once by the issuance apply response.
+authorization scopes and permission verbs such as `read`, `publish`,
+`binding.manage`, or `cache.gc.plan`. Token metadata includes its non-secret
+comment, creation, expiry, last-use, rotation, retirement, and lifecycle state;
+the plaintext secret is returned once by the issuance apply response.
+
+### Service accounts
 
 Service accounts use `ListServiceAccounts`, `GetServiceAccount`, and reviewed
 create, update, and delete pairs. A rename changes only the human-facing
 `<org>/<name>` reference; the numeric principal identity remains stable. Delete
 removes direct memberships atomically, while retained token metadata becomes
-unusable immediately because its owner is no longer live. The former
-`AutomationPrincipal` API names are not served.
+unusable immediately because its owner is no longer live.
+
+### Invitations
 
 Organization invitations use `ListInvitations`, `GetInvitation`, reviewed
 `PlanCreateInvitation`/`CreateInvitation` and
@@ -118,14 +129,19 @@ acceptance secret; only its SHA-256 verifier and AES-GCM-sealed recovery copy
 are stored. Retrying the exact same apply idempotency key returns the same
 unsealed secret, while a different apply is rejected. Acceptance or
 cancellation erases the recovery copy immediately; bounded maintenance erases
-expired copies. A pending invitation is not a user or membership. Acceptance
-succeeds only for a live user whose
-canonical email and organization match the invitation, and atomically consumes
-the secret while creating the exact direct membership. History remains visible
-as `pending`, `accepted`, `cancelled`, or time-derived `expired` metadata.
+expired copies.
+
+A pending invitation is not a user or membership. Acceptance succeeds only for
+a live user whose canonical email and organization match the invitation, and
+atomically consumes the secret while creating the exact direct membership.
+History remains visible as `pending`, `accepted`, `cancelled`, or time-derived
+`expired` metadata.
+
 Connect responses carry `Cache-Control: no-store`, `Pragma: no-cache`, and
 `Referrer-Policy: no-referrer`, so secret-bearing mutation results are not
 retained by shared caches or leaked as referrers.
+
+### Organization SSO and email domains
 
 Organization SSO uses two explicit `IdentityService` resources. The
 identity-provider surface consists of `GetIdentityProvider`, reviewed
@@ -140,7 +156,7 @@ claim requires `expectedResourceVersion: "absent"`; subsequent operations use
 the exact returned resource version. Verification performs DNS resolution in
 both native and Worker deployments and commits only when the exact reviewed
 TXT challenge is present. Claim, audit, and plan completion are one atomic
-database transaction, including on MySQL.
+database transaction.
 
 ## Topology and cache bytes
 
@@ -170,7 +186,7 @@ The remote client covers common calls and provides stable JSON output:
 
 ```sh
 aos --json hub registry list --hub https://hub.example.com
-aos --json hub registry get acme/cdn --hub https://hub.example.com
+aos --json hub registry show acme/cdn --hub https://hub.example.com
 ```
 
 Pass `--token '<access-token>'` to commands that require authentication. Use
@@ -210,7 +226,9 @@ curl -fsS -H 'Content-Type: application/json' \
 Empty version/platform selectors use Hub's deterministic default selection.
 An explicit release never falls back to another release. The HTTP package
 options list also honors its `release` query; the options RPC uses
-version/platform selection. The response identity includes the verified commit,
+version/platform selection.
+
+The response identity includes the verified commit,
 tag object, completed snapshot, exact document
 digest and size, and artifact store path/NAR identity. The `canonicalJson`
 transport field carries the exact signed JSON bytes as protobuf JSON base64.
@@ -238,8 +256,8 @@ that comparison.
 ## Read native release declarations and reporter assertions
 
 `GetPackageAbilityReference` returns the exact native reference bytes with the
-completed release, commit, tag, snapshot, and document digest. The retired
-manifest/provider-plan identity fields are reserved. `GetReleaseAbilityGraph`
+completed release, commit, tag, snapshot, and document digest.
+`GetReleaseAbilityGraph`
 returns `aos.module.release-graph`: an authenticated release and platform pin
 with exact package references. It aggregates declarations; it does not infer
 executed effects or handler edges.
@@ -252,8 +270,7 @@ principal and current enrollment resource version must match. Reports expire
 within 300 seconds; reads require `audit.read` and recheck enrollment liveness.
 Exact identities and checked values establish the report's scope, not proof of
 live runtime state. The graph is desired state and outputs are reporter
-assertions. Migrating from retired report formats clears their assertion bytes
-while preserving enrollment and the sequence replay fence.
+assertions.
 
 ## Inspect a native runtime document
 

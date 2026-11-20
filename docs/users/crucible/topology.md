@@ -557,6 +557,7 @@ required bits and no bit outside the allowed mask.
 | `id`, `implementation` | Stable source and exact QEMU subsystem identity. |
 | `source_kind` | x86 TSC/RTC/PIT/HPET/APIC timer/ACPI PM timer, Arm counter/RTC, or registered device source. |
 | `base_domain` | `scheduler_virtual` or deterministic `rtc_epoch`. |
+| `epoch_ns` | Guest-state-derived calendar epoch in nanoseconds; zero for non-calendar sources. |
 | `timer_relationship` | `none` or `programmable`. |
 | `width_bits`, `wraps`, `read_error` | Architectural read contract. |
 | `frequency_numerator`, `frequency_denominator` | Positive exact ticks-per-second ratio. |

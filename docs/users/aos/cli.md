@@ -1,8 +1,11 @@
-# Maintainer reference: Use the AOS command-line tools
+# Use the AOS command-line tools
 
-This reference covers the repository and release-engineering command surface.
-Host users normally use [`apm`](packages.md) for package and generation
-operations and do not need a source checkout or Nix.
+This reference covers the `aos` commands that work without a source checkout:
+image discovery and download, local VMs, output modes, completions, native
+documentation, and attestation verification. Host users normally use
+[`apm`](packages.md) for package and generation operations and do not need a
+source checkout or Nix. Source-tree builds, checks, and maintenance commands
+are in [Use the repository CLI](../../maintainers/repository-cli.md).
 
 The source package builds independent command-line programs with shared
 libraries, deliberately separate parsers, and separate Nix outputs.
@@ -52,81 +55,6 @@ System scope fails closed before loading package state. The selected root must
 identify `ID=aos` and provide a numeric `AOS_MODULE_ABI`; live runtime commands
 also require the immutable `/usr/lib/aos/toplevel/os-release` identity.
 
-## Work in a repository checkout
-
-Most `aos` development commands need `nix-build` and an AOS source root with a
-`default.nix`. Root discovery checks, in order:
-
-1. `AOS_ROOT`;
-2. the current directory and its parents;
-3. the binary directory and its parent.
-
-Cache, Hub, metadata, server, token, and completion commands dispatch before
-repository discovery and can run without a source checkout when their own
-inputs are available. Package operations belong to `apm` and registry
-authoring belongs to `apr`; neither requires an AOS source checkout.
-
-## Build and inspect source
-
-`aos show` includes the native deployment envelope and generated module
-documentation in JSON, with payload, dependency, option, and operation summaries
-in text. These are local evaluated declarations; they do not authenticate a
-release or prove that a handler ran. `aos graph` shows the built payload closure.
-
-Common repository workflows are:
-
-```sh
-# Build one package or every package.
-aos build zlib
-aos build --all
-
-# Inspect package metadata and dependency structure.
-aos show zlib
-aos graph zlib
-aos graph zlib --dot > zlib.dot
-aos why-depends curl openssl
-
-# Inspect closures and references.
-aos profile closure systems.server.build.toplevel
-aos profile refs curl openssl
-
-# Enter a repository-aware Nix REPL or browse generated reference data.
-aos repl
-aos doc
-```
-
-`aos build zlib` builds `pkgs.zlib`; it does not install a package on the
-running host. Use `apm install --system zlib` for a machine-wide install.
-
-`aos ability` inspects and compares checked portable plans, previews typed
-reverse-use removal effects, builds bounded private deployment views, and reads
-retained native execution or realized artifact-consumption evidence. It does
-not activate a plan or authenticate a deployment connection.
-See [Inspect ability plans and retained execution](ability-inspection.md) for
-the current commands, provenance limits, and disclosure rules.
-
-The flake output `packages.<system>.all` is the remote-build equivalent of
-`aos build --all`: build it when one submitted derivation must realize every
-individual `pkg-*` output for that system. For example, submit
-`packages.x86_64-linux.all` to an x86_64 Linux builder. Git-backed package
-sources use pinned fixed-output archives so restricted remote evaluators create
-ordinary fetch derivations instead of requiring evaluation-time network access.
-The aggregate remains one remote build session and does not shard its package
-plan across a worker fleet. Submit independent `pkg-*` outputs as separate
-builds when you want package-level cluster parallelism; their successful store
-outputs remain reusable by a later `all` build.
-Individual `pkg-*` outputs remain lazy: evaluating `pkg-openjdk-24`, for
-example, does not inspect or realize Crucible merely to enumerate the package
-set. Add new package files through `pkgs/default.nix` filesystem discovery, and
-add explicit package aliases to its `packageNames` inventory, so this property
-remains true.
-
-System image production currently uses Nix directly. See
-[Build and customize release images](../../maintainers/system-images.md). Do
-not use `aos system build`, `aos system image`, or `aos system eval` with the
-current tree; those commands still target an older attribute layout and are
-not covered by the current system tests.
-
 ## Discover and download system images
 
 `aos image` reads signed system-image metadata from a configured APM registry.
@@ -164,6 +92,13 @@ never falls back to another registry. Portable registry discovery uses the
 configured trust anchors and the selected registry's committed/client cache
 chain, and rejects failed signature, freshness, or continuity checks.
 
+`download` resumes the image NAR from the registry's CDN cache, verifies its
+signed NAR identity, extracts the single regular-file output, and verifies the
+signed disk byte size and SHA-256 before placing the final file. Omit
+`--output` to use the useful filename from signed release metadata. Use
+`--no-resume` to restart a partial transfer. Existing final files are never
+overwritten.
+
 Downloads resume an existing hidden partial file with an HTTP range request.
 The command enforces the signed size and SHA-256 before atomically installing
 the final file; verification cannot be disabled. A partial identity file binds
@@ -177,10 +112,17 @@ partial path and exits with status 130.
 All three subcommands support the global JSON output mode:
 
 ```sh
-aos --json image list --registry andyl/main --channel stable
-aos --json image show --registry andyl/main --release 2026.3.0 \
+aos --json image list --registry andyl --channel stable
+aos --json image show --registry andyl --release 2026.3.0 \
   --architecture x86_64 --format raw
 ```
+
+Use `aos --json image list` or `aos --json image show` for automation. The
+record includes the store and NAR identity, ordered cache URLs, format, target
+compatibility, media type, compression, exact size, SHA-256, release-signature
+and boot verification states, and the associated integrity-bound
+`image-delivery.json` and provider `image-info.json`. Secure Boot plus dm-verity
+images also include paired recovery UKI and authenticated recovery-bundle metadata.
 
 `apm image download PACKAGE --system --format FORMAT --output FILE` downloads
 an image by its package name from the machine-wide registry configuration.
@@ -231,33 +173,6 @@ changing state by adding `--dry-run`. VM state lives under
 image hash, architecture, and requested capacity so a reused name cannot
 silently boot the wrong disk.
 
-## Run checks and maintenance commands
-
-```sh
-# Formatting and static checks.
-aos fmt --check
-aos fmt
-aos lint
-aos lint zlib
-
-# Test layers.
-aos test eval
-aos test build
-aos test vm
-aos test fleet
-
-# Source hashes.
-aos prefetch
-aos prefetch --package zlib
-aos prefetch --all
-```
-
-`aos test` with no layer runs evaluation, build, VM, and fleet tests in order.
-VM and fleet layers need a Linux host with KVM. `aos prefetch --update` edits
-package source hashes; inspect its diff before committing.
-
-`aos fmt` uses its embedded Alejandra formatter.
-
 ## Choose output for people or automation
 
 Global output modes are explicit:
@@ -302,15 +217,41 @@ aos completions zsh > _aos
 aos completions fish > aos.fish
 ```
 
-The generated script covers the `aos` command tree. `apm` and `apr` do not
-currently expose their own completion generators.
+The generated script covers the `aos` command tree by default. `apm` and `apr`
+have no `completions` subcommand of their own; generate their scripts with
+`--command`:
+
+```sh
+aos completions bash --command apm > apm.bash
+aos completions bash --command apr > apr.bash
+```
+
+## Inspect native runtime documentation
+
+`aos docs` is an alias for `aos doc`. Native artifact inspection works without
+Nix, a checkout, or a network connection:
+
+```sh
+aos docs runtime options.json
+aos docs runtime transaction.json --format json
+aos docs runtime transaction.json --format html --output execution.html
+```
+
+The input must be an `aos.module.documentation` reference or an
+`aos.package.transaction`. Output defaults to text; global `--json` selects JSON
+unless `--format` is explicit. `--output` writes a file. Runtime mode does not
+accept installed-package, registry, search, or Hub selectors.
+
+See [runtime abilities](runtime-abilities.md) for artifact generation and example
+execution paths. Existing `doc package`, `doc hub`, and `ability` consumers have
+not yet migrated to these native formats.
 
 ## Verify runtime attestation evidence
 
-`apm attest verify` replays the package and generation events in the AOS CEL.
-A bare `--pcr15` value verifies only event-log consistency. A full generation
-decision requires an identity-pinned TPM quote, the generation record, and a
-verifier-owned policy:
+`apm attest verify` replays the package and generation events in the AOS
+canonical event log (CEL). A bare `--pcr15` value verifies only event-log
+consistency. A full generation decision requires an identity-pinned TPM quote,
+the generation record, and a verifier-owned policy:
 
 ```sh
 apm attest verify --system \
@@ -319,8 +260,7 @@ apm attest verify --system \
   --nonce-file host-evidence/nonce.hex \
   --quote-identity-file verifier/quote-identities.json \
   --generation-attestation host-evidence/gen-attestation.json \
-  --generation-policy-file verifier/generation-policy.json \
-  --rederived-manifest verifier/rederived-manifest.json
+  --generation-policy-file verifier/generation-policy.json
 ```
 
 Generation measurement retains the complete canonical record in the AOS CEL
@@ -350,9 +290,7 @@ The command verifies the quote against an enrolled AK/EK identity, binds the
 record to its unique activation event and PCR-15 prefix, checks PCR 7, PCR 11, PCR 12,
 dm-verity, facts, and host-input authorization, and reconstructs config-module
 membership and realization from the signed release commit. It rejects missing,
-revoked, or mismatched release receipts. `--rederived-manifest` supplies an
-independently produced manifest for the final reproducibility gate and is
-mandatory for image-authored configuration.
+revoked, or mismatched release receipts.
 
 Create the quote-identity catalog only after completing the selected enrollment
 workflow:
@@ -373,31 +311,12 @@ build, evaluation, download, hash, and package errors use nonzero codes suited
 to their command surface. A declined package-operation confirmation exits
 `100`.
 
-Configuration activation can report a degraded result after the new generation
-is live, while image staging and boot assessment have a separate A/B state.
-See [Upgrade and roll back a host](upgrades.md#interpret-configuration-activation-results)
-before automating system upgrades.
+A configuration transaction can commit a new generation while a service in it
+fails, and image staging and boot assessment have a separate A/B state. See
+[Upgrade and roll back a
+host](upgrades.md#interpret-configuration-activation-results) before automating
+system upgrades.
 
 Continue with [Manage packages](packages.md) for `apm`, or
 [Operate an AOS package registry](../registry/) for producer-side `apr`
 workflows.
-
-## Inspect native runtime documentation
-
-`aos docs` is an alias for `aos doc`. Native artifact inspection works without
-Nix, a checkout, or a network connection:
-
-```sh
-aos docs runtime options.json
-aos docs runtime transaction.json --format json
-aos docs runtime transaction.json --format html --output execution.html
-```
-
-The input must be an `aos.module.documentation` reference or an
-`aos.package.transaction`. Output defaults to text; global `--json` selects JSON
-unless `--format` is explicit. `--output` writes a file. Runtime mode does not
-accept installed-package, registry, search, or Hub selectors.
-
-See [runtime abilities](runtime-abilities.md) for artifact generation and example
-execution paths. Existing `doc package`, `doc hub`, and `ability` consumers have
-not yet migrated to these native formats.

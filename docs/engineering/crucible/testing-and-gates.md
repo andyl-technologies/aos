@@ -13,7 +13,51 @@ The coding rules that the gates enforce are in
 [engineering-standards.md](engineering-standards.md); the crate layering they
 follow is in [crate-structure.md](crate-structure.md). How to run Crucible
 checks in CI from a user's point of view is in
+[../../users/crucible/ci.md](../../users/crucible/ci.md). Vocabulary such as
+Contract A, execution fingerprint, replay oracle, and icount is defined in the
+[glossary](glossary.md).
+
+## Running the gates
+
+Run these from the repository root inside `nix develop` or its direnv
+environment. Each gate is a Nix check under `checks.crucible`, and
+`aos-dev build check NAME` builds `checks.NAME`:
+
+```sh
+# The two gates that apply to every change.
+aos-dev build check crucible.phase1.gates.harnessLint
+aos-dev build check crucible.phase1.gates.licenseBoundary
+
+# One ordered gate; its earlier occurrences build first as dependencies.
+aos-dev build check crucible.phase2.gates.abiConformance
+
+# List the checks of one phase.
+aos-dev list checks crucible.phase1.
+```
+
+The source-shape standards in
+[engineering-standards.md](engineering-standards.md) are separate phase1
+checks, for example `crucible.phase1.rustdocBar`,
+`crucible.phase1.testingStandards`, and `crucible.phase1.engineeringHygiene`.
+`aos-dev all checks` builds the whole check tree, and
+`nix-build -A checks.rust.aos-test-targets` compiles every test target without
+running it.
+
+For a fast loop on one crate's contribution, run the gate's Cargo target from
+the [gate targets](#gate-targets) table in the Cargo dev shell described in
+the root [`AGENTS.md`](../../../AGENTS.md):
+
+```sh
+nix develop --file cargo-shell.nix -c cargo test \
+  --manifest-path crates/Cargo.toml -p crucible-test-support --test harness_lint
+```
+
+A green Cargo target does not discharge a gate that also needs packaged QEMU;
+the Nix check is the verdict. To qualify the packaged runner instead of the
+source tree, use the `selftest` flow in
 [../../users/crucible/ci.md](../../users/crucible/ci.md).
+
+## Harness modules
 
 The harness lives in `crates/crucible/crucible-test-support`, a test-only
 workspace member that no runtime crate may depend on. Its module map:
@@ -61,7 +105,11 @@ supplemental; the canonical execution gates run the shipped QEMU and plugin.
 ```
 
 `DeterminismLayer` in `crates/crucible/crucible-test-support/src/phase_plan.rs`
-names the same five layers.
+names the same five layers. The diagram places each gate at the layer of the
+code it executes. `gate:layer0-determinism` runs production QEMU and is owned
+by `crucible-qemu-host`, so it sits at L2 here, but it is the gate that proves
+the L0 property; the [layer precedences](#layer-precedences) therefore list
+its phase1 occurrence as the L0 side of the L0-before-L1 rule.
 
 - **L0, `crucible-determinism`.** In-process tests cover decision-RNG stability
   under entity insertion (per-entity streams are forked by name hash, so adding
@@ -129,10 +177,12 @@ Two gates differ from the rest in kind. `gate:perf-bench` is a regression gate
 that compares metrics against stored baselines rather than checking byte
 identity; it never trades determinism for speed (see
 [performance.md](performance.md)). `gate:harness-lint` and
-`gate:license-boundary` are `Always` gates that run on every change before the
-ordered gates. Campaign gates are described with the campaign pages, and the
-signal-driven fault model with its own pages; this page lists them only
-because they share the catalog.
+`gate:license-boundary` are `Always` gates: they apply to every change
+regardless of which layer it touches. They are still wired as ordered
+occurrences (`gate:harness-lint` in phase0 and phase1, `gate:license-boundary`
+in phase1), so the ordered gates after them depend on them. Campaign gates
+are described with the campaign pages, and the signal-driven fault model with
+its own pages; this page lists them only because they share the catalog.
 
 The catalog is also a documentation contract. A test compares the set of names
 in this table with `canonical_gates()`, and every gate name used anywhere in
@@ -251,22 +301,47 @@ the occurrences in code order as `phase gate attr-path`:
   phase7  gate:signal-fault-system            checks.crucible.phase7.gates.signalFaultSystem
 ```
 
-`phase0:blockers` is the only `NonCatalogAggregate`: it aggregates the
-bounded-scheduler-preemption, S2, S4, and S11 blocker checks and is not a
-catalog gate. Every other occurrence is a `CatalogGate`.
+`phase0:blockers` is the only `NonCatalogAggregate`: it aggregates four
+phase0 checks and is not a catalog gate. The four are also exposed on their
+own under `checks.crucible.phase0` as `boundedSchedulerPreemption`,
+`s2HltBusyPoll`, `s4ShmemVisibility`, and `s11MultiVcpuFingerprint`; the `sN`
+prefixes are fixed check identifiers from `tests/crucible/phase0-s*.nix`.
+Every other occurrence is a `CatalogGate`.
+
+A phase label is a dependency tier of the check tree. The tiers are named in
+`PhasePlanPhase`, and each holds the gates for one part of the system:
+
+| Phase | What its gates cover |
+| --- | --- |
+| `phase0` | Mechanism checks on QEMU and the host that everything else assumes, plus the first harness-lint occurrence |
+| `phase1` | The deterministic core, the harness, the in-process double, and the source-shape standards |
+| `phase2` | The transport ABI and per-VM QEMU determinism |
+| `phase3` | Scheduling, I/O sub-nodes, and cross-VM injection |
+| `phase4` | The engine: spatial graph, temporal graph, and faults |
+| `phase5` | The control plane: API, CLI, and daemon |
+| `phase6` | Exploration and search |
+| `phase7` | Packaging, performance checks, and final acceptance |
+| `phase9` | Campaign gates, described with the [campaign pages](campaigns/README.md); not part of `PHASE_GATE_ORDER` |
+
+There is no `phase8` attribute.
 
 Repeated occurrences guard different evidence. The first
 `gate:single-vm-fingerprint` and `gate:replay-oracle` occurrences and
 `gate:divergence-bisect` are double-backed (`requires_sim_double`), as is the
 phase4 `gate:e2e-determinism`. The phase2 fingerprint occurrence is Contract A
-on real QEMU, the phase3 `gate:layer1-injection` is the full cross-node
-contract, the phase6 `gate:replay-oracle` covers active search, and the phase7
+(intra-VM hermeticity; see [determinism.md](determinism.md)) on real QEMU,
+the phase3 `gate:layer1-injection` is the full cross-node contract, the
+phase6 `gate:replay-oracle` covers active search, and the phase7
 `gate:e2e-determinism` is final acceptance.
 
-The ordering is green-before-advance: no occurrence in a later phase runs until
-every occurrence of every earlier phase is green, and
-`gate:signal-fault-system` terminal in phase7 is the only occurrence with
-`terminal_acceptance` set. `phase_plan_invariant_failures` rejects a plan with
+The ordering rule is green-before-advance: an occurrence in a later phase
+counts only when every occurrence of every earlier phase is green.
+`green_before_advance_failures` checks that rule on the plan; the Nix tree
+realizes it by making each wrapped occurrence depend on the earlier
+occurrences it names (see [Nix wiring](#nix-wiring)), so a gate cannot build
+while a named predecessor fails. `gate:signal-fault-system` terminal in phase7
+is the only occurrence with `terminal_acceptance` set.
+`phase_plan_invariant_failures` rejects a plan with
 any of these defects (`PhasePlanInvariantFailureKind`):
 
 | Failure kind | Rule |
@@ -343,8 +418,14 @@ a missing top-level dependency on a required gate or prerequisite check.
 The gates run as Nix checks under `checks.crucible`, built from
 `tests/crucible/default.nix` (imported by the repository `default.nix` as
 `crucibleChecksBase`). Each phase attribute (`phase0` to `phase7`, plus
-campaign phases) holds a `gates` set with one wrapped attribute per occurrence
-whose `attrPath` string equals the `PhaseGateOccurrence` attribute path.
+`phase9` for campaigns) holds a `gates` set and further checks beside it. Most
+ordered occurrences are attributes of the `gates` set; four sit directly on
+the phase attribute (the three phase6 feature gates and
+`phase7.productionRustPluginFlight`). In both places the wrapped attribute's
+`attrPath` string equals the `PhaseGateOccurrence` attribute path. The `gates`
+sets also hold checks that are not ordered occurrences, such as
+`phase1.gates.hostObservableSchedule`, the campaign entries in phase4 and
+phase5, the hot-fork entries in phase7, and all of `phase9.gates`.
 
 Gate checks share predicates from `tests/crucible/_lib.nix`: `hasInfix`,
 `failuresFor` (needles missing from a source file), and `forbiddenFor` (needles

@@ -6,6 +6,20 @@ between campaign policy and host execution is a real interface, so the local
 implementation does not acquire hidden process, filesystem, or QEMU
 assumptions.
 
+Source: service contracts and the supervisor in `crucible-campaign`
+([`campaign_service.rs`](../../../../crates/crucible/crucible-campaign/src/campaign_service.rs),
+[`execution/client.rs`](../../../../crates/crucible/crucible-campaign/src/execution/client.rs),
+[`executor_capability.rs`](../../../../crates/crucible/crucible-campaign/src/executor_capability.rs),
+[`authority.rs`](../../../../crates/crucible/crucible-campaign/src/authority.rs),
+[`repository/supervisor.rs`](../../../../crates/crucible/crucible-campaign/src/repository/supervisor.rs));
+the runtime in [`crucible-daemon/src/`](../../../../crates/crucible/crucible-daemon/src/),
+whose modules are listed under [daemon runtime](#daemon-runtime).
+
+Relationship to the parent page: [distributed exploration](../distributed-exploration.md)
+describes fleet store primitives and an in-process fleet search model checked
+by its own gate. No daemon or CLI surface runs a multi-host explorer, and a
+campaign always has exactly one coordinator on one host.
+
 ```text
 users and automation
         |
@@ -80,7 +94,7 @@ separate nonzero 256-bit operational credentials, configuration fails closed
 if they are equal, and the keys never enter campaign objects, exports, logs, or
 messages. Authentication proves which supervised component supplied the bytes;
 it does not make their claims authoritative. Every submission still passes the
-ordinary owner validation, and operator requests enter through an already
+ordinary coordinator validation, and operator requests enter through an already
 authenticated campaign-service principal. Only explicit operator discovery and
 canonical observations can add the graph membership that any branch request
 requires.
@@ -137,6 +151,19 @@ resource slot opens
   -> run, publish observation
   -> coordinator credits the path and updates projections
 ```
+
+Where each step lives:
+
+| Step | Code |
+| --- | --- |
+| Step loop: one bounded operation per step | `crucible_campaign` `repository/supervisor.rs` (`CampaignSupervisor`), driven per campaign by `crucible_daemon::campaign_runtime` |
+| Planner call | `crucible_campaign` `repository/planner_driver.rs`; the pure planner in `crucible_campaign` `planner_service`, run out of process by `crucible_daemon::planner_process` |
+| Publish requests, proposals, and admissions | `crucible_campaign` `repository/planner_issue.rs` |
+| Hand a claimable attempt to the executor | `crucible_campaign` `repository/executor_driver.rs` |
+| Admit and reserve locally | `crucible_daemon::executor_supervisor` with `assignment_ledger` and `repository_admission` |
+| Choose a realization | `crucible_daemon::qemu_hot_first_router` |
+| Run and publish the observation bundle | `crucible_daemon::executor_worker` on `executor_pool` threads |
+| Credit the path | `crucible_campaign` `repository/observation.rs` |
 
 ### Feedback
 
@@ -235,17 +262,22 @@ loopback implementations:
 | `ExecutorCapabilityService` | `describe_executor`, `watch_capacity` |
 
 An assignment binds an operational `AssignmentId` and daemon epoch (nonzero
-128-bit values) to the lineage, attempt, nonzero CPU, resident-memory, and
-execution-quantum ceilings, a writable-disk allowance, and a retention intent
-(discard, retain on modeled failure, or retain always). The attempt record is
-itself the execution specification; there is no second spec identity. Start
-modes are execute, materialized-start capture, savepoint capture, and
-selected-savepoint start. An `AttemptExecutionScope` is either `semantic` or a
-savepoint capture bound to its request fact, and it is carried explicitly in
-every status, checkpoint, and cancel request. These fixed-field messages are
-strictly decoded and limited to 4 KiB. Every response repeats the assignment,
-epoch, and attempt and carries a digest of the complete request, which
-untrusted adapters must verify.
+128-bit values) to:
+
+- the lineage and the attempt;
+- nonzero CPU, resident-memory, and execution-quantum ceilings;
+- a writable-disk allowance;
+- a retention intent: discard, retain on modeled failure, or retain always.
+
+The attempt record is itself the execution specification; there is no second
+spec identity. Start modes are execute, materialized-start capture, savepoint
+capture, and selected-savepoint start. An `AttemptExecutionScope` is either
+`semantic` or a savepoint capture bound to its request fact, and it is carried
+explicitly in every status, checkpoint, and cancel request.
+
+These fixed-field messages are strictly decoded and limited to 4 KiB. Every
+response repeats the assignment, epoch, and attempt and carries a digest of
+the complete request, which untrusted adapters must verify.
 
 ### Worker pool
 

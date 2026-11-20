@@ -2,7 +2,7 @@
 
 Campaign planner overhead is held to a measured baseline and a regression
 ratchet on the pinned reference host (see
-[campaign performance and validation](../engineering/crucible/campaigns/performance-and-validation.md#campaign-planner-overhead)). `gate:campaign-performance` deliberately returns
+[campaign performance and validation](performance-and-validation.md#campaign-planner-overhead)). `gate:campaign-performance` deliberately returns
 `BLOCKED` while `campaign-performance-reference-baseline-v1.env` is absent or
 its reviewed SHA-256 is unset. Do not fill either value from an estimate or a
 synthetic result. The first accepted sample must come from the production QEMU
@@ -21,7 +21,7 @@ scaling gate on the host named in
    development caches:
 
    ```sh
-   scaling_out=$(bash ./aos-dev --release build check crucible.phase7.gates.hotForkScaling.rawGate --no-out-link)
+   scaling_out=$(aos-dev --release build check crucible.phase7.gates.hotForkScaling.rawGate --no-out-link)
    ```
 
    This production flight includes 10,000 child lifecycles. Do not replace it
@@ -36,7 +36,7 @@ scaling gate on the host named in
    before `gate:campaign-performance` can pass:
 
    ```sh
-   metadata_out=$(bash ./aos-dev --release build check crucible.phase9.gates.campaignMetadataMillion --no-out-link)
+   metadata_out=$(aos-dev --release build check crucible.phase9.gates.campaignMetadataMillion --no-out-link)
    ```
 
    Retain `${metadata_out}/evidence/profile.env`,
@@ -59,7 +59,7 @@ Choose a reviewed integer ratio ceiling from the measured ratio and a justified
 noise margin. Extract the candidate fixture with the AOS-built Python package:
 
 ```sh
-python_out=$(bash ./aos-dev --release build package python3 --no-out-link)
+python_out=$(aos-dev --release build package python3 --no-out-link)
 "$python_out/bin/python3" tests/crucible/campaign-performance-baseline.py \
   "$scaling_out" --ratio-ceiling-ppm "$reviewed_ceiling_ppm" \
   > campaign-performance-reference-baseline-v1.env
@@ -102,7 +102,7 @@ performance qualification.
 After pinning, run the performance gate:
 
 ```sh
-bash ./aos-dev --release build check crucible.phase9.gates.campaignPerformance --no-out-link
+aos-dev --release build check crucible.phase9.gates.campaignPerformance --no-out-link
 ```
 
 Inspect its `result`

@@ -19,6 +19,21 @@ commands are in [Inspect runtime abilities](../../users/aos/ability-inspection.m
   protocol, identity and lifetimes, generations, recovery, retention, and
   container bootstrap.
 
+## Glossary
+
+| Term | Meaning |
+| --- | --- |
+| Ability | A named group of operations under `aos.abilities.<ability>`, such as `serviceManagement`. It is an interface: it says what can be requested, not how. |
+| Operation | One request an ability offers, with a typed input module and a typed result module. |
+| Handler | The implementation selected for an operation: a retained program, or a composition of other operations. |
+| Effect | One configured use of an operation (`effects.<instance>`): a concrete input that a handler applies, removes, or observes. |
+| Effect graph | The effects of one evaluation with their dependencies, emitted as data (`aos.activation.graph`). |
+| Scope | The installation the fixed point is evaluated for: a package, profile, container, or host. |
+| Fixed point | The merged `options`/`config` result of evaluating every selected module together, as in the NixOS module system. |
+| Generation | One committed desired document and its effect results. Rollback applies an earlier generation's document again. |
+| Deployment envelope | The `deployment.json` companion a package build emits: platform, payload outputs, runtime dependencies, and module locators. |
+| Transaction | The `aos.package.transaction` document that carries one evaluated graph to the executor. |
+
 ```mermaid
 flowchart LR
   modules["Package and system modules"] --> evaluation["Nix fixed point"]
@@ -151,10 +166,13 @@ Native handlers for host resources live in `crates/activation/`:
 | `aos-activation-storage` | Block devices, encryption, and ZFS pools |
 | `aos-activation-nix-store` | Local Nix database convergence and persistent objects |
 | `aos-activation-kubernetes` | K3s configuration and Kubernetes object sets |
+| `aos-activation-systemd` | Packaged units, identities, listeners, watchdogs, and credentials (`aos-systemd-native-resource-provider`), and credential encryption |
 | `aos-activation-crucible` | Optional Crucible observation of the executor |
 
-The systemd service, resource-group, and container-bootstrap handlers are
-Python programs in `pkgs/system/_systemd-abilities/`. The
+The `serviceManagement` service and resource-group handlers and the
+container-bootstrap handler are Python programs in
+`pkgs/system/_systemd-abilities/` (`service-handler.py`,
+`bootstrap-provider.py`). The
 [service sandbox](../packages/service-sandbox.md) page describes how service
 inputs become unit directives.
 

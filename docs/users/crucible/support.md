@@ -25,7 +25,7 @@ Faults are authored in a scenario and executed by the matching adapter.
 | Surface | Status | Boundary |
 |---|---|---|
 | Local patched-QEMU lifecycle | Packaged, primary | Linux host; validated QEMU/plugin pair; durable run-state directory. |
-| `run`, `verify`, save/resume, replay | Packaged | Operate on canonical scenarios, schedules, checkpoints, and artifacts. See the [command reference](reference.md#command-line-interface). |
+| `run`, `verify`, save/resume, replay | Packaged | Operate on canonical scenarios, schedules, checkpoints, and artifacts. See the [command reference](reference-cli.md#command-line-interface). |
 | Bounded search, fuzzing, triage | Packaged | Search and campaign budgets must be explicit; only admitted choices are explored. |
 | Interactive/debug workflow | Packaged with narrower paths | Some operations require a running daemon session, a retained checkpoint, a debug-capable guest, or an explicit non-canonical fork. |
 | HTTP/2 daemon | Packaged, limited fidelity | The daemon exposes the documented lifecycle routes; it is not a distributed scheduler or a remote equivalent of every local CLI path. |
@@ -85,7 +85,7 @@ host-side traffic generation as substitutes for modeled execution.
 
 The exhaustive executable effect, source, operator, target, phase, lifetime,
 and operation vocabulary is in the
-[canonical reference](reference.md#plans-signals-bindings-and-faults). The
+[canonical reference](reference-plan.md#plans-signals-bindings-and-faults). The
 [signal-driven fault guide](signal-driven-faults.md) explains how those pieces
 compose.
 

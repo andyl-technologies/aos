@@ -4,7 +4,7 @@ A package service's confinement is declared in its `serviceManagement` effect
 input and rendered by the systemd handler. There is no separate permission
 manifest: the typed service declaration is the only source of the unit's
 privilege, and the generated reference documents it. The operator view is
-[Understand native package runtime policy](../../users/aos/package-sandbox.md);
+[Understand native package runtime policy](../../users/aos/package-runtime-policy.md);
 the ability machinery is described in [runtime abilities](../abilities/README.md).
 
 | Piece | Location |
@@ -13,7 +13,7 @@ the ability machinery is described in [runtime abilities](../abilities/README.md
 | `serviceManagement` operations (`realize`, `resourceGroup`) | `pkgs/system/_service-management/module.nix` |
 | Unit renderer and handler | `pkgs/system/_systemd-abilities/service-handler.py` |
 | Resource-group handler | `pkgs/system/_systemd-abilities/resource-handlers.nix` |
-| Preset policy | `pkgs/system/_systemd-abilities/platform/presets.nix`, `manager.nix` |
+| Preset policy | `pkgs/system/_systemd-abilities/platform/presets.nix`, `pkgs/system/_systemd-abilities/manager.nix` |
 
 ## Rendering
 
@@ -89,9 +89,9 @@ The image also ships systemd preset policy. `manager.nix` writes
 selects any rules. Host-specific preset files under `/etc/systemd/system-preset/`
 can enable targets ahead of the default. Targets named `aos-pkg-<name>.target`
 with no explicit `wantedBy` render `[Install] WantedBy=multi-user.target`, so
-preset policy alone decides whether they start. `checks.package-preset`
-(`tests/packages/preset.nix`) boots an image with one enabled and one disabled
-package target and checks that only the enabled one runs, across reboots.
+preset policy alone decides whether they start. `checks.build.system-structure`
+(`lib/testing/system-structure.nix`) asserts that the rendered manager output
+carries the `disable *` default preset.
 
 ## High-privilege packages
 

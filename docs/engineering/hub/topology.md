@@ -8,6 +8,20 @@ placements and several simultaneous URLs. This page states the goals,
 terminology, and invariants of that topology; the records are defined in
 [domain-model.md](domain-model.md).
 
+Where in the code:
+
+- topology records, generations, and grants are persisted by
+  `crates/hub/aos-hub-db/src/db/topology.rs`, and placement policies by
+  `crates/hub/aos-hub-db/src/db/placement_policy.rs`;
+- the request-path grammar, route matching, capability classification, and
+  partition keys are pure functions in
+  `crates/hub/aos-hub-model/src/delivery.rs`, with endpoint origins in
+  `endpoint.rs` and HTTP semantics in `delivery_http.rs` beside it;
+- placement read planning and failover are in
+  `crates/hub/aos-hub-service/src/placement_read.rs`; and
+- retention roots and cache garbage collection (GC) are persisted by
+  `crates/hub/aos-hub-db/src/db/gc_topology.rs`.
+
 ## Goals
 
 1. Registries and binary caches are independently useful logical resources.
@@ -57,10 +71,10 @@ terminology, and invariants of that topology; the records are defined in
 | **Population target** | Policy causing a producer/release workflow to upload to a cache |
 | **Root reason** | Provenance-bearing reason one cache store hash cannot be collected |
 
-Use **endpoint** for the typed client origin, **route** for the configured
-mapping, and **route URL** for their rendered result. Avoid the unqualified
-words “link,” “frontend,” and “advertise” in new
-interfaces; they each hide more than one effect in the current model.
+**Surface** has only this meaning in the Hub pages. **Endpoint** is the typed
+client origin, **route** the configured mapping, and **route URL** their
+rendered result. The API does not use the unqualified words "link" or
+"frontend", because each hides more than one of the effects separated below.
 
 ## Load-bearing invariants
 
@@ -94,8 +108,10 @@ from GC.
 - Replication policy: affects placement copies only.
 - Route: affects HTTP reachability only.
 
-A console wizard may create several of these in one reviewed operation, but
-the stored records and audit events remain separate.
+The console can preview several of these together for one registry and
+cache, but each is applied from its owning settings page, and the stored
+records and audit events are separate
+([registry-cache-relations.md](registry-cache-relations.md#user-actions)).
 
 ### Every route has an explicit access posture
 
@@ -208,8 +224,15 @@ may not.
 ### No compatibility topology
 
 The schema, source, Web UI, CLI, generated API, native binary, and Worker
-contain only this model. Older external URLs survive only as ordinary
-validated routes. The one-shot migration of an older deployment is described
-in [topology-cutover.md](topology-cutover.md); rolling it back restores the
-complete old deployment and database backup rather than branching inside the
-runtime.
+contain only this topology model. There is no second representation of a
+route, placement, or binding, and no alias, slug-shaped fallback, or dual-read
+branch; every external URL is an ordinary validated route.
+
+This invariant is about the topology model, not about how many API methods
+reach it. `PublishService`, for example, offers a one-request and a resumable
+way to declare the same publication manifest
+([delivery.md](delivery.md#registry-publication-transaction)).
+
+[topology-cutover.md](topology-cutover.md) specifies the signed evidence
+bundle for moving a deployment onto this model and the in-tree commands that
+generate and verify it.

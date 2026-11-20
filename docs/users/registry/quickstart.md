@@ -8,17 +8,20 @@ registry without requiring a server.
 For production consumer configuration, including other public and internal
 registries, use [Configure package registries](../aos/registries.md).
 
-You need Nix with flakes enabled, Git with SHA-256 repository support, and an
-incremental builds of the independent `apr` and `apm` programs:
+You need Nix with flakes enabled, Git with SHA-256 repository support, and
+incremental builds of the independent `apr` and `apm` programs. Run these from
+the repository root:
 
 ```sh
-nix develop -c cargo build --manifest-path crates/Cargo.toml --bin apr --bin apm
+nix develop --file cargo-shell.nix -c \
+  cargo build --manifest-path crates/Cargo.toml --bin apr --bin apm
 export PATH="$PWD/crates/target/debug:$PATH"
 git init --object-format=sha256 /tmp/aos-sha256-probe
 ```
 
-Remove the probe after Git accepts the command. Configure a real Git author
-identity if one is not already present:
+The last command only checks that your Git supports SHA-256 repositories.
+Remove `/tmp/aos-sha256-probe` after Git accepts the command. Configure a real
+Git author identity if one is not already present:
 
 ```sh
 git config --global user.name "AOS Registry Maintainer"
