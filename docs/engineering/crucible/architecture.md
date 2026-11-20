@@ -289,7 +289,7 @@ actors that mutate state on their own task and yield between quanta, so
 control is serviced at well-defined boundaries without long-held locks.
 
 **Shared-memory data plane.** The transport's key property is that a payload's
-presence on a queue never decides its visibility; the in-band delivery icount
+presence on a queue never decides its visibility; the in-band delivery tick
 does. A shared-memory region expresses that directly and avoids socket round
 trips per quantum. The region layout is the single versioned public schema for
 the data plane, declared by
