@@ -175,5 +175,3 @@ source and provide the same store to the production lifecycle. See
    broader certification or model surface.
 
 Implementation-backed examples are indexed in [Certification examples](examples.md).
-The two-VM network and shared-cause examples are the best starting points for a
-fresh direct integration.

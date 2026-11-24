@@ -18,19 +18,24 @@ interactive emergency or rescue login services. A failure before switch-root
 therefore stops noninteractively; there is no fleet-wide or image-default
 password that grants an initrd shell.
 
-On dm-verity images, the signed embedded kernel command line is authoritative.
-External db-signed PE-addon and SMBIOS command-line fragments are measured into
-PCR 12 but not appended, so they cannot select an alternate init or target
-before recovery validation. Under enforcing Secure Boot, systemd-boot measures
-Type #1 entry options into PCR 12 and the stub discards them when an embedded
-command line exists. Unsigned addons are rejected by the image loader before
-command-line measurement. A malformed, duplicated, or control-bearing field
-that does reach the effective command line is rejected before the verity
-mapper, `/var` unlock, or `/var` mount can start. The host stops in a passive
-boot-identity failure target; it does not honor command-line requests for
-emergency, debug, breakpoint, or transient-command units. Treat the console
-diagnostic as evidence to preserve, not as a prompt that can be authenticated
-locally.
+On dm-verity images, the kernel command line embedded in the signed unified
+kernel image (UKI) is authoritative. Nothing supplied at boot can add to it:
+
+- external db-signed PE-addon and SMBIOS command-line fragments are measured
+  into TPM platform configuration register (PCR) 12 but not appended, so they
+  cannot select an alternate init or target before recovery validation;
+- under enforcing Secure Boot, systemd-boot measures Type #1 entry options
+  into PCR 12 and the stub discards them when an embedded command line exists;
+- unsigned addons are rejected by the image loader before command-line
+  measurement;
+- a malformed, duplicated, or control-bearing field that does reach the
+  effective command line is rejected before the verity mapper, `/var` unlock,
+  or `/var` mount can start.
+
+After such a rejection the host stops in a passive boot-identity failure
+target; it does not honor command-line requests for emergency, debug,
+breakpoint, or transient-command units. Treat the console diagnostic as
+evidence to preserve, not as a prompt that can be authenticated locally.
 
 Recovery UKIs are stricter: after measuring a db-signed addon or SMBIOS
 command-line fragment, the stub refuses that launch before the kernel starts.
@@ -167,7 +172,7 @@ lsblk -o NAME,SIZE,FSTYPE,PARTLABEL,PARTUUID,MOUNTPOINTS
 readlink /var/lib/profiles/system/current
 cat /var/lib/profiles/image/state.json
 cat /var/lib/profiles/system/state.json
-cat /run/aos/activation.json
+apm config status
 apm config rollback --list
 cat /var/lib/aos-provisioning/audit.json
 ```
@@ -197,20 +202,28 @@ to make it agree with an unintended layout.
 
 ## Recover a failed configuration activation
 
-An error can occur during evaluation, package fetch/render, secret resolution,
-EROFS materialization, `/etc` replacement, or provider convergence. First
-determine the active pointer and transaction-bound activation result:
+An error can occur during package selection, registry acquisition, native
+graph evaluation, or effect execution, which includes mounting the EROFS `/etc`
+lower and realizing services. First determine the active pointer and the
+controller result:
 
 ```sh
 readlink /var/lib/profiles/system/current
 cat /etc/os-release
+apm config status
 apm config rollback --list
 systemctl --failed
 journalctl -b \
-  -u aos-eval.service \
-  -u aos-graph-compile.service \
+  -u aos-ability-host-receiver.service \
+  -u aos-ability-host-controller.service \
   -u aos-activate.service
 ```
+
+A failed activation does not publish a new `current` pointer, so an unchanged
+pointer means the previous generation is still live. See
+[Metadata was accepted but activation did not
+complete](troubleshooting.md#metadata-was-accepted-but-activation-did-not-complete)
+for the stages the journal reports.
 
 Preview rollback, then switch to the intended generation:
 
@@ -241,15 +254,16 @@ The candidate is accepted only after its boot-time configuration transaction
 commits. If a pending image exhausts its sd-boot attempts, boot counting falls
 back to the other slot; inspect both state files after reaching the console.
 
-If activation status indicates an incomplete `/etc` swap, treat the system as
-indeterminate. Use console access, preserve `/var`, and restore a known-good
-image or generation according to a procedure tested for that release.
+If the controller reports pending work that it cannot recover, treat the
+system as indeterminate. Use console access, preserve `/var`, and restore a
+known-good image or generation according to a procedure tested for that
+release.
 
 ## Recover an application package
 
-Inspect installed package generations and the selected service unit. This example
-uses the `acme-agent` package from the [configuration guide](configuration.md);
-replace it with the affected package and unit:
+Inspect installed package generations and the selected service unit. This
+example uses a hypothetical `acme-agent` package; replace it with the affected
+package and unit:
 
 ```sh
 apm list --installed --system
@@ -301,12 +315,10 @@ journalctl --vacuum-size=250M
 ```
 
 Use application-specific cleanup for application state and AOS Hub storage.
-`apm clean --generations --keep N` cleans the invoking user's package profile;
-`apm clean --system --generations --keep N` safely prunes both machine-wide
-package and configuration generations while retaining each current generation.
-Run `apm gc --system` afterward to collect store paths released by pruned configuration
-roots. A/B image generations are not pruned by this command. Do not remove
-profile directories or current links by hand.
+Prune package and configuration generations with `apm clean` and `apm gc` as
+described in [Clean up old packages](packages.md#clean-up-old-packages). A/B
+image generations are not pruned by those commands. Do not remove profile
+directories or current links by hand.
 
 When no supported cleanup can restore a safe margin, preserve application
 state and reimage onto a correctly sized disk.

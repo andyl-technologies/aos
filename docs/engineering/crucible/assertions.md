@@ -12,7 +12,8 @@ assertions read is in [event-log.md](event-log.md); the shared predicate
 vocabulary and trigger graph are in
 [conditions-and-triggers.md](conditions-and-triggers.md); the white-box doorbell
 that carries guest assertion markers is in
-[guest-host-channel.md](guest-host-channel.md). Authoring guidance and the TOML
+[guest-host-channel.md](guest-host-channel.md). Shared vocabulary is defined
+in the [glossary](glossary.md). Authoring guidance and the TOML
 reference live in the user guides:
 [properties and evidence](../../users/crucible/properties-and-evidence.md) and
 the [reference](../../users/crucible/reference.md).
@@ -228,11 +229,8 @@ state = "started"
 Every predicate is evaluated against a `ConditionEventLogPrefix`: a checked
 prefix of scheduler event-log entries, reconstructed at one deterministic
 `EventEvaluationPoint`. Building a prefix fails closed with a
-`ConditionEvaluationError` when the entries are not dense from the base
-sequence, an entry's content hash does not match its material, a black-box
-observation regresses in time, an entry lies after the derived evaluation point,
-or a black-box observation is not recorded as observational or carries the wrong
-icount stamp.
+`ConditionEvaluationError`; the failure cases are listed in
+[conditions-and-triggers.md](conditions-and-triggers.md#the-checked-log-prefix).
 
 Host predicates see that prefix only through `ObservedState`, a `Copy`
 read-only view:

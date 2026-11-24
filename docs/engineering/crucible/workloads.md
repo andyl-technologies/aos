@@ -12,7 +12,8 @@ The workload vocabulary lives in
 `crates/crucible/crucible-engine/src/model/validation.rs`, and the builder
 helpers on `NodeTemplate` in `crates/crucible/crucible-engine/src/model/family.rs`.
 For authoring guidance see [the user examples](../../users/crucible/examples.md)
-and [the fault cookbook](../../users/crucible/cookbook.md).
+and [the fault cookbook](../../users/crucible/cookbook.md). Scenario, world,
+node, and virtual-time vocabulary is defined in the [glossary](glossary.md).
 
 ## The workload model
 
@@ -340,9 +341,11 @@ The CLI exposes the corpus in two ways:
   `resolve_builtin_example_scenario` in
   `crates/crucible/crucible-cli/src/cli/planning/verify_seed_render.rs` to
   `RunScenarioRef::BuiltInExample`.
-- `crucible selftest`, in builds with the test-only backend, verifies the
-  built-in corpus (or a corpus manifest given with `--corpus`) with
-  `DEFAULT_SELFTEST_RUNS = 5`. The installed CLI omits this path.
+- `crucible selftest` verifies the built-in corpus (or a corpus manifest
+  given with `--corpus`) with `DEFAULT_SELFTEST_RUNS = 5`, but only in a build
+  with `cfg(test)` or the `test-double` feature. The installed CLI still has
+  the `selftest` command; it has no `--corpus` or `--with-qemu` flag, verifies
+  no corpus, and refuses any gate that is not backed by real QEMU.
 
 `crucible verify --runs N --adversarial` multiplies each run across the
 hostile host profiles in `VERIFY_HOSTILE_PROFILES` (`loaded-single-core`,

@@ -25,14 +25,14 @@ The strategies are:
 - `guided` — coverage-guided frontier selection.
 
 `--max-states` defaults to `1`, which is intentionally conservative but rarely
-useful for a real campaign. Set both state and depth bounds explicitly in CI.
+useful for a real search. Set both state and depth bounds explicitly in CI.
 
 `--on-violation` defaults to `stop`; `collect` is the alternate policy value.
-`stop` ends the campaign after its first property violation or concrete
+`stop` ends the search after its first property violation or concrete
 execution timeout. `collect` continues within the supplied bounds and retains
 every distinct finding. Repeated identical reproductions are deduplicated. Each
 retained finding receives a reproduction artifact and an entry in the
-campaign's signed findings ledger. A property counterexample exits with status
+run's signed findings ledger. A property counterexample exits with status
 `1`; a concrete timeout without a property finding exits with status `2`.
 
 Advanced searches may load schedule-named assertion truths:
@@ -80,8 +80,8 @@ Use an explicit seed for the campaign identity and an explicit corpus directory
 if accepted cases must survive between invocations.
 
 Fuzz uses the same `--on-violation stop|collect` policy as search. Property
-violations and concrete execution timeouts become non-passing outcomes, replay
-artifacts, and signed-ledger entries. If both kinds are collected, the property
+violations and concrete execution timeouts become non-passing outcomes,
+reproduction artifacts, and signed-ledger entries. If both kinds are collected, the property
 failure status `1` takes precedence over timeout status `2`.
 
 The built-in fault campaign also has a deterministic proof path used by the

@@ -11,6 +11,12 @@ explains how the build machinery implements them.
   tier's outputs trustworthy.
 - [Rust builds](rust-builds.md) covers reusable Cargo dependency artifacts,
   their compatibility contract, development caches, and parallel Rust tests.
+- [Development builds](development-builds.md) covers the development shell,
+  `aos-dev`, the shared VM image cache, and the image reproducibility check.
+- [Package builder notes](package-builders.md) records recipe rules for
+  dependency probing, hardening exceptions, Bazel, and fixed-output fetches.
+- [Build concurrency](build-concurrency.md) lists the builds that are
+  sensitive to high parallelism and how to validate removing a limit.
 
 ## Layers
 

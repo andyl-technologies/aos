@@ -19,7 +19,7 @@ end-to-end determinism checks.
 
 An administrator must provision the dedicated cgroup-v2 and ext4 project-quota
 roots and an owner-only version-2 deployment file described in
-[campaign setup](campaigns.md#start-the-single-host-owner). An ordinary temporary
+[campaign setup](campaigns-host.md#start-the-single-host-owner). An ordinary temporary
 directory does not satisfy that resource contract. Select the provisioned file:
 
 ```sh

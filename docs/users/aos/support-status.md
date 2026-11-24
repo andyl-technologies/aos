@@ -23,9 +23,9 @@ promise.
 | Other native cloud metadata APIs | Unsupported |
 | Signed metadata on GCP, Azure, DigitalOcean, native OpenStack | No detached-signature channel |
 | DHCP and single-address static networking | Implemented |
-| MTU, VLAN, and bond high-level options | Incomplete rendering |
-| APM machine-wide packages | Add/remove reconciliation implemented; upgrade and rollback incomplete |
-| [Typed package runtime policy](package-sandbox.md) | Implemented through native ability providers |
+| MTU, VLAN, and bond high-level options | Rendered into networkd units; VLAN and bond links take no gateway or per-link DNS |
+| APM machine-wide packages | Install, remove, upgrade, rollback, and desired-set reconciliation implemented |
+| [Typed package runtime policy](package-runtime-policy.md) | Implemented through native ability providers |
 | Stock unprivileged user package profile | Not provisioned |
 | Persistent home directories | `/root` always on the state volume; `/home` opt-in through `aos.homes` |
 | Configuration generation rollback | Implemented |

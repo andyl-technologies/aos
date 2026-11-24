@@ -79,11 +79,14 @@ Choose the coordinate domain first:
 | `Event` | Exact impulses and recorded discrete events. |
 | `State` | Feedback-delayed state machines and accumulated exposure. |
 
+These are the Rust variant names. Canonical TOML spells them `virtual_time`,
+`node_counter`, `operation`, `spatial`, `event`, and `state`.
+
 Sources include constants, steps, pulses, periodic signals, normalized traces,
 spatial fields, event sequences, and keyed stochastic processes. Pure
 operators transform values without memory; stateful operators carry declared,
 checkpointed state. [Signal programs](signals.md) explains every family and the
-[reference](reference.md#plans-signals-bindings-and-faults) lists exact fields.
+[reference](reference-plan.md#plans-signals-bindings-and-faults) lists exact fields.
 
 For a one-time outage, prefer an event or pulse. For a fault that stays active
 until a later transition, use a Boolean step/pulse with a persistent binding.
@@ -110,7 +113,7 @@ from persistence loss at flush.
 Use [Fault bindings](bindings.md) for the complete bridge contract, then the
 effect selection tables in [Network faults](network-faults.md) and
 [Storage, node, and hardware faults](storage-node-faults.md). The
-[reference effect registry](reference.md#exhaustive-effect-registry) gives the exact legal
+[reference effect registry](reference-plan.md#exhaustive-effect-registry) gives the exact legal
 target kinds, phases, lifetimes, and operations for every effect.
 
 ## 5. Resolve the plan against the world
@@ -139,8 +142,8 @@ guest or modeled topology must satisfy:
 - use a typed guest marker for application-level success or failure;
 - use console matching for a stable, opaque prebuilt workload;
 - use network observations for transport/topology claims; and
-- choose `Always`, `Eventually`, `Sometimes`, `AfterQuiescence`, or
-  `Reachable` according to the intended temporal claim.
+- choose `always`, `eventually`, `sometimes`, `after_quiescence`, or
+  `reachable` according to the intended temporal claim.
 
 Include a bounded terminal condition when running. A fault that successfully
 makes an application wait forever is otherwise indistinguishable from an

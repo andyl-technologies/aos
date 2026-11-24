@@ -42,9 +42,12 @@ The model lives in `crates/crucible/crucible-engine/src/model/failure/`:
 | `material.rs`, `material/reporting.rs` | Canonical material, causal cone, validation helpers |
 | `replay_evidence.rs` | Portable replay evidence for independently observed signature replays |
 
-The CLI driver is `crates/crucible/crucible-cli/src/cli/triage_debug/`.
+The CLI driver is `crates/crucible/crucible-cli/src/cli/triage_debug/`
+(`triage.rs` for the invocation, `ledger_format.rs` for the on-disk ledger,
+`campaign_evidence.rs` for evidence captured from the campaign service).
 Reproduction artifacts and the base minimizer are described in
-[exploration.md](exploration.md).
+[exploration.md](exploration.md); event log, causal entry, and the other
+shared terms are in the [glossary](glossary.md).
 
 ## Inputs
 
@@ -82,6 +85,10 @@ recomputation detects tampering with, or drift in, the retained frames.
 scenario, the recorded schedule, and the causal subsequence of the event log.
 It deliberately omits the discovery path, the discovering campaign, the
 finding fingerprint, wall-clock data, and raw observational entries.
+
+Two fields refer to the *causal cone*: the causal event-log entries, up to and
+including the first failing one, that share a dependency key with it. The
+exact rule is under [Normalizations](#normalizations).
 
 | Field | Meaning |
 |-------|---------|
@@ -411,12 +418,16 @@ was requested.
 
 `FailureTriageResult::from_parts(ledger, clustering, minimization, report_set,
 self_check)` validates that every part describes the same `(findings ledger,
-policy)` triage: matching policies; unique cluster ids, runs, and reports; a
-self-check that is either skipped or covers exactly the clustered findings,
-with discovery hashes matching the cluster members and no unmatched record;
-and runs and reports bound to the same representatives, members, keys, and
-minimal artifacts. Its
-canonical material (`crucible.failure-triage.result.v1`) names the identity,
+policy)` triage:
+
+- the parts carry matching policies;
+- cluster ids, runs, and reports are unique;
+- the self-check is either skipped or covers exactly the clustered findings,
+  with discovery hashes matching the cluster members and no unmatched record;
+- runs and reports are bound to the same representatives, members, keys, and
+  minimal artifacts.
+
+Its canonical material (`crucible.failure-triage.result.v1`) names the identity,
 the hashes of each part, cluster and member counts, and per-report cluster id,
 report hash, and minimal representative.
 
@@ -434,7 +445,10 @@ re-clustering. Its material is hashed under
 
 ## CLI surface
 
-Triage runs over the authenticated findings retained by a campaign snapshot:
+This section records the surface that `checks.crucible.phase6.triageCliSurface`
+holds the driver to. The operator-facing description of the same flags is the
+[user reference](../../users/crucible/reference-cli.md#triage). Triage runs over
+the authenticated findings retained by a campaign snapshot:
 
 ```text
 crucible [--format jsonl|json|table|markdown] [--artifact-dir <path>] \

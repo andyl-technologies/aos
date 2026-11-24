@@ -5,14 +5,26 @@ documentation. Each entry names the type, constant, or module that carries
 the concept so the term can be traced to the implementation. Paths are
 relative to `crates/crucible/` unless they start with `pkgs/` or `tests/`.
 
+Two words need care because the code uses older names. A **tick** is a logical
+picosecond; several ABI fields that carry ticks are still named `*_icount`.
+**Raw icount** always means QEMU's retired-instruction count. The device-I/O
+**hold** is the mechanism implemented by the type `PluginDeviceIoFreeze`; the
+pages say "hold" except when quoting that name.
+
 ## Model
 
 - **ScenarioDef**: The immutable, content-addressed definition of a run,
   composed from a `World`, a `Plan`, `Properties`, and a `Seed`
   (`World::scenario_def_with_plan_properties_and_seed`). The type in
   `crucible-engine/src/model/scenario/definition.rs` carries the content
-  address `id`, the `seed`, and `app_random_draw_cap`. See
+  address `id`, the `seed`, and `app_random_draw_cap`. The `id` also covers
+  any declared measurements and selectables. See
   [scenario-model.md](scenario-model.md).
+
+- **ScenarioDefForm**: The materialized `(World, Plan, Properties, Seed)`
+  form used for storage, exchange, and reproduction
+  (`crucible-engine/src/model/configuration.rs`). It rebuilds the
+  `ScenarioDef` with `scenario_def()`.
 
 - **World**: The static topology: VM nodes, I/O sub-nodes, and links with their
   per-entity configuration. `World::static_topology` derives the participants,
@@ -40,8 +52,13 @@ relative to `crates/crucible/` unless they start with `pkgs/` or `tests/`.
   identity. `Configuration::genesis` has an empty schedule. Its materialized
   runtime is a cache, not part of identity.
 
-- **reduce**: `reduce(def, schedule) -> State`, the pure function whose purity
-  is the determinism contract (`crucible-engine/src/model/runtime.rs`).
+- **reduce**: `reduce(def, schedule) -> State`, the pure model function
+  (`crucible-engine/src/model/runtime.rs`). It validates the schedule against
+  the scenario's app-random draw cap and returns a `State` whose `id` is a
+  hash of the scenario id, seed, and schedule. It does not compute guest
+  state; the backend that realizes a configuration does, and the replay
+  oracle checks that every realization path agrees. See
+  [execution-model.md](execution-model.md).
 
 - **try_step**: Appends one decision to a configuration without materializing
   runtime state.
@@ -52,19 +69,27 @@ relative to `crates/crucible/` unless they start with `pkgs/` or `tests/`.
   baked genesis.
 
 - **bake**: `bake(world) -> GenesisCheckpoint`: boot each VM once to its ready
-  point and save it, so every run, including the first, is a resume.
+  point and save it, so every run, including the first, is a resume. The
+  model function bakes `world.scenario_def()`, the world's scenario with no
+  Plan or Properties.
+
+- **Ready point**: The per-VM policy that decides where `t = 0` sits
+  (`ReadyPoint`): `FixedIcount`, `NetworkIdle`, `ConsoleMarker`, or
+  `AgentSignal`. See [execution-model.md](execution-model.md#the-ready-point).
 
 - **Reproduction artifact**: A self-contained `(seed, scenario, schedule)`
   bundle (`ReproductionArtifact` in
   `crucible-engine/src/model/family/instances.rs`) that replays a run
-  bit-identically. The CLI's failure artifacts are `.crucible` files that also
+  bit-identically. It stores the scenario form and the schedule; the seed is
+  the form's own seed, not a separate field. The CLI's failure artifacts are `.crucible` files that also
   pin the producer build identity. See
   [../../users/crucible/reproduction.md](../../users/crucible/reproduction.md).
 
 ## Graphs and checkpoints
 
-- **Spatial graph**: The immutable structure of the system: the World's nodes,
-  links, and configuration.
+- **Spatial graph**: The immutable, content-addressed definition of the
+  system: the `ScenarioDef`, whose World holds the nodes, links, and
+  configuration.
 
 - **Temporal graph**: The content-addressed DAG of checkpoints whose edges are
   schedule deltas. See [execution-graph.md](execution-graph.md).
@@ -73,6 +98,10 @@ relative to `crates/crucible/` unless they start with `pkgs/` or `tests/`.
   `crucible-engine/src/model/materialized.rs`) with `parent`, `schedule_delta`,
   `virtual_time`, per-node raw `node_icounts`, and optional materialized
   `state`.
+
+- **Materialized state**: The cached runtime payload of a checkpoint
+  (`MaterializedState`): per-VM snapshot references, device overlay deltas,
+  scheduler state, and decision-RNG cursors.
 
 - **Thin checkpoint**: A checkpoint with `state == None`, reconstructed by
   replay from its parent.
@@ -86,7 +115,20 @@ relative to `crates/crucible/` unless they start with `pkgs/` or `tests/`.
 
 - **Replay oracle**: The structural check that a materialized checkpoint equals
   the replay of the same schedule from an ancestor, compared by content hash
-  (`crucible-test-support/src/replay_oracle.rs`).
+  (`TemporalGraph::replay_checkpoint` in
+  `crucible-engine/src/model/temporal_graph/search_storage.rs`; the gate's
+  comparison helpers are in `crucible-test-support/src/replay_oracle.rs`).
+
+- **DAG store**: The content-addressed object store that persists the temporal
+  graph (`crucible_engine::DagStore` in `crucible-engine/src/model/dag_store.rs`).
+  `crucible-store` defines a separate trait with the same name for the
+  campaign and fleet stores. See [execution-graph.md](execution-graph.md).
+
+- **Frontier**: Two related uses. The scheduler frontier is the minimum
+  current virtual time over non-terminal nodes; a quantum request must name
+  the configuration at that frontier. The search frontier is the set of
+  checkpoints not yet expanded. See [scheduling.md](scheduling.md) and
+  [exploration.md](exploration.md).
 
 - **Content addressing**: Identifying every immutable artifact by the hash of
   its canonical content (`ContentHash`), so equal content has equal identity.
@@ -178,7 +220,13 @@ relative to `crates/crucible/` unless they start with `pkgs/` or `tests/`.
 
 - **Idle jump**: A scheduler-authorized advance of an idle VM's logical time to
   an exact tick without retiring instructions (`SchedulerAuthorizedIdleJump`).
-  The accumulated jumps are the node's idle bias.
+
+- **Idle bias**: The sum of a node's idle jumps: the term added to
+  `raw_retired * 50` to give its logical tick.
+
+- **Boot barrier**: The plugin's wait before the first guest instruction
+  (`PluginBootBarrier`): the node parks until the scheduler publishes its
+  first nonzero ceiling. See [qemu-plugin.md](qemu-plugin.md#boot-barrier).
 
 - **Ceiling**: The max-advance logical tick the scheduler publishes in a node's
   shared memory slot (`max_advance_icount`); a node never runs past it.
@@ -196,7 +244,10 @@ relative to `crates/crucible/` unless they start with `pkgs/` or `tests/`.
   (`horizon_from_network_lookahead`). See [scheduling.md](scheduling.md).
 
 - **Quantum**: One scheduler step: advance a node to its horizon, then process
-  due cross-node events at that boundary.
+  due cross-node events at that boundary. Its phases are named PICK (choose
+  the minimum-horizon node), RUN (advance it to its ceiling), RESOLVE (order
+  and deliver due events), EMIT (append the event-log segment), and STEP
+  (append decisions and advance the frontier).
 
 - **Quiescence**: No scheduler-state blocker remains: no runnable node, pending
   delivery, timer, or scheduled evaluation (`SchedulerQuiescence`).
@@ -210,6 +261,10 @@ relative to `crates/crucible/` unless they start with `pkgs/` or `tests/`.
 
 - **Total order**: The deterministic event order `(virtual_time, consumer node,
   producer node, sequence)` (`ScheduledEventKey`).
+
+- **Native boundary**: An armed timer or input deadline that a backend
+  reports in its I/O inventory for a node; the scheduler folds it into that
+  node's horizon. See [scheduling.md](scheduling.md).
 
 - **Warp**: Upstream QEMU's advance of the virtual clock by host time while the
   guest is idle. Disabled in sim mode.
@@ -262,6 +317,11 @@ relative to `crates/crucible/` unless they start with `pkgs/` or `tests/`.
   AArch64 `HINT` (`aarch64-hint-4c-inert-v1`). See
   [guest-host-channel.md](guest-host-channel.md).
 
+- **Black-box, white-box**: Black-box operation observes a guest only from
+  outside the VM and needs no guest changes; it is the default. White-box
+  operation adds the doorbell channel for a cooperating guest and is enabled
+  per node with `WhiteBoxPolicy::Enabled`.
+
 ## Nodes and devices
 
 - **Node**: A participant in the scheduling graph (`SchedulingNodeKind`): a
@@ -276,6 +336,11 @@ relative to `crates/crucible/` unless they start with `pkgs/` or `tests/`.
 
 - **CoW overlay**: Copy-on-write storage over a read-only base image; the only
   place guest writes land.
+
+- **Device-I/O hold**: While block or 9p requests are in flight, the plugin
+  keeps host timing gaps from advancing the node's virtual time
+  (`PluginDeviceIoFreeze` in `crucible-qemu-plugin/src/device_io.rs`). See
+  [io-subnodes.md](io-subnodes.md#device-io-hold).
 
 - **9p server**: The deterministic Plan 9 filesystem sub-node, with path-hashed
   QIDs and sorted directory enumeration (`crucible-device/src/ninep.rs`).
@@ -305,3 +370,16 @@ relative to `crates/crucible/` unless they start with `pkgs/` or `tests/`.
 - **Gate**: A named Nix check (`checks.crucible.<phase>.gates.<name>`) that
   must pass before dependent checks run. See
   [testing-and-gates.md](testing-and-gates.md).
+
+- **Phase**: The `phaseN` label in a check's attribute path. It is a
+  dependency tier: a gate's occurrences in earlier phases build before its
+  later ones. The table of what each phase holds is in
+  [testing-and-gates.md](testing-and-gates.md).
+
+- **Campaign branch**: A `Decision::Selection` marked as a typed choice that
+  search may vary, as opposed to a decision that replay only repeats. See
+  [exploration.md](exploration.md).
+
+- **Causal cone**: The causal event-log entries, up to and including the
+  first failing one, that share a dependency key with it
+  (`FailureCausalCone`). See [failure-triage.md](failure-triage.md).

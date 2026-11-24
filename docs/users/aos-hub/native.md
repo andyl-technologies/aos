@@ -1,8 +1,8 @@
 # Deploy AOS Hub as a native service
 
 The native server keeps its system of record in SQLite and serves registry and
-cache bytes from local or S3-compatible storage. Put it behind a TLS reverse
-proxy for internet-facing use.
+cache bytes from local or S3-compatible storage. For internet-facing use,
+terminate TLS in the Hub or in a reverse proxy in front of it.
 
 Before choosing where keys and credentials live, read [Trust an internal AOS
 Hub deployment](trust.md).
@@ -39,6 +39,11 @@ Start the server:
 
 Keep the listener on localhost when a reverse proxy owns the public address.
 `--external-url` must be the URL that users and API clients open.
+
+The local `aos-hub` command only starts, initializes, recovers, and re-indexes
+the instance. After the server is running, sign in as the instance owner and
+administer it through the console or the remote `aos hub` client; see
+[Choose the right AOS Hub CLI](cli.md).
 
 ## Configure the AOS service module
 
@@ -107,14 +112,27 @@ The module runs `aos-hub` under a dedicated service account and uses
 before relying on web administration. Keep the default state root; custom
 roots also need matching systemd write permissions.
 
-The service does not terminate TLS. Configure a reverse proxy to send the
-public HTTPS origin to `127.0.0.1:8420` and preserve the request host. The
-native server does not yet trust forwarded client addresses, so pre-auth rate
-limits behind a proxy apply to the proxy peer rather than individual clients.
+## Terminate TLS
+
+Choose one of two arrangements:
+
+- A reverse proxy terminates TLS, sends the public HTTPS origin to
+  `127.0.0.1:8420`, and preserves the request host. The native server does not
+  trust forwarded client addresses, so pre-authentication rate limits then
+  apply to the proxy peer rather than individual clients.
+- The Hub terminates TLS itself. Pass `--tls-certificate-file` and
+  `--tls-private-key-file` to `serve` with a PEM certificate chain and its
+  matching private key, or set `credentials.tlsCertificate` and
+  `credentials.tlsPrivateKey` in the service module. The module requires both
+  together and an `https://` `externalUrl`. Each connection must present the
+  configured public hostname through SNI.
+
+[Operate AOS Hub in production](production.md#put-the-native-server-behind-tls)
+covers proxy requirements and public verification.
 
 ## Understand the state
 
-Stop the Hub and back up the complete state root. It contains:
+The state root contains:
 
 - `/var/lib/aos-hub/hub.db` and any SQLite WAL files;
 - `/var/lib/aos-hub/secret.key`, used to seal stored credentials and hosted
@@ -125,53 +143,59 @@ The secret key is created with mode `0600` on first production use. It may also
 be supplied from a protected file through `AOS_HUB_SECRET_KEY_FILE`. Losing it
 makes sealed values unusable.
 
-When `AOS_HUB_SECRET_KEY_FILE` points outside the Hub state root, back up that
-external key file with the same recovery point.
-
-Copy the complete stopped state root as one recovery point. If registry or cache
-bindings live elsewhere, include those paths as well. Include the reverse-proxy
-and service configuration in the same backup plan. Use SQLite's online-backup
-mechanism instead if the service cannot be stopped.
-
-Without a configured JWT credential, access-token signing keys are regenerated
-when the native process starts. Existing one-hour API access tokens then stop
-working after a restart; exchange the durable provisioning token again. When
-the AOS service supplies `credentials.jwtSecret`, preserve that runtime
-credential with the deployment's secret state.
+The backup procedure, the recovery set beyond the state root, and the effect
+of a restart on access tokens are described once in
+[Back up a native Hub](production.md#back-up-a-native-hub).
 
 ## Add registry storage
 
-Managed registries use named bindings. The simplest native binding is
-a directory writable by the service account:
+Managed registries use named bindings. Create them through the console or the
+remote client after signing in as the instance owner:
 
 ```sh
-./result/bin/aos-hub --root /var/lib/aos-hub \
-  org add acme "Acme"
-./result/bin/aos-hub --root /var/lib/aos-hub \
-  binding add acme primary --path /var/lib/aos-hub/storage
+aos hub login --hub https://hub.example.com
+```
+
+The simplest native binding is a directory writable by the service account.
+Plan the organization and the binding, review the printed effects, then apply
+each plan:
+
+```sh
+aos hub org create --slug acme --display-name "Acme" \
+  --plan --idempotency-key plan-org-acme
+aos hub org create \
+  --plan-id '<plan-id>' --confirm-hash '<hash>' --yes
+
+aos hub binding create --org acme --name primary \
+  --kind local-fs --root /var/lib/aos-hub/storage \
+  --plan --idempotency-key plan-binding-primary
+aos hub binding create --name primary \
+  --plan-id '<plan-id>' --confirm-hash '<hash>' --yes
 ```
 
 The AOS service sandbox can write under `/var/lib/aos-hub`. A binding elsewhere
 needs a matching systemd write-path override as well as filesystem ownership.
 
 For S3-compatible storage, create the binding from the organization's storage
-page in the web console. Supply the bucket and optional prefix, endpoint,
-signing region, access mode, and credentials. Private credentials are sealed
-with the instance key; include that key in the backup described above.
+page in the console, or with `aos hub binding create --kind s3`. Supply the
+bucket and optional prefix, endpoint, signing region, access mode, and
+credentials. Private credentials are sealed with the instance key; include
+that key in every backup.
 
-You can also index an existing, externally managed registry surface without
-changing the producer that created it:
+Create the registry itself with `aos hub registry create`, passing each pinned
+trust anchor as `--trust-key 'name:Ed25519:<base64-public-key>'`, then publish
+to it as described in [Host a registry](../registry/hosting.md#aos-hub). The
+Hub verifies signed registry data and fails closed. There is no local
+`aos-hub` command for adding a registry; `aos hub registry mirror` manages a
+registry that follows an existing external source. Run
+`aos hub registry mirror --help` for its options.
+
+The local `index` command re-indexes one registry, or all of them when the
+slug is omitted, directly against the state root:
 
 ```sh
-./result/bin/aos-hub --root /var/lib/aos-hub \
-  registry add acme-cdn file:///var/lib/aos-hub/storage/registry-surface \
-  --trust-key 'maintainer:Ed25519:<base64-public-key>'
+./result/bin/aos-hub --root /var/lib/aos-hub index acme/cdn
 ```
-
-The Hub verifies signed registry data and fails closed by default. Avoid
-`--no-verify` outside deliberate inspection of untrusted data. For same-host
-surfaces, use `file://`; production outbound HTTP rejects loopback, private,
-link-local, and metadata addresses.
 
 ## Monitor and update
 

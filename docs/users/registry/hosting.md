@@ -14,12 +14,9 @@ public.
 committed into `registry.toml` for consumers. These differ whenever the write
 path is S3, SFTP, a local document root, or an AOS Hub upload endpoint.
 
-An unpublished stage uses these same backends and public URLs. It does not
-need a separate Hub registry or deployment. Default catalogs and channels omit
-candidate revisions; directly addressed Git objects and cache/CDN URLs may
-still expose their uploaded bytes. Permissioned Hub stage views track the same
-stage id and revision as `apr`. See
-[Release stages](../../engineering/registry/release-stages.md).
+An unpublished [release stage](publishing.md#upload-an-unpublished-candidate)
+uses these same backends and public URLs. It does not need a separate Hub
+registry or deployment.
 
 ## Choose a topology
 
@@ -30,7 +27,7 @@ stage id and revision as `apr`. See
 | Object storage and CDN | `s3://bucket/acme` | CDN HTTPS origin | Yes |
 | SFTP deployment | `sftp://deploy@host/srv/www/acme` | HTTPS web origin | Yes |
 | Smart Git | Git push / `git+ssh://...` | `git+ssh://...` | No; channels need the static HTTP surface |
-| AOS Hub | Hub-provided HTTP upload URL | Hub registry URL | Yes |
+| AOS Hub | Local `file://` staging root, then `aos hub registry publish upload` | Hub registry URL | Yes |
 
 ## Shared filesystem
 
@@ -168,8 +165,13 @@ or publish a complete static HTTPS origin for production consumers.
 ## AOS Hub
 
 Create or select a registry in the Hub, attach a complete storage placement,
-scan it, and promote it to write authority. Obtain a short-lived token with
-`publish` access to the registry. The Hub accepts one complete APR surface as
+scan it, and promote it to write authority. The console's registry settings
+guide these steps under **Storage & replicas**; the matching commands are
+`aos hub registry create`, `aos hub placement add`, `aos hub placement scan`,
+and `aos hub placement promote`. Obtain a short-lived token with `publish`
+access to the registry, as shown in
+[Configure identities and automation](../aos-hub/production.md#configure-identities-and-automation).
+The Hub accepts one complete APR surface as
 an atomic publication: content-addressed payloads are written before mutable
 refs, and refs become visible only after every required placement verifies the
 declared bytes.
@@ -189,11 +191,8 @@ apr release 2026.8.0 \
 ```
 
 For permissioned review before visibility, the Hub console's **Publishing**
-page at `/<org>/<registry>/-/settings/staged-releases` tracks the same portable
-stage revision and inventory as APR. See
+page tracks the same stage revision and inventory as `apr`. See
 [Review unpublished release candidates](../aos-hub/web.md#review-unpublished-release-candidates).
-A ready candidate is already signed; publication and channel selection are
-separate decisions.
 
 To use the lower-level placement-aware transaction, upload the surface:
 

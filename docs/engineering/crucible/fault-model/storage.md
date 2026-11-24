@@ -126,8 +126,9 @@ loss applies to the actual state.
   disturb; it never invents an FTL that the world did not declare.
 - `storage.array_state` atomically replaces an array's complete member, path,
   selection, rebuild, and consistency policy; deactivation restores the
-  declared baseline. Layouts are `mirror`, `stripe`, `single_parity`, and
-  `dual_parity`. A logical array device can never also be a backing member.
+  declared baseline. The closed layouts are listed in the reference under
+  [fault-topology canonical locations](../../../users/crucible/reference-plan.md#fault-topology-canonical-locations).
+  A logical array device can never also be a backing member.
 - `storage.read_transform` applies bit flips, stale versions, or misdirected
   reads to returned bytes only; it does not mutate media.
 - `storage.duplicate_completion` and `storage.completion_reorder` act at the

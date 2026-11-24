@@ -23,7 +23,9 @@ before it makes examples easier to scan.
 | `-v`, `-vv` | Reserved for diagnostic verbosity. |
 | `-q`, `--quiet` | Suppress non-essential standard output. |
 
-`markdown` is valid for triage reports, not canonical event-log traces.
+`markdown` is valid for triage reports, not canonical event-log traces. The
+daemon TLS options and each option's default are in the
+[reference](reference-cli.md#global-options).
 
 ## Backend discovery
 
@@ -110,7 +112,7 @@ bounds.
 A wall-clock deadline measures host completion, not guest time. Expiry is an
 operational failure and cannot establish a property verdict. Campaign policies
 separately support modeled attempt timeouts and an optional host watchdog; see
-[campaign timeout semantics](campaigns.md#build-and-validate-inputs). A larger
+[campaign timeout semantics](campaigns-inputs.md#build-and-validate-inputs). A larger
 virtual-time budget does not guarantee a longer wall-clock wait.
 
 `run --save-on <fail|always|never>` controls terminal checkpoint
@@ -188,6 +190,9 @@ hashes are not accepted as portable resume or fork inputs.
 
 ## Exit codes
 
+This table is the single definition of Crucible's process exit statuses; other
+pages link here.
+
 | Code | Meaning |
 |---:|---|
 | `0` | Passed, deterministic, gates green, or clean shutdown. |
@@ -216,6 +221,10 @@ Run the default live subset with:
 ```sh
 ./result/bin/crucible selftest
 ```
+
+Each live probe loads the guarded campaign-executor deployment, resolved as
+for `run`. Provision the host as described in
+[campaign setup](campaigns-host.md#start-the-single-host-owner) first.
 
 To select gates explicitly, pass a comma-separated list:
 

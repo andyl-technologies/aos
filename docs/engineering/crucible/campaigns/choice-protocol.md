@@ -3,11 +3,24 @@
 Environment models, guest applications, the scheduler, and workloads expose
 different effects but one exploration concept: a stable opportunity offers a
 typed set of legal values, and the run records one selection. This page
-describes that shared model. The campaign types live in
-`crucible_campaign::choice`; the guest wire codec lives in
-`crucible_qemu_protocol::selectable`, its deferred transport in
-`crucible_qemu_protocol::selectable_transport`, and guest helpers in
-`crucible-guest`.
+describes that shared model.
+
+Source: campaign types in
+[`crucible-campaign/src/choice.rs`](../../../../crates/crucible/crucible-campaign/src/choice.rs);
+the guest wire codec in
+[`crucible-qemu-protocol/src/selectable.rs`](../../../../crates/crucible/crucible-qemu-protocol/src/selectable.rs);
+its deferred transport in
+[`selectable_transport.rs`](../../../../crates/crucible/crucible-qemu-protocol/src/selectable_transport.rs);
+catalog and setup plans in
+[`selectable_catalog_plan.rs`](../../../../crates/crucible/crucible-qemu-protocol/src/selectable_catalog_plan.rs) and
+[`plugin_setup_plan.rs`](../../../../crates/crucible/crucible-qemu-protocol/src/plugin_setup_plan.rs);
+and guest helpers in
+[`crucible-guest/src/selectable.rs`](../../../../crates/crucible/crucible-guest/src/selectable.rs).
+
+A *white-box* guest is one that cooperates with the host through the
+*doorbell*, a trapped guest instruction defined in the
+[glossary](../glossary.md#qemu-and-transport); a *black-box* guest does not
+use that channel.
 
 ## Declaration, offer, selection, application
 

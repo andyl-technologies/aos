@@ -1,15 +1,16 @@
 # Promote and schedule channel updates
 
-A channel divides consumers into 256 stable buckets, `00` through `ff`. Each
-bucket points to a signed registry release. A host chooses and persists its
-bucket; the publisher chooses which buckets advance.
+A channel divides consumers into 256 stable partitions, `00` through `ff`.
+Each partition points to a signed registry release. A host chooses and persists
+its partition; the publisher chooses which partitions advance. The Hub console
+labels partitions as buckets.
 
 Channels require the generated static origin to be readable over HTTP or HTTPS.
 They are not available from a filesystem-only or smart-Git-only registry.
 
 ## Initialize a channel
 
-Initialize all buckets at a known good release while publishing it:
+Initialize all partitions at a known good release while publishing it:
 
 ```sh
 apr release 2026.8.0 \
@@ -30,7 +31,7 @@ apm registry add https://packages.example.com/acme/ \
   --trust-key 'acme:Ed25519:BASE64_KEY'
 ```
 
-The selected bucket and monotonic release floor are durable consumer state.
+The selected partition and monotonic release floor are durable consumer state.
 Refreshing metadata does not randomly move a host between rollout rings.
 
 ## Start a progressive rollout
@@ -41,7 +42,7 @@ partitions. For an explicit review boundary, first stage and finalize the
 release as described in [publishing](publishing.md#upload-an-unpublished-candidate),
 then run `apr channel advance` and upload the resulting pointers.
 
-To publish the next complete release and advance eight buckets:
+To publish the next complete release and advance eight partitions:
 
 ```sh
 apr release 2026.8.1 \
@@ -53,11 +54,11 @@ apr release 2026.8.1 \
   --upload-url s3://acme-packages/registry
 ```
 
-`--count 8` means eight additional lowest-numbered buckets that do not already
-point at `2026.8.1`. It does not mean “make the target total eight.” Repeating
-the command with another `--count 8` advances eight more.
+`--count 8` means eight additional lowest-numbered partitions that do not
+already point at `2026.8.1`. It does not mean "make the target total eight."
+Repeating the command with another `--count 8` advances eight more.
 
-For named canary rings, select exact buckets in decimal or hexadecimal:
+For named canary rings, select exact partitions in decimal or hexadecimal:
 
 ```sh
 apr channel advance stable 2026.8.1 \
@@ -77,7 +78,7 @@ Inspect the map at any point:
 
 ```sh
 apr channel status stable --registry acme
-aos hub registry channel acme/cdn stable \
+aos hub registry channel show acme/cdn stable \
   --hub https://hub.example.com
 ```
 
@@ -106,7 +107,7 @@ An unattended job should:
 1. verify the exact target release and current channel map;
 2. acquire the organization's single-publisher lock;
 3. obtain a short-lived upload credential and signing-key access;
-4. advance a bounded number of buckets;
+4. advance a bounded number of partitions;
 5. upload the static origin;
 6. check the public channel map and package health before recording success.
 
@@ -114,7 +115,7 @@ Use JSON output for machine checks and retain it with the deployment record:
 
 ```sh
 apr --json channel status stable --registry acme
-aos --json hub registry channel acme/cdn stable \
+aos --json hub registry channel show acme/cdn stable \
   --hub https://hub.example.com
 ```
 
@@ -123,7 +124,7 @@ local command can succeed while the public registry remains unchanged.
 
 ## Complete or stop a rollout
 
-Advance all remaining buckets by asking for up to 256 additional buckets:
+Advance all remaining partitions by asking for up to 256 additional partitions:
 
 ```sh
 apr channel advance stable 2026.8.1 \
@@ -134,9 +135,9 @@ apr origin upload --registry acme \
   --upload-url s3://acme-packages/registry
 ```
 
-Advances are monotonic. Do not point a bucket back to an older release; clients
-retain a release floor and reject rollback. To stop a bad rollout, stop
+Advances are monotonic. Do not point a partition back to an older release;
+clients retain a release floor and reject rollback. To stop a bad rollout, stop
 advancing it, publish a corrected release with a higher version, and advance
-affected buckets to that release. See [Manage trust and incidents](trust.md)
+affected partitions to that release. See [Manage trust and incidents](trust.md)
 for removing or revoking the bad package metadata as part of the fix-forward
 release.

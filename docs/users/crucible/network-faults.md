@@ -60,7 +60,7 @@ search identity, and replay validation.
 | Technology control-operation result mutation | `network.control_result_transform` |
 | Satellite/disrupted contact and custody | `network.contact`, `network.custody_queue` |
 
-Use the [effect registry](reference.md#exhaustive-effect-registry) for exact target kinds,
+Use the [effect registry](reference-plan.md#exhaustive-effect-registry) for exact target kinds,
 phases, lifetimes, operations, and parameter definitions.
 
 ## Complete network effect contract

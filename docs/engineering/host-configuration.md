@@ -51,7 +51,8 @@ stage 2: aos-ability-host-controller
 
 Each controller step is a typed provider operation selected from the image's
 resolved ability stage, not a separately managed systemd unit. The ability and
-effect engine itself is part of the runtime ability infrastructure.
+effect engine itself is described in [runtime abilities](abilities/README.md),
+which also defines "ability", "operation", "effect", and "generation".
 
 ### Metadata acquisition and authorization
 
@@ -65,8 +66,8 @@ protected typed outputs. Facts are rendered to a separate `host-facts.nix`
 input; they are data, so a fact such as a provider SSH key grants nothing until
 `host.nix` or an image module uses it.
 
-In signed trust mode, `aos-platform-metadata::trust` verifies a detached SSHSIG
-over the exact `host.nix` bytes in the `aos-config` namespace against the
+In signed trust mode, `aos-platform-metadata::trust` verifies a detached SSH
+signature (SSHSIG) over the exact `host.nix` bytes in the `aos-config` namespace against the
 image's `trusted-config-keys.d/<operator>.pub` keys, before any evaluation in
 the initrd or stage 2. The namespace is distinct from Git signing, preventing
 cross-protocol replay. Platform trust mode treats the selected metadata channel

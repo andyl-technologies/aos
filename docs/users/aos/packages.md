@@ -18,7 +18,7 @@ versions when needed.
 
 For packages that contribute services, inspect the signed package contract and
 selected resources described in [Understand native package runtime
-policy](package-sandbox.md). [Secure Boot and package trust](secure-boot.md)
+policy](package-runtime-policy.md). [Secure Boot and package trust](secure-boot.md)
 explains how image-baked registry anchors connect package admission to the boot
 chain.
 Package builds and their dependencies live in the shared `/nix/store`. Users
@@ -99,7 +99,8 @@ apm depends curl
 ```
 
 For packages that expose services, see
-[Understand the package sandbox](package-sandbox.md) and the package's generated
+[Understand native package runtime policy](package-runtime-policy.md) and the
+package's generated
 configuration reference, available through `apm docs` and `apm options`.
 
 ## Upgrade packages
@@ -202,28 +203,6 @@ apm gc
 
 Garbage collection works across the shared store. Files still referenced by
 another user's profile or a retained generation remain available.
-
-## Prepare an image before selecting it
-
-On a live AOS host, root can authenticate and stage a system image separately
-from choosing the next boot:
-
-```sh
-apm image prepare server --registry acme --dry-run
-apm image prepare server --registry acme --yes
-```
-
-Preparation imports the signed closure, performs physical staging, and indexes
-the authenticated receipt. It prints the exact staged `ImageGeneration` as JSON.
-A dry-run resolves the package without importing, staging, or writing image
-state. Preparation does not select the next boot or submit a rollout.
-
-Add `--qualified` to require explicit authenticated candidate health before
-staging for a later qualified rollout. This check does not itself qualify a
-rollout; subsequent operator-source admission still applies. Pending profile or
-image work must be recovered before preparing another candidate. Cancellation
-waits for immutable transfers to finish before physical writes; interrupted
-physical staging retains its intent for authenticated retry.
 
 ## Manage machine-wide packages
 
@@ -330,6 +309,28 @@ APM validates them before changing the package profile. Prefer systemd
 system-credential references; protect any file containing credential bytes as
 secret state. See [Manage secrets](secrets.md) and
 [Configure an AOS host](configuration.md) for configuration and provisioning.
+
+## Prepare an image before selecting it
+
+On a live AOS host, root can authenticate and stage a system image separately
+from choosing the next boot:
+
+```sh
+apm image prepare server --registry acme --dry-run
+apm image prepare server --registry acme --yes
+```
+
+Preparation imports the signed closure, performs physical staging, and indexes
+the authenticated receipt. It prints the exact staged `ImageGeneration` as JSON.
+A dry-run resolves the package without importing, staging, or writing image
+state. Preparation does not select the next boot or submit a rollout.
+
+Add `--qualified` to require explicit authenticated candidate health before
+staging for a later qualified rollout. This check does not itself qualify a
+rollout; subsequent operator-source admission still applies. Pending profile or
+image work must be recovered before preparing another candidate. Cancellation
+waits for immutable transfers to finish before physical writes; interrupted
+physical staging retains its intent for authenticated retry.
 
 ## Package state and trust
 

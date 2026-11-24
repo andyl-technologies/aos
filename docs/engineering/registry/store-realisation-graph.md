@@ -15,20 +15,21 @@ is fixed before the build runs; it promises how a path was built, not which
 bits it contains. Two different NARs, one honest and one altered after
 signing, can both claim the same IA path.
 
-Before the graph existed, only the package root's NAR hash was in the signed
-tree. Every other closure member's NAR hash came from a cache-served narinfo.
-A compromised cache, CDN, or bucket could serve a tampered dependency with a
-matching tampered narinfo, and the registry signature would not notice.
+A NAR is a Nix archive, the serialized form of one store path. If the signed
+tree named only IA paths, each closure member's NAR hash would
+have to come from a cache-served narinfo. A compromised cache, content
+delivery network (CDN), or bucket could then serve a tampered dependency with
+a matching tampered narinfo, and the registry signature would not notice.
 
 The graph closes that gap by recording, inside the signed tree, the NAR hash
 and size of every blessed build of every published path.
 
 ## Model
 
-Each file `store/<first-2>/<ia-hash>` holds one or more *realisation*
-records, mirroring Nix's CA-derivation realisations. A realisation names an
-exact NAR, optionally a content address, and its dependency edges. An edge
-may pin the dependency's content address, the equivalent of Nix's
+Each file `store/<first-2>/<ia-hash>` holds one or more *realisation* records,
+mirroring Nix's content-addressed (CA) derivation realisations. A realisation
+names an exact NAR, optionally a content address, and its dependency edges. An
+edge may pin the dependency's content address, the equivalent of Nix's
 `dependentRealisations`. The realisation graph is therefore also the closure
 graph: there is no separate `closures/` index to keep consistent.
 
@@ -40,8 +41,8 @@ placing every record in one directory. A path shared by many closures
 
 Records and edges are serialized in sorted order so changes are readable
 diffs. Registries deliberately carry no `store/** -diff` git attribute: a
-change to which bytes the registry vouches for is its most important review
-surface.
+change to which bytes the registry vouches for is the most important thing
+to review.
 
 ### Cardinality
 
@@ -123,8 +124,9 @@ it is never merged silently. `apr store` maintains the graph directly:
 | `apr store verify [--deep]` | Checks graph health and closure coverage; `--deep` recomputes local NAR hashes and requires blessed matches |
 | `apr store backfill [--bless]` | Records every published closure from the local store in one signed commit |
 
-Package TOML no longer carries `nar_hash`, `nar_size`, or `references`; the
-graph is the single authority for blessed bytes and dependency shape.
+Package TOML written by the producer does not carry `nar_hash`, `nar_size`,
+or `references`; the graph is the single authority for blessed bytes and
+dependency shape.
 `store_path` still anchors the package to its record. Sources and image
 artifacts sit outside the runtime closure and keep their own hashes.
 
@@ -132,8 +134,9 @@ artifacts sit outside the runtime closure and keep their own hashes.
 
 Registry sync extracts `store/` from the verified tree, and `StoreMap`
 distinguishes "this registry publishes no graph" from "the graph has no
-record for this hash". Consumers parse TOML that still carries the legacy
-fields and, when they are absent, fill in-memory metadata from the graph.
+record for this hash". The package TOML parser accepts `nar_hash`, `nar_size`,
+and `references` as optional fields; when they are absent, consumers fill
+in-memory metadata from the graph.
 
 `apm install` and `apm upgrade` then:
 
@@ -157,8 +160,8 @@ registries publish no graph falls back, with a warning, to the narinfo
 
 The consumer verifies and imports input-addressed paths. It does not select
 content-addressed realisations or materialize content-addressed store paths;
-the `ca:` column is recorded for content-addressed consumers but not used by
-`apm` today.
+the `ca:` column is recorded for content-addressed consumers and is not used
+by `apm`.
 
 ## Related reading
 

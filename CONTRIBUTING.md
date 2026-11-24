@@ -10,6 +10,13 @@ agreement.
 Project contributors must read
 [the repository license map](docs/legal/licensing.md) before opening a change.
 
+## Development setup
+
+The [development builds guide](docs/engineering/build/development-builds.md)
+covers the development shell, the `aos-dev` entry point, and the build caches.
+AOS is built hermetically from source: add new dependencies to the AOS package
+graph instead of importing them from nixpkgs.
+
 ## Code style
 
 New Rust and Nix code follows the repository's
@@ -96,8 +103,8 @@ for the complete intake and record-handling requirements.
 
 - Original AOS files use Apache-2.0 unless a more specific notice applies.
 - `crucible-qemu-protocol` and `crucible-qemu-shmem` use `MIT OR Apache-2.0`.
-- `crucible-qemu-plugin` and `crucible-qemu-trace-plugin` use
-  `GPL-2.0-only`.
+- `crucible-qemu-plugin`, `crucible-qemu-trace-plugin`, and
+  `crucible-qemu-debug-gateway` use `GPL-2.0-only`.
 - Existing QEMU files and patches to them retain the applicable upstream file
   license. Never replace a more specific upstream notice with a blanket notice.
 - New QEMU files follow an explicit compatible file notice when present.

@@ -13,8 +13,8 @@ different portability and retention contracts. This guide separates them.
 | Canonical trace | Ordered machine-readable execution/evidence records | CI, debugging, `replay --check` | Diagnostic evidence, not a continuation by itself. |
 | Checkpoint | Exact scheduler, VM, adapter, signal, property, and object-closure state | `resume`, replay/debug | Addressed through the store or embedded artifact. |
 | Savepoint handle | Typed selector and proof naming a checkpoint | `resume`, `debug`, `replay --to` | No; referenced store closure must remain available. |
-| Reproduction artifact v3 | Authenticated inputs, schedule, live recipe, evidence scope, terminal checkpoint and reachable signal objects | `replay`, compare, bisect | Yes within its declared backend/build requirements. |
-| Findings ledger | Signed search/fuzz findings and identities | retention, `campaign finding-bundle` | Findings carry or reference self-contained reproduction material. |
+| Reproduction artifact v4 | Authenticated inputs, schedule, live recipe, evidence scope, terminal checkpoint and reachable signal objects | `replay`, compare, bisect | Yes within its declared backend/build requirements. |
+| Findings ledger | Signed search/fuzz findings and identities | retention and audit | Findings carry or reference self-contained reproduction material. |
 | Triage report | Human/machine cluster and minimization output | operator/CI | Preserve alongside the triaged campaign snapshot identity and artifacts. |
 
 Content hashes use `blake3:<64 lowercase hexadecimal digits>`. A hash proves
@@ -103,7 +103,8 @@ Use:
 
 ## Reproduction artifacts
 
-A v3 failure artifact is the preferred portable handoff. It records the live
+A v4 reproduction artifact is the preferred portable handoff; one written for
+a non-passing result is also called a failure artifact. It records the live
 recipe and fingerprint evidence scope, scenario and schedule identity, backend
 requirements, terminal outcome/checkpoint, and authenticated transitive signal
 closure. If search mutated a trace or mapping, it also records the exact ordered
@@ -131,8 +132,9 @@ input, schedule, evidence, and terminal-fingerprint divergence.
 
 ## Search and fuzz findings
 
-`search` and `fuzz` always write the requested signed findings ledger, including
-an empty ledger. Each retained finding identifies the property/timeout outcome,
+`search` and `fuzz` write a signed findings ledger when they retain at least
+one finding. With an explicit `--findings-out <path>`, the ledger is written
+even when it is empty. Each retained finding identifies the property/timeout outcome,
 scenario materialization, schedule, coverage/evidence, and replay recipe.
 `triage` works on the findings retained by a campaign snapshot rather than on
 a ledger file: it authenticates them through the campaign service, clusters

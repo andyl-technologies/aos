@@ -14,6 +14,13 @@ reverse engine, no per-instruction undo log, and no clock other than virtual
 time. The only new rule fences off mutation: guest-visible state cannot change
 until the operator explicitly creates a non-canonical debug branch.
 
+Abbreviations used on this page: RSP is GDB's Remote Serial Protocol, the
+packet protocol a GDB client speaks to a gdbstub; QMP is the QEMU Machine
+Protocol, QEMU's JSON management socket; TCG is QEMU's Tiny Code Generator,
+the software emulator Crucible runs guests under. Checkpoint, configuration,
+virtual time, and the other model terms are defined in the
+[glossary](glossary.md).
+
 ## Source map
 
 | Concern | Location |
@@ -410,9 +417,18 @@ arrive split or coalesced. The decoder buffers at most
 | Disposition | Packets | Reply |
 | --- | --- | --- |
 | `SchedulerRunControl` | `c`, `C`, `s`, `S`, `vCont;...`, interrupt | Routed to the session scheduler |
-| `ForwardToQemu` | `?`, `g`, `p`, `m`, `T`, `H`, `Z0`/`z0` (as `Z1`/`z1`), `Z1`/`z1`, `vCont?`, `vMustReplyEmpty`, and the listed `q...` queries (`qSupported`, thread info, `qXfer` features and threads, `qC`, `qAttached`, `qOffsets`, `qSymbol`, `qCRC`, `qSearch:memory`, TLS address) | QEMU's reply |
+| `ForwardToQemu` | The read-only packets and queries listed below | QEMU's reply |
 | `RejectReadOnly` | `G`, `P`, `M`, `X`, `A`, `qRcmd,`, `vFlash` | `E22`, unless a branch guest-write grant is active |
 | `RejectUnsupported` | Everything else, including `k`, `D`, `vKill`, `vFile`, `QStartNoAckMode`, `Z2`-`Z4` | `E01` |
+
+`ForwardToQemu` covers:
+
+- state reads: `?`, `g`, `p`, `m`, `T`, `H`;
+- breakpoints: `Z1`/`z1`, and `Z0`/`z0` rewritten as `Z1`/`z1`;
+- capability probes: `vCont?`, `vMustReplyEmpty`;
+- the listed `q...` queries: `qSupported`, thread info, `qXfer` features and
+  threads, `qC`, `qAttached`, `qOffsets`, `qSymbol`, `qCRC`,
+  `qSearch:memory`, and TLS address.
 
 Forwarded requests are bounded by `MAX_PENDING_RSP_REQUESTS` (64) and
 `MAX_PENDING_RSP_BYTES` (64 KiB). Overflow, or a request that arrives while
@@ -535,7 +551,11 @@ feature advertisement. If negotiation fails, the committed branch identity is
 still returned. Callers cannot choose the device, the token, or the bytes.
 
 **Data path.** All feature, command, stream, resize, exit, and close records
-are `CRGI` v1 records carried in `CRGX` v1 doorbell exchanges. The guest
+are `CRGI` v1 records carried in `CRGX` v1 doorbell exchanges. `CRGI` and
+`CRGX` are the four-byte magics of the guest-introspection record and of the
+doorbell frame that embeds one
+(`crates/crucible/crucible-qemu-protocol/src/guest_introspection.rs` and
+`guest_introspection_doorbell.rs`). The guest
 buffer is `GUEST_INTROSPECTION_DOORBELL_FRAME_BYTES` (4608) long with a
 16-byte header. The records move through the guest-introspection rings of
 the shared-memory ABI. See [guest-host-channel.md](guest-host-channel.md)
@@ -562,7 +582,8 @@ apply backpressure to child pipes.
 
 **CLI side.** Each CLI acquisition derives a fresh nonzero channel id, and
 the default response-idle deadline is 30 s (`--guest-idle-timeout`). With
-`--record-transcript`, the CLI writes a `CRGT` v1 file. The file is created
+`--record-transcript`, the CLI writes a `CRGT` v1 file (`CRGT` is the
+transcript file's magic). The file is created
 exclusively, starts with the header `CRGT\x01\0\0\0`, holds direction-tagged
 complete `CRGI` records, and is capped at 64 MiB. Transcripts belong to the
 branch and never enter canonical artifacts.
@@ -596,10 +617,13 @@ configuration, so all of a node's vCPUs land at the same coordinate.
 
 The planner refuses `fork-debug`, `exec`, `pty`, and `ssh` without
 `--allow-mutate`. It sets `raw_gdb_single_step_allowed: false`, and it
-rejects a plan that fails `proves_t_dbg_8`. Executed debugger operations
-require a live production-daemon session (`--session id:epoch:seed`).
-Local artifact and savepoint targets are planned but not executed. Command
-details and current limitations are in
+rejects a plan that fails `satisfies_debug_surface_contract`
+(`crates/crucible/crucible-cli/src/cli/report.rs`). Executed debugger
+operations require a live production-daemon session
+(`--session id:epoch:seed`): the remote relay rejects any other target. For a
+local artifact or savepoint target the CLI builds and validates the plan but
+executes no debugger operation, and exits `4` rather than report a plan-only
+success. Command details and current limitations are in
 [../../users/crucible/debugging.md](../../users/crucible/debugging.md), and
 CLI routing is in [cli.md](cli.md).
 

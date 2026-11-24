@@ -22,7 +22,12 @@ material lives elsewhere:
   [storage and node faults](../../users/crucible/storage-node-faults.md);
 - the assertion layer (property quantifiers and the assertion verdict) is in
   [assertions.md](assertions.md), and the event-log format in
-  [event-log.md](event-log.md).
+  [event-log.md](event-log.md);
+- the signal and binding model behind the fault plan is in the
+  [fault model](fault-model/README.md) pages.
+
+Shared vocabulary (tick, virtual time, plan, quiescence, white-box) is defined
+in the [glossary](glossary.md).
 
 ## Code map
 
@@ -42,10 +47,12 @@ material lives elsewhere:
 | `.../src/model/toml.rs`, `.../src/model/binary_plan.rs` | TOML and compact-binary codecs for plans, events, and predicates |
 | `.../src/model/fault_signal/` | `FaultSignalPlan`, the effect registry, the binding runtime |
 | `crates/crucible/crucible-daemon/src/vm_lifecycle/runtime.rs` | Production settlement of assertions and triggers at each boundary |
-| `crates/crucible/crucible-device/src/fault.rs`, `.../src/netlink/fault.rs` | Exact probabilities, `DeviceRng`, `LinkFaults` |
-| `crates/crucible/crucible-qemu-host/src/fault_action_sink.rs`, `.../src/production_fault_sink.rs` | Icount-targeted QEMU fault commands and the host/QEMU commit order |
+| `crates/crucible/crucible-daemon/src/vm_lifecycle.rs` | `MAX_TRIGGER_SETTLE_BATCHES` |
+| `crates/crucible/crucible-device/src/fault.rs`, `crates/crucible/crucible-device/src/netlink/fault.rs` | Exact probabilities, `DeviceRng`, `LinkFaults` |
+| `crates/crucible/crucible-qemu-host/src/fault_action_sink.rs`, `crates/crucible/crucible-qemu-host/src/production_fault_sink.rs` | Tick-targeted QEMU fault commands and the host/QEMU commit order |
 
-Paths beginning `.../src/` are under `crates/crucible/crucible-engine/`.
+Paths beginning `.../src/` are under `crates/crucible/crucible-engine/`; every
+other path is written in full.
 
 ## Design in brief
 
@@ -231,14 +238,9 @@ an `EventGraphState`. Empty `AllOf` and `AnyOf` are rejected at validation
 
 A predicate in TOML may be a bare string. String predicates parse to
 `Predicate::Named` and are expanded against the world before validation
-(`resolve_event_graph_dsl_for_world`):
-
-| String | Expansion |
-|--------|-----------|
-| `no_crashed_nodes` | `not(any_of(node_state(n, crashed) for every VM))` |
-| `quiescent` | `quiescent` |
-| `node_alive:<node>` | `not(node_state(<node>, crashed))` |
-| `node_crashed:<node>` | `once(node_state(<node>, crashed))` |
+(`resolve_event_graph_dsl_for_world`). The recognized names and their
+expansions are the same for triggers and assertions; the table is in
+[assertions.md](assertions.md#predicate-dsl).
 
 Unrecognized names stay `Named` and are answered by the evaluator's
 `ConditionLeafOracle`. The production trigger loop installs an oracle that
@@ -307,7 +309,8 @@ substitute its own combinator semantics.
 ### Production settlement order
 
 `crates/crucible/crucible-daemon/src/vm_lifecycle/runtime.rs` settles the
-graph at each boundary:
+graph at each boundary. The batch limit `MAX_TRIGGER_SETTLE_BATCHES` is
+defined in the parent module, `vm_lifecycle.rs`:
 
 ```text
 settle_genesis_entrypoints:
@@ -585,32 +588,19 @@ The event graph never mutates faults. Fault behavior is declared only in
 Signal programs produce values; bindings map them to typed effects; adapters
 apply the combined effects at deterministic opportunities. The signal and
 binding model itself is documented in
-[signal-driven faults](../../users/crucible/signal-driven-faults.md); this
-section covers how its output is represented and injected.
+the [fault model](fault-model/README.md) pages, with the authoring view in
+[signal-driven faults](../../users/crucible/signal-driven-faults.md). This
+section covers only how the model's output reaches the scheduler, the device
+cores, and QEMU.
 
 ### Effect kinds
 
 `EffectKind` is a closed registry
-(`.../src/model/fault_signal/effect_registry.rs`). Each entry fixes a stable
-key, its adapter (`FaultAdapter::Network`, `Storage`, or `Node`), legal
-target kinds, legal `FaultPhase` values, legal `EffectLifetime` values
-(`Persistent`, `Opportunity`, `Impulse`, `StateMachine`), a
-`CompositionAlgebra`, a capability id, and the evidence fields recorded on
-replay.
-
-| Adapter | Key families |
-|---------|--------------|
-| Network (31 kinds) | `network.availability`, latency and jitter, service curves and queues, `network.frame_loss`, `network.duplicate`, `network.reorder`, `network.payload_transform`, MTU, routing, firewall, shared media, contact plans |
-| Storage (20 kinds) | `storage.availability`, `storage.latency`, `storage.operation_failure`, completion reorder and duplication, read and write transforms, persistence order and volatile caches, flash and array state, `ninep.result`, `ninep.visibility` |
-| Node (20 kinds) | `node.lifecycle`, `node.hang`, `cpu.*`, `interrupt.*`, `memory.*`, `clock.*`, `accelerator.*` |
-
-Overlapping contributions are combined by the entry's algebra, never by
-arrival order: `OutageOr` (any outage wins), `CheckedSum` (sum in canonical
-binding order, overflow is an error), `Minimum`, `RationalProduct`,
-`OrderedTransform` (binding order, each intermediate digest retained),
-`Severity` (closed precedence lattice), `StateMachine`, `IndependentHazards`
-(every keyed hazard evaluated, any firing applies), `Conflict` (distinct
-simultaneous contributions are invalid), and `Composite`.
+(`.../src/model/fault_signal/effect_registry.rs`) with one adapter per entry:
+`FaultAdapter::Network` (31 kinds), `Storage` (20 kinds), or `Node` (20
+kinds). The registry fields, the kind families, and the `CompositionAlgebra`
+that combines overlapping contributions are documented in
+[effects and the fault taxonomy](fault-model/effects-and-taxonomy.md).
 
 ### Exact arithmetic and seeded draws
 
@@ -621,11 +611,19 @@ declared in the world is stored in millionths. Jitter and reorder shifts are
 `draw % (window + 1)`, and bit-flip corruption toggles bit `draw % bits` for
 each selector draw.
 
-Every draw comes from a `DeviceRng`, a thin wrapper over the engine's
-`DecisionStream`, forked by name hash from the scenario's decision-RNG root
-(`DecisionRng::fork_in_domain`). Adding or renaming an unrelated device or
-link does not shift another stream's draws, and the stream's draw cursor is
-captured in snapshots so a restored stream resumes byte-identically.
+Two draw mechanisms exist, and neither depends on host state:
+
+- The device and link cores in `crucible-device` draw from a `DeviceRng`, a
+  thin wrapper over the engine's `DecisionStream`, forked by name hash from
+  the scenario's decision-RNG root (`DecisionRng::fork_in_domain`). Adding or
+  renaming an unrelated device or link does not shift another stream's draws,
+  and the stream's draw cursor is captured in snapshots so a restored stream
+  resumes byte-identically.
+- Stochastic nodes of the signal-driven fault runtime keep no cursor. Each
+  choice is a keyed digest of the scenario seed, the signal node, the
+  consumer, and a stable opportunity, transition, or coordinate identity
+  (`keyed_u64` in `.../src/model/fault_signal/evaluator/math.rs`); see the
+  invariants in the [fault model](fault-model/README.md#invariants).
 
 ### Host-owned effects at RESOLVE
 
@@ -649,13 +647,19 @@ mutate the payload if the corrupt draw fires
 A latency-raising fault only widens lookahead; one that would lower a link
 below the strictly positive minimum link latency is clamped rather than
 rejected, so a fault can never collapse lookahead or break scheduler liveness.
-The device cores, the floor, and the into-the-past guard are documented in
-[io-subnodes.md](io-subnodes.md).
+The floor is specified in [scheduling.md](scheduling.md#link-latency-floor);
+the device cores and the into-the-past guard are documented in
+[io-subnodes.md](io-subnodes.md), and the adapter semantics in the
+[network fault adapter](fault-model/network.md) page.
 
 ### Node effects at an exact icount
 
 Node, CPU, interrupt, memory, clock, and accelerator effects mutate live
-patched QEMU through the fault-command channel. Each command carries a
+patched QEMU through the fault-command channel. The command protocol and its
+safe boundaries are specified in
+[node faults and the QEMU fault boundary](fault-model/node-and-qemu.md); the
+`*_icount` field names are historical and carry logical ticks (see
+[virtual-time.md](virtual-time.md)). Each command carries a
 `FaultCommandHeaderV1` whose `target_icount` and
 `authorization_ceiling_icount` are both set to the node's current exact
 boundary; `qemu_execution_coordinate` refuses an action whose target tick is
@@ -680,12 +684,11 @@ as a rejection.
 
 ### Icount-stamped frame injection
 
-Inputs that cross into a VM carry their delivery time in band. A
-`FrameEntry` in a shared-memory ring holds `delivery_icount`, `src_node`, and
-`seq`; `is_deliverable_at(consumer_icount)` gates visibility on
-`delivery_icount <= consumer_icount`, and `FrameDeliveryKey` orders
-simultaneous frames by `(delivery_icount, src_node, seq)`. Host timing can
-change when a frame is written, never when the guest sees it. This is the
+Inputs that cross into a VM carry their delivery tick in band, so host timing
+can change when a frame is written, never when the guest sees it. The
+`FrameEntry` layout, the deliverability rule, and the `FrameDeliveryKey` order
+are specified in
+[shmem-abi.md](shmem-abi.md#frameentry-and-deliverability). This is the
 injection half of the determinism contract; see
 [determinism.md](determinism.md).
 

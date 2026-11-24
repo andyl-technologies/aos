@@ -1,7 +1,16 @@
 # Measurements, observability, and findings
 
 Guidance is only useful when its feedback is canonical, meaningful, and
-explainable. Crucible distinguishes:
+explainable.
+
+Source: measurement definitions in
+[`crucible-engine/src/model/measurement.rs`](../../../../crates/crucible/crucible-engine/src/model/measurement.rs);
+findings in
+[`crucible-campaign/src/finding.rs`](../../../../crates/crucible/crucible-campaign/src/finding.rs);
+operational diagnostics in
+[`crucible-daemon/src/campaign_diagnostics.rs`](../../../../crates/crucible/crucible-daemon/src/campaign_diagnostics.rs).
+
+Crucible distinguishes:
 
 | Concept | Question answered |
 | --- | --- |
@@ -77,7 +86,7 @@ observation according to the schema; it is never silently converted into a
 poor numeric score. Objectives over measurements are evaluated by the
 coordinator, which publishes an `ObjectiveEvaluation` keyed by
 `(active policy, observation)` after recomputing the exact scalar; planners
-consume it only through owner-recomputed guidance (see
+consume it only through coordinator-recomputed guidance (see
 [PUCT](exploration.md#tree-policy-deterministic-puct)).
 
 ## Event streams
@@ -160,13 +169,14 @@ before publication (see [minimization](exploration.md#reduction-and-minimization
   reproduction. `crucible campaign explain-finding` composes the observation
   and original reproduction reads and checks that they agree.
 - A rich finding candidate may carry triage replay evidence in four roles
-  (minimization original and selected, verification original and selected).
-  The evidence is a small manifest root plus one to three chunks of at most
-  32 MiB (80 MiB payload). `GetCampaignFindingTriageReplaySegment` is the only
-  operation that transfers it, in fixed 32 MiB segments bound to the principal,
-  campaign, snapshot, finding, role, and object ordinal. A client
-  authenticates the complete layout before decoding, and a partial sequence
-  reveals no replay bytes.
+  (minimization original and selected, verification original and selected):
+  - the evidence is a small manifest root plus one to three chunks of at most
+    32 MiB (80 MiB payload);
+  - `GetCampaignFindingTriageReplaySegment` is the only operation that
+    transfers it, in fixed 32 MiB segments bound to the principal, campaign,
+    snapshot, finding, role, and object ordinal;
+  - a client authenticates the complete layout before decoding, and a partial
+    sequence reveals no replay bytes.
 
 Portable finding bundles (`crucible campaign finding-bundle`) retain the exact
 request and response transcript for every replay role so offline import can

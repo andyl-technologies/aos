@@ -16,6 +16,12 @@ one of the public process protocols: the control socket
 ([shmem-abi.md](shmem-abi.md)). The license policy behind that split is in
 [../../legal/licensing.md](../../legal/licensing.md).
 
+Crucible vocabulary such as launch profile, sim mode, ceiling, and tick is
+defined in the [glossary](glossary.md). Two QEMU terms recur: TCG is QEMU's
+Tiny Code Generator, its software CPU emulator, and QMP is the QEMU Machine
+Protocol, its JSON management socket. Shared-memory fields named `*_icount`
+hold logical ticks; "raw icount" means QEMU's retired-instruction count.
+
 ## Why QEMU TCG and not KVM
 
 Crucible's contract is that a guest's instruction stream and architectural
@@ -294,8 +300,10 @@ The round-robin switch boundary is the `rr_switch_quantum` value in
 `-icount`, measured in retired instructions with an ascending vCPU rotation.
 It never falls back to QEMU's adaptive real-time quantum; the pre-spawn
 validator refuses an unpinned value. The shipped default of 4096 is the
-smallest swept quantum that met the throughput floor while preserving race
-discrimination; per-branch overrides remain content-addressed. Both
+smallest quantum that met the modeled throughput floor in the sweep of 1024
+to 16384 recorded by `checks.crucible.phase0.s13RrSwitchQuantum`
+(`tests/crucible/phase0-s13-rr-quantum.c`), in which every candidate had the
+same race yield; per-branch overrides remain content-addressed. Both
 `smp_vcpus=N` and `rr_switch_quantum` enter the scenario material. The node
 clock stays a single aggregate icount; per-vCPU state is plugin-internal and
 enters the execution fingerprint, which reads all N vCPUs' register files
@@ -445,17 +453,24 @@ There is no per-quantum QMP or plugin-IPC traffic.
 `assert_qemu_quantum_hot_path_is_shmem_only` and
 `assert_async_driver_quantum_hot_path_is_shmem_only` can reject them.
 
-`QemuQuantumShmemHotPath` enforces the injection contract at the QEMU level.
-It authorizes a ceiling exactly at the next inbound `delivery_icount` and
-never past it, previews inbound ring entries before committing them, rejects
-a frame behind the passed-delivery floor without consuming the ring, and
-reports due frames in `(delivery_icount, src_node, seq)` order.
-`deliver_frame` assigns monotonic router-source sequence numbers and fails
-loudly if that space is exhausted. Emitted frames keep the guest's
-`emit_icount` stamp for the router. Each quantum report carries device-I/O
-freeze observations from the slot's `device_io_active` flag, so freeze
-transitions are part of the report and the fingerprint boundary. The slot
-fields, ring layout, and ordering rules are in [shmem-abi.md](shmem-abi.md).
+`QemuQuantumShmemHotPath` enforces the injection contract at the QEMU level:
+
+- It authorizes a ceiling exactly at the next inbound `delivery_icount` and
+  never past it.
+- It previews inbound ring entries before committing them, and rejects a
+  frame behind the passed-delivery floor without consuming the ring.
+- It reports due frames in `(delivery_icount, src_node, seq)` order.
+- `deliver_frame` assigns monotonic router-source sequence numbers and fails
+  loudly if that space is exhausted.
+- Emitted frames keep the guest's `emit_icount` stamp for the router.
+- Each quantum report carries device-I/O freeze observations
+  (`QemuDeviceIoFreezeObservation`) from the slot's `device_io_active` flag,
+  so transitions of the device-I/O hold are part of the report and the
+  fingerprint boundary. The hold itself is described in
+  [io-subnodes.md](io-subnodes.md#device-io-hold).
+
+The slot fields, ring layout, and ordering rules are in
+[shmem-abi.md](shmem-abi.md).
 
 ## The bounded async driver
 
@@ -518,14 +533,10 @@ path is reported for localization, never retried until it passes.
 ControlQuit -> QmpQuit -> Sigterm -> Sigkill -> Reap
 ```
 
-Each rung has its own bounded wait in `QemuShutdownPolicy`
-(`control_quit_wait`, `qmp_quit_wait`, `sigterm_wait`, `sigkill_wait`,
-`reap_wait`). The runner stops at the first rung after which the child has
-exited. A rung that fails, such as a broken control socket or a dead QMP
-connection, is recorded in `QemuShutdownReport::failures` and escalation
-continues; it does not abort the ladder. The final reap runs on every path.
-If the child is still alive after `SIGKILL` and the reap deadline, the
-runner returns `QemuShutdownError::LeakedChild` with the report.
+The rungs, their bounded waits in `QemuShutdownPolicy`, failure recording,
+and the `LeakedChild` result are specified in
+[control-protocol.md](control-protocol.md#shutdown-escalation). A failed rung
+does not abort the ladder. The final reap runs on every path.
 `UnixQemuChildShutdownTarget` is the production adapter; tests implement
 `QemuShutdownTarget` to model unresponsive guests without spawning QEMU.
 

@@ -14,13 +14,13 @@ checksum or signature. Record the release, image checksum,
 `image-delivery.json`, and `image-info.json`; a mutable object-storage name
 does not identify the deployed bytes.
 
-Discover and download the immutable release through AOS Hub as described in
-the [installation guide](installation.md). Bare-metal raw images arrive as
-zstd-compressed disk streams. The signed catalog authenticates the delivery
-record, which binds the transferred bytes and reconstructed disk digest. The
-provider's `image-info.json` records the root filesystem, GPT layout, and boot
-artifacts. Converting the disk encoding changes the delivery record and preserves
-the provider contract.
+Discover and download the immutable release from its registry or AOS Hub as
+described in the [installation guide](installation.md). Bare-metal raw images
+arrive as zstd-compressed disk streams. The signed catalog authenticates the
+delivery record, which binds the transferred bytes and reconstructed disk
+digest. The provider's `image-info.json` records the root filesystem, GPT
+layout, and boot artifacts. Converting the disk encoding changes the delivery
+record and preserves the provider contract.
 
 ## Size the target before first boot
 
@@ -32,16 +32,8 @@ also needs trailing unallocated space for swap, `/var`, the provisioning marker,
 and partition alignment. The stock policy needs more than 6 GiB beyond the built
 image; fleet tests use a 16 GiB disk.
 
-When enlarging a raw image, relocate its backup GPT header before first boot:
-
-```sh
-zstd -d /path/to/downloaded-aos.img.zst -o acme-server.img
-chmod u+w acme-server.img
-truncate -s 16G acme-server.img
-
-sgdisk -e acme-server.img
-```
-
+When enlarging a raw image, relocate its backup GPT header before first boot;
+[Size the target](installation.md#size-the-target) has the commands.
 Increasing only the virtual disk's visible size is not sufficient when the
 backup GPT header remains at the old end. Prepare the raw image before
 conversion or use platform tooling that both expands the disk and repairs GPT.

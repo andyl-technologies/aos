@@ -1,12 +1,39 @@
 # Hub topology cutover
 
-This page specifies the one-shot, maintenance-mode migration of a Hub
-deployment that predates the current [topology](topology.md) model, and the
-signed evidence bundle that `aos hub topology cutover` generates and verifies
-for it (`crates/cli/aos-cli/src/commands/hub_cutover_verify/`). It is a
-maintenance-mode replacement, not an expand/contract migration. The transformer may read legacy state only inside the maintenance
-operation. The target runtime has one topology model, one API, and no legacy
-parser, route, schema, flag, alias, or dual-read branch.
+This page specifies the signed evidence bundle for the one-shot,
+maintenance-mode migration of a Hub deployment that predates the current
+[topology](topology.md) model, and the `aos hub topology cutover` commands
+that generate and verify it. The migration is a maintenance-mode replacement,
+not an expand/contract migration. The transformer may read legacy state only
+inside the maintenance operation. The target runtime has one topology model,
+one API, and no legacy parser, route, schema, flag, alias, or dual-read branch.
+
+What this repository implements:
+
+- The offline bundle commands `aos hub topology cutover materialize-verifier`,
+  `generate`, and `verify`, in
+  `crates/cli/aos-cli/src/commands/hub_cutover_verify/`. They are described
+  under [Validation and bundle generation](#validation-and-bundle-generation).
+- The closed schemas, fixture sources, and web route ledger in
+  `crates/cli/aos-cli/hub-topology-cutover/`, exercised by
+  `crates/cli/aos-cli/tests/hub_topology_cutover.rs`.
+
+What it does not implement: the transformer, and the backup, quiescence, and
+switch steps of the migration. A bundle refers to the transformer only as an
+authenticated node (`transformer_node_id` in the plan), and the fixture bundle
+carries a placeholder for it. The safety invariants and validation rules below
+state what a bundle's evidence must prove about those steps; they do not
+describe migration code in this tree.
+
+The identifiers on this page are the bundle's own closed vocabulary, defined
+by the plan and report schemas, and some differ from the running Hub's names.
+The bundle's database kinds are `sqlite`, `d1`, `durable_object_sqlite`,
+`postgres`, and `mysql`, although the current Worker stores its database in a
+Durable Object ([runtime.md](runtime.md#cloudflare-worker)). The bundle's
+route `access_policy` values are `public`, `hub_authenticated`,
+`origin_authenticated`, and `private_network`, whereas the runtime names its
+route access policies `public`, `hub_auth`, `external_provider`, and
+`private_network`.
 
 The signed plan, report, and verification documents conform to the closed
 `aos-cutover-schema/v1` schemas in
@@ -69,8 +96,9 @@ The operator aborts before the switch if any invariant cannot be proved:
 ## Artifact rules
 
 Plans, reports, verification payloads, and the signer-key map use the closed
-`aos-cutover-jcs-ascii-v1` dialect: RFC 8785 JSON Canonicalization Scheme over
-integer-only UTF-8 I-JSON with ASCII-only object member names. ASCII member
+`aos-cutover-jcs-ascii-v1` dialect: RFC 8785 JSON Canonicalization Scheme
+(JCS) over integer-only UTF-8 I-JSON with ASCII-only object member names.
+ASCII member
 names therefore have identical UTF-8 byte and RFC 8785 UTF-16 sort order; the
 parser rejects duplicate members and the canonicalizer rejects any non-ASCII
 member name instead of silently defining a second ordering. They are complete
@@ -315,290 +343,6 @@ cardinality and target typing, references, exact restore proofs, recomputable
 Durable Object aggregates, evidence, blockers, retries, idempotency,
 transitions, GC partitions, post-sign tampering, bundle closure, signer-role
 widening, and verifier byte mismatch.
-
-## 1. Build and approve the plan online
-
-The preflight is read-only and runs against the still-serving old deployment.
-
-1. Pin the exact source deployment revision, source schema revision, target
-   deployment revision, target schema revision, API manifest, CLI schema, and
-   native/Worker/Web route manifests.
-2. Export a canonical, secret-free logical topology snapshot. Resolve
-   credentials to `{stable_id, purpose, version, metadata_digest}` references;
-   never export the sealed or plaintext value.
-3. Enumerate every resource and immutable generation named in safety invariant
-   2. Record binding provider identity separately from capabilities, credentials,
-   write revisions, grants, and defaults; record placement membership separately
-   from write authority; and record publication, population, and retention as
-   independent registry-cache relationships.
-4. Derive stable IDs. Prove the total deterministic mapping between source and
-   final resource sets, including declared one-to-many expansions. Recompute
-   ordered source/target counts and digests. Collisions, omissions, extra target
-   rows, inferred ownership, reused slugs with different owners, and orphaned
-   rows are blockers.
-5. Resolve each legacy binding-plus-prefix into explicit binding and placement
-   records. Multiple placements are preserved; they are not collapsed into a
-   preferred placement. Conflicting writer evidence is a blocker.
-6. Resolve every effective HTTP path into an explicit final route, frontend
-   kind, access policy, domain, and ordered placement set. Record direct,
-   static-CDN, Hub binary, and Worker paths independently so they can operate
-   simultaneously. A URL with no final mapping is a blocker.
-7. Transform each registry/cache retention input into an independent retention
-   subscription with an exact selector digest, registry source revision,
-   removal grace, and expected root count. Publication and population are not
-   inferred from retention.
-8. Capture one complete inventory generation per cache and a manifest for every
-   applicable placement. Every object selected for destructive deletion later
-   requires a strong backend identity. Incomplete or weak inventory blocks the
-   cutover's GC readiness, although the topology switch may proceed with GC
-   disabled when the plan declares the blocker and its post-switch resolution.
-9. Compute non-vacuous authorization proofs. For every effective
-   `(principal, scope)`, verify
-   `target_permissions` is a subset of `source_permissions`. For routes, use the
-   approved access-policy partial order; incomparable policies require explicit
-   security review and otherwise block.
-10. Produce the typed side-by-side transform artifact. It declares its source
-    and target schema revisions, input and expected-output digests, stable-ID
-    rules, collision policy `abort`, and no legacy write path.
-11. Generate plan checks and smoke tests in two orthogonal groups. Delivery
-    tests for Git, Nix cache, and Web are bound to real route, placement, and
-    binding IDs and collectively cover every route, frontend kind, backend
-    placement, and backend binding kind in the plan.
-    Every public route has an anonymous success; every non-public route has an
-    anonymous denial and an authorized success. Control-plane API and CLI tests
-    use no route and separately prove denied anonymous API access and
-    successful least-privileged CLI access. The full matrix also covers
-    retention freshness, inventory completeness, route parity, and
-    legacy-route absence.
-12. Canonicalize, digest, scan, and sign the plan and transformer. An operator
-    who did not generate the plan verifies both signatures and all open blockers.
-
-The online phase must not mutate schema, routes, credentials, placement state,
-retention heads, or inventory heads. Any source digest change after plan
-creation invalidates the plan.
-
-## 2. Enter maintenance and prove quiescence
-
-1. Disable scheduled and operator-triggered destructive GC.
-2. Close every write-admission path in every process and database:
-   Web/API/CLI mutations, Git publication,
-   cache PUT, presigned PUT issuance, multipart initiation/completion,
-   population, replication, repair, retention refresh, background reconciliation,
-   and queue/cron consumers that can write topology or storage.
-3. Revoke or wait out every previously issued direct-write capability. Abort
-   multipart uploads or retain their durable mutation fences. A request count of
-   zero is insufficient while an unexpired write capability exists.
-4. Wait for database transactions, D1 bookmarks, Durable Object events and
-   alarms, queues, and object
-   mutation fences to reach a terminal state. Record zero in-flight writes and
-   mutations with signed evidence.
-5. Re-export the logical source snapshot. Its digest must equal the approved
-   plan input and source topology digests. Otherwise leave maintenance, rebuild
-   the plan, and repeat approval.
-
-The old runtime remains available for read-only traffic only if the backend can
-prove reads do not cause writes. Otherwise stop it before backup.
-
-## 3. Take and verify the backup
-
-Every database in `source.databases` has one corresponding backup plan and
-evidence record. The backup set is usable only after isolated restores produce
-the same schema
-digest, logical-data digest, and row count as the quiesced source. Merely creating
-or listing an export is not verification.
-
-### SQLite
-
-Checkpoint WAL with a completed truncate checkpoint when WAL is enabled. Use
-SQLite's online-backup API or `.backup` while writes remain closed; do not copy a
-live database file independently of its WAL. Record page count and
-`PRAGMA integrity_check = ok`, hash the backup, restore it to a new path, repeat
-integrity checking, and compare canonical schema/data digests and counts.
-
-### Cloudflare D1
-
-Create a D1 export after write admission and all Worker/queue writers are
-closed. Record the export bookmark or consistency identifier and export digest.
-Import into a separate temporary D1 database, run the complete schema and
-referential checks there, and compare canonical logical digests and counts.
-Production is not the restore-test target.
-
-### Durable Object SQLite
-
-There is no assumed file-level snapshot across Durable Objects. Close routing,
-alarms, queues, and mutation issuance, advance and record a quiesce epoch, then
-invoke the versioned application-level logical export on every object in the
-declared namespace. The export includes object stable ID, schema revision,
-row-count/digest manifest, and no secrets. Replay into an isolated namespace,
-verify every object manifest and the aggregate digest, and prove the expected
-object count. A missing or newly discovered object blocks cutover.
-
-### PostgreSQL
-
-With application writes closed, capture a consistent snapshot and WAL LSN and
-produce a custom-format `pg_dump`. Record a digest of the snapshot identifier,
-not its raw value. Verify `pg_restore --list`, restore into an isolated database,
-run constraints and schema checks, and compare canonical logical digests and
-counts. Replication lag must be zero if the switch changes database endpoints.
-
-### MySQL
-
-With application writes closed, take a single-transaction consistent dump with
-stored objects required by the schema and record digests of the GTID set and
-binlog coordinate. Restore into an isolated database, run constraints and
-schema checks, and compare canonical logical digests and counts. Do not use a
-nontransactional dump when any source table lacks transactional snapshot
-semantics; that condition is a blocker.
-
-For every backend, sign the backup digest and restore-verification evidence,
-place them in immutable retention at least through the rollback deadline, and
-confirm the old deployment artifact is independently available and signed.
-Then compute and sign the ordered aggregate backup-set digest. A successful D1
-backup without every declared Durable Object namespace backup is impossible.
-
-## 4. Perform the side-by-side transform
-
-1. Verify the transformer's digest and signature again from the maintenance
-   environment.
-2. Create target tables or an isolated target namespace without changing the
-   old runtime's read targets. The namespace is not a compatibility schema and
-   is never queried by the old runtime.
-3. Run the transformer exactly once against the quiesced source snapshot. It
-   reads legacy rows and writes only target rows. It records zero legacy writes,
-   exact input/output digests, mapping digest, source/target counts, and rejected
-   rows.
-4. Abort on any rejected row, stable-ID collision, ambiguous binding, ambiguous
-   writer, missing credential reference, unmapped URL, authorization widening,
-   stale retention source, incomplete required inventory, or digest mismatch.
-5. Re-run in verification mode from the same input. The canonical output digest
-   must be identical. The verification run does not write production state.
-
-The transform artifact is a deployment tool, not a runtime library. No parser
-or data type that understands the legacy shape may be linked into the final
-Hub binary, Worker, CLI, or Web application.
-
-## 5. Validate target state
-
-Validation is read-only and produces typed, signed evidence:
-
-- all schema constraints and foreign keys pass;
-- stable-ID mapping is collision-free and total;
-- binding owner/grant and credential-purpose references resolve;
-- every placement belongs to the intended surface and binding, and write
-  authority is singular and observed rather than inferred;
-- route/domain/backend relationships resolve, route advertisements are singular by
-  surface/audience, and all planned HTTP paths retain their intended status,
-  range, cache, and authentication behavior;
-- principal and route authorization proofs contain zero widening;
-- retention selectors reproduce expected current catalog, channel, explicit
-  tag, SemVer, and recent-release roots from the pinned registry source;
-- shared-cache roots retain registry provenance without exposing it to an
-  unauthorized reader;
-- inventory placement set, object counts, manifest digests, strong-identity
-  counts, and aggregate generation digest match the plan;
-- all background writers remain stopped and destructive GC remains disabled;
-  and
-- native and Worker route/API manifests equal the approved target manifests and
-  contain no removed method or path.
-
-Expected/actual resource counts must match unless the plan declares a typed
-one-to-many expansion, such as one legacy binding/prefix relation becoming a
-binding plus placement. Every such expansion has its own digest invariant.
-
-## 6. Run pre-switch smoke tests
-
-Start the target runtime against the target namespace on an isolated listener
-with write admission closed. Run the plan's deterministic smoke matrix:
-
-- Web navigation and default settings routes;
-- CLI list/get and JSON-schema conformance;
-- API list/get, cursor pagination, and authorization denial;
-- Git smart/dumb HTTP discovery as configured;
-- Nix cache info, narinfo, NAR HEAD/GET, range, ETag, and cache behavior;
-- Hub proxy, Worker proxy, direct-origin, static-CDN, and private-network paths;
-- public anonymous success and private anonymous denial;
-- credential-reference resolution without emitting credential material; and
-- removed Web, CLI, and API paths returning absence rather than redirects or
-  compatibility responses.
-
-Record only method class, path digest, route stable ID, auth context, status,
-response digest, and evidence artifact. Do not record authorization headers,
-cookies, response bodies, presigned URLs, or private origin addresses.
-
-Any failed smoke test aborts the switch.
-
-## 7. Switch once
-
-1. Confirm the backup restore test, target validation, and all smoke tests still
-   pass; blockers are resolved; write admission and destructive GC are closed.
-2. Stop the old runtime and prove it cannot restart or consume queues.
-3. Atomically select the target schema/namespace and target deployment. There is
-   no request-by-request feature flag and no fallback read to legacy tables.
-4. Start native and Worker runtimes at the exact signed target revision.
-5. Switch traffic once, then run the smoke matrix through production routes.
-6. Keep general writes closed until production smoke, queue ownership, route
-   observations, retention freshness, and inventory gates pass.
-7. Open ordinary writes. Keep destructive GC disabled.
-
-If the switch mechanism cannot make old-writer shutdown precede new-writer
-startup, it is not acceptable for this cutover.
-
-## 8. Close or execute rollback
-
-Rollback remains possible only while new-runtime writes are zero. During that
-window, failure means:
-
-1. close traffic and verify both runtimes have zero writers;
-2. stop the new deployment;
-3. discard the target database/namespace rather than translating it backward;
-4. restore the verified pre-cutover backup into a clean source database;
-5. restore the exact signed old deployment and its route/queue ownership;
-6. validate source schema/data digests and run the old-runtime smoke matrix;
-7. reopen traffic and writes only after those checks pass; and
-8. record `rolled_back` with signed restore evidence.
-
-After any new-runtime write is admitted, database rollback is closed. Recovery
-then uses the new model's ordinary backup/restore procedures; the legacy runtime
-must not be reintroduced. A successful cutover report is finalized only after
-this closure is explicit as `closed_unused` and the old deployment/backup
-retention decision is recorded.
-
-## 9. Enable GC separately
-
-Topology cutover success does not enable destructive GC. For every cache:
-
-1. complete a fresh registry-root refresh pinned to the current retention-source
-   generation;
-2. complete a cache-wide physical inventory across every applicable placement,
-   with strong deletion identities or an explicitly blocked backend;
-3. resolve all coverage failures and active object-mutation fences;
-4. create and review the immutable first-sweep GC plan;
-5. apply the separate first-sweep acknowledgement; and
-6. enable GC only through its normal plan/apply API.
-
-The cutover report records GC as disabled. Later GC enablement belongs to its
-own signed operation and audit record.
-
-## 10. Prove final legacy removal
-
-Before merging or deploying final HEAD, a repository guard scans executable
-source, generated code, schemas, route manifests, CLI parsers/help/completions,
-Worker bindings, migrations, fixtures, and runtime feature declarations. It
-must report zero:
-
-- legacy topology parsers or model types;
-- legacy database reads/writes or schema objects;
-- old API package/service routes;
-- old CLI command variants, flags, JSON keys, or aliases;
-- old Web routes, redirects, form actions, or overloaded handlers;
-- compatibility feature flags, environment variables, or fallback branches;
-  and
-- runtime references to the one-shot transformer.
-
-The immutable signed cutover bundle may name removed concepts, but it is never
-compiled, routed, or loaded at runtime. The guard emits the scanned final HEAD
-revision, rule-set digest, zero match counts, and signed evidence. Any
-allowlist entry outside the bundle is a cutover blocker.
 
 ## Validation and bundle generation
 

@@ -281,7 +281,9 @@ controls. Watch output reports Campaign and attempt status.
 
 Use `crucible campaign branch` to add a bounded decision at an authenticated
 Campaign opportunity. The command preserves the source snapshot and records a
-portable Campaign-owned successor; see [Campaigns](campaigns.md).
+portable Campaign-owned successor; see
+[Branch from a discovered choice](campaigns-operating.md#branch-from-a-discovered-choice).
+
 ## Artifact portability
 
 Reproduction deliberately fails on a build-identity mismatch. Move the matching

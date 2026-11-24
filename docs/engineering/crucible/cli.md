@@ -7,7 +7,9 @@ service. This page covers how it is built: dispatch planning, backend
 selection and routing, hermetic QEMU discovery, seed handling, output, exit
 status, and completions. The user-facing command and flag reference is
 [reference.md](../../users/crucible/reference.md); operator guides are under
-[`docs/users/crucible/`](../../users/crucible/README.md).
+[`docs/users/crucible/`](../../users/crucible/README.md). Model vocabulary
+(session, savepoint, reproduction artifact, and so on) is defined in the
+[glossary](glossary.md).
 
 ## Code map
 
@@ -25,6 +27,14 @@ status, and completions. The user-facing command and flag reference is
 | `.../cli/control/` | Save, interactive control, and event-stream draining over `ControlClient` |
 | `.../cli/verify_serve/service.rs` | `crucible serve` host setup, shutdown, campaign attachments |
 | `.../cli/replay.rs` | `emit_canonical_trace` and replay flows |
+| `.../cli/run_save.rs`, `.../cli/run_save/` | Local run and save workflows and remote resume control setup |
+| `.../cli/exploration.rs`, `.../cli/exploration/` | `search` and `fuzz` execution over the temporal graph and their machine-readable outcomes; see [exploration.md](exploration.md) |
+| `.../cli/triage_debug.rs`, `.../cli/triage_debug/` | `triage` and `debug` planning; see [failure-triage.md](failure-triage.md) and [time-travel-debugging.md](time-travel-debugging.md) |
+| `.../cli/campaign.rs`, `.../cli/campaign/` | The `campaign` subcommands: a local client for campaign authoring, inspection, and control; see [campaigns](campaigns/README.md) |
+| `.../cli/campaign_run.rs` | Guarded campaign-backed runs, which local production QEMU runs go through |
+| `.../cli/campaign/gc.rs` | Dispatch of the `store` subcommands (`status`, `ensure`, `verify`, `gc`, `transform`, `credentials`, `cleanup`, `repair`) |
+| `.../cli/store_repair.rs` | `store repair`: generation-bound repair of one campaign-store placement |
+| `.../cli/artifact.rs` | The CLI's reproduction-artifact schema, codec, identity (`CliIdentity`), and validation |
 | `.../cli/report/error.rs` | `CliError` and its exit-code mapping |
 | `.../cli/dispatch/support.rs` | `write_completions` and selftest helpers |
 
@@ -58,13 +68,18 @@ struct CliThinWrapperPlan {
 ```
 
 `execute_cli_dispatch_plan` fails the invocation with "CLI invocation violates
-the thin-wrapper contract" unless the plan is a thin wrapper that owns no
-canonical run state, implements no scheduler or checkpoint materialization,
-adds no extra control capabilities, delegates to at least one driver, holds only
-non-canonical state references, uses only `SessionCommandKind::ALL` commands
-and `CliApiCall::ALL` calls that name a `ControlClient` method, and decomposes
-into at least one session command or API call (or is a delegated-only command
-such as `triage`, `campaign`, `store`, or `completions`).
+the thin-wrapper contract" unless the plan meets every one of these conditions:
+
+- it is marked a thin wrapper and owns no canonical run state;
+- it implements no scheduler and no checkpoint materialization;
+- it adds no extra control capabilities;
+- it delegates to at least one driver;
+- it holds only non-canonical state references;
+- it uses only `SessionCommandKind::ALL` commands and `CliApiCall::ALL` calls
+  that name a `ControlClient` method;
+- it decomposes into at least one session command or API call, or is a
+  delegated-only command such as `triage`, `campaign`, `store`, or
+  `completions`.
 
 | Subcommand | Session commands | API calls | Delegated drivers |
 |------------|------------------|-----------|-------------------|
@@ -270,7 +285,7 @@ outcome codes come from `BackendCommandStatus`:
 source's code. Non-passing outcomes (`Failed`, `Crashed`, `Timeout`) are the
 statuses that write a reproduction artifact and print the replay footer. The
 user-facing status classes are listed in the
-[reference](../../users/crucible/reference.md#output-artifacts-and-exit-status).
+[reference](../../users/crucible/reference-cli.md#output-artifacts-and-exit-status).
 
 ## `serve`
 

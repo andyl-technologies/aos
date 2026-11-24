@@ -1,32 +1,58 @@
 # AOS package registry
 
-An AOS registry is a **bare git repository in sha256 object format, published as
-static files over dumb HTTP**. The package metadata *is* the git tree content,
-so the registry is simultaneously a **superset of git's dumb-HTTP transport** (a
-stock `git clone <url>` works; **channels are branches**, **releases are tags**)
-and a **superset of the Nix binary cache** (the origin may serve
-`nix-cache-info`, `<storehash>.narinfo`, and `nar/`; the substituter location
-lives in the committed `registry.toml` `[[caches]]`, with the consumer's
-client-side `registries.d` as an optional override, and is never advertised in
-signed tags). Release lines are **standard semver, no `v` prefix**; a
-**channel** (`stable`, `testing`) is a git branch whose head is the rollout
-**frontier** plus **256 signed partition tag objects**
-(`/channels/<name>/00..ff`) that drive bucketed, publisher-controlled rollout.
-Distribution rides on a **guaranteed delta graph**: every `X.Y.0` release ships
-a self-contained **full pack** plus `.idx`, every release ships a small set of
-**thin delta packs** (`delta-<from-semver>.pack.zst`) that the client
-decompresses and indexes locally, and **all objects also exist loose** as the
-correctness fallback. Trust is rooted in an **out-of-band anchor** (baked into
-the AOS image, or pinned) and evolves through a committed **`keys.toml` roster**
-of SSH-format Ed25519 maintainer keys; releases are verified by a
-`signed partition tag -> signed semver tag -> commit` chain with
-**name-binding**, and rotation and revocation reach machines in-band on their
-next sync. The guiding philosophy is **asymmetric cost: make publishing as
-expensive as possible so consumption is as cheap as possible**.
+An AOS registry is a bare git repository in sha256 object format, published
+as static files over dumb HTTP. The package metadata *is* the git tree content.
+`apm` consumes registries and `apr` publishes them.
 
-`apm` consumes registries and `apr` publishes them. Operator workflows live in
-the [registry user guide](../../users/registry/README.md); this directory
+The design in one screen:
+
+- **Superset of git dumb HTTP.** A stock `git clone <url>` works: channels are
+  branches and releases are signed tags.
+- **Superset of the Nix binary cache.** The origin may also serve
+  `nix-cache-info`, `<storehash>.narinfo`, and `nar/`. The cache location lives
+  in the committed `registry.toml` `[caches]` stack, with the consumer's
+  client-side `registries.d` as an optional override; it is never advertised
+  in signed tags.
+- **Versions and channels.** Release lines are standard semver with no `v`
+  prefix. A channel (`stable`, `testing`) is a git branch whose head is the
+  rollout **frontier**, plus 256 signed partition tag objects
+  (`/channels/<name>/00..ff`) that drive bucketed, publisher-controlled
+  rollout.
+- **Guaranteed delta graph.** Every `X.Y.0` release ships a self-contained
+  full pack plus `.idx`, every release ships a small set of thin delta packs
+  (`delta-<from-semver>.pack.zst`) that the client decompresses and indexes
+  locally, and all objects also exist loose as the correctness fallback.
+- **Trust.** Trust is rooted in an out-of-band anchor (baked into the AOS
+  image, or pinned) and evolves through a committed `keys.toml` roster of
+  SSH-format Ed25519 maintainer keys. Releases are verified by a
+  `signed partition tag -> signed semver tag -> commit` chain with
+  name-binding; rotation and revocation reach machines in-band on their next
+  sync.
+- **Asymmetric cost.** Publishing is made as expensive as it needs to be so
+  that consumption is as cheap as possible.
+
+Operator workflows live in the
+[registry user guide](../../users/registry/README.md); this directory
 describes how the registry works.
+
+## Reading order
+
+1. [architecture.md](architecture.md) for the overall model.
+2. [repository-layout.md](repository-layout.md) and
+   [http-layout.md](http-layout.md) for what is committed and what is served.
+3. [versioning-and-channels.md](versioning-and-channels.md) and
+   [signing-and-trust.md](signing-and-trust.md) for how a consumer selects and
+   authenticates a release.
+4. [packs-and-deltas.md](packs-and-deltas.md) and
+   [store-realisation-graph.md](store-realisation-graph.md) for how git objects
+   and NAR bytes are fetched and verified.
+5. [publishing.md](publishing.md) and [release-stages.md](release-stages.md)
+   for the producer side.
+6. [implementation.md](implementation.md) when you need to find the code.
+
+[nix-cache.md](nix-cache.md), [web-surface.md](web-surface.md), and
+[apt-comparison.md](apt-comparison.md) stand alone and can be read at any
+point.
 
 ## Pages
 
@@ -36,9 +62,10 @@ describes how the registry works.
 | [implementation.md](implementation.md) | Crate and module map: producer, consumer sync and trust assembly, registry state, and NAR downloads. |
 | [repository-layout.md](repository-layout.md) | The committed git tree (`registry.toml`, `keys.toml`, `packages/`, the `store/` realisation graph) and the tree-to-HTTP mapping. |
 | [http-layout.md](http-layout.md) | The HTTP/object layout, CDN TTLs, the root sha256 loose-object store, `info/refs` / `HEAD` / relative `info/alternates`, and stock git compatibility. |
-| [versioning-and-channels.md](versioning-and-channels.md) | Semver, channels-as-branches, the frontier head, the 256-partition rollout, deterministic bucket selection, and anti-rollback. |
+| [versioning-and-channels.md](versioning-and-channels.md) | Semver, channels-as-branches, the frontier head, the 256-partition rollout, deterministic bucket selection, tracking modes, and anti-rollback. |
 | [packs-and-deltas.md](packs-and-deltas.md) | libgit2 full packs, pure-Rust thin packs, the guaranteed delta graph, client resolution and retention, and zstd transport. |
 | [signing-and-trust.md](signing-and-trust.md) | Signed tag objects, name-binding, the `tag -> tag -> commit` chain, the trust roster, AOS-TUF metadata freshness, and anti-rollback. |
+| [store-realisation-graph.md](store-realisation-graph.md) | Why the signed tree records the exact NAR bytes of every closure member, the `store/` record model, and how producer and consumer use it. |
 | [publishing.md](publishing.md) | The producer pipeline end to end, CDN atomicity, and concurrency. |
 | [release-stages.md](release-stages.md) | Unpublished release candidates: stage identity and revisions, inventory and resume, discovery boundaries, and retention. |
 | [nix-cache.md](nix-cache.md) | The static Nix binary-cache superset, narinfo mapping, cache signing, and substituter configuration. |
@@ -54,16 +81,24 @@ described in [`../hub/`](../hub/README.md).
 |---|---|
 | `crates/registry/aos-registry-format` | Pure-Rust, no-IO, wasm32-clean reader: loose git objects, SSHSIG verification, signed tags, refs, committed TOML schemas, and cache stacks. |
 | `crates/registry/aos-registry-client` | Consumer: git sync, trust store and roster pinning, channel resolution, object fetch resolution, registry state. |
-| `crates/registry/aos-registry-authoring` | Producer (`apr`): registry operations, signing, packs and deltas, Nix-cache generation, static origin upload, web surface. |
-| `crates/registry/aos-registry-web` | The registry web-surface SPA. |
+| `crates/registry/aos-registry-authoring` | Producer (`apr`): registry operations, signing, packs and deltas, Nix-cache generation, static origin upload, web pages. |
+| `crates/registry/aos-registry-web` | The registry's in-browser SPA. |
 | `crates/packages/aos-package-manager` | `apm` installation, NAR download, and profile management on top of the client. |
+
+The command-line parsers are separate from those libraries:
+
+| Parser | Where it lives |
+|---|---|
+| `apm` and `apr` top-level parsers (`ApmCli`, `AprCli`) | `crates/cli/aos-cli/src/cli/mod.rs` |
+| `apr` subcommands (`RegistryCommand` and its nested enums) | `crates/registry/aos-registry-authoring/src/commands.rs` |
+| `apm` subcommands (`PackageCommand`, including `apm registry`) | `crates/packages/aos-package-manager/src/lib.rs` |
 
 ## How the pieces fit
 
-The registry is **one bare git repo published as static files**. Stock git and
+The registry is one bare git repo published as static files. Stock git and
 the AOS client read the *same* origin; the AOS layer (`/channels` partition tags
-and thin `delta-*.pack`s) is **additive** and rides alongside the standard git
-surface without conflicting.
+and thin `delta-*.pack`s) is additive and rides alongside the standard git
+layout without conflicting.
 
 ```text
                           +------------------------------------------------+
@@ -97,6 +132,10 @@ surface without conflicting.
 |---|---|
 | **`apm`** | The package-consumer CLI. It owns installation, profiles, queries, and consumer registry configuration through `apm registry`. |
 | **`apr`** | The AOS Package Registry authoring CLI. It owns registry workspaces, signing, package publication, releases, and uploads. |
+| **NAR** | Nix archive: the serialized form of one store path, the unit a binary cache serves. |
+| **CDN / TTL** | Content delivery network, and the time-to-live a cache may keep a response. |
+| **TUF** | The Update Framework. AOS-TUF is the registry's signed role metadata under `tuf/`. |
+| **SSHSIG** | The OpenSSH signature format used for every registry tag and commit signature. |
 | **Registry** | A bare git repository in sha256 object format, served as static files over dumb HTTP. The package metadata *is* the git tree content. |
 | **Channel** | A named release line (e.g. `stable`, `testing`), modeled as a git branch (`refs/heads/<channel>`) whose head is the rollout frontier, and as 256 signed partition tag objects (`/channels/<name>/00..ff`). |
 | **Partition / bucket** | One of exactly 256 channel partitions (`00`-`ff`). A consumer selects one bucket on first channel sync from a registry-local random salt, persists the bucket index, and reuses it thereafter. The publisher advances partitions independently to control rollout. |

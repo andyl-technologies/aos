@@ -2,7 +2,15 @@
 
 This page describes the explicit relationships between registries and binary
 caches — consumer cache stacks, retention subscriptions, and population
-targets — each of which has exactly one effect.
+targets — each of which has exactly one effect. The invariant itself is stated
+in [topology.md](topology.md#one-relationship-one-effect); this page describes
+each relationship.
+
+Where in the code: the three relationships are the `integration_*.rs` and
+`retention_*.rs` operations in
+`crates/hub/aos-hub-service/src/service/operations/caches/`; retention
+subscriptions, refreshes, and root reasons are persisted by
+`crates/hub/aos-hub-db/src/db/gc_topology.rs`.
 
 ## Independent resources
 
@@ -42,7 +50,7 @@ The stack is committed registry content. Managed cache selection in the
 console drafts a signed config change; applying ordinary SQL state cannot
 silently alter the stack.
 
-Stack nodes retain the existing semantics:
+Stack nodes have these semantics:
 
 ```text
 endpoint(url)
@@ -55,10 +63,10 @@ A managed endpoint is indexed with a stable `binary_cache_id` and
 managed identity. Managed identity is never inferred solely from current URL
 string equality.
 
-The portable signed representation continues to contain an HTTP URL. New
-changes should prefer the cache's stable canonical URL. Every committed URL
-must name a normal route, or be replaced through a signed registry change
-before that route is removed. There is no URL-alias subsystem.
+The portable signed representation contains an HTTP URL. Every committed URL
+of a managed endpoint must name a normal route, or be replaced through a
+signed registry change before that route is removed. There is no URL-alias
+subsystem.
 
 ### Retention subscription
 
@@ -199,15 +207,19 @@ logical endpoint rather than storage coordinates.
 
 ## User actions
 
-The console may provide an “Integrate binary cache” workflow with independent
-choices:
+A cache's Integrations page in the console has a "Plan an integration"
+preview
+(`crates/hub/aos-hub-console/src/workflows/cache_integration_preview.rs`). For
+one registry it takes three independent choices:
 
-1. **Use for clients** — draft a change to the signed consumer cache stack.
-2. **Protect artifacts** — create a retention subscription and selector.
-3. **Upload releases** — create a population target.
+1. publish this cache in the registry's signed consumer cache stack;
+2. root registry artifacts through retention selectors; and
+3. populate the cache from the registry.
 
-Review shows three separate effects and audit entries. Unchecking one does not
-silently undo either of the others.
+The preview shows the combined topology effects of the chosen relationships
+without creating an aggregate record. Each relationship is then applied from
+its owning settings page as its own record, with its own review and audit
+entry, so leaving one out or removing it later does not undo the others.
 
 There is no persisted generic “linked” state. A cache and registry are related
 when one or more of these concrete records exists.

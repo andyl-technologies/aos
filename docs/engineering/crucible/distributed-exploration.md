@@ -13,7 +13,9 @@ checkpoint, finding, or coverage record produced on a fleet is the same
 content-addressed object a single host produces, realized by the same
 `instantiate` and stored under the same BLAKE3 key. Only its location
 changes. Persistent, multi-run campaigns build on the same primitives and are
-described in the [campaign guide](../../users/crucible/campaigns.md).
+described in the [campaign guide](../../users/crucible/campaigns.md). Terms
+such as checkpoint, frontier, and reproduction artifact are defined in the
+[glossary](glossary.md).
 
 ## Source map
 
@@ -48,8 +50,9 @@ the gate define and check the contract that such a runner must meet.
 
 ## The store interface
 
-`DagStore` is the backend-agnostic content-addressed store for temporal-graph
-objects. It is object-safe and has exactly three methods:
+`crucible_store::DagStore` is the backend-agnostic content-addressed byte
+store of the fleet primitives. It is object-safe and has exactly three
+methods:
 
 ```rust
 pub trait DagStore: Send + Sync {
@@ -64,7 +67,17 @@ bytes, rendered as 64 lowercase hex characters by `to_hex`. Because the key is
 a pure function of content, no host name, path, run id, or timestamp can enter
 it. The same node is the same object on every host and in every backend.
 
-Three implementations share the trait:
+This is not the trait the engine's temporal graph persists through. That one
+is `crucible_engine::DagStore` in
+`crates/crucible/crucible-engine/src/model/dag_store.rs`, with
+`put`/`get`/`exists`/`delete` and its own `MemoryDagStore` and
+`LocalDagStore`; it is described in
+[execution-graph.md](execution-graph.md#the-dag-store). The two traits share a
+name and the BLAKE3 key rule, but neither crate implements the other's trait
+and no adapter joins them. Every unqualified `DagStore` on this page is the
+`crucible-store` trait.
+
+Three implementations share the `crucible-store` trait:
 
 | Backend | Use | Publish rule |
 | --- | --- | --- |
@@ -104,9 +117,10 @@ two-level layout as `LocalDagStore`:
 
 The result is that sixteen writers racing to publish identical bytes leave
 one object file, and no writer can replace an object with different bytes.
-Content addressing makes write conflicts impossible on the hot path, so
-expanding a node, storing its children, and admitting them to the frontier
-need no lock and no consensus.
+Content addressing makes write conflicts impossible when publishing objects,
+so storing a node's children and admitting them to the frontier need no lock
+and no consensus. Only claiming a frontier node takes a lock, the short-lived
+claim mutex described below.
 
 ## The shared frontier
 
@@ -378,10 +392,12 @@ the [campaign guide](../../users/crucible/campaigns.md).
 
 ## The ratchet seam
 
-The fleet-visible content-addressed store is the **same seam** at which a
-future shared content-addressed substrate from the AOS `ratchet` engine could
-slot in. That interface is exactly `DagStore::put`, `DagStore::get`,
-`DagStore::has`, and `InvalidationQuery::evaluate`.
+The fleet-visible content-addressed store is the **same seam** that the
+`crucible-store` crate documentation names as the crate's whole public
+substrate interface: `DagStore::put`, `DagStore::get`, `DagStore::has`, and
+`InvalidationQuery::evaluate`. The section is named after the AOS `ratchet`
+engine because the crate keeps that interface narrow enough for a shared
+substrate to implement; no such integration exists.
 
 `InvalidationQuery` compares a `DependencySnapshot`, the named content hashes
 recorded with a node, against the current snapshot. `evaluate` returns an
@@ -391,18 +407,17 @@ Dependency-gated invalidation is not a second substrate.
 
 Crucible ships standalone. The seam is documented text, not a dependency, and
 lives in the `crucible-store` crate documentation. No `ratchet` crate appears
-in the dependency graph. Any future integration must be a thin adapter behind
-the unchanged interface, and the adapter may replace these internals only
-after `gate:content-address`, `gate:replay-oracle`, and
-`gate:e2e-determinism` pass unchanged.
+in the dependency graph, and
+`checks.crucible.phase7.crucibleCasFleetRatchetSeam` rejects one. The crate
+documentation states the rule for replacing these internals: a thin adapter
+behind the unchanged interface, admitted only when `gate:content-address`,
+`gate:replay-oracle`, and `gate:e2e-determinism` pass unchanged.
 
-There is no separate remote checkpoint store. A remote or durable backend is
-one more `DagStore` implementation. Content keys are identical across
-backends, and objects are immutable, so a conflict is a `ContentMismatch`.
-Garbage collection works on pins over the cache, never on identity.
-Authentication belongs to the backend's transport, not to the trait. The
-frontier, dedup index, and campaign store are built on the same interface,
-and a new backend inherits them.
+Content keys are identical across the three backends, and objects are
+immutable, so a conflict is a `ContentMismatch`. `SharedFrontier` and
+`SharedDedupIndex` do not go through the trait: each owns a directory root and
+writes its own marker files. Only exists-gated expansion takes a `DagStore`
+argument.
 
 ## Packaging and checks
 
@@ -476,7 +491,8 @@ Its result file records `vm_runner=tcg-only`, `kvm_required=false`, and
 
 ## Performance shape
 
-Hosts coordinate only through the shared store and a lock-free hot path, so
-fleet throughput is bounded by the store's read and write bandwidth rather
-than by coordination. Measured performance contracts live in
+Hosts coordinate only through files in the shared store: object publication
+takes no lock, and a claim holds one per-node claim lock for the length of a
+lease write. No multi-host runner exists (see [Current scope](#current-scope)),
+so no fleet throughput has been measured. Measured performance contracts live in
 [performance.md](performance.md).

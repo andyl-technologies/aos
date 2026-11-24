@@ -5,6 +5,11 @@ authority, domains, network policies, endpoints, routes, and gateways — and
 their identities. The goals and invariants they satisfy are in
 [topology.md](topology.md).
 
+The record sketches on this page are conceptual; the exact columns and
+constraints are the tables in `crates/hub/aos-hub-db/src/db/schema.sql` and
+the later migration scripts beside it. Each section names the module that
+implements it.
+
 ## Surfaces
 
 `Registry` and `BinaryCache` are the two surface kinds. They share placement,
@@ -32,15 +37,21 @@ BinaryCache
   mass_query
 ```
 
-This is a conceptual supertype. Implementations may retain separate
-`registries` and `binary_caches` tables if foreign-key and one-of constraints remain
-enforceable.
+`Surface` is a conceptual supertype. The schema keeps separate `registries`
+and `binary_caches` tables, and a record that belongs to one surface, such as
+a row of `surface_placements`, carries a `registry_id` and a `cache_id` under a
+check constraint that exactly one of them is set.
 
 A registry's Git layout and its Nix-compatible paths are one logical registry
 surface. A binary cache is a separate Nix namespace even when a registry uses
 it as its preferred substituter.
 
 ## Bindings
+
+Code: binding kinds and their per-runtime capabilities are typed in
+`crates/hub/aos-hub-model/src/binding.rs`; binding and placement queries are
+in `crates/hub/aos-hub-db/src/db/queries/topology/` and
+`crates/hub/aos-hub-db/src/db/topology.rs`.
 
 A binding describes how the Hub reaches an origin:
 
@@ -87,9 +98,9 @@ credential lifecycle. Native and Worker runtimes accept both portable API
 bindings and their runtime-native optional bindings; choosing one never changes
 the placement, route, retention, or consumer-cache model above it.
 
-Read, write, credential-minting, and administrative authority remain separate
-because their blast radii differ. Credentials should be scoped to a placement
-prefix whenever the backend permits it.
+Read, write, credential-minting, and administrative authority are separate
+because their blast radii differ. Scoping a credential to a placement prefix,
+where the backend permits it, narrows that radius further.
 
 A binding write revision is immutable. Rotation or a capability declaration
 change creates and validates a new revision, then advances the binding's
@@ -182,6 +193,9 @@ creating a fake second placement.
 
 ### Write authority and derived roles
 
+Code: `request_surface_write_promotion` and its neighbors in
+`crates/hub/aos-hub-db/src/db/queries/runtime/coordination_mutations.rs`.
+
 Write selection belongs to one per-surface authority resource rather than to
 each placement:
 
@@ -204,7 +218,9 @@ SurfaceWriteAuthority
 
 The desired placement is the reviewed control-plane intent. The observed
 placement and generation identify the writer for which routing and any
-required fencing have completed. A promotion either updates both halves in
+required fencing have completed (to *fence* a writer is to make its further
+writes fail, so a superseded writer cannot race its successor). A promotion
+either updates both halves in
 one authority-row compare-and-swap when the switch is synchronous, or updates
 desired state first and lets a reconciler complete the observed half with a
 second authority-row compare-and-swap. It never edits roles on two placement
@@ -234,6 +250,10 @@ reconciled writer is allowed. Multiple writers are not represented by
 enabling several placements independently.
 
 ### Placement groups and selection
+
+Code: policy revisions are persisted by
+`crates/hub/aos-hub-db/src/db/placement_policy.rs`; the partition key and
+`hash_range_v1` selector are in `crates/hub/aos-hub-model/src/delivery.rs`.
 
 A route either pins a placement or names a placement policy:
 
@@ -268,22 +288,17 @@ PolicyFailureContract
 Policies are immutable revisions so a route never observes half of an edit.
 Changing membership, order, access class, or a partition range creates a new
 revision and moves routes through their ordinary generation-guarded update.
-Selection is per request but stable where the protocol requires related reads
-to observe a consistent generation. Mutable registry pointers are selected
-only from complete placements that have published the exact referenced
-generation; shards never serve mutable pointers.
-
-For a mutable registry request, route resolution snapshots the surface's
-committed publication-head id before placement selection. Every candidate must
-carry that exact publication watermark and all required presence records.
-Selection and failover retain the snapshot for the request even if a newer head
-commits concurrently; a retry never re-resolves to a different head.
+How a request selects among a policy's members, which failures in
+`PolicyFailureContract` may retry another placement, and how mutable registry
+pointers stay on one publication generation are specified once, in
+[delivery.md](delivery.md#placement-failover).
 
 `ordered_failover` is the baseline portable policy. `local_then_remote` is the
 same deterministic ordering with an explicit request access class; geography
 is never inferred from untrusted forwarding headers. `hash_partition` uses the
-versioned rule below. A latency-preferred strategy is deliberately absent until
-portable, trustworthy latency observations and anti-flapping semantics exist.
+versioned rule below. There is deliberately no latency-preferred policy kind:
+it would need portable, trustworthy latency observations and anti-flapping
+semantics.
 
 `hash_range_v1` operates on the required 32-byte `partition_key` stored on each
 immutable `SurfaceObject`; routers never derive it independently from an HTTP
@@ -311,8 +326,9 @@ The selector digest is SHA-256 over
 unsigned big-endian bucket in `[0, 65535]`. Ranges are half-open,
 non-wrapping integer intervals `[start, end)` with
 `0 <= start < end <= 65536`. Bounds use an unsigned 32-bit wire/storage type so
-the exclusive full-range end is representable. Each range owns an ordered replica group. Distinct ranges
-must not overlap; identical ranges are represented once with several replicas.
+the exclusive full-range end is representable. Each range owns an ordered
+replica group. Distinct ranges must not overlap; identical ranges are
+represented once with several replicas.
 The union of ranges must cover the whole bucket space unless the policy has at
 least one complete fallback. Native Hub and Worker use the shared stored key,
 this exact encoding, and these normative selector vectors:
@@ -332,6 +348,10 @@ Partition-key derivation has these additional normative vectors:
 | NAR, SHA-256, digest bytes `00` through `1f` | `0a5e8e4a54ac17e4130754a6b3d2c2328994bba50864aed8b53e670aaf1f6529` | 20101 |
 
 ## Logical objects and physical presence
+
+Code: object, presence, and inventory persistence for caches is in
+`crates/hub/aos-hub-db/src/db/gc_topology.rs`; physical placement scans are
+driven by `crates/hub/aos-hub-service/src/placement_scan.rs`.
 
 Multiple placements require separate logical inventory from physical presence:
 
@@ -356,10 +376,15 @@ exist. A content-addressed NAR shared by several narinfos is refcounted per
 placement before physical deletion.
 
 For registries, the same split tracks Git objects, packs, releases, channels,
-and mutable pointer generations. The existing surface remains readable from a
-single placement while presence indexing is introduced.
+and mutable pointer generations.
 
 ## Domains, endpoints, and routes
+
+Code: endpoint origins and request-authority validation are in
+`crates/hub/aos-hub-model/src/endpoint.rs`; the request-path grammar and
+longest-prefix route matching are in
+`crates/hub/aos-hub-model/src/delivery.rs`; the records are persisted by
+`crates/hub/aos-hub-db/src/db/topology.rs`.
 
 A domain owns DNS-name lifecycle independently of any endpoint or route:
 
@@ -373,12 +398,12 @@ Domain
   certificate provider/state
 ```
 
-One domain can back several client-facing origins. IP literals and custom ports
-are endpoints, not fake domains or opaque URL strings:
-
 The domain's canonical hostname and owner scope are immutable. Changing the
 DNS name creates a replacement domain and then replacement endpoints; DNS and
-certificate-provider posture remains revisioned lifecycle configuration.
+certificate-provider posture is revisioned lifecycle configuration.
+
+One domain can back several client-facing origins. IP literals and custom ports
+are endpoints, not fake domains or opaque URL strings:
 
 ```text
 Endpoint
@@ -469,7 +494,7 @@ fixed routing vectors.
 
 Route resolution returns a typed result containing the matched route, surface,
 capability, access contract, and pinned placement or immutable policy revision.
-It does not rewrite the request into a legacy slug path. Route creation
+It does not rewrite the request into a slug path. Route creation
 validates that the selected placement or policy can implement every declared
 capability.
 
@@ -479,7 +504,10 @@ routes remain simultaneously usable.
 
 ### Instance OCI routes and registry namespaces
 
-Standard Distribution clients request `https://<host>/v2/<name>/...` at the
+Code: `crates/hub/aos-hub-db/src/db/oci_namespaces.rs`.
+
+Standard OCI (Open Container Initiative) Distribution clients request
+`https://<host>/v2/<name>/...` at the
 host root, so a registry-bound OCI route can only sit at an endpoint's root and
 binds that whole host to one registry. An *instance OCI route* is owned by the
 deployment instead of a tenant surface:
@@ -568,17 +596,16 @@ Every component is stored in the canonical segment form above;
 `gateway_revision.origin_prefix`. A direct route records the gateway
 and endpoint generations, client base, placement prefix, and binding that
 produced this mapping; composite constraints validate the exact gateway and
-placement inputs. Arbitrary client-path-to-prefix mapping is not supported in
-this revision. Gateway reconciliation configures and probes only the selected
+placement inputs. Arbitrary client-path-to-prefix mapping is not supported.
+Gateway reconciliation configures and probes only the selected
 external generation and atomically advances its observed state; it never
 enables, disables, creates, updates, replaces, or deletes a route. A route is
 not enabled, advertised, or reported healthy until its explicitly pinned
 gateway generation is reconciled. A gateway revision cannot retire while any
 route pins it.
 
-This replaces the current combination of a binding-targeted frontend and a
-resource-level `advertise_storage_frontend` toggle. Operators see the concrete
-derived URL, eligibility, access posture, and route health on the surface.
+Operators see the concrete derived URL, eligibility, access posture, and route
+health on the surface.
 
 Instance and organization topology defaults may nominate a binding,
 endpoint, and gateway for creation workflows. Organization values

@@ -14,7 +14,20 @@ shared-memory ceiling and futex handoff is in [shmem-abi.md](shmem-abi.md);
 event-log materialization is in [event-log.md](event-log.md); the operator view
 of topology and link faults is in the
 [topology](../../users/crucible/topology.md) and
-[network faults](../../users/crucible/network-faults.md) guides.
+[network faults](../../users/crucible/network-faults.md) guides. Tick,
+horizon, lookahead, quantum, ceiling, and the other shared vocabulary are
+defined in the [glossary](glossary.md).
+
+Two terms are used on this page before the sections that specify them:
+
+- **Phases.** Each quantum runs five phases in order. PICK selects the node
+  with the minimum effective horizon. RUN advances that node to one published
+  ceiling. RESOLVE makes the events due at the reached time visible in
+  canonical order. EMIT records the quantum's decisions and event-log entries.
+  STEP folds the decisions into the configuration and yields to control. See
+  [The quantum](#the-quantum).
+- **Frontier.** The minimum current virtual time over non-terminal nodes. It
+  is the configuration every quantum request must match.
 
 ## Code map
 
@@ -27,13 +40,16 @@ of topology and link faults is in the
 | `.../scheduler/topology.rs` | Lookahead graph, horizon composition, event keys, RESOLVE, rendezvous, RR subdivision |
 | `.../scheduler/control_state.rs` | Ceiling publications, RR and preemption records, topology change types, vCPU idle snapshots |
 | `.../scheduler/control_state/actor.rs` | `SchedulerActor`, `SchedulerActorHandle`, actor messages |
-| `.../scheduler/concurrent_prepare.rs` | Host-concurrent RUN sets |
-| `.../scheduler/liveness.rs` | `check_scheduler_liveness`, `SchedulerCriticalSection`, `ConcurrentQuantumLoop` impl |
-| `.../scheduler/event_log.rs` | `QuantumLoop`, `QuantumRequest`, `QuantumOutcome` |
-| `crates/crucible/crucible-session/src/session/core.rs` | `drive_engine_quantum`, the single session-side call into the loop |
+| `.../scheduler/concurrent_prepare.rs` | Host-concurrent RUN sets: speculative preparation and the authoritative commit |
+| `.../scheduler/liveness.rs` | `check_scheduler_liveness`, `SchedulerCriticalSection`, `ConcurrentQuantumLoop` for `SingleScheduler` |
+| `.../scheduler/liveness/quantum_loop.rs` | `QuantumLoop` for `SingleScheduler` |
+| `.../scheduler/event_log.rs` | The `QuantumLoop` and `ConcurrentQuantumLoop` traits, `QuantumRequest`, `QuantumOutcome` |
+| `.../scheduler/event_log/backend_loop.rs` and `backend_loop/` | `BackendQuantumLoop`, the live-backend adapter that drives a `SingleScheduler` against a backend; `QuantumLoop` impl |
+| `.../scheduler/event_log/backend_loop/host_concurrent.rs` | `ConcurrentQuantumLoop` for `BackendQuantumLoop`: host RUN publication and completion |
+| `crates/crucible/crucible-session/src/session/core.rs` | `SessionDriver`, `drive_engine_quantum`, `drive_engine_concurrent_quantum` |
 | `crates/crucible/crucible-qemu-host/src/quantum.rs` | QEMU RUN hot path: ceiling publish, wake, report, frame rings |
 | `crates/crucible/crucible-qemu-plugin/src/round_robin.rs` | In-guest round-robin vCPU cursor |
-| `crates/crucible/crucible-qemu-plugin/src/idle_loop.rs` | Idle wake planning and the parked idle loop |
+| `crates/crucible/crucible-qemu-plugin/src/idle_loop.rs`, `idle_loop/planning.rs` | The parked idle loop; `compute_idle_wake_plan` |
 
 All `.../scheduler/` paths are under `crates/crucible/crucible-engine/src/`.
 
@@ -46,7 +62,8 @@ Four commitments shape the implementation.
    one total order without a coordination protocol that is itself a scheduler,
    so the design collapses to one. Control is applied only between quanta, so
    the quantum is the atomic unit of both advancement and control.
-2. **Conservative parallel discrete-event simulation** (Chandy-Misra-Bryant). A
+2. **Conservative parallel discrete-event simulation** (PDES), in the
+   Chandy-Misra-Bryant (CMB) form. A
    node advances only into virtual time where no peer can still deliver an
    earlier event. Nothing is ever rolled back. Optimistic (Time Warp) schemes
    are not used because rolling back a full VM image is expensive and is itself
@@ -75,11 +92,21 @@ requests, the control inbox, and the event-log prefix. No other component
 mutates that state.
 
 The session owns the scheduler as a `QuantumLoop` implementation and drives it
-one quantum at a time. `drive_engine_quantum` in `crucible-session` is the only
-session-side call into `QuantumLoop::drive_quantum`; `SessionDriver` has no
-backend-advancement API of its own. Backends implement `SimulationBackend`:
-they advance toward a scheduler-supplied ceiling and report what they
-observed, but never choose cross-node order or derive their own schedule.
+one quantum at a time. `crucible-session` calls into the loop in three places:
+
+- `drive_engine_quantum` in `session/core.rs` calls
+  `QuantumLoop::drive_quantum`; `SessionDriver::drive_quantum` forwards to it.
+- `drive_engine_concurrent_quantum` in the same file calls
+  `ConcurrentQuantumLoop::drive_concurrent_quantum` for a host-concurrent
+  round (see [Host concurrency](#host-concurrency)).
+- `Engine::step_quantum` in `session/engine.rs` calls
+  `QuantumLoop::drive_quantum` on the loop the engine owns.
+
+None of them advances a backend directly. Backends implement
+`SimulationBackend`: they advance toward a scheduler-supplied ceiling and
+report what they observed, but never choose cross-node order or derive their
+own schedule. With a live backend the loop is `BackendQuantumLoop`, which
+wraps the `SingleScheduler` and a backend and implements both loop traits.
 
 `SchedulerActor` wraps one `SingleScheduler` behind a message-only surface:
 
@@ -241,6 +268,9 @@ effective_horizon(node) =
                        native boundaries, conservative authorization, and
                        pending inputs for the node
 ```
+
+A native boundary is an armed timer or input deadline that the backend
+reported in its I/O inventory for the node (`imported_native_boundary`).
 
 `advance_candidates` builds one `AdvanceCandidate` per node with a finite
 projection strictly ahead of its current time, then sorts by
@@ -598,7 +628,9 @@ Cross-node sends are authorized against the current topology through
 `SchedulerSendAuthorizer::authorize_cross_node_send`. The scheduler refuses a
 send while any topology change is pending (sends are frozen until it applies)
 and refuses a send with no effective edge. A successful
-`SchedulerSendAuthorization` records the topology epoch. The SimDouble and
+`SchedulerSendAuthorization` records the topology epoch. The `SimDouble`
+test double (see
+[testing-and-gates.md](testing-and-gates.md#the-in-process-qemu-double)) and
 QEMU outbound emission paths require an explicit authorizer before writing or
 draining VM-to-router frames.
 
@@ -664,7 +696,11 @@ built from the same `advance_candidates` as serial PICK:
 - Otherwise the set is every candidate that shares the minimum target and
   starts at the common frontier.
 
-Host worker count is not an input to the semantic set. The concurrent path
+Host worker count is not an input to the semantic set. `SingleScheduler`
+implements `ConcurrentQuantumLoop` in `scheduler/liveness.rs`; the live-backend
+implementation is `BackendQuantumLoop` in
+`scheduler/event_log/backend_loop/host_concurrent.rs`, and its serial
+`drive_quantum` is the same path with one host worker. The concurrent path
 (`ConcurrentQuantumLoop::drive_concurrent_quantum`) publishes the selected
 ceilings before dispatch, runs the nodes, then commits each completion through
 RESOLVE, EMIT, and STEP on the single scheduler in canonical completion order.
@@ -714,8 +750,8 @@ paths inert and is not a Crucible runtime accelerator.
 The launch default is `DEFAULT_RR_SWITCH_QUANTUM = 4096` in
 `crates/crucible/crucible-qemu-host/src/launch.rs`. Any fixed value is
 deterministic; the value trades race-surfacing granularity against switch
-overhead, and 4096 was the smallest measured candidate that met the throughput
-floor without losing race discrimination.
+overhead. The measurement behind 4096 is cited in
+[qemu-integration.md](qemu-integration.md#multi-vcpu-launch).
 
 The scheduler publishes only the node ceiling, one per RUN. For nodes with a
 `SchedulerRunSubdivisionPolicy { node, vcpu_count, rr_switch_quantum }`, it
@@ -756,8 +792,8 @@ before the reached time are cleared after RUN. The plugin computes the same
 node deadline with `aggregate_multi_vcpu_deadline`.
 
 When all vCPUs are halted, the patched QEMU round-robin idle callback may
-release the BQL around one futex wait and must rescan all vCPUs before doing
-any further work; see [qemu-patch.md](qemu-patch.md).
+release QEMU's big lock (the BQL) around one futex wait and must rescan all
+vCPUs before doing any further work; see [qemu-patch.md](qemu-patch.md).
 
 ## Preemption
 

@@ -1,8 +1,12 @@
 # Control API
 
 The control API is the programmatic surface over the session control plane
-(see [session.md](session.md)). It is two co-designed things that share one
-message vocabulary:
+(see [session.md](session.md)). It is the operator-facing RPC API between
+clients and the daemon; it is not the Unix-socket protocol the host speaks to
+the plugin inside each QEMU process, which is described in
+[control-protocol.md](control-protocol.md). Session, quantum, and the other
+model terms are defined in the [glossary](glossary.md). The API is two
+co-designed things that share one message vocabulary:
 
 1. An **in-process client** that reaches a same-process session actor through
    its mailbox and lock-free mirrors, with no serialization.

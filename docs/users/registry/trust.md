@@ -8,7 +8,7 @@ can write the serving surface; it does not replace those checks.
 These controls authenticate the publisher and exact content; they do not prove
 that a package is benign. Review the selected typed resources and native
 providers in [Understand native package runtime
-policy](../aos/package-sandbox.md) in addition to establishing registry trust.
+policy](../aos/package-runtime-policy.md) in addition to establishing registry trust.
 Consumer-side registry selection
 and bootstrap are documented in [Configure package registries](../aos/registries.md);
 this guide owns the producer's key and incident procedures.
@@ -207,7 +207,7 @@ apr store verify --registry acme
 ```
 
 Then release and upload the correction at a higher registry version. For a
-channel rollout, advance affected buckets forward to that release:
+channel rollout, advance affected partitions forward to that release:
 
 ```sh
 apr release 2026.8.2 \
@@ -219,7 +219,7 @@ apr release 2026.8.2 \
   --upload-url s3://acme-packages/registry
 ```
 
-Do not delete old release objects or move channel buckets backward. Existing
+Do not delete old release objects or move channel partitions backward. Existing
 hosts may need an explicit package or OS upgrade, and incident responders may
 need the immutable release for forensics. Publish a fixed package version,
 advance to a higher registry release, and verify the deployed state.

@@ -15,12 +15,14 @@ Three version numbers are easy to confuse:
 - a package version identifies a package build, such as `curl` 8.10.1;
 - a registry release is a signed snapshot of the whole catalog, such as
   `2026.8.0`;
-- a channel maps 256 stable consumer buckets to registry releases.
+- a channel maps 256 stable consumer partitions to registry releases.
 
-An unpublished release stage records an exact candidate revision and upload
-inventory. It stays out of default catalogs and channels; directly addressed
-refs, digests, and cache URLs may still expose uploaded bytes. It is distinct
-from a staging deployment. See [Release stages](../../engineering/registry/release-stages.md).
+A release stage is an unpublished candidate: an exact revision and its upload
+inventory, held back from default catalogs and channels until a maintainer
+finalizes it. The Hub console lists stages as candidates under **Publishing**.
+A release stage is distinct from a staging deployment. See
+[Upload an unpublished candidate](publishing.md#upload-an-unpublished-candidate)
+for the workflow and its confidentiality limits.
 
 Changing package metadata does not change consumers until a maintainer creates
 and publishes a registry release. Publishing a registry release does not move

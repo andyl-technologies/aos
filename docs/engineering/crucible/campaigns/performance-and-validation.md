@@ -6,6 +6,17 @@ performance gates prove that hot forking actually improves the cost model. The
 canonical gate catalog is `crucible_test_support::campaign_gates`, and each
 gate is wired to a check in `tests/crucible/default.nix`.
 
+Source: the gate catalog in
+[`crucible-test-support/src/campaign_gates.rs`](../../../../crates/crucible/crucible-test-support/src/campaign_gates.rs);
+the Nix wiring in
+[`tests/crucible/default.nix`](../../../../tests/crucible/default.nix).
+
+Relationship to the parent pages: [performance](../performance.md) covers
+the single-run cost model and the perf-bench gate, and
+[testing and gates](../testing-and-gates.md) covers the test layers, the
+ordered gate catalog, and gate targets. This page covers only the
+campaign-specific gates and targets.
+
 ## Cost model
 
 For latent possibilities `L`, branch requests `B`, proposals `P`, admitted
@@ -64,57 +75,37 @@ The gate also enforces these measured targets on the reference profile:
 `gate:campaign-performance` requires planner and queue overhead below 5% of
 guest continuation time on the short-branch corpus, measured by the production
 scaling flight on a pinned reference host, and it ratchets later measurements
-against a reviewed baseline. `gate:campaign-metadata-million` authenticates one
+against a reviewed baseline. No reviewed baseline is pinned yet: only the
+host profile `tests/crucible/fixtures/campaign-performance-reference-host-v1.env`
+is checked in, and until
+`tests/crucible/fixtures/campaign-performance-reference-baseline-v1.env`
+exists the check in `tests/crucible/phase9-campaign-performance.nix` reports
+`BLOCKED` with reason `versioned-reference-baseline-unmeasured` instead of
+enforcing the bound. `gate:campaign-metadata-million` authenticates one
 million real admissions (62,500 requests of 16) with bounded object, index,
 physical-store, and peak-memory evidence. The procedure for measuring and
 pinning the baseline is in
-[Crucible campaign performance baseline](../../../maintainers/crucible-campaign-performance-baseline.md).
+[Crucible campaign performance baseline](performance-baseline.md).
 Baselines and host profiles are content-addressed repository fixtures; updating
 one is a reviewed change with recorded evidence. Determinism gates never
 tolerate a variance band, and performance gates never substitute for
 equivalence.
 
-### Planner publication measurements (2026-09-30)
+### Planner cost profile
 
-A recorded comparison measured a change that combines the three choice-graph
-edits and four request-exploration edits of each planner operation into bounded
-Merkle batches, publishing only nodes reachable from the final batch root. All
-nested-index checks, byte authentication, ancestry, resource admission, and ref
-publication were unchanged. It is prefix evidence, not a million-admission
-qualification. The raw evidence (executable hashes, per-stage operation counts,
-and bytes) is in
-[`planner-prefix-baseline-2026-09-30.json`](planner-prefix-baseline-2026-09-30.json).
+Coordinator work dominates planner time; calls into the planner component are
+a small fraction of the planner stage. Acceptance's immutable reads grow with
+the store because trie authentication cost grows with it, not because ancestry
+is replayed. Each planner operation publishes its choice-graph and
+request-exploration edits as bounded Merkle batches, so only nodes reachable
+from the final batch root are stored.
 
-Each run created a new SQLite/WAL store, performed real discovery, submission,
-and planner acceptance, drained the hot paged queue, then reopened and
-authenticated the complete cold campaign and queue, supervising the real
-planner process. Machine activity was not controlled.
-
-| Requests / admissions | Variant | Setup s | Planner s | Cold reopen s | Physical bytes | Peak RSS KiB |
-| --- | --- | ---: | ---: | ---: | ---: | ---: |
-| 64 / 1,024 | Baseline | 6.402 | 19.978 | 8.116 | 49,602,560 | 24,284 |
-| 64 / 1,024 | Batched | 9.099 | 25.083 | 8.444 | 48,160,768 | 23,864 |
-| 256 / 4,096 | Baseline | 38.858 | 118.066 | 51.744 | 265,428,992 | 39,500 |
-| 256 / 4,096 | Batched | 43.607 | 130.497 | 48.302 | 260,186,112 | 36,480 |
-| 64 / 1,024, repeat | Baseline | 7.547 | 24.642 | 8.227 | 49,602,560 | 24,272 |
-| 64 / 1,024, repeat | Batched | 8.855 | 21.319 | 7.973 | 48,160,768 | 23,952 |
-
-Every run passed, and planner step identities matched between variants for the
-same corpus. Wall times do not show a reliable speedup; the deterministic
-reduction in publication and stored bytes is established. For the 256-request
-corpus, discovery batch calls fell from 1,280 to 768 and bytes from 7,130,435
-to 5,427,126; submission batch calls fell from 2,048 to 1,536 and bytes from
-12,348,470 to 10,613,625; 1,130 fewer objects and 3,426,854 fewer index bytes
-were stored. Coordinator work dominates: real planner component calls were
-1.997 s of the 118.066 s planner stage. Acceptance's fresh immutable reads grew
-from 2,654 calls (2.688 MB) at request 1 to 4,471 calls (8.158 MB) at request
-64, reflecting trie authentication cost that grows with the store, not
-ancestry replay.
-
-To reproduce, build the test without running it:
+To profile a small corpus on the production path, build the test without
+running it:
 
 ```text
-nix develop -c cargo test --manifest-path crates/Cargo.toml --release \
+nix develop --file cargo-shell.nix -c cargo test \
+  --manifest-path crates/Cargo.toml --release \
   -p crucible-daemon --test gate_campaign_metadata_million --no-run
 ```
 
@@ -130,7 +121,8 @@ python3 tests/crucible/campaign-million-profile.py diagnostic.log
 ```
 
 The summary reader bounds every line, requires successful completion, checks
-consecutive step evidence, and hashes the complete ordered step IDs.
+consecutive step evidence, and hashes the complete ordered step IDs. A prefix
+run of this kind is diagnostic evidence, not a million-admission qualification.
 
 ## Lazy-frontier performance
 

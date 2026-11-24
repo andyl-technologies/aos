@@ -200,7 +200,9 @@ separate builder when qualification requires a cache-free sandbox.
 ## The `aos` CLI tool
 
 The `aos` CLI is a Rust tool (`crates/`) for working with this repo. Run it via
-the Nix flake — do NOT use `cargo run` directly (it needs alejandra in PATH):
+the Nix flake. Do NOT use a bare `cargo run`: the binary needs the AOS-built
+native libraries described under "Incremental builds" below. The alejandra
+formatter is linked into the CLI, so `aos fmt` needs no external tool:
 
 ```sh
 # Enter the dev shell (provides aos + aos-dev + just in PATH):
@@ -267,22 +269,37 @@ AOS_DEV_ROOT="$PWD" nix develop --accept-flake-config --file cargo-shell.nix -c 
 
 ### Subcommands
 
-| Command       | Description                                             |
-|---------------|---------------------------------------------------------|
-| `aos fmt`     | Auto-format all `.nix` files with alejandra              |
-| `aos fmt --check` | Check formatting without modifying files           |
-| `aos build`   | Build a system variant or package                       |
-| `aos test`    | Run tests (eval, VM)                                    |
-| `aos show`    | Show package/module information                         |
-| `aos graph`   | Print the dependency graph                              |
-| `aos lint`    | Lint Nix files for common issues                        |
-| `aos gc`      | Garbage-collect old Nix store paths                     |
-| `aos prefetch`| Prefetch a URL and print its hash                       |
-| `aos describe`| Describe a package or module                            |
-| `aos system`  | System variant operations                               |
-| `aos repl`    | Open a Nix REPL with the AOS package set loaded         |
-| `aos why-depends` | Explain why one derivation depends on another      |
-| `aos completions` | Generate shell completions                         |
+`aos --help` and `aos <command> --help` are authoritative; this table is an
+orientation map of the top-level commands.
+
+| Command | Description |
+| --- | --- |
+| `aos fmt` | Format all `.nix` files with the embedded alejandra |
+| `aos fmt --check` | Check formatting without modifying files |
+| `aos build` | Build a package from source |
+| `aos system` | System operations (build, image, eval) |
+| `aos test` | Run tests: `eval`, `rust`, `build`, `vm`, `fleet`, or all layers |
+| `aos show` | Show package metadata |
+| `aos describe` | Show repository or package info |
+| `aos graph` | Show the dependency graph |
+| `aos why-depends` | Debug dependency chains |
+| `aos lint` | Validate package definitions |
+| `aos profile` | Profile a closure for leaked build/dev artifacts |
+| `aos prefetch` | Prefetch source hashes |
+| `aos gc` | Garbage collection |
+| `aos repl` | Interactive Nix REPL |
+| `aos ability` | Inspect native declarations, desired effects, and retained outputs |
+| `aos maintain` | Package maintenance and canonical releases (`aos maintain release`) |
+| `aos hub` | Registry hub client |
+| `aos cache` | Binary cache client (push, pull, prefetch, list) |
+| `aos serve` | Start the HTTP binary cache server |
+| `aos token` | Manage provisioning tokens |
+| `aos image` | Discover and download signed AOS system images |
+| `aos container` | Build, inspect, and transfer OCI container images |
+| `aos vm` | Run downloaded AOS images locally with QEMU |
+| `aos doc` | Browse documentation |
+| `aos language-server` | Serve package option hints over Language Server Protocol stdio |
+| `aos completions` | Generate shell completions |
 
 ## Rust code style
 
@@ -379,9 +396,9 @@ the local design no worse and improve it where that is safe and proportionate.
 ## Documentation
 
 Documentation lives in four sections: `docs/users/` for people running AOS,
-`docs/maintainers/` for people managing installation media, releases, or
-forks, `docs/engineering/` for implementation and design by component, and
-`docs/legal/` for licensing. The [engineering index](docs/engineering/README.md)
+`docs/maintainers/` for people who build AOS from source or manage images,
+releases, registries, the hosted Hub, or forks, `docs/engineering/` for
+implementation and design by component, and `docs/legal/` for licensing. The [engineering index](docs/engineering/README.md)
 lists every engineering page.
 
 - Record a design decision in the relevant `docs/engineering/` page as part of

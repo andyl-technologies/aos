@@ -115,8 +115,7 @@ format: one name per row in backticks, a kind (`function`, `namespace`, or
 <!-- downstream-api:exports:end -->
 
 Builders for Bazel workspaces are not part of this version. The package set's
-current Bazel builders serve AOS's own packages; a downstream Bazel interface
-will be added to this table when it exists.
+Bazel builders serve AOS's own packages and are not exported.
 
 ## Package attributes
 
@@ -366,8 +365,9 @@ The documentation check fails when a removed name is still exported.
 
 ## Verification
 
-These checks guard the contract. All but the fixture build run in
-`nix-build -A checks.eval`; all of them are also flake checks.
+These checks guard the contract. All of them are flake checks and members of
+`nix-build -A checks.downstream`. `nix-build -A checks.eval` also runs them,
+except the fixture build and `flake-outputs`.
 
 - `checks.downstream.api-docs` reads the three marked tables on this page. It
   fails when a row has the wrong format, an exported name is undocumented, a
@@ -380,7 +380,6 @@ These checks guard the contract. All but the fixture build run in
   evaluation. `checks.downstream.fixture-eval` instantiates every fixture
   output; `checks.downstream.fixture` builds the packages and runs the
   fixture's own checks.
-
 - `checks.downstream.toolchain-release` fails when a toolchain set member
   would leave the release package matrix on either Linux platform, and
   `checks.downstream.toolchain-cache-check` tests the cache check command

@@ -8,6 +8,13 @@ The current CLI exposes both concepts, but its interactive and debugger syntax
 is still lower-level than the target design. Treat this page as an exact surface
 reference, not as a promise of a full debugger UI.
 
+What works today: every executed debugger operation needs a live session on a
+daemon started with `serve --production-qemu`. Start with
+[Remote GDB attachment](#remote-gdb-attachment) and address the session with
+`debug --session <id:epoch:seed>`. A local artifact or savepoint target is
+accepted by the parser but exits `4` without executing an operation; see
+[Current limitations](#current-limitations).
+
 The recommended workflow treats the packaged CLI as the source of truth,
 preserves causal evidence, and requires a non-canonical fork before fault
 injection or guest access. The
@@ -95,7 +102,7 @@ put deterministic fault behavior in the scenario's signal graph and bindings.
 For a bounded inspection session, pipe commands explicitly:
 
 ```sh
-printf 'query\nstep\nquery\nstop\n' | \
+printf 'query\nstep-quantum\nquery\nstop\n' | \
   ./result/bin/crucible run scenario.toml --interactive
 ```
 
@@ -120,12 +127,12 @@ the owner's fixed choice bound.
 
 ## Debug command
 
-`debug` accepts either an artifact/savepoint target or a running session:
+`debug` accepts either an artifact/savepoint target or a running session.
+Only the running-session form executes today:
 
 ```sh
-./result/bin/crucible \
-  debug failure.crucible \
-  --at-failure
+./result/bin/crucible [daemon TLS flags] \
+  debug --session <id:epoch:seed> --node node-a attach-gdb
 ```
 
 Coordinate selectors are mutually exclusive:
@@ -210,7 +217,7 @@ configuration and event history:
 
 `reverse-continue` accepts `quiescent`, `at:<virtual-time-ticks>`, or
 `hex:<compact-predicate>`. The compact form is the canonical binary encoding of
-the [scenario predicate](reference.md#properties-and-predicates) and supports
+the [scenario predicate](reference-plan.md#properties-and-predicates) and supports
 that complete condition vocabulary.
 `goto` on a remote session accepts `vtime:<ticks>` (or a bare tick count) and
 `icount:<node>:<retired>` coordinates.
@@ -242,9 +249,10 @@ commands; disconnecting GDB does not discard the derivative. Without
 Campaign-owned sessions survive daemon restart through the campaign owner's
 bounded durable inventory. Restart reauthenticates the original snapshot-bound
 finding proof and exact checkpoint before creating a replacement lifecycle
-session. Use the ordinary session list to obtain its new `id:epoch:seed` and
-the ordinary session destroy operation to remove both the live session and its
-durable inventory entry. Recovery returns to the authenticated canonical
+session. Use the lifecycle API's session-list operation to obtain its new
+`id:epoch:seed` and its session-destroy operation to remove both the live
+session and its durable inventory entry; the CLI has no subcommand for
+either (see [Rust integration API](rust-api.md#lifecycle-control-plane)). Recovery returns to the authenticated canonical
 checkpoint read-only. A prior non-canonical branch is ephemeral and must be
 forked again after restart.
 
@@ -335,15 +343,6 @@ After that fork, GDB `continue`, `step`, and `vCont` requests are mediated by th
 gateway and admitted as ordinary scheduler-owned session commands. They are
 never forwarded directly to QEMU. GDB `step` currently means one deterministic
 scheduler quantum; raw QEMU single-instruction stepping remains disabled.
-
-For example:
-
-```sh
-./result/bin/crucible \
-  debug failure.crucible \
-  --at-failure \
-  reverse-step event
-```
 
 ## Current limitations
 

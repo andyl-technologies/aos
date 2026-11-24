@@ -268,7 +268,7 @@ roll forward with a repair migration or use the reviewed backup recovery procedu
 
 ### Initial production delivery state
 
-The September 8, 2026 production setup creates only `andyl/experimental`. It does not
+The production setup creates only `andyl/experimental`. It does not
 publish packages, system images, OCI containers, or releases. The direct R2
 attachment at `cdn.aos.andyl.org` targets `aos-hub-v2-surfaces`; activating its
 registry delivery route remains a separate step requiring controller observations
@@ -314,9 +314,8 @@ Confirm that the shell contains the staging runtime values, then deploy:
 Use `worker install` instead of `worker deploy` only when the staging Worker has
 never existed. `worker deploy` deliberately requires an existing Worker so an
 OAuth, account, or provider failure cannot be mistaken for initial provisioning.
-Provider settings verified on September 5, 2026 used `hub` for staging, with
-development identity `aos-hub/topology-hard-cutover/2`. That identity is rejected
-by the production baseline. Record the staging database instance and provider
+A staging database that still carries the development identity
+`aos-hub/topology-hard-cutover/2` is rejected by the production baseline. Record the staging database instance and provider
 migration lineage selected by its separate adoption, then preserve them on
 routine updates. A database name alone does not establish its schema version.
 Production uses `hub-v2` as documented below.
@@ -467,8 +466,9 @@ Worker. Probe `https://aos.andyl.org/.well-known/aos-deployment` exactly as for
 staging, then repeat the relevant hosted acceptance tests. The three OCI flags
 are required for the public experimental release path: authenticated upload remains
 permission-gated, verified publication binds the staged graph to the signed AOS
-release, and pull makes the committed result publicly consumable. Container
-administration and garbage collection remain disabled.
+release, and pull makes the committed result publicly consumable. The
+production command also enables container administration and garbage
+collection, which the staging command turns off.
 
 OCI capabilities are enabled by default; the production command records that
 intended configuration explicitly. Use `--oci-<capability>-enabled=false` for a

@@ -82,7 +82,7 @@ Treat a hardening exception as a privilege grant. Record:
 
 For package services, express the resource in the owning typed ability module
 and review the selected native provider. See [Understand native package runtime
-policy](package-sandbox.md). For image services, keep the exception in the
+policy](package-runtime-policy.md). For image services, keep the exception in the
 owning module rather than weakening a global preset.
 
 ## Verify the deployed baseline
@@ -108,7 +108,7 @@ Then run the checks owned by the relevant guides:
 - [Audit an AOS host](auditing.md) for audit state and loaded rules;
 - [Use Secure Boot and verify package trust](secure-boot.md) for verified boot;
 - [Configure package registries](registries.md) for effective trust policy; and
-- [Understand native package runtime policy](package-sandbox.md) for workload resources.
+- [Understand native package runtime policy](package-runtime-policy.md) for workload resources.
 
 A passing systemd state is necessary but not sufficient. Add application
 health, remote-access, registry, storage, attestation, and recovery checks for

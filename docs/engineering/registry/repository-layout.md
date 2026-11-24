@@ -13,12 +13,8 @@ and reads the files below. The signed tag authenticates the whole tree transitiv
 anything being placed in the tag message (tags are pure pointers — see
 [`signing-and-trust.md`](signing-and-trust.md)).
 
-Unpublished candidates follow the [release-stage contract](release-stages.md).
-Maintainer branches are authoring workspaces. Configured channel branch names
-reserve the published frontier, public `HEAD` names the default channel, and
-signed semver releases and the 256-partition schema retain their existing
-meaning. Default catalogs and channels omit drafts; a known ref, digest, cache
-URL, or CDN path may still expose candidate bytes.
+Unpublished release candidates are not part of any published tree; see
+[release-stages.md](release-stages.md).
 
 ---
 
@@ -45,9 +41,11 @@ maintains that roster through rotation and revocation workflows.
 
 ## 2. `registry.toml` — registry-level config (root of the tree)
 
-The git-repo-**root** `registry.toml` is the existing `RegistryRootConfig`
-(`crates/packages/aos-package-manager/src/types.rs`), read by `read_registry_toml`
-(`registry_ops.rs`) and written with a default during `apr create`.
+The git-repo-**root** `registry.toml` is parsed as `RegistryRootConfig`
+(`crates/registry/aos-registry-format/src/manifest.rs`), read by
+`read_registry_toml`
+(`crates/registry/aos-registry-client/src/registry/mirrors.rs`) and written
+with a default during `apr create`.
 
 This is a **committed tree file**, like any package TOML, authenticated by the
 signed tag; the origin does not serve a separate mutable root manifest.
@@ -80,21 +78,26 @@ supported_until = "2028-09-30"
 kind = "try"
 members = [
   { endpoint = "https://cache.aos.dev" },
-  { endpoint = "./nar" },
+  { endpoint = "https://cache-backup.aos.dev" },
 ]
 ```
 
-- `[caches]` is the unified `StackNode` expression. `try` is ordered
-  fall-through and `mirror` declares equivalent replicas; nodes may nest.
-  Consumers flatten the stack depth-first when they need a simple URL list. See
-  [`nix-cache.md`](nix-cache.md).
+- `[caches]` is the unified `StackNode` expression
+  (`crates/registry/aos-registry-format/src/stack.rs`). `try` is ordered
+  fall-through and `mirror` declares equivalent replicas; nodes may nest, and
+  a registry with a single cache may write `[caches]` with just
+  `endpoint = "..."`. Only this table form is accepted: an array-shaped
+  `[[caches]]` list is a schema error. Consumers flatten the stack depth-first
+  when they need a simple URL list; when the table is absent, the registry URL
+  itself is the cache base. See [`nix-cache.md`](nix-cache.md).
 - `require_signed_ukis` is an authenticated, opt-in release gate. When `true`,
-  every directly delivered system image must contain signed UKIs verified
+  every directly delivered system image must contain signed unified kernel
+  images (UKIs) verified
   against the active certificates in committed `sb-certs.toml`. Publishing,
   Hub indexing, and installation all fail closed on unsigned or merely
   unverified UKIs. It defaults to `false`; package-only releases are unaffected.
-- **No signing key here.** The in-repo `RegistryRootConfig.signing` field was
-  removed; a key inside a file authenticated *by* that key is circular for
+- **No signing key here.** `RegistryRootConfig` has no signing field: a key
+  inside a file authenticated *by* that key is circular for
   bootstrap. Key trust lives in the `keys.toml` roster (§3), anchored
   out-of-band by the image-baked `trusted-keys.d` or `apr trust pin`.
 
@@ -138,13 +141,14 @@ id     = "aos-core-2025"
 reason = "rotated"
 ```
 
-**Trust model:** the out-of-band anchor and signed git lineage still authenticate
-the first accepted registry commit and the `keys.toml` roster. Moving-ref release
-commits must carry `tuf/root.json`, `tuf/targets.json`, `tuf/snapshot.json`, and
-`tuf/timestamp.json`; clients verify those role thresholds, metadata versions,
-catalog hashes, and signed timestamp expiry before extracting package metadata.
-Explicit commit/tag/version pins still verify the same signed metadata and hashes
-when TUF exists without expiring old immutable release snapshots.
+**Trust model:** the out-of-band anchor and signed git lineage authenticate the
+first accepted registry commit and the `keys.toml` roster. Moving-ref release
+commits must carry AOS-TUF (The Update Framework) metadata: `tuf/root.json`,
+`tuf/targets.json`, `tuf/snapshot.json`, and `tuf/timestamp.json`; clients
+verify those role thresholds, metadata versions, catalog hashes, and signed
+timestamp expiry before extracting package metadata. Explicit
+commit/tag/version pins still verify the same signed metadata and hashes when
+TUF exists without expiring old immutable release snapshots.
 
 **Rotation:** use `apr keys add <new-id> <new-key>` to update `keys.toml` so it
 lists both old and new keys (an overlap window), then publish the resulting
@@ -169,21 +173,24 @@ appears in a **read-only** baked anchor, the operator re-pins the writable store
 with `apr trust pin --replace`; the `# revoked:` masking excludes the bad key
 without touching the image-baked file.
 
-> **Defence-in-depth note:** even an authenticated-but-wrong cache pointer can't serve
-> bad bytes - every downloaded NAR's decompressed SHA-256 and size must match a
-> blessed NAR in the signed `store/` graph (§5; `verify_downloads`,
-> `crates/packages/aos-package-manager/src/verify.rs`). So the trust that matters is the
-> *tag/commit* chain (which `keys.toml` governs), not the cache list.
+> **Defence-in-depth note:** even an authenticated-but-wrong cache pointer
+> can't serve bad bytes - every downloaded NAR's (Nix archive's) decompressed
+> SHA-256 and size must match a blessed NAR in the signed `store/` graph (§5;
+> `verify_downloads`, `crates/packages/aos-package-manager/src/verify.rs`). So
+> the trust that matters is the *tag/commit* chain (which `keys.toml` governs),
+> not the cache list.
 
 ---
 
 ## 4. `packages/<first-letter>/<name>.toml` — package metadata
 
 Sharded one subdirectory per first letter of the package name (`first_letter`,
-`registry_ops.rs`; layout documented at `parse.rs`, walked at `parse.rs`;
-written by `build_package_toml`, `registry_ops.rs`). The on-disk shape
-is the **nested** `PackageToml` (`registry/parse.rs`); the consumer flattens it
-into `PackageMeta` (`types.rs`) in memory.
+`registry_ops/store_paths.rs`; written by `build_package_toml`,
+`registry_ops/metadata.rs`; parsed and walked by
+`crates/registry/aos-registry-client/src/registry/parse.rs`). The on-disk shape
+is the **nested** `PackageToml`
+(`crates/registry/aos-registry-format/src/manifest.rs`); the consumer flattens
+it into `PackageMeta` (`consumer.rs` in the same crate) in memory.
 
 ```toml
 [package]
@@ -213,9 +220,10 @@ dev = { store_path = "/nix/store/<hash>-curl-8.5.0-dev" }
 The output's **content binding (`nar_hash`/`nar_size`) and dependency edges
 (`references`) are not here** - they live in the `store/` realisation graph
 (§5), the single authority for blessed bytes and dependency shape.
-Registries published before the graph existed still carry these fields per platform entry; the
-parser treats them as optional legacy fields and consumers backfill the
-in-memory metadata from `store/` when absent. `store_path` anchors the
+The producer does not write them. The parser still accepts them per platform
+entry as optional legacy fields, for registries that publish no `store/`
+graph, and consumers backfill the in-memory metadata from `store/` when they
+are absent. `store_path` anchors the
 installable `out` output to its IA hash. `named_outputs` retains every other
 release output as authenticated output metadata. Each entry records its
 `store_path`, optional native `deployment` companion, and output-specific
@@ -274,7 +282,7 @@ blank lines and `#` comments are ignored.
 - **Semantics**: append-mostly; removal is revocation and carries the same
   review weight as a `keys.toml` retirement. Deliberately **no `store/**
   -diff`** gitattribute - content-address changes are the highest-value
-  security-review surface and must show as readable diffs.
+  security-review material and must show as readable diffs.
 
 ---
 
@@ -319,14 +327,6 @@ See also: [`signing-and-trust.md`](signing-and-trust.md) (keys, rotation/revocat
 [`http-layout.md`](http-layout.md) (served layout), and
 [`implementation.md`](implementation.md) (code map).
 
-The public browser scopes Packages, Docs, Images, and Containers to a published
-release. `[registry].default_release` is an optional semantic version used for
-initial navigation; it does not change package-manager tracking or channel
-assignments. Without it, the browser selects the highest verified non-prerelease
-version across all published branches, then the highest verified prerelease.
-A selected version remains in page URLs, filters, searches, and installation
-instructions. An unavailable release does not fall back to another catalog.
-
 `[support]` states how long each stable train (`major.minor`) receives updates.
 It is the qualification contract's `support` export, so consumers and Hubs read
 the reviewed promise from the signed registry. `default.kind` and
@@ -342,15 +342,7 @@ only `support.trains."T"`, taken from its own contract, and the publisher
 refuses a contract that names any other train. `support.default` is written
 only by a release whose train is the newest in the registry. Everything else in
 `registry.toml` stays operator-owned and byte-identical across publications.
-The public Releases page shows one tile per supported train with its newest
-release, marks trains within ninety days of their end date, and lists older
-trains as end of life. Without the table, the browser applies the default rule
-alone.
 
-Docs combines the release's configuration paths into one tree. Any path may be
-opened as a subtree. Child lists, variant lists, and indexed search results use
-50-item cursor pages. Expanding a branch fetches only its immediate children;
-selecting an option loads its exact verified documentation object. Search covers
-the entire release unless the reader chooses the current subtree. Typed path
-segments preserve literal dots and dynamic attributes without confusing them
-with hierarchy separators.
+The public browser's use of `default_release` and `[support]`, and its Docs
+view, are described in
+[Hub control plane and console](../hub/control-plane.md#public-browser).

@@ -7,15 +7,16 @@ fail-closed: incomplete or stale inventory, a changed mutation epoch, a changed
 root/policy/topology digest, or a placement without a proven conditional-delete
 capability blocks deletion.
 
-All five OCI rollout gates default to false: pull, push, verified publication,
-administration, and GC. Enable GC only after pull/push behavior, complete
-inventories, and the provider's exact conditional-delete observation have been
-validated. The GC gate controls plan, apply, and run evidence reads; disabling
-it does not disable pull.
+All five OCI rollout gates are enabled by default: pull, push, verified
+publication, administration, and GC. Disable the GC gate, as described under
+[rollout gates](oci-containers.md#rollout-gates), until pull/push behavior,
+complete inventories, and the provider's exact conditional-delete observation
+have been validated. The GC gate controls plan, apply, and run evidence reads;
+disabling it does not disable pull.
 
 ## Readiness and capability probing
 
-Before enabling GC, verify every enabled placement has a complete inventory
+Before relying on GC, verify every enabled placement has a complete inventory
 whose captured registry epoch and immutable placement, binding, and write-state
 versions still match. The inventory must be newer than the planner's maximum
 inventory age. A provider name, bucket kind, or successful unconditional delete
@@ -372,7 +373,7 @@ identities never become metric labels.
 
 ## Incident response
 
-1. Disable `HUB_OCI_GC_ENABLED` without disabling pull. Preserve the database,
+1. Set `HUB_OCI_GC_ENABLED=false` without disabling pull. Preserve the database,
    provider inventory, Worker/native logs, generation JSON, and audit records.
 2. List blockers and placement actions for the affected generation. Do not
    manually mark a failed action complete or release logical identity/quota.
@@ -386,8 +387,8 @@ identities never become metric labels.
    restore the exact reviewed object identity, binding write revision, and
    credential generation. Never create a competing plan, retarget the action
    to current bytes or credentials, or retry it as an unconditional delete.
-6. After exact repair, use a controlled maintenance window to re-enable
-   `HUB_OCI_GC_ENABLED`, then requeue only that same frozen failed action with
+6. After exact repair, use a controlled maintenance window to re-enable the
+   GC gate, then requeue only that same frozen failed action with
    its current resource version and a stable operator retry key:
 
    ```sh

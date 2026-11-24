@@ -7,9 +7,11 @@ AOS Hub has two deployment models:
 - the Cloudflare Worker uses Durable Object SQLite, R2, KV, provider rate
   limits, and scheduled maintenance.
 
-Choose the model before provisioning data. The local `aos-hub` operator CLI
-cannot administer a Worker's Durable Object database, and the native state
-directory is not a Worker backup format.
+Choose the model before provisioning data. The local `aos-hub` command
+cannot open a Worker's Durable Object database, and the native state
+directory is not a Worker backup format. Both models are administered through
+the console and the remote `aos hub` client; the examples below assume an
+`aos hub login` session with sufficient authority.
 
 Use [Trust an internal AOS Hub deployment](trust.md) to assign signing,
 administrative, storage, and client-bootstrap authority before deployment.
@@ -30,7 +32,9 @@ and TLS, authentication material, backups, and observability.
 
 ## Put the native server behind TLS
 
-Bind the native service to loopback and set its public origin:
+The native server can terminate TLS itself; see
+[Terminate TLS](native.md#terminate-tls). To use a reverse proxy instead,
+bind the native service to loopback and set its public origin:
 
 ```nix
 {
@@ -64,51 +68,64 @@ The application route itself does not require authentication.
 
 ## Bootstrap administrative access
 
-Initialize a native instance as the service account while it is stopped:
-
-```sh
-systemctl stop aos-hub.service
-printf '%s\n' "$ROOT_PASSWORD" | \
-  systemd-run --pipe --wait --collect \
-    --uid=aos-hub --gid=aos-hub \
-    aos-hub --root /var/lib/aos-hub init \
-      --root-email ops@example.com \
-      --root-password-stdin
-systemctl start aos-hub.service
-```
-
-Do not initialize as root; root-owned SQLite or WAL files prevent the
-sandboxed service from writing its state.
+Initialize a native instance as the service account while it is stopped,
+never as root. The exact commands are in
+[Configure the AOS service module](native.md#configure-the-aos-service-module).
+If the owner password is lost, `aos-hub reset-root --email <address>
+--password-stdin` resets it against the same state root, under the same
+service-account rule.
 
 For the Worker, use the installer bootstrap flow in
 [Deploy AOS Hub to Cloudflare](cloudflare.md). Record `HUB_JWT_SECRET` and
 `HUB_SEAL_KEY` when the first deployment generates them.
 
-Set the signup policy explicitly. `invite_only` is the normal starting point
-for an organizational Hub:
+Confirm the signup policy explicitly. `invite_only` is the default and the
+normal starting point for an organizational Hub; `open` is the alternative.
+Read the identity settings and their revision, then plan and apply a change:
 
 ```sh
-aos-hub --root /var/lib/aos-hub \
-  instance set-signup-policy invite_only
-aos-hub --root /var/lib/aos-hub \
-  instance show-signup-policy
+aos hub instance identity show
+
+aos hub instance identity update plan signup_policy=invite_only \
+  --if-version '<settings-revision>' \
+  --idempotency-key plan-signup-policy
+aos hub instance identity update apply \
+  --plan-id '<plan-id>' --confirm-hash '<hash>' \
+  --idempotency-key apply-signup-policy --yes
 ```
 
-Local operator commands bypass public HTTP authorization. Limit shell and
-state-directory access accordingly.
+The local `aos-hub init`, `reset-root`, and `index` commands bypass public HTTP
+authorization. Limit shell and state-directory access accordingly.
 
 ## Configure identities and automation
 
-Use narrowly scoped provisioning tokens. The secret is printed once and the
-Hub stores only its hash:
+Use narrowly scoped tokens owned by a service account. Create the account,
+copy the registry's canonical scope from `aos hub whoami`, then plan and apply
+the token:
 
 ```sh
-aos-hub --root /var/lib/aos-hub \
-  token mint acme/platform/cdn \
-    --permission publish \
-    --owner release-bot \
-    --expires-days 30
+aos hub org service-account create plan acme release-bot \
+  --idempotency-key plan-create-release-bot
+aos hub org service-account create apply \
+  --plan-id '<plan-id>' --confirm-hash '<hash>' \
+  --idempotency-key apply-create-release-bot --yes
+
+aos hub access-token issue plan \
+  'registry:0123456789abcdef0123456789abcdef' \
+  --owner 'service_account:acme/release-bot' \
+  --permission publish \
+  --ttl-secs 2592000 \
+  --comment 'release publisher' \
+  --idempotency-key plan-release-bot-token
+aos hub access-token issue apply \
+  --plan-id '<plan-id>' --confirm-hash '<hash>' \
+  --idempotency-key apply-release-bot-token --yes
 ```
+
+The server rechecks the owner's current role authority when applying the
+plan. The secret is
+printed once by the first successful apply and the Hub stores only its hash.
+Tokens default to 30 days and cannot exceed 90.
 
 Store the token immediately. Automation may exchange it through the explicit
 provisioning grant with:
@@ -124,7 +141,7 @@ objects does not require instance administration.
 
 OIDC configuration supports issuer and endpoint metadata, JWKS, group-to-role
 mapping, enforced SSO, and optional just-in-time provisioning. Use the
-authenticated Web console or the remote `aos hub org identity-provider`
+console or the remote `aos hub org identity-provider`
 commands. The remote CLI reads a replacement credential from
 `AOS_OIDC_CLIENT_SECRET`; it does not require the secret in process arguments.
 Claim email domains separately with `aos hub org domain`. Verification resolves
@@ -164,13 +181,14 @@ snapshot procedure with defined object/database ordering. Copying a live
 `hub.db` while ignoring its WAL files is not a backup.
 
 Test restoration on an isolated listener. Restore service-account ownership,
-start a compatible Hub build, and verify:
+start a compatible Hub build, sign in to the restored instance, and verify:
 
 ```sh
 curl -fsS http://127.0.0.1:8420/healthz
-aos-hub --root /var/lib/aos-hub org list
-aos-hub --root /var/lib/aos-hub registry list
-aos-hub --root /var/lib/aos-hub cache list
+aos hub login --hub '<restored-hub-url>'
+aos hub org list
+aos hub registry list
+aos hub cache list
 ```
 
 Then exercise sign-in, a private read, package publication, registry indexing,
@@ -191,61 +209,83 @@ account-level retention and export procedures for Durable Object SQLite, R2,
 KV, deployed Worker configuration, secrets, domains, and log destinations.
 
 The packaged installer deploys and migrates the application; it is not a
-complete provider backup or cross-account restore tool. Prove recovery in a
-separate Worker name and storage namespace.
+complete provider backup or cross-account restore tool. For the database
+alone, it can capture and restore a Durable Object SQLite point-in-time
+recovery bookmark. Both commands authenticate with the deployment's
+`HUB_SEAL_KEY`, read from the environment or `--seal-key`:
 
-Protect `HUB_SEAL_KEY` as recovery-critical material. Replacing it without
-migrating sealed data can make OIDC credentials, storage credentials, and
-hosted signing keys unreadable. Rotating `HUB_JWT_SECRET` intentionally
-invalidates issued access tokens.
+```sh
+aos-hub worker backup-bookmark --url https://hub.example.com
+
+aos-hub worker restore-bookmark --url https://hub.example.com \
+  --bookmark '<bookmark>' \
+  --confirm-database-instance '<database-instance>' \
+  --confirm-deployment-id '<deployment-id>'
+```
+
+`backup-bookmark` captures the current state, or an approximate past time with
+`--timestamp-ms`. `restore-bookmark` is destructive: it schedules the restore
+for the database's next session and requires the live database instance name
+and deployment identity as confirmation. A bookmark covers the database only.
+Prove recovery in a separate Worker name and storage namespace.
+
+Protect `HUB_SEAL_KEY` and `HUB_JWT_SECRET` as described in
+[Record and protect secrets](cloudflare.md#record-and-protect-secrets).
 
 ## Control storage growth
 
-Set organizational quotas before onboarding publishers:
+Neither CLI has a command for organization quotas. Bound growth with cache
+retention and garbage collection instead. Caches are addressed as
+`<org>/<cache>`.
+
+Subscribe a cache to the registry content it must retain. This example keeps
+the registry's current catalog closure:
 
 ```sh
-aos-hub --root /var/lib/aos-hub \
-  org set-quota acme \
-    --max-bytes 536870912000 \
-    --max-objects 5000000 \
-    --max-registries 20 \
-    --max-tokens 100
+aos hub cache retention set acme/builds \
+  --registry acme/cdn \
+  --current-catalog \
+  --plan --idempotency-key plan-builds-retention
 ```
 
-For a managed cache, link registry roots and set an explicit retention policy:
+Apply the printed plan with `--plan-id`, `--confirm-hash`, and `--yes`. Other
+selectors retain channel targets (`--channel`, `--all-channel-targets`), recent
+releases (`--recent-releases`), or exact releases (`--release`).
+
+Review the cache-wide collection policy, which holds the grace period for
+unreferenced objects, soft size limits, and the schedule:
 
 ```sh
-aos-hub --root /var/lib/aos-hub \
-  cache link acme-cache acme-cdn \
-    --roots-packages --advertise
-
-aos-hub --root /var/lib/aos-hub \
-  cache gc-policy acme-cache \
-    --max-bytes 214748364800 \
-    --ttl 14d \
-    --keep-versions 3 \
-    --schedule 6h
+aos hub cache gc policy show acme/builds
 ```
 
-Preview a native sweep before deletion:
+`aos hub cache gc policy set` replaces the whole policy and requires every
+field; run it with `--help` for the list.
+
+Garbage collection is a reviewed plan followed by a run. Create a plan, read
+what it would collect and what is still rooted, then run that exact plan:
 
 ```sh
-aos-hub --root /var/lib/aos-hub \
-  cache gc acme-cache --dry-run
-aos-hub --root /var/lib/aos-hub \
-  cache roots acme-cache
+aos hub cache gc plan create acme/builds
+aos hub cache gc plan show acme/builds '<plan-id>'
+aos hub cache retention roots acme/builds
+
+aos hub cache gc run acme/builds \
+  --plan-id '<plan-id>' --confirm-hash '<hash>' \
+  --idempotency-key run-builds-gc-1 --yes --wait
 ```
 
-The native server records a schedule in policy but does not currently run
-scheduled cache GC from its background loop. Invoke `cache gc` from a reviewed
-timer or runbook after the dry run. The Worker cron path evaluates scheduled
-cache GC policies.
+A cache's first destructive sweep has its own acknowledgement gate under
+`aos hub cache gc first-sweep`. Inspect earlier runs with
+`aos hub cache gc runs list acme/builds`.
 
-Pin release or incident artifacts that must survive normal retention:
+Pin release or incident artifacts that must survive normal retention with a
+manual root. Omit `--lease-until` for an indefinite root:
 
 ```sh
-aos-hub --root /var/lib/aos-hub \
-  cache pin acme-cache STORE_HASH --ttl 30d
+aos hub cache root create acme/builds STORE_HASH \
+  --reason 'incident evidence' \
+  --plan --idempotency-key plan-pin-incident
 ```
 
 ## Monitor the service
@@ -259,9 +299,10 @@ For the native server, collect:
 - process restarts, memory, filesystem space, and SQLite errors;
 - public registry, Git, NAR, and authenticated API probes.
 
-The systemd unit uses `Type=simple`, restarts with backoff, and fails after a
-bounded crash loop. The binary does not emit systemd readiness or watchdog
-notifications.
+The AOS service module restarts the process after it exits, with a
+five-second delay. The binary does not emit systemd readiness or watchdog
+notifications, so a running process is not proof of a healthy Hub; probe
+`/healthz`.
 
 ```sh
 systemctl status aos-hub.service
@@ -290,7 +331,7 @@ data back.
 1. Preserve logs, version, health output, and recent audit entries.
 2. Stop publishers or token exchange if integrity is uncertain.
 3. Distinguish database, object storage, public routing, and identity failure.
-4. Revoke affected provisioning tokens or memberships.
+4. Retire affected access tokens or remove memberships.
 5. Preserve signing and sealing keys before replacing state.
 6. Restore into isolation and verify before returning traffic.
 7. Reindex registries and validate representative cache objects.

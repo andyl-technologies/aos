@@ -8,9 +8,22 @@ unit that is persisted, shared, and garbage-collected.
 
 The algebra it records (`Configuration`, `try_step`, `instantiate`, the replay
 oracle) is described in [execution-model.md](execution-model.md). This page
-covers the data structure, its storage, and its lifecycle. The code lives in
-`crates/crucible/crucible-engine/src/model/temporal_graph/`,
-`model/materialized.rs`, and `model/dag_store.rs`.
+covers the data structure, its storage, and its lifecycle. Terms such as thin
+and fat checkpoint, frontier, and DAG store are defined in the
+[glossary](glossary.md).
+
+## Code map
+
+Paths are relative to `crates/crucible/crucible-engine/src/model/`.
+
+| Path | Owns |
+| --- | --- |
+| `temporal_graph/core.rs` | `TemporalGraph` and its maps |
+| `temporal_graph/core/checkpoint_cache.rs` | The fat-checkpoint cache API |
+| `temporal_graph/search_storage.rs` | Closure recording and persistence, the replay oracle, garbage collection, frontier enumeration, CoW accounting |
+| `materialized.rs` | `Checkpoint`, `MaterializedState`, `MaterializationPolicy`, `CowDeltaKind`, `CowSharingStats` |
+| `engine/reduction_helpers.rs` | Checkpoint edge validation (`checkpoint_edge`) |
+| `dag_store.rs`, `dag_store/local.rs` | The engine `DagStore` trait, `LocalDagStore`, `TemporalGraphStoreKeys`, and the GC root and report types |
 
 ## Closure of genesis under `try_step`
 
@@ -128,13 +141,22 @@ pub struct MaterializedState {
 | `event_log_segments` | Retained segment keys for shared-store fetches | Event log |
 
 `SchedulerState` captures the state required for a resume to reproduce
-cross-node ordering: per-node `horizons`, `pending_frames` (each
-`PendingFrame` has a source, sequence, `delivery_icount`, and payload hash),
-`network_link_cursors`, `event_sequences`, the effective topology epoch, edges,
-and pending topology changes, the `timers` registry, pending device decisions,
-and the captured search frontier. These are exactly the pieces that must live
-inside the configuration for resume plus continue to equal an uninterrupted
-run. A checkpoint that omits one fails the replay oracle.
+cross-node ordering:
+
+- per-node `horizons`;
+- `pending_frames`, where each `PendingFrame` has a source, sequence,
+  `delivery_icount` (a delivery tick despite the field name), and payload
+  hash;
+- `network_link_cursors` and `event_sequences`;
+- the effective topology: `topology_epoch`, `effective_topology_edges`, and
+  `pending_topology_changes`;
+- the `timers` registry;
+- `pending_device_decisions`;
+- the captured `search_frontier`.
+
+These are exactly the pieces that must live inside the configuration for
+resume plus continue to equal an uninterrupted run. A checkpoint that omits
+one fails the replay oracle.
 
 `MaterializedState::id` hashes the domain `crucible.materialized-state.v2` over
 the VM snapshots, device overlays, scheduler state, decision-RNG state, and
@@ -159,10 +181,12 @@ A checkpoint exists in one of two forms. Identity does not depend on which.
 The thin form is canonical. The schedule delta is the one datum that cannot be
 recomputed, so it is what must be stored. Replay from an ancestor depends only
 on intra-VM determinism and the delta, never on snapshot completeness. A fat
-checkpoint is a cache of `reduce`, and a cache can be wrong, so it must earn
-trust through the replay oracle. If a device's checkpoint capture were
-incomplete, keeping the affected checkpoints thin degrades performance and
-never correctness.
+checkpoint is a cache of the state a backend produces when it realizes the
+configuration (the model-level `reduce` returns only an identity; see
+[execution-model.md](execution-model.md#reduce-the-pure-meaning)). A cache can
+be wrong, so it must earn trust through the replay oracle. If a device's
+checkpoint capture were incomplete, keeping the affected checkpoints thin
+degrades performance and never correctness.
 
 The cache API on `TemporalGraph` (in
 `model/temporal_graph/core/checkpoint_cache.rs`):
@@ -423,7 +447,21 @@ configuration ids; see
 
 | Check | Covers |
 | --- | --- |
-| `checks.crucible.phase1.gates.contentAddress` | Runs the `crucible-engine` `gate_content_address` test: checkpoint identity independent of state, fingerprints, and metadata; malformed parent edges; parent-chain schedule reconstruction; `crucible_engine::CowDeltaRef` sharing and `marginal_fork_cow_delta_objects`; `crucible_engine::DagStore`, `crucible_engine::LocalDagStore`, and `crucible_engine::DagStoreReproductionArtifact`; `crucible_engine::TemporalGraphGcRoots` and `crucible_engine::TemporalGraphGcReport`; `crucible_engine::FrontierReductionPolicy` and `TemporalGraph::enumerate_frontier_reduced`; `TemporalGraph::save` and `TemporalGraph::fork` |
+| `checks.crucible.phase1.gates.contentAddress` | The `crucible-engine` `gate_content_address` test; coverage listed below |
 | `checks.crucible.phase1.gates.replayOracle` | Fat/thin equality, materialization admission, eviction on mismatch, GC realizability |
 | `checks.crucible.phase1.executionGraphOperations` | Save, on-demand replay, and frontier enumeration |
 | `checks.crucible.phase1.executionCacheEviction` | Eviction leaves identity and replayed state unchanged |
+
+`gate_content_address` covers:
+
+- checkpoint identity independent of state, fingerprints, and metadata;
+- malformed parent edges and parent-chain schedule reconstruction;
+- `crucible_engine::CowDeltaRef` sharing and
+  `marginal_fork_cow_delta_objects`;
+- `crucible_engine::DagStore`, `crucible_engine::LocalDagStore`, and
+  `crucible_engine::DagStoreReproductionArtifact`;
+- `crucible_engine::TemporalGraphGcRoots` and
+  `crucible_engine::TemporalGraphGcReport`;
+- `crucible_engine::FrontierReductionPolicy` and
+  `TemporalGraph::enumerate_frontier_reduced`;
+- `TemporalGraph::save` and `TemporalGraph::fork`.

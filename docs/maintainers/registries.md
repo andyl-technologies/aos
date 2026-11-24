@@ -24,7 +24,7 @@ Each destination selects a qualification profile, listed in the
 kind selects the same profile on both registries. Experimental epochs
 (`andyl/experimental-vN`) carry the same destinations as `andyl/experimental`.
 
-Never move a experimental release into main. Graduation is a new main-registry
+Never move an experimental release into main. Graduation is a new main-registry
 release plan built from a reviewed source commit; it is not a channel move
 across registries. The experimental registry carries only `edge` because its releases never
 graduate: a candidate or stable stream on experimental infrastructure would
@@ -56,7 +56,7 @@ credentials, and storage remain isolated. Do not create `andyl/staging` or sign
 a staging-only registry name.
 
 A surface is either an AOS Hub deployment or a
-[static origin](canonical-releases.md#static-surfaces) served from a
+[static origin](release-static-surfaces.md#static-surfaces) served from a
 filesystem, S3, or SFTP location and read back over HTTPS. A registry does not
 require a Hub. A Hub staging surface may pair with a Hub or static production
 surface; a static staging surface requires a static production surface.

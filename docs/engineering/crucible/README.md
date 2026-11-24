@@ -26,11 +26,14 @@ the license and process-boundary policy lives in
 ```text
   L4  control plane       crucible-session, crucible-control-api,
                           crucible-control-client, crucible-control-server,
-                          crucible-daemon, crucible-cli (command: crucible)
+                          crucible-daemon, crucible-cli (command: crucible),
+                          crucible-store-s3
   L3  engine              crucible-engine: scenario model, scheduler, faults,
-                          assertions, event log, temporal graph
+                          assertions, event log, temporal graph;
+                          crucible-store, crucible-campaign
   L2  QEMU integration    crucible-qemu-host (host), crucible-qemu-plugin
-                          (loaded into QEMU), crucible-guest
+                          (loaded into QEMU), crucible-guest,
+                          crucible-qemu-debug-gateway
   L1  co-sim transport    crucible-qemu-shmem (ABI), crucible-qemu-protocol,
                           crucible-device (disk, 9p, and network sub-nodes)
   L0  deterministic core  crucible-determinism
@@ -39,6 +42,22 @@ the license and process-boundary policy lives in
 Each layer has its own determinism gate, and higher layers build only on
 lower layers whose gates are green. See [crate structure](crate-structure.md)
 for the complete crate map and dependency rules.
+
+## Reading order
+
+For a first pass through the code, read these five pages in order:
+
+1. [Architecture](architecture.md) for the processes, crates, and data flow.
+2. [Glossary](glossary.md) for the vocabulary; keep it open while reading
+   the rest.
+3. [Execution model](execution-model.md) for the state type and the reduction
+   every other page builds on.
+4. [Scheduling](scheduling.md) for how a quantum advances the system.
+5. [Testing and gates](testing-and-gates.md) for what to run before sending a
+   change.
+
+After that, go to the page for the crate you are changing;
+[crate structure](crate-structure.md) maps each crate to its page.
 
 ## Pages
 
@@ -93,6 +112,8 @@ Exploration and debugging:
 Building and qualifying:
 
 - [Testing and gates](testing-and-gates.md): the layered determinism harness.
+- [Gate evidence scope](gate-evidence.md): component tests versus live QEMU
+  evidence.
 - [Engineering standards](engineering-standards.md): Crucible-specific checks.
 - [Crate structure](crate-structure.md): crates, layers, and dependencies.
 - [Performance](performance.md): the cost model and measured checks.

@@ -4,8 +4,8 @@ The repository ships two Hub command surfaces with different trust boundaries.
 
 | Command | Talks to | Use it for |
 | --- | --- | --- |
-| `aos-hub` | A native Hub's local SQLite database, local storage, or the deployment provider | Starting and initializing a native server, trusted local administration, indexing, validation, and Worker deployment |
-| `aos hub` | A running Hub's public HTTP API | Public reads, token-authorized workflows, integrations, and JSON output |
+| `aos-hub` | A native Hub's local SQLite database, or the deployment provider | Starting and initializing a native server, root-account recovery, on-demand indexing, and Worker deployment |
+| `aos hub` | A running Hub's public HTTP API | All resource administration on either deployment, public reads, integrations, and JSON output |
 
 ## Local operator command: `aos-hub`
 
@@ -15,23 +15,32 @@ Build it with:
 nix build .#pkg-aos-hub
 ```
 
-Most native administration starts with the state root:
+The command surface is deliberately small. Every command except `worker`
+acts on the state root named by `--root`:
+
+| Command | Purpose |
+| --- | --- |
+| `serve` | Run the Hub server |
+| `init` | Create or migrate the database and optionally bootstrap the root administrator |
+| `reset-root` | Reset or create a root administrator's password |
+| `index [slug]` | Re-index one registry, or every registry, now |
+| `schema dump` | Print the migration statements as a JSON array |
+| `worker` | Deploy and manage the Cloudflare Worker |
 
 ```sh
-./result/bin/aos-hub --root /var/lib/aos-hub registry list
-./result/bin/aos-hub --root /var/lib/aos-hub org list
+./result/bin/aos-hub --root /var/lib/aos-hub index
 ```
 
-The command groups cover registries, organizations, projects, storage
-bindings, caches, indexing, tokens, members, identity providers, domains,
-hosted keys, channels, webhooks, validation, mirrors, and instance settings.
-Run `aos-hub --help` and `aos-hub <group> --help` for the exact command surface
-in your build.
+Run `aos-hub --help` and `aos-hub <command> --help` for the exact flags in
+your build.
 
-These commands are trusted, out-of-band operations: they act directly on local
-state rather than going through HTTP authorization. They do not open a Worker's
-Durable Object database. Use the web console, API, or `aos hub` for remote
-administration of a Worker deployment.
+The state-root commands are trusted, out-of-band operations: they act directly
+on local state rather than going through HTTP authorization. They do not open a
+Worker's Durable Object database.
+
+`aos-hub` has no commands for organizations, registries, bindings, caches,
+tokens, members, or instance settings. Administer those through the console,
+the API, or `aos hub` on both native and Worker deployments.
 
 The `aos-hub worker` group is the exception: it authenticates to Cloudflare and
 installs or updates the Worker application. See the
@@ -39,9 +48,14 @@ installs or updates the Worker application. See the
 
 ## Remote client: `aos hub`
 
-For coordinated CDN setup, use the [delivery workflow](delivery.md). Its
-`plan`, `apply`, `show`, `list`, `resume`, and `activate` commands preserve
-reviewed intent and expose durable progress across interrupted sessions.
+Most changes follow one reviewed plan/apply flow. A planning command prints the
+effects together with a plan ID and confirmation hash; a second command applies
+that exact plan. Depending on the command group, planning is either a `plan`
+subcommand or a `--plan` flag, and applying is either an `apply` subcommand or
+the same command with `--plan-id`, `--confirm-hash`, and `--yes`. Reuse an
+`--idempotency-key` when retrying a request whose response was lost.
+
+### Build and sign in
 
 Build the repository CLI with:
 
@@ -53,7 +67,7 @@ Public reads work without a token:
 
 ```sh
 ./result/bin/aos hub registry list --hub https://hub.example.com
-./result/bin/aos hub registry get acme/cdn --hub https://hub.example.com
+./result/bin/aos hub registry show acme/cdn --hub https://hub.example.com
 ```
 
 Sign in interactively:
@@ -105,9 +119,10 @@ Use the global `--json` flag for scripts:
   --hub https://hub.example.com
 ```
 
-Manage bearer credentials as generic scoped access tokens. Copy a canonical
-scope from `aos hub whoami`, then use native permission verbs rather than
-registry-specific aliases:
+### Access tokens
+
+Bearer credentials are scoped access tokens. Copy a canonical scope from
+`aos hub whoami`, then grant permission verbs such as `read` and `publish`:
 
 ```sh
 aos hub access-token list 'registry:0123456789abcdef0123456789abcdef'
@@ -120,12 +135,14 @@ aos hub access-token issue plan \
   --idempotency-key 'plan-release-publisher'
 ```
 
-Issuance and retirement use the standard reviewed plan/apply flow. The secret
-is printed only by a successful first apply. Tokens default to 30 days and may
+Issuance and retirement use the reviewed plan/apply flow. The secret is
+printed only by a successful first apply. Tokens default to 30 days and may
 not exceed 90 days; the server rechecks the owner's current role authority when
 applying the plan.
 
-Service accounts have a complete organization-scoped lifecycle:
+### Service accounts
+
+Service accounts belong to one organization:
 
 ```sh
 aos hub org service-account list acme
@@ -138,6 +155,8 @@ aos hub org service-account create plan acme publisher \
 memberships, and token ownership. `delete plan` removes its direct memberships
 atomically and immediately deadens its owned credentials. Both require the
 `resource_version` returned by list or show.
+
+### Invitations
 
 Manage invitations beneath their owning organization:
 
@@ -158,7 +177,10 @@ invitation `resource_version` returned by list or show. Accepting creates the
 membership atomically; creating an invitation never creates a user or grants
 authority. Use global `--json` for stable machine-readable output.
 
-Configure organization SSO as two explicit resources:
+### Organization SSO
+
+Organization SSO has two resources, an identity provider and its email
+domains:
 
 ```sh
 aos hub org identity-provider show acme
@@ -169,13 +191,16 @@ AOS_OIDC_CLIENT_SECRET='<secret>' \
     --token-endpoint https://idp.example.com/token \
     --jwks-uri https://idp.example.com/jwks \
     --client-id aos-hub \
-    --if-version "" \
+    --if-version absent \
     --idempotency-key plan-acme-idp
 
 aos hub org domain claim plan acme login.example.com \
-  --if-version "" \
+  --if-version absent \
   --idempotency-key plan-acme-domain
 ```
+
+A resource that does not exist yet requires `--if-version absent`; later
+changes use the `resource_version` returned by the previous read or apply.
 
 Apply the domain claim, publish the returned `txt_challenge`, then run
 `org domain verify plan` with the returned `resource_version`. Applying the
@@ -186,12 +211,15 @@ and that flag preserves the existing sealed credential. Every set, remove,
 claim, verify, and release operation uses the same explicit `plan` then `apply`
 flow.
 
-Manage storage as a named binding rather than embedding provider credentials in
-a registry or cache. A Worker deployment can refer directly to one of its R2
-bindings; no S3 endpoint or R2 API token is needed for that provider kind:
+### Storage bindings
+
+A binding is a named storage location that registries and caches refer to, so
+provider credentials are never embedded in a registry or cache. A Worker
+deployment can refer directly to one of its R2 bindings; no S3 endpoint or R2
+API token is needed for that provider kind:
 
 ```sh
-aos hub storage-binding create \
+aos hub binding create \
   --org acme \
   --name worker-objects \
   --kind deployment-r2 \
@@ -203,8 +231,16 @@ aos hub storage-binding create \
 Review the returned effects and apply the exact plan with `--plan-id`,
 `--confirm-hash`, and `--yes`. Use `--kind s3` or `--kind r2` with `--bucket`,
 `--endpoint`, `--region`, and `--access` when the Hub reaches storage through
-an HTTP object API. Credentials are separate purpose-scoped secret-version
+an HTTP object API, or `--kind local-fs` with an absolute `--root` on a native
+Hub. Credentials are separate purpose-scoped secret-version
 references and can be rotated or validated without replacing the binding.
+
+### Delivery resources
+
+For coordinated CDN setup, prefer the [delivery workflow](delivery.md). Its
+`plan`, `apply`, `show`, `list`, `resume`, and `activate` commands preserve
+reviewed intent and expose durable progress across interrupted sessions. The
+commands below edit the same resources individually.
 
 Delivery resources also use reviewed plans. Creation commands generate an
 opaque stable identity and print it in the plan; pass `--stable-id` when an
@@ -213,7 +249,7 @@ complete initial revision at creation time, including its transport policy and
 the controller location that will verify it:
 
 ```sh
-aos hub network-boundary add packages-edge \
+aos hub network-policy add packages-edge \
   --kind trusted-ingress \
   --org acme \
   --provider cloudflare \
@@ -230,7 +266,7 @@ HTTPS endpoints require an explicit record of where TLS terminates:
 ```sh
 aos hub endpoint add https://packages.example.com \
   --org acme \
-  --network-boundary instance:public@1 \
+  --network-policy instance:public@1 \
   --ingress hub \
   --listener-provider hub-worker \
   --listener-resource-id packages-edge \
@@ -287,6 +323,8 @@ webhook, instance, audit, changeset, and upload operations. Authorization is
 checked against current server-side grants for every request; approval never
 preserves authority the approving user could not grant.
 
+### Topology and placements
+
 Inspect the physical topology without internal storage identifiers:
 
 ```sh
@@ -308,7 +346,7 @@ aos hub placement eviction run --plan-id <id> --confirm-hash <hash> \
 ```
 
 Package and registry producer commands use the same cache upload admission and
-multipart API as the Web console; direct storage capabilities never receive a
+multipart API as the console; direct storage capabilities never receive a
 Hub bearer.
 
 ## Inspect native ability artifacts locally

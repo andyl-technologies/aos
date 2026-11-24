@@ -36,8 +36,9 @@ million, probability millionths, micrometres per second squared, and
 micrometres per hour.
 
 Arithmetic uses checked 128-bit intermediates over 64-bit stored values.
-`SignalOverflow` is `error` or `saturate`; `SignalRounding` is `floor`,
-`ceiling`, `toward_zero`, `away_from_zero`, or `nearest_ties_to_even`.
+Overflow and rounding are explicit `SignalOverflow` and `SignalRounding`
+policies, whose closed values are listed in the reference under
+[`[[plan.signal]]` common fields](../../../users/crucible/reference-plan.md#plansignal-common-fields).
 Saturation is never implicit.
 
 ## Evaluation domains
