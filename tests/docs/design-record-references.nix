@@ -24,6 +24,7 @@
     ".direnv"
     ".worktrees"
     ".wrangler"
+    ".lake"
     ".crucible"
     ".aos-hub"
     ".aos-doc-cache.json"
